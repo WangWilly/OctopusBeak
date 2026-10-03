@@ -28,13 +28,11 @@ assert.match(cathayWorkflowSource, /export type CathayGmailOtpPort/);
 assert.match(cathayWorkflowSource, /export async function signInCathayForApp/);
 assert.match(cathayOtpSource, /dependencies\.otp\.ensureAccess\(\)/);
 assert.match(cathayOtpSource, /dependencies\.otp\.prepareRetrieval\(\)/);
-assert.match(
-  cathayOtpSource,
-  /await clickSendOnce\(\);\s*const result = await waitForCathaySignal\(\s*dependencies\.otp\.retrieve\(boundary\.boundaryId\)/,
-);
 assert.equal(cathayOtpSource.match(/dependencies\.otp\.retrieve\(/g)?.length, 1);
 assert.match(cathayOtpSource, /requestCathayAppOtpAssistance\(/);
-assert.match(cathayOtpSource, /authentication-otp-auto-retrieval-fallback/);
+assert.match(cathayOtpSource, /verificationActor = dependencies\.verificationActor \?\? "solver"/);
+assert.match(cathayOtpSource, /verificationActor === "human"/);
+assert.doesNotMatch(cathayOtpSource, /authentication-otp-auto-retrieval-fallback/);
 assert.doesNotMatch(
   cathayWorkflowSource,
   /from "libretto"|from "node:fs|writeFile\(|from "\.\/gmail-otp\.ts"|ensureCathayGmailOtpAccess|prepareCathayGmailOtpRetrieval|retrieveCathayGmailOtp|requirePGliteChildRpcClient|executePGliteWorkflowRun|export default workflow|downloadCathayStatements/,

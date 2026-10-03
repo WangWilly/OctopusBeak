@@ -652,7 +652,7 @@ A login password, one-time code, session token, cookie, API key, credential answ
 _Avoid_: Financial account identifier, account data
 
 **Gmail OTP mailbox authorization**:
-The person's explicit Google OAuth grant that lets the application read only the Gmail messages needed to retrieve Cathay Bank login one-time codes. The first supported mailbox family is Gmail and Google Workspace; the application never asks for or stores the person's Google password. The person can turn automatic retrieval on or off, and first authorization begins only when they turn it on. While the feature remains enabled, an expired or invalid refresh token opens the system browser directly for renewed authorization during the Cathay workflow; cancellation or failure returns that run to human assistance. Automatic entry occurs only when exactly one post-request message and exactly one code satisfy the Cathay sender, template, timing, and format rules; disabled, revoked, missing, or ambiguous retrieval returns Cathay email verification to human assistance.
+The person's explicit Google consent that allows the application to retrieve Cathay sign-in codes from Gmail. Automatic retrieval is always enabled, but the grant must be given or restored explicitly in sign-in settings. Disconnecting removes that grant and makes verification require authorization again.
 _Avoid_: Email password, unrestricted mailbox ownership, generic email login
 
 **Authentication certificate file**:
@@ -810,7 +810,7 @@ A workflow-declared browser control or verification modal area that a Verificati
 _Avoid_: Generic editable target, nearest input target
 
 **Verification actor**:
-The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `solver`; an explicit `human` setting is preserved. The two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
+The party that performs a verification target: `solver` through automated verification in the user-facing application, or `human` through Assist only in an explicitly enabled development mode. The two are mutually exclusive within one task run: automatic verification never falls back to human assistance, and manual development verification never invokes a solver.
 _Avoid_: Viewer mode, interaction mode, fallback actor
 
 **Verification completion**:
@@ -910,7 +910,7 @@ The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflo
 _Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
 
 **Cathay login Email OTP**:
-The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Any missing, stale, unauthenticated, differently shaped, ambiguous, rejected, or uncertain candidate returns to human assistance without persisting the message or answer.
+The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Automatic verification ends the attempt with an actionable reason when authorization or an eligible answer is unavailable, rejected, or uncertain; it never switches to human assistance or persists the message or answer. Manual Email OTP entry belongs only to explicitly enabled development verification.
 _Avoid_: Numeric-only Cathay OTP, arbitrary six-digit email code, recipient-address equality
 
 **Verification challenge presence**:

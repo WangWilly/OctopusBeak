@@ -28,17 +28,52 @@ export const VERIFICATION_CONFIDENCE_THRESHOLD_KEYS: Record<
 
 type VerificationSettings = Record<string, string | boolean | undefined>;
 
-export function verificationActorForSource(
+export type VerificationActorPolicyInput = {
+  /** Must come from Electron's `app.isPackaged`, never NODE_ENV or renderer input. */
+  isPackaged: boolean;
+  /** Snapshot of the process environment captured before loading development .env files. */
+  env: Readonly<Record<string, string | undefined>>;
+};
+
+/**
+ * Resolve the effective actor from trusted host launch context. Saved settings
+ * are deliberately not accepted here: they can describe configuration, but
+ * cannot authorize manual control of a verification run.
+ */
+export function effectiveVerificationActorForSourceKey(
   verificationActorKey: string | undefined,
-  settings: VerificationSettings,
+  policy: VerificationActorPolicyInput,
 ): VerificationActor {
-  if (verificationActorKey === undefined) return DEFAULT_VERIFICATION_ACTOR;
-  const raw = settings[verificationActorKey];
-  if (raw === undefined) return DEFAULT_VERIFICATION_ACTOR;
-  const value = String(raw).trim().toLowerCase();
-  return VERIFICATION_ACTORS.includes(value as VerificationActor)
-    ? (value as VerificationActor)
-    : DEFAULT_VERIFICATION_ACTOR;
+  if (!verificationActorKey || policy.isPackaged !== false) {
+    return DEFAULT_VERIFICATION_ACTOR;
+  }
+  const value = policy.env[verificationActorKey]?.trim().toLowerCase();
+  return value === "human" ? "human" : DEFAULT_VERIFICATION_ACTOR;
+}
+
+let hostVerificationActorPolicy: VerificationActorPolicyInput = Object.freeze({
+  isPackaged: true,
+  env: Object.freeze({}),
+});
+
+/** Install the policy once from Electron main before starting runtime work. */
+export function configureHostVerificationActorPolicy(
+  policy: VerificationActorPolicyInput,
+) {
+  hostVerificationActorPolicy = Object.freeze({
+    isPackaged: policy.isPackaged,
+    env: Object.freeze({ ...policy.env }),
+  });
+}
+
+/** Resolve a source actor from the immutable Electron startup policy. */
+export function hostVerificationActorForSourceKey(
+  verificationActorKey: string | undefined,
+): VerificationActor {
+  return effectiveVerificationActorForSourceKey(
+    verificationActorKey,
+    hostVerificationActorPolicy,
+  );
 }
 
 export function challengeConfidenceThreshold(

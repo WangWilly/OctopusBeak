@@ -4,13 +4,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CATHAY_GMAIL_CONNECTED_EMAIL_KEY,
-  CATHAY_GMAIL_OTP_ENABLED_KEY,
   CATHAY_GMAIL_REFRESH_TOKEN_KEY,
   getAutomationCredentialCodec,
   readAutomationCredentialsFile,
-  readAutomationSettingsFile,
   writeAutomationCredentialsFile,
-  writeAutomationSettingsFile,
 } from "./config-files.ts";
 import type { AutomationCredentialCodec } from "./config-files.ts";
 import type { GmailOtpBrokerService } from "./gmail-otp-broker.ts";
@@ -712,7 +709,6 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     searchAfterMs: number;
     knownMessageIds: ReadonlySet<string>;
   }>();
-  private readonly settingsPath: string;
   private readonly credentialsPath: string;
   private readonly appRoot: string;
   private readonly fetchImpl: FetchLike;
@@ -724,7 +720,6 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
   private readonly credentialCodec: AutomationCredentialCodec | null;
 
   constructor(options: GmailOtpServiceOptions = {}) {
-    this.settingsPath = options.settingsPath ?? "settings.json";
     this.credentialsPath = options.credentialsPath ?? "credentials.json";
     this.appRoot = options.appRoot ?? process.env.OCTOPUSBEAK_APP_ROOT ?? process.cwd();
     this.fetchImpl = options.fetch ?? fetch;
@@ -743,9 +738,10 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
   }
 
   status(): CathayGmailOtpStatus {
-    const settings = readAutomationSettingsFile(this.settingsPath);
     const credentials = readAutomationCredentialsFile(this.credentialsPath, this.credentialCodec);
-    const enabled = settings[CATHAY_GMAIL_OTP_ENABLED_KEY] === true;
+    // Automatic verification is policy, independent of the saved Gmail grant.
+    // Legacy enable flags cannot disable an already authorized mailbox.
+    const enabled = true;
     const connectedEmail = nonEmpty(credentials[CATHAY_GMAIL_CONNECTED_EMAIL_KEY])
       ? credentials[CATHAY_GMAIL_CONNECTED_EMAIL_KEY].trim()
       : null;
@@ -984,42 +980,27 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
 
   async ensureAccess(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
     if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
-    if (!this.status().enabled) return { status: "fallback", reason: "disabled" };
     if (!this.credentialCodec) return { status: "fallback", reason: "not-configured" };
     const credentials = this.credentials();
     const refreshToken = credentials[CATHAY_GMAIL_REFRESH_TOKEN_KEY]?.trim();
+    if (!refreshToken && !(this.accessToken && this.accessTokenExpiresAt - this.now() > ACCESS_TOKEN_SKEW_MS)) {
+      return { status: "fallback", reason: "needs-authorization" };
+    }
     try {
       if (this.accessToken && this.accessTokenExpiresAt - this.now() > ACCESS_TOKEN_SKEW_MS)
         return { status: "ready" };
-      if (refreshToken) {
-        try {
-          await this.refreshAccessToken(refreshToken, signal);
-          throwIfCathayGmailOtpAborted(signal);
-          return { status: "ready" };
-        } catch (error) {
-          if (!(error instanceof GmailOtpAuthorizationError) || error.reason !== "token-invalid") throw error;
-        }
-      }
-      const authorized = await this.authorization(signal);
+      await this.refreshAccessToken(refreshToken!, signal);
       throwIfCathayGmailOtpAborted(signal);
-      this.saveAuthorization(authorized, signal);
-      if (authorized.accessToken) {
-        throwIfCathayGmailOtpAborted(signal);
-        this.accessToken = authorized.accessToken;
-        this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
-      }
       return { status: "ready" };
     } catch (error) {
       if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
       return {
         status: "fallback",
-        reason: error instanceof GmailOtpAuthorizationError && error.reason === "authorization-cancelled"
-          ? "authorization-cancelled"
-          : error instanceof GmailOtpAuthorizationError && error.reason === "token-invalid"
-            ? "token-invalid"
-            : /configuration|configured/i.test(error instanceof Error ? error.message : "")
-              ? "not-configured"
-              : "authorization-failed",
+        reason: error instanceof GmailOtpAuthorizationError && error.reason === "token-invalid"
+          ? "needs-authorization"
+          : /configuration|configured/i.test(error instanceof Error ? error.message : "")
+            ? "not-configured"
+            : "authorization-failed",
       };
     }
   }
@@ -1103,15 +1084,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
           this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
         }
       }
-      writeAutomationSettingsFile(this.settingsPath, {
-        ...readAutomationSettingsFile(this.settingsPath),
-        [CATHAY_GMAIL_OTP_ENABLED_KEY]: true,
-      });
     } catch (error) {
-      writeAutomationSettingsFile(this.settingsPath, {
-        ...readAutomationSettingsFile(this.settingsPath),
-        [CATHAY_GMAIL_OTP_ENABLED_KEY]: false,
-      });
       return {
         ...this.status(),
         connectionError: connectionErrorFor(error),
@@ -1122,13 +1095,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
 
   async setEnabled(enabled: boolean): Promise<CathayGmailOtpStatus> {
     if (enabled) return await this.enable();
-    writeAutomationSettingsFile(this.settingsPath, {
-      ...readAutomationSettingsFile(this.settingsPath),
-      [CATHAY_GMAIL_OTP_ENABLED_KEY]: false,
-    });
-    this.accessToken = null;
-    this.accessTokenExpiresAt = 0;
-    return this.status();
+    throw new Error("Automatic Cathay Gmail OTP cannot be disabled. Disconnect Gmail to revoke access.");
   }
 
   async disconnect(): Promise<CathayGmailOtpStatus> {
@@ -1149,10 +1116,6 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     delete next[CATHAY_GMAIL_REFRESH_TOKEN_KEY];
     delete next[CATHAY_GMAIL_CONNECTED_EMAIL_KEY];
     writeAutomationCredentialsFile(this.credentialsPath, next, this.credentialCodec);
-    writeAutomationSettingsFile(this.settingsPath, {
-      ...readAutomationSettingsFile(this.settingsPath),
-      [CATHAY_GMAIL_OTP_ENABLED_KEY]: false,
-    });
     this.accessToken = null;
     this.accessTokenExpiresAt = 0;
     return this.status();

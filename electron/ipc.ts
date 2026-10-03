@@ -19,6 +19,7 @@ import {
   automationSetupGuideLink,
   applyAutomationCredentialState,
   loadAutomationCoreSnapshot,
+  assertManualVerificationAllowedForTask,
   externalPrerequisiteById,
   readAutomationCredentialState,
   setCathayGmailOtpEnabled,
@@ -450,6 +451,7 @@ export function registerOctopusBeakIpc({
     return automationRunMany(taskIds, operationalProvider);
   });
   ipcMain.handle("automation:resumeHumanAssistance", async (_event, taskId: string) => {
+    assertManualVerificationAllowedForTask(taskId);
     await ensureAutomationRuntimeReady("automation-resume");
     return automationResumeHumanAssistance(taskId, operationalProvider);
   });
@@ -473,6 +475,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerScreenshot",
     async (_event, taskId: string) => {
+      assertManualVerificationAllowedForTask(taskId);
       const session = await readHumanSession(taskId);
       try {
         return new Uint8Array(await captureSessionScreenshot(session));
@@ -485,6 +488,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerInspect",
     async (_event, taskId: string, point: unknown) => {
+      assertManualVerificationAllowedForTask(taskId);
       const session = await readHumanSession(taskId);
       const contract = await readHumanContract(taskId);
       if (!contract)
@@ -502,6 +506,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerInput",
     async (_event, taskId: string, input: unknown) => {
+      assertManualVerificationAllowedForTask(taskId);
       const session = await readHumanSession(taskId);
       const contract = await readHumanContract(taskId);
       if (!contract)
@@ -572,6 +577,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerCompletionCheck",
     async (_event, taskId: string) => {
+      assertManualVerificationAllowedForTask(taskId);
       const session = await readHumanSession(taskId);
       const contract = await readHumanContract(taskId);
       if (!contract)

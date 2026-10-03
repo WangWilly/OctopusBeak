@@ -14,6 +14,7 @@ import {
 import { workflowFailureExplanation } from "../workflow-failures.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "../product-collection.ts";
+import { CathayAppVerificationError } from "../verification-errors.ts";
 
 test("typed workflow summary keeps only bounded status and aggregate counts", () => {
   const privateAccountNumber = ["12345", "67890"].join("");
@@ -134,6 +135,20 @@ test("typed failures use stable privacy-safe categories", () => {
     occurredAt: "2026-09-25T00:00:00.000Z",
   }]), "commit-outcome-unknown");
   assert.equal(classifyTypedWorkflowFailure(new Error("user stopped"), [], true), "cancelled");
+  assert.equal(classifyTypedWorkflowFailure(new Error("provider details"), [{
+    runId: "run-1",
+    stage: "authentication",
+    code: "verification-solver-exhausted",
+    occurredAt: "2026-10-03T00:00:00.000Z",
+  }]), "verification-failed");
+  assert.equal(
+    classifyTypedWorkflowFailure(new CathayAppVerificationError("gmail-needs-authorization"), []),
+    "verification-configuration-failed",
+  );
+  assert.equal(
+    classifyTypedWorkflowFailure(new CathayAppVerificationError("gmail-no-candidate"), []),
+    "verification-failed",
+  );
   assert.equal(classifyTypedWorkflowFailure(new Error("private details"), [{
     runId: "run-1",
     stage: "authentication",

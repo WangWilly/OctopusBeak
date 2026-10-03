@@ -29,6 +29,7 @@ import {
 import { finalizeAutomationTaskRun } from "./task-run-finalization.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
@@ -498,6 +499,10 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
 
+    configureHostVerificationActorPolicy({
+      isPackaged: false,
+      env: { LIBRETTO_CLOUD_CTBC_VERIFICATION_ACTOR: "human" },
+    });
     const completed = await runScenario("human-completion");
     assert.equal(completed.result.status, "completed");
     assert.equal(completed.run?.status, "completed");
@@ -515,6 +520,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(cancelled.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.equal(cancelled.run?.signal, null, "cancelling during commit preserves the unknown outcome");
   } finally {
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });

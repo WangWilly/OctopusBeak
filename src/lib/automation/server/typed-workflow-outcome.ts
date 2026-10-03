@@ -13,6 +13,7 @@ import {
   TYPED_WORKFLOW_ERROR_CODES,
   type TypedWorkflowErrorCode,
 } from "../workflow-failures.ts";
+import { CathayAppVerificationError } from "../verification-errors.ts";
 
 export type { TypedWorkflowErrorCode } from "../workflow-failures.ts";
 
@@ -204,6 +205,12 @@ export function classifyTypedWorkflowFailure(
   if (commitStarted && !commitCompleted) return "commit-outcome-unknown";
 
   if (signalAborted) return "cancelled";
+  if (error instanceof CathayAppVerificationError && ERROR_CODES.has(error.errorCode)) {
+    return error.errorCode;
+  }
+  if (events.some((event) => event.stage === "authentication" && event.code === "verification-solver-exhausted")) {
+    return "verification-failed";
+  }
   if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
   if (events.some((event) => event.stage === "authentication" && (
     event.code === "solver-route-unavailable"

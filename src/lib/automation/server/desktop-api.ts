@@ -5,6 +5,7 @@ import {
   enabledAutomationTasks,
   taskById,
 } from "./tasks.ts";
+import { hostVerificationActorForSourceKey } from "../verification-config.ts";
 import {
   isStatementSelectionGroup,
   selectStatementTypes,
@@ -20,6 +21,7 @@ import { buildAutomationPageModel } from "./page-model.ts";
 import {
   automationBusinessTimezone,
   automationGroupEnabledStatus,
+  automationGroupVerificationActors,
   readAutomationSettings,
 } from "./settings.ts";
 import {
@@ -101,7 +103,7 @@ export async function enableCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
   return sanitizedCathayGmailOtpStatus(await enableCathayGmailOtpCore());
 }
 
-/** Disabling keeps the Google grant; the core owns that lifecycle rule. */
+/** Legacy callers may connect, but cannot disable automatic verification. */
 export async function setCathayGmailOtpEnabled(
   enabled: boolean,
 ): Promise<CathayGmailOtpStatus> {
@@ -231,6 +233,7 @@ export async function loadAutomationCoreSnapshot(
 ): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
+  const verificationActorsByCredentialGroup = automationGroupVerificationActors();
   const activeTaskIds = activeAutomationTaskIds();
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
@@ -254,6 +257,7 @@ export async function loadAutomationCoreSnapshot(
   return {
     runtimeSessionId: runtime.sessionId,
     runtimeRevision: runtime.revision,
+    verificationActorsByCredentialGroup,
     automation: {
       ...buildAutomationPageModel({
         tasks: enabledAutomationTasks(enabledGroups),
@@ -272,6 +276,7 @@ export async function loadAutomationCoreSnapshot(
         runtime,
         credentialStates: { ...credentialStates },
       }),
+      verificationActorsByCredentialGroup,
     },
     credentialGroups,
   };
@@ -291,6 +296,9 @@ export function applyAutomationCredentialState(
   return {
     runtimeSessionId: core.runtimeSessionId,
     runtimeRevision: core.runtimeRevision,
+    verificationActorsByCredentialGroup: {
+      ...core.verificationActorsByCredentialGroup,
+    },
     automation: {
       ...core.automation,
       credentials: { ...credentialState.status },
@@ -332,6 +340,20 @@ export function externalPrerequisiteById(prerequisiteId: string) {
       return prerequisite;
   }
   return null;
+}
+
+/** Reject renderer-originated manual control unless the trusted host policy
+ * explicitly selected development human verification for this source. */
+export function assertManualVerificationAllowedForTask(taskId: string) {
+  const task = taskById(taskId);
+  if (!task) throw new Error("Unknown automation task: " + taskId);
+  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
+    (candidate) => candidate.id === task.credentialGroupId,
+  );
+  const actor = hostVerificationActorForSourceKey(group?.verificationActorKey);
+  if (actor !== "human") {
+    throw new Error("Manual verification is disabled for this source.");
+  }
 }
 
 export function automationSetupGuideLink(
@@ -560,6 +582,7 @@ export async function automationResumeHumanAssistance(
       "This task does not use an App browser workflow. Start a new run from the source.",
     );
   }
+  assertManualVerificationAllowedForTask(taskId);
   const model = await loadAutomationDesktopModel(provider);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");

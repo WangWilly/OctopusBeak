@@ -168,6 +168,7 @@ const automation = (
     tasks: [selectedTask],
   },
   credentialGroups: [fubonGroup, esunGroup, maicoinGroup],
+  verificationActorsByCredentialGroup: {},
 });
 
 const context = (
@@ -614,7 +615,7 @@ assert.match(
 assert.match(automationDashboard, /humanTask[\s\S]*?assistInteracted/);
 assert.match(
   automationDashboard,
-  /class="button secondary task-control"[\s\S]*?data-onboarding=\{onboardingStep === "assist" && !humanTask[\s\S]*?"automation-assist"[\s\S]*?data-onboarding-action="open-assist"/,
+  /\{#if task\.status === "waiting_for_human" && task\.humanSession[\s\S]*?shouldOfferManualVerification[\s\S]*?<button[\s\S]*?class="button secondary task-control"[\s\S]*?data-onboarding=\{visibleOnboardingStep === "assist" && !humanTask[\s\S]*?"automation-assist"[\s\S]*?data-onboarding-action="open-assist"/,
 );
 const activeTaskJumpSource = automationDashboard.slice(
   automationDashboard.indexOf('class="active-task-jump"'),
@@ -1003,11 +1004,11 @@ test("independent verification keeps the Assist viewer guided until it is verifi
   );
   assert.match(
     automationDashboard,
-    /data-onboarding=\{onboardingStep === "assist" && humanTask && guideAssistViewer/,
+    /data-onboarding=\{visibleOnboardingStep === "assist" && humanTask && guideAssistViewer/,
   );
   assert.match(
     automationDashboard,
-    /onboardingStep === "assist" && canResumeAssist\(\s*assistInteracted,\s*Boolean\(floatingInput\),\s*humanTask\.humanAssistanceContract\?\.completion,\s*\)\s*\?\s*\$t\.onboarding\.resumeCollection\s*:\s*\$t\.automation\.resume/,
+    /visibleOnboardingStep === "assist" && canResumeAssist\(\s*assistInteracted,\s*Boolean\(floatingInput\),\s*humanTask\.humanAssistanceContract\?\.completion,\s*\)\s*\?\s*\$t\.onboarding\.resumeCollection\s*:\s*\$t\.automation\.resume/,
   );
 });
 

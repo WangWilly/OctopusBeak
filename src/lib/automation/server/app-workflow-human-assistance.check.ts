@@ -139,6 +139,13 @@ test("solver challenges fail when the App has no registered route", async () => 
     assert.ok((await provider.automation.taskRunById(created.taskRunId))?.events.some(
       (event) => event.code === "solver-route-unavailable",
     ));
+    await assert.rejects(
+      assistance.request({ ...contract, stageId: "unknown-manual-stage", challengeKind: undefined }, controller.signal),
+      /solver route is unavailable/u,
+    );
+    const failedClosed = await provider.automation.taskRunById(created.taskRunId);
+    assert.equal(failedClosed?.status, "running", "unsupported solver work never enters an unavailable waiting state");
+    assert.ok(failedClosed?.events.some((event) => event.code === "solver-challenge-unsupported"));
   } finally {
     controller.abort();
     await store.close();

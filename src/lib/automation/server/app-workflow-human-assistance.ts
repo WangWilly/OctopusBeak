@@ -86,18 +86,20 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
         const registeredHandler = requestHandlers.get(current.taskId);
         if (
           input.requireSolverRoute
-          && isSolverChallengeKind(contract.challengeKind)
           && !input.onRequest
           && !registeredHandler
         ) {
+          const reason = isSolverChallengeKind(contract.challengeKind)
+            ? "solver-route-unavailable"
+            : "solver-challenge-unsupported";
           await input.persistence.appendRunEvent({
             runId: input.taskRunId,
             stage: "authentication",
-            code: "solver-route-unavailable",
+            code: reason,
             occurredAt: new Date().toISOString(),
           });
           await input.onRuntimeUpdate?.(input.taskRunId);
-          throw new Error("App workflow solver route is unavailable for this challenge.");
+          throw new Error("App workflow solver route is unavailable for this verification stage.");
         }
         await input.persistence.updateHumanAssistanceContract(input.taskRunId, contract);
         const transition = await input.persistence.transitionTaskRunToActive(

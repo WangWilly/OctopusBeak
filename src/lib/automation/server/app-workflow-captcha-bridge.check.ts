@@ -12,9 +12,11 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import { MAX_CAPTCHA_RETRY_ROUNDS } from "./captcha-retry-campaign.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const sinopacContract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -215,6 +217,10 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
 
 test("App SinoPac CAPTCHA assistance aborts its route when the live run is cancelled", async () => {
   const store = new PGliteStore(await PGlite.create());
+  configureHostVerificationActorPolicy({
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human" },
+  });
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
@@ -276,6 +282,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
   } finally {
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });
@@ -358,6 +365,72 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
       controller.abort();
       await store.close();
     }
+  }
+});
+
+test("exhausted App solver retries finalize with a typed verification failure and safe reason", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  const controller = new AbortController();
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const taskId = "fubon-all-statements";
+    const created = await provider.automation.createTaskRun({
+      taskId,
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const attempts: number[] = [];
+    const result = await runCaptchaRetryCampaign({
+      taskId,
+      appWorkflow: true,
+      provider,
+      launchVerificationSettings: {},
+      initialExecutionOptions: { taskRunId: created.taskRunId },
+      isCancellationRequested: () => false,
+      routeWaitingRunVerification: async (input) => {
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable", reason: "solver-exhausted" };
+      },
+      async execute(options) {
+        attempts.push(options.attempt ?? 1);
+        const assistance = createAppWorkflowHumanAssistancePort({
+          taskRunId: created.taskRunId,
+          persistence: provider.automation,
+        });
+        try {
+          await assistance.request(sinopacContract, controller.signal);
+        } catch {
+          // Reject the current challenge so the campaign can admit its next round.
+        }
+        return {
+          status: "failed" as const,
+          taskRunId: created.taskRunId,
+          executionId: options.executionId!,
+          result: {
+            exitCode: 1,
+            signal: null,
+            error: new Error("untrusted solver diagnostics"),
+            statementSummary: null,
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          },
+        };
+      },
+    });
+    assert.deepEqual(result, { status: "failed" });
+    assert.equal(attempts.length, MAX_CAPTCHA_RETRY_ROUNDS);
+    const finalRun = await provider.automation.taskRunById(created.taskRunId);
+    assert.equal(finalRun?.status, "failed");
+    assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "verification-failed");
+    assert.ok(finalRun?.events.some((event) => event.code === "verification-solver-exhausted"));
+    assert.doesNotMatch(JSON.stringify(finalRun), /untrusted solver diagnostics/u);
+  } finally {
+    controller.abort();
+    await store.close();
   }
 });
 

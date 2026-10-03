@@ -1,6 +1,7 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
 import type { WorkflowRunEvent } from "./workflow-executor.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
+import type { VerificationActor } from "./verification-config.ts";
 export type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 
 /**
@@ -182,6 +183,8 @@ export type AutomationPageModel = {
   credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
+  /** Main-process policy projection; missing entries fail closed to solver in the UI. */
+  verificationActorsByCredentialGroup?: Readonly<Record<string, VerificationActor>>;
   /** Optional for compatibility with non-desktop model consumers. */
   cathayGmailOtp?: CathayGmailOtpStatus;
 };

@@ -161,7 +161,8 @@ test("App verification uses its task-run ID and ignores legacy session text", as
     taskId: "sinopac-statements",
     taskRunId,
     provider,
-    settings: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver" },
+    // A stored human value is deliberately ignored by the host policy.
+    settings: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human" },
     solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
     providerVerification: {
       handlesChallengeImage: () => true,

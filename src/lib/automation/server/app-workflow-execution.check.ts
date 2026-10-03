@@ -20,6 +20,7 @@ import { shutdownAppAutomationWorkflows } from "./runner.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const loginUrl = "https://www.einvoice.nat.gov.tw/accounts/login";
 const homeUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/home";
@@ -114,6 +115,10 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
   const store = new PGliteStore(database);
   const browser = await chromium.launch({ headless: true });
   const contexts = new Map<string, BrowserContext>();
+  configureHostVerificationActorPolicy({
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR: "human" },
+  });
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
@@ -338,6 +343,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     await interrupted;
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
   } finally {
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     for (const context of contexts.values()) await context.close().catch(() => {});
     await browser.close();
     await store.close();

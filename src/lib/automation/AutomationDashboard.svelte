@@ -5,6 +5,7 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
+  import type { VerificationActor } from "$lib/automation/verification-config.ts";
   import type {
     AutomationActionKind,
     AutomationActionToken,
@@ -30,6 +31,14 @@
     firstInvalidCredentialGroup,
   } from "$lib/automation/credential-setup.ts";
   import { credentialInputValue } from "$lib/automation/credential-redaction.ts";
+  import {
+    cathayEmailOtpFailureReason,
+    cathayOtpReasonNeedsGmailSettings,
+    onboardingStepForVerificationActor,
+    shouldOfferManualVerification,
+    verificationFailureEventReason,
+    verificationSolverExhausted,
+  } from "$lib/automation/verification-actor-ui.ts";
   import {
     mapViewerPointer,
     shouldDispatchViewerClickBeforeType,
@@ -73,6 +82,7 @@
   export let onboardingSingleSource = false;
   export let onboardingStep: OnboardingStep = "hidden";
   export let onboardingSelectedCredentialGroupId: string | null = null;
+  export let verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>> = {};
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
 
   function blockState(
@@ -138,9 +148,9 @@
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { sync: true };
   const defaultCathayGmailOtpStatus: CathayGmailOtpStatus = {
-    enabled: false,
+    enabled: true,
     connectedEmail: null,
-    needsAuthorization: false,
+    needsAuthorization: true,
   };
   let cathayGmailOtpStatus: CathayGmailOtpStatus = defaultCathayGmailOtpStatus;
 
@@ -154,9 +164,17 @@
     Boolean(floatingInput),
     humanTask?.humanAssistanceContract?.completion,
   );
+  $: visibleOnboardingStep = onboardingStepForVerificationActor(
+    onboardingStep,
+    onboardingSelectedCredentialGroupId,
+    verificationActorsByCredentialGroup,
+  );
   $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
-    task.isActive || task.status === "waiting_for_human" || task.status === "failed"
+    task.isActive
+    || (task.status === "waiting_for_human"
+      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup))
+    || task.status === "failed"
   );
   $: credentialReadyCount = syncTasks.filter((task) =>
     task.credentialKeys.every((key) => automation.credentials[key]),
@@ -188,11 +206,15 @@
       .map((task) => task.credentialGroupId as string),
   );
   $: onboardingDisclosure = onboardingTaskDisclosure(
-    onboardingStep,
+    visibleOnboardingStep,
     onboardingSelectedCredentialGroupId,
     automation.tasks,
   );
   $: revealOnboardingTask(onboardingDisclosure);
+  $: if (humanTask && !shouldOfferManualVerification(
+    humanTask.credentialGroupId,
+    verificationActorsByCredentialGroup,
+  )) closeHumanViewer();
   $: visibleCredentialGroups = credentialGroups.filter((group) => {
     const term = credentialSearch.trim().toLowerCase();
     if (!term) return true;
@@ -498,6 +520,13 @@
     credentialsOpen = true;
   }
 
+  async function openCathayGmailOtpSettings() {
+    openCredentials();
+    selectCredentialGroup("cathay");
+    await tick();
+    document.getElementById("cathay-gmail-otp-title")?.focus();
+  }
+
   function closeCredentials() {
     if (credentialsDirty && !confirm($t.automation.discardCredentialChanges)) return;
     resetCredentialChanges();
@@ -538,27 +567,6 @@
       await reload();
       if (result.connectionError)
         cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
-    } catch {
-      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
-    } finally {
-      cathayGmailOtpBusy = false;
-    }
-  }
-
-  async function setCathayGmailOtpEnabled(enabled: boolean) {
-    if (cathayGmailOtpBusy) return;
-    cathayGmailOtpBusy = true;
-    cathayGmailOtpError = "";
-    try {
-      if (enabled) {
-        const result = await window.octopusBeak.automation.enableCathayGmailOtp();
-        await reload();
-        if (result.connectionError)
-          cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
-      } else {
-        await window.octopusBeak.automation.setCathayGmailOtpEnabled(false);
-        await reload();
-      }
     } catch {
       cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
     } finally {
@@ -892,7 +900,8 @@
   }
 
   function handleActiveTaskClick(task: AutomationTaskRow) {
-    if (task.status === "waiting_for_human" && task.humanSession) {
+    if (task.status === "waiting_for_human" && task.humanSession
+      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) {
       openHumanViewer(task);
       return;
     }
@@ -1073,6 +1082,7 @@
   }
 
   function openHumanViewer(task: AutomationTaskRow) {
+    if (!shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) return;
     humanTask = task;
     assistInteracted = false;
     viewerScale = Math.max(1, Math.min(2.5, task.humanAssistanceContract?.focus.initialZoom ?? 1));
@@ -1401,11 +1411,31 @@
     return (dictionary.automation.taskLabels as Record<string, string>)[task.id] ?? task.label;
   }
 
+  function taskStatusLabel(task: AutomationTaskRow, dictionary: Translation) {
+    if (task.status === "waiting_for_human"
+      && !shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) {
+      return dictionary.automation.progressAutomaticVerification;
+    }
+    return dictionary.automation.statusLabels[task.status];
+  }
+
+  function workflowEventFailureLabel(event: AutomationTaskRow["events"][number]): string | null {
+    const reason = verificationFailureEventReason(event);
+    if (reason === "verification-solver-exhausted") {
+      return $t.automation.verificationSolverExhausted;
+    }
+    return reason ? $t.automation.cathayOtpFailureReasons[reason] : null;
+  }
+
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
+    if (task.status === "waiting_for_human") {
+      return shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
+        ? dictionary.automation.progressWaiting
+        : dictionary.automation.progressAutomaticVerification;
+    }
     if (task.progressPercent !== null) return `${task.progressPercent}%`;
     if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
     if (task.status === "retrying") return dictionary.automation.progressRetrying(task.attempt || 1, task.maxAttempts);
-    if (task.status === "waiting_for_human") return dictionary.automation.progressWaiting;
     if (task.status === "completed") return dictionary.automation.progressCompleted;
     if (task.status === "partial") return dictionary.automation.progressPartial;
     if (task.status === "failed") return dictionary.automation.progressFailed;
@@ -1470,7 +1500,10 @@
                   title={taskLabel(task, $t)}
                   data-onboarding-task={task.id}
                   data-onboarding-group={task.credentialGroupId}
-                  data-onboarding-action={task.status === "waiting_for_human" ? "open-assist" : "logs"}
+                  data-onboarding-action={task.status === "waiting_for_human"
+                    && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
+                    ? "open-assist"
+                    : "logs"}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
                   onpointerleave={hideTaskTooltip}
                   onfocus={(event) => showTaskTooltip(task, event)}
@@ -1619,7 +1652,7 @@
           </thead>
           <tbody>
             {#each stage.tasks as task (task.id)}
-              <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || task.status === "waiting_for_human"} id={`${task.id}-task-row`}>
+              <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || (task.status === "waiting_for_human" && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup))} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
                     <strong>{taskLabel(task, $t)}</strong>
@@ -1655,12 +1688,12 @@
                     </div>
                     <span class="mono">{progressLabel(task, $t)}</span>
                     {#if task.status === "completed" || task.status === "partial"}
-                      <span class={`chip ${statusClass(task.status)}`}>{$t.automation.statusLabels[task.status]}</span>
+                      <span class={`chip ${statusClass(task.status)}`}>{taskStatusLabel(task, $t)}</span>
                     {/if}
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
-                    {$t.automation.statusLabels[task.status]}
+                    {taskStatusLabel(task, $t)}
                   </span>
                   {/if}
                 </td>
@@ -1688,11 +1721,12 @@
                         {$t.automation.forceQuit}
                       </button>
                     {/if}
-                    {#if task.status === "waiting_for_human" && task.humanSession}
+                    {#if task.status === "waiting_for_human" && task.humanSession
+                      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)}
                       <button
                         class="button secondary task-control"
                         type="button"
-                        data-onboarding={onboardingStep === "assist" && !humanTask
+                        data-onboarding={visibleOnboardingStep === "assist" && !humanTask
                           && task.credentialGroupId === onboardingSelectedCredentialGroupId
                           ? "automation-assist"
                           : undefined}
@@ -1730,9 +1764,24 @@
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
                       {#if task.appWorkflowOutcome?.errorCode}
-                        <p class="workflow-outcome-error">
+                        {@const cathayOtpFailure = cathayEmailOtpFailureReason(task.events)}
+                        {@const solverExhausted = verificationSolverExhausted(task.events)}
+                        <div class="workflow-outcome-error">
                           <code>{task.appWorkflowOutcome.errorCode}</code>
-                          {#if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
+                          {#if cathayOtpFailure}
+                            <span>{$t.automation.cathayOtpFailureReasons[cathayOtpFailure]}</span>
+                            {#if cathayOtpReasonNeedsGmailSettings(cathayOtpFailure)}
+                              <button
+                                class="button secondary cathay-gmail-settings-action"
+                                type="button"
+                                onclick={() => void openCathayGmailOtpSettings()}
+                              >
+                                {$t.automation.cathayGmailOtpSettingsAction}
+                              </button>
+                            {/if}
+                          {:else if solverExhausted}
+                            <span>{$t.automation.verificationSolverExhausted}</span>
+                          {:else if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
                             <span>{$locale === "zh-TW"
                               ? "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。"
                               : "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying."}</span>
@@ -1743,7 +1792,7 @@
                           {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                           {/if}
-                        </p>
+                        </div>
                       {/if}
                       {#if task.appWorkflowOutcome?.summary}
                         <div class="workflow-outcome-summary" aria-label={$t.automation.workflowOutcomeSummary}>
@@ -1787,10 +1836,15 @@
                       {#if task.events.length}
                         <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
                           {#each task.events as event, index (index)}
+                            {@const failureLabel = workflowEventFailureLabel(event)}
                             <li class="workflow-event-row">
                               <div class="workflow-event-main">
                                 <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
-                                <code>{event.code}</code>
+                                {#if failureLabel}
+                                  <span>{failureLabel}</span>
+                                {:else}
+                                  <code>{event.code}</code>
+                                {/if}
                               </div>
                               <div class="workflow-event-meta">
                                 <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
@@ -1832,7 +1886,7 @@
     style={`left: ${taskTooltipPosition.left}px; top: ${taskTooltipPosition.top}px;`}
   >
     <strong>{taskLabel(hoveredTask, $t)}</strong>
-    <span>{taskStageTitle(hoveredTask, $t)} · {$t.automation.statusLabels[hoveredTask.status]}</span>
+    <span>{taskStageTitle(hoveredTask, $t)} · {taskStatusLabel(hoveredTask, $t)}</span>
     <span>{latestTaskTime(hoveredTask)}</span>
   </div>
 {/if}
@@ -2005,19 +2059,10 @@
               <section class="gmail-otp-settings" aria-labelledby="cathay-gmail-otp-title">
                 <div class="gmail-otp-head">
                   <div>
-                    <h4 id="cathay-gmail-otp-title">{$t.automation.cathayGmailOtpTitle}</h4>
+                    <h4 id="cathay-gmail-otp-title" tabindex="-1">{$t.automation.cathayGmailOtpTitle}</h4>
                     <p>{$t.automation.cathayGmailOtpDescription}</p>
                   </div>
-                  <button
-                    class="switch credential-switch"
-                    type="button"
-                    aria-pressed={cathayGmailOtpStatus.enabled}
-                    disabled={cathayGmailOtpBusy}
-                    onclick={() => void setCathayGmailOtpEnabled(!cathayGmailOtpStatus.enabled)}
-                  >
-                    <span>{$t.automation.cathayGmailOtpToggle}</span>
-                    <span class="switch-track" aria-hidden="true"></span>
-                  </button>
+                  <span class="chip good">{$t.automation.cathayGmailOtpAlwaysAutomatic}</span>
                 </div>
                 <p class="gmail-otp-status" aria-live="polite">
                   {#if cathayGmailOtpStatus.needsAuthorization}
@@ -2258,13 +2303,13 @@
             class="button primary fixed-action"
             type="button"
             disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)}
-            data-onboarding={onboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)
+            data-onboarding={visibleOnboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)
               ? "automation-assist"
               : undefined}
             data-onboarding-action="resume-collection"
             onclick={resumeHumanViewer}
           >
-            {onboardingStep === "assist" && canResumeAssist(
+            {visibleOnboardingStep === "assist" && canResumeAssist(
               assistInteracted,
               Boolean(floatingInput),
               humanTask.humanAssistanceContract?.completion,
@@ -2290,7 +2335,7 @@
               {#if viewerImageUrl}
                 <img
                   class="viewer-image"
-                  data-onboarding={onboardingStep === "assist" && humanTask && guideAssistViewer
+                  data-onboarding={visibleOnboardingStep === "assist" && humanTask && guideAssistViewer
                     ? "automation-assist"
                     : undefined}
                   data-onboarding-action="choose-verification-control"
@@ -2316,7 +2361,7 @@
                 </div>
               {/if}
             </button>
-          {#if onboardingStep === "assist" && humanTask && guideAssistViewer}
+          {#if visibleOnboardingStep === "assist" && humanTask && guideAssistViewer}
             <div class="verification-viewer-tooltip" role="tooltip">
               {$t.onboarding.clickVerificationField}
             </div>
@@ -2338,7 +2383,7 @@
             >
               <input
                 bind:this={floatingInputEl}
-                data-onboarding={onboardingStep === "assist" && floatingInput
+                data-onboarding={visibleOnboardingStep === "assist" && floatingInput
                   ? "automation-assist"
                   : undefined}
                 data-onboarding-action="enter-verification"
@@ -3011,11 +3056,21 @@
   }
 
   .workflow-outcome-error {
+    display: grid;
+    justify-items: start;
+    gap: var(--space-2);
     margin: 0;
     color: var(--danger);
-    font-family: var(--font-mono);
     font-size: 12px;
     overflow-wrap: anywhere;
+  }
+
+  .workflow-outcome-error code {
+    font-family: var(--font-mono);
+  }
+
+  .cathay-gmail-settings-action {
+    min-height: 32px;
   }
 
   .workflow-outcome-summary {
