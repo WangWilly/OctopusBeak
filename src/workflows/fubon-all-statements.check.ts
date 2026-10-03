@@ -79,6 +79,7 @@ await assert.rejects(
     },
     {
       managedIdentitySecret: "synthetic-managed-secret",
+      statementTypes: ["deposit"],
       credentials: { ...credentials, fubon_password: "synthetic-password" },
     },
     {

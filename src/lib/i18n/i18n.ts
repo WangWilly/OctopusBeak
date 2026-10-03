@@ -616,8 +616,6 @@ const en = {
     selectAllStatements: "Select all",
     statementSelectionHelp: (bank: string) =>
       `Choose at least one while ${bank} is enabled.`,
-    statementSelectionAllSupported: (bank: string) =>
-      `${bank} automatically collects every supported account type; these selections do not change execution.`,
     selectOneStatementType: (bank: string) =>
       `Select at least one ${bank} statement type.`,
     needsSetup: "Needs setup",
@@ -642,6 +640,21 @@ const en = {
       domestic: "Domestic accounts",
       accounts: "Accounts",
     } as Record<string, string>,
+    workflowOutcomeSummary: "Workflow outcome summary",
+    productResults: "Product results",
+    productOutcomeStatuses: {
+      success: "Collected",
+      no_data: "No data",
+      not_held: "Not held",
+      failed: "Failed",
+      skipped: "Skipped",
+    },
+    productSkipReasons: {
+      not_selected: "Not selected",
+      not_attempted: "Not attempted",
+    },
+    productRetainedCount: (count: number) =>
+      `${count} complete data items saved.`,
     historySearch: "Search tasks or commands",
     historyAll: "All",
     historyRunning: "Running",
@@ -1501,8 +1514,6 @@ const zh: typeof en = {
     selectAllStatements: "全選",
     statementSelectionHelp: (bank) =>
       `${bank} 啟用時，請至少選擇一種帳戶型態。`,
-    statementSelectionAllSupported: (bank) =>
-      `${bank} 會自動抓取目前支援的所有帳戶資料；此處選擇不會影響執行。`,
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
     selectedStatementCount: (selected, total) => `已選 ${selected}/${total}`,
@@ -1524,6 +1535,20 @@ const zh: typeof en = {
       domestic: "國內帳戶",
       accounts: "帳戶",
     },
+    workflowOutcomeSummary: "工作流程結果摘要",
+    productResults: "產品結果",
+    productOutcomeStatuses: {
+      success: "已抓取",
+      no_data: "沒有資料",
+      not_held: "未持有",
+      failed: "失敗",
+      skipped: "略過",
+    },
+    productSkipReasons: {
+      not_selected: "未選取",
+      not_attempted: "尚未執行",
+    },
+    productRetainedCount: (count) => `已保存 ${count} 項完整資料。`,
     historySearch: "搜尋任務或指令",
     historyAll: "全部",
     historyRunning: "執行中",

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
+import { collectSelectedProducts } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
@@ -1602,6 +1603,73 @@ try {
   assert.deepEqual(result, { sourceCount: 1, rowCount: 1, itemCount: 1 });
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.product, "foreign-currency-deposit");
+
+  // Exercise the real FX collector through the parent coordinator: a single
+  // account can have several currency balances, each requiring its own receipt.
+  const committedProducts: string[] = [];
+  const multiCurrency = await collectSelectedProducts({
+    productIds: ["foreign_currency", "credit_card"],
+    selectedIds: ["foreign_currency", "credit_card"],
+    signal: new AbortController().signal,
+    collect: async (typeId, staged: PGliteWorkflowRunItem[]) => {
+      if (typeId === "credit_card")
+        return { sourceCaptureCount: 0, rowCount: 0, itemCount: 0, noDataEvidence: true };
+      const collected = await runYuantaForeignCurrencyStatements(
+        {} as never,
+        yuantaForeignCurrencyStatementsInputSchema.parse({
+          customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+        }),
+        { yuanta_user_id: "synthetic-yuanta-login" },
+        {
+          collectOnly: true,
+          deferredCommitItems: staged,
+          openPage: async () => ({} as never),
+          readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
+          selectAccount: async () => undefined,
+          readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
+          queryAccountCurrency: async () => undefined,
+          downloadRows: async () => ({ rows: [{
+            accountLabel: "外幣綜合存款", accountValue: "00123456789012",
+            queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
+            values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
+            sortTime: null,
+          }] }),
+          readCurrentBalances: async () => ["USD", "JPY"].map((currency) => ({
+            source: "yuanta", kind: "foreign", stream: "foreign-currency-deposit",
+            accountNumber: "00123456789012", sourceAccountKey: "00123456789012", currency,
+            available: { coefficient: "90", scale: 2, sourceLexeme: "0.90" },
+            ledger: { coefficient: "100", scale: 2, sourceLexeme: "1.00" },
+            effectiveAt: "2026-08-24T04:00:00.000Z",
+            providerHttpDate: "Mon, 24 Aug 2026 04:00:00 GMT",
+            observedAt: "2026-08-24T04:00:00.000Z",
+            sourceEvidence: {
+              endpoint: "/nib/tx/finance_overview_for_summary", method: "POST", status: 200,
+              cacheControl: "no-store", contractVersion: "yuanta/current-deposit-balance-v1",
+            },
+          })),
+          now: () => "2026-08-24T04:00:00.000Z",
+        },
+      );
+      return { sourceCaptureCount: collected.sourceCount, rowCount: collected.rowCount, itemCount: collected.itemCount };
+    },
+    commit: async (typeId, staged) => {
+      committedProducts.push(typeId);
+      assert.equal(staged.length, 3, "statement and both currency balances remain complete items");
+      assert.equal(new Set(staged.map((item) => item.itemKey)).size, 3);
+      return {
+        status: "completed", committedCount: staged.length, failedCount: 0, diagnostics: [],
+        items: staged.map((item) => ({
+          provider: item.provider, product: item.product, itemKey: item.itemKey,
+          status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
+        })),
+      };
+    },
+  });
+  assert.equal(multiCurrency.status, "completed");
+  assert.equal(multiCurrency.committedCount, 3);
+  assert.deepEqual(committedProducts, ["foreign_currency"]);
+  assert.deepEqual(multiCurrency.products.map(({ status }) => status), ["success", "no_data"],
+    "multi-currency balances must not stop subsequent selected products");
 
   const rejectedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(

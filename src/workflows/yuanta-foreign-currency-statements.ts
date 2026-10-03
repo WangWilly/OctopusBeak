@@ -2672,7 +2672,9 @@ export async function runYuantaForeignCurrencyStatements(
       const item: PGliteWorkflowRunItem = {
         provider: "yuanta",
         product: "current-deposit-balance",
-        itemKey: capture.identity.sourceAccountKey,
+        // One account can hold multiple currencies; each balance capture needs
+        // a distinct receipt identity within the product's staged items.
+        itemKey: JSON.stringify([capture.identity.sourceAccountKey, row.currency]),
         command: {
           kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
           request: currentDepositBalanceCommandRequest(capture),

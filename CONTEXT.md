@@ -68,7 +68,8 @@ A provider-specific, non-password value used to identify a person during authent
 _Avoid_: Generic user ID, credential, authentication secret
 
 **Statement selection**:
-The set of statement types chosen for an enabled credential source to collect.
+The set of statement types explicitly chosen by a person for an enabled credential source to collect, expressing collection intent rather than evidence of product ownership. A multi-product source starts without an automatic all-products selection, and newly supported products remain outside the selection until chosen.
+_Avoid_: Institution source coverage, inferred product ownership, automatic all-products collection
 
 **Collection scope version**:
 A sanitized version of the enabled product streams, Statement Selections, identity scope, query coverage, completeness semantics, and other non-secret Integration configuration that determines what one Source Capture means. A collection attempt records and revalidates this version before admission; authentication-secret rotation and purely presentational or scheduling changes do not create financial knowledge or change it.
@@ -743,7 +744,16 @@ An always-expanded, source-specific section in credential setup that explains wh
 _Avoid_: Field hint, remote help content, generic learn-more link
 
 **Statement run summary**:
-A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome.
+A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome based on actual collection and admission results. Partial completion preserves independently complete, successfully admitted data alongside product failures without treating an incomplete Source Capture or a grouped evidence spine as partially admissible.
+_Avoid_: All-products success assumption, partial financial evidence, failure that hides admitted data
+
+**Product collection absence**:
+A non-failure collection outcome established by explicit source evidence, distinguishing a product the person does not hold from a product with no data in the queried scope. Neither outcome changes Statement Selection or establishes account closure, while navigation, authentication, timeout, and parsing failures establish neither kind of absence.
+_Avoid_: Missing-page ownership inference, empty-statement product absence, automatic deselection
+
+**Statement collection rerun**:
+A new synchronization attempt covering every statement type in the person's current Statement Selection, including after a partially completed run. It relies on existing admission identity and deduplication semantics rather than restricting collection to the preceding run's failed products.
+_Avoid_: Failed-products-only retry, resume of an incomplete Source Capture
 
 **External prerequisite**:
 A locally installed or user-controlled dependency outside the app that must be available before an automation task can authenticate or collect data, such as a security component, browser extension, or certificate component.

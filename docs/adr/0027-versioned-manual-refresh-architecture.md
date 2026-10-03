@@ -29,10 +29,13 @@ refresh round must describe the same data generation.
 ### 1. One main-process data version is the freshness authority
 
 The main process owns a non-negative, monotonic data version and its stale
-state. A terminal automation run that completes or partially completes marks
-the version stale exactly once after its task-run transition commits. Failed
-runs and runs waiting for human input do not claim a data change. The
-invalidation event contains the new version, reason, and change time.
+state. The existing completed and partial terminal-run rules continue to mark
+the version stale exactly once after the task-run transition commits. A failed
+or cancelled product-collection run also marks it stale when durable
+financial-commit receipts show that an earlier product changed data; those
+statuses alone do not claim a change. Waiting for human input alone does not
+invalidate data. The invalidation event contains the new version, reason, and
+change time.
 
 The event is advisory. It never starts page loads by itself. The renderer can
 query the current snapshot when it starts, resumes, or reconnects, so a missed
@@ -83,6 +86,9 @@ shell, navigation, and unrelated interactions remain available throughout.
 
 - Automation completion no longer requires an app restart to become
   discoverable.
+- Existing completed and partial runs keep their freshness behavior, while a
+  failed or cancelled product run can also invalidate data after an earlier
+  durable financial commit.
 - The renderer can recover from sleep, navigation, and renderer restart with
   one cheap version query.
 - Current-page data becomes available before background pages, while one round

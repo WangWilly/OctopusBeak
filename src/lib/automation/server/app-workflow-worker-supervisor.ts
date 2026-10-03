@@ -27,11 +27,11 @@ export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-star
 
 export type AppWorkflowWorkerOutcome =
   | Readonly<{ status: "completed"; errorCode: null; summary: TypedWorkflowOutcomeSummary | null }>
-  | Readonly<{ status: "cancelled"; errorCode: "cancelled"; summary: null }>
+  | Readonly<{ status: "cancelled"; errorCode: "cancelled"; summary: TypedWorkflowOutcomeSummary | null }>
   | Readonly<{
     status: "failed";
     errorCode: AppWorkflowWorkerFailureCode;
-    summary: null;
+    summary: TypedWorkflowOutcomeSummary | null;
     failureKind: "worker-start" | "worker-crash" | "workflow" | "unexpected-exit" | "protocol";
     diagnostic?: SafeWorkflowFailureError;
   }>;
@@ -88,7 +88,11 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   terminalGraceMs?: number;
 }>;
 
-const CANCELLED: AppWorkflowWorkerOutcome = { status: "cancelled", errorCode: "cancelled", summary: null };
+function cancelled(summary: TypedWorkflowOutcomeSummary | null = null): AppWorkflowWorkerOutcome {
+  return { status: "cancelled", errorCode: "cancelled", summary };
+}
+
+const CANCELLED: AppWorkflowWorkerOutcome = cancelled();
 const MAX_EVENTS_PER_RUN = 512;
 const DEFAULT_CANCEL_GRACE_MS = 2_000;
 const DEFAULT_TERMINAL_GRACE_MS = 1_000;
@@ -100,14 +104,19 @@ function failed(
   errorCode: AppWorkflowWorkerFailureCode,
   failureKind: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>['failureKind'],
   diagnostic: SafeWorkflowFailureError | null = null,
+  summary: TypedWorkflowOutcomeSummary | null = null,
 ): AppWorkflowWorkerOutcome {
   return {
     status: "failed",
     errorCode,
-    summary: null,
+    summary,
     failureKind,
     ...(diagnostic ? { diagnostic } : {}),
   };
+}
+
+function uncertaintyCannotBeCancelled(outcome: AppWorkflowWorkerOutcome): boolean {
+  return outcome.status === "failed" && outcome.errorCode === "commit-outcome-unknown";
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -303,7 +312,9 @@ export async function runSupervisedAppWorkflow(
     };
     const terminalOutcome = (outcome: AppWorkflowWorkerOutcome) => {
       if (settled || pendingOutcome) return;
-      pendingOutcome = cancellationRequested ? CANCELLED : outcome;
+      pendingOutcome = cancellationRequested && !uncertaintyCannotBeCancelled(outcome)
+        ? cancelled(outcome.summary)
+        : outcome;
       if (exitCode !== null) {
         settle(pendingOutcome);
         return;
@@ -321,7 +332,9 @@ export async function runSupervisedAppWorkflow(
       cancelWorker: boolean,
     ) => {
       if (settled || pendingOutcome) return;
-      pendingOutcome = cancellationRequested ? CANCELLED : outcome;
+      pendingOutcome = cancellationRequested && !uncertaintyCannotBeCancelled(outcome)
+        ? cancelled(outcome.summary)
+        : outcome;
       if (!signal.aborted) controller.abort();
       if (cancelWorker) {
         try {
@@ -453,12 +466,31 @@ export async function runSupervisedAppWorkflow(
       send(response);
     };
     const onMessage = (value: unknown) => {
-      if (settled || pendingOutcome) return;
+      if (settled) return;
       let frame: ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>;
       try {
         frame = parseAppWorkflowWorkerOutboundFrame(value);
       } catch {
         protocolFailure();
+        return;
+      }
+      if (pendingOutcome) {
+        if (pendingOutcome.status === "cancelled"
+          && (frame.kind === "failed" || frame.kind === "cancelled")
+          && frame.taskRunId === options.runId) {
+          if (frame.kind === "failed" && frame.errorCode === "commit-outcome-unknown") {
+            pendingOutcome = failed(
+              "commit-outcome-unknown",
+              "workflow",
+              frame.diagnostic ?? null,
+              frame.summary ?? null,
+            );
+            if (exitCode !== null) settle(pendingOutcome);
+          } else if (frame.kind === "cancelled" && frame.summary) {
+            pendingOutcome = cancelled(frame.summary);
+            if (exitCode !== null) settle(pendingOutcome);
+          }
+        }
         return;
       }
 
@@ -540,11 +572,18 @@ export async function runSupervisedAppWorkflow(
         terminalOutcome({ status: "completed", errorCode: null, summary: frame.summary });
       } else if (frame.kind === "cancelled") {
         if (frame.taskRunId !== options.runId) return protocolFailure();
-        terminalOutcome(CANCELLED);
+        terminalOutcome(frame.summary
+          ? { status: "cancelled", errorCode: "cancelled", summary: frame.summary }
+          : CANCELLED);
       } else if (frame.taskRunId !== options.runId) {
         protocolFailure();
       } else {
-        terminalOutcome(failed(frame.errorCode as AppWorkflowWorkerFailureCode, "workflow", frame.diagnostic ?? null));
+        terminalOutcome(failed(
+          frame.errorCode as AppWorkflowWorkerFailureCode,
+          "workflow",
+          frame.diagnostic ?? null,
+          frame.summary ?? null,
+        ));
       }
     };
     const onOnline = () => { workerOnline = true; };
@@ -561,7 +600,9 @@ export async function runSupervisedAppWorkflow(
       if (cancelTimer) clearTimeout(cancelTimer);
       cancelTimer = undefined;
       if (pendingOutcome) {
-        settle(cancellationRequested ? CANCELLED : pendingOutcome);
+        settle(cancellationRequested && !uncertaintyCannotBeCancelled(pendingOutcome)
+          ? cancelled(pendingOutcome.summary)
+          : pendingOutcome);
       } else if (cancellationRequested || options.signal.aborted) {
         settle(CANCELLED);
       } else {

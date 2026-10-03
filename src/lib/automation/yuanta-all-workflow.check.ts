@@ -82,6 +82,7 @@ function context(
 
 const input = {
   managedIdentitySecret: "synthetic-yuanta-managed-secret",
+  statementTypes: ["deposit", "foreign_currency", "credit_card", "loan", "fund"] as const,
   credentials: {
     yuanta_user_id: "synthetic-id",
     yuanta_account: "synthetic-account",
@@ -102,6 +103,7 @@ function collector(
 }
 
 const products = ["deposit", "foreign-currency-deposit", "credit-card", "loan", "investment"];
+const productTypes = ["deposit", "foreign_currency", "credit_card", "loan", "fund"];
 
 function collectors(calls: string[]) {
   return {
@@ -119,6 +121,7 @@ function collectors(calls: string[]) {
     collectLoan: collector(products[3]!, calls),
     collectFund: collector(products[4]!, calls),
     prepareForComponent: async (_page: Page, product: string) => { calls.push(`prepared:${product}`); },
+    assertSession: async () => undefined,
     signOut: async () => { calls.push("signed-out"); },
   };
 }
@@ -140,27 +143,33 @@ try {
       sourceCaptureCount: 5,
       rowCount: 10,
       itemCount: 5,
+      committedCount: 5,
+      skippedProductCount: 0,
+      products: productTypes.map((typeId) => ({ typeId, status: "success", itemCount: 1, committedCount: 1 })),
       status: "financial-admitted",
     });
-    assert.equal(batches.length, 1, "Yuanta must invoke injected canonical admission exactly once");
+    assert.equal(batches.length, 5, "Yuanta commits each selected product independently");
     assert.deepEqual(
-      batches[0]?.map(({ product, itemKey }) => [product, itemKey]),
-      products.map((product) => [product, `${product}-capture-1`]),
-      "the one commit receives the completed source set from every selected product",
+      batches.map((batch) => batch.map(({ product, itemKey }) => [product, itemKey])),
+      products.map((product) => [[product, `${product}-capture-1`]]),
+      "each commit contains only its product's completed evidence",
     );
     assert.ok(calls.includes("human:yuanta-bank-login-captcha"));
     assert.ok(calls.includes("event:authentication:authentication-completed"));
     assert.ok(calls.includes("event:validation:source-validation-completed"));
-    assert.ok(calls.includes("event:commit:canonical-commit-completed"));
-    assert.ok(calls.indexOf("investment-collected") < calls.indexOf("commit"));
+    assert.ok(calls.includes("event:commit:deposit-canonical-commit-completed"));
+    assert.ok(calls.includes("event:commit:foreign-currency-canonical-commit-completed"));
+    assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
+    assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));
+    assert.ok(calls.includes("event:commit:fund-canonical-commit-completed"));
+    assert.ok(calls.indexOf("investment-collected") < calls.lastIndexOf("commit"));
   }
 
   {
     const calls: string[] = [];
     const batches: PGliteWorkflowRunItem[][] = [];
     const controller = new AbortController();
-    await assert.rejects(
-      runYuantaAllStatementsWorkflow(
+    const result = await runYuantaAllStatementsWorkflow(
         context(controller.signal, calls, batches),
         input,
         {
@@ -175,11 +184,14 @@ try {
             throw new Error("foreign-currency export is incomplete");
           },
         },
-      ),
-      /export is incomplete/u,
-    );
+      );
     assert.ok(calls.indexOf("deposit-collected") < calls.indexOf("foreign-currency-failed-after-deposit"));
-    assert.equal(batches.length, 0, "a later selected export failure must happen before any commit");
+    assert.equal(batches.length, 4, "a product error does not block later complete products");
+    assert.deepEqual(result.products.map(({ typeId, status }) => [typeId, status]), [
+      ["deposit", "success"], ["foreign_currency", "failed"], ["credit_card", "success"],
+      ["loan", "success"], ["fund", "success"],
+    ]);
+    assert.equal(result.status, "partial");
   }
 
   {
@@ -192,17 +204,16 @@ try {
         if (value.includes("\uFFFD")) throw new Error("Malformed Big5 source text.");
       },
     });
-    await assert.rejects(
-      runYuantaAllStatementsWorkflow(workflowContext, input, {
+    const result = await runYuantaAllStatementsWorkflow(workflowContext, input, {
         ...collectors(calls),
         collectDeposit: async (_page, _input, _context, _identity, items) => {
           items.push(item("deposit", "bad\uFFFDsource"));
           return { sourceCount: 1, rowCount: 1, itemCount: 1 };
         },
-      }),
-      /Malformed Big5 source text/u,
-    );
-    assert.equal(batches.length, 0, "malformed decoded text must be rejected before commit");
+      });
+    assert.equal(batches.length, 4, "a malformed product staging group does not leak or block other products");
+    assert.equal(result.products.find((product) => product.typeId === "deposit")?.status, "failed");
+    assert.equal(result.status, "partial");
   }
 
   {
@@ -222,8 +233,51 @@ try {
           return { sourceCount: 1, rowCount: 1, itemCount: 0 };
         },
       }),
+      (error: unknown) => {
+        const summary = (error as { summary?: { products?: readonly { typeId: string; status: string; committedCount: number }[] } }).summary;
+        assert.deepEqual(summary?.products?.map(({ typeId, status, committedCount }) => [typeId, status, committedCount]), [
+          ["deposit", "success", 1],
+          ["foreign_currency", "failed", 0],
+          ["credit_card", "skipped", 0],
+          ["loan", "skipped", 0],
+          ["fund", "skipped", 0],
+        ]);
+        return true;
+      },
     );
-    assert.equal(batches.length, 0, "cancellation must not admit already-collected products");
+    assert.equal(batches.length, 1, "receipts for a completed product are retained before cancellation");
+  }
+
+  {
+    const calls: string[] = [];
+    const batches: PGliteWorkflowRunItem[][] = [];
+    const controller = new AbortController();
+    const result = await runYuantaAllStatementsWorkflow(
+      context(controller.signal, calls, batches),
+      { ...input, statementTypes: ["fund"] },
+      {
+        ...collectors(calls),
+        collectDeposit: async () => { calls.push("deposit-called"); throw new Error("unselected"); },
+        collectForeignCurrency: async () => { calls.push("foreign-called"); throw new Error("unselected"); },
+        collectCreditCard: async () => { calls.push("card-called"); throw new Error("unselected"); },
+        collectLoan: async () => { calls.push("loan-called"); throw new Error("unselected"); },
+        collectFund: async (_page, _input, _context, _identity, items) => {
+          calls.push("fund-called");
+          items.push(item("investment"));
+          return { sourceCount: 1, rowCount: 2, itemCount: 1 };
+        },
+      },
+    );
+    assert.deepEqual(calls.filter((call) => call.endsWith("-called")), ["fund-called"]);
+    assert.deepEqual(result.products.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
+      ["deposit", "skipped", "not_selected"],
+      ["foreign_currency", "skipped", "not_selected"],
+      ["credit_card", "skipped", "not_selected"],
+      ["loan", "skipped", "not_selected"],
+      ["fund", "success", undefined],
+    ]);
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0]?.[0]?.product, "investment");
   }
 
   assert.deepEqual(await readdir(temp), [], "typed Yuanta workflow must not write downloads or logs");

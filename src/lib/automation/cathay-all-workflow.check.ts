@@ -14,6 +14,8 @@ import {
 } from "../../ledger/pglite/cathay-domestic-admission.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../../ledger/canonical/foreign-currency-deposit.fixtures.ts";
+import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
+import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
   WorkflowContext,
@@ -26,6 +28,7 @@ import {
   type CathayGmailOtpPort,
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -254,7 +257,9 @@ function resultFor(items: readonly unknown[]) {
   };
 }
 
-function contextHarness() {
+function contextHarness(
+  makeResult: (items: readonly unknown[]) => unknown = resultFor,
+) {
   const controller = new AbortController();
   const events: Array<{ stage: string; code: string }> = [];
   const committed: unknown[][] = [];
@@ -262,7 +267,7 @@ function contextHarness() {
     async execute(items) {
       const materialized = [...(items as Iterable<unknown>)];
       committed.push(materialized);
-      return resultFor(materialized) as never;
+      return makeResult(materialized) as never;
     },
   };
   const context: WorkflowContext = {
@@ -286,6 +291,12 @@ function collectionDependencies(
   override: Partial<{
     domestic: CathayDomesticFinancialCollection;
     foreign: CathayForeignFinancialCollection;
+    collectCurrentBalanceItems: (
+      page: Page,
+      domestic: CathayDomesticFinancialCollection | undefined,
+      foreign: CathayForeignFinancialCollection | undefined,
+      context: WorkflowContext,
+    ) => Promise<readonly PGliteWorkflowRunItem[]>;
   }> = {},
 ) {
   return {
@@ -310,7 +321,8 @@ function collectionDependencies(
         rowCount: 1,
         accountKeys: [CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1.accountNo],
       },
-    collectCurrentBalanceItems: async () => [],
+    collectCurrentBalanceItems:
+      override.collectCurrentBalanceItems ?? (async () => []),
   };
 }
 
@@ -324,7 +336,7 @@ const bothProductsInput = {
   dateRange: "one_year",
 };
 
-test("Cathay all workflow admits domestic and foreign sources before one injected commit with no artifacts", async () => {
+test("Cathay all workflow collects and commits selected products independently with no artifacts", async () => {
   const previousCwd = process.cwd();
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "cathay-typed-"));
   process.chdir(temporaryDirectory);
@@ -337,14 +349,33 @@ test("Cathay all workflow admits domestic and foreign sources before one injecte
     );
     assert.deepEqual(output.statementTypes, ["domestic", "foreign"]);
     assert.equal(output.sourceCaptureCount, 2);
-    assert.equal(harness.committed.length, 1);
+    assert.equal(harness.committed.length, 2);
     const statementItem = harness.committed[0]![0] as {
+      product: string;
       command: { request: { steps: readonly { kind: string }[] } };
     };
+    assert.equal(statementItem.product, "domestic-statements");
     assert.deepEqual(
       statementItem.command.request.steps.map((step) => step.kind),
-      ["financial", "deposit"],
+      ["financial"],
     );
+    const foreignItem = harness.committed[1]![0] as {
+      product: string;
+      command: { request: { steps: readonly { kind: string }[] } };
+    };
+    assert.equal(foreignItem.product, "foreign-currency-statements");
+    assert.deepEqual(
+      foreignItem.command.request.steps.map((step) => step.kind),
+      ["deposit"],
+    );
+    assert.deepEqual(
+      output.products.map((product) => [product.typeId, product.status]),
+      [
+        ["domestic", "success"],
+        ["foreign_currency", "success"],
+      ],
+    );
+    assert.equal(output.status, "financial-admitted");
     assert.ok(
       harness.events.some(
         (event) => event.code === "all-source-admission-completed",
@@ -362,31 +393,196 @@ test("Cathay all workflow admits domestic and foreign sources before one injecte
   }
 });
 
-test("Cathay all workflow rejects an incomplete selected domestic set before any commit", async () => {
+test("Cathay all workflow never invokes an unselected product collector", async () => {
   const harness = contextHarness();
-  await assert.rejects(
-    runCathayAllProviderWorkflow(
-      harness.context,
-      bothProductsInput,
-      collectionDependencies({
-        domestic: {
-          requests: DOMESTIC_REQUESTS.slice(0, 0),
-          accountNumbers: [CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo],
-          captureCount: 1,
-          rowCount: 0,
-        },
-      }),
-    ),
-    /domestic selected source set is incomplete/u,
+  let foreignCalls = 0;
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: ["domestic"] },
+    {
+      ...collectionDependencies(),
+      collectForeign: async () => {
+        foreignCalls += 1;
+        throw new Error("Unselected foreign product must not run.");
+      },
+    },
   );
-  assert.equal(harness.committed.length, 0);
+
+  assert.equal(foreignCalls, 0);
+  assert.equal(harness.committed.length, 1);
+  assert.deepEqual(
+    output.products.map((product) => [
+      product.typeId,
+      product.status,
+      product.skipReason,
+    ]),
+    [
+      ["domestic", "success", undefined],
+      ["foreign_currency", "skipped", "not_selected"],
+    ],
+  );
 });
 
-test("Cathay foreign collector rejects a missing selected currency before group commit", async () => {
+test("Cathay all workflow can collect foreign currency without domestic products", async () => {
+  const harness = contextHarness();
+  let domesticCalls = 0;
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: ["foreign_currency"] },
+    {
+      ...collectionDependencies(),
+      collectDomestic: async () => {
+        domesticCalls += 1;
+        throw new Error("Unselected domestic product must not run.");
+      },
+    },
+  );
+
+  assert.equal(domesticCalls, 0);
+  assert.equal(harness.committed.length, 1);
+  assert.deepEqual(
+    output.products.map((product) => [
+      product.typeId,
+      product.status,
+      product.skipReason,
+    ]),
+    [
+      ["domestic", "skipped", "not_selected"],
+      ["foreign_currency", "success", undefined],
+    ],
+  );
+});
+
+test("Cathay all workflow reports incomplete domestic collection without blocking foreign collection", async () => {
+  const harness = contextHarness();
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    bothProductsInput,
+    collectionDependencies({
+      domestic: {
+        requests: DOMESTIC_REQUESTS.slice(0, 0),
+        accountNumbers: [CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo],
+        captureCount: 1,
+        rowCount: 0,
+      },
+    }),
+  );
+  assert.equal(output.status, "partial");
+  assert.deepEqual(
+    output.products.map((product) => [product.typeId, product.status]),
+    [
+      ["domestic", "failed"],
+      ["foreign_currency", "success"],
+    ],
+  );
+  assert.equal(harness.committed.length, 1);
+  assert.equal(
+    (harness.committed[0]![0] as { product: string }).product,
+    "foreign-currency-statements",
+  );
+});
+
+test("Cathay balance collection failure discards that product's staged statements and continues", async () => {
+  const harness = contextHarness();
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    bothProductsInput,
+    collectionDependencies({
+      collectCurrentBalanceItems: async (_page, domestic, foreign) => {
+        if (domestic) throw new Error("Domestic balance source failed.");
+        assert.ok(foreign);
+        return [];
+      },
+    }),
+  );
+
+  assert.equal(output.status, "partial");
+  assert.deepEqual(
+    output.products.map((product) => [product.typeId, product.status]),
+    [
+      ["domestic", "failed"],
+      ["foreign_currency", "success"],
+    ],
+  );
+  assert.equal(harness.committed.length, 1);
+  assert.equal(
+    (harness.committed[0]![0] as { product: string }).product,
+    "foreign-currency-statements",
+  );
+});
+
+test("Cathay balance admission failure keeps product receipts and does not block another product", async () => {
+  const harness = contextHarness((items) => {
+    const result = resultFor(items) as {
+      status: string;
+      items: Array<Record<string, unknown>>;
+      diagnostics: readonly unknown[];
+      committedCount: number;
+      failedCount: number;
+    };
+    const failedIndex = items.findIndex(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        "product" in item &&
+        (item as { product?: unknown }).product === "domestic-current-balance",
+    );
+    if (failedIndex < 0) return result;
+    return {
+      ...result,
+      status: "partially-completed",
+      items: result.items.map((item, index) =>
+        index === failedIndex
+          ? { ...item, status: "failed", failureKind: "item" }
+          : item,
+      ),
+      committedCount: result.items.length - 1,
+      failedCount: 1,
+    };
+  });
+  const balanceItem = {
+    provider: "cathay",
+    product: "domestic-current-balance",
+    itemKey: "cathay-test-run:domestic:balance:0",
+    command: {
+      kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+      request: {},
+    },
+  } as unknown as PGliteWorkflowRunItem;
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    bothProductsInput,
+    collectionDependencies({
+      collectCurrentBalanceItems: async (_page, domestic) =>
+        domestic ? [balanceItem] : [],
+    }),
+  );
+
+  assert.equal(output.status, "partial");
+  assert.deepEqual(
+    output.products.map((product) => [
+      product.typeId,
+      product.status,
+      product.committedCount,
+      product.errorCode,
+    ]),
+    [
+      ["domestic", "failed", 1, "canonical-commit-failed"],
+      ["foreign_currency", "success", 1, undefined],
+    ],
+  );
+  assert.equal(output.committedCount, 2);
+  assert.equal(harness.committed.length, 2);
+  assert.equal(harness.committed[0]!.length, 2);
+});
+
+test("Cathay foreign collector reports a missing selected currency without blocking domestic commit", async () => {
   const harness = contextHarness();
   const dependencies = collectionDependencies();
-  await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    bothProductsInput,
+    {
       ...dependencies,
       collectForeign: (page, input, session, source, observedAt) =>
         collectCathayForeignFinancialCaptures(
@@ -427,16 +623,29 @@ test("Cathay foreign collector rejects a missing selected currency before group 
             },
           },
         ),
-    }),
-    /omitted a selected account\/currency/u,
+    },
   );
-  assert.equal(harness.committed.length, 0);
+  assert.equal(output.status, "partial");
+  assert.deepEqual(
+    output.products.map((product) => [product.typeId, product.status]),
+    [
+      ["domestic", "success"],
+      ["foreign_currency", "failed"],
+    ],
+  );
+  assert.equal(harness.committed.length, 1);
+  assert.equal(
+    (harness.committed[0]![0] as { product: string }).product,
+    "domestic-statements",
+  );
 });
 
-test("Cathay malformed source decoding rejects selected sources before commit", async () => {
+test("Cathay malformed source decoding is isolated to its product and keeps the summary free of source data", async () => {
   const harness = contextHarness();
-  await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    bothProductsInput,
+    {
       ...collectionDependencies(),
       collectDomestic: async (_page, _input, _session, source) => {
         source.text.decode(Uint8Array.from([0xff]), "utf-8");
@@ -447,13 +656,64 @@ test("Cathay malformed source decoding rejects selected sources before commit", 
           rowCount: 3,
         };
       },
-    }),
-    SourceTextIntegrityError,
+    },
   );
+
+  assert.equal(output.status, "partial");
+  assert.deepEqual(
+    output.products.map((product) => [product.typeId, product.status, product.errorCode]),
+    [
+      ["domestic", "failed", "source-integrity-failed"],
+      ["foreign_currency", "success", undefined],
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(output.products),
+    /fixture-password|fixture-user/u,
+  );
+  assert.equal(harness.committed.length, 1);
+});
+
+test("Cathay session health failure after collection stops before commit and skips later products", async () => {
+  const harness = contextHarness();
+  let sessionChecks = 0;
+  await assert.rejects(
+    runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
+      ...collectionDependencies(),
+      createSession: async () => {
+        sessionChecks += 1;
+        if (sessionChecks === 3) throw new Error("expired session token");
+        return {
+          jwtToken: "fixture-token",
+          customerId: "fixture",
+          idType: "fixture",
+        };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "authentication-failed");
+      assert.deepEqual(
+        error.summary.products.map((product) => [
+          product.typeId,
+          product.status,
+          product.skipReason,
+        ]),
+        [
+          ["domestic", "failed", undefined],
+          ["foreign_currency", "skipped", "not_attempted"],
+        ],
+      );
+      assert.doesNotMatch(JSON.stringify(error.summary), /expired session token/u);
+      return true;
+    },
+  );
+
+  assert.equal(sessionChecks, 4);
   assert.equal(harness.committed.length, 0);
 });
 
-test("Cathay all workflow cancellation during collection stops before commit", async () => {
+test("Cathay all workflow cancellation stops later products and retains prior receipts in its summary", async () => {
   const harness = contextHarness();
   await assert.rejects(
     runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
@@ -468,7 +728,23 @@ test("Cathay all workflow cancellation during collection stops before commit", a
         };
       },
     }),
-    /fixture cancellation/u,
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "cancelled");
+      assert.deepEqual(
+        error.summary.products.map((product) => [
+          product.typeId,
+          product.status,
+          product.skipReason,
+        ]),
+        [
+          ["domestic", "success", undefined],
+          ["foreign_currency", "failed", undefined],
+        ],
+      );
+      assert.equal(error.summary.committedCount, 1);
+      return true;
+    },
   );
-  assert.equal(harness.committed.length, 0);
+  assert.equal(harness.committed.length, 1);
 });

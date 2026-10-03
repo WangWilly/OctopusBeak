@@ -30,6 +30,34 @@ assert.equal(
   translations["zh-TW"].automation.saveCredentialsFailed,
   "無法儲存登入資料，請再試一次。",
 );
+assert.equal(
+  translations.en.automation.productOutcomeStatuses.not_held,
+  "Not held",
+);
+assert.equal(
+  translations.en.automation.productOutcomeStatuses.no_data,
+  "No data",
+);
+assert.equal(
+  translations.en.automation.productSkipReasons.not_attempted,
+  "Not attempted",
+);
+assert.equal(
+  translations["zh-TW"].automation.productOutcomeStatuses.not_held,
+  "未持有",
+);
+assert.equal(
+  translations["zh-TW"].automation.productOutcomeStatuses.no_data,
+  "沒有資料",
+);
+assert.equal(
+  translations["zh-TW"].automation.productSkipReasons.not_selected,
+  "未選取",
+);
+assert.equal(
+  translations["zh-TW"].automation.productRetainedCount(3),
+  "已保存 3 項完整資料。",
+);
 assert.equal(translations.en.settings.displaySize, "Display size");
 assert.equal(translations["zh-TW"].settings.displaySize, "顯示大小");
 assert.equal(translations.en.settings.languageDescription, "Choose the language used by OctopusBeak.");

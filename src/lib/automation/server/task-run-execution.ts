@@ -21,6 +21,7 @@ import type {
 import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 import {
   classifyTypedWorkflowFailure,
+  summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import {
@@ -228,6 +229,7 @@ async function executeInlineAppWorkflow(
   let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
   let unregisterHumanAssistance: (() => void) | undefined;
   let result: AutomationTaskExecutionResult;
+  let workflowOutput: unknown;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
@@ -298,7 +300,7 @@ async function executeInlineAppWorkflow(
         { automation: execution.persistence },
       );
     }
-    const workflowOutput = await executor.run(
+    workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
       workflowInputForTask(execution.task.workflowId, launchEnv),
@@ -342,7 +344,8 @@ async function executeInlineAppWorkflow(
       statementSummary: null,
       appWorkflowOutcome: {
         errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
-        summary: null,
+        summary: summarizeInterruptedProductCollection(error)
+          ?? summarizeTypedWorkflowOutput(workflowOutput),
       },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
@@ -392,7 +395,7 @@ function sanitizedWorkerResult(
       signal: "SIGTERM",
       error: new Error("Automation task cancelled."),
       statementSummary: null,
-      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+      appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
@@ -418,7 +421,7 @@ function sanitizedWorkerResult(
       signal: "SIGTERM",
       error: new Error("Automation task cancelled."),
       statementSummary: null,
-      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+      appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
@@ -431,7 +434,7 @@ function sanitizedWorkerResult(
     signal: null,
     error: new Error(`App workflow failed (${errorCode}).`),
     statementSummary: null,
-    appWorkflowOutcome: { errorCode, summary: null },
+    appWorkflowOutcome: { errorCode, summary: outcome.summary },
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
   };
@@ -467,6 +470,7 @@ async function executeSupervisedAppWorkflow(
 
   let unregisterHumanAssistance: (() => void) | undefined;
   let result: AutomationTaskExecutionResult;
+  let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
   let priorEventCount: number | null = null;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
@@ -580,6 +584,7 @@ async function executeSupervisedAppWorkflow(
         return await runWorker(browserConnection);
       })
       : await runWorker();
+    workerOutcome = outcome;
     await browserRuntimeIdentity.flush();
 
     let eventsForExecution = observedEvents;
@@ -601,7 +606,12 @@ async function executeSupervisedAppWorkflow(
       const explicitCode = outcome.status === "failed"
         ? typedWorkerFailureCode(outcome.errorCode)
         : null;
-      const errorCode = explicitCode && explicitCode !== "workflow-failed"
+      // A structured product failure is explicit evidence, even when its code
+      // is workflow-failed. Do not replace it with a guess from the last event.
+      const productConfirmsCode = outcome.summary?.products?.some(
+        (product) => product.status === "failed" && product.errorCode === explicitCode,
+      );
+      const errorCode = explicitCode && (explicitCode !== "workflow-failed" || productConfirmsCode)
         ? explicitCode
         : classifyTypedWorkflowFailure(
             new Error("App workflow worker failed."),
@@ -645,10 +655,14 @@ async function executeSupervisedAppWorkflow(
       cancelled,
     );
     result = sanitizedWorkerResult(
-      cancelled ? { status: "cancelled", errorCode: "cancelled", summary: null } : {
+      cancelled ? {
+        status: "cancelled",
+        errorCode: "cancelled",
+        summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
+      } : {
         status: "failed",
         errorCode: "workflow-failed",
-        summary: null,
+        summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
         failureKind: "worker-crash",
       },
       errorCode,

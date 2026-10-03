@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { strictSourceText } from "./source-text.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import {
   createWorkflowExecutor,
   type WorkflowExecutorPorts,
@@ -84,4 +85,80 @@ test("an event write failure after work starts does not relabel the outcome", as
     "committed",
   );
   assert.deepEqual(failures, ["event-persistence-failed", "event-persistence-failed"]);
+});
+
+test("abort after a product workflow returns retains its committed product summary", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const controller = new AbortController();
+  const executor = createWorkflowExecutor([{
+    id: "product-collection-example",
+    requiresFinancialCommit: true,
+    async run() {
+      controller.abort();
+      return {
+        sourceCaptureCount: 1,
+        rowCount: 2,
+        itemCount: 1,
+        committedCount: 1,
+        skippedProductCount: 0,
+        products: [
+          { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+          { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
+        ],
+        status: "financial-admitted",
+      };
+    },
+  }], ports(events));
+
+  await assert.rejects(
+    executor.run("product-collection-example", "run-products", null, controller.signal),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "cancelled");
+      assert.equal(error.summary.committedCount, 1);
+      assert.equal(error.summary.products[0]?.status, "success");
+      assert.equal(error.summary.products[0]?.committedCount, 1);
+      return true;
+    },
+  );
+  assert.deepEqual(events.map(({ code }) => code), ["run-started", "run-cancelled"]);
+});
+
+test("abort during finalization still converts only a product result to interruption", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const controller = new AbortController();
+  const base = ports(events);
+  const executor = createWorkflowExecutor([{
+    id: "product-finalization-example",
+    requiresFinancialCommit: true,
+    async run() {
+      return {
+        sourceCaptureCount: 0,
+        rowCount: 0,
+        itemCount: 0,
+        committedCount: 0,
+        skippedProductCount: 0,
+        products: [{ typeId: "deposit", status: "no_data", itemCount: 0, committedCount: 0 }],
+        status: "no-data",
+      };
+    },
+  }], {
+    ...base,
+    events: {
+      append: async (event) => {
+        events.push(event);
+        if (event.stage === "finalization" && event.code === "run-completed") controller.abort();
+      },
+    },
+  });
+  await assert.rejects(
+    executor.run("product-finalization-example", "run-product-finalization", null, controller.signal),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "cancelled");
+      assert.equal(error.summary.products[0]?.status, "no_data");
+      return true;
+    },
+  );
+  assert.deepEqual(events.map(({ code }) => code), ["run-started", "run-completed", "run-cancelled"]);
 });

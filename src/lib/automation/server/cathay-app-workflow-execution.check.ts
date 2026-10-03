@@ -72,6 +72,20 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     },
     statementTypes: ["domestic", "foreign_currency"],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, {
+      ...syntheticEnvironment(),
+      LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,unknown",
+    }),
+    /Unknown Cathay statement type: unknown/u,
+  );
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, {
+      ...syntheticEnvironment(),
+      LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: undefined,
+    }),
+    /Select at least one Cathay statement type/u,
+  );
 
   const root = await mkdtemp(join(tmpdir(), "cathay-app-workflow-"));
   const previousDirectory = process.cwd();

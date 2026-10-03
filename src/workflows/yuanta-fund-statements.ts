@@ -1007,6 +1007,7 @@ export async function extractFundPositions(
       if (allowEmptyHistory) return [];
       throw new StatementComponentAbsentError(
         "No YuanTa fund position is available for this login.",
+        "no_data",
       );
     }
   }

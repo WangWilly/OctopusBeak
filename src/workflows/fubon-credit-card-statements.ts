@@ -108,6 +108,7 @@ export type FubonCreditCardWorkflowCollection = Readonly<{
   rowCount: number;
   itemCount: number;
   financialAdmissionCount: number;
+  noDataEvidence?: boolean;
 }>;
 type FubonCreditCardSourceSnapshot = Readonly<{
   currentUsedCredit?: FubonCurrentUsedCreditSnapshot;
@@ -725,6 +726,7 @@ async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
   if (await hasFubonCreditCardNoRecord(scope)) {
     throw new StatementComponentAbsentError(
       "Fubon credit-card statement records are not available for this account.",
+      "no_data",
     );
   }
   if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;

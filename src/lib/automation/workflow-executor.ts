@@ -9,6 +9,7 @@ import type {
 } from "../../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "./source-text.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import { interruptedProductCollectionFromOutput } from "./product-collection.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -154,8 +155,15 @@ export function createWorkflowExecutor(
       await appendEvent("preparation", "run-started");
       try {
         const result = await definition.run(context, input);
-        signal.throwIfAborted();
+        const throwIfAbortedWithProductResults = () => {
+          if (!signal.aborted) return;
+          const interrupted = interruptedProductCollectionFromOutput(result);
+          if (interrupted) throw interrupted;
+          signal.throwIfAborted();
+        };
+        throwIfAbortedWithProductResults();
         await event("finalization", "run-completed");
+        throwIfAbortedWithProductResults();
         return result;
       } catch (error) {
         await event("finalization", signal.aborted ? "run-cancelled" : "run-failed");

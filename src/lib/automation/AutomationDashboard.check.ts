@@ -337,6 +337,8 @@ assert.match(
 );
 assert.match(source, /type="checkbox"/);
 assert.match(source, /selectedStatementTypeIds/);
+assert.doesNotMatch(source, /statementSelectionAllSupported/);
+assert.doesNotMatch(source, /selectedCredentialGroup\.id !== "fubon"/);
 assert.match(source, /task\.primaryAction === "Configure"/);
 assert.match(source, /task\.status === "partial"/);
 assert.match(
@@ -357,6 +359,11 @@ assert.match(
 );
 assert.match(source, /buildCredentialSetupPlan/);
 assert.match(source, /aria-live="polite"/);
+assert.match(source, /summary\?\.products\?\.length/);
+assert.match(source, /productOutcomeStatuses\[product\.status\]/);
+assert.match(source, /productSkipReasons\[product\.skipReason\]/);
+assert.match(source, /product\.status === "failed" && product\.committedCount > 0/);
+assert.match(source, /productRetainedCount\(product\.committedCount\)/);
 assert.match(source, /\.statement-selection:focus\s*\{/);
 assert.match(source, /\.statement-type-option:focus-within\s*\{/);
 assert.match(
@@ -409,6 +416,7 @@ assert.doesNotMatch(
   credentialGroupStatusSource,
   /groupEnabled|statementSelectionDrafts/,
 );
+assert.doesNotMatch(credentialGroupStatusSource, /group\.id === "fubon"/);
 assert.match(
   credentialGroupStatusSource,
   /if \(group\.statementTypes\?\.length && !selectedCount\) return dictionary\.automation\.needsSetup;[\s\S]*?selectedStatementCount\(selectedCount, group\.statementTypes\.length\)/,

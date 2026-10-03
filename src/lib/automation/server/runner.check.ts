@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
@@ -8,6 +10,7 @@ import {
   pgliteWorkflowRuntimeEnv,
   forceTerminateAutomationTask,
   runAutomationTask,
+  startAutomationTask,
   shutdownAppAutomationWorkflows,
 } from "./runner.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
@@ -18,6 +21,7 @@ import type {
 import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../ledger/exchange-rates.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
+import { writeAutomationSettingsFile } from "./config-files.ts";
 
 function providerStub(automation: Record<string, unknown> = {}) {
   return {
@@ -62,6 +66,34 @@ test("typed workflow runtime fails closed when its PGlite capability is absent",
   (provider as unknown as { pgliteWorkflow: { required: boolean; env: NodeJS.ProcessEnv } })
     .pgliteWorkflow.required = false;
   assert.throws(() => pgliteWorkflowRuntimeEnv(provider), /PGlite workflow transport is unavailable/u);
+});
+
+test("Fubon cannot start with missing or unknown statement selections", async () => {
+  const root = await mkdtemp(join(tmpdir(), "automation-runner-selection-"));
+  const previousDirectory = process.cwd();
+  try {
+    process.chdir(root);
+    writeAutomationSettingsFile("settings.json", {
+      LIBRETTO_CLOUD_FUBON_ENABLED: true,
+    });
+    await assert.rejects(
+      startAutomationTask("fubon-all-statements", providerStub()),
+      /Select at least one Fubon statement type/u,
+    );
+
+    writeAutomationSettingsFile("settings.json", {
+      LIBRETTO_CLOUD_FUBON_ENABLED: true,
+      LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
+    });
+    await assert.rejects(
+      startAutomationTask("fubon-all-statements", providerStub()),
+      /Unknown Fubon statement type: unknown/u,
+    );
+    assert.equal(hasActiveAutomationTask(), false);
+  } finally {
+    process.chdir(previousDirectory);
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("exchange-rate service uses injected overview and persistence with progress", async () => {

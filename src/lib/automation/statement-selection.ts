@@ -201,7 +201,7 @@ export function selectStatementTypes(
   );
   const known = new Set(group.statementTypes.map((type) => type.id));
   const unknownIds = [...requested].filter((id) => !known.has(id));
-  if (enabled && unknownIds.length > 0 && mode === "strict") {
+  if (unknownIds.length > 0 && mode === "strict") {
     throw new StatementSelectionError(
       group.id,
       "unknown-type",

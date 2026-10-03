@@ -114,10 +114,11 @@ export async function finalizeAutomationTaskRun(
   result: AutomationTaskExecutionResult,
 ) {
   const outcome = result.appWorkflowOutcome;
-  const cancelled = context.forceTerminated === true
+  const commitOutcomeUnknown = outcome?.errorCode === "commit-outcome-unknown";
+  const cancelled = !commitOutcomeUnknown && (context.forceTerminated === true
     || result.signal === "SIGTERM"
     || result.error?.message === "Automation task cancelled."
-    || outcome?.errorCode === "cancelled";
+    || outcome?.errorCode === "cancelled");
   const partial = outcome?.summary?.status === "partial"
     || result.statementSummary?.status === "partial";
   const typedFailureCode = outcome?.errorCode
@@ -138,6 +139,9 @@ export async function finalizeAutomationTaskRun(
     errorCode: cancelled ? "cancelled" as const : typedFailureCode,
     summary: outcome?.summary ?? null,
   };
+  const committedProductCount = outcome?.summary?.counts.committedCount
+    ?? outcome?.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
+    ?? 0;
   const prerequisiteError = cancelled
     ? "Workflow cancelled."
     : status === "failed"
@@ -147,6 +151,9 @@ export async function finalizeAutomationTaskRun(
   const currentRun = await persistence.taskRunById(context.taskRunId);
   if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
   if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
+  const commitCompletedEvent = currentRun.events.some((event) => event.stage === "commit"
+    && /(?:canonical-)?commit-completed$/u.test(event.code)
+    && (event.completed ?? 0) > 0);
   const transition = await finalizeTaskRunTransition(
     context.provider,
     { taskRunId: context.taskRunId },
@@ -161,7 +168,8 @@ export async function finalizeAutomationTaskRun(
     },
   );
   if (!transition.skipped) {
-    if (transition.status === "completed" || transition.status === "partial") {
+    if (transition.status === "completed" || transition.status === "partial"
+      || committedProductCount > 0 || commitCompletedEvent) {
       (context.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
     }
     const task = taskById(context.taskId);

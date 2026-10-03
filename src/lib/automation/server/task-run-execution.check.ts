@@ -32,7 +32,7 @@ import { taskById } from "./tasks.ts";
 
 const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
-type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel" | "validation-failure";
+type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel" | "validation-failure" | "product-invariant";
 
 const assistanceContract = {
   stageId: "verification",
@@ -78,6 +78,27 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
     if (frame.kind === "event-ack") {
       this.eventAckAfterPersistence = this.isEventPersisted();
+      if (this.scenario === "product-invariant") {
+        const start = this.workerData as AppWorkflowWorkerStart;
+        setImmediate(() => {
+          if (frame.eventId === "worker-start-event") {
+            this.emit("message", {
+              protocolVersion: 2, kind: "event", eventId: "foreign-collection",
+              event: { runId: start.taskRunId, stage: "collection", code: "foreign-currency-collection-started", occurredAt: "2026-10-03T08:17:23.000Z" },
+            });
+          } else {
+            this.emit("message", {
+              protocolVersion: 2, kind: "failed", taskRunId: start.taskRunId, errorCode: "workflow-failed",
+              summary: { status: "partial", counts: { committedCount: 4, itemCount: 4 }, products: [
+                { typeId: "deposit", status: "success", itemCount: 4, committedCount: 4 },
+                { typeId: "foreign_currency", status: "failed", itemCount: 6, committedCount: 0, errorCode: "workflow-failed" },
+              ] },
+            });
+            this.emit("exit", 1);
+          }
+        });
+        return;
+      }
       if (this.scenario === "human-completion" && frame.eventId === "worker-start-event") {
         setImmediate(() => this.emit("message", {
           protocolVersion: 2,
@@ -700,4 +721,34 @@ test("task execution module has no command, session-resume, or file-log path", a
   assert.doesNotMatch(source, /\b(?:resumeSession|resumeFailure|logTail|logPath|script|command)\b/u);
   assert.doesNotMatch(source, /\b(?:executeAutomationTaskProcess|resolveTaskCommand|appendLog)\s*\(/u);
   assert.doesNotMatch(source, /\b(?:readFileSync|mkdirSync|rmSync)\s*\(/u);
+});
+
+
+test("supervised product invariant failures retain the worker code instead of guessing from collection events", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    await runAutomationTaskExecution(task, provider.automation, {
+      launchEnv: {
+        LIBRETTO_CLOUD_CTBC_USER_ID: "synthetic-user",
+        LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
+        LIBRETTO_CLOUD_CTBC_PASSWORD: "synthetic-password",
+        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
+        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
+      },
+      workflowBrowserPortFactory: () => ({ async withPage(run) { return await run({} as never); } }),
+      appWorkflowBrowserConnectionForRun: (id) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${id}` }),
+      appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(options.workerData, "product-invariant", () => true),
+    }, async (id) => { taskRunId = id; });
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(run?.appWorkflowOutcome?.errorCode, "workflow-failed");
+    assert.equal(run?.appWorkflowOutcome?.summary?.counts.committedCount, 4);
+    assert.equal(run?.status, "failed", "a fatal invariant remains a failure with retained receipts");
+  } finally {
+    await store.close();
+  }
 });

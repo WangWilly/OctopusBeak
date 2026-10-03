@@ -106,6 +106,23 @@ assert.throws(
     return true;
   },
 );
+assert.throws(
+  () =>
+    selectStatementTypes(
+      fubon,
+      {
+        [fubon.enabledKey]: false,
+        [fubon.statementSelectionKey]: "deposit,unknown",
+      },
+      "strict",
+    ),
+  (error: unknown) => {
+    assert.ok(error instanceof StatementSelectionError);
+    assert.equal(error.reason, "unknown-type");
+    assert.deepEqual(error.unknownIds, ["unknown"]);
+    return true;
+  },
+);
 assert.equal(
   new StatementSelectionError(fubon.id, "unknown-type", fubon).message,
   "Unknown Fubon statement type: unknown",
@@ -137,6 +154,14 @@ assert.throws(
     assert.equal(error.reason, "missing-selection");
     assert.deepEqual(error.unknownIds, []);
     assert.equal(error.message, "Select at least one Fubon statement type.");
+    return true;
+  },
+);
+assert.throws(
+  () => selectStatementTypes(fubon, { [fubon.enabledKey]: true }, "strict"),
+  (error: unknown) => {
+    assert.ok(error instanceof StatementSelectionError);
+    assert.equal(error.reason, "missing-selection");
     return true;
   },
 );

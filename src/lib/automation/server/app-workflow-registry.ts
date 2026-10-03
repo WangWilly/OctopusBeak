@@ -31,6 +31,10 @@ import type { AutomationPersistenceProvider } from "./store.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import type { AppWorkflowBrowserProfile } from "./app-browser-host.ts";
 import {
+  BANK_STATEMENT_CAPABILITIES,
+  selectStatementTypes,
+} from "../statement-selection.ts";
+import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureDefinition,
   packagedBrowserFixtureEnabled,
@@ -74,6 +78,21 @@ function createCathayRegistryDefinition(
       );
     },
   };
+}
+
+function statementTypeIdsFromEnvironment(
+  groupId: keyof typeof BANK_STATEMENT_CAPABILITIES,
+  environment: NodeJS.ProcessEnv,
+) {
+  const group = BANK_STATEMENT_CAPABILITIES[groupId];
+  return selectStatementTypes(
+    group,
+    {
+      [group.enabledKey]: true,
+      [group.statementSelectionKey]: environment[group.statementSelectionKey],
+    },
+    "strict",
+  ).selectedIds;
 }
 
 const cathayAllStatementsWorkflow = createCathayRegistryDefinition(unavailableCathayOtpPort);
@@ -161,6 +180,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           fubon_account: environment.LIBRETTO_CLOUD_FUBON_ACCOUNT ?? "",
           fubon_password: environment.LIBRETTO_CLOUD_FUBON_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("fubon", environment),
       };
     },
   },
@@ -201,6 +221,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           yuanta_account: environment.LIBRETTO_CLOUD_YUANTA_ACCOUNT ?? "",
           yuanta_password: environment.LIBRETTO_CLOUD_YUANTA_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("yuanta", environment),
       };
     },
   },
@@ -307,17 +328,13 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
     },
     startUrl: "https://www.cathaybk.com.tw/MyBank/",
     inputFromEnvironment(environment) {
-      const configuredTypes = environment.LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES;
-      const statementTypes = configuredTypes === undefined
-        ? undefined
-        : configuredTypes.split(",").map((type) => type.trim()).filter(Boolean);
       return {
         credentials: {
           cathay_user_id: environment.LIBRETTO_CLOUD_CATHAY_USER_ID ?? "",
           cathay_account: environment.LIBRETTO_CLOUD_CATHAY_ACCOUNT ?? "",
           cathay_password: environment.LIBRETTO_CLOUD_CATHAY_PASSWORD ?? "",
         },
-        ...(statementTypes === undefined ? {} : { statementTypes }),
+        statementTypes: statementTypeIdsFromEnvironment("cathay", environment),
       };
     },
   },

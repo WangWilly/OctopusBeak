@@ -47,7 +47,7 @@ export function buildCredentialSetupPlan(draft: CredentialSetupDraft) {
   for (const group of draft.groups) {
     updates[group.enabledKey] = draft.enabled[group.id] !== false ? "true" : "false";
     const selectedIds = draft.statementSelections[group.id] ?? [];
-    if (group.statementSelectionKey && selectedIds.length) {
+    if (group.statementSelectionKey) {
       updates[group.statementSelectionKey] = selectedIds.join(",");
     }
   }

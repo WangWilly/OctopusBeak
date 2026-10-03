@@ -41,6 +41,7 @@ const syntheticEnvironment = () => ({
   [credentialKey("USER_ID")]: "synthetic-user-id",
   [credentialKey("ACCOUNT")]: "synthetic-account",
   [credentialKey("PASSWORD")]: "synthetic-password",
+  [credentialKey("STATEMENT_TYPES")]: "fund,deposit",
   [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "synthetic-yuanta-managed-secret",
 });
 
@@ -60,7 +61,15 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
       yuanta_account: "synthetic-account",
       yuanta_password: "synthetic-password",
     },
+    statementTypes: ["deposit", "fund"],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, {
+      ...syntheticEnvironment(),
+      LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "fund,unknown",
+    }),
+    /Unknown Yuanta statement type: unknown/u,
+  );
 
   const root = await mkdtemp(join(tmpdir(), "yuanta-app-workflow-"));
   const previousDirectory = process.cwd();

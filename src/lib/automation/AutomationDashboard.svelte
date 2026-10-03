@@ -218,7 +218,6 @@
   $: onboardingNeedsStatements = Boolean(
     onboardingSourceSelection
     && selectedCredentialGroup?.statementTypes?.length
-    && selectedCredentialGroup.id !== "fubon"
     && (
       !(statementSelectionDrafts[selectedCredentialGroup.id]?.length)
       || !statementSelectionConfirmed
@@ -606,7 +605,6 @@
 
   function credentialGroupStatus(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation) {
     if (!enabled) return dictionary.common.disabled;
-    if (group.id === "fubon") return dictionary.common.enabled;
     if (group.statementSetupRequired && group.selectedStatementTypeIds.length) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length && !selectedCount) return dictionary.automation.needsSetup;
     if (group.statementTypes?.length) {
@@ -1748,7 +1746,7 @@
                         </p>
                       {/if}
                       {#if task.appWorkflowOutcome?.summary}
-                        <div class="workflow-outcome-summary" aria-label="Workflow outcome summary">
+                        <div class="workflow-outcome-summary" aria-label={$t.automation.workflowOutcomeSummary}>
                           {#if task.appWorkflowOutcome.summary.status}
                             <span>{task.appWorkflowOutcome.summary.status}</span>
                           {/if}
@@ -1756,6 +1754,35 @@
                             <span>{count[0]}: {count[1]}</span>
                           {/each}
                         </div>
+                      {/if}
+                      {#if task.appWorkflowOutcome?.summary?.products?.length}
+                        <ul class="workflow-product-results" aria-label={$t.automation.productResults}>
+                          {#each task.appWorkflowOutcome.summary.products as product (product.typeId)}
+                            <li class="workflow-product-row">
+                              <strong class="workflow-product-name">
+                                {$t.automation.statementTypeLabels[product.typeId] ?? product.typeId}
+                              </strong>
+                              <div class="workflow-product-details">
+                                <span class="workflow-product-status" data-status={product.status}>
+                                  {$t.automation.productOutcomeStatuses[product.status]}
+                                </span>
+                                {#if product.status === "skipped" && product.skipReason}
+                                  <span class="workflow-product-note">
+                                    {$t.automation.productSkipReasons[product.skipReason]}
+                                  </span>
+                                {/if}
+                                {#if product.status === "failed" && product.committedCount > 0}
+                                  <span class="workflow-product-retained">
+                                    {$t.automation.productRetainedCount(product.committedCount)}
+                                  </span>
+                                {/if}
+                                {#if product.errorCode}
+                                  <code>{product.errorCode}</code>
+                                {/if}
+                              </div>
+                            </li>
+                          {/each}
+                        </ul>
                       {/if}
                       {#if task.events.length}
                         <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
@@ -2039,12 +2066,7 @@
                 {/if}
               </section>
             {/if}
-            {#if selectedCredentialGroup.id === "fubon" && selectedCredentialGroup.statementTypes?.length}
-              <fieldset class="statement-selection" id="fubon-statement-selection" tabindex="-1">
-                <legend>{$t.automation.statementsToCollect}</legend>
-                <p id="fubon-statement-help">{$t.automation.statementSelectionAllSupported(credentialGroupName(selectedCredentialGroup))}</p>
-              </fieldset>
-            {:else if selectedCredentialGroup.statementTypes?.length}
+            {#if selectedCredentialGroup.statementTypes?.length}
               <fieldset
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
@@ -3002,6 +3024,75 @@
     gap: var(--space-2) var(--space-4);
     color: var(--muted);
     font-size: 12px;
+  }
+
+  .workflow-product-results {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    list-style: none;
+  }
+
+  .workflow-product-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .workflow-product-row:last-child {
+    border-bottom: 0;
+  }
+
+  .workflow-product-name {
+    flex: 0 0 auto;
+    font-size: 13px;
+  }
+
+  .workflow-product-details {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    min-width: 0;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: right;
+  }
+
+  .workflow-product-status {
+    color: var(--accent);
+    font-weight: 650;
+  }
+
+  .workflow-product-status[data-status="failed"] {
+    color: var(--danger);
+  }
+
+  .workflow-product-status[data-status="no_data"],
+  .workflow-product-status[data-status="not_held"],
+  .workflow-product-status[data-status="skipped"] {
+    color: var(--muted);
+  }
+
+  .workflow-product-details code {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-product-retained {
+    color: var(--fg);
+    font-weight: 550;
   }
 
   .sync-sheet {
@@ -4059,6 +4150,15 @@
     }
 
     .workflow-event-meta {
+      justify-content: flex-start;
+      text-align: left;
+    }
+
+    .workflow-product-row {
+      flex-direction: column;
+    }
+
+    .workflow-product-details {
       justify-content: flex-start;
       text-align: left;
     }
