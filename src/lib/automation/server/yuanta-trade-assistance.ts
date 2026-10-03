@@ -5,7 +5,7 @@ import {
   type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import { verificationActorForSource } from "../verification-config.ts";
+import { hostVerificationActorForSourceKey } from "../verification-config.ts";
 import {
   createProviderVerificationHost,
   type ProviderVerificationHost,
@@ -164,16 +164,25 @@ export async function routeYuantaTradeAppAssistanceRequest(
   dependencies: YuantaTradeAppAssistanceDependencies,
 ): Promise<VerificationRoutingOutcome | undefined> {
   request.signal.throwIfAborted();
+  const verificationActor = hostVerificationActorForSourceKey(
+    "LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR",
+  );
 
   // ServiSign certificate selection is a native prerequisite and stays in the
-  // live Assist session. Other undeclared stages also fail safe to the user.
-  if (!isSupportedAutomaticStage(request.contract)) return undefined;
+  // live Assist session only in the explicit development human mode.
+  if (!isSupportedAutomaticStage(request.contract)) {
+    if (verificationActor === "human") return undefined;
+    await dependencies.provider.automation.appendRunEvent({
+      runId: request.taskRunId,
+      stage: "authentication",
+      code: "solver-challenge-unsupported",
+      occurredAt: new Date().toISOString(),
+    });
+    throw new Error("Yuanta Trade verification stage is not supported by the automatic solver.");
+  }
   if (
     request.contract.stageId === "yuanta-trade-challenge"
-    && verificationActorForSource(
-      "LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR",
-      dependencies.settings,
-    ) === "solver"
+    && verificationActor === "solver"
   ) {
     await dependencies.provider.automation.appendRunEvent({
       runId: request.taskRunId,

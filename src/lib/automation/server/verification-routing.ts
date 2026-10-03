@@ -10,8 +10,8 @@ import { resolveHumanAssistanceSolverMetadata } from "../human-assistance.ts";
 import {
   DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
   challengeConfidenceThreshold,
+  hostVerificationActorForSourceKey,
   isSolverChallengeKind,
-  verificationActorForSource,
   type VerificationActor,
 } from "../verification-config.ts";
 import {
@@ -271,7 +271,7 @@ export async function routeWaitingRunVerification(input: {
       )
     : null;
   const settings = input.settings ?? readAutomationSettings();
-  const actor = verificationActorForSource(group?.verificationActorKey, settings);
+  const actor = hostVerificationActorForSourceKey(group?.verificationActorKey);
   const run = await input.provider.automation.taskRunById(input.taskRunId);
   if (
     !run

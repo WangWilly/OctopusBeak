@@ -17,6 +17,7 @@ import {
   loadAutomationDesktopModel,
 } from "./desktop-api.ts";
 import { readAutomationSettings } from "./settings.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 test("desktop automation model and history are read from the provider", async () => {
   const database = await PGlite.create();
@@ -205,6 +206,26 @@ test("non-typed task runs cannot be resumed as App workflow assistance", async (
       /does not use an App browser workflow/u,
     );
   } finally {
+    await store.close();
+  }
+});
+
+test("packaged manual resume is denied even when its process environment requests human mode", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  configureHostVerificationActorPolicy({
+    isPackaged: true,
+    env: { LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR: "human" },
+  });
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    await assert.rejects(
+      automationResumeHumanAssistance("cathay-all-statements", provider),
+      /Manual verification is disabled/u,
+    );
+  } finally {
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });

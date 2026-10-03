@@ -5,38 +5,67 @@ import {
   VERIFICATION_ACTORS,
   VERIFICATION_CONFIDENCE_THRESHOLD_KEYS,
   challengeConfidenceThreshold,
-  verificationActorForSource,
+  effectiveVerificationActorForSourceKey,
 } from "./verification-config.ts";
 
 test("an App source with a verification actor key defaults to solver", () => {
   assert.equal(DEFAULT_VERIFICATION_ACTOR, "solver");
   assert.equal(
-    verificationActorForSource("LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR", {}),
+    effectiveVerificationActorForSourceKey("LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR", {
+      isPackaged: false,
+      env: {},
+    }),
     "solver",
   );
-  assert.equal(verificationActorForSource(undefined, {}), "solver");
+  assert.equal(effectiveVerificationActorForSourceKey(undefined, {
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "human" },
+  }), "solver");
 });
 
-test("an explicitly configured actor is read back", () => {
+test("only unpackaged host launch environment can select manual verification", () => {
   assert.equal(
-    verificationActorForSource("KEY", { KEY: "human" }),
+    effectiveVerificationActorForSourceKey("KEY", {
+      isPackaged: false,
+      env: { KEY: "human" },
+    }),
     "human",
   );
   assert.equal(
-    verificationActorForSource("KEY", { KEY: "solver" }),
+    effectiveVerificationActorForSourceKey("KEY", {
+      isPackaged: false,
+      env: { KEY: "solver" },
+    }),
     "solver",
   );
 });
 
-test("an unrecognized actor value falls back to solver", () => {
+test("packaged builds ignore human process overrides", () => {
   assert.equal(
-    verificationActorForSource("KEY", { KEY: "robot" }),
+    effectiveVerificationActorForSourceKey("KEY", {
+      isPackaged: true,
+      env: { KEY: "human" },
+    }),
     "solver",
   );
-  assert.equal(
-    verificationActorForSource("KEY", { KEY: "SOLVER" }),
-    "solver",
-  );
+});
+
+test("missing trusted package metadata fails closed to solver", () => {
+  assert.equal(effectiveVerificationActorForSourceKey("KEY", {
+    isPackaged: undefined,
+    env: { KEY: "human" },
+  } as unknown as Parameters<typeof effectiveVerificationActorForSourceKey>[1]), "solver");
+});
+
+test("unrecognized actor values fail closed to solver", () => {
+  assert.equal(effectiveVerificationActorForSourceKey("KEY", {
+    isPackaged: false,
+    env: { KEY: "robot" },
+  }), "solver");
+  assert.equal(effectiveVerificationActorForSourceKey("KEY", {
+    isPackaged: false,
+    env: { KEY: " HUMAN ".toUpperCase() },
+  }), "human");
 });
 
 test("only human and solver are valid verification actors", () => {

@@ -23,13 +23,13 @@ test("every supported source defaults its verification actor to solver", () => {
   }
 });
 
-test("a per-source human override is read back while others stay solver", () => {
+test("persisted human overrides never authorize manual verification", () => {
   const fubon = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon");
   assert.ok(fubon?.verificationActorKey);
   const actors = automationGroupVerificationActors({
     [fubon.verificationActorKey!]: "human",
   });
-  assert.equal(actors.fubon, "human");
+  assert.equal(actors.fubon, "solver");
   assert.equal(actors.esun, "solver");
 });
 

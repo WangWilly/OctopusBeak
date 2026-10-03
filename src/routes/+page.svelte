@@ -11,6 +11,7 @@
     type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
   import { isAutomationBlockStale } from "$lib/automation/runtime-sync.ts";
+  import { onboardingStepForVerificationActor } from "$lib/automation/verification-actor-ui.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -185,7 +186,12 @@
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
   $: activeBlocks = route === "settings" ? {} : routeBlocks[route] ?? {};
-  $: onboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
+  $: resolvedOnboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
+  $: onboardingStep = onboardingStepForVerificationActor(
+    resolvedOnboardingStep,
+    onboardingState?.selectedCredentialGroupId,
+    automationValue?.verificationActorsByCredentialGroup,
+  );
   $: onboardingCompact = automationValue
     && onboardingStep === "collection"
     && automationValue.automation.tasks.some((task) =>
@@ -477,6 +483,11 @@
     return {
       automation: details?.automation ?? source.automation,
       credentialGroups: details?.credentialGroups ?? list?.credentialGroups ?? [],
+      verificationActorsByCredentialGroup:
+        details?.verificationActorsByCredentialGroup
+        ?? list?.verificationActorsByCredentialGroup
+        ?? summary?.verificationActorsByCredentialGroup
+        ?? {},
     };
   }
 
@@ -1084,6 +1095,7 @@
     <AutomationDashboard
       automation={automationRenderValue.automation}
       credentialGroups={automationRenderValue.credentialGroups}
+      verificationActorsByCredentialGroup={automationRenderValue.verificationActorsByCredentialGroup}
       blocks={activeBlocks}
       runtimeSnapshot={automationRuntimeSnapshot}
       runtimeController={automationRuntimeController}

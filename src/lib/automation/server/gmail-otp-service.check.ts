@@ -179,9 +179,9 @@ test("token exchange failure returns a sanitized connection error", async () => 
       }),
     });
     assert.deepEqual(await service.enable(), {
-      enabled: false,
+      enabled: true,
       connectedEmail: null,
-      needsAuthorization: false,
+      needsAuthorization: true,
       connectionError: "token-exchange-failed",
     });
   } finally {
@@ -567,7 +567,7 @@ test("preparation cancellation aborts Gmail listing and never creates a retrieva
   }
 });
 
-test("cancelled shared OAuth authorization cannot save credentials after it resolves late", async () => {
+test("automatic Gmail access never starts interactive OAuth when no grant exists", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-oauth-cancel-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
@@ -575,42 +575,23 @@ test("cancelled shared OAuth authorization cannot save credentials after it reso
   setAutomationCredentialCodec(fakeCredentialCodec);
   writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
   writeAutomationCredentialsFile(credentialsPath, {});
-  const controller = new AbortController();
-  let authorizationSignal: AbortSignal | undefined;
-  let authorizationStarted!: () => void;
-  const authorizationPending = new Promise<void>((resolve) => { authorizationStarted = resolve; });
-  let releaseAuthorization!: (value: { refreshToken: string; connectedEmail: string }) => void;
   let authorizationCalls = 0;
   const service = createCathayGmailOtpService({
     settingsPath,
     credentialsPath,
-    oauthAuthorize: async (signal) => {
+    oauthAuthorize: async () => {
       authorizationCalls += 1;
-      authorizationSignal = signal;
-      if (authorizationCalls === 1) {
-        authorizationStarted();
-        return await new Promise<{ refreshToken: string; connectedEmail: string }>((resolve) => {
-          releaseAuthorization = resolve;
-        });
-      }
-      return { refreshToken: "retry-refresh", connectedEmail: "test@gmail.com" };
+      return { refreshToken: "unexpected-refresh", connectedEmail: "test@gmail.com" };
     },
   });
 
   try {
-    const cancelledAuthorization = service.ensureAccess(controller.signal);
-    await authorizationPending;
-    controller.abort();
-    assert.deepEqual(await cancelledAuthorization, { status: "fallback", reason: "gmail-request-failed" });
-    assert.ok(authorizationSignal);
-    assert.equal(authorizationSignal?.aborted, true, "the unused shared authorization flight should be cancelled");
-    releaseAuthorization({ refreshToken: "late-refresh", connectedEmail: "late@gmail.com" });
-    await Promise.resolve();
-    await Promise.resolve();
+    assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "needs-authorization" });
     assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], undefined);
-    assert.deepEqual(await service.ensureAccess(), { status: "ready" });
-    assert.equal(authorizationCalls, 2, "a later run should not join the abandoned authorization flight");
-    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "retry-refresh");
+    assert.equal(authorizationCalls, 0);
+    assert.deepEqual(await service.enable(), { enabled: true, connectedEmail: "test@gmail.com", needsAuthorization: false });
+    assert.equal(authorizationCalls, 1, "only the explicit settings action may begin OAuth");
+    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "unexpected-refresh");
   } finally {
     setAutomationCredentialCodec(null);
     resetCathayGmailOtpServiceForTests();
@@ -649,7 +630,7 @@ test("host token persistence is encrypted and never copied to workflow env", asy
       credentialsPath,
       fetch: async (url) => { revoked.push(String(url)); return new Response(null, { status: 200 }); },
     });
-    assert.deepEqual(await disconnecting.disconnect(), { enabled: false, connectedEmail: null, needsAuthorization: false });
+    assert.deepEqual(await disconnecting.disconnect(), { enabled: true, connectedEmail: null, needsAuthorization: true });
     assert.equal(revoked.length, 1);
     assert.match(revoked[0]!, /oauth2\.googleapis\.com\/revoke/);
     assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], undefined);
@@ -679,9 +660,9 @@ test("Gmail authorization fails closed when safe credential storage is unavailab
     });
     assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "not-configured" });
     assert.deepEqual(await service.enable(), {
-      enabled: false,
+      enabled: true,
       connectedEmail: null,
-      needsAuthorization: false,
+      needsAuthorization: true,
       connectionError: "credential-storage-failed",
     });
     assert.equal(oauthCalls, 0);
@@ -693,12 +674,12 @@ test("Gmail authorization fails closed when safe credential storage is unavailab
   }
 });
 
-test("disabling keeps the grant and re-enabling refreshes it without OAuth", async () => {
+test("authorized Gmail stays automatic despite a stale disabled setting", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-reenable-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
   writeFakeOAuthClientConfig(dir);
-  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: false });
   writeAutomationCredentialsFile(credentialsPath, {
     [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh-grant",
     [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
@@ -721,9 +702,10 @@ test("disabling keeps the grant and re-enabling refreshes it without OAuth", asy
     now: () => 1000,
   });
   try {
-    assert.deepEqual(await service.setEnabled(false), { enabled: false, connectedEmail: "test@gmail.com", needsAuthorization: false });
+    assert.deepEqual(service.status(), { enabled: true, connectedEmail: "test@gmail.com", needsAuthorization: false });
+    assert.deepEqual(await service.ensureAccess(), { status: "ready" });
+    await assert.rejects(service.setEnabled(false), /cannot be disabled/u);
     assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "refresh-grant");
-    assert.deepEqual(await service.enable(), { enabled: true, connectedEmail: "test@gmail.com", needsAuthorization: false });
     assert.equal(refreshCalls, 1);
     assert.equal(oauthCalls, 0);
   } finally {
@@ -759,11 +741,7 @@ test("Gmail service keeps its credential codec when another operation resets the
     now: () => 1000,
   });
   try {
-    assert.deepEqual(await service.setEnabled(false), {
-      enabled: false,
-      connectedEmail: "test@gmail.com",
-      needsAuthorization: false,
-    });
+    await assert.rejects(service.setEnabled(false), /cannot be disabled/u);
     assert.deepEqual(await service.enable(), {
       enabled: true,
       connectedEmail: "test@gmail.com",
@@ -775,7 +753,7 @@ test("Gmail service keeps its credential codec when another operation resets the
   }
 });
 
-test("invalid_grant opens the browser path again through single-flight authorization", async () => {
+test("automatic Gmail access reports invalid_grant as reconnect-required without OAuth", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-refresh-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
@@ -798,9 +776,9 @@ test("invalid_grant opens the browser path again through single-flight authoriza
       },
       oauthAuthorize: async () => ({ refreshToken: "new-refresh", connectedEmail: "test@gmail.com" }),
     });
-    assert.deepEqual(await service.ensureAccess(), { status: "ready" });
+    assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "needs-authorization" });
     assert.equal(refreshes, 1);
-    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "new-refresh");
+    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "expired");
   } finally {
     if (oldClientId === undefined) delete process.env.OCTOPUSBEAK_GOOGLE_OAUTH_CLIENT_ID;
     else process.env.OCTOPUSBEAK_GOOGLE_OAUTH_CLIENT_ID = oldClientId;

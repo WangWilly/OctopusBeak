@@ -20,8 +20,10 @@ import {
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
+  routeYuantaTradeAppAssistanceRequest,
   registerYuantaTradeAppAssistanceHandler,
 } from "./yuanta-trade-assistance.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const TASK_ID = "yuanta-trade-statements";
 
@@ -344,6 +346,10 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
 
 test("Yuanta Trade image challenge stays in Assist after an explicit human setting", async () => {
   const { store, provider, run } = await createRun();
+  configureHostVerificationActorPolicy({
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
+  });
   const unregister = registerYuantaTradeAppAssistanceHandler({
     provider,
     settings: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
@@ -367,12 +373,17 @@ test("Yuanta Trade image challenge stays in Assist after an explicit human setti
     await request;
   } finally {
     unregister();
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });
 
 test("Yuanta Trade certificate selection stays with the user for native ServiSign", async () => {
   const { store, provider, run } = await createRun();
+  configureHostVerificationActorPolicy({
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
+  });
   let routed = false;
   const unregister = registerYuantaTradeAppAssistanceHandler({
     provider,
@@ -402,6 +413,29 @@ test("Yuanta Trade certificate selection stays with the user for native ServiSig
     await request;
   } finally {
     unregister();
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
+    await store.close();
+  }
+});
+
+test("Yuanta Trade unsupported native verification fails closed in solver mode", async () => {
+  const { store, provider, run } = await createRun();
+  configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
+  try {
+    await assert.rejects(
+      routeYuantaTradeAppAssistanceRequest({
+        taskId: TASK_ID,
+        taskRunId: run.taskRunId,
+        contract: certificateContract(),
+        signal: new AbortController().signal,
+      }, { provider, settings: {} }),
+      /not supported by the automatic solver/u,
+    );
+    const saved = await provider.automation.taskRunById(run.taskRunId);
+    assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
+    assert.equal(saved?.status, "running");
+  } finally {
+    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });
