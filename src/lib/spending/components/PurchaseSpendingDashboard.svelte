@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { createSpendingPageReader } from "../page-reader.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
@@ -11,38 +10,41 @@
   import { resolveSpendingPurchaseReport } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
-    type SpendingPurchaseReportView,
   } from "../purchase-matching.ts";
   import {
-    reconcileSpendingPageActionSummary,
-    spendingPairingReportContext,
-    type SpendingCandidatePageDto,
     type SpendingPageDto,
-    type SpendingPageActionResult,
     type SpendingPairingCandidateView,
-    type SpendingPurchaseReportSummaryDto,
-    type SpendingRecordPageDto,
-    preserveSpendingMonthSelection,
   } from "../model.ts";
-  import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+  import {
+    createDesktopPurchaseSpendingTransport,
+    createPurchaseSpendingSession,
+    type PurchaseSpendingFeedback,
+    type PurchaseSpendingReport,
+  } from "../purchase-spending-session.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
 
-  type PurchaseReport = SpendingPurchaseReportView & Readonly<{ summary?: SpendingPurchaseReportSummaryDto }>;
+  type PurchaseReport = PurchaseSpendingReport;
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let refreshSummary: () => Promise<void> = async () => {};
-  const pageReader = createSpendingPageReader(() => refreshSummary());
+  const spendingSession = createPurchaseSpendingSession({
+    report: purchaseReport,
+    canonical: fallbackCanonical,
+    refreshSummary: () => refreshSummary(),
+    transport: createDesktopPurchaseSpendingTransport(),
+  });
+  const spendingState = spendingSession.state;
 
   export let retryBlock: (key: string) => void = () => {};
 
   function blockState(key: "summary" | "chart" | "list" | "details"): BlockState<DashboardBlockPayload> {
     if (report.summary) {
       const data = {
-        canonical: fallbackCanonical,
+        canonical: $spendingState.canonical,
         purchaseReport: report as unknown as SpendingPageDto["purchaseReport"],
         invoices: [],
       };
@@ -62,54 +64,31 @@
   }
 
   let report = purchaseReport;
-  let pendingReport: PurchaseReport | null = null;
-  let previousReport: PurchaseReport | undefined;
+  let isUpdating = false;
+  let canonical = fallbackCanonical;
+  let previousReport = purchaseReport;
+  let previousCanonical = fallbackCanonical;
   let selectedMonth: string | null = null;
   let chartReady = false;
+  let chartMode: "day" | "month" = "day";
+  let selectedCurrency = "";
+  let selectedDay: string | null = null;
   let busyAction: string | null = null;
-  let actionError = "";
-  let pairingFeedback = "";
+  let actionError: PurchaseSpendingFeedback | null = null;
+  let pairingFeedback: "selectionUnavailable" | "" = "";
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
   let paymentVisibleCount = 10;
   let candidateVisibleCount = 10;
-  let previousCandidateKey = "";
-  let chartMode: "day" | "month" = "day";
-  let selectedCurrency = "";
-  let selectedDay: string | null = null;
   let monthCandidateCount: number | null = null;
   let monthCandidateLoading = false;
   let recordPageLoading = false;
-  let recordPageNextCursor: string | null = null;
-  let recordPageRecords: readonly PurchaseRecord[] = [];
-  let candidatePageItems: SpendingCandidatePageDto["items"] = [];
-  let candidatePageNextOffset: number | null = null;
-  let candidatePageMonthKey = "";
-  let candidatePageRequestId: string | null = null;
-  let candidatePageTimer: ReturnType<typeof setTimeout> | null = null;
-  let recordRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingRecordRefresh: Readonly<{
-    knowledgeAt: number;
-    month: string;
-    day: string | null;
-    key: string;
-    requestToken: number;
-  }> | null = null;
-  let monthDataRequestToken = 0;
-  let candidatePageRequestToken = 0;
-  let requestedMonthDataKey = "";
-  let loadedMonthDataKey = "";
-  let pageError = "";
-  let nextCandidateRequestId = 1;
+  let hasMoreRecords = false;
   let pairingCandidates: readonly SpendingPairingCandidateView[] | null = null;
   let validatedSelectedCandidate: SpendingPairingCandidateView | null = null;
-  let pairingDataVersion: number | null = null;
   let pairingCandidateTotal = 0;
-  let pairingNextOffset: number | null = null;
   let pairingCandidatesLoading = false;
-  let pairingRequestToken = 0;
-  let pairingPrewarmVersion: number | null = null;
-  const initialPairingCandidateCount = 50;
+  let pageError = "";
   const reportDerivedCache = new WeakMap<object, {
     months: readonly string[];
     availableCurrencies: readonly string[];
@@ -120,7 +99,30 @@
   const reportRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
   const reportVisibleRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
 
+  $: report = $spendingState.report;
+  $: isUpdating = $spendingState.isUpdating;
+  $: canonical = $spendingState.canonical;
+  $: selectedMonth = $spendingState.selectedMonth;
+  $: selectedDay = $spendingState.selectedDay;
+  $: busyAction = $spendingState.busyAction;
+  $: actionError = $spendingState.actionError;
+  $: pageError = $spendingState.pageError;
+  $: pairingFeedback = $spendingState.pairingFeedback;
+  $: pairingInvoice = $spendingState.pairingInvoice;
+  $: selectedPaymentId = $spendingState.selectedPaymentId;
+  $: paymentVisibleCount = $spendingState.paymentVisibleCount;
+  $: candidateVisibleCount = $spendingState.candidateVisibleCount;
+  $: monthCandidateCount = $spendingState.monthCandidateCount;
+  $: monthCandidateLoading = $spendingState.monthCandidateLoading;
+  $: recordPageLoading = $spendingState.recordPageLoading;
+  $: hasMoreRecords = $spendingState.hasMoreRecords;
+  $: pairingCandidates = $spendingState.pairingCandidates;
+  $: validatedSelectedCandidate = $spendingState.validatedSelectedCandidate;
+  $: pairingCandidateTotal = $spendingState.pairingCandidateTotal;
+  $: pairingCandidatesLoading = $spendingState.pairingCandidatesLoading;
+
   onMount(() => {
+    spendingSession.start();
     let firstFrame = 0;
     let chartFrame = 0;
     firstFrame = requestAnimationFrame(() => {
@@ -131,10 +133,7 @@
     return () => {
       cancelAnimationFrame(firstFrame);
       cancelAnimationFrame(chartFrame);
-      if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
-      pendingRecordRefresh = null;
-      monthDataRequestToken += 1;
-      void cancelPendingCandidatePage();
+      spendingSession.dispose();
     };
   });
 
@@ -180,78 +179,26 @@
     return derived;
   }
 
-  $: if (previousReport !== purchaseReport) {
-    const sameVersionUpdate = Boolean(previousReport && report.summary && purchaseReport.summary
-      && report.knowledgeAt === purchaseReport.knowledgeAt);
-    const selection = preserveSpendingMonthSelection(
-      previousReport?.summary,
-      purchaseReport.summary,
-      selectedMonth,
-      selectedDay,
-    );
+  $: if (purchaseReport !== previousReport || fallbackCanonical !== previousCanonical) {
     previousReport = purchaseReport;
-    selectedMonth = selection.selectedMonth;
-    selectedDay = selection.selectedDay;
-    actionError = "";
-    if (sameVersionUpdate) {
-      // The compact action result already advanced this version locally. The
-      // same-version live publication confirms its summary without discarding
-      // the immediately patched affected row or launching a duplicate page.
-      report = Object.freeze({
-        ...purchaseReport,
-        records: report.records,
-        candidates: report.candidates,
-      });
-      // An explicit summary reload can retry a failed page even when no new
-      // financial commit was made. The failure itself never resets this key.
-      if (pageError) resetMonthPageState(true);
-    } else {
-      const retainSnapshot = Boolean(report.summary && report.records.length > 0 && purchaseReport.summary);
-      pendingReport = retainSnapshot ? purchaseReport : null;
-      if (!retainSnapshot) report = purchaseReport;
-      resetMonthPageState(retainSnapshot);
-    }
+    previousCanonical = fallbackCanonical;
+    spendingSession.receiveLive(purchaseReport, fallbackCanonical);
   }
-  $: if (pairingInvoice?.invoice) {
-    const latestVersion = (pendingReport ?? report).knowledgeAt;
-    // The retained list is a display snapshot. Candidate eligibility follows
-    // the latest summary immediately, even while its record page is loading.
-    const currentInvoice = pendingReport ? pairingInvoice : report.records.find((record) =>
-      record.basis === "invoice" && record.invoice?.invoiceId === pairingInvoice?.invoice?.invoiceId);
-    if (!currentInvoice) {
-      closePairing();
-      actionError = $t.purchaseSpending.pairingInvoiceUnavailable;
-    } else {
-      if (pairingInvoice !== currentInvoice) pairingInvoice = currentInvoice;
-      if (pairingDataVersion !== latestVersion) {
-        pairingDataVersion = latestVersion;
-        pairingCandidates = null;
-        validatedSelectedCandidate = null;
-        pairingCandidateTotal = 0;
-        pairingNextOffset = null;
-        paymentVisibleCount = initialPairingCandidateCount;
-        pairingCandidatesLoading = true;
-        void loadPairingCandidates(currentInvoice, ++pairingRequestToken);
-      }
-    }
-  }
-  // Candidate preparation stays in the financial worker.  Fire it once for
-  // each immutable report version without delaying the shell or renderer.
-  $: if (report.knowledgeAt !== pairingPrewarmVersion) {
-    const dataVersion = report.knowledgeAt;
-    pairingPrewarmVersion = dataVersion;
-    void window.octopusBeak.spending.prewarmPairingCandidates({ dataVersion }).catch(() => {});
-  }
+  $: actionErrorText = actionError
+    ? actionError.kind === "error"
+      ? actionError.message
+      : actionError.key === "pairingSelectionUnavailable"
+        ? $t.purchaseSpending.pairingSelectionUnavailable
+        : actionError.key === "pairingDataChanged"
+          ? $t.purchaseSpending.pairingDataChanged
+          : $t.purchaseSpending.pairingInvoiceUnavailable
+    : "";
+  $: pairingFeedbackText = pairingFeedback === "selectionUnavailable"
+    ? $t.purchaseSpending.pairingSelectionUnavailable
+    : "";
   $: reportDerived = reportDerivedFor(report);
   $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
-  $: pageReader.observe((pendingReport ?? report).knowledgeAt);
-  $: if ((pendingReport ?? report).summary && activeMonth) {
-    const nextReport = pendingReport ?? report;
-    const key = `${nextReport.knowledgeAt}:${activeMonth}:${selectedDay ?? ""}`;
-    if (key !== requestedMonthDataKey && key !== loadedMonthDataKey)
-      void loadMonthData(nextReport.knowledgeAt, activeMonth, key);
-  }
   $: monthRecords = recordsForMonth(report, activeMonth);
   $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
   $: availableCurrencies = reportDerived.availableCurrencies;
@@ -263,11 +210,6 @@
     return activeMonth === null || invoice?.occurrence.value.startsWith(`${activeMonth}-`) || transaction?.occurrence.value.startsWith(`${activeMonth}-`);
   });
   $: visibleCandidates = monthCandidates;
-  $: candidateKey = `${report.knowledgeAt}:${activeMonth ?? ""}:${monthCandidateCount ?? "unloaded"}`;
-  $: if (candidateKey !== previousCandidateKey) {
-    previousCandidateKey = candidateKey;
-    candidateVisibleCount = Math.min(10, visibleCandidates.length);
-  }
   $: visibleCandidateRows = visibleCandidates.slice(0, candidateVisibleCount);
   $: visibleEligiblePayments = [
     ...(validatedSelectedCandidate && selectedPaymentId === validatedSelectedCandidate.transactionId &&
@@ -294,324 +236,6 @@
     ? dailyChartDataFor(report, monthRecords, activeMonth, selectedCurrency)
     : monthlyChartData(monthTotals, selectedCurrency);
   $: candidateRecordsByKey = reportDerived.candidateRecordsByKey;
-
-  function cancelPendingCandidatePage(): Promise<void> {
-    const pendingTimer = candidatePageTimer;
-    if (pendingTimer !== null) clearTimeout(pendingTimer);
-    candidatePageTimer = null;
-    candidatePageRequestToken += 1;
-    monthCandidateLoading = false;
-    const requestId = candidatePageRequestId;
-    candidatePageRequestId = null;
-    if (requestId && typeof window !== "undefined") {
-      return window.octopusBeak.spending.cancelCandidatePage(requestId).then(() => undefined, () => undefined);
-    }
-    return Promise.resolve();
-  }
-
-  function resetMonthPageState(retainSnapshot = false) {
-    cancelPendingRecordRefresh();
-    monthDataRequestToken += 1;
-    void cancelPendingCandidatePage();
-    requestedMonthDataKey = "";
-    loadedMonthDataKey = "";
-    candidatePageMonthKey = "";
-    recordPageLoading = false;
-    recordPageNextCursor = null;
-    if (!retainSnapshot) {
-      recordPageRecords = [];
-      candidatePageItems = [];
-    }
-    candidatePageNextOffset = null;
-    monthCandidateCount = null;
-    pageError = "";
-  }
-
-  function publishMonthPageRecords() {
-    if (!report.summary) return;
-    const byId = new Map<string, PurchaseRecord>();
-    for (const record of [...recordPageRecords, ...candidatePageItems.flatMap((item) => [item.invoiceRecord, item.paymentRecord].filter((value): value is PurchaseRecord => value !== null))]) {
-      const prior = byId.get(record.purchaseId);
-      if (!prior) {
-        byId.set(record.purchaseId, record);
-        continue;
-      }
-      byId.set(record.purchaseId, Object.freeze({
-        ...prior,
-        candidateIds: Object.freeze([...new Set([...prior.candidateIds, ...record.candidateIds])]),
-        possibleDuplicate: prior.possibleDuplicate || record.possibleDuplicate,
-      }));
-    }
-    const records = [...byId.values()].sort((left, right) =>
-      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
-    const candidates = candidatePageItems.map((item) => item.candidate);
-    const summary = Object.freeze({
-      ...report.summary,
-      monthTotals: Object.freeze(report.summary.monthTotals.map((month) => month.month === activeMonth && monthCandidateCount !== null
-        ? Object.freeze({ ...month, pendingCandidateCount: monthCandidateCount })
-        : month)),
-    });
-    report = Object.freeze({
-      ...report,
-      records: Object.freeze(records),
-      candidates: Object.freeze(candidates),
-      summary,
-    });
-  }
-
-  async function loadMonthData(knowledgeAt: number, month: string, key: string) {
-    if (requestedMonthDataKey === key || loadedMonthDataKey === key) return;
-    requestedMonthDataKey = key;
-    const requestToken = ++monthDataRequestToken;
-    const candidateKeyForMonth = `${knowledgeAt}:${month}`;
-    const replaceCandidates = candidatePageMonthKey !== candidateKeyForMonth;
-    if (replaceCandidates) {
-      await cancelPendingCandidatePage();
-      if (requestToken !== monthDataRequestToken) return;
-      candidatePageMonthKey = candidateKeyForMonth;
-      candidatePageNextOffset = null;
-      monthCandidateCount = null;
-    }
-    recordPageLoading = true;
-    pageError = "";
-    try {
-      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
-        knowledgeAt,
-        month,
-        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
-        limit: 50,
-      }));
-      if (!page) return;
-      if (requestToken !== monthDataRequestToken || (pendingReport ?? report).knowledgeAt !== knowledgeAt || activeMonth !== month) return;
-      if (pendingReport) {
-        report = pendingReport;
-        pendingReport = null;
-      }
-      if (replaceCandidates) candidatePageItems = [];
-      recordPageRecords = page.records;
-      recordPageNextCursor = page.nextCursor;
-      loadedMonthDataKey = key;
-      publishMonthPageRecords();
-      scheduleCandidatePageLoad(knowledgeAt, month, candidateKeyForMonth);
-    } catch (error) {
-      if (requestToken === monthDataRequestToken) {
-        pageError = error instanceof Error ? error.message : String(error);
-      }
-    } finally {
-      if (requestToken === monthDataRequestToken) recordPageLoading = false;
-    }
-  }
-
-  function scheduleCandidatePageLoad(knowledgeAt: number, month: string, key: string) {
-    if (pairingInvoice || monthCandidateCount !== null || candidatePageTimer !== null || candidatePageRequestId !== null) return;
-    candidatePageTimer = setTimeout(() => {
-      candidatePageTimer = null;
-      void fetchCandidatePage(knowledgeAt, month, key, 0);
-    }, 1_200);
-  }
-
-  async function fetchCandidatePage(knowledgeAt: number, month: string, key: string, offset: number) {
-    if (pairingInvoice || candidatePageMonthKey !== key || report.knowledgeAt !== knowledgeAt) return;
-    const requestToken = ++candidatePageRequestToken;
-    const requestId = `spending-candidates-${nextCandidateRequestId++}`;
-    candidatePageRequestId = requestId;
-    monthCandidateLoading = true;
-    try {
-      const page: SpendingCandidatePageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadCandidatePage({
-        knowledgeAt,
-        month,
-        offset,
-        limit: 50,
-      }, requestId));
-      if (!page) return;
-      if (requestToken !== candidatePageRequestToken || pairingInvoice || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
-      candidatePageItems = offset === 0 ? page.items : Object.freeze([...candidatePageItems, ...page.items]);
-      candidatePageNextOffset = page.nextOffset;
-      monthCandidateCount = page.totalCandidateCount;
-      publishMonthPageRecords();
-    } catch (error) {
-      if (requestToken === candidatePageRequestToken) {
-        pageError = error instanceof Error ? error.message : String(error);
-      }
-    } finally {
-      if (candidatePageRequestId === requestId) candidatePageRequestId = null;
-      if (requestToken === candidatePageRequestToken) monthCandidateLoading = false;
-    }
-  }
-
-  async function loadMoreRecords() {
-    if (!recordPageNextCursor || !activeMonth || !report.summary || recordPageLoading) return;
-    const knowledgeAt = report.knowledgeAt;
-    const month = activeMonth;
-    const requestToken = monthDataRequestToken;
-    recordPageLoading = true;
-    try {
-      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
-        knowledgeAt,
-        month,
-        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
-        cursor: recordPageNextCursor,
-        limit: 50,
-      }));
-      if (!page) return;
-      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
-      recordPageRecords = Object.freeze([...recordPageRecords, ...page.records]);
-      recordPageNextCursor = page.nextCursor;
-      publishMonthPageRecords();
-    } catch (error) {
-      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
-        pageError = error instanceof Error ? error.message : String(error);
-    } finally {
-      if (requestToken === monthDataRequestToken) recordPageLoading = false;
-    }
-  }
-
-  async function showMoreCandidates() {
-    const nextCount = candidateVisibleCount + 10;
-    if (nextCount > visibleCandidates.length && candidatePageNextOffset !== null && activeMonth && report.summary) {
-      await fetchCandidatePage(report.knowledgeAt, activeMonth, candidatePageMonthKey, candidatePageNextOffset);
-    }
-    candidateVisibleCount = Math.min(nextCount, monthCandidateCount ?? visibleCandidates.length);
-  }
-
-  function acceptCompactPageAction(result: SpendingPageActionResult) {
-    // An action may finish after a newer live publication. Preserve that
-    // publication and its in-flight page instead of promoting an older result.
-    if ((pendingReport ?? report).knowledgeAt > result.knowledgeAt) return;
-    if (!report.summary) {
-      if (report.knowledgeAt >= result.knowledgeAt) return;
-      throw new Error("Spending changed while applying the pairing result. Reload the selected month.");
-    }
-    const reconciliation = reconcileSpendingPageActionSummary(report.summary, report.knowledgeAt, result);
-    if (reconciliation.state === "newer-live-version") return;
-    const liveAlreadyPublishedAction = reconciliation.state === "already-current";
-    const month = activeMonth;
-    const day = selectedDay && month && selectedDay.startsWith(`${month}-`) ? selectedDay : null;
-    const summary = reconciliation.summary;
-    const matchesPair = (record: PurchaseRecord) =>
-      record.invoice?.invoiceId === result.invoiceIdentityId ||
-      record.transaction?.transactionId === result.transactionIdentityId;
-    const matchesView = (record: PurchaseRecord) =>
-      (month === null || record.occurrence.value.startsWith(`${month}-`))
-      && (day === null || record.occurrence.value.startsWith(day));
-    const nextRecords = Object.freeze([
-      ...recordPageRecords.filter((record) => !matchesPair(record)),
-      ...result.affectedRecords.filter((record) => matchesView(record as PurchaseRecord)),
-    ].sort((left, right) =>
-      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
-    const nextReport = Object.freeze({
-      ...report,
-      knowledgeAt: result.knowledgeAt,
-      totalsByCurrency: summary.totalsByCurrency,
-      summary,
-      records: nextRecords,
-      candidates: Object.freeze([]),
-    }) as PurchaseReport;
-    const monthKey = month ? `${result.knowledgeAt}:${month}:${day ?? ""}` : "";
-    const currentPageRequestPending = liveAlreadyPublishedAction
-      && requestedMonthDataKey === monthKey
-      && loadedMonthDataKey !== monthKey;
-    if (!liveAlreadyPublishedAction) monthDataRequestToken += 1;
-    const requestToken = monthDataRequestToken;
-    void cancelPendingCandidatePage();
-    candidatePageItems = [];
-    candidatePageNextOffset = null;
-    candidatePageMonthKey = month ? `${result.knowledgeAt}:${month}` : "";
-    monthCandidateCount = null;
-    recordPageRecords = nextRecords;
-    recordPageNextCursor = null;
-    if (!liveAlreadyPublishedAction) {
-      recordPageLoading = Boolean(month);
-      requestedMonthDataKey = monthKey;
-      loadedMonthDataKey = "";
-    }
-    pageError = "";
-    pendingReport = null;
-    report = nextReport;
-    selectedMonth = month;
-    fallbackCanonical = Object.freeze({
-      ...fallbackCanonical,
-      availability: summary.recordCount > 0 ? "available" : "empty",
-      knowledgePoint: result.knowledgeAt,
-      totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
-        currency: amount.currency,
-        value: exactToNumber(amount),
-        exact: { coefficient: amount.coefficient, scale: amount.scale },
-      })),
-      totalStatus: "complete",
-    });
-    if (month && liveAlreadyPublishedAction && !currentPageRequestPending) {
-      recordPageLoading = true;
-      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
-    } else if (month && !liveAlreadyPublishedAction) {
-      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
-    }
-  }
-
-  function scheduleRecordRefreshAfterAction(
-    knowledgeAt: number,
-    month: string,
-    day: string | null,
-    key: string,
-    requestToken: number,
-  ) {
-    pendingRecordRefresh = { knowledgeAt, month, day, key, requestToken };
-    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
-    // The action result already patches affected rows and summary. Give a
-    // subsequent Pairing click priority over this full page reconciliation.
-    recordRefreshTimer = setTimeout(() => {
-      recordRefreshTimer = null;
-      flushRecordRefreshAfterAction();
-    }, 1_200);
-  }
-
-  function cancelPendingRecordRefresh() {
-    const hadPending = pendingRecordRefresh !== null;
-    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
-    recordRefreshTimer = null;
-    pendingRecordRefresh = null;
-    if (hadPending) recordPageLoading = false;
-  }
-
-  function flushRecordRefreshAfterAction() {
-    if (pairingInvoice || !pendingRecordRefresh) return;
-    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
-    recordRefreshTimer = null;
-    const request = pendingRecordRefresh;
-    pendingRecordRefresh = null;
-    void refreshRecordsAfterAction(
-      request.knowledgeAt, request.month, request.day, request.key, request.requestToken,
-    );
-  }
-
-  async function refreshRecordsAfterAction(
-    knowledgeAt: number,
-    month: string,
-    day: string | null,
-    key: string,
-    requestToken: number,
-  ) {
-    try {
-      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
-        knowledgeAt,
-        month,
-        day,
-        limit: 50,
-      }));
-      if (!page) return;
-      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
-      recordPageRecords = page.records;
-      recordPageNextCursor = page.nextCursor;
-      loadedMonthDataKey = key;
-      publishMonthPageRecords();
-      scheduleCandidatePageLoad(knowledgeAt, month, `${knowledgeAt}:${month}`);
-    } catch (error) {
-      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
-        pageError = error instanceof Error ? error.message : String(error);
-    } finally {
-      if (requestToken === monthDataRequestToken) recordPageLoading = false;
-    }
-  }
 
   function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
     return {
@@ -879,8 +503,7 @@
   }
 
   function chooseMonth(month: string) {
-    selectedMonth = month;
-    selectedDay = null;
+    spendingSession.chooseMonth(month);
   }
 
   function selectChartPeriod(key: string) {
@@ -889,256 +512,51 @@
       chartMode = "day";
       return;
     }
-    selectedDay = selectedDay === key ? null : key;
+    spendingSession.chooseDay(selectedDay === key ? null : key);
   }
 
   function selectChartPeriodFromControl(key: string) {
     if (chartMode === "day") {
-      selectedDay = key || null;
+      spendingSession.chooseDay(key || null);
       return;
     }
     if (key) selectChartPeriod(key);
   }
 
-  async function confirmCandidate(candidateId: string) {
-    await decideCandidate(candidateId, "confirmCandidate");
+  function confirmCandidate(candidateId: string) {
+    return spendingSession.confirmCandidate(candidateId);
   }
 
-  async function denyCandidate(candidateId: string) {
-    await decideCandidate(candidateId, "denyCandidate");
+  function denyCandidate(candidateId: string) {
+    return spendingSession.denyCandidate(candidateId);
   }
-
-  async function decideCandidate(candidateId: string, action: "confirmCandidate" | "denyCandidate") {
-    cancelPendingRecordRefresh();
-    busyAction = `${action}:${candidateId}`;
-    actionError = "";
-    try {
-      const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
-      const recordsByKey = candidateRecordsByKeyFor(report);
-      const invoiceRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null : null;
-      const paymentRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null : null;
-      if (report.summary) {
-        if (!candidate || !invoiceRecord?.invoice || !paymentRecord?.transaction)
-          throw new Error($t.purchaseSpending.pairingSelectionUnavailable);
-        const result = await window.octopusBeak.spending.applyPageAction({
-          action: action === "confirmCandidate" ? "confirm" : "deny",
-          kind: "candidate",
-          candidateId,
-          invoiceIdentityId: invoiceRecord.invoice.invoiceId,
-          transactionIdentityId: paymentRecord.transaction.transactionId,
-          dataVersion: report.knowledgeAt,
-        });
-        acceptCompactPageAction(result);
-        selectedMonth = activeMonth;
-        return;
-      }
-      const context = candidate && invoiceRecord && paymentRecord
-        ? spendingPairingReportContext(report, invoiceRecord, paymentRecord, candidateId) : null;
-      const request = candidate && context ? {
-        kind: "candidate" as const, candidateId,
-        invoiceIdentityId: invoiceRecord!.invoice!.invoiceId,
-        transactionIdentityId: paymentRecord!.transaction!.transactionId,
-        dataVersion: report.knowledgeAt,
-        totalsByCurrency: report.totalsByCurrency,
-        pairingReportContext: context,
-      } : { kind: "candidate" as const, candidateId };
-      const next = action === "confirmCandidate"
-        ? await window.octopusBeak.spending.confirmCandidate(request)
-        : await window.octopusBeak.spending.denyCandidate(request);
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
-    }
-  }
-
 
   function openPairing(record: PurchaseRecord) {
-    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
-    recordRefreshTimer = null;
-    pairingInvoice = record;
-    pairingDataVersion = report.knowledgeAt;
-    selectedPaymentId = "";
-    pairingFeedback = "";
-    validatedSelectedCandidate = null;
-    paymentVisibleCount = initialPairingCandidateCount;
-    pairingCandidates = null;
-    pairingCandidateTotal = 0;
-    pairingNextOffset = null;
-    pairingCandidatesLoading = true;
-    const requestToken = ++pairingRequestToken;
-    actionError = "";
-    void cancelPendingCandidatePage().then(() => {
-      if (requestToken === pairingRequestToken && pairingInvoice?.invoice?.invoiceId === record.invoice?.invoiceId)
-        void loadPairingCandidates(record, requestToken);
-    });
+    spendingSession.openPairing(record);
   }
 
-  function closePairing(reloadMonthCandidates = true) {
-    pairingRequestToken += 1;
-    pairingInvoice = null;
-    pairingDataVersion = null;
-    selectedPaymentId = "";
-    pairingFeedback = "";
-    validatedSelectedCandidate = null;
-    pairingCandidates = null;
-    pairingCandidateTotal = 0;
-    pairingNextOffset = null;
-    pairingCandidatesLoading = false;
-    if (busyAction === null) flushRecordRefreshAfterAction();
-    if (reloadMonthCandidates && report.summary && activeMonth)
-      scheduleCandidatePageLoad(report.knowledgeAt, activeMonth, candidatePageMonthKey);
+  function closePairing() {
+    spendingSession.closePairing();
   }
 
-  async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
-    const invoiceIdentityId = record.invoice?.invoiceId;
-    if (!invoiceIdentityId) return;
-    const expectedDataVersion = (pendingReport ?? report).knowledgeAt;
-    const selectedAtRequest = selectedPaymentId;
-    try {
-      const result = await window.octopusBeak.spending.rankPairingCandidates({
-        invoiceIdentityId,
-        dataVersion: expectedDataVersion,
-        selectedTransactionId: selectedAtRequest || undefined,
-        limit: initialPairingCandidateCount,
-      });
-      if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
-      if (result.dataVersion !== expectedDataVersion || result.dataVersion !== (pendingReport ?? report).knowledgeAt)
-        throw new Error($t.purchaseSpending.pairingDataChanged);
-      pairingCandidates = result.candidates;
-      pairingCandidateTotal = result.totalCandidateCount;
-      pairingNextOffset = result.nextOffset;
-      validatedSelectedCandidate = result.selectedCandidate ?? null;
-      if (selectedAtRequest && selectedAtRequest === selectedPaymentId && !result.selectedCandidate) {
-        selectedPaymentId = "";
-        pairingFeedback = $t.purchaseSpending.pairingSelectionUnavailable;
-      }
-    } catch (error) {
-      if (requestToken !== pairingRequestToken) return;
-      pairingCandidates = [];
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
-    }
+  function showMoreCandidates() {
+    return spendingSession.showMoreCandidates();
   }
 
-  async function showMorePayments() {
-    const nextVisibleCount = paymentVisibleCount + 10;
-    if (
-      pairingInvoice?.invoice &&
-      pairingNextOffset !== null &&
-      nextVisibleCount > (pairingCandidates?.length ?? 0)
-    ) {
-      const requestToken = pairingRequestToken;
-      const invoiceIdentityId = pairingInvoice.invoice.invoiceId;
-      const expectedDataVersion = (pendingReport ?? report).knowledgeAt;
-      pairingCandidatesLoading = true;
-      try {
-        const result = await window.octopusBeak.spending.rankPairingCandidates({
-          invoiceIdentityId,
-          dataVersion: expectedDataVersion,
-          offset: pairingNextOffset,
-          limit: 50,
-        });
-        if (
-          requestToken !== pairingRequestToken ||
-          pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId
-        ) return;
-        if (result.dataVersion !== expectedDataVersion || result.dataVersion !== (pendingReport ?? report).knowledgeAt) {
-          pairingCandidates = null;
-          pairingCandidateTotal = 0;
-          pairingNextOffset = null;
-          paymentVisibleCount = initialPairingCandidateCount;
-          pairingCandidatesLoading = true;
-          const restartToken = ++pairingRequestToken;
-          void loadPairingCandidates(pairingInvoice, restartToken);
-          return;
-        }
-        pairingCandidates = Object.freeze([...(pairingCandidates ?? []), ...result.candidates]);
-        pairingCandidateTotal = result.totalCandidateCount;
-        pairingNextOffset = result.nextOffset;
-      } catch (error) {
-        actionError = error instanceof Error ? error.message : String(error);
-      } finally {
-        if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
-      }
-    }
-    paymentVisibleCount = Math.min(nextVisibleCount, pairingCandidateTotal);
+  function showMorePayments() {
+    return spendingSession.showMorePayments();
   }
 
-  async function confirmDirectPair() {
-    const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
-    if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading || pendingReport) return;
-    cancelPendingRecordRefresh();
-    busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-    actionError = "";
-    try {
-      if (report.summary) {
-        const result = await window.octopusBeak.spending.applyPageAction({
-          action: "confirm",
-          kind: "direct",
-          invoiceIdentityId,
-          transactionIdentityId: selectedPaymentId,
-          dataVersion: report.knowledgeAt,
-        });
-        closePairing(false);
-        acceptCompactPageAction(result);
-        return;
-      }
-      const paymentRecord = report.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === selectedPaymentId);
-      const pairCandidate = report.candidates.find((candidate) =>
-        candidateRecord(candidate.candidateId, "invoice")?.invoice?.invoiceId === invoiceIdentityId &&
-        candidateRecord(candidate.candidateId, "transaction")?.transaction?.transactionId === selectedPaymentId);
-      const context = pairingInvoice && paymentRecord ? spendingPairingReportContext(report, pairingInvoice, paymentRecord, pairCandidate?.candidateId) : undefined;
-      const next = await window.octopusBeak.spending.confirmCandidate({
-        kind: "direct",
-        invoiceIdentityId,
-        transactionIdentityId: selectedPaymentId,
-        dataVersion: report.knowledgeAt,
-        totalsByCurrency: report.totalsByCurrency,
-        pairingReportContext: context,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      closePairing();
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
-    }
+  function loadMoreRecords() {
+    return spendingSession.loadMoreRecords();
   }
 
-  async function revokeLink(record: PurchaseRecord) {
-    if (!record.link) return;
-    cancelPendingRecordRefresh();
-    const action = `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`;
-    busyAction = action;
-    actionError = "";
-    try {
-      if (report.summary) {
-        const result = await window.octopusBeak.spending.applyPageAction({
-          action: "revoke",
-          kind: "revoke",
-          invoiceIdentityId: record.link.invoiceId,
-          transactionIdentityId: record.link.transactionId,
-          dataVersion: report.knowledgeAt,
-        });
-        acceptCompactPageAction(result);
-        selectedMonth = activeMonth;
-        return;
-      }
-      const next = await window.octopusBeak.spending.revokeLink({
-        invoiceId: record.link.invoiceId,
-        transactionId: record.link.transactionId,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
-    }
+  function confirmDirectPair() {
+    return spendingSession.confirmDirectPair();
+  }
+
+  function revokeLink(record: PurchaseRecord) {
+    return spendingSession.revokeLink(record);
   }
 
   function itemCategory(item: PurchaseRecord["items"][number]) {
@@ -1180,11 +598,11 @@
       </span>
     </section>
 
-    {#if recordPageLoading || pendingReport}
+    {#if recordPageLoading || isUpdating}
       <p role="status" data-spending-updating>{$t.common.loading}</p>
     {/if}
-    {#if actionError || pageError}
-      <section class="card purchase-action-error" role="alert">{actionError || pageError}</section>
+    {#if actionErrorText || pageError}
+      <section class="card purchase-action-error" role="alert">{actionErrorText || pageError}</section>
     {/if}
 
     <div class="purchase-analysis-grid">
@@ -1240,8 +658,8 @@
             <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : $t.purchaseSpending.recentMonths}</p>
           </div>
           <div class="chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
-            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$t.purchaseSpending.daily}</button>
-            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$t.purchaseSpending.monthly}</button>
+            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.daily}</button>
+            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.monthly}</button>
           </div>
         </div>
         {#if chartReady}
@@ -1309,13 +727,13 @@
                 <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · {transactionRecord ? amountText(transactionRecord.amount) : "--"}</span>
               </div>
               <div class="candidate-actions">
-                <button type="button" class="button primary" disabled={busyAction !== null || pendingReport !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
-                <button type="button" class="button secondary" disabled={busyAction !== null || pendingReport !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
+                <button type="button" class="button primary" disabled={busyAction !== null || isUpdating} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
+                <button type="button" class="button secondary" disabled={busyAction !== null || isUpdating} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
               </div>
             </article>
           {/each}
           {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > candidateVisibleCount : listView.visible.length > candidateVisibleCount}
-            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => report.summary ? void showMoreCandidates() : candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$t.purchaseSpending.showMore}</button>
+            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => void showMoreCandidates()}>{$t.purchaseSpending.showMore}</button>
           {/if}
         </div>
       </section>
@@ -1334,7 +752,7 @@
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
         <div><h2>{$t.purchaseSpending.purchases}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : $t.purchaseSpending.allRecords} · {$t.purchaseSpending.recordsCount(periodRecordCount)}</p></div>
-        {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$t.purchaseSpending.showFullMonth}</button>{/if}
+        {#if selectedDay}<button type="button" class="button secondary" onclick={() => spendingSession.chooseDay(null)}>{$t.purchaseSpending.showFullMonth}</button>{/if}
       </div>
       <div class="purchase-record-list">
         {#each detailsRecordGroups as group (group.date)}
@@ -1363,11 +781,11 @@
                 </details>
               {/if}
               {#if record.basis === "invoice" && record.invoice}
-                <button type="button" class="button secondary pair-button" disabled={busyAction !== null || pendingReport !== null} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
+                <button type="button" class="button secondary pair-button" disabled={busyAction !== null || isUpdating} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
               {/if}
               {#if record.link}
                 <details class="source-details" data-source-details><summary>{$t.purchaseSpending.sourceAndMatchEvidence}</summary><div>{$t.purchaseSpending.matchEvent}: {record.link.eventId} · {$t.purchaseSpending.knowledge}: {record.link.evidenceKnowledgeSequence} · {$t.purchaseSpending.origin}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
-                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null || pendingReport !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
+                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null || isUpdating} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
               {/if}
               {#if record.refund}<span class="refund-note">{$t.purchaseSpending.refundPeriod} · {record.refund.provenanceReference}</span>{/if}
             </div>
@@ -1377,7 +795,7 @@
           </section>
         {:else}<div class="purchase-empty"><strong>{$t.purchaseSpending.noPurchases}</strong><span>{$t.purchaseSpending.chooseOtherPeriod}</span></div>{/each}
       </div>
-      {#if recordPageNextCursor}
+      {#if hasMoreRecords}
         <button type="button" class="button secondary" disabled={recordPageLoading} data-load-more-records onclick={() => void loadMoreRecords()}>
           {recordPageLoading ? $t.common.loading : $t.purchaseSpending.showMore}
         </button>
@@ -1393,7 +811,7 @@
             <button type="button" class="button secondary" onclick={() => closePairing()}>{$t.common.close}</button>
           </div>
           <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
-          {#if pairingFeedback}<p class="panel-meta pairing-feedback" role="status">{pairingFeedback}</p>{/if}
+          {#if pairingFeedbackText}<p class="panel-meta pairing-feedback" role="status">{pairingFeedbackText}</p>{/if}
           <div class="pairing-invoice-summary">
             <strong>{recordLabel(pairingInvoice)}</strong>
             <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
@@ -1405,7 +823,7 @@
             {:else}
               {#each visibleEligiblePayments as payment (payment.purchaseId)}
                 <label class="payment-option">
-                  <input type="radio" name="spending-payment" value={payment.transactionId} bind:group={selectedPaymentId} onchange={() => pairingFeedback = ""} />
+                  <input type="radio" name="spending-payment" value={payment.transactionId} checked={selectedPaymentId === payment.transactionId} onchange={() => spendingSession.selectPayment(payment.transactionId)} />
                   <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
                 </label>
               {:else}
@@ -1429,12 +847,12 @@
           {#if busyAction !== null}
             <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.savingPair}</span>
           {/if}
-          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null || Boolean(pendingReport)} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
+          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null || isUpdating} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
     {/if}
 
-    {#if fallbackCanonical.availability === "unavailable"}
+    {#if canonical.availability === "unavailable"}
       <p class="panel-meta purchase-canonical-note">{$t.purchaseSpending.missingCanonical}</p>
     {/if}
   </div>
