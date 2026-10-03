@@ -16,12 +16,12 @@ import {
   isEsunCompleteGrid,
   parseEsunCurrentCreditCardUsedCreditHtml,
   esunCurrentUsedCreditFromSummaryResponse,
+  ESUN_CREDIT_CARD_IDENTITY_EPOCH,
   esunCreditCurrentSnapshotCapture,
   rowsFromTimelineResponse,
   issuerSummaryFromBillResponse,
 } from "./esun-credit-card-statements.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
 } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
@@ -217,7 +217,7 @@ assert.deepEqual(
 );
 assert.equal(
   identity.identityEpochKey,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
+  ESUN_CREDIT_CARD_IDENTITY_EPOCH,
 );
 assert.notEqual(
   identity.sourceConnectionKey,

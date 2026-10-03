@@ -38,28 +38,39 @@ test("MAX USDT trade cash is admitted under its controlled investment route", ()
   assert.doesNotThrow(() => validatePGliteCanonicalFinancialFact(
     investmentFact("USDT", "maicoin/investment/canonical-v1"),
     "maicoin/investment/canonical-v1",
+    "maicoin/investment/canonical-v1",
   ));
   assert.throws(() => validatePGliteCanonicalFinancialFact(
     investmentFact("USDT", "yuanta-fund/investment/canonical-v1"),
+    "yuanta-fund/investment/canonical-v1",
     "yuanta-fund/investment/canonical-v1",
   ));
   assert.throws(() => validatePGliteCanonicalFinancialFact(
     investmentFact("USDT", "maicoin/investment/canonical-v1"),
     "yuanta-fund/investment/canonical-v1",
+    "maicoin/investment/canonical-v1",
   ));
+  assert.throws(() => validatePGliteCanonicalFinancialFact(
+    {
+      ...investmentFact("TWD", "maicoin/investment/canonical-v1"),
+      semanticRuleVersion: "yuanta-fund/investment/canonical-v1",
+    },
+    "maicoin/investment/canonical-v1",
+    "maicoin/investment/canonical-v1",
+  ), /rule combination is not admitted/u);
 });
 
 function sourceEvidence(overrides: Partial<PGliteCanonicalSourceEvidence> = {}): PGliteCanonicalSourceEvidence {
-  const routeKey = "synthetic/domestic-deposit/v8";
+  const routeKey = "cathay/domestic-deposit/v1";
   return {
     captureId: "occurrence-group-validation",
-    integrationNamespace: "synthetic",
+    integrationNamespace: "cathay",
     sourceConnectionKey: token("a"),
     identityEpoch: token("b"),
     stream: "domestic-deposit",
     recordKind: "source-record",
     routeKey,
-    contractVersion: "synthetic-v8",
+    contractVersion: "v1",
     subjectDigest: token("c"),
     observedAt: "2026-09-30T00:00:00.000Z",
     scope: {
@@ -68,7 +79,7 @@ function sourceEvidence(overrides: Partial<PGliteCanonicalSourceEvidence> = {}):
       kind: "bounded-range",
       completeness: "complete-range",
       completenessBasis: "full-bounded-range",
-      ruleVersion: "synthetic-completeness-v1",
+      ruleVersion: "cathay/domestic-deposit/v1",
       sourceAccountKey: "source-account",
     },
     pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 0, terminal: true, metadata: {} }],
@@ -79,12 +90,25 @@ function sourceEvidence(overrides: Partial<PGliteCanonicalSourceEvidence> = {}):
 
 test("occurrence group coverage follows the registered source route mode", () => {
   assert.doesNotThrow(() => validatePGliteCanonicalSourceEvidence(sourceEvidence()));
+  assert.throws(
+    () => validatePGliteCanonicalSourceEvidence(sourceEvidence({
+      routeKey: "esun/credit-card/human-attested-v3",
+      integrationNamespace: "esun",
+      stream: "credit-card",
+      contractVersion: "esun/credit-card/human-attested-v3",
+    })),
+    /not registered/u,
+  );
 
   const required = sourceEvidence({
     integrationNamespace: "fubon",
     routeKey: "fubon/domestic-deposit/human-attested-v1",
     contractVersion: "human-attested-v1",
     stream: "domestic-deposit",
+    scope: {
+      ...sourceEvidence().scope,
+      ruleVersion: "fubon/domestic-deposit/human-attested-v1",
+    },
   });
   assert.throws(
     () => validatePGliteCanonicalSourceEvidence(required),
@@ -103,10 +127,6 @@ test("occurrence group coverage follows the registered source route mode", () =>
   assert.doesNotThrow(() => validatePGliteCanonicalSourceEvidence(coveredRequired));
 
   const unsupported = sourceEvidence({
-    integrationNamespace: "synthetic-bank",
-    stream: "checking",
-    routeKey: "synthetic-bank/deposit/posted-v1",
-    contractVersion: "posted-v1",
     occurrenceGroupCoverage: coveredRequired.occurrenceGroupCoverage,
   });
   assert.throws(
@@ -122,6 +142,10 @@ test("investment transaction routes require history groups but admit balance-onl
     contractVersion: "yuanta-fund/investment/canonical-v1",
     stream: "investment",
     recordKind: "investment-transactions",
+    scope: {
+      ...sourceEvidence().scope,
+      ruleVersion: "yuanta-fund/investment/canonical-v1",
+    },
   });
   assert.throws(
     () => validatePGliteCanonicalSourceEvidence(yuantaFund),
@@ -171,11 +195,18 @@ test("grouped source records require exact complete coverage and contiguous slot
     },
   });
   const base = sourceEvidence({
+    integrationNamespace: "fubon",
+    routeKey: "fubon/domestic-deposit/human-attested-v1",
+    contractVersion: "human-attested-v1",
+    scope: {
+      ...sourceEvidence().scope,
+      ruleVersion: "fubon/domestic-deposit/human-attested-v1",
+    },
     occurrenceGroupCoverage: [{
       scopeKey,
       startDate: "2026-01-01",
       endDate: "2026-01-31",
-      contractVersion: "synthetic-v8",
+      contractVersion: "human-attested-v1",
     }],
     pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 2, terminal: true, metadata: {} }],
     records: [validRecord(1, "h"), validRecord(2, "i")],
@@ -264,22 +295,35 @@ test("card queried-bucket routes require one unique complete inventory per scope
 });
 
 
-test("ungrouped observations remain admitted but orphan bucket provenance is rejected", () => {
+test("required-group routes admit point-in-time observations but reject orphan bucket provenance", () => {
   const record = {
     occurrenceKey: token("h"), collisionKey: token("i"), providerKey: token("j"),
     contentHash: token("k"), compact: { description: "synthetic observation" },
   };
   const base = sourceEvidence({
+    integrationNamespace: "fubon",
+    routeKey: "fubon/domestic-deposit/human-attested-v1",
+    contractVersion: "human-attested-v1",
+    scope: {
+      ...sourceEvidence().scope,
+      startDate: "20260110",
+      endDate: "20260110",
+      kind: "point-in-time",
+      completeness: "single-page",
+      ruleVersion: "fubon/domestic-deposit/human-attested-v1",
+    },
     pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: {} }],
     records: [record],
   });
   assert.doesNotThrow(() => validatePGliteCanonicalSourceEvidence(base));
-  for (const occurrenceGroupCoverage of [undefined, [{
-    scopeKey: token("d"), startDate: "2026-01-01", endDate: "2026-01-31", contractVersion: "synthetic-v8",
-  }]]) {
-    assert.throws(() => validatePGliteCanonicalSourceEvidence({
-      ...base, occurrenceGroupCoverage,
-      records: [{ ...record, occurrenceGroupBucketKey: "unbilled" }],
-    }), /coverage evidence|Only grouped source records/u);
-  }
+  assert.throws(() => validatePGliteCanonicalSourceEvidence({
+    ...base,
+    records: [{ ...record, occurrenceGroupBucketKey: "unbilled" }],
+  }), /Occurrence group records require complete coverage evidence/u);
+  assert.throws(() => validatePGliteCanonicalSourceEvidence({
+    ...base,
+    occurrenceGroupCoverage: [{
+      scopeKey: token("d"), startDate: "2026-01-01", endDate: "2026-01-31", contractVersion: "human-attested-v1",
+    }],
+  }), /Occurrence group coverage requires a complete bounded source range/u);
 });

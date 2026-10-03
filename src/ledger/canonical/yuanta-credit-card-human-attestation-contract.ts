@@ -10,11 +10,6 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   return Object.freeze(value);
 };
 
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE =
-  "yuanta/credit-card/human-attested-v1" as const;
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_VERSION =
-  "yuanta/credit-card/human-attested-v1" as const;
-
 /**
  * This is a user-confirmed source authority, not a provider identity claim.
  * Yuanta exposes masked card values and no stable transaction identifiers in
@@ -22,19 +17,23 @@ export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_VERSION =
  * from the encrypted credential scope by the workflow and is never a card
  * number or a presentation label.
  */
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
-  attestationId: "yuanta-credit-card-human-attested-v1",
-  evidenceVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_VERSION,
-  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE =
+  "yuanta/credit-card/human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION =
+  "yuanta/credit-card/human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
+  attestationId: "yuanta-credit-card-human-attested-v2",
+  evidenceVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION,
+  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
   status: "active",
-  attestedAt: "2026-08-26T00:00:00.000+08:00",
+  attestedAt: "2026-08-27T00:00:00.000+08:00",
   attestedBy: "user-confirmed-yuanta-credit-card-portfolio",
   provenance: {
     kind: "human-attestation",
     sourceCaptureFingerprint:
-      "sha256:K7W0Lh8wT8mM3FqkKx8tR4zD4e5p7vJ2nB1sC6aQ9xE",
+      "sha256:yuanta-credit-card-live-card-projection-and-history-detail-settled-summary-evidence-v2",
     source:
-      "Yuanta redacted six billed-month plus unbilled terminal capture",
+      "Yuanta redacted six billed-month plus unbilled terminal capture with issuer-settled summaries",
   },
   authority: "human-attested-primary-cardholder-portfolio",
   accountType: "credit",
@@ -46,51 +45,19 @@ export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
   semantics: {
     accountIdentity:
       "yuanta-source-connection-identity-epoch-credential-account-fingerprint",
-    cards: "last-four-card-instruments-under-attested-portfolio",
+    cards:
+      "card-instruments-by-managed-secret-hmac-of-first-six-plus-last-four-projection",
     posting: "posted-date-required",
     billing: "billed-or-unbilled-independent-of-posting",
     transactionIdentity:
       "immutable-normalized-content-tuple-plus-contiguous-exact-duplicate-ordinal",
     occurrenceOrdering:
-      "complete-six-month-plus-unbilled-source-order-human-attested-not-provider-guaranteed",
-    statements: "billed-month-settled-summary-only",
+      "complete-six-month-plus-unbilled-deterministic-source-order-human-attested-not-provider-guaranteed",
+    statements:
+      "issuer-settled-history-detail-close-due-total-minimum-with-period-and-prior-close-derived-cycle-start",
     relations: "explicit-source-linkage-only",
     completeness: "six-billed-months-plus-unbilled-terminal-no-pager",
     withdrawal: "never-infer-from-missing-card-or-row",
-  },
-  revokedAt: null,
-  revocationReason: null,
-} as const);
-
-/**
- * v2 is a new authority route because settled statement summaries and the
- * first-six/last-four instrument projection are materially stronger semantics
- * than the historical v1 capture.  v1 remains immutable for historical
- * captures and is intentionally not silently reinterpreted as v2.
- */
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE =
-  "yuanta/credit-card/human-attested-v2" as const;
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION =
-  "yuanta/credit-card/human-attested-v2" as const;
-export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
-  ...YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  attestationId: "yuanta-credit-card-human-attested-v2",
-  evidenceVersion: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION,
-  authorityRoute: YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
-  attestedAt: "2026-08-27T00:00:00.000+08:00",
-  provenance: {
-    kind: "human-attestation",
-    sourceCaptureFingerprint:
-      "sha256:yuanta-credit-card-live-card-projection-and-history-detail-settled-summary-evidence-v2",
-    source:
-      "Yuanta redacted six billed-month plus unbilled terminal capture with issuer-settled summaries",
-  },
-  semantics: {
-    ...YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics,
-    cards:
-      "card-instruments-by-managed-secret-hmac-of-first-six-plus-last-four-projection",
-    statements:
-      "issuer-settled-history-detail-close-due-total-minimum-with-period-and-prior-close-derived-cycle-start",
     settledSummaryPeriodAuthority:
       "history-detail.table.rwdTable[0].row[0].cell[0].period-label-to-row[1].cell[0].same-column-value-exact-human-attested-a",
     settledSummaryPeriodFormat:
@@ -117,19 +84,10 @@ export const YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
       "v2-complete-capture-supersedes-v1-current-view-only-history-retains-both",
     settledSummaryDiagnosticPage:
       "creditcardsummary-optional-non-authoritative-and-must-not-block",
-    occurrenceOrdering:
-      "complete-six-month-plus-unbilled-deterministic-source-order-human-attested-not-provider-guaranteed",
   },
+  revokedAt: null,
+  revocationReason: null,
 } as const);
-
-export type YuantaCreditCardHumanAttestedV1Manifest = Omit<
-  typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
 
 export type YuantaCreditCardHumanAttestedV2Manifest = Omit<
   typeof YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
@@ -150,55 +108,6 @@ export type YuantaCreditCardHumanAttestationEvent = {
   manifestFingerprint: `sha256:${string}`;
   sequence: number;
 };
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: YuantaCreditCardHumanAttestedV1Manifest =
-  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(currentManifest);
-
-function manifestFingerprint(): `sha256:${string}` {
-  return YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.provenance
-    .sourceCaptureFingerprint as `sha256:${string}`;
-}
-
-export function assertYuantaCreditCardHumanAttestedV1Manifest(
-  manifest: YuantaCreditCardHumanAttestedV1Manifest,
-): void {
-  if (
-    manifest !== currentManifest ||
-    !VALIDATED_MANIFESTS.has(manifest) ||
-    manifest.attestationId !==
-      YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
-    manifest.evidenceVersion !==
-      YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion ||
-    manifest.authorityRoute !==
-      YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute ||
-    manifest.providerGuaranteed !== false ||
-    manifest.occurrenceProviderGuaranteed !== false
-  )
-    throw new Error(
-      "Yuanta credit-card attestation manifest does not match the immutable contract.",
-    );
-}
-
-export function getYuantaCreditCardHumanAttestedV1Manifest(): YuantaCreditCardHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
-export function isYuantaCreditCardHumanAttestedV1Manifest(
-  value: unknown,
-): value is YuantaCreditCardHumanAttestedV1Manifest {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
-  );
-}
-
-export function isYuantaCreditCardHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
 
 /** The workflow may only pass an opaque, non-card account attestation key. */
 export function isYuantaCreditCardHumanAttestedAccountKey(
@@ -235,8 +144,10 @@ function manifestFingerprintV2(
     .digest("base64url")}`;
 }
 
-export function yuantaCreditCardHumanAttestedV2ManifestFingerprint(): `sha256:${string}` {
-  return manifestFingerprintV2();
+export function yuantaCreditCardHumanAttestedV2ManifestFingerprint(
+  manifest: YuantaCreditCardHumanAttestedV2Manifest = currentV2Manifest,
+): `sha256:${string}` {
+  return manifestFingerprintV2(manifest);
 }
 
 export function assertYuantaCreditCardHumanAttestedV2Manifest(
@@ -273,26 +184,6 @@ export function isYuantaCreditCardHumanAttestedV2Manifest(
 
 export function isYuantaCreditCardHumanAttestedV2Active(): boolean {
   return currentV2Manifest.status === "active";
-}
-
-
-export function yuantaCreditCardHumanAttestedV1ManifestFingerprint(): `sha256:${string}` {
-  return manifestFingerprint();
-}
-
-export function setYuantaCreditCardHumanAttestedV1Status(
-  status: "active" | "revoked",
-  at: string | null,
-  reason: string | null,
-): YuantaCreditCardHumanAttestedV1Manifest {
-  currentManifest = deepFreeze({
-    ...currentManifest,
-    status,
-    revokedAt: status === "revoked" ? at : null,
-    revocationReason: status === "revoked" ? reason : null,
-  });
-  VALIDATED_MANIFESTS.add(currentManifest);
-  return currentManifest;
 }
 
 export function setYuantaCreditCardHumanAttestedV2Status(

@@ -25,20 +25,20 @@ function fact(sourceOccurrenceKey: string, sourceSequence: string) {
     currency: "TWD",
     direction: "inflow" as const,
     postingStatus: "posted" as const,
-    postingOrigin: "synthetic_origin",
-    postingBasis: "synthetic_basis",
-    postingRuleVersion: "synthetic-v1",
+    postingOrigin: "provider_booked_history",
+    postingBasis: "query-status-success-with-accounting-date",
+    postingRuleVersion: "cathay/domestic-deposit/v1",
     description: "test source",
     economicStatus: "normal" as const,
     administrativeState: "active" as const,
-    semanticRuleVersion: "synthetic-v1",
+    semanticRuleVersion: "cathay/domestic-deposit/v1",
     effectiveOn: "2026-01-01",
     transactionDateTimeLocal: "2026-01-01T00:00:00+08:00",
     timeZone: "Asia/Taipei" as const,
     timePrecision: "second" as const,
     timeOrigin: "source_reported" as const,
     effectiveTimeBasis: "accounting" as const,
-    effectiveTimeRuleVersion: "synthetic-v1",
+    effectiveTimeRuleVersion: "cathay/domestic-deposit/v1",
     utcInstantUtcUs: 1,
   };
 }
@@ -51,13 +51,13 @@ function request(
   return {
     capture: {
       captureId,
-      integrationNamespace: "synthetic",
+      integrationNamespace: "cathay",
       sourceConnectionKey: token("a"),
       identityEpoch: token("b"),
       stream: "domestic-deposit",
       recordKind: "source-record",
-      routeKey: "synthetic/domestic-deposit/v8",
-      contractVersion: "synthetic-v8",
+      routeKey: "cathay/domestic-deposit/v1",
+      contractVersion: "v1",
       subjectDigest: token("c"),
       observedAt: "2026-08-19T00:00:00.000Z",
       accountNumber: {
@@ -71,7 +71,7 @@ function request(
         endDate: "20260102",
         kind: "point-in-time",
         completeness: "single-page",
-        ruleVersion: "synthetic-completeness-v1",
+        ruleVersion: "cathay/domestic-deposit/v1",
         sourceAccountKey: "synthetic-account-1",
       },
       pages: [{
@@ -150,7 +150,7 @@ test("mixed raw evidence and derived financial facts commit or roll back togethe
     assert.equal(committed.admissions.length, 1);
     assert.equal(committed.financial.length, 1);
     assert.deepEqual(await counts(store), {
-      captures: 2, commits: 2, provenance: 1, records: 2, revisions: 1, transactions: 1,
+      captures: 2, commits: 3, provenance: 1, records: 2, revisions: 1, transactions: 1,
     });
     const invalid = request("derived-bad");
     await assert.rejects(commitPGliteCanonicalMixedCapture(store, {
@@ -160,7 +160,7 @@ test("mixed raw evidence and derived financial facts commit or roll back togethe
       ],
     }));
     assert.deepEqual(await counts(store), {
-      captures: 2, commits: 2, provenance: 1, records: 2, revisions: 1, transactions: 1,
+      captures: 2, commits: 3, provenance: 1, records: 2, revisions: 1, transactions: 1,
     });
   } finally {
     await store.close();
@@ -179,7 +179,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     assert.equal(first.transactions[0]?.revisionCreated, true);
     assert.deepEqual(await counts(store), {
       captures: 1,
-      commits: 1,
+      commits: 2,
       provenance: 1,
       records: 1,
       revisions: 1,
@@ -188,11 +188,11 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     const recurrence = await commitPGliteCanonicalFinancialCapture(store, request("capture-2"), {
       clock: () => 100,
     });
-    assert.equal(recurrence.commitSequence, 2);
+    assert.equal(recurrence.commitSequence, 3);
     assert.equal(recurrence.transactions[0]?.revisionCreated, false);
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 2,
+      commits: 4,
       provenance: 2,
       records: 2,
       revisions: 1,
@@ -202,7 +202,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
       (await store.query<{ recorded_at_utc_us: number | string }>(
         "SELECT recorded_at_utc_us FROM canonical_commits ORDER BY commit_sequence",
       )).rows.map((row) => Number(row.recorded_at_utc_us)),
-      [100, 101],
+      [100, 101, 102, 103],
     );
 
     await assert.rejects(
@@ -253,7 +253,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     );
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 2,
+      commits: 4,
       provenance: 2,
       records: 2,
       revisions: 1,
@@ -273,7 +273,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     );
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 2,
+      commits: 4,
       provenance: 2,
       records: 2,
       revisions: 1,
@@ -317,7 +317,7 @@ test("a non-MAX capture cannot admit USDT by claiming the MAX posting version", 
         currency: "USDT",
         postingRuleVersion: "maicoin/investment/canonical-v1",
       }],
-    }), /Financial currency is not admitted for this source route/u);
+    }), /Financial rule combination is not admitted by this source contract/u);
     assert.deepEqual(await counts(store), {
       captures: 0, commits: 0, provenance: 0, records: 0, revisions: 0, transactions: 0,
     });
@@ -348,6 +348,8 @@ test("the registered MAX route admits a USDT booked financial fact", async () =>
         ...base.transactions[0]!,
         currency: "USDT",
         postingRuleVersion: route,
+        semanticRuleVersion: route,
+        effectiveTimeRuleVersion: route,
       }],
     });
     const row = (await store.query<{ currency: string }>(
@@ -372,8 +374,39 @@ test("financial admission seeds local attestation and rejects a revoked durable 
         integrationNamespace: "ctbc",
         routeKey: authorityRoute,
         contractVersion: "human-attested-v1",
-        scope: { ...original.capture.scope, ruleVersion: authorityRoute },
+        scope: {
+          ...original.capture.scope,
+          endDate: "20260102",
+          kind: "bounded-range",
+          completeness: "complete-range",
+          completenessBasis: "complete-range",
+          ruleVersion: authorityRoute,
+        },
+        records: original.capture.records.map((record) => ({
+          ...record,
+          occurrenceGroup: {
+            scopeKey: token("ctbc-occurrence-scope"),
+            fingerprint: token("ctbc-occurrence-fingerprint"),
+            partitionDate: "2026-01-01",
+            ordinal: 1,
+          },
+        })),
+        occurrenceGroupCoverage: [{
+          scopeKey: token("ctbc-occurrence-scope"),
+          startDate: "2026-01-01",
+          endDate: "2026-01-02",
+          contractVersion: "human-attested-v1",
+        }],
       },
+      transactions: original.transactions.map((fact) => ({
+        ...fact,
+        postingOrigin: "human-attested",
+        postingBasis: "statement-posted-history",
+        postingRuleVersion: authorityRoute,
+        semanticRuleVersion: authorityRoute,
+        effectiveTimeBasis: "accounting",
+        effectiveTimeRuleVersion: authorityRoute,
+      })),
     } satisfies PGliteCanonicalFinancialCommitRequest;
   };
   try {
@@ -413,8 +446,8 @@ test("PGlite canonical financial batches retain one transaction boundary", async
     const results = await commitPGliteCanonicalFinancialBatch(store, {
       commits: [first, second],
     }, { clock: () => 10 });
-    assert.deepEqual(results.map((result) => result.commitSequence), [1, 2]);
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 2 }]);
+    assert.deepEqual(results.map((result) => result.commitSequence), [1, 3]);
+    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
 
     const failedFirst = request("batch-rollback-1", token("p"), token("q"));
     const failedSecond = {
@@ -425,7 +458,7 @@ test("PGlite canonical financial batches retain one transaction boundary", async
       commitPGliteCanonicalFinancialBatch(store, { commits: [failedFirst, failedSecond] }, { clock: () => 10 }),
       (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError && error.reason === "invalid-financial-fact",
     );
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 2 }]);
+    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
 
     const cancelled = new AbortController();
     cancelled.abort();
@@ -433,7 +466,7 @@ test("PGlite canonical financial batches retain one transaction boundary", async
       commitPGliteCanonicalFinancialCapture(store, request("cancelled"), { signal: cancelled.signal }),
       (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError && error.reason === "cancelled",
     );
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 2 }]);
+    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
   } finally {
     await store.close();
   }

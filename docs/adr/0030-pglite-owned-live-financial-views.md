@@ -113,3 +113,13 @@ completion varied with the 100,000-row fixture, while their shell/navigation
 feedback remained within the 200 ms contract.
 These figures are local acceptance evidence for ADR 0028, not a cross-machine
 guarantee.
+
+## Source-contract admission baseline
+
+[ADR 0035](./0035-source-contract-catalog-and-rule-admission.md) establishes a
+clean PGlite baseline for the installed source-contract catalog and its exact
+financial rule combinations. This scoped change has no data migration or
+compatibility reader: a database created against an older baseline fails
+closed, and the user must explicitly rebuild it before the new baseline can
+open. App startup never deletes or resets an older database. Other schema
+changes continue to follow the reviewed migration policy above.
