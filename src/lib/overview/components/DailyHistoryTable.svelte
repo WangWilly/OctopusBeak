@@ -14,32 +14,23 @@
   type Column = { key: SortKey; label: string; right: boolean };
 
   export let rows: DailyHistoryRowDto[] = [];
-  export let compact = false;
   export let netLabel = "";
   export let currency = "TWD";
   export let paginate = false;
   export let pageSize = 10;
-  export let visibleRows = 4;
 
   let sortKey: SortKey = "date";
   let sortDirection: SortDirection = "desc";
   let page = 0;
   let columns: Column[] = [];
 
-  $: columns = compact
-    ? [
-        { key: "date", label: $t.historyTable.date, right: false },
-        { key: "netAssets", label: netLabel || $t.historyTable.netAssets, right: true },
-        { key: "assets", label: $t.historyTable.assets, right: true },
-        { key: "liabilities", label: $t.historyTable.liabilities, right: true },
-      ]
-    : [
-        { key: "date", label: $t.historyTable.date, right: false },
-        { key: "netAssets", label: netLabel || $t.historyTable.netAssets, right: true },
-        { key: "dailyChange", label: $t.historyTable.dailyChange, right: true },
-        { key: "assets", label: $t.historyTable.assets, right: true },
-        { key: "liabilities", label: $t.historyTable.liabilities, right: true },
-      ];
+  $: columns = [
+    { key: "date", label: $t.historyTable.date, right: false },
+    { key: "netAssets", label: netLabel || $t.historyTable.netAssets, right: true },
+    { key: "dailyChange", label: $t.historyTable.dailyChange, right: true },
+    { key: "assets", label: $t.historyTable.assets, right: true },
+    { key: "liabilities", label: $t.historyTable.liabilities, right: true },
+  ];
   $: hasMissingRates = rows.some((row) => row.exchangeRateMissing === true);
   $: if (hasMissingRates && sortKey !== "date") {
     sortKey = "date";
@@ -107,9 +98,9 @@
 
 </script>
 
-<div class="history-table-shell" class:scroll-window={!paginate} style={`--history-visible-rows:${visibleRows}`}>
+<div class="history-table-shell">
   <div class="table-wrap history-table-wrap">
-    <table class="table history-table" class:compact>
+    <table class="table history-table">
       <thead>
         <tr>
           {#each columns as column}
@@ -161,25 +152,19 @@
               {/if}
             </td>
             <td class="right money">{formatCurrencyAmount(row, "netAssets")}</td>
-            {#if !compact}
-              {@const dailyChange = currencyValue(row.dailyChange)}
-              <td
-                class="right money"
-                class:amount-positive={!row.exchangeRateMissing && dailyChange > 0}
-                class:amount-negative={!row.exchangeRateMissing && dailyChange < 0}
-              >
-                {formatCurrencyAmount(row, "dailyChange", true)}
-              </td>
-              <td class="right money">{formatCurrencyAmount(row, "assets")}</td>
-              <td class="right money">{formatCurrencyAmount(row, "liabilities")}</td>
-            {:else}
-              <td class="right money">{formatCurrencyAmount(row, "assets")}</td>
-              <td class="right money">{formatCurrencyAmount(row, "liabilities")}</td>
-            {/if}
+            <td
+              class="right money"
+              class:amount-positive={!row.exchangeRateMissing && currencyValue(row.dailyChange) > 0}
+              class:amount-negative={!row.exchangeRateMissing && currencyValue(row.dailyChange) < 0}
+            >
+              {formatCurrencyAmount(row, "dailyChange", true)}
+            </td>
+            <td class="right money">{formatCurrencyAmount(row, "assets")}</td>
+            <td class="right money">{formatCurrencyAmount(row, "liabilities")}</td>
           </tr>
         {:else}
           <tr>
-            <td colspan={compact ? 4 : 5}>{$t.historyTable.noSnapshotHistory}</td>
+            <td colspan="5">{$t.historyTable.noSnapshotHistory}</td>
           </tr>
         {/each}
       </tbody>
@@ -210,7 +195,6 @@
 <style>
   .history-table-shell {
     --history-header-height: 56px;
-    --history-row-height: 72px;
   }
 
   .history-table-wrap {
@@ -223,41 +207,14 @@
     table-layout: fixed;
   }
 
-  .history-table.compact {
-    min-width: 680px;
-  }
-
-  .scroll-window .history-table thead {
-    display: table;
-    width: 100%;
-    table-layout: fixed;
-    background: var(--surface);
-  }
-
   .history-table th {
     height: var(--history-header-height);
     padding: 0;
     background: var(--surface);
   }
 
-  .scroll-window .history-table tbody {
-    display: block;
-    max-height: calc((var(--history-row-height) + 1px) * var(--history-visible-rows));
-    overflow-y: auto;
-  }
-
-  .scroll-window .history-table tbody tr {
-    display: table;
-    width: 100%;
-    table-layout: fixed;
-  }
-
   .history-table td {
     white-space: nowrap;
-  }
-
-  .scroll-window .history-table td {
-    height: var(--history-row-height);
   }
 
   .missing-rate-row td {

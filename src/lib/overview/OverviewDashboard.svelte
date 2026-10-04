@@ -233,9 +233,6 @@
         {:else}
           <div class="pad">
             <SnapshotSparkline rows={chartHistory.slice(-30)} currency={activeSnapshotCurrency} label={$t.overview.snapshotHistory} diverging />
-            {#key activeSnapshotCurrency}
-              <DailyHistoryTable rows={chartHistory.slice(-30)} compact netLabel={$t.overview.sideLabel} currency={activeSnapshotCurrency} />
-            {/key}
           </div>
         {/if}
       </article>
