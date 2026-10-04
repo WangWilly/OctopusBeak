@@ -219,7 +219,7 @@ Both layers share one token base. `site/assets/site.css` re-declares `src/app.cs
 A slate-and-paper palette with one restrained blue. The status colors are desaturated so they never shout.
 
 ### Primary
-- **Ledger Blue** (`ledger-blue`): the single accent. Used for chart lines and areas, the selected row's inset bar, secondary buttons, and accent-tinted hover borders. Kept at low chroma (0.08) so it reads as ink, not as a brand splash.
+- **Ledger Blue** (`ledger-blue`): the single accent. Used for chart lines and areas, allocation and exposure row bars, the selected row's inset bar, secondary buttons, and accent-tinted hover borders. Kept at low chroma (0.08) so it reads as ink, not as a brand splash.
 - **Ledger Blue Wash** (`ledger-blue-wash`): the background behind secondary buttons and accent-tinted surfaces.
 
 ### Neutral
@@ -342,7 +342,7 @@ A frosted pill group (12px radius, 4px inset) of transparent 28px segments in mu
 - **Focus:** the border turns ink and gains a 3px Paper Soft halo.
 
 ### Tables
-Uppercase muted headers at 11px. Cells have 16px by 20px padding and a top hairline. Numeric columns are right-aligned. A selected or hovered account row takes a 5% Ledger Blue tint and a 3px inset accent bar on the left edge.
+Uppercase muted headers at 11px. Cells have 16px by 20px padding and a top hairline. Numeric columns are right-aligned. A selected or hovered account row takes a 5% Ledger Blue tint and a 3px inset accent bar on the left edge. Sortable numeric headers put the sort mark on the inside so the label's right edge lines up with the figures. Below 1180px the institution column is hidden, since every account label already starts with it. A row repeats its "updated" date only when it differs from the table's latest date, which is shown once under the table.
 
 ### Navigation
 The sidebar is a Slate Ink spine with white text at 62% opacity, 44px links at weight 560, and 14px text. Hover and active states are white text on a white 8% fill with a white 10% hairline. The bottom of the sidebar shows a net-worth status figure. The collapse animates at 220ms with `cubic-bezier(0.2, 0.8, 0.2, 1)`.
