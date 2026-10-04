@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { beforeEach, afterEach } from "node:test";
 import {
   startAutomationTask, cancelAutomationTask, forceTerminateAutomationTask,
   shutdownAppAutomationWorkflows, hasActiveAutomationTask,
@@ -7,6 +10,25 @@ import {
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
+import { writeAutomationSettingsFile } from "./config-files.ts";
+
+let previousDirectory: string;
+let settingsDirectory: string;
+beforeEach(async () => {
+  previousDirectory = process.cwd();
+  settingsDirectory = await mkdtemp(join(tmpdir(), "automation-queue-settings-"));
+  process.chdir(settingsDirectory);
+  writeAutomationSettingsFile("settings.json", {
+    LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
+    LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES: "credit_card",
+    LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "deposit",
+    LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts",
+  });
+});
+afterEach(async () => {
+  process.chdir(previousDirectory);
+  await rm(settingsDirectory, { recursive: true, force: true });
+});
 
 function harness() {
   const runs = new Map<string, AutomationTaskRun>();

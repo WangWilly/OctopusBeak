@@ -22,6 +22,12 @@ assert.deepEqual(routeRegistration, {
   integrationNamespace: "linebank",
   stream: "domestic-deposit",
   contractVersions: ["linebank/current-deposit-balance-v1"],
+  ruleCombinations: [{
+    contractVersion: "linebank/current-deposit-balance-v1",
+    postingRuleVersion: null,
+    semanticRuleVersion: null,
+    effectiveTimeRuleVersion: "linebank/current-deposit-balance-v1",
+  }],
 });
 
 const response = {
