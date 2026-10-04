@@ -9,7 +9,10 @@ import type {
 } from "../../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "./source-text.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
-import { interruptedProductCollectionFromOutput } from "./product-collection.ts";
+import {
+  COLLECTION_PRODUCT_TYPE_IDS,
+  interruptedProductCollectionFromOutput,
+} from "./product-collection.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -20,6 +23,22 @@ export type WorkflowStage =
   | "commit"
   | "finalization";
 
+export type WorkflowProgressActivity = "query" | "download";
+export const WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS = [
+  ...COLLECTION_PRODUCT_TYPE_IDS,
+  "foreign",
+  "investment",
+] as const;
+export type WorkflowProgressStatementType = typeof WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS[number];
+export type WorkflowProgressMetadata = Readonly<{
+  activity?: WorkflowProgressActivity;
+  statementType?: WorkflowProgressStatementType;
+}>;
+export type WorkflowEventCounts = Readonly<{
+  completed?: number;
+  total?: number;
+} & WorkflowProgressMetadata>;
+
 export type WorkflowRunEvent = Readonly<{
   runId: string;
   stage: WorkflowStage;
@@ -27,6 +46,9 @@ export type WorkflowRunEvent = Readonly<{
   occurredAt: string;
   completed?: number;
   total?: number;
+  activity?: WorkflowProgressActivity;
+  statementType?: WorkflowProgressStatementType;
+  retrying?: boolean;
 }>;
 
 export interface WorkflowEventPort {
@@ -61,7 +83,11 @@ export type WorkflowContext = Readonly<{
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
-  event(stage: WorkflowStage, code: string, counts?: Readonly<{ completed?: number; total?: number }>): Promise<void>;
+  event(
+    stage: WorkflowStage,
+    code: string,
+    counts?: WorkflowEventCounts,
+  ): Promise<void>;
 }>;
 
 export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
@@ -120,6 +146,8 @@ export function createWorkflowExecutor(
           occurredAt: ports.now(),
           ...(counts?.completed === undefined ? {} : { completed: counts.completed }),
           ...(counts?.total === undefined ? {} : { total: counts.total }),
+          ...(counts?.activity === undefined ? {} : { activity: counts.activity }),
+          ...(counts?.statementType === undefined ? {} : { statementType: counts.statementType }),
         });
       };
       const event: WorkflowContext["event"] = async (stage, code, counts) => {

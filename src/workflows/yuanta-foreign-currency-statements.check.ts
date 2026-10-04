@@ -1570,6 +1570,7 @@ const typedForeignOriginalCwd = process.cwd();
 process.chdir(typedForeignTemp);
 try {
   const deferred: PGliteWorkflowRunItem[] = [];
+  const collectionActivities: string[] = [];
   const result = await runYuantaForeignCurrencyStatements(
     {} as never,
     yuantaForeignCurrencyStatementsInputSchema.parse({
@@ -1581,28 +1582,39 @@ try {
       readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
       selectAccount: async () => undefined,
       readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
-      queryAccountCurrency: async () => undefined,
-      downloadRows: async () => ({
-        rows: [{
-          accountLabel: "外幣綜合存款",
-          accountValue: "00123456789012",
-          queryCurrencyLabel: "全部幣別",
-          queryCurrencyValue: "ALL",
-          values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
-          sortTime: null,
-        }],
-      }),
+      queryAccountCurrency: async () => { collectionActivities.push("query-call"); },
+      downloadRows: async () => {
+        collectionActivities.push("download-call");
+        return {
+          rows: [{
+            accountLabel: "外幣綜合存款",
+            accountValue: "00123456789012",
+            queryCurrencyLabel: "全部幣別",
+            queryCurrencyValue: "ALL",
+            values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
+            sortTime: null,
+          }],
+        };
+      },
       readCurrentBalances: async () => [],
       now: () => "2026-08-24T12:00:00+08:00",
       signal: new AbortController().signal,
       sourceText: strictSourceText,
       collectOnly: true,
       deferredCommitItems: deferred,
+      reportActivity: async (activity: "query" | "download") => {
+        collectionActivities.push(activity);
+      },
     } as never,
   );
   assert.deepEqual(result, { sourceCount: 1, rowCount: 1, itemCount: 1 });
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.product, "foreign-currency-deposit");
+  assert.deepEqual(
+    collectionActivities,
+    ["query", "query-call", "download", "download-call"],
+    "progress must identify FX query and CSV retrieval before each source operation",
+  );
 
   // Exercise the real FX collector through the parent coordinator: a single
   // account can have several currency balances, each requiring its own receipt.

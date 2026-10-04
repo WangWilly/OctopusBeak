@@ -8,6 +8,7 @@ import {
   collectSelectedProducts,
   ProductCollectionFatalError,
   type CollectionProductOutcome,
+  type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.ts";
 import {
   activateControlWithoutPointer,
@@ -179,6 +180,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
     context: WorkflowContext,
     identity: FubonWorkflowIdentity,
     items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
   ) => Promise<FubonDepositWorkflowCollection>;
   collectCreditCard?: (
     page: Page,
@@ -186,6 +188,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
     context: WorkflowContext,
     identity: FubonWorkflowIdentity,
     items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
   ) => Promise<FubonCreditCardWorkflowCollection>;
   collectLoan?: (
     page: Page,
@@ -193,6 +196,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
     context: WorkflowContext,
     identity: FubonWorkflowIdentity,
     items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
   ) => Promise<FubonLoanWorkflowCollection>;
   signOut?: (page: Page) => Promise<void>;
   startSessionKeepAlive?: (page: Page) => () => void;
@@ -246,6 +250,7 @@ async function collectFubonDepositForApp(
   context: WorkflowContext,
   identity: FubonWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonDepositWorkflowCollection> {
   return await runFubonStatements(page, input, {
     sourceConnectionScope: identity.sourceConnectionScope,
@@ -253,6 +258,7 @@ async function collectFubonDepositForApp(
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,
+    reportActivity,
   });
 }
 
@@ -262,6 +268,7 @@ async function collectFubonCreditCardForApp(
   context: WorkflowContext,
   identity: FubonWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonCreditCardWorkflowCollection> {
   const creditCardInput = {
     ...input,
@@ -273,6 +280,7 @@ async function collectFubonCreditCardForApp(
     sourceText: context.text,
     signal: context.signal,
     observedAt: context.now,
+    reportActivity,
   });
 }
 
@@ -282,6 +290,7 @@ async function collectFubonLoanForApp(
   context: WorkflowContext,
   identity: FubonWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonLoanWorkflowCollection> {
   return await runFubonLoanStatements(page, input, {
     sourceConnectionScope: identity.sourceConnectionScope,
@@ -290,6 +299,7 @@ async function collectFubonLoanForApp(
     sourceText: context.text,
     signal: context.signal,
     observedAt: context.now,
+    reportActivity,
   });
 }
 
@@ -348,12 +358,12 @@ export async function runFubonAllStatementsWorkflow(
         selectedIds,
         signal: context.signal,
         assertSession: () => assertSession(page),
-        collect: async (typeId, stagedItems) => {
+        collect: async (typeId, stagedItems, reportActivity) => {
           const result = typeId === "deposit"
-            ? await collectDeposit(page, parsed.data.statements, context, identity, stagedItems)
+            ? await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity)
             : typeId === "credit_card"
-              ? await collectCreditCard(page, parsed.data.creditCards, context, identity, stagedItems)
-              : await collectLoan(page, parsed.data.loans, context, identity, stagedItems);
+              ? await collectCreditCard(page, parsed.data.creditCards, context, identity, stagedItems, reportActivity)
+              : await collectLoan(page, parsed.data.loans, context, identity, stagedItems, reportActivity);
           for (const item of stagedItems) {
             if (item.provider !== "fubon" || !item.itemKey || !item.command)
               throw new ProductCollectionFatalError("workflow-failed");

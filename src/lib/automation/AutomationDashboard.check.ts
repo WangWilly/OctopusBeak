@@ -172,6 +172,19 @@ assert.match(source, /<ProgressiveBlock label="list"[^>]*showSpinner=\{false\}/)
 assert.doesNotMatch(source, /<ProgressiveBlock label="summary"[^>]*showSpinner=\{false\}/);
 assert.match(source, /role="progressbar"/);
 assert.match(source, /aria-valuenow=\{task\.progressPercent/);
+assert.match(source, /aria-valuetext=\{progressLabel\(task, \$t\)\}/);
+assert.match(source, /function workflowProgressStageLabel\(/);
+assert.match(source, /progressQueryingProduct\(product\)/);
+assert.match(source, /progressDownloadingProduct\(product\)/);
+assert.match(source, /task\.workflowProgress\?\.params\?\.retrying === true/);
+assert.match(source, /function shouldShowWorkflowProgress\(/);
+assert.match(source, /task\.status === "waiting_for_human"/);
+assert.match(source, /class:working=\{workflowProgressIsWorking\(task\)\}/);
+assert.match(
+  source,
+  /if \(task\.status === "waiting_for_human"\) \{\s*return task\.isActive\s*&& !shouldOfferManualVerification\(task\.credentialGroupId, verificationActorsByCredentialGroup\);/,
+);
+assert.match(source, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.progress-bar\.working::after/);
 assert.match(
   source,
   /\$: activeTasks = automation\.tasks\.filter\(\(task\) => task\.isActive\);/,

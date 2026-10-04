@@ -2513,6 +2513,7 @@ export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
   now?: () => string;
   signal?: AbortSignal;
   sourceText?: SourceTextPort;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   collectOnly?: true;
   deferredCommitItems?: PGliteWorkflowRunItem[];
 }>;
@@ -2552,8 +2553,10 @@ export async function runYuantaForeignCurrencyStatements(
     for (const currency of currencies) {
       checkCancelled();
       const maskedAccount = maskAccountLabel(account.label);
+      await overrides.reportActivity?.("query");
       await query(page, input, account, currency);
       checkCancelled();
+      await overrides.reportActivity?.("download");
       const download = await downloadRows(
         page,
         maskedAccount,

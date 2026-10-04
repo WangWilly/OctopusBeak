@@ -124,6 +124,7 @@ type FubonCreditCardRunOverrides = {
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   observedAt?: () => string;
   /** Injects a completely collected source snapshot for focused admission checks. */
   readSourceSnapshot?: (
@@ -2402,13 +2403,16 @@ export async function runFubonCreditCardStatements(
 ): Promise<FubonCreditCardWorkflowCollection> {
   let sourceSnapshot: FubonCreditCardSourceSnapshot;
   if (overrides.readSourceSnapshot) {
+    await overrides.reportActivity?.("query");
     sourceSnapshot = await overrides.readSourceSnapshot(page, input);
   } else {
     let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
     try {
+      await overrides.reportActivity?.("query");
       const currentCreditRead = await readFubonCurrentUsedCredit(page, overrides.sourceText);
       currentUsedCredit = currentCreditRead.snapshot;
     } catch {}
+    await overrides.reportActivity?.("query");
     await openStatementDetailsPage(page);
 
     const statementRows: CsvRow[] = [];
@@ -2430,6 +2434,7 @@ export async function runFubonCreditCardStatements(
 
       const periodLabel = await readStatementPeriodLabel(scope);
       statementPeriods.push(periodLabel);
+      await overrides.reportActivity?.("query");
       const statementResult = await readStatementRows(
         scope,
         periodLabel,
@@ -2441,6 +2446,7 @@ export async function runFubonCreditCardStatements(
       gridStates.push(await gridState(scope));
     }
 
+    await overrides.reportActivity?.("query");
     const unbilledScope = await openUnbilledDetailsPage(page);
     const unbilledRows = await readUnbilledRows(
       unbilledScope,

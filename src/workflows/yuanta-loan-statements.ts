@@ -90,6 +90,7 @@ export type YuantaLoanStatementsRunDependencies = Partial<Readonly<{
   sourceConnectionScope: string;
   sourceConnectionKey: string;
   observedAt: () => string;
+  reportActivity: (activity: "query" | "download") => Promise<void>;
   /** Test/live-adapter seams; production uses the provider page functions. */
   openLoanStatementPage: (page: Page) => Promise<unknown>;
   readLoanAccountOptions: typeof readYuantaLoanAccountOptions;
@@ -1124,8 +1125,10 @@ export async function runYuantaLoanStatements(
   for (const account of accounts) {
     signal.throwIfAborted();
     const maskedAccount = maskAccountLabel(account.label);
+    await overrides.reportActivity?.("query");
     await queryAccount(page, input, account);
     signal.throwIfAborted();
+    await overrides.reportActivity?.("query");
     const parsed = await traversePages(page, maskedAccount, {
       sourceText,
       signal,

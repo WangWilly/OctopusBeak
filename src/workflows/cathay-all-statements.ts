@@ -6,6 +6,7 @@ import {
   ProductCollectionFatalError,
   type ProductCollectionRunSummary,
   type ProductCollectionSummary,
+  type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.js";
 import {
   type CathayGmailOtpPort,
@@ -314,6 +315,7 @@ export async function runCathayAllProviderWorkflow(
       typeId: "domestic" | "foreign_currency",
       domestic: CathayDomesticFinancialCollection | undefined,
       foreign: CathayForeignFinancialCollection | undefined,
+      reportActivity: ProductCollectionActivityReporter,
     ): Promise<readonly PGliteWorkflowRunItem[]> => {
       const label = typeId === "foreign_currency" ? "foreign" : "domestic";
       await context.event(
@@ -321,6 +323,7 @@ export async function runCathayAllProviderWorkflow(
         `${label}-current-balance-started`,
       );
       let items: readonly PGliteWorkflowRunItem[];
+      await reportActivity("query");
       if (dependencies.collectCurrentBalanceItems) {
         items = await withCathayAbort(
           dependencies.collectCurrentBalanceItems(
@@ -428,8 +431,9 @@ export async function runCathayAllProviderWorkflow(
         session = checkedSession;
       },
       event: (stage, code, counts) => context.event(stage, code, counts),
-      collect: async (typeId, stagedItems): Promise<ProductCollectionSummary> => {
+      collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
         if (typeId === "domestic") {
+          await reportActivity("query");
           const domestic = await withCathayAbort(
             (
               dependencies.collectDomestic ??
@@ -479,6 +483,7 @@ export async function runCathayAllProviderWorkflow(
             "domestic",
             domestic,
             undefined,
+            reportActivity,
           );
           stagedItems.push(...balances);
           statementCaptureCount += domestic.captureCount;
@@ -491,6 +496,7 @@ export async function runCathayAllProviderWorkflow(
           };
         }
 
+        await reportActivity("query");
         const foreign = await withCathayAbort(
           (
             dependencies.collectForeign ??
@@ -544,6 +550,7 @@ export async function runCathayAllProviderWorkflow(
           "foreign_currency",
           undefined,
           foreign,
+          reportActivity,
         );
         stagedItems.push(...balances);
         statementCaptureCount += foreign.captures.length;

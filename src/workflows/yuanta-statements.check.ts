@@ -559,6 +559,7 @@ const originalCwd = process.cwd();
 process.chdir(typedOutputDir);
 try {
   const deferredItems: PGliteWorkflowRunItem[] = [];
+  const collectionActivities: string[] = [];
   let preparedDateRange: string | null = null;
   const typedResult = await runYuantaStatements(
     {} as never,
@@ -572,8 +573,12 @@ try {
         assert.equal(preparedDateRange, "one_month", "the selected range must be prepared before account collection");
         return [workflowAccount];
       },
-      queryAccount: async () => undefined,
-      downloadStatementRows: async () => workflowDownload,
+      queryAccount: async () => { collectionActivities.push("query-call"); },
+      downloadStatementRows: async () => {
+        collectionActivities.push("download-call");
+        return workflowDownload;
+      },
+      reportActivity: async (activity) => { collectionActivities.push(activity); },
       sourceConnectionScope: stableConnectionScope,
       sourceConnectionKey: stableConnectionKey,
       readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
@@ -586,6 +591,11 @@ try {
   assert.equal(preparedDateRange, "one_month", "the typed collector must apply the selected range before reading source data");
   assert.equal(typedResult.sourceCount, 1);
   assert.equal(typedResult.rowCount, 1);
+  assert.deepEqual(
+    collectionActivities,
+    ["query", "query-call", "download", "download-call"],
+    "progress must identify query and CSV retrieval before each source operation",
+  );
   assert.equal(deferredItems.length, typedResult.itemCount);
   assert.ok(deferredItems.every((item) => item.provider === "yuanta" && item.command));
   assert.deepEqual(await readdir(typedOutputDir), []);

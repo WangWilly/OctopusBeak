@@ -7,7 +7,11 @@ import { SourceAccessChallengeError, SourceUnavailableError } from "./source-acc
 import { SourceTextIntegrityError } from "./source-text.ts";
 import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
 import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
-import type { WorkflowStage } from "./workflow-executor.ts";
+import type {
+  WorkflowEventCounts,
+  WorkflowProgressActivity,
+  WorkflowStage,
+} from "./workflow-executor.ts";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -109,7 +113,12 @@ export type ProductCollectionRunSummary = Readonly<{
 export type ProductCollectionStageEvent = (
   stage: WorkflowStage,
   code: string,
-  counts?: Readonly<{ completed?: number; total?: number }>,
+  counts?: WorkflowEventCounts,
+) => Promise<void>;
+
+/** Provider hook for reporting the start of a real source query or download. */
+export type ProductCollectionActivityReporter = (
+  activity: WorkflowProgressActivity,
 ) => Promise<void>;
 
 /** Explicit evidence classification for a selected product with no records. */
@@ -187,7 +196,11 @@ export type CollectSelectedProductsOptions<
   prepare?: (typeId: TId) => Promise<void>;
   /** Must fail with a ProductCollectionFatalError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
-  collect: (typeId: TId, stagedItems: TItem[]) => Promise<ProductCollectionSummary>;
+  collect: (
+    typeId: TId,
+    stagedItems: TItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<ProductCollectionSummary>;
   /** Called once for each non-empty, fully collected product staging group. */
   commit: (typeId: TId, stagedItems: readonly TItem[]) => Promise<PGliteWorkflowRunResult<unknown>>;
   event?: ProductCollectionStageEvent;
@@ -349,12 +362,20 @@ export async function collectSelectedProducts<
     let sourceCountForProduct = 0;
     let rowsForProduct = 0;
     let productItemCount = 0;
+    const emitProductEvent = (
+      stage: WorkflowStage,
+      code: string,
+      counts?: WorkflowEventCounts,
+    ) => options.event?.(stage, code, { ...counts, statementType: typeId });
 
     try {
       await options.assertSession?.();
       await options.prepare?.(typeId);
-      await options.event?.("collection", `${codePrefix}-collection-started`);
-      const collected = await options.collect(typeId, stagedItems);
+      await emitProductEvent("collection", `${codePrefix}-collection-started`, { activity: "query" });
+      const reportActivity: ProductCollectionActivityReporter = async (activity) => {
+        await emitProductEvent("collection", `${codePrefix}-collection-${activity}-started`, { activity });
+      };
+      const collected = await options.collect(typeId, stagedItems, reportActivity);
       await options.assertSession?.();
 
       if (!isSafeCount(collected.sourceCaptureCount)
@@ -378,7 +399,7 @@ export async function collectSelectedProducts<
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
           completedByType.set(typeId, createOutcome(typeId, "no_data"));
-          await options.event?.("collection", `${codePrefix}-collection-no-data`);
+          await emitProductEvent("collection", `${codePrefix}-collection-no-data`);
           if (signal.aborted) {
             throw new ProductCollectionInterruptedError("cancelled", summarize(
               orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
@@ -388,7 +409,7 @@ export async function collectSelectedProducts<
           completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, {
             errorCode: "source-collection-failed",
           }));
-          await options.event?.("validation", `${codePrefix}-source-validation-rejected`);
+          await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);
         }
         continue;
       }
@@ -396,17 +417,21 @@ export async function collectSelectedProducts<
       itemCount += productItemCount;
       sourceCaptureCount += sourceCountForProduct;
       rowCount += rowsForProduct;
-      await options.event?.("decoding", `${codePrefix}-source-decoding-completed`, {
+      await emitProductEvent("collection", `${codePrefix}-collection-completed`, {
         completed: sourceCountForProduct,
         total: sourceCountForProduct,
       });
-      await options.event?.("validation", `${codePrefix}-source-validation-completed`, {
+      await emitProductEvent("decoding", `${codePrefix}-source-decoding-completed`, {
+        completed: sourceCountForProduct,
+        total: sourceCountForProduct,
+      });
+      await emitProductEvent("validation", `${codePrefix}-source-validation-completed`, {
         completed: productItemCount,
         total: productItemCount,
       });
       let commitResult: PGliteWorkflowRunResult<unknown>;
       try {
-        await options.event?.("commit", `${codePrefix}-canonical-commit-started`, {
+        await emitProductEvent("commit", `${codePrefix}-canonical-commit-started`, {
           completed: 0,
           total: stagedItems.length,
         });
@@ -439,7 +464,7 @@ export async function collectSelectedProducts<
       }
 
       if (hasFatalCommitFailure(commitResult)) {
-        await options.event?.("commit", signal.aborted
+        await emitProductEvent("commit", signal.aborted
           ? `${codePrefix}-canonical-commit-cancelled`
           : `${codePrefix}-canonical-commit-failed`, {
           completed: receiptsForProduct,
@@ -463,7 +488,7 @@ export async function collectSelectedProducts<
         completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
           errorCode: "canonical-commit-failed",
         }));
-        await options.event?.("commit", `${codePrefix}-canonical-commit-failed`, {
+        await emitProductEvent("commit", `${codePrefix}-canonical-commit-failed`, {
           completed: receiptsForProduct,
           total: stagedItems.length,
         });
@@ -471,7 +496,7 @@ export async function collectSelectedProducts<
       }
 
       completedByType.set(typeId, createOutcome(typeId, "success", productItemCount, receiptsForProduct));
-      await options.event?.("commit", `${codePrefix}-canonical-commit-completed`, {
+      await emitProductEvent("commit", `${codePrefix}-canonical-commit-completed`, {
         completed: receiptsForProduct,
         total: stagedItems.length,
       });
@@ -510,11 +535,11 @@ export async function collectSelectedProducts<
 
       if (error instanceof StatementComponentAbsentError && error.disposition) {
         completedByType.set(typeId, createOutcome(typeId, error.disposition));
-        await options.event?.("collection", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
+        await emitProductEvent("collection", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
       } else {
         const errorCode = productFailureCode(error);
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
-        await options.event?.("validation", `${codePrefix}-source-validation-rejected`);
+        await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);
       }
 
       if (options.assertSession && !signal.aborted) {

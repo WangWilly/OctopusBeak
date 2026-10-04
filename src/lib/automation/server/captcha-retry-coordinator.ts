@@ -534,6 +534,7 @@ export async function runCaptchaRetryCampaign(
         attempt: nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
         executionId: randomUUID(),
+        retrying: true,
       };
       continue;
     }

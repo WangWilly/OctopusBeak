@@ -226,6 +226,7 @@ export type FubonStatementsRunDependencies = Readonly<{
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   openTransactionDetailForAccountIndex?: (
     page: Page,
     accountIndex: number,
@@ -2822,6 +2823,7 @@ export async function runFubonStatements(
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
   {
+    await overrides.reportActivity?.("query");
     await openTransactionDetail(page, 0);
     const accounts = await readAccounts(page);
     let sourceCount = 0;
@@ -2834,6 +2836,7 @@ export async function runFubonStatements(
 
       for (const dateRange of input.dateRanges) {
         overrides.signal?.throwIfAborted();
+        await overrides.reportActivity?.("query");
         const statement = await fetchStatement(page, dateRange, account);
         overrides.sourceText.assertIntact(JSON.stringify(statement));
         accountStatements.push(statement);
@@ -2951,6 +2954,7 @@ export async function runFubonStatements(
     // commit boundary. A failure here must not leave statement captures from
     // this run behind.
     if (financialCaptures.length > 0) {
+      await overrides.reportActivity?.("query");
       const authority = financialCaptures[0]!.identity;
       const currentRows = await readCurrent(page, {
         observedAt: new Date().toISOString(),

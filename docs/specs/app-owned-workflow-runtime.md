@@ -2,6 +2,8 @@
 
 This is the production contract for automation and the implementation baseline for new workflows. [ADR 0032](../adr/0032-app-owned-workflow-runtime.md) records the architectural decision. All 13 production task entries currently run through the desktop App's typed execution path. Provider collection code does not start its own production command or choose its own persistence route.
 
+For each task's approximate stage-based progress display, see the [Workflow run progress contract](workflow-run-progress.md).
+
 ## Production boundary
 
 Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. All thirteen production tasks run in App-supervised workers, including exchange rates, MaiCoin, and E-Invoice. Every browser workflow uses the same headless Chromium worker path.
