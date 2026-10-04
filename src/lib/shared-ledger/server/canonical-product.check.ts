@@ -115,3 +115,32 @@ test("canonical product rows retain exact signed transaction and position values
   });
   assert.equal(position?.value, 123456789012345680);
 });
+
+test("canonical products carry daily history only for the accounts they show", () => {
+  const row = (date: string) => ({
+    date,
+    netAssets: [],
+    dailyChange: [],
+    assets: [{ currency: "TWD", value: 1 }],
+    liabilities: [],
+    accountChanges: [],
+    positionCount: 0,
+  });
+  const projection = {
+    availability: "available",
+    accounts: [],
+    positions: [],
+    transactions: [],
+    sourceGaps: [],
+    importedAt: null,
+    knowledgePoint: 1,
+  } as unknown as Parameters<typeof mapCanonicalProduct>[0];
+
+  assert.deepEqual(mapCanonicalProduct(projection, "assets").dailyHistoryByAccount, {});
+  const product = mapCanonicalProduct(projection, "assets", {
+    dailyHistory: [row("2026-09-08")],
+    dailyHistoryByAccount: { "hidden-account": [row("2026-09-08")] },
+  });
+  assert.deepEqual(product.dailyHistoryByAccount, {});
+  assert.deepEqual(product.dailyHistory.map((item) => item.date), ["2026-09-08"]);
+});

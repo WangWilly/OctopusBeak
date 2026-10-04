@@ -28,6 +28,10 @@ export type CanonicalProductDto = CurrentProjectionStateDto & {
 export function mapCanonicalProduct(
   projection: CanonicalOverviewProjection,
   product: "assets" | "liabilities",
+  history: Readonly<{
+    dailyHistory: readonly DailyHistoryRowDto[];
+    dailyHistoryByAccount: Readonly<Record<string, readonly DailyHistoryRowDto[]>>;
+  }> = { dailyHistory: [], dailyHistoryByAccount: {} },
 ): CanonicalProductDto {
   const allAccounts = projection.accounts.map(mapAccount);
   const accounts = allAccounts
@@ -93,8 +97,12 @@ export function mapCanonicalProduct(
     marginAccounts: marginAccounts ?? [],
     positionsByAccount,
     transactionsByAccount,
-    dailyHistoryByAccount: {},
-    dailyHistory: [],
+    dailyHistoryByAccount: Object.fromEntries(
+      Object.entries(history.dailyHistoryByAccount)
+        .filter(([accountId]) => accountIds.has(accountId))
+        .map(([accountId, rows]) => [accountId, rows.map((row) => ({ ...row }))]),
+    ),
+    dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
   };
 }
 

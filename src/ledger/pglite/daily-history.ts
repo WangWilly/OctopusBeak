@@ -128,6 +128,25 @@ export async function readPGliteDailyHistory(
   knowledgePoint: number,
   accounts: readonly CanonicalOverviewAccount[],
 ): Promise<DailyHistoryRowDto[]> {
+  return (await readPGliteDailyHistoryWithAccounts(reader, knowledgePoint, accounts)).dailyHistory;
+}
+
+export type PGliteDailyHistory = Readonly<{
+  dailyHistory: DailyHistoryRowDto[];
+  dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;
+}>;
+
+type AccountHistoryState = { assets: AmountBuckets; liabilities: AmountBuckets; holdings: Set<string> };
+
+/**
+ * The per-account rows hold only that account's own balances and holdings on
+ * the dates it changed; readers carry the latest row forward between dates.
+ */
+export async function readPGliteDailyHistoryWithAccounts(
+  reader: PGliteDailyHistoryReader,
+  knowledgePoint: number,
+  accounts: readonly CanonicalOverviewAccount[],
+): Promise<PGliteDailyHistory> {
   if (!Number.isSafeInteger(knowledgePoint) || knowledgePoint < 0)
     throw new Error("Overview history knowledgePoint must be a non-negative safe integer.");
 
@@ -203,7 +222,7 @@ export async function readPGliteDailyHistory(
     [knowledgePoint],
   );
 
-  if (result.rows.length === 0) return [];
+  if (result.rows.length === 0) return { dailyHistory: [], dailyHistoryByAccount: {} };
 
   const labelByAccount = new Map(accounts.map((account) => [account.id, account.label]));
   const accountOrder = new Map(accounts.map((account, index) => [account.id, index]));
@@ -212,7 +231,21 @@ export async function readPGliteDailyHistory(
   const assets: AmountBuckets = new Map();
   const liabilities: AmountBuckets = new Map();
   const rows: DailyHistoryRowDto[] = [];
+  const accountStates = new Map<string, AccountHistoryState>();
+  const dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]> = {};
   let previousNet: AmountBuckets | null = null;
+  const accountState = (accountId: string): AccountHistoryState => {
+    let state = accountStates.get(accountId);
+    if (!state) {
+      state = { assets: new Map(), liabilities: new Map(), holdings: new Set() };
+      accountStates.set(accountId, state);
+    }
+    return state;
+  };
+  const adjust = (side: "assets" | "liabilities", accountId: string, currency: string, value: ExactAmount | null, sign: 1 | -1) => {
+    adjustBucket(side === "assets" ? assets : liabilities, currency, value, sign);
+    adjustBucket(accountState(accountId)[side], currency, value, sign);
+  };
 
   for (let start = 0; start < result.rows.length;) {
     const date = result.rows[start]!.event_date;
@@ -228,23 +261,24 @@ export async function readPGliteDailyHistory(
           const priorSelected = selectedDepositoryBalance(balanceStates, event.account_id, event.integration_namespace, event.currency);
           balanceStates.set(key, event);
           const nextSelected = selectedDepositoryBalance(balanceStates, event.account_id, event.integration_namespace, event.currency);
-          adjustBucket(assets, event.currency, rowExact(priorSelected), -1);
-          adjustBucket(assets, event.currency, rowExact(nextSelected), 1);
+          adjust("assets", event.account_id, event.currency, rowExact(priorSelected), -1);
+          adjust("assets", event.account_id, event.currency, rowExact(nextSelected), 1);
         } else if (event.account_type === "credit" && event.balance_kind === "credit_used") {
           balanceStates.set(key, event);
-          adjustBucket(liabilities, event.currency, rowExact(previous), -1);
-          adjustBucket(liabilities, event.currency, rowExact(event), 1);
+          adjust("liabilities", event.account_id, event.currency, rowExact(previous), -1);
+          adjust("liabilities", event.account_id, event.currency, rowExact(event), 1);
         } else if (event.account_type === "loan" && ["outstanding_total", "loan_outstanding", "outstanding_principal"].includes(event.balance_kind)) {
           balanceStates.set(key, event);
-          adjustBucket(liabilities, event.currency, rowExact(previous), -1);
-          adjustBucket(liabilities, event.currency, rowExact(event), 1);
+          adjust("liabilities", event.account_id, event.currency, rowExact(previous), -1);
+          adjust("liabilities", event.account_id, event.currency, rowExact(event), 1);
         }
       } else if (event.event_type === "holding" && event.security_id !== null) {
         const key = `${event.account_id}\u0000${event.security_id}`;
         const previous = holdingStates.get(key);
         holdingStates.set(key, event);
-        if (previous?.currency) adjustBucket(assets, previous.currency, rowExact(previous), -1);
-        if (event.currency) adjustBucket(assets, event.currency, rowExact(event), 1);
+        accountState(event.account_id).holdings.add(event.security_id);
+        if (previous?.currency) adjust("assets", event.account_id, previous.currency, rowExact(previous), -1);
+        if (event.currency) adjust("assets", event.account_id, event.currency, rowExact(event), 1);
       }
       end += 1;
     }
@@ -264,9 +298,22 @@ export async function readPGliteDailyHistory(
       accountChanges,
       positionCount: holdingStates.size,
     });
+    for (const accountId of changedAccounts) {
+      const state = accountState(accountId);
+      const label = labelByAccount.get(accountId);
+      (dailyHistoryByAccount[accountId] ??= []).push({
+        date,
+        netAssets: amountLines(netAmounts(state.assets, state.liabilities)),
+        dailyChange: [],
+        assets: amountLines(state.assets),
+        liabilities: amountLines(state.liabilities),
+        accountChanges: label === undefined ? [] : [label],
+        positionCount: state.holdings.size,
+      });
+    }
     previousNet = net;
     start = end;
   }
 
-  return rows;
+  return { dailyHistory: rows, dailyHistoryByAccount };
 }
