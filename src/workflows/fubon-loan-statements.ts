@@ -123,21 +123,9 @@ export type FubonLoanWorkflowCollection = Readonly<{
   noDataEvidence?: boolean;
 }>;
 
-type LoanPeriod =
-  | Readonly<{ mode: "quick"; quickMonths: "1" | "3" | "6" }>
-  | Readonly<{ mode: "custom"; startDate: string; endDate: string }>;
-
 const FUBON_LOAN_MAX_PAGES = 10_000;
 export const FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION =
   "fubon/loan-account-as-repayment-destination/v1" as const;
-
-function fullUnmaskedFubonLoanAccount(value: string): string | null {
-  const source = cleanText(value);
-  if (!source || /[*xX•]/u.test(source)) return null;
-  if (!/^\d[\d\s-]*\d$/u.test(source)) return null;
-  const normalized = source.replace(/[\s-]/gu, "");
-  return /^\d{10,16}$/u.test(normalized) ? normalized : null;
-}
 
 /**
  * The live selector uses an opaque option value while its visible label owns
@@ -1037,19 +1025,6 @@ function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
   return Boolean(
     input.queryItem || (input.queryItems && input.queryItems.length > 0),
   );
-}
-
-function describeLoanPeriod(input: FubonLoanStatementsInput): LoanPeriod {
-  return input.dateRange
-    ? {
-        mode: "custom" as const,
-        startDate: input.dateRange.startDate,
-        endDate: input.dateRange.endDate,
-      }
-    : {
-        mode: "quick" as const,
-        quickMonths: input.quickMonths,
-      };
 }
 
 function formatDate(date: Date): string {

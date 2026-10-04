@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type {
-  CanonicalSourceAccountNumber,
   CanonicalSourceEvidence,
 } from "../canonical/canonical-source-evidence.ts";
 import type {
@@ -191,20 +190,6 @@ function sinopacDigest(
   const hash = createHash("sha256").update(domain);
   for (const value of values) hash.update("\0").update(value);
   return `sha256:${hash.digest("base64url")}`;
-}
-
-function stableSourceJson(value: Record<string, unknown>): string {
-  const canonicalize = (entry: unknown): unknown =>
-    Array.isArray(entry)
-      ? entry.map(canonicalize)
-      : entry !== null && typeof entry === "object"
-        ? Object.fromEntries(
-            Object.entries(entry as Record<string, unknown>)
-              .sort(([left], [right]) => left.localeCompare(right))
-              .map(([key, nested]) => [key, canonicalize(nested)]),
-          )
-        : entry;
-  return JSON.stringify(canonicalize(value));
 }
 
 function normalizedCell(value: unknown): string {

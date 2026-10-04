@@ -40,7 +40,6 @@ import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   type SinopacCurrentDepositBalanceRow,
   type SinopacCurrentDepositResponseMetadata,

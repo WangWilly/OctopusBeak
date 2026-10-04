@@ -81,10 +81,6 @@ function processResultOf(execution: CaptchaRetryExecutionResult) {
   return "result" in execution ? execution.result : null;
 }
 
-function executionIdOf(execution: CaptchaRetryExecutionResult) {
-  return "executionId" in execution ? execution.executionId : null;
-}
-
 function recordCapturedChallenge(
   campaign: CaptchaRetryCampaign,
   executionId: string,

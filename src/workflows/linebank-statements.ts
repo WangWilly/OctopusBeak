@@ -995,12 +995,6 @@ function transactionLinkLocator(page: Page): Locator {
   return page.getByRole("link", { name: "帳戶交易明細查詢" });
 }
 
-function authenticatedMarkerLocator(page: Page): Locator {
-  return page.locator(
-    'a[href="/transaction"]:visible, #account-dropdown:visible',
-  );
-}
-
 async function visibleMatches(locator: Locator): Promise<Locator[]> {
   const count = await locator.count();
   const matches: Locator[] = [];

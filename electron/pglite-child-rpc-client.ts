@@ -8,7 +8,6 @@ import {
 import {
   createPGliteFinancialRpcClient,
   type PGliteFinancialOperation,
-  type PGliteFinancialRegistry,
   type PGliteFinancialRequestOptions,
   type PGliteFinancialRpcClient,
 } from "./pglite-financial-rpc-client.ts";

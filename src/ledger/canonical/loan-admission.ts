@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
-import {
-  assignOccurrenceSlots,
-  canonicalOccurrenceGroupKey,
-} from "./occurrence-groups.ts";
+import "./occurrence-groups.ts";
 import type {
   CanonicalLoanCaptureBuildInput,
   CanonicalLoanIdentityInput,

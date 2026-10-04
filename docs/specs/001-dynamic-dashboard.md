@@ -1,19 +1,21 @@
 # 001 Dynamic Dashboard
 
-Status: Implemented MVP; historical spec retained
+Status: Implemented MVP snapshot; historical
 Date: 2026-06-25
 Last updated: 2026-07-01
 Target repo: `/Users/willywangkaa/.codex/worktrees/1ae6/libretto-playground`
+
+This entire document records the SQLite-backed dashboard MVP as it stood at its last update. Its proposals, flow, implementation details, and commands are historical and are not current operating instructions. The desktop app now uses the worker-owned PGlite database described by [ADR 0030](../adr/0030-pglite-owned-live-financial-views.md), and production workflows follow the [App-owned workflow runtime contract](./app-owned-workflow-runtime.md).
 
 ## Purpose
 
 Replace the legacy static dashboard with live SvelteKit dashboards backed by the existing SQLite ledger.
 
-The MVP matched the legacy static dashboard scope, then split the user-facing app into `/overview`, `/assets`, and `/liabilities`. `/dashboard` now redirects to `/overview`.
+The MVP matched the legacy static dashboard scope, then split the user-facing app into `/overview`, `/assets`, and `/liabilities`. In that snapshot, `/dashboard` redirected to `/overview`.
 
-## Current Flow
+## MVP Flow at Last Update
 
-The current system works like this:
+The MVP snapshot worked like this:
 
 1. `src/workflows/*` downloads bank-provided account statements into `downloads/`.
 2. `src/ledger/import-downloads-csv.ts` parses CSV files and writes typed statement rows into `data/ledger/ledger.sqlite`.
@@ -82,9 +84,9 @@ Read path:
 
 The important rule is that the dashboard does not rebuild a single giant financial domain model. It builds small DTOs for the UI sections that already exist.
 
-## Current Implementation
+## Implementation Snapshot at Last Update
 
-Current routes:
+Routes in that snapshot:
 
 - `/` redirects to `/overview`.
 - `/dashboard` redirects to `/overview`.
@@ -93,7 +95,7 @@ Current routes:
 - `/liabilities` renders credit card, loan, and other liability accounts with transactions and account history.
 - `/automation` runs statement/sync/import tasks and tracks task history.
 
-Current server composition:
+Server composition in that snapshot:
 
 ```text
 src/routes/overview/+page.server.ts

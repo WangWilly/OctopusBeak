@@ -1840,20 +1840,6 @@ function accountIdFor(account: string, fallback: string): string {
   );
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
-}
-
 function depositRows(scope: BrowserScope): Locator {
   return scope.locator("tr").filter({
     has: scope.locator("a.btn_sel").filter({ hasText: "交易明細查詢" }),

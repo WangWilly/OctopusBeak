@@ -6,7 +6,6 @@ import type {
   CanonicalOverviewExpectedSource,
   CanonicalOverviewProjection,
 } from "../../../ledger/canonical/canonical-overview-query.ts";
-import type { SpendingPair } from "../../../ledger/canonical/spending-recognition.ts";
 
 /** Products that may consume the financial query boundary. */
 export type FinancialProduct = "assets" | "overview" | "spending" | "liabilities";

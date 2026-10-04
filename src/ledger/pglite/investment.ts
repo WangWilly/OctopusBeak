@@ -13,7 +13,7 @@ import type {
   PGliteCanonicalBalanceObservationInput,
   PGliteCanonicalFinancialFactInput,
 } from "./source-admission-validation.ts";
-import type { InvestmentCaptureInput, InvestmentTransactionAction } from "../canonical/investment-financial.ts";
+import type { InvestmentCaptureInput } from "../canonical/investment-financial.ts";
 import { assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid } from "../canonical/investment-financial-admission.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
