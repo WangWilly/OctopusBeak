@@ -1503,11 +1503,7 @@ import type {
     const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status);
     return workflowProgressIsWorking(task)
       || (task.isActive && task.status === "waiting_for_human")
-      || (terminal && (
-        task.progressPercent !== null
-        || ["failed", "partial", "cancelled", "interrupted"].includes(task.status)
-        || isOnboardingProgressTask(task)
-      ));
+      || (terminal && (task.status !== "completed" || isOnboardingProgressTask(task)));
   }
 
   function shouldShowProgressStatus(task: AutomationTaskRow) {
@@ -1721,12 +1717,15 @@ import type {
     {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
-    <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
+    {@const multiStage = listTaskStages.length > 1}
+    <section class="card workflow-card" class:single-stage={!multiStage} aria-label={$t.automation.taskQueue}>
       {#each listTaskStages as stage, stageIndex}
         <section class="stage-section">
           <div class="stage-head">
             <div class="stage-head-content">
-              <span class:muted={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              {#if multiStage}
+                <span class:muted={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              {/if}
               <span class="stage-copy">
                 <span class="stage-title-row">
                   <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
@@ -1744,31 +1743,33 @@ import type {
                 >
                   {$t.automation.syncAll}
                 </button>
-                <button
-                  class="stage-toggle-action"
-                  type="button"
-                  aria-label={stageOpen[stage.id] ? $t.automation.collapseStage(stage.title) : $t.automation.expandStage(stage.title)}
-                  aria-expanded={stageOpen[stage.id]}
-                  aria-controls={`${stage.id}-stage-body`}
-                  onclick={() => toggleStage(stage.id)}
-                >
-                  <span class="stage-caret" aria-hidden="true"></span>
-                </button>
+                {#if multiStage}
+                  <button
+                    class="stage-toggle-action"
+                    type="button"
+                    aria-label={stageOpen[stage.id] ? $t.automation.collapseStage(stage.title) : $t.automation.expandStage(stage.title)}
+                    aria-expanded={stageOpen[stage.id]}
+                    aria-controls={`${stage.id}-stage-body`}
+                    onclick={() => toggleStage(stage.id)}
+                  >
+                    <span class="stage-caret" aria-hidden="true"></span>
+                  </button>
+                {/if}
               </div>
             </div>
           </div>
 
-          {#if stageOpen[stage.id]}
+          {#if !multiStage || stageOpen[stage.id]}
           <div class="stage-body" id={`${stage.id}-stage-body`} transition:disclosureSlide>
             <div class="table-reveal">
               <div class="table-wrap">
               <table class="table automation-table">
           <colgroup>
-            <col style="width: 32%" />
-            <col style="width: 14%" />
             <col style="width: 22%" />
-            <col style="width: 12%" />
-            <col style="width: 20%" />
+            <col style="width: 16%" />
+            <col style="width: 17%" />
+            <col style="width: 16%" />
+            <col style="width: 29%" />
           </colgroup>
           <thead>
             <tr>
@@ -1787,18 +1788,16 @@ import type {
                     <strong>{taskLabel(task, $t)}</strong>
                   </div>
                 </td>
-                <td>
-                  <span class={`credential-state ${taskCredentialsReady(task, listAutomation) ? "good" : anyCredentialReadFailed(task, listAutomation) ? "bad" : ""}`}>
-                    {#if allCredentialsLoading(task, listAutomation)}
-                      <span class="spinner" aria-label={$t.common.loading}></span>
-                    {:else if anyCredentialReadFailed(task, listAutomation)}
-                      {$locale === "zh-TW" ? "讀取失敗" : "Read failed"}
-                    {:else if taskCredentialsReady(task, listAutomation)}
-                      {$t.common.ready}
-                    {:else}
-                      {$t.common.missing}
-                    {/if}
-                  </span>
+                <td class="credential-state">
+                  {#if allCredentialsLoading(task, listAutomation)}
+                    <span class="spinner" aria-label={$t.common.loading}></span>
+                  {:else if anyCredentialReadFailed(task, listAutomation)}
+                    <span class="chip bad">{$t.automation.credentialReadFailed}</span>
+                  {:else if taskCredentialsReady(task, listAutomation)}
+                    <span class="chip good">{$t.common.ready}</span>
+                  {:else}
+                    <span class="chip warn">{$t.common.missing}</span>
+                  {/if}
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
@@ -2548,7 +2547,6 @@ import type {
     justify-content: space-between;
     gap: 28px;
     padding: 24px 30px;
-    border-radius: 8px;
   }
 
   .sync-hero.active {
@@ -2667,9 +2665,9 @@ import type {
 
   .sync-hero h2 {
     margin: 0;
-    font-size: clamp(25px, 2vw, 31px);
+    font-size: 22px;
     line-height: 1.25;
-    letter-spacing: -0.035em;
+    letter-spacing: -0.01em;
   }
 
   .running-kicker {
@@ -2784,9 +2782,9 @@ import type {
   }
 
   .active-task-jump.sync-task {
-    border-color: color-mix(in oklch, #158276 34%, var(--border));
-    background: color-mix(in oklch, #158276 8%, var(--surface));
-    color: #11756a;
+    border-color: color-mix(in oklch, var(--success) 34%, var(--border));
+    background: color-mix(in oklch, var(--success) 8%, var(--surface));
+    color: var(--success);
   }
 
   .active-task-jump.failed {
@@ -2801,13 +2799,6 @@ import type {
     gap: 10px;
   }
 
-  .stage-sync-action,
-  .sync-modal-actions .button.primary {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: white;
-  }
-
   .hero-action {
     min-width: 132px;
     min-height: 48px;
@@ -2816,7 +2807,14 @@ import type {
 
   .workflow-card {
     overflow: hidden;
-    border-radius: 8px;
+  }
+
+  .workflow-card.single-stage .stage-head-content {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .workflow-card.single-stage .stage-body {
+    padding-left: 20px;
   }
 
   .stage-section {
@@ -2944,7 +2942,7 @@ import type {
 
   .automation-table {
     table-layout: fixed;
-    min-width: 760px;
+    min-width: 860px;
   }
 
   .automation-table th,
@@ -2960,7 +2958,7 @@ import type {
   }
 
   .automation-table tr.task-active td {
-    background: color-mix(in oklch, var(--warn) 2%, white);
+    background: color-mix(in oklch, var(--accent) 5%, var(--surface));
   }
 
   .task-row {
@@ -2968,7 +2966,7 @@ import type {
   }
 
   .automation-table tr.task-attention td {
-    background: color-mix(in oklch, var(--danger) 2%, white);
+    background: color-mix(in oklch, var(--danger) 6%, var(--surface));
   }
 
   .task-name {
@@ -2989,17 +2987,8 @@ import type {
     white-space: nowrap;
   }
 
-  .credential-state {
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  .credential-state.good {
-    color: var(--success);
-  }
-
-  .credential-state.bad {
-    color: var(--danger);
+  .automation-table td > .chip {
+    white-space: nowrap;
   }
 
   .progress-cell {
@@ -3101,9 +3090,10 @@ import type {
 
   .task-actions {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    gap: 10px;
-    flex-wrap: wrap;
+    gap: 4px;
+    flex-wrap: nowrap;
   }
 
   .fixed-action {
@@ -3124,6 +3114,7 @@ import type {
     background: transparent;
     color: var(--accent);
     font-size: 12px;
+    white-space: nowrap;
   }
 
   .task-control.active-details {
@@ -3134,16 +3125,15 @@ import type {
 
   .task-control.primary,
   .task-control.danger {
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .task-control.primary {
-    color: var(--accent);
+    padding: 0 12px;
+    border: 1px solid var(--fg);
+    background: var(--fg);
+    color: white;
   }
 
   .task-control.danger {
+    border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
+    background: color-mix(in oklch, var(--danger) 9%, white);
     color: var(--danger);
   }
 
@@ -4364,6 +4354,10 @@ import type {
 
     .stage-body {
       padding: 0 var(--space-4) var(--space-4);
+    }
+
+    .workflow-card.single-stage .stage-body {
+      padding-left: var(--space-4);
     }
 
     .stage-number {

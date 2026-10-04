@@ -248,7 +248,7 @@ assert.doesNotMatch(source, /run\.errorMessage/);
 assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
 assert.match(
   source,
-  /<colgroup>[\s\S]*width: 32%[\s\S]*width: 14%[\s\S]*width: 22%[\s\S]*width: 12%[\s\S]*width: 20%[\s\S]*<\/colgroup>/,
+  /<colgroup>[\s\S]*width: 22%[\s\S]*width: 16%[\s\S]*width: 17%[\s\S]*width: 16%[\s\S]*width: 29%[\s\S]*<\/colgroup>/,
 );
 assert.match(source, /\.automation-table\s*\{\s*table-layout: fixed;/);
 assert.match(source, /colspan="5"/);

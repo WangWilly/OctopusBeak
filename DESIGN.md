@@ -368,8 +368,8 @@ The sync sheet slides in from the right edge below the top bar. It is 455px wide
 
 ### Staged Workflow (Automation)
 Automation progress reads as numbered stages inside one card, separated by hairlines.
-- **Stage head:** at least 82px tall with 10px by 20px padding and a Paper Soft fill on hover. It contains a 36px **stage number** (a Ledger Blue disc with white monospace numerals at weight 760 and a faint accent shadow, or a Graphite Muted disc with no shadow when the stage is inactive), the title, and a 10px chevron caret that rotates over 180ms.
-- **Sync hero:** an 8px-radius banner at least 116px tall with 24px by 30px padding. While a run is active it turns accent-tinted (an accent-wash fill at 24% over white, with a border at 28% accent) and shows a **running kicker** (Ledger Blue text at 14px and weight 780, next to a spinner).
+- **Stage head:** at least 82px tall with 10px by 20px padding and a Paper Soft fill on hover. It contains a 36px **stage number** (a Ledger Blue disc with white monospace numerals at weight 760 and a faint accent shadow, or a Graphite Muted disc with no shadow when the stage is inactive), the title, and a 10px chevron caret that rotates over 180ms. The number and caret appear only when there is more than one stage; a single stage shows its title and sync action, and its table is not indented.
+- **Sync hero:** a card-radius banner at least 116px tall with 24px by 30px padding and a 22px heading at -0.01em. While a run is active it turns accent-tinted (an accent-wash fill at 24% over white, with a border at 28% accent) and shows a **running kicker** (Ledger Blue text at 14px and weight 780, next to a spinner).
 - **Progress bar:** a 6px pill track in Paper Soft with a Ledger Blue fill. In tables it sits in a progress cell at least 96px wide alongside a short line of copy.
 - **Event and product rows:** rows at least 42px tall, separated by hairlines, with metadata aligned right. Product status text is Ledger Blue at weight 650 and turns Overdrawn Red when `data-status="failed"`.
 
