@@ -1,4 +1,6 @@
 <script lang="ts">
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionForNamespace, institutionForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Landmark, Search, X } from "@lucide/svelte";
@@ -1637,6 +1639,8 @@ import type {
                 >
                   {#if task.status === "waiting_for_human"}
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
+                  {:else if institutionForTask(task.id)}
+                    <InstitutionLogo institution={institutionForTask(task.id)} size={22} />
                   {:else if task.kind === "crawler"}
                     <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else}
@@ -1789,6 +1793,7 @@ import type {
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || (task.status === "waiting_for_human" && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup))} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
+                    <span class="task-logo"><InstitutionLogo institution={institutionForTask(task.id)} /></span>
                     <strong>{taskLabel(task, $t)}</strong>
                   </div>
                 </td>
@@ -2120,7 +2125,10 @@ import type {
                 aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                 onclick={() => chooseCredentialGroup(group.id)}
               >
-                <strong>{credentialGroupName(group)}</strong>
+                <span class="provider-name">
+                  <InstitutionLogo institution={institutionForNamespace(group.id)} />
+                  <strong>{credentialGroupName(group)}</strong>
+                </span>
                 <span>{credentialGroupStatuses[group.id]}</span>
               </button>
             {/each}
@@ -2368,7 +2376,7 @@ import type {
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
+                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={institutionForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>
@@ -2970,6 +2978,23 @@ import type {
 
   .task-name {
     min-width: 150px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .task-logo {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    display: grid;
+    place-items: center;
+  }
+
+  .provider-name {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .task-name strong {
@@ -3606,7 +3631,7 @@ import type {
     box-shadow: inset 3px 0 0 var(--fg);
   }
 
-  .credential-provider-list nav button span {
+  .credential-provider-list nav button > span:last-child {
     color: var(--muted);
     font-size: 12px;
   }
