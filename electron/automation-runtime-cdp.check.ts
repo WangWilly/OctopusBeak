@@ -68,11 +68,11 @@ async function waitForRendererPage(browser: Browser, timeoutMs: number) {
 async function navigateToAutomation(page: Page) {
   await page.waitForFunction(
     () => window.location.hash === "#/overview"
-      && Boolean(document.querySelector('[data-onboarding="nav-automation"]')),
+      && Boolean(document.querySelector('nav.side-nav a[href="#/automation"]')),
     undefined,
     { timeout: 10_000 },
   );
-  await page.locator('[data-onboarding="nav-automation"]').click();
+  await page.locator('nav.side-nav a[href="#/automation"]').click();
   await page.waitForFunction(
     () => window.location.hash === "#/automation",
     undefined,
@@ -125,7 +125,7 @@ async function waitForPagePredicate<Arg>(
         const probe = target.__octopusBeakFailureProbe;
         return {
           rowBusy: [...document.querySelectorAll<HTMLButtonElement>(
-            '[data-onboarding-action="primary"]',
+            '[id$="-task-row"] .task-actions button[aria-busy]',
           )].map((button) => ({
             taskId: button.closest<HTMLElement>("[id$='-task-row']")?.id ?? "unknown",
             busy: button.getAttribute("aria-busy"),
@@ -287,7 +287,7 @@ test("isolated Electron/CDP typed App run records and renders a safe failure", a
     await waitForPagePredicate(page, (taskId: string) => {
       const rowText = document.querySelector<HTMLElement>(`#${taskId}-task-row`)?.textContent ?? "";
       const button = document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
+        `#${taskId}-task-row .task-actions button[aria-busy]`,
       );
       return /failed|失敗/iu.test(rowText) && button?.getAttribute("aria-busy") === "false";
     }, TASK_ID, 5_000);
@@ -413,7 +413,7 @@ test("isolated Electron/CDP runtime failure event reaches the row within 200ms",
       const observeRow = () => {
         if (probe.domAt !== null) return;
         const rowElement = document.querySelector<HTMLElement>(`#${input.taskId}-task-row`);
-        const button = rowElement?.querySelector<HTMLButtonElement>('[data-onboarding-action="primary"]');
+        const button = rowElement?.querySelector<HTMLButtonElement>('.task-actions button[aria-busy]');
         const ready = Boolean(rowElement && button)
           && /failed|失敗/iu.test(rowElement?.textContent ?? "")
           && button?.getAttribute("aria-busy") === "false";
@@ -444,7 +444,7 @@ test("isolated Electron/CDP runtime failure event reaches the row within 200ms",
 
     const optimisticStart = await page.evaluate((taskId) => {
       const button = document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
+        `#${taskId}-task-row .task-actions button[aria-busy]`,
       );
       if (!button) throw new Error(`Missing primary action for ${taskId}`);
       const start = performance.now();
@@ -453,7 +453,7 @@ test("isolated Electron/CDP runtime failure event reaches the row within 200ms",
     }, TASK_ID);
     await page.waitForFunction(
       (taskId) => document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
+        `#${taskId}-task-row .task-actions button[aria-busy]`,
       )?.getAttribute("aria-busy") === "true",
       TASK_ID,
       { timeout: 1_000 },
@@ -491,7 +491,7 @@ test("isolated Electron/CDP runtime failure event reaches the row within 200ms",
     assert.ok(probe.eventAt !== null && probe.domAt !== null);
     assert.ok(probe.renderMs !== null && probe.renderMs <= 200, `Authoritative failure rendered too slowly: ${probe.renderMs}ms`);
     assert.equal(page.url(), initialUrl, "Failure state must appear without a route switch.");
-    assert.equal(await row.locator('[data-onboarding-action="primary"]').getAttribute("aria-busy"), "false");
+    assert.equal(await row.locator('.task-actions button[aria-busy]').getAttribute("aria-busy"), "false");
     assert.match(await row.innerText(), /failed|失敗/i);
     assert.equal(existsSync(join(browserStateRoot, TASK_ID)), false);
     assert.equal(readFileSync(browserStateRoot, "utf8"), "CDP fixture blocks browser launch.");
