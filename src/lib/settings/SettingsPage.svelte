@@ -19,9 +19,10 @@
   } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
-  export let onboardingStatus: "active" | "paused" | "completed" | null = null;
-  export let onResumeOnboarding: () => void = () => {};
+  export let onboardingStatus: "active" | "exited" | "completed" | null = null;
   export let onRestartOnboarding: () => void = () => {};
+  export let onboardingRestartPending = false;
+  export let onboardingRestartError: string | null = null;
 
   const timezones = ["Asia/Taipei", "Asia/Tokyo", "America/New_York", "Europe/London", "UTC"];
   const hours = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
@@ -217,19 +218,27 @@
           <span class="setting-label">
             {onboardingStatus === "completed"
               ? $t.onboarding.completeTitle
-              : onboardingStatus
+              : onboardingStatus === "exited"
+                ? $t.onboarding.exited
+                : onboardingStatus
                 ? $t.onboarding.progress
                 : $t.onboarding.welcomeTitle}
           </span>
           <div class="onboarding-setting-actions">
-            {#if onboardingStatus === "paused"}
-              <button class="button primary" type="button" onclick={onResumeOnboarding}>
-                {$t.onboarding.continue}
+            {#if onboardingStatus === "exited"}
+              <button
+                class="button secondary"
+                type="button"
+                disabled={onboardingRestartPending}
+                aria-busy={onboardingRestartPending}
+                onclick={restartOnboarding}
+              >
+                {onboardingRestartPending ? $t.onboarding.restarting : $t.onboarding.restart}
               </button>
             {/if}
-            <button class="button secondary" type="button" onclick={restartOnboarding}>
-              {$t.onboarding.restart}
-            </button>
+            {#if onboardingRestartError}
+              <p class="onboarding-restart-error" role="alert">{onboardingRestartError}</p>
+            {/if}
           </div>
         </div>
       </div>
@@ -290,6 +299,13 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--space-3);
+  }
+
+  .onboarding-restart-error {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--danger);
+    text-align: right;
   }
 
   .scale-controls {

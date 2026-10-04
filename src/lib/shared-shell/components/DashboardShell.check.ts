@@ -9,4 +9,5 @@ test("DashboardShell exposes the global refresh state and keeps it interactive",
   assert.match(source, /aria-busy=\{\$refreshState\.status === "refreshing"\}/);
   assert.match(source, /disabled=\{!refreshContext \|\| \$refreshState\.status === "refreshing"\}/);
   assert.match(source, /onClick|onclick=\{\(\) => refreshContext && void refreshContext\.refresh\(\)\}/);
+  assert.doesNotMatch(source, /data-onboarding|syncDataOnboarding/);
 });

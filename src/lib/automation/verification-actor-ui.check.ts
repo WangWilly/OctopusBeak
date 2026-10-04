@@ -4,7 +4,6 @@ import {
   CATHAY_APP_VERIFICATION_FAILURE_REASONS,
   cathayEmailOtpFailureReason,
   cathayOtpReasonNeedsGmailSettings,
-  onboardingStepForVerificationActor,
   shouldOfferManualVerification,
   verificationFailureEventReason,
   verificationSolverExhausted,
@@ -17,18 +16,6 @@ assert.equal(verificationActorForUiGroup("cathay", { cathay: "unknown" } as neve
 assert.equal(verificationActorForUiGroup("cathay", { cathay: "human" }), "human");
 assert.equal(shouldOfferManualVerification("cathay", undefined), false);
 assert.equal(shouldOfferManualVerification("cathay", { cathay: "human" }), true);
-assert.equal(
-  onboardingStepForVerificationActor("assist", "cathay", undefined),
-  "hidden",
-);
-assert.equal(
-  onboardingStepForVerificationActor("assist", "cathay", { cathay: "human" }),
-  "assist",
-);
-assert.equal(
-  onboardingStepForVerificationActor("credentials", "cathay", undefined),
-  "credentials",
-);
 
 const events = [
   { stage: "preparation", code: "prepared" },
@@ -71,13 +58,11 @@ const dashboard = readFileSync(new URL("./AutomationDashboard.svelte", import.me
 assert.match(dashboard, /iconTasks = automation\.tasks\.filter\([\s\S]*?shouldOfferManualVerification/);
 assert.match(dashboard, /status === "waiting_for_human" && task\.humanSession[\s\S]*?shouldOfferManualVerification/);
 assert.match(dashboard, /function openHumanViewer\(task: AutomationTaskRow\) \{\s*if \(!shouldOfferManualVerification/);
-assert.match(dashboard, /visibleOnboardingStep = onboardingStepForVerificationActor/);
 assert.match(dashboard, /cathayGmailOtpSettingsAction/);
 assert.match(dashboard, /workflowEventFailureLabel\(event\)/);
 assert.match(dashboard, /<code>\{event\.code\}<\/code>/);
 
 const page = readFileSync(new URL("../../routes/+page.svelte", import.meta.url), "utf8");
-assert.match(page, /onboardingStepForVerificationActor\([\s\S]*?automationValue\?\.verificationActorsByCredentialGroup/);
 assert.match(page, /verificationActorsByCredentialGroup=\{automationRenderValue\.verificationActorsByCredentialGroup\}/);
 
 console.log("Verification actor UI checks passed.");

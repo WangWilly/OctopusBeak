@@ -11,7 +11,6 @@ type Position = {
 
 const MARGIN = 24;
 const GAP = 18;
-const COMPACT_COACH = { width: 360, height: 58 };
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
@@ -21,15 +20,24 @@ export function placeOnboardingCoach(
   viewport: Size,
   obstacles: Rect[] = [],
 ): Position | null {
+  const availableWidth = viewport.width - MARGIN * 2;
+  const availableHeight = viewport.height - MARGIN * 2;
+  if (availableWidth <= 0 || availableHeight <= 0) return null;
+  const containedCoach = {
+    width: Math.min(coach.width, availableWidth),
+    height: Math.min(coach.height, availableHeight),
+  };
   const obstaclePasses = obstacles.length
     ? [[target, ...obstacles], [target]]
     : [[target]];
   for (const blockedRects of obstaclePasses) {
-    for (const [size, compact] of [[coach, false], [COMPACT_COACH, true]] as const) {
-      if (
-        size.width > viewport.width - MARGIN * 2
-        || size.height > viewport.height - MARGIN * 2
-      ) continue;
+    const sizes = [
+      ...(containedCoach.width === coach.width && containedCoach.height === coach.height
+        ? [[coach, false] as const]
+        : []),
+      [containedCoach, true] as const,
+    ];
+    for (const [size, compact] of sizes) {
 
       const centeredTop = clamp(
         target.top + target.height / 2 - size.height / 2,
@@ -66,17 +74,11 @@ export function placeOnboardingCoach(
       if (position) return { ...position, ...size, compact };
     }
   }
-  if (
-    COMPACT_COACH.width <= viewport.width - MARGIN * 2
-    && COMPACT_COACH.height <= viewport.height - MARGIN * 2
-  ) {
-    return {
-      side: "bottom-right",
-      left: viewport.width - COMPACT_COACH.width - MARGIN,
-      top: viewport.height - COMPACT_COACH.height - MARGIN,
-      ...COMPACT_COACH,
-      compact: true,
-    };
-  }
-  return null;
+  return {
+    side: "bottom-right",
+    left: viewport.width - containedCoach.width - MARGIN,
+    top: viewport.height - containedCoach.height - MARGIN,
+    ...containedCoach,
+    compact: true,
+  };
 }

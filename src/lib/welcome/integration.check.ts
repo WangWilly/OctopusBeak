@@ -13,15 +13,15 @@ const completed = (bankAutomationChoice: "start" | "later"): FirstRunWelcomeStat
 });
 
 test("routes Start setup into a newly-created bank onboarding progression", () => {
-  assert.deepEqual(resolveCompletedFirstRunWelcome(completed("start")), {
-    route: "automation",
-    onboardingState: {
-      version: 2,
-      status: "active",
-      selectedCredentialGroupId: null,
-      sourceConfiguredAt: null,
-    },
-  });
+  const destination = resolveCompletedFirstRunWelcome(completed("start"));
+  assert.equal(destination?.route, "automation");
+  assert.equal(destination?.onboardingState?.version, 3);
+  assert.equal(destination?.onboardingState?.status, "active");
+  assert.equal(destination?.onboardingState?.phase, "setup");
+  assert.equal(destination?.onboardingState?.selectedCredentialGroupId, null);
+  assert.equal(destination?.onboardingState?.sourceConfiguredAt, null);
+  assert.equal(destination?.onboardingState?.trackedRun, null);
+  assert.equal(typeof destination?.onboardingState?.progressionId, "string");
 });
 
 test("routes Maybe later to Overview without creating bank onboarding", () => {
@@ -53,7 +53,9 @@ test("completion updates the destination URL and normalizes the route exactly on
 
   assert.ok(navigation);
   assert.ok(completion);
-  assert.match(navigation, /const destinationHash = `#\/\$\{nextRoute\}`;/);
+  assert.match(navigation, /const allowedRoute = requiredOnboardingRoute\(onboardingState\) \?\? nextRoute;/);
+  assert.match(navigation, /const destinationHash = `#\/\$\{allowedRoute\}`;/);
+  assert.match(navigation, /requiredOnboardingRoute\(onboardingState\)/);
   assert.match(navigation, /if \(location\.hash !== destinationHash\) history\.pushState\(history\.state, "", destinationHash\);/);
   assert.equal(navigation.match(/normalizeRoute\(\)/g)?.length, 1);
   assert.match(completion, /navigateToRoute\(destination\.route\);/);

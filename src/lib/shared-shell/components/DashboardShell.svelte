@@ -33,7 +33,6 @@
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
-  export let syncDataOnboarding: string | null = null;
 
   const sidebarStorageKey = "octopusbeak-sidebar-collapsed";
   let sidebarCollapsed = readStoredSidebarCollapsed();
@@ -260,7 +259,7 @@
             />
           </div>
         {:else if syncLabel}
-          <span class="chip good" data-onboarding={syncDataOnboarding ?? undefined}>{syncLabel}</span>
+          <span class="chip good">{syncLabel}</span>
         {/if}
         <ValueVisibilityToggle bind:visible={valuesVisible} />
       </slot>
@@ -276,7 +275,6 @@
             class="nav-link"
             href={item.href}
             aria-label={item.label}
-            data-onboarding={`nav-${item.id}`}
           >
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="currentColor" d={item.path} />

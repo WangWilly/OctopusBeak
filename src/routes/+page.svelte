@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, setContext } from "svelte";
+  import { onMount, setContext, tick } from "svelte";
   import { writable } from "svelte/store";
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
@@ -10,8 +10,7 @@
     type AutomationActionToken,
     type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
-  import { isAutomationBlockStale } from "$lib/automation/runtime-sync.ts";
-  import { onboardingStepForVerificationActor } from "$lib/automation/verification-actor-ui.ts";
+  import { isAutomationBlockStale, mergeAutomationRuntime } from "$lib/automation/runtime-sync.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -21,19 +20,25 @@
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
-    completedSourceTaskFinishedAt,
-    createOnboardingState,
+    createOnboardingApplicationPort,
+  } from "$lib/onboarding/application-port.ts";
+  import {
+    createOnboardingController,
+    requiredOnboardingRoute,
+    type OnboardingWorkflowToken,
+  } from "$lib/onboarding/controller.ts";
+  import type { OnboardingPresentation, OnboardingStoryEvent } from "$lib/onboarding/story.ts";
+  import {
     readOnboardingState,
     writeOnboardingState,
     type OnboardingState,
   } from "$lib/onboarding/state.ts";
   import {
-    resolveOnboardingStep,
     shouldNarrowOnboardingSources,
-    type CredentialSetupResult,
     type OnboardingFacts,
     type OnboardingRoute,
   } from "$lib/onboarding/progression.ts";
+  import { createOnboardingTargetRegistry } from "$lib/onboarding/target-observer.ts";
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
@@ -121,9 +126,20 @@
   let automationPendingTaskIds = new Set<string>();
   let automationPendingActions: readonly AutomationActionToken[] = [];
   let onboardingState: OnboardingState | null = null;
+  let onboardingController: ReturnType<typeof createOnboardingController> | null = null;
+  const onboardingTargets = createOnboardingTargetRegistry();
+  let onboardingRestartPending = false;
+  let onboardingRestartError: string | null = null;
+  let automationDashboard: {
+    retryOnboardingWorkflow(): Promise<void>;
+    openCredentialsForOnboarding(): void;
+    applyOnboardingCredentialPresentation(
+      presentation: OnboardingPresentation,
+      credentialGroupId: string | null,
+    ): Promise<void>;
+  } | undefined;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
-  let overviewLoadedForTaskFinishedAt: string | null = null;
   let overviewReloading = false;
   let financialLiveStores: FinancialPageLiveStores | null = null;
   let financialLiveEnabled = false;
@@ -156,21 +172,28 @@
     nextRoute: RouteId,
     automationData: AutomationDesktopModel | null,
     overviewData: OverviewPageDto | null,
-    overviewLoadedAt: string | null,
+    runtimeSnapshot: AutomationRuntimeSnapshot | null,
+    pendingActions: readonly AutomationActionToken[],
   ): OnboardingFacts {
+    const liveAutomation = automationData
+      ? mergeAutomationRuntime(automationData.automation, runtimeSnapshot, pendingActions)
+      : null;
     return {
       route: nextRoute,
-      automation: automationData
+      automation: liveAutomation && automationData
         ? {
-          tasks: automationData.automation.tasks,
+          tasks: liveAutomation.tasks,
           credentialGroups: automationData.credentialGroups,
-          credentials: automationData.automation.credentials,
+          credentials: liveAutomation.credentials,
         }
         : null,
       overview: overviewData
-        ? { accounts: overviewData.accounts, importedAt: overviewData.importedAt }
+        ? {
+          accounts: overviewData.accounts,
+          importedAt: overviewData.importedAt,
+          availability: overviewData.availability,
+        }
         : null,
-      overviewLoadedForTaskFinishedAt: overviewLoadedAt,
     };
   }
 
@@ -178,7 +201,8 @@
     route,
     viewData(automation) ?? null,
     viewData(overview) ?? null,
-    overviewLoadedForTaskFinishedAt,
+    automationRuntimeSnapshot,
+    automationPendingActions,
   );
   $: overviewValue = viewData(overview);
   $: assetsValue = viewData(assets);
@@ -186,36 +210,26 @@
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
   $: activeBlocks = route === "settings" ? {} : routeBlocks[route] ?? {};
-  $: resolvedOnboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
-  $: onboardingStep = onboardingStepForVerificationActor(
-    resolvedOnboardingStep,
-    onboardingState?.selectedCredentialGroupId,
-    automationValue?.verificationActorsByCredentialGroup,
-  );
-  $: onboardingCompact = automationValue
-    && onboardingStep === "collection"
-    && automationValue.automation.tasks.some((task) =>
-      task.isActive
-      && task.credentialGroupId === onboardingState?.selectedCredentialGroupId,
-    );
+  $: onboardingStory = onboardingState
+    ? onboardingController?.getStoryView(onboardingRestartPending) ?? null
+    : null;
   $: if (
-    route === "overview"
-    && onboardingStep === "overview"
-    && !overviewReloading
-    && automation.status === "ready"
-    && completedSourceTaskFinishedAt(
-      automation.data.automation.tasks,
-      onboardingState?.selectedCredentialGroupId ?? null,
-    ) !== overviewLoadedForTaskFinishedAt
-  ) {
-    void loadRoute("overview", { force: true });
-  }
-
+    onboardingController
+    && routeCapabilityResolved
+    && onboardingState?.status === "active"
+    && (onboardingState.phase === "running"
+      || onboardingState.phase === "preparing-overview"
+      || onboardingState.phase === "overview")
+  ) void onboardingController.reconcile(onboardingFacts);
   function normalizeRoute() {
     if (!routeCapabilityResolved) return;
     const previousRoute = route;
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
-    route = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next) ? next as RouteId : "overview";
+    const requestedRoute = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next)
+      ? next as RouteId
+      : "overview";
+    const requiredRoute = requiredOnboardingRoute(onboardingState);
+    route = requiredRoute ?? requestedRoute;
     const acceptsId = route === "assets" || route === "liabilities";
     let id: string | null = null;
     try {
@@ -225,11 +239,25 @@
     }
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
-    if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
+    if (
+      !location.hash
+      || requestedRoute !== route
+      || next !== route
+      || encodedId === ""
+      || (!acceptsId && encodedId)
+      || (encodedId && !id)
+      || extraSegments.length > 0
+    ) history.replaceState(history.state, "", `#${canonicalHash}`);
     if (route !== "automation" && route !== "settings" && previousRoute !== route) {
       startRouteLoad(route);
     }
-    startFinancialLive(route === "settings" ? "automation" : route);
+    const preserveOnboardingOverviewRead = onboardingState?.status === "active"
+      && onboardingState.phase === "preparing-overview"
+      && financialLiveRoute === "overview"
+      && Boolean(stopFinancialLive);
+    if (!preserveOnboardingOverviewRead) {
+      startFinancialLive(route === "settings" ? "automation" : route);
+    }
     const hasAutomationData = routeDataCache.read("automation") !== undefined
       || Object.values(routeBlocks.automation ?? {}).some((state) => "data" in state);
     if (route !== "automation" && route !== "settings" && financialLiveEnabled) return;
@@ -293,12 +321,6 @@
       stopFinancialLive = financialLiveStores.overview().subscribe((state) => {
         applyLivePage("overview", state, (value: OverviewPageDto) => {
           overview = finishViewLoad(value);
-          if (automation.status === "ready") {
-            overviewLoadedForTaskFinishedAt = completedSourceTaskFinishedAt(
-              automation.data.automation.tasks,
-              onboardingState?.selectedCredentialGroupId ?? null,
-            );
-          }
           return overviewBlocks(value);
         });
       });
@@ -683,6 +705,20 @@
     writeOnboardingState(localStorage, next);
   }
 
+  function acceptAutomationRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
+    const result = automationRuntimeController.acceptSnapshot(snapshot);
+    if (!result.accepted) return;
+    automationRuntimeSnapshot = result.snapshot;
+    automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
+    automationPendingActions = automationRuntimeController.pendingActions();
+    if (result.hadGap || result.sessionChanged) {
+      void loadRoute("automation", {
+        force: true,
+        automationRefreshReason: "session-resync",
+      });
+    }
+  }
+
   function saveFirstRunWelcome(next: FirstRunWelcomeState) {
     firstRunWelcomeState = next;
     writeFirstRunWelcomeState(localStorage, next);
@@ -690,60 +726,137 @@
   }
 
   function navigateToRoute(nextRoute: RouteId) {
-    const destinationHash = `#/${nextRoute}`;
+    const allowedRoute = requiredOnboardingRoute(onboardingState) ?? nextRoute;
+    const destinationHash = `#/${allowedRoute}`;
     if (location.hash !== destinationHash) history.pushState(history.state, "", destinationHash);
     normalizeRoute();
+  }
+
+  function ensureOnboardingController() {
+    if (onboardingController) return onboardingController;
+    onboardingController = createOnboardingController(createOnboardingApplicationPort({
+      persist: saveOnboarding,
+      now: () => new Date().toISOString(),
+      navigate: navigateToRoute,
+      loadAutomation: async () => {
+        await loadRoute("automation", {
+          force: true,
+          rethrow: true,
+          awaitBlocks: true,
+          automationRefreshReason: "session-resync",
+        });
+        const latest = viewData(automation) ?? progressiveAutomation();
+        if (!latest) throw new Error("Automation data unavailable.");
+        return latest;
+      },
+      runtimeSnapshot: async () => {
+        const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+        acceptAutomationRuntimeSnapshot(snapshot);
+        return snapshot;
+      },
+      loadOverview: async () => {
+        overviewReloading = true;
+        try {
+          // Keep the current route on Automation until this subscription has
+          // delivered a fresh Overview read. The route transition itself then
+          // reuses the ready live subscription instead of starting a stale read.
+          await reloadFinancialLive("overview");
+          const value = viewData(overview);
+          if (!value) throw new Error("Overview data unavailable.");
+          return value;
+        } finally {
+          overviewReloading = false;
+        }
+      },
+      cancelTask: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
+      forceTerminateTask: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
+    }));
+    onboardingController.hydrate(onboardingState);
+    return onboardingController;
   }
 
   function completeFirstRunWelcome() {
     if (!firstRunWelcomeState) return;
     const destination = resolveCompletedFirstRunWelcome(firstRunWelcomeState);
     if (!destination) return;
-    if (destination.onboardingState) saveOnboarding(destination.onboardingState);
+    if (destination.onboardingState) {
+      saveOnboarding(destination.onboardingState);
+      ensureOnboardingController().hydrate(destination.onboardingState);
+    }
     navigateToRoute(destination.route);
     completingFirstRunWelcome = false;
   }
 
-  function pauseOnboarding() {
-    if (onboardingState) saveOnboarding({ ...onboardingState, status: "paused" });
-  }
-
-  function resumeOnboarding() {
-    saveOnboarding(onboardingState
-      ? { ...onboardingState, status: "active" }
-      : createOnboardingState());
-    location.hash = "/automation";
-  }
-
-  function restartOnboarding() {
-    saveOnboarding(createOnboardingState());
-    location.hash = "/automation";
+  async function restartOnboarding() {
+    if (onboardingRestartPending) return;
+    onboardingRestartPending = true;
+    onboardingRestartError = null;
+    try {
+      const restarted = await ensureOnboardingController().restart();
+      if (!restarted) {
+        onboardingRestartError = onboardingController?.state?.error
+          ?? "The previous workflow could not be cancelled.";
+      }
+    } catch (error) {
+      onboardingRestartError = message(error);
+    } finally {
+      onboardingRestartPending = false;
+    }
   }
 
   function finishOnboarding() {
-    if (onboardingState) saveOnboarding({ ...onboardingState, status: "completed" });
+    onboardingController?.finish();
   }
 
-  function selectOnboardingSource({ selectedCredentialGroupId, sourceConfiguredAt }: CredentialSetupResult) {
-    const current = onboardingState ?? createOnboardingState();
-    saveOnboarding({
-      ...current,
-      selectedCredentialGroupId,
-      sourceConfiguredAt,
-      status: "active",
+  function handleOnboardingStoryEvent(event: OnboardingStoryEvent) {
+    const controller = ensureOnboardingController();
+    if (event.type === "open-picker") controller.openSourcePicker();
+    else if (event.type === "choose-source") controller.chooseSource(event.credentialGroupId);
+    else controller.sourceSaved({
+      selectedCredentialGroupId: event.credentialGroupId,
+      sourceConfiguredAt: event.configuredAt,
     });
   }
 
-  function addOnboardingSource() {
-    finishOnboarding();
-    location.hash = "/automation";
-    requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>('[data-onboarding="automation-credentials"]')?.click();
-    });
+  async function previousOnboardingNode() {
+    const transition = onboardingController?.previous(onboardingRestartPending);
+    if (!transition) return;
+    await tick();
+    await automationDashboard?.applyOnboardingCredentialPresentation(
+      transition.presentation,
+      transition.credentialGroupId,
+    );
   }
 
-  function backOnboarding() {
-    location.hash = route === "automation" ? "/overview" : "/automation";
+  function returnToOnboardingOverview() {
+    return onboardingController?.returnToOverview() ?? Promise.resolve(false);
+  }
+
+  async function addOnboardingSource() {
+    onboardingController?.addSource();
+  }
+
+  function workflowStarting(taskId: string, credentialGroupId: string | null): OnboardingWorkflowToken | null {
+    return ensureOnboardingController().workflowStarting(taskId, credentialGroupId);
+  }
+
+  function workflowStarted(
+    token: OnboardingWorkflowToken | null,
+    run: { taskId: string; runId: string | null },
+  ) {
+    onboardingController?.workflowStarted(token, run);
+  }
+
+  function workflowStartFailed(token: OnboardingWorkflowToken | null, error: string) {
+    onboardingController?.workflowStartFailed(token, error);
+  }
+
+  async function retryOnboardingWorkflow() {
+    await automationDashboard?.retryOnboardingWorkflow();
+  }
+
+  async function cancelOnboardingWorkflow() {
+    await onboardingController?.cancelWorkflow();
   }
 
   async function resolveFirstRunWelcome() {
@@ -793,7 +906,6 @@
     }
     if (overviewData) {
       overview = finishViewLoad(overviewData);
-      overviewLoadedForTaskFinishedAt = null;
     } else if (overviewResult?.status === "rejected") {
       failRouteLoad("overview", overviewResult.error);
       console.warn("welcome-overview-load-failed", message(overviewResult.error));
@@ -899,6 +1011,7 @@
   onMount(() => {
     let mounted = true;
     onboardingState = readOnboardingState(localStorage);
+    ensureOnboardingController();
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error));
@@ -957,19 +1070,6 @@
       },
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
-    const applyAutomationRuntimeSnapshot = (snapshot: AutomationRuntimeSnapshot) => {
-      const result = automationRuntimeController.acceptSnapshot(snapshot);
-      if (!result.accepted) return;
-      automationRuntimeSnapshot = result.snapshot;
-      automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
-      automationPendingActions = automationRuntimeController.pendingActions();
-      if (result.hadGap || result.sessionChanged) {
-        void loadRoute("automation", {
-          force: true,
-          automationRefreshReason: "session-resync",
-        });
-      }
-    };
     const automationApi = window.octopusBeak.automation;
     const unsubscribeAutomationController = automationRuntimeController.subscribe(() => {
       const current = automationRuntimeController.snapshot();
@@ -978,11 +1078,11 @@
       automationPendingActions = automationRuntimeController.pendingActions();
     });
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
-      ? automationApi.onRuntimeChanged(applyAutomationRuntimeSnapshot)
+      ? automationApi.onRuntimeChanged(acceptAutomationRuntimeSnapshot)
       : () => {};
     if (typeof automationApi.runtimeSnapshot === "function") {
       void automationApi.runtimeSnapshot()
-        .then(applyAutomationRuntimeSnapshot)
+        .then(acceptAutomationRuntimeSnapshot)
         .catch((error) => {
           console.error("automation-runtime-snapshot-failed", error);
           if (typeof automationApi.fatalRuntimeSnapshot === "function") {
@@ -993,7 +1093,7 @@
     const onAutomationRuntimeResync = () => {
       if (typeof automationApi.runtimeSnapshot !== "function") return;
       void automationApi.runtimeSnapshot()
-        .then(applyAutomationRuntimeSnapshot)
+        .then(acceptAutomationRuntimeSnapshot)
         .catch((error) => {
           console.error("automation-runtime-resync-failed", error);
           if (typeof automationApi.fatalRuntimeSnapshot === "function") {
@@ -1007,6 +1107,7 @@
     };
     document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
+    addEventListener("popstate", normalizeRoute);
     return () => {
       mounted = false;
       dataVersionLifecycle.dispose();
@@ -1017,6 +1118,7 @@
       removeEventListener("focus", onAutomationRuntimeResync);
       document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
       removeEventListener("hashchange", normalizeRoute);
+      removeEventListener("popstate", normalizeRoute);
     };
   });
 </script>
@@ -1040,6 +1142,8 @@
     <OverviewDashboard
       overview={overviewRenderValue}
       blocks={activeBlocks}
+      onboardingEmptyState={onboardingStory?.id === "overview-empty"}
+      {onboardingTargets}
       retryBlock={(key) => retryRouteBlock("overview", key)}
     />
     <RouteLoadNotice state={overview} retry={() => void loadRoute("overview", { force: true })} />
@@ -1093,6 +1197,7 @@
 {:else if route === "automation"}
   {#if automationRenderValue}
     <AutomationDashboard
+      bind:this={automationDashboard}
       automation={automationRenderValue.automation}
       credentialGroups={automationRenderValue.credentialGroups}
       verificationActorsByCredentialGroup={automationRenderValue.verificationActorsByCredentialGroup}
@@ -1103,15 +1208,24 @@
       appPendingActions={automationPendingActions}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
-      onboardingSourceSelection={onboardingStep === "credentials"}
+      onboardingSourceSelection={[
+        "source-entry",
+        "source-selection",
+        "credentials",
+      ].includes(onboardingStory?.id ?? "")}
       onboardingSingleSource={shouldNarrowOnboardingSources(
         onboardingFacts,
         onboardingState,
-        onboardingStep,
+        onboardingStory?.id ?? "source-entry",
       )}
-      {onboardingStep}
+      onboardingNodeId={onboardingStory?.id ?? null}
       onboardingSelectedCredentialGroupId={onboardingState?.selectedCredentialGroupId ?? null}
-      onOnboardingSourceSaved={selectOnboardingSource}
+      onboardingTrackedTaskId={onboardingState?.trackedRun?.taskId ?? null}
+      {onboardingTargets}
+      onOnboardingStoryEvent={handleOnboardingStoryEvent}
+      onOnboardingWorkflowStarting={workflowStarting}
+      onOnboardingWorkflowStarted={workflowStarted}
+      onOnboardingWorkflowStartFailed={workflowStartFailed}
     />
     <RouteLoadNotice state={automation} retry={() => void loadRoute("automation", { force: true })} />
   {:else}
@@ -1122,22 +1236,25 @@
 {:else}
   <SettingsPage
     onboardingStatus={onboardingState?.status ?? null}
-    onResumeOnboarding={resumeOnboarding}
     onRestartOnboarding={restartOnboarding}
+    {onboardingRestartPending}
+    {onboardingRestartError}
   />
 {/if}
 
-{#if onboardingState && firstRunWelcomeState?.status !== "active" && !completingFirstRunWelcome}
+{#if onboardingStory && onboardingState && firstRunWelcomeState?.status !== "active" && !completingFirstRunWelcome}
   <OnboardingCoach
-    step={onboardingStep}
+    story={onboardingStory}
     state={onboardingState}
-    {route}
-    onPause={pauseOnboarding}
+    targets={onboardingTargets}
+    onExit={() => onboardingController?.exit()}
+    onPrevious={previousOnboardingNode}
+    onReturnToOverview={returnToOnboardingOverview}
     onFinish={finishOnboarding}
     onAddSource={addOnboardingSource}
-    onBack={backOnboarding}
-    onRetryTarget={() => loadRoute(route, { force: true })}
-    compact={onboardingCompact}
+    onRetryWorkflow={retryOnboardingWorkflow}
+    onRetryOverview={() => onboardingController?.retryOverview() ?? Promise.resolve()}
+    onCancelWorkflow={cancelOnboardingWorkflow}
   />
 {/if}
 

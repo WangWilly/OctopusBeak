@@ -125,7 +125,19 @@ test("ignores secondary obstacles before hiding the coach", () => {
   assert.equal(intersects(target, result, result), false);
 });
 
-test("uses a contained compact coach above a wide statement target at 150% scale", () => {
+test("keeps the coach inside the viewport when a large target leaves no free region", () => {
+  const viewport = { width: 1280, height: 726 };
+  const target = { left: 72.5, top: 20, width: 1120, height: 686 };
+  const requestedSize = { width: 360, height: 263.3 };
+  const result = placeOnboardingCoach(target, requestedSize, viewport);
+
+  assert.ok(result);
+  assert.ok(inside(result, result, viewport));
+  assert.equal(result.width, requestedSize.width);
+  assert.equal(result.height, requestedSize.height);
+});
+
+test("clamps the measured coach at smaller viewport sizes", () => {
   const viewport = { width: 654, height: 467 };
   const target = { left: 30, top: 100, width: 594, height: 280 };
   const size = { width: 360, height: 419 };
@@ -138,5 +150,18 @@ test("uses a contained compact coach above a wide statement target at 150% scale
   assert.ok(result);
   assert.equal(result.compact, true);
   assert.ok(inside(result, result, viewport));
-  assert.equal([target, ...obstacles].some((rect) => intersects(rect, result, result)), false);
+  assert.ok(result.width <= viewport.width - 48);
+  assert.ok(result.height <= viewport.height - 48);
+});
+
+test("keeps full coach content size at the supported onboarding window sizes", () => {
+  const target = { left: 30, top: 72, width: 920, height: 520 };
+  const content = { width: 360, height: 340 };
+  for (const viewport of [{ width: 1280, height: 726 }, { width: 1024, height: 640 }]) {
+    const result = placeOnboardingCoach(target, content, viewport);
+    assert.ok(result);
+    assert.equal(result.width, content.width);
+    assert.equal(result.height, content.height);
+    assert.ok(inside(result, content, viewport));
+  }
 });

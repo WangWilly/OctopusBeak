@@ -178,6 +178,20 @@ assert.match(source, /progressQueryingProduct\(product\)/);
 assert.match(source, /progressDownloadingProduct\(product\)/);
 assert.match(source, /task\.workflowProgress\?\.params\?\.retrying === true/);
 assert.match(source, /function shouldShowWorkflowProgress\(/);
+const onboardingProgressTaskSource = source.slice(
+  source.indexOf("function isOnboardingProgressTask"),
+  source.indexOf("function shouldShowWorkflowProgress"),
+);
+assert.match(onboardingProgressTaskSource, /task\.id === onboardingTrackedTaskId/);
+for (const step of [
+  "collection-progress",
+  "collection-failed",
+  "overview-preparing",
+  "overview-preparation-failed",
+]) {
+  assert.match(onboardingProgressTaskSource, new RegExp(`"${step}"`));
+}
+assert.match(source, /function shouldShowWorkflowProgress\([\s\S]*?isOnboardingProgressTask\(task\)/);
 assert.match(source, /task\.status === "waiting_for_human"/);
 assert.match(source, /class:working=\{workflowProgressIsWorking\(task\)\}/);
 assert.match(
@@ -252,10 +266,22 @@ assert.match(
   source,
   /\.credential-provider-list nav::-webkit-scrollbar\s*\{\s*width: 12px;/,
 );
-assert.doesNotMatch(
-  source,
-  /\.credential-provider-list nav\[data-onboarding\]/,
-);
+assert.doesNotMatch(source, /data-onboarding/);
+assert.doesNotMatch(source, /ononboarding(?:advance|back)/);
+assert.match(source, /registerOnboardingTarget/);
+assert.match(source, /onboardingTargets/);
+assert.match(source, /"automation\.credentials"/);
+assert.match(source, /"automation\.run"/);
+assert.match(source, /"automation\.progress"/);
+assert.match(source, /onOnboardingWorkflowStarting/);
+assert.match(source, /onOnboardingWorkflowStarted/);
+assert.match(source, /onOnboardingWorkflowStartFailed/);
+assert.match(source, /export async function retryOnboardingWorkflow\(\)/);
+assert.match(source, /export async function openCredentialsForOnboarding\(\)/);
+assert.match(source, /credentialState\(key\) !== "ready"/);
+assert.match(source, /statementSelectionConfirmed = Boolean\(group\?\.selectedStatementTypeIds\.length\)/);
+assert.match(source, /workflowFailureExplanation\(task\.appWorkflowOutcome\.errorCode, \$locale\)/);
+assert.match(source, /\$t\.automation\.viewOverview/);
 assert.match(
   source,
   /class:selected=\{group\.id === selectedCredentialGroupId\}/,
@@ -454,10 +480,6 @@ const statementFieldsetSource = source.slice(
   ),
 );
 assert.match(source, /let statementSelectionError = ""/);
-assert.match(
-  statementFieldsetSource,
-  /data-onboarding=\{!onboardingCredentialTargetKey && onboardingNeedsStatements\s+\? "automation-credentials"\s+: undefined\}/,
-);
 assert.match(
   statementFieldsetSource,
   /aria-describedby=\{statementSelectionError/,

@@ -1,66 +1,74 @@
-import type { OnboardingTarget } from "./progression.ts";
+export type OnboardingTargetRegistration = {
+  element: HTMLElement;
+  action?: string;
+};
 
-export function selectorForOnboardingTarget(target: OnboardingTarget | null) {
-  if (!target) return null;
-  if (target.kind === "automation-nav") return '[data-onboarding="nav-automation"]';
-  if (target.kind === "credentials") return '[data-onboarding="automation-credentials"]';
-  if (target.kind === "assist") return '[data-onboarding="automation-assist"]';
-  if (target.kind === "overview-nav") return '[data-onboarding="nav-overview"]';
-  if (target.kind === "complete") return '[data-onboarding="overview-summary"]';
-  if (target.kind === "overview-empty") {
-    if (target.route !== "automation" || !target.taskId) return '[data-onboarding="nav-automation"]';
-    return `[data-onboarding-group="${target.taskId}"][data-onboarding-action="logs"],`
-      + `[data-onboarding-task="${target.taskId}"][data-onboarding-action="logs"]`;
+export type OnboardingTargetRegistry = ReturnType<typeof createOnboardingTargetRegistry>;
+
+export function createOnboardingTargetRegistry() {
+  const targets = new Map<string, OnboardingTargetRegistration>();
+  const listeners = new Set<() => void>();
+
+  function emit() {
+    for (const listener of listeners) listener();
   }
-  return `[data-onboarding-group="${target.taskId}"][data-onboarding-action="${target.action}"],`
-    + `[data-onboarding-task="${target.taskId}"][data-onboarding-action="${target.action}"]`;
+
+  return {
+    get(id: string | null | undefined) {
+      return id ? targets.get(id) ?? null : null;
+    },
+
+    register(id: string, element: HTMLElement, action?: string) {
+      const registration = { element, ...(action ? { action } : {}) };
+      targets.set(id, registration);
+      emit();
+      return () => {
+        if (targets.get(id) !== registration) return;
+        targets.delete(id);
+        emit();
+      };
+    },
+
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      // Observers need the current snapshot as well as future changes. A route
+      // may register its target before the coach mounts and subscribes.
+      listener();
+      return () => listeners.delete(listener);
+    },
+  };
 }
 
-export function activateOnboardingTarget(target: HTMLElement) {
-  target.focus();
-  const action = target.dataset.onboardingAction;
-  if (action === "enter-verification") {
-    if (target instanceof HTMLInputElement && target.value.trim()) {
-      target.form?.requestSubmit();
-    }
-    return;
-  }
-  if (action === "enter-credentials") {
-    if (target instanceof HTMLInputElement) {
-      if (target.value.trim()) {
-        target.dispatchEvent(new CustomEvent("onboardingadvance", { bubbles: true }));
-      }
-      return;
-    }
-    if (target instanceof HTMLButtonElement) target.click();
-    return;
-  }
-  if (action !== "choose-verification-control" && action !== "select-source") target.click();
+export type OnboardingTargetActionParameters = {
+  registry: OnboardingTargetRegistry;
+  id: string | null;
+  action?: string;
+};
+
+export function registerOnboardingTarget(
+  node: HTMLElement,
+  parameters: OnboardingTargetActionParameters,
+) {
+  let unregister = parameters.id
+    ? parameters.registry.register(parameters.id, node, parameters.action)
+    : () => {};
+  let current = parameters;
+  return {
+    update(next: OnboardingTargetActionParameters) {
+      if (next.registry === current.registry && next.id === current.id && next.action === current.action) return;
+      unregister();
+      current = next;
+      unregister = current.id
+        ? current.registry.register(current.id, node, current.action)
+        : () => {};
+    },
+    destroy() {
+      unregister();
+    },
+  };
 }
 
 export function focusOnboardingTarget(target: HTMLElement) {
-  const action = target.dataset.onboardingAction;
-  if (action !== "enter-credentials" && action !== "choose-verification-control") return false;
   target.focus({ preventScroll: true });
   return true;
-}
-
-export function observeOnboardingTarget(
-  selector: string | null,
-  onTarget: (target: HTMLElement | null) => void,
-) {
-  const locate = () => {
-    onTarget(selector ? document.querySelector<HTMLElement>(selector) : null);
-  };
-  locate();
-  if (!selector) return () => {};
-
-  const observer = new MutationObserver(locate);
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["data-onboarding"],
-  });
-  return () => observer.disconnect();
 }
