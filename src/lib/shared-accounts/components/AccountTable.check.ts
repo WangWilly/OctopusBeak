@@ -24,7 +24,7 @@ test("credit-card current usage rows expose their estimate basis", () => {
 });
 
 test("unavailable accounts omit allocation and exposure values", () => {
-  assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
+  assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta num">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
 });
 
 test("account actions do not expose a data issue reporting surface", () => {

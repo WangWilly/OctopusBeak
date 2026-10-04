@@ -82,6 +82,10 @@
       .toLowerCase();
     return filterMatch && (!query || text.includes(query));
   });
+  $: latestUpdated = accounts.reduce<string | null>(
+    (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
+    null,
+  );
   $: total = accounts.reduce((sum, account) => sum + amountValue(account.amountLines), 0);
   $: sorted = sortAccounts(filtered, sortKey, sortDirection, total);
   $: if (sorted.length === 0 && selectedAccountId !== null) {
@@ -248,6 +252,7 @@
               {#each sortColumns as column}
                 <th
                   class:right={column.right}
+                  class:institution-cell={column.key === "institution"}
                   aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
                 >
                   <button
@@ -287,12 +292,16 @@
               >
                 <td>
                   <strong>{account.label}</strong><br />
-                  <span class="account-meta">{translateKnownLabel(account.product, $t)} / {$t.accounts.txCount(account.transactionCount)}</span>
+                  <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
                 </td>
-                <td>{account.institution}</td>
+                <td class="institution-cell">{account.institution}</td>
                 <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
                 <td class="right">
-                  <strong class="money">
+                  <strong
+                    class="money"
+                    data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
+                    title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
+                  >
                     {#if account.valueAvailability === "awaiting"}
                       <span>{$t.overview.currentAwaiting}</span>
                     {:else if account.valueAvailability === "unavailable"}
@@ -304,14 +313,13 @@
                   {#if availableBalanceBasis}
                     <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
                   {/if}
-                  {#if estimatedCreditBasis}
-                    <span class="account-meta">{$t.accounts.creditCardEstimateBasis}</span><br />
+                  {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
+                    <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                   {/if}
-                  <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">
                   {#if account.valueAvailability === "available"}
-                    <span class="account-meta">{percent}%</span>
+                    <span class="account-meta num">{percent}%</span>
                     <div class="row-bar" aria-hidden="true">
                       <span style={`width:${percent}%`}></span>
                     </div>
@@ -326,6 +334,9 @@
           </tbody>
         </table>
       </div>
+      {#if latestUpdated}
+        <p class="account-meta table-updated">{$t.accounts.updated(latestUpdated)}</p>
+      {/if}
     </div>
   </div>
 </section>
@@ -387,6 +398,22 @@
 
   .sort-mark.asc::before {
     transform: rotate(180deg);
+  }
+
+  .institution-cell {
+    white-space: nowrap;
+  }
+
+  .table-updated {
+    margin: 0;
+    padding: var(--space-3) var(--space-5);
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 1180px) {
+    .institution-cell {
+      display: none;
+    }
   }
 
   .account-table-wrap-animating {
