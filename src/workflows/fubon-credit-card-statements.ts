@@ -255,10 +255,6 @@ function matchesFilter(value: string, filters: string[]): boolean {
   });
 }
 
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))];
-}
-
 function isDateLike(value: string): boolean {
   return /^\d{3,4}\/\d{2}\/\d{2}$/.test(toAsciiDigits(cleanText(value)));
 }
@@ -359,23 +355,6 @@ async function findScopeWithSelector(
     await page.waitForTimeout(500);
   }
   throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
-
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if (await hasAttachedLocator(locator)) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
 }
 
 async function waitForNoVisibleBankMask(
@@ -1447,16 +1426,6 @@ function fullPanForRow(row: CsvRow): string | undefined {
   if (captured) return captured;
   const raw = row.card_number ?? "";
   return fullPanCandidate(raw);
-}
-
-function fullPanForCardRows(rows: readonly CsvRow[]): string | undefined {
-  const values = unique(
-    rows
-      .map(fullPanForRow)
-      .filter((value): value is string => value !== undefined),
-  );
-  if (values.length > 1) throw new Error("Fubon card identity has conflicting PAN observations.");
-  return values[0];
 }
 
 /**

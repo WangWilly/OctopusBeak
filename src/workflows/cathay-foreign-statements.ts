@@ -14,7 +14,6 @@ import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balan
 import { buildCathayCurrentDepositBalanceCaptures } from "./cathay-current-deposit-canonical.ts";
 import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   type CurrentDepositBalanceCaptureInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 
@@ -155,13 +154,6 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function formatNullableAmount(
-  value: number | string | null | undefined,
-): string {
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
-
 function normalizeDate(value: string | null | undefined): string {
   const text = cleanText(value);
   const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
@@ -173,37 +165,8 @@ function normalizeDate(value: string | null | undefined): string {
   return text;
 }
 
-function foreignAmountColumns(
-  debitCreditType: string | undefined,
-  amount: number | string | null | undefined,
-): [string, string] {
-  const formattedAmount = formatNullableAmount(amount);
-  if (!formattedAmount) return ["", ""];
-
-  const type = cleanText(debitCreditType).toUpperCase();
-  const isDebit =
-    type === "D" ||
-    type.includes("DEBIT") ||
-    /支出|扣|提出|轉出|匯出|買/.test(type);
-  const isCredit =
-    type === "C" ||
-    type.includes("CREDIT") ||
-    /存入|收入|轉入|匯入|賣/.test(type);
-
-  if (isDebit) return [formattedAmount, ""];
-  if (isCredit) return ["", formattedAmount];
-  return ["", formattedAmount];
-}
-
 function foreignSummary(info: CathayForeignTransferInfo): string {
   return [info.debitCreditType, info.custName]
-    .map((value) => cleanText(value))
-    .filter(Boolean)
-    .join(" ");
-}
-
-function foreignNote(info: CathayForeignTransferInfo): string {
-  return [info.memo, info.exRate ? `匯率 ${cleanText(info.exRate)}` : ""]
     .map((value) => cleanText(value))
     .filter(Boolean)
     .join(" ");

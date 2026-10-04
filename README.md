@@ -84,6 +84,8 @@ CAPTCHA、OTP、工作階段 Cookie 與其他驗證資訊不會交給模型處�
 <details>
 <summary>從原始碼執行</summary>
 
+專案文件的權威來源與維護方式請見[文件索引](docs/README.md)。
+
 ```bash
 npm install
 npm run typecheck
@@ -125,7 +127,7 @@ npm run workflow:dev -- fixture
 
 | 路徑 | 用途 |
 | --- | --- |
-| `src/workflows/` | 正逐一遷移至 App typed runtime 的既有工作流程模組 |
+| `src/workflows/` | 銀行與來源工作流程定義；正式工作由桌面 App 的 typed runtime 執行 |
 | `src/ledger/` | 來源解析、PGlite 儲存與財務查詢 |
 | `src/lib/overview/`、`src/lib/assets/`、`src/lib/liabilities/` | 財務總覽介面 |
 | `src/lib/spending/` | 電子發票與消費介面 |

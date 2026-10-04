@@ -3,7 +3,9 @@
 Accepted amendment: [ADR 0024](../adr/0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements. [Revised ADR 0009](../adr/0009-reset-legacy-financial-data-before-canonical-collection.md) replaces quarantine and delayed cleanup with a direct canonical-only reset for a product with no existing users.
 
 
-Status: implementation-ready planning specification
+Status: historical implementation-ready planning specification; SQLite-specific physical storage and runtime superseded by [ADR 0030](../adr/0030-pglite-owned-live-financial-views.md)
+
+ADR 0030 records the direct cutover to the worker-owned PGlite database in `data/pglite/` and explicitly preserves the domain and transactional guarantees of ADRs 0010, 0017, and 0029 unless a later accepted decision revises them. Treat the SQLite schema, database path, runtime, and migration instructions below as historical design. If implementation behavior conflicts with an unrevised requirement, record and review that discrepancy rather than changing the requirement to match the code. For the current production workflow boundary, see the [App-owned workflow runtime contract](./app-owned-workflow-runtime.md).
 
 This specification resolves GitHub issue 124. It translates ADRs 0004–0010 and the root glossary into a first-version physical storage and query boundary. It specifies table responsibilities, mandatory constraints, transaction boundaries, and verification criteria; exact SQL names may change during implementation only when the same guarantees remain mechanically enforceable. The typed enrichment extensions to this storage boundary are defined by [Transaction taxonomy and enrichment specification](./transaction-taxonomy-and-enrichment.md) and ADR 0011.
 

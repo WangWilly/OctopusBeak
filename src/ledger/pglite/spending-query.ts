@@ -18,7 +18,6 @@ import type {
   CanonicalSpendingCategorization,
   CanonicalSpendingDisplay,
   CanonicalSpendingReport,
-  CanonicalSpendingTag,
   CanonicalSpendingTransaction,
 } from "../canonical/canonical-spending-contracts.ts";
 import {
@@ -60,7 +59,6 @@ import {
   calendarDayDistance,
   exactMoneyEqual,
   exactMoneyKey,
-  invoiceMatchingMoney,
   createSpendingManualPairingIndex,
   rankSpendingManualPaymentCandidates,
   type SpendingMatchingInvoice,
@@ -196,11 +194,6 @@ function exactMoney(row: Row, coefficient = "amount_coefficient", scale = "amoun
     scale: numeric(row[scale], "Exact amount scale"),
     currency: stringValue(row[currency], "Exact amount currency"),
   };
-}
-
-function nullableMoney(row: Row, coefficient = "amount_coefficient", scale = "amount_scale", currency = "currency"): Money | null {
-  if (row[coefficient] === null || row[coefficient] === undefined) return null;
-  return exactMoney(row, coefficient, scale, currency);
 }
 
 function addDecimal(left: Readonly<{ coefficient: bigint; scale: number }>, right: Readonly<{ coefficient: bigint; scale: number }>): { coefficient: bigint; scale: number } {
@@ -1094,44 +1087,6 @@ export async function resolvePGliteSpendingCandidate(
     throw new Error("Spending candidate is no longer pending.");
   }
   return Object.freeze({ knowledgeAt, candidate: match, durableCandidate, invoice: selectedInvoice, transaction });
-}
-
-/**
- * Pairing only needs the eligible bank transactions and their kind evidence;
- * loading categories, tags, invoices, and existing purchase records would
- * make a manual candidate page pay for the entire Spending report.
- */
-async function queryPairingTransactions(
-  reader: PGliteSpendingReader,
-  knowledgeAt: number,
-): Promise<readonly CanonicalSpendingTransaction[]> {
-  const base = await transactionRows(reader, "current", knowledgeAt, null);
-  if (base.length === 0) return [];
-  const [facts, kindRows] = await Promise.all([
-    transactionDateFacts(reader),
-    pgliteQuery<EnrichmentRow>(reader,
-      `SELECT enrichment.transaction_id, enrichment.field_name,
-              enrichment.assertion_id, enrichment.value_text, enrichment.origin,
-              enrichment.producer_id, enrichment.producer_version,
-              enrichment.route_id, enrichment.taxonomy_id,
-              enrichment.taxonomy_version, enrichment.taxonomy_dimension,
-              enrichment.taxonomy_code, enrichment.projection_commit_id,
-              commit_row.commit_sequence AS projection_commit_sequence
-         FROM current_transaction_enrichment enrichment
-         JOIN canonical_commits commit_row ON commit_row.commit_id = enrichment.projection_commit_id
-        WHERE enrichment.field_name = 'kind'
-        ORDER BY enrichment.transaction_id`,
-    ),
-  ]);
-  const enrichmentsBy = grouped(rows(kindRows), (row) => idString(row.transaction_id, "Enrichment transaction"));
-  const transactions = base.map((row) => transactionFromRow(
-    row,
-    facts.get(idString(row.revision_id, "Transaction revision")),
-    [],
-    enrichmentsBy.get(idString(row.transaction_id, "Enrichment transaction")) ?? [],
-    [],
-  ));
-  return spendingReport("current", knowledgeAt, null, transactions).includedTransactions;
 }
 
 type PairingTransaction = SpendingMatchingTransaction & Readonly<{

@@ -1,5 +1,4 @@
 import type {
-  DataInvalidationEvent,
   DataVersionListener,
   DataVersionSnapshot,
 } from "./data-version.ts";

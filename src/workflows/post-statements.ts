@@ -244,10 +244,6 @@ export function postDetailLinkSelector(visibleOnly = false): string {
   return visibleOnly ? "a.btn_td_orange_dtl:visible" : "a.btn_td_orange_dtl";
 }
 
-function detailLinks(page: Page): Locator {
-  return page.locator(postDetailLinkSelector());
-}
-
 function visibleDetailLinks(page: Page): Locator {
   return page.locator(postDetailLinkSelector(true));
 }

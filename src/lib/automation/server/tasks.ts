@@ -2,7 +2,6 @@ import type {
   AutomationCredentialGroup,
   AutomationCredentialRedaction,
   AutomationExternalPrerequisite,
-  AutomationTaskKind,
   AutomationTaskSummary,
 } from "../types.ts";
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";

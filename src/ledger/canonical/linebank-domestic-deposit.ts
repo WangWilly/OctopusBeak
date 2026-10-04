@@ -2729,13 +2729,6 @@ export function validateLineBankCanonicalCapture(
   };
 }
 
-function transactionKey(row: LineBankTransactionRow): string {
-  const value = row.txSeqNbr;
-  if (value === undefined || value === null) return "";
-  const key = String(value).trim();
-  return /^\d+$/.test(key) && BigInt(key) > 0n ? key : "";
-}
-
 function push(
   diagnostics: LineBankPreflightDiagnostic[],
   code: LineBankPreflightDiagnosticCode,
