@@ -1578,7 +1578,9 @@ import type {
   title={$t.automation.title}
   sideLabel={$t.automation.sideLabel}
   {sideValue}
+  sideValueSensitive={false}
   {sideSub}
+  titleHidden
 >
   <svelte:fragment slot="topbar-actions">
     <button
@@ -2530,14 +2532,6 @@ import type {
 
   .automation-content.sync-sheet-open {
     margin-right: 455px;
-  }
-
-  :global(.topbar-title) {
-    display: none;
-  }
-
-  :global(.topbar-actions) {
-    grid-column: 3;
   }
 
   .topbar-action {

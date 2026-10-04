@@ -65,6 +65,18 @@ button:disabled {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -221,7 +233,7 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   font-weight: 700;
 }
 
-.side-status .money {
+.side-status .side-value {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
@@ -283,6 +295,10 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklch, var(--surface) 96%, transparent);
   backdrop-filter: blur(16px);
+}
+
+.topbar.title-hidden .topbar-actions {
+  grid-column: 3;
 }
 
 .topbar-controls {
@@ -422,9 +438,8 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 
 .metric-card {
   min-height: 144px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
   padding: var(--space-5);
 }
 
@@ -467,6 +482,7 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 }
 
 .metric-card .breakdown {
+  align-self: end;
   display: flex;
   gap: 0;
   flex-wrap: wrap;
@@ -568,13 +584,13 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 
 .account-toolbar {
   position: sticky;
-  top: calc(72px + var(--space-6));
+  top: var(--topbar-height);
   z-index: 8;
   align-items: stretch;
   padding: var(--space-3) 0;
-  background: color-mix(in oklch, var(--bg) 34%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: color-mix(in oklch, var(--bg) 92%, transparent);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
 }
 
 .selected-actions {
@@ -887,7 +903,7 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--fg);
+  background: var(--accent);
 }
 
 .sparkline {
@@ -960,6 +976,11 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   color: var(--muted);
   font-size: 14px;
   font-weight: 700;
+}
+
+.sparkline-empty.compact {
+  min-height: 120px;
+  font-weight: 500;
 }
 
 .modal {

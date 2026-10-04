@@ -38,18 +38,6 @@
 <style>
   .block-frame { position: relative; min-width: 0; }
 
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
   .block-spinner {
     position: absolute;
     top: 14px;
