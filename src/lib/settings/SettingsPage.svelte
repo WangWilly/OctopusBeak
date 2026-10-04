@@ -225,7 +225,7 @@
                 : $t.onboarding.welcomeTitle}
           </span>
           <div class="onboarding-setting-actions">
-            {#if onboardingStatus === "exited"}
+            {#if onboardingStatus === "exited" || onboardingStatus === "completed"}
               <button
                 class="button secondary"
                 type="button"
