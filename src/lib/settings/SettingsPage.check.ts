@@ -46,6 +46,12 @@ test("Settings offers onboarding restart only for completed or exited states", a
     assert.equal(findButton(renderSettings("active"), "Restart onboarding"), null);
     assert.equal(findButton(renderSettings(null), "Restart onboarding"), null);
 
+    const stateChips = { completed: "Completed", exited: "Exited", active: "In progress", notStarted: "Not started" } as const;
+    for (const [status, label] of Object.entries(stateChips)) {
+      const body = renderSettings(status === "notStarted" ? null : status as "active" | "exited" | "completed");
+      assert.match(body, new RegExp(`<span class="chip[^"]*"[^>]*>\\s*${label}\\s*</span>`), `${status} onboarding should show its state chip`);
+    }
+
     for (const status of ["completed", "exited"] as const) {
       const pendingButton = findButton(renderSettings(status, true), "Restarting...");
       assert.ok(pendingButton);

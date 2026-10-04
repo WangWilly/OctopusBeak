@@ -926,6 +926,17 @@ const en = {
     decreaseScale: "Decrease display size",
     increaseScale: "Increase display size",
     resetScale: "Reset",
+    settingsNotSaved: "Not saved",
+    onboardingSection: "Onboarding",
+    onboardingDescription:
+      "Restart the guided setup at any time. Saved sign-in details, source selections, and imported data are kept.",
+    onboardingStatus: "Status",
+    onboardingState: {
+      active: "In progress",
+      exited: "Exited",
+      completed: "Completed",
+      notStarted: "Not started",
+    },
   },
   knownLabels: {
     "Net position": "Net position",
@@ -1845,6 +1856,16 @@ const zh: typeof en = {
     decreaseScale: "縮小顯示",
     increaseScale: "放大顯示",
     resetScale: "重設",
+    settingsNotSaved: "未儲存",
+    onboardingSection: "新手引導",
+    onboardingDescription: "可隨時重新開始引導設定。已儲存的登入資料、來源選擇與匯入資料都會保留。",
+    onboardingStatus: "狀態",
+    onboardingState: {
+      active: "進行中",
+      exited: "已退出",
+      completed: "已完成",
+      notStarted: "尚未開始",
+    },
   },
   knownLabels: {
     "Net position": "淨部位",
