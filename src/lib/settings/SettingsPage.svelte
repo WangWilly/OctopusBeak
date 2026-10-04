@@ -103,8 +103,11 @@
     saveSystemSettings();
   }
 
-  function restartOnboarding() {
-    if (confirm($t.onboarding.restartConfirm)) onRestartOnboarding();
+  let restartConfirming = false;
+
+  function confirmRestart() {
+    restartConfirming = false;
+    onRestartOnboarding();
   }
 </script>
 
@@ -234,19 +237,38 @@
             <span class="chip" class:good={onboardingStatus === "completed"}>
               {$t.settings.onboardingState[onboardingStatus ?? "notStarted"]}
             </span>
-            {#if onboardingStatus === "exited" || onboardingStatus === "completed"}
+            {#if onboardingStatus === null}
+              <button
+                class="button primary"
+                type="button"
+                disabled={onboardingRestartPending}
+                aria-busy={onboardingRestartPending}
+                onclick={onRestartOnboarding}
+              >
+                {onboardingRestartPending ? $t.onboarding.starting : $t.onboarding.start}
+              </button>
+            {:else if (onboardingStatus === "exited" || onboardingStatus === "completed") && !restartConfirming}
               <button
                 class="button"
                 type="button"
                 disabled={onboardingRestartPending}
                 aria-busy={onboardingRestartPending}
-                onclick={restartOnboarding}
+                onclick={() => (restartConfirming = true)}
               >
                 {onboardingRestartPending ? $t.onboarding.restarting : $t.onboarding.restart}
               </button>
             {/if}
           </div>
         </div>
+        {#if restartConfirming && (onboardingStatus === "exited" || onboardingStatus === "completed")}
+          <div class="restart-confirm" role="group" aria-labelledby="onboarding-restart-confirm">
+            <p id="onboarding-restart-confirm">{$t.onboarding.restartConfirm}</p>
+            <div class="onboarding-setting-actions">
+              <button class="button" type="button" onclick={() => (restartConfirming = false)}>{$t.common.cancel}</button>
+              <button class="button danger" type="button" onclick={confirmRestart}>{$t.onboarding.restartConfirmAction}</button>
+            </div>
+          </div>
+        {/if}
       </div>
       {#if onboardingRestartError}
         <div class="settings-error" role="alert">
@@ -328,6 +350,20 @@
     align-items: center;
     justify-content: flex-end;
     gap: var(--space-3);
+  }
+
+  .restart-confirm {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4) 0 var(--space-2);
+    border-top: 1px solid var(--border);
+  }
+
+  .restart-confirm p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .settings-error {
