@@ -9,6 +9,9 @@
     TransactionRowDto,
   } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionForNamespace } from "$lib/institutions/institutions.ts";
+  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
@@ -70,17 +73,20 @@
   );
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
-  $: filtered = accounts.filter((account) => {
+  $: filtered = accounts.flatMap((account) => {
+    const shown = localizeAccount(account, $t);
     const filterMatch = filter === "all" || account.kind === filter;
     const text = [
-      account.label,
+      shown.label,
+      shown.institution,
+      shown.product,
       account.institution,
       account.product,
       account.typeLabel,
     ]
       .join(" ")
       .toLowerCase();
-    return filterMatch && (!query || text.includes(query));
+    return filterMatch && (!query || text.includes(query)) ? [shown] : [];
   });
   $: latestUpdated = accounts.reduce<string | null>(
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
@@ -291,7 +297,10 @@
                 on:click={() => selectAccount(account.id)}
               >
                 <td>
-                  <strong>{account.label}</strong><br />
+                  <span class="account-name">
+                    <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
+                    <strong>{account.label}</strong>
+                  </span>
                   <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
                 </td>
                 <td class="institution-cell">{account.institution}</td>
@@ -398,6 +407,12 @@
 
   .sort-mark.asc::before {
     transform: rotate(180deg);
+  }
+
+  .account-name {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .institution-cell {

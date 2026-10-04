@@ -78,6 +78,8 @@ export type AccountRowDto = {
   id: string;
   label: string;
   institution: string;
+  /** The collection namespace that identifies the institution, e.g. "cathay". */
+  institutionKey?: string;
   product: string;
   group: AccountGroup;
   kind: AccountKind;

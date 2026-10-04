@@ -12,6 +12,7 @@
   } from "$lib/shared-ledger/types.ts";
   import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
+  import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
     buildStackedBalanceChartData,
     type BalanceChartFilter,
@@ -79,7 +80,8 @@
     currency: chartCurrency,
     mode: "liability",
   });
-  function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
+  function buildMetrics(sourceAccounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
+    const accounts = localizeAccounts(sourceAccounts, dictionary);
     const largest = largestAccount(accounts);
     const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
     const loanAccounts = accounts.filter((account) => account.kind === "loan");
@@ -185,7 +187,7 @@
       {@const chartBlock = liabilitiesBlockData("chart", data)}
       {@const chartDataBlock = resolveLiabilitiesChart(liabilities, chartBlock)}
       {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
-        accounts: chartDataBlock.accounts,
+        accounts: localizeAccounts(chartDataBlock.accounts, $t),
         dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
         filter: accountFilter,
         currency: chartCurrency,

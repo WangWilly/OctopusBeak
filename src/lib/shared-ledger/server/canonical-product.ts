@@ -112,6 +112,7 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
     canonicalAccountId: account.id,
     label: account.label,
     institution: account.institution,
+    institutionKey: account.integrationNamespace,
     product: account.product,
     group: account.group,
     kind: account.kind,
