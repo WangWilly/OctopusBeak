@@ -533,15 +533,17 @@ export async function automationRunMany(
 export function automationCancel(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ): Promise<{ cancelled: string }> {
-  return cancelAutomationTask(taskId, provider);
+  return cancelAutomationTask(taskId, provider, expectedRunId);
 }
 
 export function automationForceTerminate(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ): Promise<{ cancelled: string }> {
-  return forceTerminateAutomationTask(taskId, provider);
+  return forceTerminateAutomationTask(taskId, provider, expectedRunId);
 }
 
 export function automationRunHistory(

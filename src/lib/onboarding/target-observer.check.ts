@@ -1,70 +1,82 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { activateOnboardingTarget } from "./target-observer.ts";
+import {
+  createOnboardingTargetRegistry,
+  focusOnboardingTarget,
+  registerOnboardingTarget,
+} from "./target-observer.ts";
 
-function restoreGlobal(name: "HTMLButtonElement" | "HTMLInputElement", descriptor?: PropertyDescriptor) {
-  if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-  else Reflect.deleteProperty(globalThis, name);
-}
-
-test("enter-credentials buttons invoke their native click handler once", () => {
-  const inputDescriptor = Object.getOwnPropertyDescriptor(globalThis, "HTMLInputElement");
-  const buttonDescriptor = Object.getOwnPropertyDescriptor(globalThis, "HTMLButtonElement");
-  let focused = 0;
-  let clicked = 0;
-
-  class FakeInputElement {}
-  class FakeButtonElement {
-    dataset = { onboardingAction: "enter-credentials" };
-
-    focus() { focused += 1; }
-    click() { clicked += 1; }
-  }
-
-  Object.defineProperty(globalThis, "HTMLInputElement", {
-    configurable: true,
-    value: FakeInputElement,
+test("registered targets notify subscribers and stale cleanup cannot remove a replacement", () => {
+  const registry = createOnboardingTargetRegistry();
+  const events: Array<string | null> = [];
+  const unsubscribe = registry.subscribe(() => {
+    events.push(registry.get("automation.progress")?.action ?? null);
   });
-  Object.defineProperty(globalThis, "HTMLButtonElement", {
-    configurable: true,
-    value: FakeButtonElement,
-  });
-  try {
-    activateOnboardingTarget(new FakeButtonElement() as unknown as HTMLElement);
-    assert.deepEqual({ focused, clicked }, { focused: 1, clicked: 1 });
-  } finally {
-    restoreGlobal("HTMLInputElement", inputDescriptor);
-    restoreGlobal("HTMLButtonElement", buttonDescriptor);
-  }
+  const first = {} as HTMLElement;
+  const second = {} as HTMLElement;
+
+  const removeFirst = registry.register("automation.progress", first, "first-copy");
+  const removeSecond = registry.register("automation.progress", second, "progress-copy");
+
+  removeFirst();
+  assert.equal(registry.get("automation.progress")?.element, second);
+  assert.equal(registry.get("automation.progress")?.action, "progress-copy");
+  removeSecond();
+  assert.equal(registry.get("automation.progress"), null);
+  assert.deepEqual(events, [null, "first-copy", "progress-copy", null]);
+
+  unsubscribe();
+  registry.register("automation.progress", first);
+  assert.equal(events.length, 4);
 });
 
-test("enter-credentials inputs keep focus and dispatch onboarding advancement", () => {
-  const inputDescriptor = Object.getOwnPropertyDescriptor(globalThis, "HTMLInputElement");
-  let focused = 0;
-  let advanced = 0;
-  let clicked = 0;
+test("subscribing after target registration immediately exposes the current target snapshot", () => {
+  const registry = createOnboardingTargetRegistry();
+  const element = {} as HTMLElement;
+  registry.register("automation.credentials", element, "open-credentials");
 
-  class FakeInputElement {
-    dataset = { onboardingAction: "enter-credentials" };
-    value = "  certificate password  ";
-
-    focus() { focused += 1; }
-    click() { clicked += 1; }
-    dispatchEvent(event: Event) {
-      if (event.type === "onboardingadvance" && event.bubbles) advanced += 1;
-      return true;
-    }
-  }
-
-  Object.defineProperty(globalThis, "HTMLInputElement", {
-    configurable: true,
-    value: FakeInputElement,
+  let seen: HTMLElement | null = null;
+  const unsubscribe = registry.subscribe(() => {
+    seen = registry.get("automation.credentials")?.element ?? null;
   });
-  try {
-    activateOnboardingTarget(new FakeInputElement() as unknown as HTMLElement);
-    assert.deepEqual({ focused, advanced, clicked }, { focused: 1, advanced: 1, clicked: 0 });
-  } finally {
-    restoreGlobal("HTMLInputElement", inputDescriptor);
-  }
+
+  assert.equal(seen, element);
+  unsubscribe();
+});
+
+test("Svelte target action updates and removes its explicit registration", () => {
+  const registry = createOnboardingTargetRegistry();
+  const element = {} as HTMLElement;
+  const action = registerOnboardingTarget(element, {
+    registry,
+    id: "automation.run",
+    action: "run-copy",
+  });
+  assert.equal(registry.get("automation.run")?.element, element);
+
+  action.update({ registry, id: "automation.progress", action: "progress-copy" });
+  assert.equal(registry.get("automation.run"), null);
+  assert.equal(registry.get("automation.progress")?.element, element);
+  assert.equal(registry.get("automation.progress")?.action, "progress-copy");
+
+  action.destroy();
+  assert.equal(registry.get("automation.progress"), null);
+});
+
+test("focus targets receives focus only and never synthesizes an application action", () => {
+  let focused = 0;
+  let clicked = 0;
+  const target = {
+    focus(options?: FocusOptions) {
+      assert.deepEqual(options, { preventScroll: true });
+      focused += 1;
+    },
+    click() {
+      clicked += 1;
+    },
+  } as unknown as HTMLElement;
+
+  assert.equal(focusOnboardingTarget(target), true);
+  assert.deepEqual({ focused, clicked }, { focused: 1, clicked: 0 });
 });

@@ -32,6 +32,11 @@
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import {
+    createOnboardingTargetRegistry,
+    registerOnboardingTarget,
+    type OnboardingTargetRegistry,
+  } from "$lib/onboarding/target-observer.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
   const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
@@ -40,6 +45,8 @@
   export let overview: OverviewPageDto;
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
+  export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
+  export let onboardingEmptyState = false;
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
@@ -157,11 +164,28 @@
   {sideSub}
   {sideSubSensitive}
   syncLabel={$t.common.importedAt(formatImportedAt(overview.importedAt))}
-  syncDataOnboarding="overview-imported"
 >
   <div class="content">
-    {#if overview.coverage !== "complete"}
-      <div class="projection-state" role="status" data-overview-state={overview.coverage}>
+    {#if overview.availability === "empty"}
+      <section
+        class="card projection-state overview-empty-state"
+        role="status"
+        data-overview-state="empty"
+        use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.empty" }}
+      >
+        {$t.overview.currentEmpty}
+      </section>
+    {/if}
+    {#if overview.coverage !== "complete" && overview.availability !== "empty"}
+      <div
+        class="projection-state"
+        role="status"
+        data-overview-state={overview.coverage}
+        use:registerOnboardingTarget={{
+          registry: onboardingTargets,
+          id: onboardingEmptyState ? "overview.empty" : null,
+        }}
+      >
         <span>{currentStateLabel}</span>
         {#if overview.sourceGaps.length > 0}
           <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
@@ -179,7 +203,10 @@
       let:data
     >
       {@const summaryBlock = overviewBlockData("summary", data)}
-      <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
+      <section
+        aria-label={$t.overview.summaryAria}
+        use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.summary" }}
+      >
         <SummaryStrip metrics={metricsFor(resolveOverviewSummary(overview, summaryBlock))} />
       </section>
     </ProgressiveBlock>

@@ -49,8 +49,16 @@ _Avoid_: package integrity, source checksum
 ### Product
 
 **Onboarding progression**:
-The guided sequence that helps a person configure a credential source, collect statements, import them, and confirm the resulting overview. It begins after the person opts in from First-run Welcome or restarts it from Settings; it may pause for human assistance and resume later.
+The guided sequence that helps a person configure a credential source, collect statements, import them, and confirm the resulting overview. It begins after the person opts in from First-run Welcome or restarts it from Settings, controls application navigation while active, and permits an explicit Onboarding Exit rather than free navigation between pages.
 _Avoid_: First-run Welcome, welcome screens
+
+**Onboarding exit**:
+The person's explicit departure from Onboarding Progression that restores normal application navigation while any already-started Automation Task Run continues. It is distinct from cancelling that run; returning to onboarding requires starting the progression again rather than resuming the exited progression.
+_Avoid_: Workflow cancellation, run cancellation, onboarding completion
+
+**Onboarding restart**:
+A fresh Onboarding Progression that resets guidance progress while retaining entered Sign-in Details, source selections, and imported data, without requiring the person to enter existing settings again. Restart cancels any still-running workflow from the exited progression before a new run may start; the old run's result does not complete the new progression.
+_Avoid_: Resume exited onboarding, clear credentials, financial data reset
 
 **First-run Welcome**:
 A one-time, resumable, swipe-through introduction shown before Onboarding progression for a genuinely empty new user. Existing product data or any existing Onboarding progression state identifies an existing user and bypasses it. First-run Welcome preserves the selected language and current slide across restarts, and completes only after the person explicitly chooses whether to begin bank automation; restarting onboarding from Settings never includes it.
@@ -956,7 +964,3 @@ _Avoid_: Raw pause log, provider-specific persistence, UI-owned contract state
 **Provider verification adapter**:
 A provider-owned resolver and completion adapter that identifies the live verification controls, frames, challenge regions, allowed interaction modes, and provider-specific completion signals for a human assistance contract. The generic viewer does not infer these details from arbitrary page inputs.
 _Avoid_: Generic input scanner, nearest-control heuristic
-
-**Onboarding human verification gate**:
-The rule that onboarding progression is driven by the real automation task outcome, not by local Assist interaction state. Entered text or a completed UI interaction may make Resume available according to the contract, but onboarding remains in Assist until the workflow reports successful collection.
-_Avoid_: UI-interaction onboarding advance, input-nonempty milestone

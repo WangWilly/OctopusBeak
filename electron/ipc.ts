@@ -455,11 +455,11 @@ export function registerOctopusBeakIpc({
     await ensureAutomationRuntimeReady("automation-resume");
     return automationResumeHumanAssistance(taskId, operationalProvider);
   });
-  ipcMain.handle("automation:cancel", (_event, taskId: string) =>
-    automationCancel(taskId, operationalProvider),
+  ipcMain.handle("automation:cancel", (_event, taskId: string, expectedRunId?: string) =>
+    automationCancel(taskId, operationalProvider, expectedRunId),
   );
-  ipcMain.handle("automation:forceTerminate", (_event, taskId: string) =>
-    automationForceTerminate(taskId, operationalProvider),
+  ipcMain.handle("automation:forceTerminate", (_event, taskId: string, expectedRunId?: string) =>
+    automationForceTerminate(taskId, operationalProvider, expectedRunId),
   );
   ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
   ipcMain.handle(

@@ -284,8 +284,8 @@ export type OctopusBeakApi = {
     run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     runMany(taskIds: string[]): Promise<AutomationRunManyResult>;
     resumeHumanAssistance(taskId: string): Promise<{ resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
-    cancel(taskId: string): Promise<{ cancelled: string }>;
-    forceTerminate(taskId: string): Promise<{ cancelled: string }>;
+    cancel(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }>;
+    forceTerminate(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
     openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
     viewerScreenshot(taskId: string): Promise<Uint8Array | null>;

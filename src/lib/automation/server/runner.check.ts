@@ -6,6 +6,9 @@ import test from "node:test";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
   cancelAutomationTask,
+  automationTaskCancellationRequested,
+  automationTaskForceTerminationRequested,
+  currentAutomationTaskRun,
   hasActiveAutomationTask,
   pgliteWorkflowRuntimeEnv,
   forceTerminateAutomationTask,
@@ -45,6 +48,12 @@ function providerStub(automation: Record<string, unknown> = {}) {
       async overviewCurrent() { return { dailyHistory: [] }; },
     },
   } as unknown as AutomationPersistenceProvider;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
@@ -254,7 +263,15 @@ test("runner cancellation aborts the typed execution without accessing a child p
   );
   await started;
   assert.equal(hasActiveAutomationTask(), true);
-  assert.deepEqual(await cancelAutomationTask("exchange-rates", provider), {
+  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-cancellation-check");
+  await assert.rejects(
+    cancelAutomationTask("exchange-rates", provider, "a-different-run"),
+    /run changed before cancellation/u,
+  );
+  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
+  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
+  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-cancellation-check");
+  assert.deepEqual(await cancelAutomationTask("exchange-rates", provider, "runner-cancellation-check"), {
     cancelled: "exchange-rates",
   });
   const error = await rejectedRun;
@@ -294,8 +311,15 @@ test("force termination waits for typed cancellation to settle", async () => {
   const run = runAutomationTask("exchange-rates", provider, { runExecution });
   const settledRun = run.then(() => undefined, () => undefined);
   await started;
+  await assert.rejects(
+    forceTerminateAutomationTask("exchange-rates", provider, "a-different-run"),
+    /run changed before force termination/u,
+  );
+  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
+  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
+  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-force-check");
   let forceSettled = false;
-  const force = forceTerminateAutomationTask("exchange-rates", provider).then(() => {
+  const force = forceTerminateAutomationTask("exchange-rates", provider, "runner-force-check").then(() => {
     forceSettled = true;
   });
   await cancellationObserved;
@@ -307,6 +331,116 @@ test("force termination waits for typed cancellation to settle", async () => {
   await settledRun;
   assert.equal(forceSettled, true);
   assert.equal(hasActiveAutomationTask(), false);
+});
+
+test("late cancellation persistence cannot mutate a newer run under the same task id", async () => {
+  const persistenceRead = deferred<AutomationTaskRun | null>();
+  const persistenceStarted = deferred<void>();
+  let holdOldRunRead = false;
+  const provider = providerStub({
+    async taskRunById(runId: string) {
+      if (holdOldRunRead && runId === "old-run") {
+        holdOldRunRead = false;
+        persistenceStarted.resolve();
+        return persistenceRead.promise;
+      }
+      return null;
+    },
+  });
+  const oldStarted = deferred<void>();
+  const releaseOld = deferred<void>();
+  const oldRun = runAutomationTask("exchange-rates", provider, {
+    runExecution: async (_task, _persistence, _options, onRunCreated) => {
+      await onRunCreated("old-run");
+      oldStarted.resolve();
+      await releaseOld.promise;
+      return null as never;
+    },
+  });
+  const oldSettled = oldRun.then(() => undefined, () => undefined);
+  await oldStarted.promise;
+
+  holdOldRunRead = true;
+  const cancellation = cancelAutomationTask("exchange-rates", provider, "old-run");
+  await persistenceStarted.promise;
+  releaseOld.resolve();
+  await oldSettled;
+
+  const newStarted = deferred<void>();
+  const releaseNew = deferred<void>();
+  const newRun = runAutomationTask("exchange-rates", provider, {
+    runExecution: async (_task, _persistence, _options, onRunCreated) => {
+      await onRunCreated("new-run");
+      newStarted.resolve();
+      await releaseNew.promise;
+      return null as never;
+    },
+  });
+  const newSettled = newRun.then(() => undefined, () => undefined);
+  await newStarted.promise;
+  persistenceRead.resolve(null);
+  await cancellation;
+
+  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "new-run");
+  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
+  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
+  releaseNew.resolve();
+  await newSettled;
+});
+
+test("late force-termination persistence cannot mutate a newer run under the same task id", async () => {
+  const persistenceRead = deferred<AutomationTaskRun | null>();
+  const persistenceStarted = deferred<void>();
+  let holdOldRunRead = false;
+  const provider = providerStub({
+    async taskRunById(runId: string) {
+      if (holdOldRunRead && runId === "old-force-run") {
+        holdOldRunRead = false;
+        persistenceStarted.resolve();
+        return persistenceRead.promise;
+      }
+      return null;
+    },
+  });
+  const oldStarted = deferred<void>();
+  const releaseOld = deferred<void>();
+  const oldRun = runAutomationTask("exchange-rates", provider, {
+    runExecution: async (_task, _persistence, _options, onRunCreated) => {
+      await onRunCreated("old-force-run");
+      oldStarted.resolve();
+      await releaseOld.promise;
+      return null as never;
+    },
+  });
+  const oldSettled = oldRun.then(() => undefined, () => undefined);
+  await oldStarted.promise;
+
+  holdOldRunRead = true;
+  const forceTermination = forceTerminateAutomationTask("exchange-rates", provider, "old-force-run");
+  await persistenceStarted.promise;
+  releaseOld.resolve();
+  await oldSettled;
+
+  const newStarted = deferred<void>();
+  const releaseNew = deferred<void>();
+  const newRun = runAutomationTask("exchange-rates", provider, {
+    runExecution: async (_task, _persistence, _options, onRunCreated) => {
+      await onRunCreated("new-force-run");
+      newStarted.resolve();
+      await releaseNew.promise;
+      return null as never;
+    },
+  });
+  const newSettled = newRun.then(() => undefined, () => undefined);
+  await newStarted.promise;
+  persistenceRead.resolve(null);
+  await forceTermination;
+
+  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "new-force-run");
+  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
+  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
+  releaseNew.resolve();
+  await newSettled;
 });
 
 test("shutdown finalizes persisted runs after aborting active App workflows", async () => {

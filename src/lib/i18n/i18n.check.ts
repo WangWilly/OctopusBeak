@@ -10,6 +10,34 @@ assert.equal(localeLabels.en, "English");
 assert.equal(localeLabels["zh-TW"], "繁體中文");
 assert.equal(translations.en.settings.title, "Settings");
 assert.equal(translations["zh-TW"].settings.title, "設定");
+assert.equal(translations.en.automation.viewOverview, "View Overview");
+assert.equal(translations["zh-TW"].automation.viewOverview, "查看總覽");
+assert.equal(translations.en.onboarding.collectionProgressTitle, "Collecting your data");
+assert.equal(translations["zh-TW"].onboarding.collectionProgressTitle, "正在收集資料");
+assert.equal(translations["zh-TW"].onboarding.sourceEntryTitle, "選擇金融機構");
+assert.equal(translations["zh-TW"].onboarding.sourceEntryBody, "選擇要同步的銀行和你持有的帳戶種類");
+assert.equal(translations.en.onboarding.previous, "Previous");
+assert.equal(translations["zh-TW"].onboarding.previous, "上一步");
+assert.equal(translations.en.onboarding.returnToOverview, "Return to Overview");
+assert.equal(translations["zh-TW"].onboarding.returnToOverview, "返回總覽");
+assert.equal(Object.hasOwn(translations.en.onboarding, "credentialsTitle"), false);
+assert.equal(Object.hasOwn(translations["zh-TW"].onboarding, "credentialsTitle"), false);
+assert.equal(translations.en.onboarding.workflowReviewTitle, "Review the completed workflow");
+assert.equal(translations["zh-TW"].onboarding.workflowReviewTitle, "檢視已完成的 workflow");
+assert.equal(translations.en.onboarding.overviewPreparingTitle, "Preparing your overview");
+assert.equal(translations["zh-TW"].onboarding.overviewPreparingTitle, "正在準備總覽");
+assert.match(translations.en.onboarding.overviewEmptyTitle, /workflow returned no account data/);
+assert.match(translations.en.onboarding.overviewEmptyBody, /selected workflow[\s\S]*Other sources may still have data/);
+assert.match(translations["zh-TW"].onboarding.overviewEmptyTitle, /選定的工作流程未回傳帳戶資料/);
+assert.match(translations["zh-TW"].onboarding.overviewEmptyBody, /其他來源仍可能有資料/);
+assert.equal(translations.en.onboarding.exited, "Onboarding exited");
+assert.equal(translations["zh-TW"].onboarding.exited, "已退出新手引導");
+assert.equal(translations.en.onboarding.restarting, "Restarting...");
+assert.equal(translations["zh-TW"].onboarding.restarting, "正在重新開始…");
+assert.match(translations.en.onboarding.restartConfirm, /source selection[\s\S]*imported data[\s\S]*won’t need to enter them again/);
+assert.match(translations["zh-TW"].onboarding.restartConfirm, /來源選擇與匯入資料都會保留，不需要重新輸入/);
+assert.equal(Object.hasOwn(translations.en.onboarding, "assistBody"), false);
+assert.equal(Object.hasOwn(translations["zh-TW"].onboarding, "assistBody"), false);
 assert.equal(
   translations.en.overview.currentPartial(20, 2),
   "20 accounts are still waiting for a current value. 2 sources are not collected yet. Totals are partial.",

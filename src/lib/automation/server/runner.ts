@@ -363,17 +363,26 @@ export async function runAutomationBatch(
 async function cancelAutomationTaskWithPersistence(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ) {
   if (!activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is not running: ${taskId}`);
   }
+  const requestedRunId = activeTaskRunIds.get(taskId)!;
+  if (expectedRunId !== undefined && (!expectedRunId || requestedRunId !== expectedRunId)) {
+    throw new Error(`Automation task run changed before cancellation: ${taskId}`);
+  }
   cancellationRequestedTaskIds.add(taskId);
   const cancellationRequestedAt = new Date().toISOString();
-  const activeRunId = runtimeForTask(taskId)?.runId
-    ?? activeTaskRunIds.get(taskId);
-  const cancellingRun = activeRunId && activeRunId !== "pending" && activeRunId !== "queued"
+  const queueController = queuedTaskControllers.get(taskId);
+  const activeRunId = requestedRunId;
+  const cancellingRun = activeRunId !== "pending" && activeRunId !== "queued"
     ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
     : null;
+  // Persistence is asynchronous. The task may finish and a newer run may
+  // claim this task ID while it is in flight, so re-check before touching the
+  // runtime record, queue controller, or grace timer.
+  if (activeTaskRunIds.get(taskId) !== requestedRunId) return { cancelled: taskId };
   const runtime = runtimeForTask(taskId);
   if (cancellingRun) {
     automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
@@ -386,14 +395,20 @@ async function cancelAutomationTaskWithPersistence(
       updatedAt: cancellationRequestedAt,
     });
   }
-  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue cancelled."));
+  if (queueController && queuedTaskControllers.get(taskId) === queueController) {
+    queueController.abort(new Error("Workflow queue cancelled."));
+  }
   const previousTimer = cancellationForceTimers.get(taskId);
   if (previousTimer) clearTimeout(previousTimer);
   cancellationForceTimers.set(taskId, setTimeout(() => {
     cancellationForceTimers.delete(taskId);
-    if (!activeTaskRunIds.has(taskId)) return;
+    if (
+      !activeTaskRunIds.has(taskId)
+      || activeTaskRunIds.get(taskId) !== requestedRunId
+    ) return;
     const current = runtimeForTask(taskId);
     if (!current || current.status !== "cancelling") return;
+    if (expectedRunId !== undefined && current.runId !== expectedRunId) return;
     automationRuntimeState.upsert({
       ...current,
       forceTerminateAvailable: true,
@@ -431,28 +446,36 @@ export async function startAutomationTasks(
 export async function cancelAutomationTask(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ): Promise<{ cancelled: string }> {
-  return cancelAutomationTaskWithPersistence(taskId, provider);
+  return cancelAutomationTaskWithPersistence(taskId, provider, expectedRunId);
 }
 
 /** Force termination is available only after the normal cancellation grace period. */
 async function forceTerminateAutomationTaskWithPersistence(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ) {
   if (!activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is not running: ${taskId}`);
   }
+  const requestedRunId = activeTaskRunIds.get(taskId)!;
+  if (expectedRunId !== undefined && (!expectedRunId || requestedRunId !== expectedRunId)) {
+    throw new Error(`Automation task run changed before force termination: ${taskId}`);
+  }
+  const queueController = queuedTaskControllers.get(taskId);
+  const activeCompletion = activeTaskRunCompletions.get(taskId);
   forceTerminationRequestedTaskIds.add(taskId);
   cancellationRequestedTaskIds.add(taskId);
   const timer = cancellationForceTimers.get(taskId);
   if (timer) clearTimeout(timer);
   cancellationForceTimers.delete(taskId);
-  const activeRunId = runtimeForTask(taskId)?.runId
-    ?? activeTaskRunIds.get(taskId);
+  const activeRunId = requestedRunId;
   const cancellingRun = activeRunId && activeRunId !== "pending" && activeRunId !== "queued"
     ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
     : null;
+  if (activeTaskRunIds.get(taskId) !== requestedRunId) return { cancelled: taskId };
   const runtime = runtimeForTask(taskId);
   if (cancellingRun) {
     automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
@@ -464,16 +487,19 @@ async function forceTerminateAutomationTaskWithPersistence(
       updatedAt: new Date().toISOString(),
     });
   }
-  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue force-cancelled."));
-  await activeTaskRunCompletions.get(taskId);
+  if (queueController && queuedTaskControllers.get(taskId) === queueController) {
+    queueController.abort(new Error("Workflow queue force-cancelled."));
+  }
+  await activeCompletion;
   return { cancelled: taskId };
 }
 
 export async function forceTerminateAutomationTask(
   taskId: string,
   provider: AutomationPersistenceProvider,
+  expectedRunId?: string,
 ) {
-  return forceTerminateAutomationTaskWithPersistence(taskId, provider);
+  return forceTerminateAutomationTaskWithPersistence(taskId, provider, expectedRunId);
 }
 
 export type InterruptedAutomationRecoveryDependencies = {

@@ -1,7 +1,6 @@
 import type { VerificationActor } from "./verification-config.ts";
 import type { WorkflowRunEvent } from "./workflow-executor.ts";
 import type { CathayAppVerificationFailureReason } from "./verification-errors.ts";
-import type { OnboardingStep } from "$lib/onboarding/progression.ts";
 
 export const CATHAY_APP_VERIFICATION_FAILURE_REASONS = [
   "challenge-unavailable",
@@ -56,19 +55,6 @@ export function shouldOfferManualVerification(
   actorsByCredentialGroup: Readonly<Record<string, VerificationActor>> | null | undefined,
 ): boolean {
   return verificationActorForUiGroup(credentialGroupId, actorsByCredentialGroup) === "human";
-}
-
-export function onboardingStepForVerificationActor(
-  step: OnboardingStep,
-  credentialGroupId: string | null | undefined,
-  actorsByCredentialGroup: Readonly<Record<string, VerificationActor>> | null | undefined,
-): OnboardingStep {
-  return step === "assist" && !shouldOfferManualVerification(
-    credentialGroupId,
-    actorsByCredentialGroup,
-  )
-    ? "hidden"
-    : step;
 }
 
 /** Read only the finite, bounded reason codes emitted by the Cathay workflow. */
