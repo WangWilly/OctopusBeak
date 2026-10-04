@@ -929,7 +929,7 @@ const en = {
     settingsNotSaved: "Not saved",
     onboardingSection: "Onboarding",
     onboardingDescription:
-      "Restart the guided setup at any time. Saved sign-in details, source selections, and imported data are kept.",
+      "After you exit or finish the guided setup, you can restart it here. Saved sign-in details, source selections, and imported data are kept.",
     onboardingStatus: "Status",
     onboardingState: {
       active: "In progress",
@@ -1858,7 +1858,7 @@ const zh: typeof en = {
     resetScale: "重設",
     settingsNotSaved: "未儲存",
     onboardingSection: "新手引導",
-    onboardingDescription: "可隨時重新開始引導設定。已儲存的登入資料、來源選擇與匯入資料都會保留。",
+    onboardingDescription: "退出或完成引導設定後，可以在這裡重新開始。已儲存的登入資料、來源選擇與匯入資料都會保留。",
     onboardingStatus: "狀態",
     onboardingState: {
       active: "進行中",
