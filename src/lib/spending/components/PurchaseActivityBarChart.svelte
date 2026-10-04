@@ -21,6 +21,7 @@
     maximumFractionDigits: 1,
   });
   $: hasValue = data.some((datum) => datum.value !== 0);
+  $: barData = data.filter((datum) => datum.value !== 0);
 
   function selectBar(_event: MouseEvent, detail: { data: PurchaseActivityDatum }) {
     onSelect?.(detail.data.key);
@@ -42,9 +43,16 @@
       onBarClick={selectBar}
       props={{
         xAxis: { format: "none", tickSpacing: 40 },
-        yAxis: { format: (value: unknown) => compactAmount.format(Number(value)) },
-        bars: { radius: 5, rounded: "top" },
-        tooltip: { header: { format: "none" } },
+        yAxis: {
+          format: (value: unknown) => compactAmount.format(Number(value)),
+          tickLabelProps: { "data-sensitive": "" },
+        },
+        bars: { radius: 5, rounded: "top", data: barData, key: (datum: PurchaseActivityDatum) => datum.key },
+        tooltip: {
+          root: { portal: false },
+          header: { format: "none" },
+          item: { classes: { value: "money" } },
+        },
       }}
     />
   {:else}

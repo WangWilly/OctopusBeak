@@ -86,3 +86,17 @@ assert.match(source, /from "\.\.\/purchase-matching\.ts"/);
 assert.doesNotMatch(source, /ledger\/canonical\/|node:/u);
 assert.doesNotMatch(matchingSource, /from ["']node:/u);
 assert.doesNotMatch(matchingSource, /from ["'][^"']*(?:canonical|server)[^"']*["']/u);
+
+const canonicalSource = readFileSync(new URL("./CanonicalSpendingDashboard.svelte", import.meta.url), "utf8");
+for (const [name, component] of [["purchase", source], ["canonical", canonicalSource]] as const) {
+  const markup = component.slice(component.indexOf("</script>"), component.indexOf("<style>"));
+  for (const match of markup.matchAll(/\{[^{}]*(?:amountText|AmountText)\b[^{}]*\}/g)) {
+    const before = markup.slice(0, match.index);
+    if (/sideValue=$/.test(before)) continue;
+    assert.match(before, /<(?:span|strong) class="money" data-sensitive>$/, `${name} amount must blur when values are hidden: ${match[0]}`);
+  }
+}
+assert.doesNotMatch(source, /<option value=\{datum\.key\}>[^<]*datum\.value/);
+assert.match(chartSource, /tickLabelProps: \{ "data-sensitive": "" \}/);
+assert.match(chartSource, /root: \{ portal: false \}/);
+assert.match(chartSource, /item: \{ classes: \{ value: "money" \} \}/);
