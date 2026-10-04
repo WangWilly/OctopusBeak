@@ -91,14 +91,14 @@ test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, asyn
     await page.reload();
     await page.locator("[data-overview-state]").first().waitFor({ state: "visible", timeout: 15_000 });
     assert.equal(await page.locator(".route-error").count(), 0);
-    await page.locator('[data-onboarding="nav-spending"]').click();
+    await page.locator('nav.side-nav a[href="#/spending"]').click();
     await page.waitForFunction(() => window.location.hash === "#/spending", undefined, { timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector(".route-skeleton, .route-error"), undefined, { timeout: 15_000 });
     assert.equal(await page.locator("[data-financial-live-error]").count(), 0);
     await page.locator(".refresh-trigger").click();
     await page.waitForFunction(() => document.querySelector(".refresh-trigger")?.getAttribute("data-refresh-state") !== "refreshing", undefined, { timeout: 15_000 });
     assert.equal(await page.locator(".route-error").count(), 0);
-    await page.locator('[data-onboarding="nav-overview"]').click();
+    await page.locator('nav.side-nav a[href="#/overview"]').click();
     await page.locator("[data-overview-state]").first().waitFor({ state: "visible", timeout: 15_000 });
     assert.equal(await page.locator(".route-error").count(), 0);
 
