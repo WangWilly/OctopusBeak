@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Component } from "svelte";
 import { createServer, type ViteDevServer } from "vite";
 
-test("Settings offers onboarding restart only for completed or exited states", async () => {
+test("Settings offers onboarding start when none exists and restart only for completed or exited states", async () => {
   const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const values = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
@@ -45,6 +45,9 @@ test("Settings offers onboarding restart only for completed or exited states", a
     assert.ok(findButton(renderSettings("exited"), "Restart onboarding"), "exited onboarding should keep Restart onboarding");
     assert.equal(findButton(renderSettings("active"), "Restart onboarding"), null);
     assert.equal(findButton(renderSettings(null), "Restart onboarding"), null);
+    assert.ok(findButton(renderSettings(null), "Start onboarding"), "a user without onboarding state can start it");
+    assert.equal(findButton(renderSettings("active"), "Start onboarding"), null);
+    assert.equal(findButton(renderSettings("completed"), "Start onboarding"), null);
 
     const stateChips = { completed: "Completed", exited: "Exited", active: "In progress", notStarted: "Not started" } as const;
     for (const [status, label] of Object.entries(stateChips)) {

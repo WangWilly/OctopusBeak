@@ -883,6 +883,9 @@ const en = {
     previousBlockedRestart: "Wait for the previous workflow cancellation to finish.",
     exit: "Exit onboarding",
     restart: "Restart onboarding",
+    start: "Start onboarding",
+    starting: "Starting...",
+    restartConfirmAction: "Restart",
     restartConfirm: "Restart onboarding from scratch? Any workflow started by the previous onboarding will be cancelled. Your saved credentials and source selection, along with imported data, will be kept, so you won’t need to enter them again.",
     restarting: "Restarting...",
     exited: "Onboarding exited",
@@ -930,7 +933,7 @@ const en = {
     settingsNotSaved: "Not saved",
     onboardingSection: "Onboarding",
     onboardingDescription:
-      "After you exit or finish the guided setup, you can restart it here. Saved sign-in details, source selections, and imported data are kept.",
+      "Start the guided setup here, or restart it after you exit or finish. Saved sign-in details, source selections, and imported data are kept.",
     onboardingStatus: "Status",
     onboardingState: {
       active: "In progress",
@@ -1817,6 +1820,9 @@ const zh: typeof en = {
     previousBlockedRestart: "請等舊工作流程取消完成後再返回。",
     exit: "退出新手引導",
     restart: "重新開始新手引導",
+    start: "開始新手引導",
+    starting: "正在開始…",
+    restartConfirmAction: "確認重新開始",
     restartConfirm: "確定要從頭重新開始新手引導嗎？這會取消前一次引導啟動的 workflow。已儲存的登入資料、來源選擇與匯入資料都會保留，不需要重新輸入。",
     restarting: "正在重新開始…",
     exited: "已退出新手引導",
@@ -1860,7 +1866,7 @@ const zh: typeof en = {
     resetScale: "重設",
     settingsNotSaved: "未儲存",
     onboardingSection: "新手引導",
-    onboardingDescription: "退出或完成引導設定後，可以在這裡重新開始。已儲存的登入資料、來源選擇與匯入資料都會保留。",
+    onboardingDescription: "可以在這裡開始引導設定，或在退出、完成後重新開始。已儲存的登入資料、來源選擇與匯入資料都會保留。",
     onboardingStatus: "狀態",
     onboardingState: {
       active: "進行中",
