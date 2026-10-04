@@ -258,3 +258,16 @@
     </ProgressiveBlock>
   </div>
 </DashboardShell>
+
+<style>
+  .balance-basis {
+    margin: 0 0 var(--space-6);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 400;
+  }
+</style>
