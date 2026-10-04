@@ -39,7 +39,7 @@ import {
   selectPGliteOverviewAssets,
   selectPGliteOverviewLiabilities,
 } from "../src/ledger/pglite/overview.ts";
-import { readPGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
+import { readPGliteDailyHistory, readPGliteDailyHistoryWithAccounts } from "../src/ledger/pglite/daily-history.ts";
 import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
@@ -575,7 +575,12 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        return mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets");
+        const history = await readPGliteDailyHistoryWithAccounts(
+          transaction,
+          result.projection.knowledgePoint,
+          result.projection.accounts,
+        );
+        return mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", history);
       });
     },
     async liabilitiesCurrent(expectedSources = []) {
@@ -584,7 +589,12 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        return mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities");
+        const history = await readPGliteDailyHistoryWithAccounts(
+          transaction,
+          result.projection.knowledgePoint,
+          result.projection.accounts,
+        );
+        return mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", history);
       });
     },
     async spendingCurrent(input = {}) {

@@ -16,7 +16,7 @@ import {
   selectPGliteOverviewAssets,
   selectPGliteOverviewLiabilities,
 } from "./overview.ts";
-import { readPGliteDailyHistory } from "./daily-history.ts";
+import { readPGliteDailyHistory, readPGliteDailyHistoryWithAccounts } from "./daily-history.ts";
 import { exchangeRateRequestFromOverview } from "../exchange-rate-requirements.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
@@ -498,6 +498,28 @@ test("PGlite deposit and balance commands feed current and historical overview a
     ]);
     assert.equal(dailyHistory[0]?.accountChanges.length, 1);
     assert.equal(dailyHistory[1]?.accountChanges.length, 1);
+    const withAccounts = await readPGliteDailyHistoryWithAccounts(
+      store,
+      current.projection.knowledgePoint,
+      current.projection.accounts,
+    );
+    assert.deepEqual(withAccounts.dailyHistory, dailyHistory);
+    assert.deepEqual(
+      Object.keys(withAccounts.dailyHistoryByAccount).sort(),
+      current.projection.accounts.map((account) => account.id).sort(),
+    );
+    for (const row of dailyHistory) {
+      const carried = new Map<string, number>();
+      for (const rows of Object.values(withAccounts.dailyHistoryByAccount)) {
+        const latest = rows.filter((item) => item.date <= row.date).at(-1);
+        for (const amount of latest?.assets ?? []) carried.set(amount.currency, (carried.get(amount.currency) ?? 0) + amount.value);
+      }
+      assert.deepEqual(
+        Object.fromEntries(carried),
+        Object.fromEntries(row.assets.map((amount) => [amount.currency, amount.value])),
+        `per-account history must sum to the total on ${row.date}`,
+      );
+    }
     assert.deepEqual(exchangeRateRequestFromOverview({ dailyHistory }), {
       requiredFrom: "2026-09-22",
       currencies: ["USD"],
