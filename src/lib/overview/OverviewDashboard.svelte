@@ -4,12 +4,13 @@
   import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
   import OverviewSankeyCard from "$lib/overview/components/OverviewSankeyCard.svelte";
   import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
-  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, translateKnownLabel, type Translation } from "$lib/i18n/i18n.ts";
   import {
     allExchangeRatesMissing,
     convertDailyHistoryRows,
     dailyHistoryCurrencies,
   } from "$lib/overview/exchange-rate-display.ts";
+  import { translateSummaryBreakdown } from "$lib/overview/summary-breakdown.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
   import {
@@ -135,23 +136,9 @@
   function translateSummaryMetric(metric: SummaryMetricDto, dictionary: Translation): SummaryMetricDto {
     return {
       ...metric,
-      label: translateKnownLabel(metric.label, dictionary),
-      breakdown: metric.breakdown.map((item) => translateBreakdown(item, dictionary)),
+      label: translateKnownLabel(dictionary, metric.label),
+      breakdown: translateSummaryBreakdown(metric.breakdown, dictionary),
     };
-  }
-
-  function translateKnownLabel(value: string, dictionary: Translation) {
-    return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
-  }
-
-  function translateBreakdown(value: string, dictionary: Translation) {
-    const assetMatch = value.match(/^(\d+) asset accounts$/);
-    if (assetMatch) return dictionary.common.assetAccountCount(Number(assetMatch[1]));
-    const debtMatch = value.match(/^(\d+) debt accounts$/);
-    if (debtMatch) return dictionary.common.debtAccountCount(Number(debtMatch[1]));
-    const countMatch = value.match(/^(Bank|Fund|Brokerage|Foreign|Credit card|Loan|Other) (\d+)$/);
-    if (countMatch) return dictionary.common.countLabel(translateKnownLabel(countMatch[1], dictionary), Number(countMatch[2]));
-    return value;
   }
 </script>
 
@@ -215,34 +202,39 @@
       {@const chartBlock = overviewBlockData("chart", data)}
       {@const chartData = resolveOverviewChart(overview, chartBlock)}
       {@const chartHistory = chartData.dailyHistory}
+      {@const snapshotCurrencies = dailyHistoryCurrencies(chartHistory)}
+      {@const activeSnapshotCurrency = snapshotCurrencies.includes(snapshotCurrency) ? snapshotCurrency : snapshotCurrencies[0]}
       <section class="grid layout-2">
       <article class="card">
         <div class="panel-title">
           <h2>{$t.overview.snapshotHistory}</h2>
-          <label class="chip select-chip" for="snapshot-currency">
-            <select
-              id="snapshot-currency"
-              aria-label={$t.overview.snapshotHistoryCurrency}
-              bind:value={snapshotCurrency}
-              onchange={(event) => (snapshotCurrency = selectValue(event))}
-              oninput={(event) => (snapshotCurrency = selectValue(event))}
-            >
-              <option>TWD</option>
-              <option>JPY</option>
-              <option>USD</option>
-            </select>
-          </label>
+          {#if snapshotCurrencies.length > 1}
+            <label class="chip select-chip" for="snapshot-currency">
+              <select
+                id="snapshot-currency"
+                aria-label={$t.overview.snapshotHistoryCurrency}
+                value={activeSnapshotCurrency}
+                onchange={(event) => (snapshotCurrency = selectValue(event))}
+              >
+                {#each snapshotCurrencies as currency}
+                  <option value={currency}>{currency}</option>
+                {/each}
+              </select>
+            </label>
+          {:else}
+            <span class="chip panel-title-lead">{activeSnapshotCurrency}</span>
+          {/if}
           <span class="chip">{$t.common.days30}</span>
         </div>
         {#if chartData.historyAvailability !== "available" || chartHistory.length === 0}
-          <div class="card pad projection-state history-state" role="status" data-overview-state="history-unavailable">
+          <div class="projection-state history-state" role="status" data-overview-state="history-unavailable">
             {$t.overview.historyUnavailable}
           </div>
         {:else}
-          <div class="card pad">
-            <SnapshotSparkline rows={chartHistory.slice(-30)} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
-            {#key snapshotCurrency}
-              <DailyHistoryTable rows={chartHistory.slice(-30)} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
+          <div class="pad">
+            <SnapshotSparkline rows={chartHistory.slice(-30)} currency={activeSnapshotCurrency} label={$t.overview.snapshotHistory} diverging />
+            {#key activeSnapshotCurrency}
+              <DailyHistoryTable rows={chartHistory.slice(-30)} compact netLabel={$t.overview.sideLabel} currency={activeSnapshotCurrency} />
             {/key}
           </div>
         {/if}
@@ -326,7 +318,7 @@
             </span>
           {/if}
         </div>
-        <div class="card pad overview-sankey-panel">
+        <div class="pad overview-sankey-panel">
           <OverviewSankeyCard
             graph={sankey}
             currency={sankeyCurrency}
@@ -344,6 +336,10 @@
     min-width: 0;
     display: grid;
     gap: var(--space-4);
+  }
+
+  .panel-title-lead {
+    margin-left: auto;
   }
 
   .missing-rate-status {
@@ -367,12 +363,13 @@
     align-items: baseline;
     padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius);
     color: var(--muted);
     background: var(--surface-soft);
   }
 
   .history-state {
+    margin: var(--space-5);
     min-height: 5rem;
     align-items: center;
   }
@@ -384,8 +381,8 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    color: var(--text);
-    font-size: var(--font-size-sm);
+    color: var(--fg);
+    font-size: 12px;
   }
 
 </style>

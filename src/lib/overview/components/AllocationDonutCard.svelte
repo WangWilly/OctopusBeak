@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Arc, PieChart } from "layerchart";
-  import { cubicInOut } from "svelte/easing";
-  import { t } from "$lib/i18n/i18n.ts";
+  import { cubicOut } from "svelte/easing";
+  import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type { AccountKind, AccountRowDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import {
@@ -26,6 +26,19 @@
   $: activeItem = chart.items.find((item) => item.key === activeKey) ?? null;
   $: if (activeKey && !chart.items.some((item) => item.key === activeKey)) activeKey = null;
 
+  const kindLabelKeys = {
+    bank: "bank",
+    fund: "fund",
+    brokerage: "brokerage",
+    crypto: "crypto",
+    foreign: "foreign",
+    "credit-card": "creditCard",
+    loan: "loan",
+    other: "other",
+  } as const satisfies Record<AccountKind, keyof Translation["accounts"]>;
+
+  $: kindLabel = (kind: AccountKind) => $t.accounts[kindLabelKeys[kind]];
+
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
   }
@@ -49,7 +62,7 @@
       offset: activeKey === item.key ? 8 : 0,
       class: `allocation-slice ${activeKey === item.key ? "active" : ""}`,
       tabindex: 0,
-      "aria-label": `${item.label}: ${item.percent.toFixed(1)}%, ${formatMoney({ currency: chart.currency, value: item.value })}`,
+      "aria-label": `${kindLabel(item.key)}: ${item.percent.toFixed(1)}%, ${formatMoney({ currency: chart.currency, value: item.value })}`,
     };
   }
 </script>
@@ -93,7 +106,7 @@
               padAngle={0.018}
               legend={false}
               tooltipContext={false}
-              props={{ pie: { motion: { type: "tween", duration: 800, easing: cubicInOut } } }}
+              props={{ pie: { motion: { type: "tween", duration: 200, easing: cubicOut } } }}
               height={212}
               padding={{ top: 6, right: 6, bottom: 6, left: 6 }}
             >
@@ -119,7 +132,7 @@
             <div class="allocation-tooltip" style={tooltipStyle(activeItem.key)}>
               <div>
                 <span class="allocation-tooltip-swatch" style:background-color={activeItem.color}></span>
-                <strong>{activeItem.label}</strong>
+                <strong>{kindLabel(activeItem.key)}</strong>
                 <span class="money">{activeItem.percent.toFixed(1)}%</span>
               </div>
               <span class="money" data-sensitive>
@@ -128,6 +141,20 @@
             </div>
           {/if}
         </div>
+        <ul class="allocation-legend" aria-label={$t.allocation.breakdownAria(displayTitle)}>
+          {#each chart.items as item (item.key)}
+            <li
+              class:active={activeKey === item.key}
+              class:dimmed={activeKey !== null && activeKey !== item.key}
+              onpointerenter={() => (activeKey = item.key)}
+              onpointerleave={() => (activeKey = null)}
+            >
+              <span class="allocation-legend-swatch" style:background-color={item.color}></span>
+              <span class="allocation-legend-label">{kindLabel(item.key)}</span>
+              <span class="num">{item.percent.toFixed(1)}%</span>
+            </li>
+          {/each}
+        </ul>
       </div>
     {:else}
       <div class="allocation-empty">{$t.allocation.empty(currency)}</div>
@@ -148,6 +175,55 @@
   .allocation-content {
     display: grid;
     place-items: center;
+  }
+
+  .allocation-legend {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 14px;
+    margin: var(--space-3) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .allocation-legend li {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    transition: opacity 140ms ease;
+  }
+
+  .allocation-legend li.dimmed {
+    opacity: 0.42;
+  }
+
+  .allocation-legend li.active {
+    color: var(--fg);
+  }
+
+  .allocation-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    flex: 0 0 auto;
+  }
+
+  .allocation-legend-label {
+    min-width: 0;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .allocation-legend .num {
+    color: var(--fg);
   }
 
   .allocation-donut-stage {
@@ -203,7 +279,7 @@
     border: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
     border-radius: var(--radius);
     background: color-mix(in oklch, var(--surface) 94%, transparent);
-    box-shadow: 0 18px 40px rgb(15 23 42 / 0.16);
+    box-shadow: 0 14px 36px rgb(15 23 42 / 0.14);
     pointer-events: none;
     animation: allocation-tooltip-in 140ms ease-out both;
   }

@@ -107,7 +107,7 @@
 
 </script>
 
-<div class="history-table-shell" style={`--history-visible-rows:${visibleRows}`}>
+<div class="history-table-shell" class:scroll-window={!paginate} style={`--history-visible-rows:${visibleRows}`}>
   <div class="table-wrap history-table-wrap">
     <table class="table history-table" class:compact>
       <thead>
@@ -227,7 +227,7 @@
     min-width: 680px;
   }
 
-  .history-table thead {
+  .scroll-window .history-table thead {
     display: table;
     width: 100%;
     table-layout: fixed;
@@ -240,21 +240,24 @@
     background: var(--surface);
   }
 
-  .history-table tbody {
+  .scroll-window .history-table tbody {
     display: block;
     max-height: calc((var(--history-row-height) + 1px) * var(--history-visible-rows));
     overflow-y: auto;
   }
 
-  .history-table tbody tr {
+  .scroll-window .history-table tbody tr {
     display: table;
     width: 100%;
     table-layout: fixed;
   }
 
   .history-table td {
-    height: var(--history-row-height);
     white-space: nowrap;
+  }
+
+  .scroll-window .history-table td {
+    height: var(--history-row-height);
   }
 
   .missing-rate-row td {
