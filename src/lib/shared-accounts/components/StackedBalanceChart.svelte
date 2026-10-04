@@ -44,6 +44,16 @@
     : buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
   $: yDomain = isSingleSeriesSelected ? [yAxis.min, yAxis.max] : [0, yAxis.max];
   $: displayLabel = label || $t.common.balance;
+  $: kindLabels = {
+    bank: $t.accounts.bank,
+    fund: $t.accounts.fund,
+    brokerage: $t.accounts.brokerage,
+    crypto: $t.accounts.crypto,
+    foreign: $t.accounts.foreign,
+    "credit-card": $t.accounts.creditCard,
+    loan: $t.accounts.loan,
+    other: $t.accounts.other,
+  } as Record<string, string>;
   $: ariaLabel = $t.chart.labelAria(displayLabel, currency);
 
   function toggleSeries(key: string) {
@@ -165,7 +175,7 @@
                   <div class="stacked-balance-tooltip-row">
                     <span class="stacked-balance-tooltip-label">
                       <span class="stacked-balance-tooltip-swatch" style:background-color={item.color}></span>
-                      {item.label}
+                      {kindLabels[item.key] ?? item.label}
                     </span>
                     <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(item, data) })}</strong>
                   </div>
@@ -183,12 +193,12 @@
           class:selected={selectedSeriesKeys.length === 0 || selectedKeySet.has(series.key)}
           class="stacked-balance-legend-item"
           type="button"
-          title={series.label}
+          title={kindLabels[series.key] ?? series.label}
           aria-pressed={selectedSeriesKeys.length === 0 || selectedKeySet.has(series.key)}
           onclick={() => toggleSeries(series.key)}
         >
           <span class="stacked-balance-legend-swatch" style:background-color={series.color}></span>
-          <span class="stacked-balance-legend-label">{series.label}</span>
+          <span class="stacked-balance-legend-label">{kindLabels[series.key] ?? series.label}</span>
         </button>
       {/each}
     </div>
