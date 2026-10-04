@@ -60,3 +60,20 @@ assert.deepEqual(
     ["credit-card", "Credit Card", 200, 20],
   ],
 );
+
+const everyKind: AccountRowDto[] = [
+  account("brokerage", "investment", "brokerage", [{ currency: "TWD", value: 1 }]),
+  account("fund", "investment", "fund", [{ currency: "TWD", value: 1 }]),
+  account("bank", "asset", "bank", [{ currency: "TWD", value: 1 }]),
+  account("foreign", "asset", "foreign", [{ currency: "TWD", value: 1 }]),
+  account("crypto", "asset", "crypto", [{ currency: "TWD", value: 1 }]),
+  account("other", "asset", "other", [{ currency: "TWD", value: 1 }]),
+  account("card", "liability", "credit-card", [{ currency: "TWD", value: -1 }]),
+  account("loan", "liability", "loan", [{ currency: "TWD", value: 1 }]),
+  account("crypto-debt", "liability", "crypto", [{ currency: "TWD", value: 1 }]),
+  account("other-debt", "liability", "other", [{ currency: "TWD", value: 1 }]),
+];
+for (const mode of ["asset", "liability"] as const) {
+  const colors = buildAllocationDonutData(everyKind, mode).items.map((item) => item.color);
+  assert.equal(new Set(colors).size, colors.length, `${mode} slices have distinct colors`);
+}

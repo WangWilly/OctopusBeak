@@ -23,14 +23,14 @@ const LIABILITY_KIND_ORDER: AccountKind[] = ["loan", "credit-card", "crypto", "o
 const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
 
 const KIND_COLORS: Record<AccountKind, string> = {
-  brokerage: "oklch(49% 0.08 215)",
-  fund: "oklch(47% 0.07 160)",
-  bank: "oklch(48% 0.085 250)",
-  foreign: "oklch(48% 0.035 250)",
-  crypto: "oklch(50% 0.07 35)",
+  brokerage: "oklch(52% 0.11 250)",
+  fund: "oklch(52% 0.09 170)",
+  bank: "oklch(56% 0.1 70)",
+  foreign: "oklch(53% 0.08 320)",
+  crypto: "oklch(49% 0.06 215)",
+  other: "oklch(50% 0.05 285)",
   "credit-card": "oklch(50% 0.07 35)",
-  loan: "oklch(46% 0.055 250)",
-  other: "oklch(52% 0.045 285)",
+  loan: "oklch(46% 0.035 250)",
 };
 
 export function getAllocationCurrencies(accounts: AccountRowDto[], mode: AllocationDonutMode) {

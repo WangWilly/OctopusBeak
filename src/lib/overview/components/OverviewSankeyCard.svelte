@@ -90,7 +90,6 @@
             {#each nodes as node (node.id)}
               {@const nodeWidth = (node.x1 ?? 0) - (node.x0 ?? 0)}
               {@const nodeHeight = (node.y1 ?? 0) - (node.y0 ?? 0)}
-              {@const isLastColumn = node.depth === 3}
               <Group
                 x={node.x0}
                 y={node.y0}
@@ -110,9 +109,9 @@
                 {#if nodeHeight >= 14}
                   <Text
                     value={labelFor(node.label)}
-                    x={isLastColumn ? -5 : nodeWidth + 5}
+                    x={nodeWidth + 5}
                     y={nodeHeight / 2}
-                    textAnchor={isLastColumn ? "end" : "start"}
+                    textAnchor="start"
                     verticalAnchor="middle"
                     class="overview-sankey-label"
                   />
@@ -196,7 +195,7 @@
   }
 
   :global(.overview-sankey-label) {
-    fill: var(--ink);
+    fill: var(--fg);
     font-size: 11px;
     font-weight: 700;
     paint-order: stroke;
@@ -212,7 +211,7 @@
     border-radius: var(--radius-sm);
     background: var(--fg);
     color: white;
-    box-shadow: 0 8px 20px color-mix(in srgb, black 22%, transparent);
+    box-shadow: 0 14px 36px rgb(15 23 42 / 0.14);
     font-size: 12px;
     font-weight: 800;
   }
