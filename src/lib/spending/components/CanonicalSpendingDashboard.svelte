@@ -197,9 +197,11 @@
       <section class="card canonical-gap-card" data-eligibility-gap role="status">
         <strong>{$locale === "zh-TW" ? "資料資格缺口" : "Eligibility coverage gap"}</strong>
         <span>
-          {$locale === "zh-TW"
-            ? `${period.reportEligibility.gapCount} 筆、${period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} 缺少判定是否列入支出所需資料。`
-            : `${period.reportEligibility.gapCount} transaction(s), ${period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} are missing data needed to decide whether they belong in spending.`}
+          {#if $locale === "zh-TW"}
+            <span class="num">{period.reportEligibility.gapCount}</span> 筆、<span class="money" data-sensitive>{period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")}</span> 缺少判定是否列入支出所需資料。
+          {:else}
+            <span class="num">{period.reportEligibility.gapCount}</span> transaction(s), <span class="money" data-sensitive>{period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")}</span> are missing data needed to decide whether they belong in spending.
+          {/if}
         </span>
       </section>
     {/if}
@@ -226,9 +228,9 @@
         {/each}
       </div>
       <div class="canonical-coverage-grid">
-        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{summaryPeriod.classificationCoverage.classifiedCount}</strong></div>
-        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{summaryPeriod.classificationCoverage.unclassifiedCount}</strong></div>
-        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{summaryPeriod.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong class="num">{summaryPeriod.classificationCoverage.classifiedCount}</strong></div>
+        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong class="num">{summaryPeriod.classificationCoverage.unclassifiedCount}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong class="money" data-sensitive>{summaryPeriod.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
       </div>
     </section>
     </ProgressiveBlock>
@@ -263,7 +265,7 @@
                   {#each invoice.items as item (item.itemKey)}
                     <span>
                       {item.productName ?? ($locale === "zh-TW" ? "未提供品項名稱" : "Item name unavailable")}
-                      · <span data-sensitive>{invoiceItemAmountText(item)}</span>
+                      · <span class="money" data-sensitive>{invoiceItemAmountText(item)}</span>
                     </span>
                   {:else}
                     <span>{$locale === "zh-TW" ? "未提供品項明細" : "No item details provided"}</span>
@@ -357,7 +359,7 @@
               {#if record.category.mode === "allocated"}
                 <div class="canonical-allocation-list" data-allocation-components>
                   {#each record.category.components as component (component.code)}
-                    <span>{categoryText(component.labels, component.code)}: {amountText(component.amount)}</span>
+                    <span>{categoryText(component.labels, component.code)}: <span class="money" data-sensitive>{amountText(component.amount)}</span></span>
                   {/each}
                 </div>
               {/if}

@@ -274,6 +274,16 @@
     return new Intl.DateTimeFormat($locale, { year: "numeric", month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
   }
 
+  function linkedDatesText(record: PurchaseRecord, transaction: NonNullable<PurchaseRecord["transaction"]>) {
+    const invoiceDate = record.occurrence.value.slice(0, 10);
+    const postingDate = (transaction.postingDate ?? transaction.effectiveOn).slice(0, 10);
+    const parts = [`${$t.purchaseSpending.invoicePurchaseDate}: ${dateText(invoiceDate)}`];
+    if (!transaction.consumeDate) parts.push(`${$t.purchaseSpending.consumeDate}: ${$t.purchaseSpending.notProvided}`);
+    else if (transaction.consumeDate.slice(0, 10) !== invoiceDate) parts.push(`${$t.purchaseSpending.consumeDate}: ${dateText(transaction.consumeDate)}`);
+    if (postingDate !== invoiceDate) parts.push(`${$t.purchaseSpending.postingDate}: ${dateText(postingDate)}`);
+    return parts.join(" · ");
+  }
+
   function recordLabel(record: PurchaseRecord) {
     return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? $t.purchaseSpending.merchantUnavailable;
   }
@@ -629,14 +639,14 @@
           <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
         </div>
         <dl class="summary-facts">
-          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd>{monthSummary?.recordCount ?? monthRecords.length}</dd></div>
-          <div><dt>{$t.purchaseSpending.activeDays}</dt><dd>{spendingDayCount}</dd></div>
-          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd>{monthCandidateCount ?? monthSummary?.pendingCandidateCount ?? "—"}</dd></div>
+          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd class="num">{monthSummary?.recordCount ?? monthRecords.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.activeDays}</dt><dd class="num">{spendingDayCount}</dd></div>
+          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd class="num">{monthCandidateCount ?? monthSummary?.pendingCandidateCount ?? "—"}</dd></div>
         </dl>
         {#if availableCurrencies.length > 1}
-          <div class="currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
+          <div class="filters currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
             {#each availableCurrencies as currency}
-              <button type="button" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
+              <button type="button" class="filter-btn" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
             {/each}
           </div>
         {/if}
@@ -657,9 +667,9 @@
             <h2>{chartMode === "day" ? $t.purchaseSpending.dailySpending : $t.purchaseSpending.monthlySpending}</h2>
             <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : $t.purchaseSpending.recentMonths}</p>
           </div>
-          <div class="chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
-            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.daily}</button>
-            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.monthly}</button>
+          <div class="filters chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
+            <button type="button" class="filter-btn" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.daily}</button>
+            <button type="button" class="filter-btn" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.monthly}</button>
           </div>
         </div>
         {#if chartReady}
@@ -672,6 +682,7 @@
         {:else}
           <div class="purchase-chart-pending" aria-hidden="true"></div>
         {/if}
+        <div class="chart-footer">
         <label class="chart-period-picker">
           <span>{chartMode === "day" ? $t.purchaseSpending.chooseDay : $t.purchaseSpending.chooseMonth}</span>
           <select
@@ -681,13 +692,14 @@
           >
             {#if chartMode === "day"}<option value="">{$t.purchaseSpending.showFullMonth}</option>{/if}
             {#each blockChartData as datum (datum.key)}
-              <option value={datum.key}>{datum.label} · {chartCurrency} {datum.value.toLocaleString($locale)}</option>
+              <option value={datum.key}>{datum.label}</option>
             {/each}
           </select>
         </label>
         <p class="chart-hint">{chartMode === "day"
           ? $t.purchaseSpending.dayHint
           : $t.purchaseSpending.monthHint}</p>
+        </div>
       </section>
       </ProgressiveBlock>
     </div>
@@ -709,7 +721,11 @@
         </div>
         <div class="candidate-list">
           {#if listView.visible.length === 0}
-            <p class="candidate-empty" role={monthCandidateLoading ? "status" : undefined}>{monthCandidateLoading ? $t.purchaseSpending.preparingCandidates : $t.purchaseSpending.noPendingMatches}</p>
+            {#if (report.summary && monthCandidateCount === null) || monthCandidateLoading}
+              <p class="candidate-empty pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.preparingCandidates}</p>
+            {:else}
+              <p class="candidate-empty">{$t.purchaseSpending.noPendingMatches}</p>
+            {/if}
           {/if}
           {#each listView.rows as candidate (candidate.candidateId)}
             {@const invoiceRecord = listView.recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null}
@@ -718,13 +734,13 @@
               <div class="candidate-side">
                 <strong>{$t.purchaseSpending.invoiceSource}</strong>
                 <span>{invoiceRecord?.invoice?.revision.seller.name ?? $t.purchaseSpending.merchantUnavailable}</span>
-                <span>{invoiceRecord ? dateText(invoiceRecord.occurrence.value) : "--"} · {invoiceRecord ? amountText(invoiceRecord.amount) : "--"}</span>
+                <span>{invoiceRecord ? dateText(invoiceRecord.occurrence.value) : "--"} · <span class="money" data-sensitive>{invoiceRecord ? amountText(invoiceRecord.amount) : "--"}</span></span>
               </div>
               <div class="candidate-compare"><span class="possible-duplicate">{$t.purchaseSpending.possibleMatch}</span><span>{$t.purchaseSpending.review}</span></div>
               <div class="candidate-side">
                 <strong>{transactionRecord ? basisLabel(transactionRecord) : $t.purchaseSpending.bankSource}</strong>
                 <span>{transactionRecord?.transaction?.description ?? $t.purchaseSpending.descriptionUnavailable}</span>
-                <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · {transactionRecord ? amountText(transactionRecord.amount) : "--"}</span>
+                <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · <span class="money" data-sensitive>{transactionRecord ? amountText(transactionRecord.amount) : "--"}</span></span>
               </div>
               <div class="candidate-actions">
                 <button type="button" class="button primary" disabled={busyAction !== null || isUpdating} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
@@ -767,16 +783,16 @@
               <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$t.purchaseSpending.possibleDuplicate}</span>{/if}</div>
               {#if occurrenceBasisLabel(record)}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}
               {#if record.basis === "linked" && record.transaction}
-                <span>{$t.purchaseSpending.paymentAmount}: {amountText(record.transaction.amount)} · {record.transaction.amount.currency}</span>
-                <span>{$t.purchaseSpending.invoicePurchaseDate}: {dateText(record.occurrence.value)} · {$t.purchaseSpending.consumeDate}: {record.transaction.consumeDate ? dateText(record.transaction.consumeDate) : $t.purchaseSpending.notProvided} · {$t.purchaseSpending.postingDate}: {record.transaction.postingDate ? dateText(record.transaction.postingDate) : dateText(record.transaction.effectiveOn)}</span>
+                <span>{$t.purchaseSpending.paymentAmount}: <span class="money" data-sensitive>{amountText(record.transaction.amount)}</span></span>
+                <span>{linkedDatesText(record, record.transaction)}</span>
                 {#if transactionDateBasisLabel(record.transaction)}<span class="fallback-date" data-transaction-date-basis="posting-date-fallback">{transactionDateBasisLabel(record.transaction)}</span>{/if}
-                {#if record.difference}<span data-link-difference>{$t.purchaseSpending.invoiceAmount}: {amountText(record.difference.invoiceAmount)} · {$t.purchaseSpending.bankAmount}: {amountText(record.difference.bankAmount)} · {$t.purchaseSpending.difference}: {record.difference.exactAmountEqual ? "0" : $t.purchaseSpending.amountDifferenceNotInferred}</span>{/if}
+                {#if record.difference}<span data-link-difference>{$t.purchaseSpending.invoiceAmount}: <span class="money" data-sensitive>{amountText(record.difference.invoiceAmount)}</span> · {$t.purchaseSpending.bankAmount}: <span class="money" data-sensitive>{amountText(record.difference.bankAmount)}</span> · {$t.purchaseSpending.difference}: {#if record.difference.exactAmountEqual}<span class="money" data-sensitive>0</span>{:else}{$t.purchaseSpending.amountDifferenceNotInferred}{/if}</span>{/if}
               {/if}
               {#if record.items.length > 0}
                 <details class="item-list" data-item-details>
                   <summary>{$t.purchaseSpending.invoiceItemsCount(record.items.length)}</summary>
                   {#each record.items as item (item.itemId)}
-                    <span>{item.name ?? $t.purchaseSpending.itemNameUnavailable} · {$t.purchaseSpending.quantity}: {exactText(item.quantity)} · {$t.purchaseSpending.category}: {itemCategory(item)} · {$t.purchaseSpending.itemAmount}: {amountText(item.amount)}</span>
+                    <span>{item.name ?? $t.purchaseSpending.itemNameUnavailable} · {$t.purchaseSpending.quantity}: <span class="num">{exactText(item.quantity)}</span> · {$t.purchaseSpending.category}: {itemCategory(item)} · {$t.purchaseSpending.itemAmount}: <span class="money" data-sensitive>{amountText(item.amount)}</span></span>
                   {/each}
                 </details>
               {/if}
@@ -785,7 +801,7 @@
               {/if}
               {#if record.link}
                 <details class="source-details" data-source-details><summary>{$t.purchaseSpending.sourceAndMatchEvidence}</summary><div>{$t.purchaseSpending.matchEvent}: {record.link.eventId} · {$t.purchaseSpending.knowledge}: {record.link.evidenceKnowledgeSequence} · {$t.purchaseSpending.origin}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
-                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null || isUpdating} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
+                <button type="button" class="button revoke-button" disabled={busyAction !== null || isUpdating} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
               {/if}
               {#if record.refund}<span class="refund-note">{$t.purchaseSpending.refundPeriod} · {record.refund.provenanceReference}</span>{/if}
             </div>
@@ -808,13 +824,13 @@
         <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title" aria-busy={busyAction !== null}>
           <div class="panel-title">
             <div><p class="eyebrow">{$t.purchaseSpending.manualMatch}</p><h2 id="pairing-title">{$t.purchaseSpending.choosePayment}</h2></div>
-            <button type="button" class="button secondary" onclick={() => closePairing()}>{$t.common.close}</button>
+            <button type="button" class="modal-close" aria-label={$t.common.close} onclick={() => closePairing()}>&times;</button>
           </div>
           <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
           {#if pairingFeedbackText}<p class="panel-meta pairing-feedback" role="status">{pairingFeedbackText}</p>{/if}
           <div class="pairing-invoice-summary">
             <strong>{recordLabel(pairingInvoice)}</strong>
-            <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
+            <span>{dateText(pairingInvoice.occurrence.value)} · <span class="money" data-sensitive>{amountText(pairingInvoice.amount)}</span></span>
           </div>
           <fieldset class="payment-options" data-total-candidate-count={pairingCandidateTotal} data-loaded-candidate-count={pairingCandidates?.length ?? 0}>
             <legend>{$t.purchaseSpending.eligiblePayments}</legend>
@@ -824,7 +840,7 @@
               {#each visibleEligiblePayments as payment (payment.purchaseId)}
                 <label class="payment-option">
                   <input type="radio" name="spending-payment" value={payment.transactionId} checked={selectedPaymentId === payment.transactionId} onchange={() => spendingSession.selectPayment(payment.transactionId)} />
-                  <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
+                  <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · <span class="money" data-sensitive>{amountText(payment.amount)}</span></small></span>
                 </label>
               {:else}
                 <span class="panel-meta">{$t.purchaseSpending.noEligiblePayments}</span>
@@ -837,7 +853,7 @@
           {#if selectedPayment}
             <div class="pairing-effect" data-direct-pair-effect>
               <strong>{$t.purchaseSpending.recognitionAfterMatch}</strong>
-              <span>{$t.purchaseSpending.amountCurrencyFromBank}: {amountText(selectedPayment.amount)}</span>
+              <span>{$t.purchaseSpending.amountCurrencyFromBank}: <span class="money" data-sensitive>{amountText(selectedPayment.amount)}</span></span>
               <span>{$t.purchaseSpending.dateFromInvoice}: {dateText(pairingInvoice.occurrence.value)}</span>
               {#if pairingInvoice.amount?.currency !== selectedPayment.amount?.currency || exactText(pairingInvoice.amount) !== exactText(selectedPayment.amount)}
                 <span>{$t.purchaseSpending.sourceDifferenceNotInferred}</span>
@@ -859,21 +875,23 @@
 </DashboardShell>
 
 <style>
-  .purchase-spending { display: grid; gap: var(--space-5); }
+  .purchase-spending { display: grid; gap: var(--space-6); }
   .purchase-spending :global(button) { transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
   .purchase-policy-card, .purchase-summary-card, .purchase-chart-card, .purchase-candidates-card, .purchase-records-card, .purchase-action-error { min-width: 0; }
-  .purchase-policy-card { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); padding: var(--space-4) var(--space-5); background: var(--accent-soft); border-color: color-mix(in oklch, var(--accent) 22%, var(--border)); }
+  .purchase-policy-card { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-radius: var(--radius); }
   .policy-copy { display: flex; align-items: baseline; gap: var(--space-4); min-width: 0; }
   .policy-copy h2 { flex: 0 0 auto; margin: 0; font-size: 14px; }
-  .policy-copy p { max-width: 75ch; margin: 0; color: color-mix(in oklch, var(--accent) 45%, var(--fg)); font-size: 13px; }
-  .purchase-total-status { flex: 0 0 auto; color: var(--success); font-size: 12px; font-weight: 720; white-space: nowrap; }
+  .policy-copy p { max-width: 75ch; margin: 0; color: var(--muted); font-size: 13px; }
+  .purchase-total-status { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 720; white-space: nowrap; }
+  .purchase-total-status[data-total-status="month-clear"], .purchase-total-status[data-total-status="complete"] { color: var(--success); }
   .purchase-total-status[data-total-status="includes-pending-confirmation"], .possible-duplicate, .purchase-action-error { color: var(--danger); }
   .purchase-action-error { padding: var(--space-4) var(--space-5); background: color-mix(in oklch, var(--danger) 8%, white); }
 
-  .purchase-analysis-grid { display: grid; grid-template-columns: minmax(290px, 0.7fr) minmax(0, 1.55fr); gap: var(--space-5); align-items: stretch; }
+  .purchase-analysis-grid { display: grid; grid-template-columns: minmax(290px, 0.7fr) minmax(0, 1.55fr); gap: var(--space-6); align-items: stretch; }
+  .purchase-analysis-grid .card { height: 100%; }
   .purchase-summary-card, .purchase-chart-card, .purchase-candidates-card, .purchase-records-card { padding: var(--space-5); }
   .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
-  .section-heading h2 { margin: 0; font-size: 18px; line-height: 1.25; letter-spacing: -0.015em; }
+  .section-heading h2 { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.25; letter-spacing: -0.015em; }
   .section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
   .month-picker { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
   .month-picker select { min-height: 36px; padding: 0 34px 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--fg); }
@@ -883,17 +901,15 @@
   .summary-facts div { min-width: 0; padding: var(--space-3) var(--space-2); }
   .summary-facts div + div { border-left: 1px solid var(--border); }
   .summary-facts dt { color: var(--muted); font-size: 11px; }
-  .summary-facts dd { margin: 4px 0 0; font-size: 20px; font-weight: 740; }
-  .currency-switch, .chart-mode-switch { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--radius); background: var(--surface-soft); }
+  .summary-facts dd { margin: 4px 0 0; font-size: 20px; font-weight: 750; }
   .currency-switch { margin-top: var(--space-4); }
-  .currency-switch button, .chart-mode-switch button { min-height: 30px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 12px; }
-  .currency-switch button[aria-pressed="true"], .chart-mode-switch button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 2px 8px rgb(15 23 42 / 0.08); }
   .pending-total-note, .purchase-canonical-note { margin: var(--space-4) 0 0; color: var(--muted); font-size: 12px; }
   .chart-heading { margin-bottom: var(--space-3); }
   .purchase-chart-pending { min-height: 280px; }
-  .chart-period-picker { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); color: var(--muted); font-size: 11px; }
+  .chart-footer { display: flex; align-items: center; justify-content: space-between; flex-direction: row-reverse; gap: var(--space-4); margin-top: var(--space-2); }
+  .chart-period-picker { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: 11px; }
   .chart-period-picker select { min-height: 32px; max-width: 210px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
-  .chart-hint { margin: var(--space-2) 0 0; color: var(--muted); font-size: 11px; text-align: center; }
+  .chart-hint { margin: 0; color: var(--muted); font-size: 11px; }
 
   .purchase-candidates-card { display: grid; gap: var(--space-4); }
   .candidate-scope { display: flex; align-items: center; gap: var(--space-3); color: var(--muted); font-size: 12px; }
@@ -902,7 +918,7 @@
   .candidate-row { display: grid; grid-template-columns: minmax(0, 1fr) 116px minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); padding: var(--space-4) 0; border-top: 1px solid var(--border); }
   .candidate-side { display: grid; gap: 3px; min-width: 0; }
   .candidate-side strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-  .candidate-side span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .candidate-side > span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .candidate-compare { position: relative; display: grid; gap: 2px; justify-items: center; color: var(--muted); font-size: 10px; text-align: center; }
   .candidate-compare::before { content: ""; position: absolute; top: 50%; left: -12px; right: -12px; z-index: 0; height: 1px; background: var(--border); }
   .candidate-compare span { position: relative; z-index: 1; padding: 1px 6px; background: var(--surface); }
@@ -931,15 +947,18 @@
   .purchase-record-side { text-align: right; white-space: nowrap; }
   .purchase-record-side strong { font-size: 14px; }
   .item-list, .source-details { color: var(--muted); font-size: 12px; }
-  .item-list summary, .source-details summary { cursor: pointer; color: var(--accent); }
-  .item-list span { display: block; margin-top: 4px; }
+  .item-list summary, .source-details summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--accent); list-style: none; }
+  .item-list summary::-webkit-details-marker, .source-details summary::-webkit-details-marker { display: none; }
+  .item-list summary::before, .source-details summary::before { content: ""; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 180ms ease; }
+  .item-list[open] > summary::before, .source-details[open] > summary::before { transform: rotate(45deg); }
+  .item-list > span { display: block; margin-top: 4px; }
   .source-details pre { max-width: 100%; margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .revoke-button, .pair-button { justify-self: start; margin-top: 4px; }
   .refund-note { color: var(--success) !important; }
   .purchase-empty { display: grid; gap: 5px; padding: var(--space-8) var(--space-5); color: var(--muted); text-align: center; }
   .purchase-empty strong { color: var(--fg); }
 
-  .pairing-dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-5); background: rgb(0 0 0 / 45%); }
+  .pairing-dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-5); background: rgba(14, 18, 28, 0.44); -webkit-backdrop-filter: blur(10px) saturate(0.84); backdrop-filter: blur(10px) saturate(0.84); }
   .pairing-dialog { width: min(680px, 100%); max-height: 85vh; overflow: auto; padding: var(--space-5); }
   .pairing-invoice-summary, .pairing-effect { display: grid; gap: 4px; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); }
   .pairing-invoice-summary span, .pairing-effect span { color: var(--muted); font-size: 12px; }
@@ -947,12 +966,16 @@
   .payment-options legend { margin-bottom: var(--space-2); font-weight: 700; }
   .payment-option { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
   .payment-option:hover { border-color: color-mix(in oklch, var(--accent) 35%, var(--border)); background: var(--accent-soft); }
-  .payment-option span { display: grid; gap: 3px; }
+  .payment-option > span { display: grid; gap: 3px; }
   .payment-option small { color: var(--muted); }
   .pairing-effect { margin-bottom: var(--space-4); }
   .pairing-loading { display: inline-flex; align-items: center; gap: 7px; }
   .pairing-spinner { width: 12px; height: 12px; border: 2px solid color-mix(in oklch, var(--accent) 25%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: pairing-spin 700ms linear infinite; }
   @keyframes pairing-spin { to { transform: rotate(360deg); } }
+  .candidate-empty.pairing-loading { display: flex; justify-content: center; }
+  @media (prefers-reduced-motion: reduce) {
+    .item-list summary::before, .source-details summary::before { transition: none; }
+  }
 
   @media (max-width: 1050px) {
     .purchase-analysis-grid { grid-template-columns: 1fr; }
@@ -973,7 +996,7 @@
     .purchase-day-heading, .purchase-day-heading > div { flex-direction: column; gap: 3px; }
     .summary-facts { grid-template-columns: 1fr; }
     .summary-facts div + div { border-left: 0; border-top: 1px solid var(--border); }
-    .chart-period-picker { align-items: stretch; flex-direction: column; }
+    .chart-footer, .chart-period-picker { align-items: stretch; flex-direction: column; }
     .chart-period-picker select { max-width: none; width: 100%; }
   }
 </style>
