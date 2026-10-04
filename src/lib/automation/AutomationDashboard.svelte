@@ -16,16 +16,15 @@
     CathayGmailOtpStatus,
   } from "$lib/automation/types.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+import {
+  canSubmitCredentials,
+  onboardingTaskDisclosure,
+} from "$lib/onboarding/state.ts";
   import {
     canResumeAssist,
-    canSubmitCredentials,
-    nextOnboardingCredentialKey,
-    onboardingTaskDisclosure,
-    previousOnboardingCredentialState,
     settleAssistDrag,
     settleAssistTextSubmission,
-    shouldGuideAssistViewer,
-  } from "$lib/onboarding/state.ts";
+  } from "$lib/automation/assist-interaction.ts";
   import {
     buildCredentialSetupPlan,
     firstInvalidCredentialGroup,
@@ -34,7 +33,6 @@
   import {
     cathayEmailOtpFailureReason,
     cathayOtpReasonNeedsGmailSettings,
-    onboardingStepForVerificationActor,
     shouldOfferManualVerification,
     verificationFailureEventReason,
     verificationSolverExhausted,
@@ -44,7 +42,17 @@
     shouldDispatchViewerClickBeforeType,
     viewerOverlayAnchorForRect,
   } from "$lib/automation/viewer-coordinate.ts";
-  import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
+import type { OnboardingWorkflowToken } from "$lib/onboarding/controller.ts";
+import type {
+  OnboardingNodeId,
+  OnboardingPresentation,
+  OnboardingStoryEvent,
+} from "$lib/onboarding/story.ts";
+  import {
+    createOnboardingTargetRegistry,
+    registerOnboardingTarget,
+    type OnboardingTargetRegistry,
+  } from "$lib/onboarding/target-observer.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
@@ -80,10 +88,24 @@
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
   export let onboardingSingleSource = false;
-  export let onboardingStep: OnboardingStep = "hidden";
+  export let onboardingNodeId: OnboardingNodeId | null = null;
   export let onboardingSelectedCredentialGroupId: string | null = null;
+  export let onboardingTrackedTaskId: string | null = null;
+  export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>> = {};
-  export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
+  export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
+  export let onOnboardingWorkflowStarting: (
+    taskId: string,
+    credentialGroupId: string | null,
+  ) => OnboardingWorkflowToken | null = () => null;
+  export let onOnboardingWorkflowStarted: (
+    token: OnboardingWorkflowToken | null,
+    run: { taskId: string; runId: string | null },
+  ) => void = () => {};
+  export let onOnboardingWorkflowStartFailed: (
+    token: OnboardingWorkflowToken | null,
+    message: string,
+  ) => void = () => {};
 
   function blockState(
     source: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
@@ -102,6 +124,7 @@
   }
 
   let credentialsOpen = false;
+  let credentialPresentation: "picker" | "details" = "details";
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
@@ -143,7 +166,6 @@
   let cathayGmailOtpError = "";
   let statementSelectionDrafts: Record<string, string[]> = {};
   let statementSelectionConfirmed = false;
-  let onboardingCredentialTargetKey: string | null = null;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let stageOpen: Record<string, boolean> = { sync: true };
@@ -159,16 +181,6 @@
     : $t.common.ready;
   $: sideSub = $t.common.businessDay(automation.businessDate);
   $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
-  $: guideAssistViewer = shouldGuideAssistViewer(
-    assistInteracted,
-    Boolean(floatingInput),
-    humanTask?.humanAssistanceContract?.completion,
-  );
-  $: visibleOnboardingStep = onboardingStepForVerificationActor(
-    onboardingStep,
-    onboardingSelectedCredentialGroupId,
-    verificationActorsByCredentialGroup,
-  );
   $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
     task.isActive
@@ -206,7 +218,7 @@
       .map((task) => task.credentialGroupId as string),
   );
   $: onboardingDisclosure = onboardingTaskDisclosure(
-    visibleOnboardingStep,
+    onboardingNodeId ?? "source-entry",
     onboardingSelectedCredentialGroupId,
     automation.tasks,
   );
@@ -230,7 +242,7 @@
     ?? (!onboardingSourceSelection ? visibleCredentialGroups[0] : undefined);
   $: onboardingMissingCredentialKey = onboardingSourceSelection && selectedCredentialGroup
     ? selectedCredentialGroup.credentialKeys.find(
-        (key) => !credentialDrafts[key]?.trim(),
+        (key) => !credentialDrafts[key]?.trim() && credentialState(key) !== "ready",
       ) ?? null
     : null;
   $: onboardingSourceEnabled = Boolean(
@@ -249,7 +261,6 @@
     onboardingSourceSelection
     && selectedCredentialGroup
     && onboardingSourceEnabled
-    && !onboardingCredentialTargetKey
     && !onboardingMissingCredentialKey
     && !onboardingNeedsStatements,
   );
@@ -499,7 +510,6 @@
     credentialFileErrors = {};
     focusedCredentialKey = null;
     cathayGmailOtpError = "";
-    onboardingCredentialTargetKey = null;
     statementSelectionConfirmed = false;
     statementSelectionError = "";
     groupEnabled = Object.fromEntries(credentialGroups.map((group) => [group.id, group.enabled]));
@@ -517,7 +527,57 @@
         : selectedCredentialGroupId || credentialGroups[0]?.id || "",
     );
     credentialSearch = "";
+    credentialPresentation = onboardingSourceSelection
+      && ["source-entry", "source-selection"].includes(onboardingNodeId ?? "")
+      ? "picker"
+      : "details";
     credentialsOpen = true;
+  }
+
+  function openCredentialsFromStoryEntry() {
+    openCredentials();
+    if (onboardingSourceSelection && onboardingNodeId === "source-entry") {
+      onOnboardingStoryEvent({ type: "open-picker" });
+      credentialPresentation = "picker";
+    }
+  }
+
+  function chooseCredentialGroup(groupId: string) {
+    selectCredentialGroup(groupId);
+    if (onboardingSourceSelection && onboardingNodeId === "source-selection") {
+      credentialPresentation = "details";
+      onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
+    }
+  }
+
+  export async function openCredentialsForOnboarding() {
+    if (!credentialsOpen) openCredentials();
+    await tick();
+  }
+
+  export async function applyOnboardingCredentialPresentation(
+    presentation: OnboardingPresentation,
+    credentialGroupId: string | null,
+  ) {
+    if (presentation === "none") return;
+    if (presentation === "close-credentials") {
+      credentialsOpen = false;
+      await tick();
+      return;
+    }
+    if (!credentialsOpen) openCredentials();
+    if (credentialGroupId && credentialGroups.some((group) => group.id === credentialGroupId)) {
+      if (selectedCredentialGroupId !== credentialGroupId) selectCredentialGroup(credentialGroupId);
+    }
+    credentialPresentation = presentation === "show-picker" ? "picker" : "details";
+    await tick();
+  }
+
+  export async function retryOnboardingWorkflow() {
+    const task = automation.tasks.find(
+      (candidate) => candidate.credentialGroupId === onboardingSelectedCredentialGroupId,
+    );
+    if (task) await runTask(task);
   }
 
   async function openCathayGmailOtpSettings() {
@@ -528,6 +588,7 @@
   }
 
   function closeCredentials() {
+    if (onboardingSourceSelection) return;
     if (credentialsDirty && !confirm($t.automation.discardCredentialChanges)) return;
     resetCredentialChanges();
     credentialsOpen = false;
@@ -535,6 +596,7 @@
 
   function closeCredentialsOnEscape(event: KeyboardEvent) {
     if (!credentialsOpen || event.key !== "Escape") return;
+    if (onboardingSourceSelection) return;
     event.preventDefault();
     closeCredentials();
   }
@@ -664,60 +726,12 @@
       }
       credentialDrafts = { ...credentialDrafts, [key]: result.path };
       credentialFileDraftNames = { ...credentialFileDraftNames, [key]: result.filename };
-      if (onboardingSourceSelection && key === onboardingCredentialTargetKey) {
-        await advanceOnboardingCredential();
-      }
     } catch (error) {
       credentialFileErrors = {
         ...credentialFileErrors,
         [key]: error instanceof Error ? error.message : String(error),
       };
     }
-  }
-
-  function handleOnboardingCredentialKeydown(key: string, event: KeyboardEvent) {
-    if (
-      event.key !== "Enter"
-      || event.isComposing
-      || !onboardingSourceSelection
-      || key !== onboardingCredentialTargetKey
-      || !credentialDrafts[key]?.trim()
-    ) return;
-    event.preventDefault();
-    void advanceOnboardingCredential();
-  }
-
-  async function advanceOnboardingCredential() {
-    if (!selectedCredentialGroup) return;
-    const nextKey = nextOnboardingCredentialKey(
-      selectedCredentialGroup.credentialKeys,
-      onboardingCredentialTargetKey,
-      credentialDrafts,
-    );
-    onboardingCredentialTargetKey = nextKey;
-    await tick();
-    if (nextKey) document.getElementById(`credential-input-${nextKey}`)?.focus();
-  }
-
-  function backOnboardingCredential(event: Event) {
-    event.preventDefault();
-    const previous = previousOnboardingCredentialState(
-      selectedCredentialGroup?.credentialKeys ?? [],
-      {
-        selectedCredentialGroupId,
-        targetKey: onboardingCredentialTargetKey,
-        statementSelectionConfirmed,
-      },
-      Boolean(selectedCredentialGroup?.statementTypes?.length),
-    );
-    if (previous.closeCredentials) {
-      resetCredentialChanges();
-      credentialsOpen = false;
-      return;
-    }
-    selectedCredentialGroupId = previous.selectedCredentialGroupId;
-    onboardingCredentialTargetKey = previous.targetKey;
-    statementSelectionConfirmed = previous.statementSelectionConfirmed;
   }
 
   async function updateCredentialSearch(event: Event) {
@@ -732,11 +746,9 @@
 
   function selectCredentialGroup(groupId: string) {
     statementSelectionError = "";
-    statementSelectionConfirmed = false;
+    const group = credentialGroups.find((candidate) => candidate.id === groupId);
+    statementSelectionConfirmed = Boolean(group?.selectedStatementTypeIds.length);
     selectedCredentialGroupId = groupId;
-    onboardingCredentialTargetKey = onboardingSourceSelection
-      ? credentialGroups.find((group) => group.id === groupId)?.credentialKeys[0] ?? null
-      : null;
     if (onboardingSourceSelection && onboardingSingleSource && groupId) {
       groupEnabled = Object.fromEntries(
         credentialGroups.map((group) => [
@@ -754,20 +766,24 @@
     if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
     const token = beginActionToken(task.id, "run");
     if (!token) return;
+    const onboardingToken = onOnboardingWorkflowStarting(task.id, task.credentialGroupId ?? null);
     applyLocalPreparing(task.id);
     schedulePreparingTimeout(task.id);
     try {
       actionError = "";
       const result = await window.octopusBeak.automation.run(task.id);
       runtimeController?.bindRun(token, result.runId);
+      onOnboardingWorkflowStarted(onboardingToken, { taskId: task.id, runId: result.runId ?? null });
       if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      onOnboardingWorkflowStartFailed(onboardingToken, message);
       failActionToken(token);
       const pending = preparingTimeouts.get(task.id);
       if (pending) clearTimeout(pending);
       preparingTimeouts.delete(task.id);
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = message;
     }
   }
 
@@ -1050,17 +1066,17 @@
       resetCredentialChanges();
       await reload();
       if (onboardingSourceSelection && savedGroupId) {
-        onOnboardingSourceSaved({
-          selectedCredentialGroupId: savedGroupId,
-          sourceConfiguredAt: new Date().toISOString(),
+        onOnboardingStoryEvent({
+          type: "source-saved",
+          credentialGroupId: savedGroupId,
+          configuredAt: new Date().toISOString(),
         });
         credentialsOpen = false;
         const selectedTask = automation.tasks.find(
           (task) => task.credentialGroupId === savedGroupId,
         );
         if (selectedTask?.canRun) {
-          await window.octopusBeak.automation.run(selectedTask.id);
-          await reload();
+          await runTask(selectedTask);
         }
       } else {
         credentialsOpen = false;
@@ -1146,19 +1162,6 @@
       ? ((bounds.y + (bounds.bottom - bounds.y) / 2) / imageSize.height) * 100
       : 50;
     return `--viewer-scale: ${viewerScale}; --viewer-origin-x: ${originX}%; --viewer-origin-y: ${originY}%;`;
-  }
-
-  function backOnboardingAssist(event: Event) {
-    event.preventDefault();
-    if (floatingInput) {
-      floatingInput = null;
-      return;
-    }
-    if (assistInteracted) {
-      assistInteracted = false;
-      return;
-    }
-    closeHumanViewer();
   }
 
   async function sendViewerInput(input: unknown) {
@@ -1485,11 +1488,26 @@
     return task.isActive && ["preparing", "running", "retrying", "cancelling"].includes(task.status);
   }
 
+  function isOnboardingProgressTask(task: AutomationTaskRow) {
+    return task.id === onboardingTrackedTaskId
+      && [
+        "collection-progress",
+        "collection-failed",
+        "workflow-review",
+        "overview-preparing",
+        "overview-preparation-failed",
+      ].includes(onboardingNodeId ?? "");
+  }
+
   function shouldShowWorkflowProgress(task: AutomationTaskRow) {
     const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status);
     return workflowProgressIsWorking(task)
       || (task.isActive && task.status === "waiting_for_human")
-      || (terminal && task.progressPercent !== null);
+      || (terminal && (
+        task.progressPercent !== null
+        || ["failed", "partial", "cancelled", "interrupted"].includes(task.status)
+        || isOnboardingProgressTask(task)
+      ));
   }
 
   function shouldShowProgressStatus(task: AutomationTaskRow) {
@@ -1513,12 +1531,13 @@
         ? waiting
         : dictionary.automation.progressWaitingWithPercent(waiting, task.progressPercent);
     }
-    if (["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)
-      && task.progressPercent !== null) {
-      return dictionary.automation.progressTerminalWithPercent(
-        taskStatusLabel(task, dictionary),
-        task.progressPercent,
-      );
+    if (["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
+      return task.progressPercent === null
+        ? taskStatusLabel(task, dictionary)
+        : dictionary.automation.progressTerminalWithPercent(
+            taskStatusLabel(task, dictionary),
+            task.progressPercent,
+          );
     }
     const stage = workflowProgressStageLabel(task, dictionary);
     if (stage) {
@@ -1565,8 +1584,15 @@
     <button
       class="button secondary topbar-action"
       type="button"
-      data-onboarding={!credentialsOpen ? "automation-credentials" : undefined}
-      onclick={openCredentials}
+      use:registerOnboardingTarget={{
+        registry: onboardingTargets,
+        id: onboardingSourceSelection
+        && onboardingNodeId === "source-entry"
+        && !credentialsOpen
+          ? "automation.credentials"
+          : null,
+      }}
+      onclick={openCredentialsFromStoryEntry}
     >
       {$t.automation.credentials}
     </button>
@@ -1605,12 +1631,6 @@
                   aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
                   title={taskLabel(task, $t)}
-                  data-onboarding-task={task.id}
-                  data-onboarding-group={task.credentialGroupId}
-                  data-onboarding-action={task.status === "waiting_for_human"
-                    && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
-                    ? "open-assist"
-                    : "logs"}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
                   onpointerleave={hideTaskTooltip}
                   onfocus={(event) => showTaskTooltip(task, event)}
@@ -1781,7 +1801,13 @@
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
                   {#if shouldShowWorkflowProgress(task)}
-                  <div class="progress-cell">
+                  <div
+                    class="progress-cell"
+                    use:registerOnboardingTarget={{
+                      registry: onboardingTargets,
+                      id: isOnboardingProgressTask(task) ? "automation.progress" : null,
+                    }}
+                  >
                     <div
                       class="progress-bar"
                       class:working={workflowProgressIsWorking(task)}
@@ -1801,6 +1827,14 @@
                         <span class={`chip ${statusClass(task.status)}`}>{taskStatusLabel(task, $t)}</span>
                       {/if}
                     </div>
+                    {#if ["failed", "cancelled"].includes(task.status) && task.appWorkflowOutcome?.errorCode}
+                      <div class="workflow-failure-summary" role="status">
+                        <code>{task.appWorkflowOutcome.errorCode}</code>
+                        {#if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
+                          <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                        {/if}
+                      </div>
+                    {/if}
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
@@ -1815,9 +1849,14 @@
                       type="button"
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
-                      data-onboarding-task={task.id}
-                      data-onboarding-group={task.credentialGroupId}
-                      data-onboarding-action="primary"
+                      use:registerOnboardingTarget={{
+                        registry: onboardingTargets,
+                        id: task.credentialGroupId === onboardingSelectedCredentialGroupId
+                          && onboardingNodeId === "collection"
+                          ? "automation.run"
+                          : null,
+                        action: "run-workflow",
+                      }}
                       onclick={() => void primaryTaskAction(task)}
                     >
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
@@ -1837,11 +1876,6 @@
                       <button
                         class="button secondary task-control"
                         type="button"
-                        data-onboarding={visibleOnboardingStep === "assist" && !humanTask
-                          && task.credentialGroupId === onboardingSelectedCredentialGroupId
-                          ? "automation-assist"
-                          : undefined}
-                        data-onboarding-action="open-assist"
                         onclick={() => openHumanViewer(task)}
                       >
                         {$t.automation.assist}
@@ -1855,14 +1889,16 @@
                       title={$t.automation.runDetails}
                       aria-expanded={expandedRunDetailsTaskId === task.id}
                       aria-controls={`${task.id}-run-details`}
-                      data-onboarding-task={task.id}
-                      data-onboarding-group={task.credentialGroupId}
-                      data-onboarding-action="run-details"
                       onclick={() => (expandedRunDetailsTaskId = expandedRunDetailsTaskId === task.id ? null : task.id)}
                     >
                       <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
                       <span class="visually-hidden">{$t.automation.runDetails}</span>
                     </button>
+                    {#if task.status === "completed"}
+                      <a class="button secondary task-control" href="#/overview">
+                        {$t.automation.viewOverview}
+                      </a>
+                    {/if}
                   </div>
                 </td>
               </tr>
@@ -2032,12 +2068,16 @@
 
 {#if credentialsOpen}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} onclick={closeCredentials}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} disabled={onboardingSourceSelection} onclick={closeCredentials}></button>
     <form
       class="modal-panel credential-modal"
       onsubmit={saveCredentials}
-      ononboardingadvance={advanceOnboardingCredential}
-      ononboardingback={backOnboardingCredential}
+      use:registerOnboardingTarget={{
+        registry: onboardingTargets,
+        id: onboardingSourceSelection && onboardingNodeId === "credentials"
+          ? "automation.credentials"
+          : null,
+      }}
     >
       <div class="modal-head">
         <div>
@@ -2045,42 +2085,40 @@
           <p>{$t.automation.credentialsDescription}</p>
         </div>
         <div class="credential-head-actions">
-          <button class="button fixed-action" type="button" onclick={closeCredentials}>{$t.common.cancel}</button>
+          {#if !onboardingSourceSelection}
+            <button class="button fixed-action" type="button" onclick={closeCredentials}>{$t.common.cancel}</button>
+          {/if}
           <button
             class="button primary fixed-action"
             type="submit"
             disabled={!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)}
-            data-onboarding={onboardingCredentialsReady
-              ? "automation-credentials"
-              : undefined}
-            data-onboarding-action="save-credentials"
           >{$t.common.save}</button>
-          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
+          {#if !onboardingSourceSelection}
+            <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
+          {/if}
         </div>
       </div>
       <div class="modal-body credential-layout">
-        <aside class="credential-provider-list">
+        <aside
+          class="credential-provider-list"
+          use:registerOnboardingTarget={{
+            registry: onboardingTargets,
+            id: onboardingSourceSelection && onboardingNodeId === "source-selection"
+              ? "automation.credentials"
+              : null,
+          }}
+        >
           <label class="modal-search">
             <Search size={18} />
             <input value={credentialSearch} oninput={updateCredentialSearch} placeholder={$t.automation.credentialSearch} />
           </label>
-          <nav
-            aria-label={$t.automation.credentialsTitle}
-            tabindex="-1"
-            data-onboarding={onboardingSourceSelection
-              && credentialsOpen
-              && !selectedCredentialGroupId
-                ? "automation-credentials"
-                : undefined}
-            data-onboarding-action="select-source"
-          >
+          <nav aria-label={$t.automation.credentialsTitle} tabindex="-1">
             {#each visibleCredentialGroups as group}
               <button
                 type="button"
                 class:selected={group.id === selectedCredentialGroupId}
                 aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
-                data-onboarding-group={group.id}
-                onclick={() => selectCredentialGroup(group.id)}
+                onclick={() => chooseCredentialGroup(group.id)}
               >
                 <strong>{credentialGroupName(group)}</strong>
                 <span>{credentialGroupStatuses[group.id]}</span>
@@ -2088,7 +2126,7 @@
             {/each}
           </nav>
         </aside>
-        {#if selectedCredentialGroup}
+        {#if selectedCredentialGroup && (!onboardingSourceSelection || credentialPresentation === "details")}
           <section class="credential-body" aria-labelledby={`${selectedCredentialGroup.id}-credentials-title`}>
             <div class="credential-section-head">
               <h3 id={`${selectedCredentialGroup.id}-credentials-title`}>{credentialGroupName(selectedCredentialGroup)}</h3>
@@ -2097,10 +2135,6 @@
                 class:dirty={(groupEnabled[selectedCredentialGroup.id] !== false) !== selectedCredentialGroup.enabled}
                 type="button"
                 aria-pressed={groupEnabled[selectedCredentialGroup.id] !== false}
-                data-onboarding={onboardingSourceSelection && !onboardingSourceEnabled
-                  ? "automation-credentials"
-                  : undefined}
-                data-onboarding-action="enable-source"
                 onclick={() => toggleGroup(selectedCredentialGroup.id)}
               >
                 <span>{$t.common.enabled}</span>
@@ -2124,10 +2158,6 @@
                         id={`credential-input-${key}`}
                         class="button secondary"
                         type="button"
-                        data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
-                          ? "automation-credentials"
-                          : undefined}
-                        data-onboarding-action="enter-credentials"
                         onclick={() => void selectCertificateFile(key)}
                       >{selectedFileName ? $t.automation.chooseAnotherCertificateFile : $t.automation.chooseCertificateFile}</button>
                     </div>
@@ -2151,14 +2181,9 @@
                         focusedCredentialKey === key,
                       )}
                       class:dirty={Boolean(credentialDrafts[key]?.trim())}
-                      data-onboarding={onboardingSourceEnabled && key === onboardingCredentialTargetKey
-                        ? "automation-credentials"
-                        : undefined}
-                      data-onboarding-action="enter-credentials"
                       onfocus={(event) => focusCredentialInput(key, credentialField.redaction, event)}
                       onblur={(event) => blurCredentialInput(key, credentialField.redaction, event)}
                       oninput={(event) => updateCredentialDraft(key, event)}
-                      onkeydown={(event) => handleOnboardingCredentialKeydown(key, event)}
                       placeholder={automation.credentials[key] ? $t.common.saved : $t.common.missing}
                       autocomplete="off"
                     />
@@ -2227,10 +2252,6 @@
                 class="statement-selection"
                 id={`${selectedCredentialGroup.id}-statement-selection`}
                 tabindex="-1"
-                data-onboarding={!onboardingCredentialTargetKey && onboardingNeedsStatements
-                  ? "automation-credentials"
-                  : undefined}
-                data-onboarding-action="select-statements"
                 aria-describedby={statementSelectionError
                   ? `${selectedCredentialGroup.id}-statement-help ${selectedCredentialGroup.id}-statement-error`
                   : `${selectedCredentialGroup.id}-statement-help`}
@@ -2383,7 +2404,6 @@
     <div
       class="modal-panel human-viewer-modal"
       class:expanded={viewerExpanded}
-      ononboardingback={backOnboardingAssist}
     >
       <div class="modal-head viewer-head">
         <div class="viewer-title">
@@ -2414,19 +2434,9 @@
             class="button primary fixed-action"
             type="button"
             disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)}
-            data-onboarding={visibleOnboardingStep === "assist" && humanTask && canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)
-              ? "automation-assist"
-              : undefined}
-            data-onboarding-action="resume-collection"
             onclick={resumeHumanViewer}
           >
-            {visibleOnboardingStep === "assist" && canResumeAssist(
-              assistInteracted,
-              Boolean(floatingInput),
-              humanTask.humanAssistanceContract?.completion,
-            )
-              ? $t.onboarding.resumeCollection
-              : $t.automation.resume}
+            {$t.automation.resume}
           </button>
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHumanViewer}>x</button>
         </div>
@@ -2437,7 +2447,7 @@
             <button
               class="viewer-image-button"
               type="button"
-              aria-label={$t.onboarding.verificationViewerAria}
+              aria-label={$t.automation.pausedBrowser}
               onkeydown={handleViewerKeydown}
               onpointerdown={handleViewerPointerDown}
               onpointerup={handleViewerPointerUp}
@@ -2446,10 +2456,6 @@
               {#if viewerImageUrl}
                 <img
                   class="viewer-image"
-                  data-onboarding={visibleOnboardingStep === "assist" && humanTask && guideAssistViewer
-                    ? "automation-assist"
-                    : undefined}
-                  data-onboarding-action="choose-verification-control"
                   src={viewerImageUrl}
                   alt={$t.automation.pausedBrowser}
                   draggable="false"
@@ -2472,11 +2478,6 @@
                 </div>
               {/if}
             </button>
-          {#if visibleOnboardingStep === "assist" && humanTask && guideAssistViewer}
-            <div class="verification-viewer-tooltip" role="tooltip">
-              {$t.onboarding.clickVerificationField}
-            </div>
-          {/if}
           <button
             class="viewer-expand-action"
             type="button"
@@ -2494,10 +2495,6 @@
             >
               <input
                 bind:this={floatingInputEl}
-                data-onboarding={visibleOnboardingStep === "assist" && floatingInput
-                  ? "automation-assist"
-                  : undefined}
-                data-onboarding-action="enter-verification"
                 type="text"
                 maxlength="128"
                 aria-label={$t.automation.textToTypeAria}
@@ -3052,6 +3049,18 @@
     justify-content: space-between;
     gap: 6px;
     min-width: 0;
+  }
+
+  .workflow-failure-summary {
+    display: grid;
+    gap: 3px;
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  .workflow-failure-summary code {
+    width: fit-content;
+    font-size: 11px;
   }
 
   .progress-copy {

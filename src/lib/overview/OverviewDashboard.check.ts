@@ -99,6 +99,23 @@ test("overview does not render balance-basis notices", () => {
   assert.doesNotMatch(source, /\$t\.overview\.(availableBalanceBasis|creditCardEstimateBasis)/);
 });
 
+test("overview exposes registered summary and confirmed empty-state spotlight targets", () => {
+  assert.match(source, /registerOnboardingTarget/);
+  assert.match(source, /export let onboardingEmptyState = false/);
+  assert.match(source, /id: "overview\.summary"/);
+  assert.match(
+    source,
+    /overview\.availability === "empty"[\s\S]*?id: "overview\.empty"[\s\S]*?\$t\.overview\.currentEmpty/,
+  );
+  const coverageProjectionState = source.slice(
+    source.indexOf('overview.coverage !== "complete" && overview.availability !== "empty"'),
+    source.indexOf("\n      </div>\n    {/if}", source.indexOf('overview.coverage !== "complete" && overview.availability !== "empty"')),
+  );
+  assert.match(coverageProjectionState, /id: onboardingEmptyState \? "overview\.empty" : null/);
+  assert.match(coverageProjectionState, /overview\.sourceGaps\.length > 0/);
+  assert.doesNotMatch(source, /data-onboarding/);
+});
+
 test("unavailable current state wins when source gaps are also present", () => {
   const stateExpression = source.slice(
     source.indexOf("$: currentStateLabel"),
