@@ -16,10 +16,10 @@ import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 
-function maxResponse(body: unknown, date?: string) {
+function maxResponse(body: unknown, date = "Wed, 02 Sep 2026 04:05:06 GMT") {
   return new Response(JSON.stringify(body), {
     status: 200,
-    headers: date ? { Date: date } : {},
+    headers: { Date: date },
   });
 }
 
@@ -97,7 +97,8 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
         },
       },
     });
-    assert.equal((await terminal).kind, "completed");
+    const result = await terminal;
+    assert.equal(result.kind, "completed", JSON.stringify(result));
     assert.deepEqual(observedCodes.slice(-1), ["run-completed"]);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
