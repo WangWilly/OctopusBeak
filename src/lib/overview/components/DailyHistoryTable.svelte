@@ -18,7 +18,7 @@
   export let netLabel = "";
   export let currency = "TWD";
   export let paginate = false;
-  export let pageSize = 30;
+  export let pageSize = 10;
   export let visibleRows = 4;
 
   let sortKey: SortKey = "date";
