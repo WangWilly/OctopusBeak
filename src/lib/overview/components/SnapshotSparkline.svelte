@@ -278,7 +278,7 @@
   </div>
 {:else}
   <div class="sparkline sparkline-empty" role="img" aria-label={ariaLabel}>
-    No {currency} history
+    {$t.chart.noHistory(currency)}
   </div>
 {/if}
 
