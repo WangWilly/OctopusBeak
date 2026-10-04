@@ -60,7 +60,7 @@
           <SnapshotSparkline rows={chartRows} {currency} label={$t.common.balance} />
         </div>
         {#key currency}
-          <DailyHistoryTable rows={rows} {currency} netLabel={$t.common.balance} paginate pageSize={20} visibleRows={6} />
+          <DailyHistoryTable rows={rows} {currency} netLabel={$t.common.balance} paginate pageSize={20} />
         {/key}
       </div>
     </div>

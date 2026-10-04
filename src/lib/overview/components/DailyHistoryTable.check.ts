@@ -7,11 +7,11 @@ const source = readFileSync(new URL("./DailyHistoryTable.svelte", import.meta.ur
 test("missing exchange rates do not color native-currency daily changes", () => {
   assert.match(
     source,
-    /class:amount-positive=\{!row\.exchangeRateMissing && dailyChange > 0\}/,
+    /class:amount-positive=\{!row\.exchangeRateMissing && currencyValue\(row\.dailyChange\) > 0\}/,
   );
   assert.match(
     source,
-    /class:amount-negative=\{!row\.exchangeRateMissing && dailyChange < 0\}/,
+    /class:amount-negative=\{!row\.exchangeRateMissing && currencyValue\(row\.dailyChange\) < 0\}/,
   );
 });
 
