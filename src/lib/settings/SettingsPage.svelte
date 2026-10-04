@@ -114,6 +114,7 @@
   title={$t.settings.title}
   sideLabel={$t.settings.sideLabel}
   sideValue={localeLabels[$locale]}
+  sideValueSensitive={false}
   sideSub={$t.settings.sideSub}
 >
   <svelte:fragment slot="topbar-actions">

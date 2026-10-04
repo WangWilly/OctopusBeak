@@ -28,6 +28,8 @@
   export let title = "Portfolio";
   export let sideLabel = "Net position";
   export let sideValue = "--";
+  export let sideValueSensitive = true;
+  export let titleHidden = false;
   export let sideSub = "";
   export let sideSubSensitive = false;
   export let search = "";
@@ -185,7 +187,7 @@
 <svelte:window onkeydown={handleDisplayScaleKeydown} />
 
 <div class:values-hidden={!valuesVisible} class:sidebar-collapsed={sidebarCollapsed} class="shell-page">
-  <header class="topbar">
+  <header class="topbar" class:title-hidden={titleHidden}>
     <div class="topbar-controls">
       <button
         class="sidebar-toggle"
@@ -210,7 +212,7 @@
       </button>
     </div>
 
-    <h1 class="topbar-title"><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
+    <h1 class="topbar-title" class:visually-hidden={titleHidden}><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
 
     <div class="topbar-actions">
       <button
@@ -286,7 +288,7 @@
     </div>
     <div class="side-status">
       <p class="label">{sideLabel}</p>
-      <p class="money">{sideValue}</p>
+      <p class="side-value" class:money={sideValueSensitive}>{sideValue}</p>
       <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
     </div>
   </aside>
@@ -373,18 +375,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .refresh-spinner { animation: none; }
-  }
-
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 
   .display-scale-hud {

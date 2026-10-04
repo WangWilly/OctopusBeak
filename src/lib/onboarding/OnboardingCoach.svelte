@@ -489,17 +489,6 @@
   .coach-error { margin: 0 0 10px; color: var(--danger); font-size: 13px; }
   .coach-disabled-reason { margin: 0 0 10px !important; color: var(--muted); font-size: 12px; line-height: 1.3 !important; }
   .coach-actions :global(.button) { min-height: 38px; padding: 8px 11px; }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
   @keyframes guide-idle { 50% { background-position: right center; } }
   @media (max-height: 700px) {
     .coach { padding: 18px; }

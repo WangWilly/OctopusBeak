@@ -287,7 +287,7 @@
               >
                 <td>
                   <strong>{account.label}</strong><br />
-                  <span class="account-meta">{account.product} / {$t.accounts.txCount(account.transactionCount)}</span>
+                  <span class="account-meta">{translateKnownLabel(account.product, $t)} / {$t.accounts.txCount(account.transactionCount)}</span>
                 </td>
                 <td>{account.institution}</td>
                 <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
@@ -338,7 +338,7 @@
 <style>
   .sort-button {
     width: 100%;
-    min-height: 52px;
+    min-height: 24px;
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -353,7 +353,7 @@
   }
 
   .sort-button.right {
-    justify-content: flex-end;
+    flex-direction: row-reverse;
   }
 
   .sort-button:hover,

@@ -194,7 +194,7 @@
     </div>
   </div>
 {:else}
-  <div class="stacked-balance-chart sparkline-empty" role="img" aria-label={ariaLabel}>
+  <div class="sparkline-empty compact" role="img" aria-label={ariaLabel}>
     {$t.chart.noHistory(currency)}
   </div>
 {/if}

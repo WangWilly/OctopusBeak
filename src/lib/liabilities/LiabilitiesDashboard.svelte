@@ -184,6 +184,13 @@
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
       {@const chartBlock = liabilitiesBlockData("chart", data)}
       {@const chartDataBlock = resolveLiabilitiesChart(liabilities, chartBlock)}
+      {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
+        accounts: chartDataBlock.accounts,
+        dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
+        filter: accountFilter,
+        currency: chartCurrency,
+        mode: "liability",
+      }) : chartData}
       <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.liabilities.debtBalance}</h2>
@@ -202,17 +209,13 @@
             </select>
           </label>
         {/if}
-        <span class="chip">{$t.common.days30}</span>
+        {#if stackedChart.series.length > 0}
+          <span class="chip">{$t.common.days30}</span>
+        {/if}
       </div>
       <div class="pad balance-chart">
         <StackedBalanceChart
-          chart={chartBlock ? buildStackedBalanceChartData({
-            accounts: chartDataBlock.accounts,
-            dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
-            filter: accountFilter,
-            currency: chartCurrency,
-            mode: "liability",
-          }) : chartData}
+          chart={stackedChart}
           currency={chartCurrency}
           label={$t.liabilities.debtExposure}
         />
