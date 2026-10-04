@@ -2137,7 +2137,7 @@ import type {
                 aria-pressed={groupEnabled[selectedCredentialGroup.id] !== false}
                 onclick={() => toggleGroup(selectedCredentialGroup.id)}
               >
-                <span>{$t.common.enabled}</span>
+                <span>{$t.automation.credentialSyncToggle}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>

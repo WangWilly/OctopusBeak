@@ -13,9 +13,22 @@ assert.equal(translations["zh-TW"].settings.title, "設定");
 assert.equal(translations.en.automation.viewOverview, "View Overview");
 assert.equal(translations["zh-TW"].automation.viewOverview, "查看總覽");
 assert.equal(translations.en.onboarding.collectionProgressTitle, "Collecting your data");
-assert.equal(translations["zh-TW"].onboarding.collectionProgressTitle, "正在收集資料");
+assert.equal(translations["zh-TW"].onboarding.collectionProgressTitle, "同步資料中");
 assert.equal(translations["zh-TW"].onboarding.sourceEntryTitle, "選擇金融機構");
 assert.equal(translations["zh-TW"].onboarding.sourceEntryBody, "選擇要同步的銀行和你持有的帳戶種類");
+assert.equal(translations["zh-TW"].onboarding.chooseSourceCopy.title, "選擇第一間金融機構");
+assert.equal(translations["zh-TW"].onboarding.chooseSourceCopy.body, "選擇要同步的金融機構，新手流程結束後仍可加入更多。");
+assert.equal(translations["zh-TW"].onboarding.credentialsSetupCopy.title, "設定金融機構");
+assert.equal(translations["zh-TW"].onboarding.credentialsSetupCopy.body, "確認啟用狀態、登入資料與需要同步的帳號範圍。");
+assert.equal(translations["zh-TW"].onboarding.collectionTitle, "開始同步資料");
+assert.equal(translations["zh-TW"].onboarding.collectionProgressTitle, "同步資料中");
+assert.equal(translations["zh-TW"].onboarding.collectionProgressBody, "可查看同步的進度。");
+assert.equal(translations["zh-TW"].onboarding.previousBlockedWorkflow, "停止同步後才能返回上一步。");
+assert.equal(translations["zh-TW"].onboarding.cancelWorkflow, "取消同步");
+assert.equal(translations["zh-TW"].onboarding.retryWorkflow, "重新同步");
+assert.equal(translations["zh-TW"].onboarding.completeTitle, "已完成同步");
+assert.equal(translations["zh-TW"].onboarding.completeBody, "教學已完成，可以同步你其他金融機構的帳號。");
+assert.equal(translations["zh-TW"].onboarding.addSource, "同步其他帳號");
 assert.equal(translations.en.onboarding.previous, "Previous");
 assert.equal(translations["zh-TW"].onboarding.previous, "上一步");
 assert.equal(translations.en.onboarding.returnToOverview, "Return to Overview");
@@ -23,7 +36,7 @@ assert.equal(translations["zh-TW"].onboarding.returnToOverview, "返回總覽");
 assert.equal(Object.hasOwn(translations.en.onboarding, "credentialsTitle"), false);
 assert.equal(Object.hasOwn(translations["zh-TW"].onboarding, "credentialsTitle"), false);
 assert.equal(translations.en.onboarding.workflowReviewTitle, "Review the completed workflow");
-assert.equal(translations["zh-TW"].onboarding.workflowReviewTitle, "檢視已完成的 workflow");
+assert.equal(translations["zh-TW"].onboarding.workflowReviewTitle, "查看同步結果");
 assert.equal(translations.en.onboarding.overviewPreparingTitle, "Preparing your overview");
 assert.equal(translations["zh-TW"].onboarding.overviewPreparingTitle, "正在準備總覽");
 assert.match(translations.en.onboarding.overviewEmptyTitle, /workflow returned no account data/);
@@ -50,6 +63,8 @@ assert.equal(
   translations.en.automation.discardCredentialChanges,
   "Discard unsaved changes to sign-in details?",
 );
+assert.equal(translations.en.automation.credentialSyncToggle, "Enabled");
+assert.equal(translations["zh-TW"].automation.credentialSyncToggle, "啟用同步");
 assert.equal(
   translations.en.automation.saveCredentialsFailed,
   "Sign-in details couldn’t be saved. Try again.",
