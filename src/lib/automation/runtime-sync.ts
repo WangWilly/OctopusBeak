@@ -41,8 +41,12 @@ export function isAutomationBlockStale(
   return version.runtimeRevision < current.revision;
 }
 
-function progressText(task: AutomationTaskRow, runtime: AutomationRuntimeTaskSnapshot) {
-  if (runtime.progress.percent !== null) return `${runtime.progress.percent}%`;
+function progressText(
+  task: AutomationTaskRow,
+  runtime: AutomationRuntimeTaskSnapshot,
+  percent: number | null = runtime.progress.percent,
+) {
+  if (percent !== null) return `${percent}%`;
   if (runtime.status === "running") return `Running attempt ${runtime.attempt}/${runtime.maxAttempts}`;
   if (runtime.status === "retrying") return `Retrying attempt ${runtime.attempt}/${runtime.maxAttempts}`;
   if (runtime.status === "waiting_for_human") return "Waiting for human";
@@ -61,11 +65,21 @@ function applyOptimisticAction(
   if (action.kind === "run") {
     return {
       ...task,
+      runId: null,
       status: "preparing",
       isActive: true,
       primaryAction: "Cancel",
       canRun: true,
+      attempt: 1,
+      latestStartedAt: null,
+      latestFinishedAt: null,
+      appWorkflowOutcome: null,
+      events: [],
+      progressPercent: 0,
       progressText: "Preparing",
+      workflowProgress: null,
+      humanSession: null,
+      humanAssistanceContract: null,
     };
   }
   return {
@@ -84,6 +98,19 @@ export function mergeAutomationRuntimeTask(
 ): AutomationTaskRow {
   const isActive = isActiveAutomationRuntimeStatus(runtime.status);
   const status = runtime.status as AutomationTaskRow["status"];
+  const isSameRun = runtime.runId !== null && task.runId === runtime.runId;
+  const observedPercent = isSameRun && task.progressPercent !== null
+    ? Math.max(task.progressPercent, runtime.progress.percent ?? task.progressPercent)
+    : runtime.progress.percent;
+  const progressPercent = status === "completed"
+    ? 100
+    : observedPercent === null
+      ? null
+      : Math.min(99, observedPercent);
+  const workflowProgress = {
+    ...runtime.progress,
+    percent: progressPercent,
+  };
   return {
     ...task,
     runId: runtime.runId,
@@ -91,10 +118,11 @@ export function mergeAutomationRuntimeTask(
     isActive,
     attempt: runtime.attempt,
     maxAttempts: runtime.maxAttempts,
+    workflowProgress,
     appWorkflowOutcome: runtime.appWorkflowOutcome,
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
-    progressPercent: runtime.progress.percent,
-    progressText: progressText(task, runtime),
+    progressPercent,
+    progressText: progressText(task, runtime, progressPercent),
     primaryAction: primaryActionForAutomationTask(status, isActive),
     // Active lifecycle always wins over credential readiness so a run can be
     // cancelled/terminated even if credentials are being refreshed.

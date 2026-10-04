@@ -779,11 +779,21 @@
       tasks: automation.tasks.map((task) => task.id === taskId
         ? {
           ...task,
+          runId: null,
           status: "preparing",
           isActive: true,
           primaryAction: "Cancel",
           canRun: true,
-          progressText: "0%",
+          attempt: 1,
+          latestStartedAt: null,
+          latestFinishedAt: null,
+          appWorkflowOutcome: null,
+          events: [],
+          progressPercent: 0,
+          progressText: "Preparing",
+          workflowProgress: null,
+          humanSession: null,
+          humanAssistanceContract: null,
         }
         : task),
     };
@@ -1419,6 +1429,73 @@
     return dictionary.automation.statusLabels[task.status];
   }
 
+  function workflowProgressStageLabel(
+    task: AutomationTaskRow,
+    dictionary: Translation,
+  ): string | null {
+    const phaseCode = task.workflowProgress?.phaseCode;
+    if (!phaseCode?.startsWith("workflow-")) return null;
+    const stage = phaseCode.slice("workflow-".length);
+    if (![
+      "preparation",
+      "authentication",
+      "collection",
+      "decoding",
+      "validation",
+      "commit",
+      "finalization",
+    ].includes(stage)) return null;
+
+    if (stage === "collection") {
+      const activity = task.workflowProgress?.params?.activity;
+      const statementType = task.workflowProgress?.params?.statementType;
+      const product = typeof statementType === "string"
+        ? dictionary.automation.statementTypeLabels[statementType] ?? statementType
+        : null;
+      if (activity === "query") {
+        return product
+          ? dictionary.automation.progressQueryingProduct(product)
+          : dictionary.automation.progressQuerying;
+      }
+      if (activity === "download") {
+        return product
+          ? dictionary.automation.progressDownloadingProduct(product)
+          : dictionary.automation.progressDownloading;
+      }
+      return product
+        ? dictionary.automation.progressStageProduct(dictionary.automation.progressStages[stage], product)
+        : dictionary.automation.progressStages[stage] ?? null;
+    }
+
+    const stageLabel = dictionary.automation.progressStages[stage];
+    const statementType = task.workflowProgress?.params?.statementType;
+    const product = typeof statementType === "string"
+      ? dictionary.automation.statementTypeLabels[statementType] ?? statementType
+      : null;
+    return product && stageLabel
+      ? dictionary.automation.progressStageProduct(stageLabel, product)
+      : stageLabel ?? null;
+  }
+
+  function workflowProgressIsWorking(task: AutomationTaskRow) {
+    if (task.status === "waiting_for_human") {
+      return task.isActive
+        && !shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup);
+    }
+    return task.isActive && ["preparing", "running", "retrying", "cancelling"].includes(task.status);
+  }
+
+  function shouldShowWorkflowProgress(task: AutomationTaskRow) {
+    const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status);
+    return workflowProgressIsWorking(task)
+      || (task.isActive && task.status === "waiting_for_human")
+      || (terminal && task.progressPercent !== null);
+  }
+
+  function shouldShowProgressStatus(task: AutomationTaskRow) {
+    return ["waiting_for_human", "cancelling"].includes(task.status);
+  }
+
   function workflowEventFailureLabel(event: AutomationTaskRow["events"][number]): string | null {
     const reason = verificationFailureEventReason(event);
     if (reason === "verification-solver-exhausted") {
@@ -1429,9 +1506,39 @@
 
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
     if (task.status === "waiting_for_human") {
-      return shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
+      const waiting = shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
         ? dictionary.automation.progressWaiting
         : dictionary.automation.progressAutomaticVerification;
+      return task.progressPercent === null
+        ? waiting
+        : dictionary.automation.progressWaitingWithPercent(waiting, task.progressPercent);
+    }
+    if (["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)
+      && task.progressPercent !== null) {
+      return dictionary.automation.progressTerminalWithPercent(
+        taskStatusLabel(task, dictionary),
+        task.progressPercent,
+      );
+    }
+    const stage = workflowProgressStageLabel(task, dictionary);
+    if (stage) {
+      const stageWithProgress = task.progressPercent === null
+        ? stage
+        : dictionary.automation.progressStagePercent(stage, task.progressPercent);
+      const retrying = task.status === "retrying" || task.workflowProgress?.params?.retrying === true;
+      return retrying
+        ? dictionary.automation.progressRetryingStage(
+          stageWithProgress,
+          task.attempt || 1,
+          task.maxAttempts,
+        )
+        : stageWithProgress;
+    }
+    if (task.status === "preparing") {
+      return dictionary.automation.progressStagePercent(
+        dictionary.automation.progressStages.preparation,
+        task.progressPercent ?? 0,
+      );
     }
     if (task.progressPercent !== null) return `${task.progressPercent}%`;
     if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
@@ -1673,23 +1780,27 @@
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
-                  {#if task.isActive || (task.progressPercent !== null && !["cancelled", "failed", "interrupted"].includes(task.status))}
+                  {#if shouldShowWorkflowProgress(task)}
                   <div class="progress-cell">
                     <div
                       class="progress-bar"
+                      class:working={workflowProgressIsWorking(task)}
                       role="progressbar"
                       aria-valuemin="0"
                       aria-valuemax="100"
                       aria-valuenow={task.progressPercent ?? undefined}
                       aria-valuetext={progressLabel(task, $t)}
                       aria-label={taskLabel(task, $t)}
+                      aria-busy={workflowProgressIsWorking(task)}
                     >
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
-                    <span class="mono">{progressLabel(task, $t)}</span>
-                    {#if task.status === "completed" || task.status === "partial"}
-                      <span class={`chip ${statusClass(task.status)}`}>{taskStatusLabel(task, $t)}</span>
-                    {/if}
+                    <div class="progress-description">
+                      <span class="progress-copy" data-status={task.status}>{progressLabel(task, $t)}</span>
+                      {#if shouldShowProgressStatus(task)}
+                        <span class={`chip ${statusClass(task.status)}`}>{taskStatusLabel(task, $t)}</span>
+                      {/if}
+                    </div>
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
@@ -2852,6 +2963,9 @@
 
   .automation-table th {
     font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .automation-table tr.task-active td {
@@ -2899,13 +3013,14 @@
 
   .progress-cell {
     min-width: 96px;
-    display: flex;
+    display: grid;
+    gap: 6px;
     align-items: center;
-    gap: 8px;
   }
 
   .progress-bar {
-    flex: 1 0 40px;
+    position: relative;
+    width: 100%;
     min-width: 40px;
     height: 6px;
     overflow: hidden;
@@ -2918,6 +3033,67 @@
     height: 100%;
     border-radius: inherit;
     background: var(--accent);
+  }
+
+  .progress-bar.working::after {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 22%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--surface) 88%, transparent), transparent);
+    content: "";
+    animation: workflow-progress-sweep 1.4s linear infinite;
+    pointer-events: none;
+  }
+
+  .progress-description {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .progress-copy {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .progress-copy[data-status="failed"],
+  .progress-copy[data-status="cancelled"],
+  .progress-copy[data-status="interrupted"] {
+    color: var(--danger);
+    font-weight: 700;
+  }
+
+  .progress-copy[data-status="completed"] {
+    color: var(--success);
+    font-weight: 700;
+  }
+
+  .progress-copy[data-status="partial"] {
+    color: var(--warn);
+    font-weight: 700;
+  }
+
+  @keyframes workflow-progress-sweep {
+    from {
+      transform: translateX(-120%);
+    }
+
+    to {
+      transform: translateX(560%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress-bar.working::after {
+      transform: translateX(300%);
+      animation: none;
+    }
   }
 
   .task-actions {

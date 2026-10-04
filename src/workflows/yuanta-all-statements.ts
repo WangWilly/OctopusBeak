@@ -7,6 +7,7 @@ import {
   collectSelectedProducts,
   ProductCollectionFatalError,
   type CollectionProductOutcome,
+  type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.ts";
 import {
   authenticateYuantaBankWithAssistance,
@@ -126,11 +127,46 @@ type YuantaWorkflowIdentity = Readonly<{
 
 export type YuantaAllWorkflowDependencies = Readonly<{
   authenticate?: (page: Page, credentials: YuantaCredentials, context: WorkflowContext) => Promise<void>;
-  collectDeposit?: (page: Page, input: unknown, context: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>;
-  collectForeignCurrency?: (page: Page, input: unknown, context: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>;
-  collectCreditCard?: (page: Page, input: unknown, context: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>;
-  collectLoan?: (page: Page, input: unknown, context: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>;
-  collectFund?: (page: Page, input: unknown, context: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>;
+  collectDeposit?: (
+    page: Page,
+    input: unknown,
+    context: WorkflowContext,
+    identity: YuantaWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<YuantaWorkflowCollectionSummary>;
+  collectForeignCurrency?: (
+    page: Page,
+    input: unknown,
+    context: WorkflowContext,
+    identity: YuantaWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<YuantaWorkflowCollectionSummary>;
+  collectCreditCard?: (
+    page: Page,
+    input: unknown,
+    context: WorkflowContext,
+    identity: YuantaWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<YuantaWorkflowCollectionSummary>;
+  collectLoan?: (
+    page: Page,
+    input: unknown,
+    context: WorkflowContext,
+    identity: YuantaWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<YuantaWorkflowCollectionSummary>;
+  collectFund?: (
+    page: Page,
+    input: unknown,
+    context: WorkflowContext,
+    identity: YuantaWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+    reportActivity: ProductCollectionActivityReporter,
+  ) => Promise<YuantaWorkflowCollectionSummary>;
   prepareForComponent?: (page: Page, product: string) => Promise<void>;
   assertSession?: (page: Page) => Promise<void>;
   signOut?: (page: Page) => Promise<void>;
@@ -159,6 +195,7 @@ async function collectYuantaDepositForApp(
   context: WorkflowContext,
   identity: YuantaWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<YuantaDepositWorkflowCollection> {
   const parsedInput = yuantaStatementsInputSchema.parse(rawInput);
   return await runYuantaStatements(page, parsedInput, {
@@ -168,6 +205,7 @@ async function collectYuantaDepositForApp(
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,
+    reportActivity,
   });
 }
 
@@ -177,6 +215,7 @@ async function collectYuantaForeignForApp(
   context: WorkflowContext,
   _identity: YuantaWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<YuantaForeignCurrencyWorkflowCollection> {
   const parsedInput = yuantaForeignCurrencyStatementsInputSchema.parse(rawInput);
   return await runYuantaForeignCurrencyStatements(page, parsedInput, {
@@ -187,6 +226,7 @@ async function collectYuantaForeignForApp(
     sourceText: context.text,
     signal: context.signal,
     now: context.now,
+    reportActivity,
   });
 }
 
@@ -196,6 +236,7 @@ async function collectYuantaCreditCardForApp(
   context: WorkflowContext,
   identity: YuantaWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<YuantaCreditCardWorkflowCollection> {
   const parsedInput = yuantaCreditCardStatementsInputSchema.parse(rawInput);
   const credentials = (rawInput as { credentials?: YuantaCredentials }).credentials ?? {};
@@ -207,6 +248,7 @@ async function collectYuantaCreditCardForApp(
     sourceText: context.text,
     signal: context.signal,
     now: context.now,
+    reportActivity,
   });
 }
 
@@ -216,6 +258,7 @@ async function collectYuantaLoanForApp(
   context: WorkflowContext,
   identity: YuantaWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<YuantaLoanWorkflowCollection> {
   const parsedInput = yuantaLoanStatementsInputSchema.parse(rawInput);
   return await runYuantaLoanStatements(page, parsedInput, {
@@ -226,6 +269,7 @@ async function collectYuantaLoanForApp(
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,
+    reportActivity,
   });
 }
 
@@ -235,6 +279,7 @@ async function collectYuantaFundForApp(
   context: WorkflowContext,
   _identity: YuantaWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
+  reportActivity: ProductCollectionActivityReporter,
 ): Promise<YuantaFundWorkflowCollection> {
   const parsedInput = yuantaFundStatementsInputSchema.parse(rawInput);
   const credentials = (rawInput as { credentials?: YuantaCredentials }).credentials ?? {};
@@ -244,6 +289,7 @@ async function collectYuantaFundForApp(
     sourceText: context.text,
     signal: context.signal,
     now: context.now,
+    reportActivity,
   });
 }
 
@@ -294,7 +340,17 @@ export async function runYuantaAllStatementsWorkflow(
     loan: { ...asRecord(parsed.data.loan), credentials },
     fund: { ...asRecord(parsed.data.fund), credentials },
   };
-  const collectors: Record<string, (page: Page, input: unknown, ctx: WorkflowContext, identity: YuantaWorkflowIdentity, items: PGliteWorkflowRunItem[]) => Promise<YuantaWorkflowCollectionSummary>> = {
+  const collectors: Record<
+    string,
+    (
+      page: Page,
+      input: unknown,
+      ctx: WorkflowContext,
+      identity: YuantaWorkflowIdentity,
+      items: PGliteWorkflowRunItem[],
+      reportActivity: ProductCollectionActivityReporter,
+    ) => Promise<YuantaWorkflowCollectionSummary>
+  > = {
     deposit: collectDeposit,
     foreign_currency: collectForeign,
     credit_card: collectCreditCard,
@@ -321,13 +377,14 @@ export async function runYuantaAllStatementsWorkflow(
           if (typeId !== "deposit") await prepare(page, typeId);
         },
         assertSession: () => assertSession(page),
-        collect: async (typeId, stagedItems) => {
+        collect: async (typeId, stagedItems, reportActivity) => {
           const result = await collectors[typeId]!(
             page,
             inputByProduct[typeId],
             context,
             identity,
             stagedItems,
+            reportActivity,
           );
           for (const item of stagedItems) {
             if ((item.provider !== "yuanta" && item.provider !== "yuanta-fund")

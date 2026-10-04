@@ -72,6 +72,46 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     () => parseAppWorkflowWorkerOutboundFrame({ protocolVersion: 2, kind: "event", eventId: "e1", event: { runId: "run-fixture-1", stage: "collection", code: "valid-code", occurredAt: "2026-09-26T00:00:00.000Z", raw: "source bytes" } }),
     /protocol rejected/u,
   );
+  const scopedProgressEvent = parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "event",
+    eventId: "scoped-progress",
+    event: {
+      runId: "run-fixture-1",
+      stage: "collection",
+      code: "statement-download-started",
+      occurredAt: "2026-10-04T00:00:00.000Z",
+      statementType: "deposit",
+      activity: "download",
+      retrying: true,
+    },
+  });
+  assert.equal(scopedProgressEvent.kind, "event");
+  if (scopedProgressEvent.kind === "event") {
+    assert.equal(scopedProgressEvent.event.statementType, "deposit");
+    assert.equal(scopedProgressEvent.event.activity, "download");
+    assert.equal(scopedProgressEvent.event.retrying, true);
+  }
+  for (const metadata of [
+    { activity: { value: "download" } },
+    { activity: "delete" },
+    { statementType: "private-account-name" },
+    { statementType: 42 },
+    { retrying: "true" },
+  ]) {
+    assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
+      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+      kind: "event",
+      eventId: "invalid-progress",
+      event: {
+        runId: "run-fixture-1",
+        stage: "collection",
+        code: "statement-download-started",
+        occurredAt: "2026-10-04T00:00:00.000Z",
+        ...metadata,
+      },
+    }), /protocol rejected/u, "only bounded progress metadata crosses the worker boundary");
+  }
   assert.throws(
     () => parseAppWorkflowWorkerStart({ ...start, input: { credential: "x".repeat(2_000_000) } }),
     /protocol rejected/u,

@@ -116,7 +116,16 @@ export function buildAutomationPageModel(input: {
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
-    const progressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
+    const rawProgressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
+    const progressPercent = status === "completed"
+      ? 100
+      : rawProgressPercent === null
+        ? null
+        : Math.min(99, rawProgressPercent);
+    const runProgress = runtime?.progress ?? run?.progress ?? null;
+    const workflowProgress = runProgress
+      ? { ...runProgress, percent: progressPercent }
+      : null;
     const attempt = runtime?.attempt ?? run?.attempt ?? 0;
     const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
     const events = pageWorkflowEvents(run?.events, run?.taskRunId);
@@ -135,6 +144,7 @@ export function buildAutomationPageModel(input: {
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
       latestFinishedAt: run?.finishedAt ?? null,
+      workflowProgress,
       appWorkflowOutcome,
       events,
       progressPercent,

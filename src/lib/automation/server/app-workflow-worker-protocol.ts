@@ -4,6 +4,7 @@ import {
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import {
   isTypedWorkflowOutcomeSummary,
   type TypedWorkflowOutcomeSummary,
@@ -50,6 +51,8 @@ const gmailOtpFallbackReasons = new Set<GmailOtpFallbackReason>([
 const stages = new Set<WorkflowRunEvent["stage"]>([
   "preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization",
 ]);
+const progressActivities = new Set(["query", "download"]);
+const progressStatementTypes = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
 const completionStatuses = new Set<Exclude<HumanAssistanceCompletionStatus, "pending">>([
   "entered", "verified", "failed",
 ]);
@@ -377,7 +380,9 @@ function validHumanContract(value: unknown): value is HumanAssistanceContractInp
 }
 
 function validEvent(value: unknown): value is WorkflowRunEvent {
-  if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "code", "occurredAt"], ["completed", "total"])) return false;
+  if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "code", "occurredAt"], [
+    "completed", "total", "activity", "statementType", "retrying",
+  ])) return false;
   if (
     typeof value.runId !== "string"
     || !SAFE_ID.test(value.runId)
@@ -393,6 +398,11 @@ function validEvent(value: unknown): value is WorkflowRunEvent {
     if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0 || Number(value[key]) > 1_000_000_000)) return false;
   }
   if (value.completed !== undefined && value.total !== undefined && Number(value.completed) > Number(value.total)) return false;
+  if (value.activity !== undefined
+    && (typeof value.activity !== "string" || !progressActivities.has(value.activity))) return false;
+  if (value.statementType !== undefined
+    && (typeof value.statementType !== "string" || !progressStatementTypes.has(value.statementType))) return false;
+  if (value.retrying !== undefined && typeof value.retrying !== "boolean") return false;
   return true;
 }
 

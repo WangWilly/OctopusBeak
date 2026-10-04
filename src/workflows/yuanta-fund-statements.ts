@@ -2152,7 +2152,11 @@ function validateYuantaFundHistoryProof(
 type YuantaFundSourceCollector = (
   page: Page,
   input: WorkflowInput,
-  context: Readonly<{ sourceText: SourceTextPort; signal: AbortSignal }>,
+  context: Readonly<{
+    sourceText: SourceTextPort;
+    signal: AbortSignal;
+    reportActivity?: (activity: "query" | "download") => Promise<void>;
+  }>,
 ) => Promise<YuantaFundSourceTables>;
 
 export type YuantaFundWorkflowDependencies = Readonly<{
@@ -2161,13 +2165,18 @@ export type YuantaFundWorkflowDependencies = Readonly<{
   sourceText: SourceTextPort;
   signal: AbortSignal;
   now(): string;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   collectSourceTables?: YuantaFundSourceCollector;
 }>;
 
 async function collectYuantaFundSourceTables(
   page: Page,
   input: WorkflowInput,
-  context: Readonly<{ sourceText: SourceTextPort; signal: AbortSignal }>,
+  context: Readonly<{
+    sourceText: SourceTextPort;
+    signal: AbortSignal;
+    reportActivity?: (activity: "query" | "download") => Promise<void>;
+  }>,
 ): Promise<YuantaFundSourceTables> {
   const dateRange = resolveDateRange(input);
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
@@ -2180,12 +2189,14 @@ async function collectYuantaFundSourceTables(
 
   if (input.includePortfolioSummary) {
     checkCancelled();
+    await context.reportActivity?.("query");
     await openPortfolioSummary(page);
     await captureTables(page, tables, "portfolio-summary", null, null, context);
   }
 
   if (input.includeInvestmentDetails || input.includeHistoricalTransactions) {
     checkCancelled();
+    await context.reportActivity?.("query");
     const overviewScope = await openInvestmentOverview(page);
     positions = await extractFundPositions(page, input.includeHistoricalTransactions);
     if (positions.length === 0 && input.includeHistoricalTransactions) {
@@ -2207,6 +2218,7 @@ async function collectYuantaFundSourceTables(
 
     for (const position of positions) {
       checkCancelled();
+      await context.reportActivity?.("query");
       await openInvestmentOverview(page);
       await openFundDetail(page, position);
       await captureTables(
@@ -2226,6 +2238,7 @@ async function collectYuantaFundSourceTables(
       throw new Error("YuanTa complete account history cannot use a fund subset filter.");
     for (const query of yuantaFundAccountHistoryQueries) {
       checkCancelled();
+      await context.reportActivity?.("query");
       await queryAccountFundTransactions(page, query, dateRange.startDate, dateRange.endDate);
       const firstTable = tables.length;
       const key = yuantaFundAccountHistoryKey(query.investmentType);
@@ -2244,7 +2257,9 @@ async function collectYuantaFundSourceTables(
 
   if (input.includeOffHourOrders) {
     checkCancelled();
+    await context.reportActivity?.("query");
     await openOffHourOrders(page);
+    await context.reportActivity?.("query");
     await queryOffHourOrders(page, dateRange.startDate, dateRange.endDate);
     await captureTables(
       page,
@@ -2288,6 +2303,7 @@ export async function runYuantaFundStatements(
   )(page, input, {
     sourceText: dependencies.sourceText,
     signal: dependencies.signal,
+    reportActivity: dependencies.reportActivity,
   });
   dependencies.signal.throwIfAborted();
   dependencies.sourceText.assertIntact(JSON.stringify(sourceCollection.tables));

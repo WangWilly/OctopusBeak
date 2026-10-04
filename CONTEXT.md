@@ -785,6 +785,14 @@ One execution attempt of an automation task, including its status, bounded opera
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
 _Avoid_: Log file, raw stdout, source record, financial fact
 
+**Workflow progress stage**:
+A meaningful, user-recognizable phase of an Automation Task Run, such as signing in, querying statements, downloading, or preparing results. It describes the work currently underway rather than an individual browser interaction and identifies the selected statement type when work is specific to that type.
+_Avoid_: Browser action, human interaction stage
+
+**Workflow run progress**:
+An approximate indication of advancement through a run's Workflow Progress Stages for its selected scope, driven by actual stage advancement rather than elapsed time, that never decreases within the same run, including automatic retries. Only full successful completion represents 100%; partial success, failure, cancellation, or waiting for human assistance retains the last progress, while a new run starts at zero and activity within a stage does not imply further advancement.
+_Avoid_: Time remaining estimate, financial completeness, elapsed-time percentage
+
 **Workflow executor**:
 The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
