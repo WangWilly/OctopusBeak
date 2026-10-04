@@ -1654,6 +1654,10 @@ import type {
             {$t.automation.stopAll}
           </button>
         </div>
+      {:else if summaryAutomation.tasks.some((task) => task.status === "completed")}
+        <div class="sync-hero-actions">
+          <a class="button secondary hero-action" href="#/overview">{$t.automation.viewOverview}</a>
+        </div>
       {/if}
     </section>
     </ProgressiveBlock>
@@ -1895,11 +1899,6 @@ import type {
                       <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
                       <span class="visually-hidden">{$t.automation.runDetails}</span>
                     </button>
-                    {#if task.status === "completed"}
-                      <a class="button secondary task-control" href="#/overview">
-                        {$t.automation.viewOverview}
-                      </a>
-                    {/if}
                   </div>
                 </td>
               </tr>
