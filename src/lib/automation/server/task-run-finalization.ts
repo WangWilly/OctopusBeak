@@ -12,6 +12,7 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import { taskById, type AutomationTaskKind } from "./tasks.ts";
+import type { AutomationTaskProgress } from "../types.ts";
 import {
   dataVersionStore,
   type DataVersionStore,
@@ -20,7 +21,7 @@ import {
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
   persistence: AutomationPersistenceProvider["automation"];
-  run: Pick<AutomationTaskRun, "taskRunId" | "attempt">;
+  run: Pick<AutomationTaskRun, "taskRunId" | "attempt" | "progress">;
   executionId: string;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
 };
@@ -53,6 +54,7 @@ export type AsyncTaskRunFinalizationIntent = {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   appWorkflowOutcome?: AutomationTaskExecutionResult["appWorkflowOutcome"];
+  progress?: AutomationTaskProgress;
   terminationMode?: "forced";
 };
 
@@ -95,6 +97,7 @@ export async function finalizeTaskRunTransition(
     finishedAt: new Date().toISOString(),
     exitCode: intent.exitCode,
     signal: intent.signal,
+    ...(intent.progress === undefined ? {} : { progress: intent.progress }),
     ...(intent.appWorkflowOutcome === undefined
       ? {}
       : { appWorkflowOutcome: intent.appWorkflowOutcome }),
@@ -162,6 +165,18 @@ export async function finalizeAutomationTaskRun(
       exitCode: result.exitCode,
       signal: result.signal,
       appWorkflowOutcome,
+      ...(status === "completed" ? {
+        progress: currentRun.progress?.phaseCode === "complete"
+          ? { ...currentRun.progress, percent: 100, attempt: currentRun.attempt }
+          : {
+            ...currentRun.progress,
+            phaseCode: "workflow-finalization",
+            completed: 1,
+            total: 1,
+            percent: 100,
+            attempt: currentRun.attempt,
+          },
+      } : {}),
       ...(status === "cancelled" && context.forceTerminated
         ? { terminationMode: "forced" as const }
         : {}),

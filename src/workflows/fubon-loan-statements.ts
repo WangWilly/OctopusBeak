@@ -112,6 +112,7 @@ export type FubonLoanStatementsRunDependencies = Readonly<{
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   explicitRelationLinks?: readonly ExplicitLoanTransactionLink[];
   observedAt?: () => string;
 }>;
@@ -1415,6 +1416,7 @@ export async function runFubonLoanStatements(
     sourceConnectionKey: relationSourceConnectionKey,
   } = requireSourceConnectionIdentity("fubon", "Fubon loan", overrides);
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
+  await overrides.reportActivity?.("query");
   let scope = await openLoanStatementsPage(page, { silent: true });
   const loanAccounts = await readLoanAccountOptions(scope, input.loanAccountLabels);
   const queryItems = requestedQueryItems(input);
@@ -1446,6 +1448,7 @@ export async function runFubonLoanStatements(
     for (const queryItem of accountQueryItems) {
       overrides.signal.throwIfAborted();
       scope = await configureLoanQuery(page, input, queryItem);
+      await overrides.reportActivity?.("query");
       const html = await fetchLoanQueryHtml(page, overrides.sourceText);
       const parsed = await parseFubonLoanStatementForCollection(
         page,

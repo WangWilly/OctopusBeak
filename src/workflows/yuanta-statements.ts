@@ -115,6 +115,7 @@ export type YuantaStatementsRunDependencies = {
     page: Page,
     account: { label: string; value: string },
   ) => Promise<YuantaStatementDownload>;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   /** Stable provider-login scope; never contains a password or session. */
   sourceConnectionScope: string;
   /** Stable source key derived from the provider-login scope. */
@@ -1138,8 +1139,10 @@ export async function runYuantaStatements(
   const accounts = await readAccounts(page);
   for (const account of accounts) {
     overrides.signal.throwIfAborted();
+    await overrides.reportActivity?.("query");
     await query(page, account);
     overrides.signal.throwIfAborted();
+    await overrides.reportActivity?.("download");
     const downloaded = await download(page, account);
     overrides.sourceText.assertIntact(JSON.stringify(downloaded));
     if (downloaded.source.terminal !== true)

@@ -88,6 +88,95 @@ test("runtime merge gives live status, progress, outcome, and action precedence"
   assert.deepEqual(merged.parallelRunnableTaskIds, []);
 });
 
+test("runtime merge carries structured workflow progress for renderer labels", () => {
+  const progress = {
+    phaseCode: "workflow-collection",
+    completed: 2,
+    total: 5,
+    percent: 40,
+    attempt: 1,
+    params: { statementType: "credit_card", activity: "download" },
+  };
+  const merged = mergeAutomationRuntime(model([task()]), runtime({
+    tasks: [{ ...runtime().tasks[0]!, progress }],
+  }));
+
+  assert.deepEqual(merged.tasks[0]?.workflowProgress, progress);
+  assert.equal(merged.tasks[0]?.progressPercent, 40);
+});
+
+test("same-run progress never moves backwards while a new run starts at its own progress", () => {
+  const currentProgress = {
+    phaseCode: "workflow-collection",
+    completed: 3,
+    total: 5,
+    percent: 60,
+    attempt: 1,
+  };
+  const source = task({
+    runId: "run-1",
+    status: "running",
+    isActive: true,
+    progressPercent: 60,
+    workflowProgress: currentProgress,
+  });
+  const regressed = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    runId: "run-1",
+    progress: { ...currentProgress, phaseCode: "workflow-authentication", percent: 25 },
+  });
+  const restarted = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    runId: "run-2",
+    progress: { ...currentProgress, phaseCode: "workflow-preparation", percent: 4 },
+  });
+
+  assert.equal(regressed.progressPercent, 60);
+  assert.equal(regressed.workflowProgress?.percent, 60);
+  assert.equal(regressed.workflowProgress?.phaseCode, "workflow-authentication");
+  assert.equal(restarted.progressPercent, 4);
+});
+
+test("optimistic new run clears stale progress and outcome details", () => {
+  const source = task({
+    runId: "run-old",
+    status: "partial",
+    progressPercent: 72,
+    workflowProgress: {
+      phaseCode: "workflow-commit",
+      completed: 2,
+      total: 3,
+      percent: 72,
+      attempt: 1,
+    },
+    appWorkflowOutcome: {
+      errorCode: null,
+      summary: { status: "partial", counts: { itemCount: 2 } },
+    },
+    events: [{
+      runId: "run-old",
+      stage: "collection",
+      code: "source-collected",
+      occurredAt: "2026-09-21T00:00:00.000Z",
+    }],
+  });
+  const merged = mergeAutomationRuntime(model([source]), undefined, [{
+    token: "run-token",
+    taskId: source.id,
+    kind: "run",
+    runId: null,
+    startedAt: 1,
+  }]);
+  const item = merged.tasks[0]!;
+
+  assert.equal(item.runId, null);
+  assert.equal(item.status, "preparing");
+  assert.equal(item.progressPercent, 0);
+  assert.equal(item.workflowProgress, null);
+  assert.equal(item.appWorkflowOutcome, null);
+  assert.deepEqual(item.events, []);
+});
+
 test("block metadata remains the static source while runtime overlay is authoritative", () => {
   const fallback = model([task({ label: "fallback" })]);
   const block = model([task({ label: "block" })]);
@@ -142,6 +231,27 @@ test("terminal runtime status derives the current action instead of stale block 
   assert.equal(partial.isActive, false);
   assert.equal(partial.primaryAction, "Run");
   assert.equal(partial.progressPercent, 67);
+});
+
+test("only a successful terminal status reaches one hundred percent", () => {
+  const source = task({ runId: "run-1", progressPercent: 94 });
+  const completed = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    runId: "run-1",
+    status: "completed",
+    progress: { ...runtime().tasks[0]!.progress, percent: 94 },
+  });
+  const partial = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    runId: "run-1",
+    status: "partial",
+    progress: { ...runtime().tasks[0]!.progress, percent: 100 },
+  });
+
+  assert.equal(completed.progressPercent, 100);
+  assert.equal(completed.workflowProgress?.percent, 100);
+  assert.equal(partial.progressPercent, 99);
+  assert.equal(partial.workflowProgress?.percent, 99);
 });
 
 test("runtime updates carry the durable typed outcome into the row", () => {

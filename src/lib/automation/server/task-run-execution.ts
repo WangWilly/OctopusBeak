@@ -7,6 +7,7 @@ import {
 } from "./task-run-finalization.ts";
 import {
   type AutomationPersistencePort,
+  isTerminalTaskRunStatus,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 import { automationGroupVerificationActors } from "./settings.ts";
@@ -18,6 +19,10 @@ import type {
   WorkflowExecutorPorts,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
+import {
+  projectWorkflowRunProgress,
+  selectedWorkflowStatementTypes,
+} from "./workflow-run-progress.ts";
 import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 import {
   classifyTypedWorkflowFailure,
@@ -72,6 +77,8 @@ export type AutomationTaskExecutionOptions = {
   executionId?: string;
   attempt?: number;
   maxAttempts?: number;
+  /** This execution is another round of the same visible run. */
+  retrying?: boolean;
   /** Let a higher-level campaign own the single terminal transition. */
   deferFinalization?: boolean;
   /** Stop a typed workflow when the host task was cancelled. */
@@ -112,6 +119,69 @@ function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEven
     if (events[index]?.stage !== "finalization") return events[index]?.stage;
   }
   return undefined;
+}
+
+function createWorkflowProgressReporter(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+  input: unknown,
+) {
+  let progress = execution.run.progress ?? indeterminateProgress(execution.run.attempt);
+  const selectedStatementTypes = selectedWorkflowStatementTypes(input);
+  let retrying = options.retrying === true;
+
+  const persistProgress = async (next: AutomationTaskProgress): Promise<void> => {
+    progress = next;
+    try {
+      const current = await execution.persistence.taskRunById(execution.run.taskRunId);
+      if (current && !isTerminalTaskRunStatus(current.status)) {
+        await execution.persistence.updateTaskRun(execution.run.taskRunId, { progress: next });
+      }
+    } catch {
+      // Progress is advisory; a progress write must not turn a committed
+      // workflow result into an ambiguous failure.
+    }
+  };
+
+  const refreshRuntime = async (): Promise<void> => {
+    try {
+      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+    } catch {
+      // The persisted event and progress record are authoritative.
+    }
+  };
+
+  return {
+    async appendEvent(event: WorkflowRunEvent): Promise<void> {
+      const authenticationSucceeded = event.stage === "authentication"
+        && /authentication-(?:completed|verified|success)$/u.test(event.code);
+      const retryIsCaughtUp = authenticationSucceeded || event.stage === "collection";
+      const recordedEvent = retrying && !retryIsCaughtUp
+        ? { ...event, retrying: true }
+        : event;
+      if (retryIsCaughtUp) retrying = false;
+
+      await execution.persistence.appendRunEvent(recordedEvent);
+      const projected = projectWorkflowRunProgress(
+        recordedEvent,
+        progress,
+        selectedStatementTypes,
+      );
+      if (projected) await persistProgress(projected);
+      await refreshRuntime();
+    },
+
+    async appendExchangeRateProgress(value: Readonly<{
+      phaseCode: "load-request" | "sync" | "complete";
+      completed: number;
+      total: number;
+      percent: number;
+    }>): Promise<void> {
+      const percent = Math.max(progress.percent ?? 0, Math.min(99, Math.max(0, value.percent)));
+      await persistProgress({ ...value, percent, attempt: execution.run.attempt });
+      await refreshRuntime();
+    },
+  };
 }
 
 async function recordWorkflowFailure(
@@ -245,6 +315,8 @@ async function executeInlineAppWorkflow(
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
+    const input = workflowInputForTask(execution.task.workflowId, launchEnv);
+    const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const startUrl = workflowStartUrlForTask(execution.task.workflowId);
     const browserProfile = workflowBrowserProfileForTask(execution.task.workflowId);
     const browser: WorkflowBrowserPort = injectedPorts.browser
@@ -283,8 +355,7 @@ async function executeInlineAppWorkflow(
       ...(financialCommit ? { financialCommit } : {}),
       events: injectedPorts.events ?? {
         async append(event) {
-          await execution.persistence.appendRunEvent(event);
-          await execution.onRuntimeUpdate?.(event.runId);
+          await progressReporter.appendEvent(event);
         },
       },
       now: injectedPorts.now ?? (() => new Date().toISOString()),
@@ -301,7 +372,7 @@ async function executeInlineAppWorkflow(
     workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
-      workflowInputForTask(execution.task.workflowId, launchEnv),
+      input,
       controller.signal,
     );
     await browserRuntimeIdentity.flush();
@@ -485,6 +556,7 @@ async function executeSupervisedAppWorkflow(
     }
 
     const input = workflowInputForTask(workflowId, launchEnv);
+    const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const nonbrowser = workflowId === "exchange-rates" || workflowId === "sync-maicoin";
     const pgliteRpc = (definition.requiresFinancialCommit || workflowId === "exchange-rates")
       ? pgliteRpcForWorker(launchEnv)
@@ -537,13 +609,7 @@ async function executeSupervisedAppWorkflow(
           // attempted event first so commit ambiguity remains detectable even
           // if persistence fails and the worker later crashes.
           observedEvents.push(event);
-          await execution.persistence.appendRunEvent(event);
-          try {
-            await execution.onRuntimeUpdate?.(event.runId);
-          } catch {
-            // Runtime refresh is secondary to the persisted event and must not
-            // turn an ACKed database write into a worker failure.
-          }
+          await progressReporter.appendEvent(event);
         },
         ...(workflowId === "exchange-rates" ? {
           appendExchangeRateProgress: async (progress: Readonly<{
@@ -552,10 +618,7 @@ async function executeSupervisedAppWorkflow(
             total: number;
             percent: number;
           }>) => {
-            await execution.persistence.updateTaskRun(execution.run.taskRunId, {
-              progress: { ...progress, attempt: execution.run.attempt },
-            });
-            await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+            await progressReporter.appendExchangeRateProgress(progress);
           },
         } : {}),
         requestHumanAssistance: (contract, signal) =>
@@ -698,8 +761,11 @@ async function createAutomationTaskRunExecution(
     ? await persistence.taskRunById(options.taskRunId)
     : null;
   if (options.taskRunId && !existingRun) return null;
+  const startingProgress = existingRun?.progress
+    ? { ...existingRun.progress, attempt }
+    : indeterminateProgress(attempt);
   const run = existingRun
-    ? { taskRunId: existingRun.taskRunId, attempt }
+    ? { taskRunId: existingRun.taskRunId, attempt, progress: startingProgress }
     : {
         ...(await persistence.createTaskRun({
           taskId: task.id,
@@ -709,7 +775,7 @@ async function createAutomationTaskRunExecution(
           maxAttempts,
           startedAt,
           scheduledAtUtc: options.scheduledAtUtc,
-          progress: indeterminateProgress(attempt),
+          progress: startingProgress,
         })),
         attempt,
       };
@@ -721,7 +787,7 @@ async function createAutomationTaskRunExecution(
       finishedAt: null,
       exitCode: null,
       signal: null,
-      progress: indeterminateProgress(attempt),
+      progress: startingProgress,
     });
   }
   return {
@@ -738,7 +804,7 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
     phaseCode: null,
     completed: null,
     total: null,
-    percent: null,
+    percent: 0,
     attempt,
   };
 }
@@ -798,6 +864,11 @@ export async function runAutomationTaskExecution(
       },
       cancelledResult,
     );
+    try {
+      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+    } catch {
+      // Runtime refresh follows the terminal persistence boundary.
+    }
     return {
       status: finalized.status,
       taskRunId: execution.run.taskRunId,
@@ -827,6 +898,11 @@ export async function runAutomationTaskExecution(
       },
       result,
     );
+    try {
+      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+    } catch {
+      // Runtime refresh follows the terminal persistence boundary.
+    }
     return {
       status: finalized.status,
       taskRunId: execution.run.taskRunId,

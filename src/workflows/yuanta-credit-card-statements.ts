@@ -4845,6 +4845,7 @@ async function submitCreditCardUnbilled(page: Page): Promise<string> {
 type YuantaCreditCardAppCollection = {
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   /** Run-local items stay private until every selected source passes admission. */
   items: PGliteWorkflowRunItem[];
   now(): string;
@@ -4863,6 +4864,7 @@ export type YuantaCreditCardWorkflowDependencies = Readonly<{
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  reportActivity?: (activity: "query" | "download") => Promise<void>;
   now(): string;
   canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
   instrumentFingerprintSecret?: string;
@@ -4887,6 +4889,7 @@ export async function runYuantaCreditCardStatements(
   const appCollection: YuantaCreditCardAppCollection = {
     sourceText: dependencies.sourceText,
     signal: dependencies.signal,
+    reportActivity: dependencies.reportActivity,
     items: [],
     now: dependencies.now,
     ...(dependencies.canonicalHumanAttestation
@@ -4919,6 +4922,7 @@ async function collectYuantaCreditCardStatements(
   log("yuanta-credit-card-page-ready-start", {
     startedAt: new Date(pageReadyStartedAt).toISOString(),
   });
+  await appCollection.reportActivity?.("query");
   const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
   appCollection.sourceText.assertIntact(currentMonthHtml);
   appCollection.signal.throwIfAborted();
@@ -4962,6 +4966,7 @@ async function collectYuantaCreditCardStatements(
         period: month.label,
         startedAt: new Date(monthStartedAt).toISOString(),
       });
+      await appCollection.reportActivity?.("query");
       return submitCreditCardMonth(page, month);
     },
     async (month, monthHtml, monthPosition) => {
@@ -5000,6 +5005,7 @@ async function collectYuantaCreditCardStatements(
     log("yuanta-credit-card-unbilled-start", {
       startedAt: new Date(unbilledStartedAt).toISOString(),
     });
+    await appCollection.reportActivity?.("query");
     const unbilledHtml = await submitCreditCardUnbilled(page);
     appCollection.sourceText.assertIntact(unbilledHtml);
     appCollection.signal.throwIfAborted();
@@ -5038,6 +5044,7 @@ async function collectYuantaCreditCardStatements(
     });
     let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
     try {
+      await appCollection.reportActivity?.("query");
       summaryTraversal = await submitCreditCardSummary(page, {
         sourceText: appCollection.sourceText,
         signal: appCollection.signal,

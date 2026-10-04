@@ -100,6 +100,52 @@ assert.deepEqual(typedRow?.events, [
     total: 2,
   },
 ]);
+
+const persistedProgress = {
+  phaseCode: "workflow-collection",
+  completed: 1,
+  total: 4,
+  percent: 25,
+  attempt: 1,
+  params: { statementType: "credit_card", activity: "query" },
+};
+const persistedProgressModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: "typed-progress-run",
+      taskId: typedTask.id,
+      status: "failed",
+      progress: persistedProgress,
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+const persistedProgressRow = persistedProgressModel.tasks.find((task) => task.id === typedTask.id);
+assert.deepEqual(persistedProgressRow?.workflowProgress, persistedProgress);
+assert.equal(persistedProgressRow?.progressPercent, 25);
+
+const successfulProgressModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: "typed-success-run",
+      taskId: typedTask.id,
+      progress: { ...persistedProgress, percent: 92 },
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+assert.equal(
+  successfulProgressModel.tasks.find((task) => task.id === typedTask.id)?.progressPercent,
+  100,
+);
 assert.equal(typedRow?.events[0]?.code, "authentication-completed");
 assert.equal(typedRow?.events[1]?.code, "source-collected");
 assert.equal(
