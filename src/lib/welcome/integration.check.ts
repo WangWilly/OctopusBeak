@@ -15,7 +15,7 @@ const completed = (bankAutomationChoice: "start" | "later"): FirstRunWelcomeStat
 test("routes Start setup into a newly-created bank onboarding progression", () => {
   const destination = resolveCompletedFirstRunWelcome(completed("start"));
   assert.equal(destination?.route, "automation");
-  assert.equal(destination?.onboardingState?.version, 3);
+  assert.equal(destination?.onboardingState?.version, 4);
   assert.equal(destination?.onboardingState?.status, "active");
   assert.equal(destination?.onboardingState?.phase, "setup");
   assert.equal(destination?.onboardingState?.selectedCredentialGroupId, null);
