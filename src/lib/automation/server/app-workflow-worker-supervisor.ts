@@ -18,7 +18,6 @@ import {
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerStart,
-  type CathayGmailOtpOperation,
   type CathayGmailOtpRequestFrame,
   type CathayGmailOtpResponseFrame,
 } from "./app-workflow-worker-protocol.ts";

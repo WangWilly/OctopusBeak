@@ -505,10 +505,6 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-function digitsOnly(value: string): string {
-  return toAsciiDigits(value).replace(/\D/g, "");
-}
-
 function maskAccountLabel(value: string): string {
   return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
@@ -617,15 +613,6 @@ export function parseYuantaLoanStatementRows(
         sortTime: parseDateSortValue(transactionDate),
       },
     ];
-  });
-}
-
-function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
-  return [...rows].sort((left, right) => {
-    if (left.sortTime === null && right.sortTime === null) return 0;
-    if (left.sortTime === null) return 1;
-    if (right.sortTime === null) return -1;
-    return right.sortTime - left.sortTime;
   });
 }
 

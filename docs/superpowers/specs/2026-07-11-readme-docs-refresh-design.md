@@ -1,5 +1,7 @@
 # README and Ledger Documentation Refresh
 
+Historical design snapshot. Its former `docs/raw-ledger.md` target has been removed because its SQLite importer instructions no longer describe the current workflow. Treat the scope below as a record of the earlier refresh, not a current work request; see the [documentation map](../../README.md) and [ADR 0030](../../adr/0030-pglite-owned-live-financial-views.md) for current authority.
+
 ## Scope
 
 - Update `README.md` to document the personal E-Invoice workflow, the Spending page, per-item category editing, and the Traditional Chinese README link.

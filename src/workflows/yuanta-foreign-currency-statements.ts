@@ -1912,10 +1912,6 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
 function stripSpreadsheetTextPrefix(value: string): string {
   const text = cleanText(value);
   return text.replace(/^'+/, "").replace(/'+$/, "");
@@ -1988,17 +1984,6 @@ function transactionRowsFromDownloadedCsv(
   return transactions;
 }
 
-function sortedTransactionRows(
-  rows: ForeignCurrencyTransactionRow[],
-): ForeignCurrencyTransactionRow[] {
-  return [...rows].sort((left, right) => {
-    if (left.sortTime === null && right.sortTime === null) return 0;
-    if (left.sortTime === null) return 1;
-    if (right.sortTime === null) return -1;
-    return right.sortTime - left.sortTime;
-  });
-}
-
 function matchesFilter(
   option: { label: string; value: string },
   filters: string[],
@@ -2033,13 +2018,6 @@ function isUnavailableOption(value: string, label: string): boolean {
     /^(?:請|请)?選擇(?:帳戶|账戶|幣別|币别)?$/.test(normalizedLabel) ||
     /^(?:無|无)(?:可用)?(?:帳戶|账戶|幣別|币别)$/.test(normalizedLabel)
   );
-}
-
-function describeDateRange(input: WorkflowInput): string {
-  if (input.customDateRange) {
-    return `${input.customDateRange.startDate}-${input.customDateRange.endDate}`;
-  }
-  return dateRangeLabels[input.dateRange];
 }
 
 async function findScopeWithSelector(

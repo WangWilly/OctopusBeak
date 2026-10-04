@@ -626,40 +626,6 @@ async function explicitLoanPlans(
   }));
 }
 
-async function currentLoanRelationScope(
-  transaction: PGliteTransaction,
-  sourceConnectionId: Uint8Array,
-): Promise<Readonly<{ relationIds: Set<string>; groupIds: Set<string> }>> {
-  const relationRows = await query<Row>(
-    transaction,
-    `SELECT DISTINCT ON (relation.relation_id)
-            relation.relation_id, event.event_kind
-       FROM transaction_relations relation
-       LEFT JOIN loan_repayment_relation_events event ON event.relation_id = relation.relation_id
-       LEFT JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
-      WHERE relation.source_connection_id = ?
-      ORDER BY relation.relation_id, event_commit.commit_sequence DESC NULLS LAST,
-               encode(event.event_id, 'hex') DESC NULLS LAST`,
-    [sourceConnectionId],
-  );
-  const groupRows = await query<Row>(
-    transaction,
-    `SELECT DISTINCT ON (group_row.settlement_group_id)
-            group_row.settlement_group_id, event.event_kind
-       FROM loan_repayment_settlement_groups group_row
-       LEFT JOIN loan_repayment_relation_events event ON event.settlement_group_id = group_row.settlement_group_id
-       LEFT JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
-      WHERE group_row.source_connection_id = ?
-      ORDER BY group_row.settlement_group_id, event_commit.commit_sequence DESC NULLS LAST,
-               encode(event.event_id, 'hex') DESC NULLS LAST`,
-    [sourceConnectionId],
-  );
-  return {
-    relationIds: new Set(relationRows.filter((row) => row.event_kind === "observed").map((row) => hex(bytes(row.relation_id, "Current relation")))),
-    groupIds: new Set(groupRows.filter((row) => row.event_kind === "observed").map((row) => hex(bytes(row.settlement_group_id, "Current group")))),
-  };
-}
-
 async function refreshCurrentLoanRelationTables(
   transaction: PGliteTransaction,
   sourceConnection: Connection,

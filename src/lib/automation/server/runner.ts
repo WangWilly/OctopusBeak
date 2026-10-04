@@ -1,6 +1,5 @@
 import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
-import type { OverviewPageDto } from "../../overview/types.ts";
 import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,

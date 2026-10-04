@@ -8,7 +8,6 @@ import {
 import {
   canonicalLoanOccurrenceScopeKey,
   CanonicalLoanAdmissionError,
-  FUBON_LOAN_CONTRACT_VERSION,
   LOAN_EVENT_CONTRACT_MAPPINGS,
   canonicalLoanSourceIdentity,
   canonicalLoanToken,

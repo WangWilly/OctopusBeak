@@ -545,13 +545,6 @@ export function classifyCathayRowDateShapes(
   };
 }
 
-function isCathayDateScopeValidationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Cathay response date scope does not match the requested scope|Missing required string (?:startDate|endDate)\./i.test(
-    message,
-  );
-}
-
 function cathayLocalDayOrdinal(value: string | undefined): number | null {
   const raw = value ?? "";
   const match =

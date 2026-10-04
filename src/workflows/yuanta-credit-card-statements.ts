@@ -466,20 +466,6 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
-}
-
 async function findScopeWithSelector(
   page: Page,
   selector: string,
@@ -713,32 +699,6 @@ async function clickCreditCardBillsLink(
   return true;
 }
 
-async function readMonthOptions(page: Page): Promise<MonthOption[]> {
-  const scope = await waitForCreditCardBillsReady(page);
-  const links = scope.locator('a[onclick*="queryMonth("]');
-  const count = await links.count();
-  const options = new Map<number, MonthOption>();
-
-  for (let index = 0; index < count; index += 1) {
-    const link = links.nth(index);
-    const onclick = (await link.getAttribute("onclick")) ?? "";
-    const match = onclick.match(/queryMonth\(['"]?(\d+)['"]?\)/);
-    if (!match) continue;
-
-    const label = cleanText(await link.textContent());
-    if (!label) continue;
-
-    const monthIndex = Number(match[1]);
-    options.set(monthIndex, { index: monthIndex, label });
-  }
-
-  if (options.size === 0) {
-    throw new Error("Could not find YuanTa credit card statement month links.");
-  }
-
-  return [...options.values()].sort((left, right) => left.index - right.index);
-}
-
 function selectMonthOptions(
   options: MonthOption[],
   input: WorkflowInput,
@@ -759,56 +719,6 @@ function selectMonthOptions(
     );
   }
   return selected;
-}
-
-async function clickMonth(page: Page, month: MonthOption): Promise<void> {
-  const scope = await waitForCreditCardBillsReady(page);
-  const link = await firstVisibleLocator(
-    scope.locator('a[onclick*="queryMonth("]').filter({ hasText: month.label }),
-    `YuanTa credit card month "${month.label}"`,
-  );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  await waitForCreditCardBillsReady(page, month.label);
-}
-
-async function waitForCreditCardFunctionResult(
-  page: Page,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [...page.frames(), page]) {
-      if (
-        (await hasAttachedLocator(scope.locator(".cardBx"))) ||
-        (await hasAttachedLocator(scope.locator("table.rwdTable")))
-      ) {
-        return scope;
-      }
-
-      const noRecordText = await creditCardNoRecordLocator(scope)
-        .evaluateAll((elements) =>
-          elements.map((element) => element.textContent ?? "").join(" "),
-        )
-        .catch(() => "");
-      if (isCreditCardNoRecordText(noRecordText)) return scope;
-
-      const bodyText = await scope
-        .locator("body")
-        .textContent({ timeout: 500 })
-        .catch(() => "");
-      if (
-        /credit(?:No)?UnbilledMsg|creditNoRecordMsg/.test(bodyText ?? "") &&
-        isCreditCardNoRecordText(bodyText)
-      ) {
-        return scope;
-      }
-    }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error(`Could not find ${description} result in any frame.`);
 }
 
 async function findYuantaMenuActionScope(
@@ -1314,26 +1224,6 @@ async function submitCreditCardSummary(
     loaded.evidence,
     options,
   );
-}
-
-async function clickCreditCardFunction(
-  page: Page,
-  functionIndex: number,
-  description: string,
-): Promise<BrowserScope> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate.locator(`a[onclick*="turnCDFunc(${functionIndex})"]`),
-    description,
-  );
-  const link = await firstVisibleLocator(
-    scope.locator(`a[onclick*="turnCDFunc(${functionIndex})"]`),
-    description,
-  );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  return await waitForCreditCardFunctionResult(page, description);
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -1924,27 +1814,6 @@ export async function submitCreditCardMonthOptions(
   }
 }
 
-async function parseHtmlTableRows(table: Locator): Promise<string[][]> {
-  const rows = await table.locator("tr").all();
-  const parsedRows: string[][] = [];
-
-  for (const row of rows) {
-    const values = (
-      await row
-        .locator("th, td:not(.cardDetailList):not(.billcontrol_Btn)")
-        .allTextContents()
-    ).map(cleanText);
-    if (values.some((value) => value.length > 0)) parsedRows.push(values);
-  }
-
-  if (parsedRows.length === 0) {
-    const text = cleanText(await table.innerText());
-    if (text) parsedRows.push([text]);
-  }
-
-  return parsedRows;
-}
-
 function normalizeTableRows(tableLabel: string, rows: string[][]): string[][] {
   if (tableLabel !== "transactions" || rows.length < 2) return rows;
 
@@ -2081,97 +1950,6 @@ function statementRowsFromTableRows(
   }
 
   return statementRows;
-}
-
-async function findStatementScope(page: Page): Promise<BrowserScope | null> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    for (const scope of [...page.frames(), page]) {
-      if (await hasAttachedLocator(scope.locator(".cardBx"))) {
-        return scope;
-      }
-      const noRecordText = await creditCardNoRecordLocator(scope)
-        .evaluateAll((elements) =>
-          elements.map((element) => element.textContent ?? "").join(" "),
-        )
-        .catch(() => "");
-      if (isCreditCardNoRecordText(noRecordText)) return null;
-      if (isCreditCardProductAbsentText(noRecordText)) {
-        throw new StatementComponentAbsentError(
-          "No YuanTa credit-card product is available for this login.",
-          "not_held",
-        );
-      }
-    }
-    await page.waitForTimeout(250);
-  }
-
-  return null;
-}
-
-async function parseStatementRows(
-  page: Page,
-  period: string | null,
-  paymentStatus: string,
-): Promise<StatementRow[]> {
-  const scope = await findStatementScope(page);
-  if (!scope) return [];
-
-  const cardTables = await scope.locator(".cardBx").evaluateAll((cardBoxes) =>
-    cardBoxes
-      .filter(
-        (cardBox) =>
-          cardBox.querySelector(".cardInfoD") &&
-          cardBox.querySelector("table.rwdTable"),
-      )
-      .map((cardBox) => {
-        const textOf = (element: Element | null): string =>
-          (element?.textContent ?? "")
-            .replace(/\u00a0/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-        const creditCardName = textOf(
-          cardBox.querySelector(".cardInfoD h4.web") ??
-            cardBox.querySelector(".cardHead h4"),
-        )
-          .replace(/主卡/g, "")
-          .trim();
-        let creditCardNo = "";
-        for (const item of Array.from(
-          cardBox.querySelectorAll(".cardInfod_Con li"),
-        )) {
-          if (textOf(item.querySelector("h5")).includes("卡號")) {
-            creditCardNo = textOf(item.querySelector("p"));
-            break;
-          }
-        }
-        const tables = Array.from(
-          cardBox.querySelectorAll("table.rwdTable"),
-        ).map((table) =>
-          Array.from(table.querySelectorAll("tr"))
-            .map((row) =>
-              Array.from(
-                row.querySelectorAll(
-                  "th, td:not(.cardDetailList):not(.billcontrol_Btn)",
-                ),
-              ).map(textOf),
-            )
-            .filter((row) => row.some((value) => value.length > 0)),
-        );
-        return { creditCardNo, creditCardName, tables };
-      }),
-  );
-
-  return cardTables.flatMap(({ creditCardNo, creditCardName, tables }) =>
-    tables.flatMap((rows) =>
-      statementRowsFromTableRows(rows, {
-        creditCardNo,
-        creditCardName,
-        period,
-        paymentStatus,
-      }),
-    ),
-  );
 }
 
 function parseAmount(value: string | undefined): number | null {
@@ -2489,17 +2267,6 @@ function yuantaSummaryField(value: string): YuantaSummaryField | undefined {
 
 function isYuantaSummaryIgnoredLabel(value: string): boolean {
   return /^已繳款金額$/u.test(normalizedYuantaSummaryLabel(value));
-}
-
-function yuantaSummaryRowsFromHtml(html: string): string[][][] {
-  const tables = [
-    ...html.matchAll(
-      /<table\b[^>]*>[\s\S]*?<\/table>/gi,
-    ),
-  ].map((match) => parseHtmlRowsFromString(match[0]));
-  if (tables.length > 0) return tables;
-  const text = stripHtml(html);
-  return text ? [[[text]]] : [];
 }
 
 function addYuantaSummaryCandidate(
@@ -3026,12 +2793,6 @@ function removeYuantaSummaryCandidateField(
     else delete withoutField[YUANTA_SUMMARY_FIELD_EVIDENCE];
   }
   return withoutField;
-}
-
-function removeYuantaSummaryCandidatePeriod(
-  candidate: YuantaSummaryCandidate,
-): YuantaSummaryCandidate {
-  return removeYuantaSummaryCandidateField(candidate, "period");
 }
 
 function removeYuantaSummaryCandidateOverlaps(
@@ -4792,35 +4553,6 @@ export function collectYuantaCreditCardHistorySummaries(
     summaries.push({ ...summary, period: normalizedPeriod });
   }
   return summaries;
-}
-
-async function readBillingPaymentStatus(page: Page): Promise<string> {
-  const scope = await findScopeWithSelector(
-    page,
-    "table.rwdTable",
-    10_000,
-  ).catch(() => null);
-  if (!scope) return "";
-
-  const tables = scope.locator("table.rwdTable");
-  const count = await tables.count();
-
-  for (let tableIndex = 0; tableIndex < count; tableIndex += 1) {
-    const rows = await parseHtmlTableRows(tables.nth(tableIndex));
-    const headerRowIndex = rows.findIndex(
-      (row) => row.includes("帳單月份") && row.includes("已繳款金額"),
-    );
-    if (headerRowIndex < 0 || headerRowIndex + 1 >= rows.length) continue;
-
-    const headers = uniqueHeaders(rows[headerRowIndex]);
-    const values = alignValuesToHeaders(
-      rows[headerRowIndex + 1],
-      headers,
-    ).slice(0, headers.length);
-    return inferPaymentStatus(columnsFromValues(headers, values));
-  }
-
-  return "";
 }
 
 function cardKeyForRow(row: StatementRow): string {

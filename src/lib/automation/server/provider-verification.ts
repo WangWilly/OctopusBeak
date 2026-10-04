@@ -1,7 +1,6 @@
 import type {
   HumanAssistanceContract,
   HumanAssistanceContractInput,
-  HumanVerificationRect,
 } from "../human-assistance.ts";
 import { transformHumanAssistanceContract } from "../human-assistance.ts";
 import {

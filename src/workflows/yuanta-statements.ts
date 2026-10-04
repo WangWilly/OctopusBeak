@@ -430,10 +430,6 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-function digitsOnly(value: string): string {
-  return toAsciiDigits(value).replace(/\D/g, "");
-}
-
 function escapedRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

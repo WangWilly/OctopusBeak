@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
   "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview" as const;
@@ -119,8 +119,6 @@ export type CathayCurrentDepositSnapshotInput = Readonly<{
   uiAccountNumbers?: readonly string[];
   financialAuthority?: CathayCurrentDepositFinancialAuthority;
 }>;
-
-type BrowserScope = Page | Frame;
 
 type CathayDomesticApiRow = {
   accountType?: unknown;

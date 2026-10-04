@@ -15,7 +15,6 @@ import {
 import {
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE,
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_VERSION,
-  YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   getYuantaHumanAttestedV2Manifest,
   isYuantaHumanAttestedV2Active,
   isYuantaHumanAttestedV2Manifest,

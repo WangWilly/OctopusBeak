@@ -10,7 +10,6 @@ import {
   GMAIL_OTP_IPC_ENDPOINT_ENV,
   GMAIL_OTP_IPC_TOKEN_BYTES,
   GMAIL_OTP_IPC_TOKEN_ENV,
-  gmailOtpIpcAuthFrame,
   isGmailOtpIpcToken,
   parseGmailOtpIpcAuthFrame,
   parseGmailOtpRequestFrame,

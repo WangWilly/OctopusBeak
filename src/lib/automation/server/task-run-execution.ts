@@ -53,7 +53,6 @@ import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
-  createPGliteChildRpcClient,
   requirePGliteChildRpcClientFromEnv,
 } from "../../../../electron/pglite-child-rpc-client.ts";
 

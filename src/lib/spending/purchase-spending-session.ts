@@ -10,7 +10,6 @@ import {
   type SpendingPageDto,
   type SpendingPairingCandidateView,
   type SpendingPurchaseReportSummaryDto,
-  type SpendingRecordPageDto,
   preserveSpendingMonthSelection,
 } from "./model.ts";
 import { applySpendingPurchaseReportPatch } from "./purchase-report-patch.ts";

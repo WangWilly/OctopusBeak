@@ -29,8 +29,6 @@ import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-l
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
 import type {
   CanonicalOverviewAmount,
-  CanonicalOverviewExpectedSource,
-  CanonicalOverviewProjection,
 } from "../src/ledger/canonical/canonical-overview-query.ts";
 import {
   exactAmountToNumber,
@@ -53,29 +51,22 @@ import {
   type PGliteCanonicalFinancialCommitBatchRequest,
   type PGliteCanonicalFinancialCommitRequest,
   type PGliteCanonicalSourceAdmissionRequest,
-  type PGliteCanonicalSourceAdmissionReceipt,
-  type PGliteCanonicalFinancialCommitResult,
-  type PGliteCanonicalSourceStore,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
   executePGliteCanonicalDepositCommit,
   type PGliteCanonicalDepositCommitRequest,
-  type PGliteCanonicalDepositCommitResult,
 } from "../src/ledger/pglite/deposit.ts";
 import {
   commitPGliteCanonicalMixedCapture,
   type PGliteCanonicalMixedCommitRequest,
-  type PGliteCanonicalMixedCommitResult,
 } from "../src/ledger/pglite/mixed-commit.ts";
 import {
   executePGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
-  type PGliteCanonicalBalanceCommitResult,
 } from "../src/ledger/pglite/balance.ts";
 import {
   executePGliteCanonicalEInvoiceCommit,
   PGliteCanonicalEInvoiceAdmissionError,
-  type PGliteCanonicalEInvoiceCommitResult,
 } from "../src/ledger/pglite/einvoice.ts";
 import {
   executePGliteCanonicalCreditCardCommand,
@@ -84,17 +75,14 @@ import {
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   type PGliteCanonicalCreditCardBalanceCaptureRequest,
   type PGliteCanonicalCreditCardCaptureRequest,
-  type PGliteCanonicalCreditCardCommitResult,
 } from "../src/ledger/pglite/credit-card.ts";
 import {
   executePGliteCanonicalLoanCommand,
   type PGliteCanonicalLoanCommitRequest,
-  type PGliteCanonicalLoanCommitResult,
 } from "../src/ledger/pglite/loan.ts";
 import {
   executePGliteCanonicalInvestmentCommand,
   type PGliteCanonicalInvestmentCommitRequest,
-  type PGliteCanonicalInvestmentCommitResult,
 } from "../src/ledger/pglite/investment.ts";
 import {
   executePGliteCanonicalLoanRelationCommand,
@@ -103,9 +91,7 @@ import {
   queryPGliteCurrentLoanRepaymentSettlementGroups,
   queryPGliteCurrentInvestmentFundingRelations,
   type PGliteCanonicalLoanRelationResolutionRequest,
-  type PGliteCanonicalLoanRelationResolutionResult,
   type PGliteCanonicalInvestmentRelationResolutionRequest,
-  type PGliteCanonicalInvestmentRelationResolutionResult,
 } from "../src/ledger/pglite/relations.ts";
 import type { PGliteStore, PGliteTransaction } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -131,7 +117,6 @@ import {
   type PGliteFinancialFailureCategory,
   type PGliteFinancialOperation,
   type PGliteFinancialRequest,
-  type PGliteFinancialRequestOptions,
   type PGliteFinancialResponse,
   type PGliteFinancialRegistry,
   type PGliteFinancialRpcClient,

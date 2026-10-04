@@ -7,7 +7,6 @@ import {
   type CathayCurrentDepositObservation,
 } from "./cathay-current-deposit-balances.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,

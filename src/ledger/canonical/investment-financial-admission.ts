@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
@@ -318,15 +318,6 @@ export function deriveInvestmentHoldingCorrectionProofKey(input: {
     input.measurementSubjectKey,
     input.effectiveOn,
   );
-}
-function uuidV7(): Buffer {
-  const bytes = randomBytes(16);
-  const now = BigInt(Date.now());
-  for (let i = 0; i < 6; i += 1)
-    bytes[i] = Number((now >> BigInt(40 - i * 8)) & 0xffn);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  return bytes;
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {

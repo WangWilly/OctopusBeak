@@ -162,12 +162,6 @@ function bytesValue(value: unknown, label = "Canonical identity"): Uint8Array {
   throw new Error(`${label} is not a UUID bytea value.`);
 }
 
-function stringValue(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim() === "")
-    throw new Error(`${label} is missing.`);
-  return value;
-}
-
 function integerValue(value: unknown, label: string): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number)) throw new Error(`${label} is invalid.`);

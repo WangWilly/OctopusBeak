@@ -84,6 +84,8 @@ CAPTCHAs, OTPs, session cookies, and other authentication material are not sent 
 <details>
 <summary>Run from source</summary>
 
+See the [documentation map](docs/README.md) for authoritative sources and document lifecycle rules.
+
 ```bash
 npm install
 npm run typecheck
@@ -125,7 +127,7 @@ The desktop PGlite worker stores financial data in `data/pglite/`.
 
 | Path | Purpose |
 | --- | --- |
-| `src/workflows/` | Existing workflow modules migrating to the App typed runtime |
+| `src/workflows/` | Bank and source workflow definitions; production tasks run through the desktop App's typed runtime |
 | `src/ledger/` | Source parsing, PGlite storage, and financial queries |
 | `src/lib/overview/`, `src/lib/assets/`, `src/lib/liabilities/` | Financial overview UI |
 | `src/lib/spending/` | E-Invoice and spending UI |

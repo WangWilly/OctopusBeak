@@ -133,16 +133,6 @@ type InvestmentTransactionRow = Readonly<{
   description: string | null;
 }>;
 
-function uuidText(value: unknown): string {
-  const hex = typeof value === "string"
-    ? value.replace(/^\\x/u, "").replaceAll("-", "")
-    : value instanceof Uint8Array || Buffer.isBuffer(value)
-      ? Buffer.from(value).toString("hex")
-      : String(value).replace(/^\\x/u, "").replaceAll("-", "");
-  if (!/^[0-9a-f]{32}$/iu.test(hex)) throw new Error("PGlite overview returned an invalid UUID.");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`.toLowerCase();
-}
-
 function normalizeExact(value: { coefficient: string; scale: number }): { coefficient: string; scale: number } {
   let coefficient = BigInt(value.coefficient);
   let scale = value.scale;

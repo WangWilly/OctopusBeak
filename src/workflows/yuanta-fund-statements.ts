@@ -509,12 +509,6 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
-function toAsciiDigits(value: string): string {
-  return value.replace(/[０-９]/g, (char) =>
-    String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
-  );
-}
-
 function simpleTableConfig(headers: string[]): TableOutputConfig {
   return {
     rawColumns: headers,
@@ -569,20 +563,6 @@ function resolveDateRange(input: WorkflowInput): {
   const endDate = formatDate(end);
 
   return { startDate, endDate, label: `${startDate}-${endDate}` };
-}
-
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
 }
 
 async function findScopeWithSelector(
@@ -683,23 +663,6 @@ async function gotoFundTransactionPage(
   );
   await settleAfterNavigation(page);
   return true;
-}
-
-async function isFundArea(page: Page, timeoutMs = 3_000): Promise<boolean> {
-  return await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator('a[onclick*="fundsummary"]')
-        .or(candidate.locator('a[onclick*="fundtransactiondetails"]'))
-        .or(candidate.locator('a[onclick*="f_offhourqueryandcancel"]'))
-        .or(candidate.locator('input[name="menutype"][value*="fund"]'))
-        .first(),
-    "YuanTa fund navigation",
-    timeoutMs,
-  )
-    .then(() => true)
-    .catch(() => false);
 }
 
 async function clickFundMenuLink(
@@ -1525,10 +1488,6 @@ function findMatchingHeaderRowIndex(
   }
 
   return findHeaderRowIndex(table);
-}
-
-function addIfPresent(values: Set<string>, value: string | null): void {
-  if (value) values.add(value);
 }
 
 async function captureTables(

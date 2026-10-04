@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
@@ -79,8 +79,6 @@ export type FubonCurrentDepositSnapshotInput = Readonly<{
   observedAt: string;
   financialAuthority?: FubonCurrentDepositFinancialAuthority;
 }>;
-
-type BrowserScope = Page | Frame;
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
