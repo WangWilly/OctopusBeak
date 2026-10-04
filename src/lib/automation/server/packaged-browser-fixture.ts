@@ -89,6 +89,11 @@ export function packagedBrowserFixtureDefinition(
     id: workflowId,
     requiresFinancialCommit: false,
     async run(context) {
+      if (workflowId === "packaged-browser-fixture-success"
+        && process.env.OCTOPUSBEAK_PACKAGED_RECOGNITION_FIXTURE === "1") {
+        const { verifyPackagedRecognition } = await import("./packaged-recognition-fixture.ts");
+        await verifyPackagedRecognition(context);
+      }
       await verifyFixturePage(context);
       if (workflowId === "packaged-browser-fixture-cancel") {
         await waitForCancellation(context);

@@ -56,6 +56,15 @@ npm run desktop:install-browsers
 
 After packaging, run `npm run desktop:packaged-browser-smoke -- --app-root <app-or-resources-app-path>` to launch both the bundled Playwright browser and the packaged App's workflow worker against a local fixture. The App fixture checks one completed run and one cancelled run through the real browser host, validates the browser profile identity, and confirms page, runtime profile, and temporary user data cleanup. On macOS, pass `out/OctopusBeak-darwin-arm64/OctopusBeak.app`; on Linux or Windows, pass the unpacked `resources/app` directory. This smoke uses only a temporary local HTTP server and never contacts a financial source.
 
+The release workflow additionally runs:
+
+```bash
+node scripts/check-packaged-assets.mjs --app-root out/OctopusBeak-darwin-arm64/OctopusBeak.app/Contents/Resources/app
+npm run desktop:packaged-browser-smoke -- --app-root out/OctopusBeak-darwin-arm64/OctopusBeak.app --recognition
+```
+
+The asset check compares every app LFS asset's size and SHA-256 with Git's LFS manifest; website-only `site/` assets are excluded. The recognition option runs synthetic digit OCR and speech-model inference on silence inside the actual packaged automation worker, and initializes the MPEG decoder. It checks model/native-runtime availability, not speech transcription accuracy. OCR retains its runtime download behavior; the smoke uses an isolated temporary cache so a developer's existing model cache cannot hide download failures. The model download requires network access. All these checks must pass before installer upload and publication.
+
 The macOS arm64 package passed this smoke on 2026-09-29. It verified Chromium 151.0.7922.34, the actual shell executable inside the packaged browser root, and normal packaged-App worker success and cancellation. Linux and Windows package artifacts were not built in this phase.
 
 ## macOS Signing Identity

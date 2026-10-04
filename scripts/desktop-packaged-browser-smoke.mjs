@@ -158,7 +158,7 @@ function runPackagedPlaywrightNode(runnerPath, environment, timeoutMs = 30_000) 
   });
 }
 
-function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 180_000) {
+function runPackagedWorkflowFixture(electronPath, environment, timeoutMs = 300_000) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(electronPath, [], {
       cwd: dirname(electronPath),
@@ -345,11 +345,19 @@ const { createRequire } = require("node:module");
   const visitsBeforeWorkflow = fixture.requestCount;
   workflowFixtureResult = await runPackagedWorkflowFixture(executable, {
     OCTOPUSBEAK_USER_DATA: userDataRoot,
+    OCTOPUSBEAK_PACKAGED_RECOGNITION_FIXTURE: process.argv.includes("--recognition") ? "1" : "0",
+    TMPDIR: temporaryRoot,
+    TEMP: temporaryRoot,
+    TMP: temporaryRoot,
     OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE: "1",
     OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_URL: fixture.url,
     OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_EXPECTED_CHROMIUM_VERSION: expectedVersion,
   });
   assertWorkflowFixtureResult(workflowFixtureResult, expectedVersion);
+  if (process.argv.includes("--recognition")) {
+    assert.ok(existsSync(join(temporaryRoot, "octopusbeak", "tesseract", "eng.traineddata")),
+      "Recognition fixture must download OCR data into its isolated cache.");
+  }
   assert.ok(fixture.requestCount - visitsBeforeWorkflow >= 2, "Both packaged App worker cases must load the local fixture.");
 } finally {
   fixture.server.close();
@@ -364,4 +372,5 @@ console.log(JSON.stringify({
   workerCases: [workflowFixtureResult.success.status, workflowFixtureResult.cancel.status],
   profilesRemoved: true,
   recordsSanitized: true,
+  recognition: process.argv.includes("--recognition") ? "passed" : "not-requested",
 }));

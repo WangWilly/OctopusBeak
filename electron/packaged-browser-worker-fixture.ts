@@ -46,7 +46,7 @@ type FixtureDependencies = Readonly<{
   now?: () => number;
 }>;
 
-const FIXTURE_TIMEOUT_MS = 45_000;
+const FIXTURE_TIMEOUT_MS = 180_000;
 const TERMINAL_STATUSES = new Set<AutomationTaskRun["status"]>([
   "completed",
   "failed",
