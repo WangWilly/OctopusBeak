@@ -76,9 +76,9 @@
     gap: 10px;
     margin-top: 10px;
     padding: 8px 10px;
-    border: 1px solid color-mix(in srgb, var(--danger, #b42318) 35%, var(--border));
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
     border-radius: 10px;
-    color: var(--danger, #b42318);
+    color: var(--danger);
     font-size: 0.85rem;
   }
 
