@@ -124,9 +124,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check canonical readiness
-        run: npm run check:canonical-readiness
-
       - name: Check pinned GitHub Actions
         run: npm run check:actions-pinned
 
@@ -331,6 +328,14 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           spctl --assess --type execute --verbose=4 "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
+
+      - name: Verify packaged assets and automation worker
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          APP_PATH="out/OctopusBeak-darwin-arm64/OctopusBeak.app"
+          node scripts/check-packaged-assets.mjs --app-root "$APP_PATH/Contents/Resources/app"
+          npm run desktop:packaged-browser-smoke -- --app-root "$APP_PATH" --recognition
 
       - name: Collect installer artifacts
         run: |
