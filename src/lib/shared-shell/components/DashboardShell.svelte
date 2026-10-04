@@ -349,7 +349,7 @@
   }
 
   .refresh-trigger.error {
-    color: var(--danger, #b42318);
+    color: var(--danger);
     border-color: color-mix(in srgb, currentColor 45%, var(--border));
   }
 

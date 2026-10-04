@@ -298,12 +298,12 @@ The system is flat at rest and lifts only what floats. Content cards, tables, an
 - **Panel** (`--shadow`: `0 14px 34px rgb(15 23 42 / 0.07)`): modal panels.
 - **Popover** (`0 14px 36px rgb(15 23 42 / 0.14)`): anchored popovers such as search, and the floating notice (`0 12px 30px / 0.14`).
 - **Sheet edge** (`-7px 0 22px rgb(30 48 66 / 0.05)`): the right-hand sync sheet.
-- **Coach** (`0 22px 50px`, at 0.28 alpha): the onboarding coach card above the dimmed page, the deepest shadow in the app.
+- **Coach** (`0 22px 50px rgb(15 23 42 / 0.28)`): the onboarding coach card above the dimmed page, the deepest shadow in the app.
 
 ### Named Rules
 **The Flat-By-Default Rule.** A surface that scrolls with content has no shadow. Shadow means "this floats above the ledger".
 
-**The Slate Shadow Rule.** Shadows are always tinted `rgb(15 23 42 / α)` and never pure black. Alpha stays at 0.14 or below.
+**The Slate Shadow Rule.** Shadows are always tinted `rgb(15 23 42 / α)` and never pure black. Alpha stays at 0.14 or below, except for the onboarding coach (0.28), which floats above a dimmed page.
 
 ## Shapes
 

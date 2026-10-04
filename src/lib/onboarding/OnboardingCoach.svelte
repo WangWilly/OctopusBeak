@@ -448,7 +448,7 @@
     border-radius: 16px;
     background: var(--surface);
     color: var(--fg);
-    box-shadow: 0 22px 50px rgb(0 0 0 / 0.28);
+    box-shadow: 0 22px 50px rgb(15 23 42 / 0.28);
   }
   .coach.measuring {
     visibility: hidden;
@@ -486,7 +486,7 @@
   .milestones span.active { background: var(--accent); }
   h2 { margin: 0 0 8px; font-size: 23px; line-height: 1.2; }
   .coach > p { margin: 0 0 14px; color: var(--muted); line-height: 1.45; }
-  .coach-error { margin: 0 0 10px; color: var(--danger, #b42318); font-size: 13px; }
+  .coach-error { margin: 0 0 10px; color: var(--danger); font-size: 13px; }
   .coach-disabled-reason { margin: 0 0 10px !important; color: var(--muted); font-size: 12px; line-height: 1.3 !important; }
   .coach-actions :global(.button) { min-height: 38px; padding: 8px 11px; }
   .visually-hidden {

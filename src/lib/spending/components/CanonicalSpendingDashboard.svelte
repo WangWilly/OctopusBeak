@@ -413,7 +413,7 @@
   .canonical-gap-card {
     align-items: flex-start;
     flex-direction: column;
-    border-color: color-mix(in srgb, var(--danger, #b42318) 35%, var(--border));
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
   }
 
   .canonical-gap-card span {
@@ -428,7 +428,7 @@
 
   .canonical-total-status.incomplete,
   .gap-label {
-    color: var(--danger, #b42318);
+    color: var(--danger);
   }
 
   .canonical-amount-list,
@@ -558,7 +558,7 @@
   }
 
   .canonical-invoice-incomplete {
-    color: var(--danger, #b42318) !important;
+    color: var(--danger) !important;
   }
 
   .canonical-filter-row {
@@ -606,7 +606,7 @@
   }
 
   .gap-record {
-    background: color-mix(in srgb, var(--danger, #b42318) 4%, transparent);
+    background: color-mix(in srgb, var(--danger) 4%, transparent);
   }
 
   @media (max-width: 680px) {

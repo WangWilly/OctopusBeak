@@ -39,7 +39,7 @@
   }
 
   .route-load-notice.failed {
-    color: var(--danger, #b42318);
+    color: var(--danger);
   }
 
   .notice-spinner {
