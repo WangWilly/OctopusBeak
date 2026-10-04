@@ -13,6 +13,15 @@ colors:
   settled-green: "oklch(47% 0.08 155)"
   caution-ochre: "oklch(56% 0.08 82)"
   overdrawn-red: "oklch(48% 0.09 28)"
+  series-blue: "oklch(52% 0.11 250)"
+  series-green: "oklch(52% 0.09 170)"
+  series-ochre: "oklch(56% 0.1 70)"
+  series-plum: "oklch(53% 0.08 320)"
+  series-clay: "oklch(50% 0.07 35)"
+  series-teal: "oklch(49% 0.06 215)"
+  series-violet: "oklch(50% 0.05 285)"
+  series-slate: "oklch(46% 0.035 250)"
+  viewer-night: "oklch(18% 0.025 250)"
   vault-blue: "#071f4a"
   engraving-teal: "#18a9a4"
   banknote-mint: "#edf4f1"
@@ -123,6 +132,60 @@ components:
     textColor: "{colors.paper-white}"
     width: "256px"
     padding: "24px"
+  switch:
+    backgroundColor: "{colors.paper-white}"
+    textColor: "{colors.slate-ink}"
+    rounded: "{rounded.control}"
+    padding: "0 8px"
+    width: "76px"
+    height: "36px"
+  popover:
+    backgroundColor: "{colors.paper-white}"
+    rounded: "{rounded.popover}"
+    padding: "16px"
+    width: "360px"
+  modal:
+    backgroundColor: "{colors.paper-white}"
+    rounded: "{rounded.lg}"
+    width: "920px"
+  sync-sheet:
+    backgroundColor: "{colors.paper-white}"
+    padding: "28px"
+    width: "455px"
+  stage-number:
+    backgroundColor: "{colors.ledger-blue}"
+    textColor: "{colors.paper-white}"
+    rounded: "{rounded.pill}"
+    size: "36px"
+  progress-bar:
+    backgroundColor: "{colors.paper-soft}"
+    rounded: "{rounded.pill}"
+    height: "6px"
+  option-tile:
+    backgroundColor: "{colors.paper-white}"
+    textColor: "{colors.slate-ink}"
+    rounded: "{rounded.md}"
+    padding: "12px"
+    height: "44px"
+  option-tile-checked:
+    backgroundColor: "{colors.ledger-blue-wash}"
+  floating-notice:
+    backgroundColor: "{colors.paper-white}"
+    textColor: "{colors.graphite-muted}"
+    rounded: "{rounded.popover}"
+    padding: "10px 14px"
+  verification-viewer:
+    backgroundColor: "{colors.viewer-night}"
+    rounded: "{rounded.lg}"
+  onboarding-coach:
+    backgroundColor: "{colors.paper-white}"
+    textColor: "{colors.slate-ink}"
+    rounded: "{rounded.lg}"
+    padding: "24px"
+    width: "360px"
+  skeleton:
+    backgroundColor: "{colors.paper-soft}"
+    rounded: "{rounded.popover}"
   site-button-mint:
     backgroundColor: "{colors.banknote-mint}"
     textColor: "{colors.vault-blue}"
@@ -172,6 +235,10 @@ A slate-and-paper palette with one restrained blue. The status colors are desatu
 - **Caution Ochre** (`caution-ochre`): warnings.
 - **Overdrawn Red** (`overdrawn-red`): destructive actions and errors, tinted at 9% into white for the button background.
 
+### Data Series
+An eight-hue categorical set for charts, matched in lightness (46–56%) and kept at moderate chroma (0.035–0.11) so that no single series overpowers the others. The stacked balance chart cycles through them in this order: **Series Blue**, **Series Green**, **Series Ochre**, **Series Plum**, **Series Clay**, **Series Teal**, **Series Violet**, **Series Slate**. The spending categories map onto the same hues (food, daily, transport, shopping, home, leisure, other) through overridable `--spending-*` properties. Semantic charts reuse them by meaning: net worth uses blue, assets use green, and liabilities and credit cards use clay. The Sankey chart is the one exception and uses its own asset teal (`oklch(53% 0.1 207)`) and liability rust (`oklch(56% 0.11 34)`).
+- **Viewer Night** (`viewer-night`): the slightly blue-shifted dark ground behind the human-verification screenshot viewer, so a bright bank page reads as an embedded window.
+
 ### Brand Layer (site and first-run only)
 - **Vault Blue** (`vault-blue`): the hero and night-panel gradient base, and text on mint.
 - **Engraving Teal** (`engraving-teal`): the end of the gradient, a radial glow, and engraving ink at 34%.
@@ -181,6 +248,8 @@ A slate-and-paper palette with one restrained blue. The status colors are desatu
 **The Ink-Not-Blue Rule.** The primary action is Slate Ink filled with white text. Ledger Blue is for selection, data, and secondary emphasis, never the main call to action.
 
 **The Tint-Don't-Mix Rule.** Derived surfaces are produced with `color-mix(in oklch, <token> N%, white|transparent)` from an existing token. Never introduce a new hex for a hover or a wash.
+
+**The Equal Weight Series Rule.** Chart series share a lightness band of 46–56%. A new series color takes the next free hue at that lightness. Don't add a brighter color to make a series stand out; emphasize it with selection or a label instead.
 
 **The Threshold Rule.** Vault Blue, Engraving Teal, Banknote Mint, and the engravings belong to the site and the first-run welcome or onboarding. Working app screens stay slate and paper.
 
@@ -227,7 +296,9 @@ The system is flat at rest and lifts only what floats. Content cards, tables, an
 - **Hairline lift** (`0 1px 2px rgb(15 23 42 / 0.06–0.08)`): the pressed filter segment and toggle hover.
 - **Toolbar ambient** (`0 12px 28px rgb(15 23 42 / 0.05)`, hover `0 16px 34px / 0.09`): floating filter groups and selection bars.
 - **Panel** (`--shadow`: `0 14px 34px rgb(15 23 42 / 0.07)`): modal panels.
-- **Popover** (`0 14px 36px rgb(15 23 42 / 0.14)`): anchored popovers such as search.
+- **Popover** (`0 14px 36px rgb(15 23 42 / 0.14)`): anchored popovers such as search, and the floating notice (`0 12px 30px / 0.14`).
+- **Sheet edge** (`-7px 0 22px rgb(30 48 66 / 0.05)`): the right-hand sync sheet.
+- **Coach** (`0 22px 50px`, at 0.28 alpha): the onboarding coach card above the dimmed page, the deepest shadow in the app.
 
 ### Named Rules
 **The Flat-By-Default Rule.** A surface that scrolls with content has no shadow. Shadow means "this floats above the ledger".
@@ -279,6 +350,53 @@ The sidebar is a Slate Ink spine with white text at 62% opacity, 44px links at w
 ### Charts (Sparkline)
 The balance history is drawn with a 4px round-capped Ledger Blue line over a 14% accent area, with a Hairline grid and muted 11px axis labels. Dots are accent with a 3px white stroke. The tooltip is an ink body at 92% opacity with white text and a tabular figure.
 
+### Switch
+A 76×36px bordered control (8px radius) pairing an icon with a 30×18px pill track. The track is ink when on and Hairline when off. Its 12px white thumb slides 12px over 180ms. Used for the values-visible toggle and the per-source enable toggles.
+
+### Popover
+Anchored to its trigger with CSS anchor positioning and placed 8px below it, at most 360px wide. Paper White with a Hairline border, a 12px radius, 16px padding, and the Popover shadow. It opens from `translateY(-4px) scale(0.98)` to rest over 140ms via `@starting-style`, and its backdrop is transparent, so the page stays visible.
+
+### Modal
+- **Backdrop:** slate at 44% (`rgba(14, 18, 28, 0.44)`) with a `blur(10px) saturate(0.84)` that fades in over 160ms.
+- **Panel:** Paper White, Hairline border, 16px radius, Panel shadow. It is at most 920px wide and at most 760px tall (or the viewport height minus 40px), and rises from `translateY(10px) scale(0.985)` over 180ms with the ease-out curve.
+- **Head:** a 20px padded band with a bottom hairline, a 22px title, and a 40×40px bordered close button. The body scrolls; the head stays put.
+- **Variants:** detail modals (transactions, invoices, statements, assets) use the standard panel. The human-verification viewer modal is wider (at most 1080px, 20px radius) and can expand to nearly the full viewport.
+- Reduced motion disables both entrance animations.
+
+### Side Sheet
+The sync sheet slides in from the right edge below the top bar. It is 455px wide, Paper White, has a left Hairline, a faint leftward shadow (`-7px 0 22px rgb(30 48 66 / 0.05)`), a 28px padded head, and its own scroll. Use it for a task list that runs alongside the dashboard instead of blocking it.
+
+### Staged Workflow (Automation)
+Automation progress reads as numbered stages inside one card, separated by hairlines.
+- **Stage head:** at least 82px tall with 10px by 20px padding and a Paper Soft fill on hover. It contains a 36px **stage number** (a Ledger Blue disc with white monospace numerals at weight 760 and a faint accent shadow, or a Graphite Muted disc with no shadow when the stage is inactive), the title, and a 10px chevron caret that rotates over 180ms.
+- **Sync hero:** an 8px-radius banner at least 116px tall with 24px by 30px padding. While a run is active it turns accent-tinted (an accent-wash fill at 24% over white, with a border at 28% accent) and shows a **running kicker** (Ledger Blue text at 14px and weight 780, next to a spinner).
+- **Progress bar:** a 6px pill track in Paper Soft with a Ledger Blue fill. In tables it sits in a progress cell at least 96px wide alongside a short line of copy.
+- **Event and product rows:** rows at least 42px tall, separated by hairlines, with metadata aligned right. Product status text is Ledger Blue at weight 650 and turns Overdrawn Red when `data-status="failed"`.
+
+### Option Tiles
+Checkbox or radio choices rendered as 44px bordered tiles (10px radius, 12px padding) in a grid, used for statement types. When checked (`:has(input:checked)`), the border becomes Ledger Blue and the fill becomes Ledger Blue Wash. The whole tile is the click target.
+
+### Notices and Banners
+- **Prerequisite notice:** a card-level warning with a border at 34% Caution Ochre, a 6% ochre wash, 24px by 30px padding, and a list of the tasks it affects. Warnings tint the container; they never switch to a loud fill.
+- **Projection state banner:** a 10px-radius inline strip with a Hairline border and muted text, explaining gaps in the derived data.
+- **Floating notice:** a toast-like pill fixed 24px from the bottom-right corner, at most 420px wide, with a 12px radius, a slate shadow, a 14px spinner, and muted text. It turns Overdrawn Red when the action failed.
+- **Inline block error:** a 10px-radius row with a border at 35% red and red text, with a Retry button aligned right.
+
+### Loading States
+- **Skeleton:** Paper Soft blocks (12–14px radius) with a 100° shimmer gradient over 1.4s. Route skeletons mirror the target layout (a 32px heading bar, a three-column grid of 104px tiles, and a 240px table).
+- **Spinner:** a 14px ring with a 2px Hairline track and a Ledger Blue top arc that turns every 700ms. On ink buttons the track is white at 35% and the arc uses `currentColor`.
+- **Progressive block:** an already-rendered block keeps its content while it refreshes and shows a spinner in its top-right corner instead of being replaced by a skeleton.
+- Reduced motion stops the shimmer and the spinners.
+
+### Human Verification Viewer
+When a site needs a CAPTCHA or OTP, the bank page's screenshot is shown inside a Viewer Night frame (16px radius, Hairline border, a faint inner white line). It can zoom toward the challenge region over 180ms. A floating input and submit control sit next to the challenge itself. The frame says, without decoration, "this part is the bank's page, and you're the one acting on it".
+
+### Onboarding Coach
+- **Spotlight:** the target is ringed by a 3px white border plus a 4px Ledger Blue ring (12px radius, 6px outset). Everything else is dimmed with a 9999px spread shadow (`rgb(10 14 18 / 0.56)`), and invisible blockers prevent clicks outside the target.
+- **Coach card:** a Paper White card at most 360px wide with a 16px radius and 24px padding, placed next to the target and falling back to the bottom-right corner. It contains a 32px pixel-art guide sprite on a two-frame 1.2s idle loop, 8px milestone dots (Hairline, or Ledger Blue for the current step), a 23px title, muted body copy, and compact 38px buttons.
+- **Short viewports:** at 700px and 560px of height the padding, title, and sprite step down so the card always fits.
+- The coach is the one place in the working app that may use a deeper shadow (`0 22px 50px`), because it floats above a dimmed page.
+
 ### Privacy Blur (signature)
 When values are hidden, every `.money` or `[data-sensitive]` element blurs 10px, drops to 64% opacity, and can't be selected, with a 160ms transition. The switch track fades from ink to hairline. This is the ledger's visible privacy affordance.
 
@@ -295,6 +413,9 @@ Security-print SVG textures (rosette, wave field, and rule) are inked through `c
 - **Do** write a `:lang(en)` override alongside any new display or headline style, and test both zh-TW and en lengths.
 - **Do** respect `prefers-reduced-motion`. The site zeroes all transitions, and the app disables modal animation.
 - **Do** honor the values-hidden blur on any new surface that shows money.
+- **Do** take chart colors from the Data Series set in order, and reuse its semantic mapping (net worth in blue, assets in green, liabilities in clay).
+- **Do** keep content in place while it refreshes (progressive block spinner). Show skeletons only on first load, shaped like the content they stand in for.
+- **Do** frame anything from a third-party site (bank screenshots, CAPTCHA regions) in the Viewer Night frame so it never looks like OctopusBeak's own UI.
 
 ### Don't:
 - **Don't** bring Vault Blue, Engraving Teal, Banknote Mint, or the engravings into working app screens (Overview, Assets, Spending, Automation, Settings).
@@ -302,4 +423,5 @@ Security-print SVG textures (rosette, wave field, and rule) are inked through `c
 - **Don't** introduce pure black, pure grey, or untinted `rgba(0,0,0,…)` shadows. Neutrals and shadows are slate-tinted.
 - **Don't** round font weights to the 100s. The fine-grained weights (560, 680, 720, 750) are deliberate.
 - **Don't** add bouncy, springy, or scale-heavy motion. Transitions run 140–220ms with `ease` or `cubic-bezier(0.2, 0.8, 0.2, 1)`.
-- **Don't** use pills for buttons. Pills are for status chips, currency chips, and tracks only.
+- **Don't** use pills for buttons. Pills are for status chips, currency chips, and tracks only. Stage-number discs and milestone dots are the only other round shapes.
+- **Don't** signal a warning or failure with a solid fill. Tint the container (6–10%) and color the text or border instead.
