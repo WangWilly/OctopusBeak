@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { CircleAlert, CircleCheck } from "@lucide/svelte";
+  import { CircleAlert, CircleCheck, Minus, Plus } from "@lucide/svelte";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
@@ -37,7 +37,7 @@
   let selectedHour = "06";
   let selectedMinute = "00";
   let selectedMeridiem = "AM";
-  let saveStatus: "pending" | "success" | "error" = "success";
+  let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
   let saveQueue = Promise.resolve();
@@ -120,15 +120,15 @@
   <svelte:fragment slot="topbar-actions">
     <span
       id="settings-save-status"
-      class:pending={saveStatus === "pending"}
+      class:success={saveStatus === "success"}
       class:error={saveStatus === "error"}
       class="settings-save-status"
-      role={saveStatus === "error" ? "alert" : "status"}
+      role="status"
       aria-live="polite"
     >
       {#if saveStatus === "error"}
         <CircleAlert size={18} strokeWidth={2.25} aria-hidden="true" />
-        {$t.settings.settingsSaveFailed(saveError)}
+        {$t.settings.settingsNotSaved}
       {:else}
         <CircleCheck size={18} strokeWidth={2.25} aria-hidden="true" />
         {saveStatus === "pending" ? $t.settings.saving : $t.settings.allChangesSaved}
@@ -138,7 +138,7 @@
 
   <div class="content settings-content">
     <section class="card settings-group schedule-group">
-      <div class="panel-title group-title">
+      <div class="panel-title">
         <div>
           <h2>{$t.settings.scheduleSettings}</h2>
           <p class="lead">{$t.settings.systemSettingsDescription}</p>
@@ -146,14 +146,14 @@
       </div>
       <div class="settings-rows">
         <div class="setting-row">
-          <label for="system-timezone">{$t.settings.systemTimezone}</label>
+          <label class="setting-label" for="system-timezone">{$t.settings.systemTimezone}</label>
           <select id="system-timezone" bind:value={selectedTimezone} onchange={saveTimezone}>
             {#each timezoneOptions as timezone}<option value={timezone}>{timezone}</option>{/each}
           </select>
         </div>
         <div class="setting-row">
-          <span class="setting-label">{$t.settings.exchangeRateUpdateTime}</span>
-          <div class="time-selects" aria-label={$t.settings.exchangeRateUpdateTime}>
+          <span class="setting-label" id="update-time-label">{$t.settings.exchangeRateUpdateTime}</span>
+          <div class="time-selects" role="group" aria-labelledby="update-time-label">
             <select id="update-hour" aria-label={$t.settings.hour} bind:value={selectedHour} onchange={updateScheduledTime}>
               {#each hours as hour}<option value={hour}>{hour}</option>{/each}
             </select>
@@ -166,19 +166,26 @@
           </div>
         </div>
       </div>
+      {#if saveStatus === "error"}
+        <div class="settings-error" role="alert">
+          <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+          <span>{$t.settings.settingsSaveFailed(saveError)}</span>
+          <button class="button" type="button" onclick={saveSystemSettings}>{$t.common.retry}</button>
+        </div>
+      {/if}
     </section>
 
     <section class="card settings-group personal-group">
-      <div class="panel-title group-title">
-        <div>
-          <h2>{$t.settings.languageDisplaySettings}</h2>
-          <p class="lead">{$t.settings.languageDescription} {$t.settings.displaySizeDescription}</p>
-        </div>
+      <div class="panel-title">
+        <h2>{$t.settings.languageDisplaySettings}</h2>
       </div>
       <div class="settings-rows">
         <div class="setting-row">
-          <span class="setting-label">{$t.settings.interfaceLanguage}</span>
-          <div class="language-options" aria-label={$t.settings.languageAria}>
+          <div class="setting-label-group">
+            <span class="setting-label" id="interface-language-label">{$t.settings.interfaceLanguage}</span>
+            <small class="setting-hint">{$t.settings.languageDescription}</small>
+          </div>
+          <div class="language-options" role="group" aria-labelledby="interface-language-label">
             {#each locales as item}
               <button
                 class="filter-btn"
@@ -192,15 +199,21 @@
           </div>
         </div>
         {#if displayScaleAvailable}
-          <div class="setting-row scale-row">
-            <span class="setting-label">{$t.settings.displaySize}</span>
-            <div class="scale-controls">
-              <button class="scale-step" type="button" aria-label={$t.settings.decreaseScale} disabled={$displayScale <= DISPLAY_SCALE_MIN} onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}>−</button>
-              <output class="display-scale-value">{$displayScale}%</output>
-              <button class="scale-step" type="button" aria-label={$t.settings.increaseScale} disabled={$displayScale >= DISPLAY_SCALE_MAX} onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}>＋</button>
-              <small class="display-scale-shortcuts">{shortcutModifier}− {$t.settings.decreaseScale} · {shortcutModifier}+ {$t.settings.increaseScale} · {shortcutModifier}0 {$t.settings.resetScale}</small>
-              <button class="button secondary scale-reset" type="button" disabled={$displayScale === DISPLAY_SCALE_DEFAULT} onclick={() => changeDisplayScale(DISPLAY_SCALE_DEFAULT)}>{$t.settings.resetScale}</button>
-              <p class="display-scale-range">{$t.settings.scaleRange(DISPLAY_SCALE_MIN, DISPLAY_SCALE_MAX)}</p>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="display-size-label">{$t.settings.displaySize}</span>
+              <small class="setting-hint">{$t.settings.displaySizeDescription}</small>
+              <small class="setting-hint">{$t.settings.scaleRange(DISPLAY_SCALE_MIN, DISPLAY_SCALE_MAX)} · {shortcutModifier}− {$t.settings.decreaseScale} · {shortcutModifier}+ {$t.settings.increaseScale} · {shortcutModifier}0 {$t.settings.resetScale}</small>
+            </div>
+            <div class="scale-controls" role="group" aria-labelledby="display-size-label">
+              <button class="scale-step" type="button" aria-label={$t.settings.decreaseScale} disabled={$displayScale <= DISPLAY_SCALE_MIN} onclick={() => changeDisplayScale($displayScale - DISPLAY_SCALE_STEP)}>
+                <Minus size={18} strokeWidth={2.25} aria-hidden="true" />
+              </button>
+              <output class="display-scale-value num">{$displayScale}%</output>
+              <button class="scale-step" type="button" aria-label={$t.settings.increaseScale} disabled={$displayScale >= DISPLAY_SCALE_MAX} onclick={() => changeDisplayScale($displayScale + DISPLAY_SCALE_STEP)}>
+                <Plus size={18} strokeWidth={2.25} aria-hidden="true" />
+              </button>
+              <button class="button scale-reset" type="button" disabled={$displayScale === DISPLAY_SCALE_DEFAULT} onclick={() => changeDisplayScale(DISPLAY_SCALE_DEFAULT)}>{$t.settings.resetScale}</button>
             </div>
           </div>
         {/if}
@@ -208,27 +221,22 @@
     </section>
 
     <section class="card settings-group">
-      <div class="panel-title group-title">
+      <div class="panel-title">
         <div>
-          <h2>{$t.onboarding.welcomeTitle}</h2>
-          <p class="lead">{$t.onboarding.welcomeBody}</p>
+          <h2>{$t.settings.onboardingSection}</h2>
+          <p class="lead">{$t.settings.onboardingDescription}</p>
         </div>
       </div>
       <div class="settings-rows">
         <div class="setting-row">
-          <span class="setting-label">
-            {onboardingStatus === "completed"
-              ? $t.onboarding.completeTitle
-              : onboardingStatus === "exited"
-                ? $t.onboarding.exited
-                : onboardingStatus
-                ? $t.onboarding.progress
-                : $t.onboarding.welcomeTitle}
-          </span>
+          <span class="setting-label">{$t.settings.onboardingStatus}</span>
           <div class="onboarding-setting-actions">
+            <span class="chip" class:good={onboardingStatus === "completed"}>
+              {$t.settings.onboardingState[onboardingStatus ?? "notStarted"]}
+            </span>
             {#if onboardingStatus === "exited" || onboardingStatus === "completed"}
               <button
-                class="button secondary"
+                class="button"
                 type="button"
                 disabled={onboardingRestartPending}
                 aria-busy={onboardingRestartPending}
@@ -237,12 +245,15 @@
                 {onboardingRestartPending ? $t.onboarding.restarting : $t.onboarding.restart}
               </button>
             {/if}
-            {#if onboardingRestartError}
-              <p class="onboarding-restart-error" role="alert">{onboardingRestartError}</p>
-            {/if}
           </div>
         </div>
       </div>
+      {#if onboardingRestartError}
+        <div class="settings-error" role="alert">
+          <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+          <span>{onboardingRestartError}</span>
+        </div>
+      {/if}
     </section>
   </div>
 </DashboardShell>
@@ -259,17 +270,15 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-    color: var(--success);
+    color: var(--muted);
     font-size: 13px;
     font-weight: 720;
   }
 
-  .settings-save-status.pending { color: var(--muted); }
+  .settings-save-status.success { color: var(--success); }
   .settings-save-status.error { color: var(--danger); }
 
   .settings-group { overflow: hidden; }
-  .settings-group .group-title { padding: var(--space-5); background: linear-gradient(105deg, #e7e7e7, #fff); }
-  .group-title h2 { color: var(--fg); }
 
   .settings-rows { display: grid; }
   .setting-row {
@@ -283,9 +292,27 @@
   }
 
   .setting-row:last-child { border-bottom: 0; }
-  .setting-row > label,
   .setting-label { font-size: 14px; font-weight: 720; }
-  .setting-row select { width: 100%; min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
+  .setting-label-group { display: grid; gap: var(--space-1); padding: var(--space-4) 0; }
+  .setting-hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+  .setting-row select {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .setting-row select:focus {
+    outline: none;
+    border-color: var(--fg);
+    box-shadow: 0 0 0 3px var(--surface-soft);
+  }
 
   .time-selects { display: grid; grid-template-columns: 1fr 1fr 96px; gap: var(--space-2); }
 
@@ -298,54 +325,59 @@
   .onboarding-setting-actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-end;
     gap: var(--space-3);
   }
 
-  .onboarding-restart-error {
-    flex-basis: 100%;
-    margin: 0;
+  .settings-error {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0 var(--space-5) var(--space-5);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+    border-radius: var(--radius);
     color: var(--danger);
-    text-align: right;
+    font-size: 13px;
+    overflow-wrap: anywhere;
   }
+
+  .settings-error :global(svg) { flex: none; }
+  .settings-error .button { margin-left: auto; flex: none; }
 
   .scale-controls {
     display: grid;
-    grid-template-columns: 44px auto 44px minmax(0, 1fr) auto;
+    grid-template-columns: 44px minmax(70px, auto) 44px minmax(0, 1fr);
     align-items: center;
     gap: var(--space-3);
   }
 
-  .scale-row { grid-template-columns: 160px minmax(0, 1fr); }
-
   .display-scale-value {
-    min-width: 70px;
     text-align: center;
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 750;
-    font-variant-numeric: tabular-nums;
   }
 
-  .scale-step { width: 44px; min-height: 44px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font-size: 22px; cursor: pointer; }
-  .scale-step:hover { background: var(--surface-soft); }
+  .scale-step {
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    transition: background 160ms ease;
+  }
+
+  .scale-step:hover:not(:disabled) { background: var(--surface-soft); }
   .scale-reset { justify-self: end; }
-
-  .display-scale-shortcuts {
-    min-width: 0;
-    color: var(--muted);
-    font-size: 11px;
-    line-height: 1.6;
-    white-space: nowrap;
-  }
-
-  .display-scale-range { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 
   @media (max-width: 760px) {
     .setting-row { grid-template-columns: 1fr; gap: var(--space-3); padding: var(--space-4) 0; }
-    .scale-row { grid-template-columns: 1fr; }
+    .setting-label-group { padding: 0; }
     .time-selects { max-width: 100%; }
-    .scale-controls { grid-template-columns: 44px auto 44px 1fr; }
-    .display-scale-shortcuts { white-space: normal; }
-    .scale-reset { grid-column: 1 / -1; justify-self: start; }
   }
 </style>
