@@ -179,7 +179,7 @@
     padding: var(--space-4);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface-muted);
+    background: var(--surface-soft);
   }
 
   .provider-status > div,
