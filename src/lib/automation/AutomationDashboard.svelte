@@ -2942,7 +2942,7 @@ import type {
 
   .automation-table {
     table-layout: fixed;
-    min-width: 860px;
+    min-width: 720px;
   }
 
   .automation-table th,
@@ -3093,7 +3093,7 @@ import type {
     align-items: center;
     justify-content: flex-end;
     gap: 4px;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
   }
 
   .fixed-action {
