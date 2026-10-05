@@ -218,6 +218,44 @@ export type SpendingPendingOverviewDto = Readonly<{
 
 export type SpendingPendingOverviewRequest = Readonly<{ knowledgeAt: number }>;
 
+export type SpendingMergeLogRequest = Readonly<{
+  knowledgeAt: number;
+  cursor?: string | null;
+  limit?: number;
+}>;
+
+export type SpendingMoneyDto = Readonly<{ currency: string; coefficient: string; scale: number }>;
+
+/** One 合併紀錄 row: a decision event with the current display facts of both sides. */
+export type SpendingMergeLogEntry = Readonly<{
+  eventId: string;
+  kind: "confirmed" | "denied" | "revoked";
+  origin: "user" | "source";
+  decidedAt: string;
+  commitSequence: number;
+  invoice: Readonly<{
+    invoiceId: string;
+    invoiceNumber: string;
+    sellerName: string | null;
+    occurrence: string;
+    amount: SpendingMoneyDto | null;
+  }> | null;
+  payment: Readonly<{
+    transactionId: string;
+    description: string | null;
+    date: string;
+    amount: SpendingMoneyDto;
+  }> | null;
+}>;
+
+export type SpendingMergeLogDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  /** Newest decision first. */
+  entries: readonly SpendingMergeLogEntry[];
+  nextCursor: string | null;
+}>;
+
 /** 合併所有高度相符: confirm exactly the strong pairs the user was shown. */
 export type SpendingStrongConfirmRequest = Readonly<{
   /** The data version the shown pairs came from; a newer unrelated commit does not reject. */

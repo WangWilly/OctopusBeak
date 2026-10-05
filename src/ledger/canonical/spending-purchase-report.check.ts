@@ -30,7 +30,7 @@ test("purchase report counts pending evidence twice, and confirmed links once on
   assert.deepEqual(pending.records.map((row) => row.basis).sort(), ["bank-transaction", "invoice"]);
   assert.equal(pending.totalStatus, "includes-pending-confirmation");
   assert.deepEqual(pending.totalsByCurrency, [{ currency: "TWD", coefficient: "2020", scale: 0, count: 2 }]);
-  const link = { invoiceId: INV, transactionId: TXN, eventId: "link", origin: "user" as const, evidenceKnowledgeSequence: 4, decisionCommitSequence: 5, evidence: { confirmed: true }, userId: "u", authorityRoute: null, stableCrossSourceReference: null };
+  const link = { invoiceId: INV, transactionId: TXN, eventId: "link", origin: "user" as const, evidenceKnowledgeSequence: 4, decisionCommitSequence: 5, decidedAt: "2026-10-05T00:00:00.000Z", evidence: { confirmed: true }, userId: "u", authorityRoute: null, stableCrossSourceReference: null };
   const linked = composePurchaseReport({ request: { kind: "current", startDate: "2026-09-01", endDate: "2026-09-30" }, knowledgeAt: 5, invoices: [inv], transactions: [bank], recognition: recognition({ activeLinks: [link] }) });
   assert.equal(linked.records.length, 1);
   assert.equal(linked.records[0]?.basis, "linked");
