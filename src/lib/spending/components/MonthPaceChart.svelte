@@ -40,8 +40,9 @@
     return dayTicks.includes(Number(value)) ? String(value) : "";
   }
 
-  function selectBar(_event: MouseEvent, detail: { data: DayReading }) {
-    onSelectDay(detail.data.date);
+  function selectDay(_event: MouseEvent, detail: { data: DayReading | PacePoint | null }) {
+    const day = detail.data ? reading.days[detail.data.day - 1] : null;
+    if (day && day.tone !== "future") onSelectDay(day.date);
   }
 
   function paceDate(point: PacePoint) {
@@ -65,7 +66,8 @@
         rule={false}
         legend={false}
         highlight={{ lines: true, points: false }}
-        padding={{ top: 12, right: PLOT_RIGHT, bottom: 8, left: PLOT_LEFT }}
+        tooltipContext={{ mode: "quadtree-x", onclick: selectDay }}
+        padding={{ top: 12, right: PLOT_RIGHT, bottom: 14, left: PLOT_LEFT }}
         props={{
           yAxis: {
             format: (value: unknown) => compactAmount.format(Number(value)),
@@ -117,7 +119,7 @@
         bandPadding={BAND_PADDING}
         rule={false}
         padding={{ top: 6, right: PLOT_RIGHT, bottom: 24, left: PLOT_LEFT }}
-        onBarClick={selectBar}
+        tooltipContext={{ mode: "band", onclick: selectDay }}
         props={{
           xAxis: { format: dayTick, ticks: reading.days.map((day) => day.day), tickLabelProps: { class: "strip-day-tick" } },
           yAxis: {
@@ -128,7 +130,7 @@
         }}
       >
         {#snippet marks()}
-          <Bars data={stripBars} radius={2} rounded="edge" onBarClick={selectBar} key={(day: DayReading) => day.date} />
+          <Bars data={stripBars} radius={2} rounded="edge" key={(day: DayReading) => day.date} />
           {#if selected && selected.value !== 0}
             <Bars data={[selected]} radius={2} rounded="edge" fill="none" stroke="var(--fg)" strokeWidth={2} class="strip-selected" />
           {/if}
@@ -167,7 +169,7 @@
 <style>
   .month-pace { position: relative; min-width: 0; }
   .pace-plot, .pace-strip { min-width: 0; }
-  .pace-strip { margin-top: calc(var(--space-1) * -1); cursor: pointer; }
+  .pace-plot, .pace-strip { cursor: pointer; }
   .month-pace :global(.pace-usual-range) { fill: color-mix(in oklch, var(--muted) 12%, transparent); stroke: none; }
   .month-pace :global(.pace-usual-line) { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; }
   .month-pace :global(.pace-line) { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }

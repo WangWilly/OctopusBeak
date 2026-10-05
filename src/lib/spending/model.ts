@@ -760,7 +760,7 @@ const taipeiDateFormatter = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 });
 
-function taipeiDateKey(unixSeconds: number): string {
+export function taipeiDateKey(unixSeconds: number): string {
   const parts = Object.fromEntries(
     taipeiDateFormatter.formatToParts(new Date(unixSeconds * 1000))
       .map(({ type, value }) => [type, value]),
