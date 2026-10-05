@@ -57,12 +57,6 @@ export type SpendingManualPaymentCandidate = Readonly<{
   merchantSimilarity: number;
 }>;
 
-/**
- * Source-neutral ordering for the manual pairing modal. Every transaction is
- * retained; tiers only determine order, so a person can review a mismatch
- * rather than losing it to an amount filter.
- */
-
 function manualCandidateCacheKey(invoice: SpendingMatchingInvoice): string {
   const amount = invoiceMatchingMoney(invoice);
   return JSON.stringify([
@@ -150,6 +144,11 @@ function isSpendingPairingIndex(
   return !Array.isArray(value);
 }
 
+/**
+ * Source-neutral ordering for the manual pairing modal. Every transaction is
+ * retained; tiers only determine order, so a person can review a mismatch
+ * rather than losing it to an amount filter.
+ */
 export function rankSpendingManualPaymentCandidates(
   invoice: SpendingMatchingInvoice,
   transactions: readonly SpendingMatchingTransaction[] | SpendingPairingIndex,
