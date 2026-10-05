@@ -1,6 +1,6 @@
 # Invoice-item categories and purchase category
 
-Status: proposed
+Status: accepted
 
 Amends [ADR 0011](./0011-orthogonal-transaction-taxonomy-and-enrichment.md) within the purchase-basis Spending of [ADR 0024](./0024-purchase-basis-spending-and-report-deduplication.md).
 
