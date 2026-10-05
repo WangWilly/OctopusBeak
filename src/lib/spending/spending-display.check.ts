@@ -11,6 +11,7 @@ import {
   reasonTexts,
   recordCategoryText,
   recordGroups,
+  recordMerchant,
 } from "./spending-display.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
 
@@ -108,4 +109,16 @@ test("the category picker's labels are the taxonomy's own labels in both languag
     assert.equal(en.spending.personalCategories[code], labels.en, code);
     assert.equal(zh.spending.personalCategories[code], labels.zhHant, code);
   }
+});
+
+test("purchase titles read like the design: the store for merged purchases, the short seller name for invoices", () => {
+  const seller = "統一超商股份有限公司宜蘭縣第一三二分公司";
+  const invoice = { revision: { seller: { name: seller, taxId: "12345678" } } };
+  assert.equal(
+    recordMerchant(zh, record({ basis: "linked", description: seller, invoice, transaction: { ...record().transaction, description: "統一超商－蘭雲" } })),
+    "統一超商－蘭雲",
+  );
+  assert.equal(recordMerchant(zh, record({ basis: "invoice", description: seller, invoice, transaction: null })), "統一超商");
+  assert.equal(recordMerchant(zh, record({ basis: "invoice", description: "明口小吃店", invoice: { revision: { seller: { name: "明口小吃店", taxId: "1" } } }, transaction: null })), "明口小吃店");
+  assert.equal(recordMerchant(zh, record()), "全聯福利中心");
 });
