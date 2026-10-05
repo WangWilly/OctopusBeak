@@ -79,9 +79,11 @@ export type DayReading = Readonly<{
   tone: DayTone;
 }>;
 
-/** Geometry only. Aligned with `days` by index. */
+/** Aligned with `days` by index. Numbers are geometry; amounts are for display. */
 export type PacePoint = Readonly<{
   day: number;
+  amount: Money | null;
+  usualAmount: Money | null;
   cumulative: number | null;
   usual: number | null;
   usualLow: number | null;
@@ -121,6 +123,7 @@ export type TrendMonth = Readonly<{
   total: Money;
   value: number;
   /** The month's own usual mean, cut like the month itself. */
+  usual: Money | null;
   usualValue: number | null;
   status: "complete" | "in-progress" | "first-imported" | "before-history";
   /** Only months with records can be opened. */
@@ -184,6 +187,7 @@ export function readSpendingTrend(summary: SpendingSummary, input: ReadTrendInpu
       month,
       total: money(currency, total),
       value: exactToNumber(total),
+      usual: usual.kind === "available" ? usual.mean : null,
       usualValue: usual.kind === "available" ? exactToNumber(usual.mean) : null,
       status: month < index.historyStart
         ? "before-history"
@@ -384,11 +388,15 @@ function readCurrency(
   const baseline = usual.kind === "available"
     ? usual.months.map((candidate) => cellsFor(index, currency, candidate).cumulative)
     : null;
+  const usualScale = Math.max(0, ...(baseline ?? []).map((series) => series.at(-1)?.scale ?? 0));
   const pace = cells.cumulative.map((cumulative, offset): PacePoint => {
     const day = offset + 1;
-    const usualAt = baseline?.map((series) => exactToNumber(series[Math.min(day, series.length) - 1] ?? ZERO)) ?? null;
+    const usualExact = baseline?.map((series) => series[Math.min(day, series.length) - 1] ?? ZERO) ?? null;
+    const usualAt = usualExact?.map(exactToNumber) ?? null;
     return Object.freeze({
       day,
+      amount: day <= throughDay ? money(currency, cumulative) : null,
+      usualAmount: usualExact ? money(currency, mean(usualExact, usualExact.length, usualScale)) : null,
       cumulative: day <= throughDay ? exactToNumber(cumulative) : null,
       usual: usualAt ? usualAt.reduce((sum, value) => sum + value, 0) / usualAt.length : null,
       usualLow: usualAt ? Math.min(...usualAt) : null,
