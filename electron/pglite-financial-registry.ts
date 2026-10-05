@@ -26,6 +26,16 @@ import type {
   SpendingPurchaseActionResult,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
+  SpendingMergeLogDto,
+  SpendingMergeLogRequest,
+  SpendingMerchantStatsDto,
+  SpendingMerchantStatsRequest,
+  SpendingMonthInsightDto,
+  SpendingMonthInsightRequest,
+  SpendingPendingOverviewDto,
+  SpendingPendingOverviewRequest,
+  SpendingStrongConfirmRequest,
+  SpendingStrongConfirmResult,
 } from "../src/lib/spending/model.ts";
 import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
@@ -135,6 +145,9 @@ type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Req
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
 
+/** Version-bound Spending reads multiplexed over financial.spending.current. */
+type SpendingTaggedRead = "record-page" | "candidate-page" | "pending-overview" | "merge-log" | "month-insight" | "merchant-stats";
+
 export type PGliteFinancialPageClient = Readonly<{
   load(page: "overview", options?: { expectedVersion?: number }): Promise<OverviewPageDto>;
   load(page: "assets", options?: { expectedVersion?: number }): Promise<AssetsPageDto>;
@@ -144,6 +157,11 @@ export type PGliteFinancialPageClient = Readonly<{
   loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
   applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
   setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
+  loadSpendingPendingOverview(request: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
+  loadSpendingMergeLog(request: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
+  loadSpendingMonthInsight(request: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
+  loadSpendingMerchantStats(request: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
+  confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
   loadBlock(
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
     block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey,
@@ -308,6 +326,10 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
     case "financial.spending.denyCandidate":
     case "financial.spending.revokeLink":
       return args.length === 1 && plainRecord(args[0]);
+    case "financial.spending.confirmStrongCandidates":
+      return args.length === 1 && plainRecord(args[0])
+        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
+        && Array.isArray((args[0] as Record<string, unknown>).pairs);
     case "financial.spending.setPurchaseCategory":
       return args.length === 1 && plainRecord(args[0])
         && stringField(args[0], "purchaseId")
@@ -549,6 +571,17 @@ export function createPGliteFinancialRegistry(
   let spendingPageActionCount = 0;
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
+  const readTaggedSpendingPage = (read: SpendingTaggedRead, request: unknown) => {
+    switch (read) {
+      case "record-page": return spending.recordPage(request as SpendingRecordPageRequest);
+      case "candidate-page": return spending.candidatePage(request as SpendingCandidatePageRequest);
+      case "pending-overview": return spending.pendingOverview(request as SpendingPendingOverviewRequest);
+      case "merge-log": return spending.mergeLog(request as SpendingMergeLogRequest);
+      case "month-insight": return spending.monthInsight(request as SpendingMonthInsightRequest);
+      case "merchant-stats": return spending.merchantStats(request as SpendingMerchantStatsRequest);
+      default: throw new TypeError("Unknown Spending page read.");
+    }
+  };
   return Object.freeze({
     async overviewCurrent(expectedSources = []) {
       // Keep the canonical projection and the rate rows in one repeatable
@@ -608,14 +641,12 @@ export function createPGliteFinancialRegistry(
     },
     async spendingCurrent(input = {}) {
       const tagged = input as SpendingLoadInput & Readonly<{
-        __spendingRead?: "record-page" | "candidate-page";
-        request?: SpendingRecordPageRequest | SpendingCandidatePageRequest;
+        __spendingRead?: SpendingTaggedRead;
+        request?: unknown;
       }>;
       if (tagged.__spendingRead) {
         try {
-          const result = tagged.__spendingRead === "record-page"
-            ? await spending.recordPage(tagged.request as SpendingRecordPageRequest)
-            : await spending.candidatePage(tagged.request as SpendingCandidatePageRequest);
+          const result = await readTaggedSpendingPage(tagged.__spendingRead, tagged.request);
           return result as unknown as SpendingPageDto;
         } catch (error) {
           if (!(error instanceof SpendingPageVersionError)) throw error;
@@ -676,6 +707,9 @@ export function createPGliteFinancialRegistry(
     setPurchaseCategory(input) {
       return commands.setPurchaseCategory(input);
     },
+    confirmStrongCandidates(input) {
+      return commands.confirmStrongCandidates(input);
+    },
     sourceAdmit: (request, options) => source.admit(request, options),
     sourceCommit: (request, options) => source.commit(request, options),
     sourceCommitBatch: (request, options) => source.commitBatch(request, options),
@@ -715,6 +749,7 @@ async function invoke(
     case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
     case "financial.spending.revokeLink": return registry.revokeLink(args[0] as SpendingLinkActionInput);
     case "financial.spending.setPurchaseCategory": return registry.setPurchaseCategory(args[0] as SpendingPurchaseCategoryRequest);
+    case "financial.spending.confirmStrongCandidates": return registry.confirmStrongCandidates(args[0] as SpendingStrongConfirmRequest);
     case "financial.source.admit": return registry.sourceAdmit(args[0] as PGliteCanonicalSourceAdmissionRequest, options);
     case "financial.source.commit": return registry.sourceCommit(args[0] as PGliteCanonicalFinancialCommitRequest, options);
     case "financial.source.commitBatch": return registry.sourceCommitBatch(args[0] as PGliteCanonicalFinancialCommitBatchRequest, options);
@@ -855,6 +890,21 @@ export function createPGliteFinancialPageClient(
     },
     setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest) {
       return rpc.registry.setPurchaseCategory(request);
+    },
+    loadSpendingPendingOverview(request: SpendingPendingOverviewRequest) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "pending-overview", request }]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
+    },
+    loadSpendingMergeLog(request: SpendingMergeLogRequest) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "merge-log", request }]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
+    },
+    loadSpendingMonthInsight(request: SpendingMonthInsightRequest) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "month-insight", request }]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
+    },
+    loadSpendingMerchantStats(request: SpendingMerchantStatsRequest) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "merchant-stats", request }]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
+    },
+    confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest) {
+      return rpc.registry.confirmStrongCandidates(request);
     },
     async loadBlock(pageName: "overview" | "assets" | "liabilities" | "spending" | "automation", block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey, options?: { expectedVersion?: number }, automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto, automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot) {
       void options;

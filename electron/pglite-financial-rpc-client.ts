@@ -11,6 +11,8 @@ import type {
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
   SpendingPageDto,
+  SpendingStrongConfirmRequest,
+  SpendingStrongConfirmResult,
 } from "../src/lib/spending/model.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
@@ -72,6 +74,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.spending.denyCandidate",
   "financial.spending.revokeLink",
   "financial.spending.setPurchaseCategory",
+  "financial.spending.confirmStrongCandidates",
   "financial.source.admit",
   "financial.source.commit",
   "financial.source.commitBatch",
@@ -160,6 +163,7 @@ export type PGliteFinancialRegistry = Readonly<{
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
   revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
   setPurchaseCategory(input: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
+  confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
   sourceAdmit(request: PGliteCanonicalSourceAdmissionRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalSourceAdmissionReceipt>;
   sourceCommit(request: PGliteCanonicalFinancialCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalFinancialCommitResult>;
   sourceCommitBatch(request: PGliteCanonicalFinancialCommitBatchRequest, options?: PGliteCanonicalCommitOptions): Promise<readonly PGliteCanonicalFinancialCommitResult[]>;
@@ -324,6 +328,7 @@ export function createPGliteFinancialRpcClient(
     denyCandidate: (input) => call("financial.spending.denyCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
     revokeLink: (input) => call("financial.spending.revokeLink", [input]) as Promise<SpendingPurchaseActionResult>,
     setPurchaseCategory: (input) => call("financial.spending.setPurchaseCategory", [input]) as Promise<SpendingPurchaseCategoryResult>,
+    confirmStrongCandidates: (input) => call("financial.spending.confirmStrongCandidates", [input]) as Promise<SpendingStrongConfirmResult>,
     sourceAdmit: (input, options) => call("financial.source.admit", [input], options) as Promise<PGliteCanonicalSourceAdmissionReceipt>,
     sourceCommit: (input, options) => call("financial.source.commit", [input], options) as Promise<PGliteCanonicalFinancialCommitResult>,
     sourceCommitBatch: (input, options) => call("financial.source.commitBatch", [input], options) as Promise<readonly PGliteCanonicalFinancialCommitResult[]>,

@@ -410,6 +410,19 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     const staleResult = { stale: true, knowledgeAt: spending.purchaseReport.knowledgeAt };
     assert.deepEqual(await page.loadSpendingRecordPage(staleRequest), staleResult);
     assert.deepEqual(await page.loadSpendingCandidatePage(staleRequest), staleResult);
+    const knowledgeAt = spending.purchaseReport.knowledgeAt;
+    assert.deepEqual(await page.loadSpendingPendingOverview({ knowledgeAt: knowledgeAt - 1 }), staleResult);
+    assert.deepEqual(await page.loadSpendingMergeLog({ knowledgeAt: knowledgeAt - 1 }), staleResult);
+    assert.deepEqual(await page.loadSpendingMonthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-01" }), staleResult);
+    assert.deepEqual(await page.loadSpendingMerchantStats({ knowledgeAt: knowledgeAt - 1, purchaseId: "transaction:x" }), staleResult);
+    assert.deepEqual(await page.loadSpendingPendingOverview({ knowledgeAt }), {
+      schemaVersion: 1, knowledgeAt, pendingCount: 0, strongCount: 0, affectedByCurrency: [], strongPairs: [],
+    });
+    assert.deepEqual(await page.loadSpendingMergeLog({ knowledgeAt }), { schemaVersion: 1, knowledgeAt, entries: [], nextCursor: null });
+    assert.deepEqual(await page.loadSpendingMonthInsight({ knowledgeAt, month: "2026-01" }), { schemaVersion: 1, knowledgeAt, month: "2026-01", largestByCurrency: [] });
+    const unknownPair = { candidateId: "sha256:unknown", invoiceIdentityId: "00000000-0000-4000-8000-000000000001", transactionIdentityId: "00000000-0000-4000-8000-000000000002" };
+    const conflict = await page.confirmSpendingStrongCandidates({ shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] });
+    assert.deepEqual(conflict, { status: "conflict", knowledgeAt, conflicts: [unknownPair], strongPairs: [] }, "the worker command rejects a pair that is not pending");
 
     assert.ok(!("stale" in committedPage));
     assert.deepEqual(committedPage.records, [], "the version-bound purchase page must omit this ineligible source fact");

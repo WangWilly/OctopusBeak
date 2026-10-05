@@ -28,6 +28,16 @@ import type {
   SpendingPageActionResult,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
+  SpendingMergeLogDto,
+  SpendingMergeLogRequest,
+  SpendingMerchantStatsDto,
+  SpendingMerchantStatsRequest,
+  SpendingMonthInsightDto,
+  SpendingMonthInsightRequest,
+  SpendingPendingOverviewDto,
+  SpendingPendingOverviewRequest,
+  SpendingStrongConfirmRequest,
+  SpendingStrongConfirmResult,
 } from "$lib/spending/model.ts";
 import type {
   SpendingLoadInput,
@@ -268,6 +278,11 @@ export type OctopusBeakApi = {
     cancelCandidatePage(requestId: string): Promise<boolean>;
     applyPageAction(input: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
     setPurchaseCategory(input: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
+    loadPendingOverview(input: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
+    loadMergeLog(input: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
+    loadMonthInsight(input: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
+    loadMerchantStats(input: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
+    confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
@@ -323,6 +338,11 @@ export const octopusBeakApiChannels = [
   "spending:candidate-page-cancel",
   "spending:page-action",
   "spending:set-purchase-category",
+  "spending:pending-overview",
+  "spending:merge-log",
+  "spending:month-insight",
+  "spending:merchant-stats",
+  "spending:confirm-strong-candidates",
   "spending:pairing-candidates",
   "spending:pairing-prewarm",
   "spending:confirmCandidate",

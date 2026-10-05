@@ -86,6 +86,11 @@ import type {
   SpendingPageActionRequest,
   SpendingPurchaseCategoryRequest,
   SpendingRecordPageRequest,
+  SpendingMergeLogRequest,
+  SpendingMerchantStatsRequest,
+  SpendingMonthInsightRequest,
+  SpendingPendingOverviewRequest,
+  SpendingStrongConfirmRequest,
 } from "../src/lib/spending/model.ts";
 import { projectFinancialBlock } from "./financial-page-block-loader.ts";
 
@@ -310,6 +315,21 @@ export function registerOctopusBeakIpc({
   });
   ipcMain.handle("spending:set-purchase-category", async (_event, request: SpendingPurchaseCategoryRequest) => {
     return pgliteFinancial.setSpendingPurchaseCategory(request);
+  });
+  ipcMain.handle("spending:pending-overview", async (_event, request: SpendingPendingOverviewRequest) => {
+    return pgliteFinancial.loadSpendingPendingOverview(request);
+  });
+  ipcMain.handle("spending:merge-log", async (_event, request: SpendingMergeLogRequest) => {
+    return pgliteFinancial.loadSpendingMergeLog(request);
+  });
+  ipcMain.handle("spending:month-insight", async (_event, request: SpendingMonthInsightRequest) => {
+    return pgliteFinancial.loadSpendingMonthInsight(request);
+  });
+  ipcMain.handle("spending:merchant-stats", async (_event, request: SpendingMerchantStatsRequest) => {
+    return pgliteFinancial.loadSpendingMerchantStats(request);
+  });
+  ipcMain.handle("spending:confirm-strong-candidates", async (_event, request: SpendingStrongConfirmRequest) => {
+    return pgliteFinancial.confirmSpendingStrongCandidates(request);
   });
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
     financialPages.rankPairingCandidates(input),
