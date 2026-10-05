@@ -17,6 +17,7 @@ import {
   selectPGliteOverviewLiabilities,
 } from "./overview.ts";
 import { readPGliteDailyHistory, readPGliteDailyHistoryWithAccounts } from "./daily-history.ts";
+import { readPGliteHoldingPrices } from "./holding-prices.ts";
 import { exchangeRateRequestFromOverview } from "../exchange-rate-requirements.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
@@ -719,6 +720,105 @@ test("overview preserves investment holdings, transactions, margin lineage, and 
     assert.equal(liabilities.accounts.length, 0);
     assert.equal(liabilities.positions.length, 0);
     assert.equal(liabilities.transactions.length, 0);
+  } finally {
+    await store.close();
+  }
+});
+
+async function seedSecondHoldingCollection(
+  store: PGliteStore,
+  holdings: readonly Readonly<{ security: "acme" | "beta"; effectiveOn: string; valuation: string; quantity: string }>[],
+): Promise<void> {
+  const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
+  const accountId = id(44);
+  const securities = { acme: id(47), beta: id(60) };
+  const firstCapture = { captureId: id(45), commitId: id(41) };
+  await store.query(
+    "INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type) VALUES ($1, 'yuanta-trade', 'beta-equity', 'BETA', 'Beta Equity', 'BETA', 'TWD', 'equity')",
+    [securities.beta],
+  );
+  await store.query(
+    "INSERT INTO source_records(source_record_id, capture_id, commit_id, record_kind, sequence_lexeme, occurrence_key, description, payload_json) VALUES ($1, $2, $3, 'investment-holding', '4', 'holding-beta-1', 'Beta holding', '{}')",
+    [id(61), firstCapture.captureId, firstCapture.commitId],
+  );
+  await store.query(
+    "INSERT INTO investment_holding_observations(observation_id, capture_id, commit_id, account_id, security_id, source_record_id, measurement_key, correction_of_observation_id, revision_number, is_current, quantity_coefficient, quantity_scale, valuation_coefficient, valuation_scale, valuation_currency, cost_coefficient, cost_scale, cost_currency, effective_on, observed_at, lineage_json) VALUES ($1, $2, $3, $4, $5, $6, 'holding-beta-1', NULL, 1, 1, '10', 0, '3000', 0, 'TWD', NULL, NULL, NULL, '2026-09-22', '2026-09-22T01:00:00.000Z', '{}')",
+    [id(62), firstCapture.captureId, firstCapture.commitId, accountId, securities.beta, id(61)],
+  );
+  const commitId = id(63);
+  const captureId = id(64);
+  await store.query(
+    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 2, 2, 'yuanta-trade/investment/canonical-v1', 'source_capture')",
+    [commitId],
+  );
+  await store.query(
+    "INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES ($1, 'fixture-investment-capture-2', $2, $3, 'yuanta-trade/investment/canonical-v1', 'investment', 'investment', 'brokerage-1', '2026-09-25T01:00:00.000Z', '2026-09-23', '2026-09-24', 'single-page', 'fixture', 'yuanta-trade/investment/canonical-v1', $4)",
+    [captureId, id(42), id(43), commitId],
+  );
+  await store.query(
+    "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'yuanta-trade', 'yuanta-trade/investment/canonical-v1')",
+    [captureId, commitId],
+  );
+  for (const [index, holding] of holdings.entries()) {
+    const recordId = id(70 + index);
+    await store.query(
+      "INSERT INTO source_records(source_record_id, capture_id, commit_id, record_kind, sequence_lexeme, occurrence_key, description, payload_json) VALUES ($1, $2, $3, 'investment-holding', $4, $5, 'holding', '{}')",
+      [recordId, captureId, commitId, String(index + 1), `holding-2-${index}`],
+    );
+    await store.query(
+      "INSERT INTO investment_holding_observations(observation_id, capture_id, commit_id, account_id, security_id, source_record_id, measurement_key, correction_of_observation_id, revision_number, is_current, quantity_coefficient, quantity_scale, valuation_coefficient, valuation_scale, valuation_currency, cost_coefficient, cost_scale, cost_currency, effective_on, observed_at, lineage_json) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 1, 1, $8, 0, $9, 0, 'TWD', NULL, NULL, NULL, $10, '2026-09-25T01:00:00.000Z', '{}')",
+      [id(80 + index), captureId, commitId, accountId, securities[holding.security], recordId, `holding-2-${index}`, holding.quantity, holding.valuation, holding.effectiveOn],
+    );
+  }
+}
+
+test("a security missing from a newer complete holding collection is sold in both current and history", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await seedInvestmentOverviewFixture(store);
+    await seedSecondHoldingCollection(store, [{ security: "acme", effectiveOn: "2026-09-23", quantity: "5", valuation: "13000" }]);
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    const account = projection.accounts[0]!;
+    assert.deepEqual(account.positions.map((position) => position.label), ["Acme Equity"], "the sold Beta is not a current position");
+    assert.deepEqual(account.amounts.map(({ currency, exact }) => ({ currency, exact })), [{ currency: "TWD", exact: { coefficient: "13000", scale: 0 } }]);
+    const { dailyHistory, dailyHistoryByAccount } = await readPGliteDailyHistoryWithAccounts(store, projection.knowledgePoint, projection.accounts);
+    assert.deepEqual(dailyHistory.map((row) => [row.date, row.netAssets.map((amount) => amount.value), row.positionCount]), [
+      ["2026-09-22", [15500], 2],
+      ["2026-09-23", [13000], 1],
+    ], "history drops Beta on the date the newer collection takes effect");
+    assert.deepEqual(dailyHistoryByAccount[account.id]?.at(-1)?.netAssets.map((amount) => amount.value), [13000]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("holdings of one collection on different valuation dates are all still held", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await seedInvestmentOverviewFixture(store);
+    await seedSecondHoldingCollection(store, [
+      { security: "beta", effectiveOn: "2026-09-23", quantity: "10", valuation: "3300" },
+      { security: "acme", effectiveOn: "2026-09-24", quantity: "5", valuation: "13000" },
+    ]);
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    assert.deepEqual(projection.positions.map((position) => position.label).sort(), ["Acme Equity", "Beta Equity"]);
+    const dailyHistory = await readPGliteDailyHistory(store, projection.knowledgePoint, projection.accounts);
+    assert.deepEqual(dailyHistory.map((row) => [row.date, row.netAssets.map((amount) => amount.value)]), [
+      ["2026-09-22", [15500]],
+      ["2026-09-23", [15800]],
+      ["2026-09-24", [16300]],
+    ], "Acme's older valuation stays until its own newer date");
+    const prices = await readPGliteHoldingPrices(store, projection.knowledgePoint);
+    assert.deepEqual(prices.map(({ date, price }) => [date, price]), [
+      ["2026-09-22", 2500],
+      ["2026-09-24", 2600],
+      ["2026-09-22", 300],
+      ["2026-09-23", 330],
+    ], "each security keeps its two latest implied prices, oldest first");
   } finally {
     await store.close();
   }

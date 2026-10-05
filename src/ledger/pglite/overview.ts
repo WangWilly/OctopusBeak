@@ -721,8 +721,17 @@ async function readProjection(
     [knowledgeAt, financialAt ?? null],
   );
   const holdingsQuery = store.query<HoldingRow>(
-    `WITH candidates AS (
-       SELECT encode(holding.account_id, 'hex') AS account_id,
+    `WITH visible AS (
+       SELECT holding.*, commit_row.commit_sequence
+         FROM investment_holding_observations holding
+         JOIN canonical_commits commit_row ON commit_row.commit_id = holding.commit_id
+        WHERE commit_row.commit_sequence <= $1
+          AND ($2::text IS NULL OR holding.effective_on <= $2)
+          AND ($3::boolean = FALSE OR holding.is_current = 1)
+     ), candidates AS (
+       SELECT holding.account_id AS raw_account_id,
+              holding.security_id AS raw_security_id,
+              encode(holding.account_id, 'hex') AS account_id,
               encode(holding.security_id, 'hex') AS security_id,
               security.security_key,
               security.name AS security_name,
@@ -737,24 +746,34 @@ async function readProjection(
               holding.effective_on,
               holding.observed_at,
               holding.measurement_key,
-              commit_row.commit_sequence AS source_commit_sequence,
+              holding.commit_sequence AS source_commit_sequence,
               ROW_NUMBER() OVER (
                 PARTITION BY holding.account_id, holding.security_id
                 ORDER BY holding.effective_on DESC, holding.observed_at DESC,
-                         holding.revision_number DESC, commit_row.commit_sequence DESC
+                         holding.revision_number DESC, holding.commit_sequence DESC
               ) AS selection_rank
-         FROM investment_holding_observations holding
+         FROM visible holding
          JOIN investment_securities security ON security.security_id = holding.security_id
-         JOIN canonical_commits commit_row ON commit_row.commit_id = holding.commit_id
-        WHERE commit_row.commit_sequence <= $1
-          AND ($2::text IS NULL OR holding.effective_on <= $2)
-          AND ($3::boolean = FALSE OR holding.is_current = 1)
      )
      SELECT account_id, security_id, security_key, security_name, security_ticker,
             security_type, security_currency, quantity_coefficient, quantity_scale,
             valuation_coefficient, valuation_scale, valuation_currency,
             effective_on, observed_at, measurement_key, source_commit_sequence
-       FROM candidates WHERE selection_rank = 1`,
+       FROM candidates candidate
+      WHERE selection_rank = 1
+        -- A holding capture is a complete snapshot: a newer collection run of
+        -- the account that omits this security means it was sold.
+        AND NOT EXISTS (
+          SELECT 1 FROM visible newer
+           WHERE newer.account_id = candidate.raw_account_id
+             AND newer.observed_at > candidate.observed_at
+             AND NOT EXISTS (
+               SELECT 1 FROM visible same_run
+                WHERE same_run.account_id = newer.account_id
+                  AND same_run.observed_at = newer.observed_at
+                  AND same_run.security_id = candidate.raw_security_id
+             )
+        )`,
     [knowledgeAt, financialAt ?? null, cutoff === null],
   );
   const marginsQuery = store.query<MarginRow>(
