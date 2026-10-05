@@ -1,63 +1,27 @@
 import assert from "node:assert/strict";
-import type { DailyHistoryRowDto, ExchangeRateDto } from "../shared-ledger/types.ts";
-import {
-  allExchangeRatesMissing,
-  convertDailyHistoryRows,
-  dailyHistoryCurrencies,
-} from "./exchange-rate-display.ts";
+import test from "node:test";
+import type { ExchangeRateDto } from "../shared-ledger/types.ts";
+import { convertToTwd, indexExchangeRates, rateOnOrBefore } from "./exchange-rate-display.ts";
 
-const rows: DailyHistoryRowDto[] = [{
-  date: "2026-07-12",
-  netAssets: [
-    { currency: "TWD", value: 3200 },
-    { currency: "USD", value: 100 },
-  ],
-  dailyChange: [{ currency: "USD", value: 10 }],
-  assets: [{ currency: "JPY", value: 1000 }],
-  liabilities: [{ currency: "TWD", value: 640 }],
-  accountChanges: ["USD account"],
-  positionCount: 3,
-}];
 const rates: ExchangeRateDto[] = [
+  { rateDate: "2026-07-13", currency: "USD", twdPerUnit: 33 },
   { rateDate: "2026-07-11", currency: "USD", twdPerUnit: 32 },
   { rateDate: "2026-07-11", currency: "JPY", twdPerUnit: 0.2 },
-  { rateDate: "2026-07-13", currency: "USD", twdPerUnit: 33 },
-  { rateDate: "2026-07-13", currency: "JPY", twdPerUnit: 0.21 },
 ];
+const index = indexExchangeRates(rates);
 
-assert.deepEqual(dailyHistoryCurrencies(rows), ["TWD", "USD", "JPY"]);
-const converted = convertDailyHistoryRows(rows, rates, "USD");
-assert.deepEqual(converted.rows[0]?.netAssets, [{ currency: "USD", value: 200 }]);
-assert.deepEqual(converted.rows[0]?.dailyChange, [{ currency: "USD", value: 10 }]);
-assert.deepEqual(converted.rows[0]?.assets, [{ currency: "USD", value: 6.25 }]);
-assert.deepEqual(converted.rows[0]?.liabilities, [{ currency: "USD", value: 20 }]);
-assert.deepEqual(converted.rows[0]?.exchangeRateDates, ["2026-07-11"]);
-assert.equal(converted.rows[0]?.exchangeRateMissing, false);
-assert.deepEqual(converted.rows[0]?.accountChanges, ["USD account"]);
-assert.equal(converted.rows[0]?.positionCount, 3);
+test("a date between working days uses the newest earlier rate", () => {
+  assert.deepEqual(rateOnOrBefore(index, "USD", "2026-07-12"), { rateDate: "2026-07-11", twdPerUnit: 32 });
+  assert.deepEqual(rateOnOrBefore(index, "USD", "2026-07-13"), { rateDate: "2026-07-13", twdPerUnit: 33 });
+  assert.equal(rateOnOrBefore(index, "USD", "2026-07-10"), null, "no rate before the first rate date");
+  assert.deepEqual(rateOnOrBefore(index, "TWD", "1999-01-01"), { rateDate: null, twdPerUnit: 1 });
+});
 
-const missing = convertDailyHistoryRows(rows, rates.filter((rate) => rate.currency !== "JPY"), "USD");
-assert.equal(missing.rows[0]?.exchangeRateMissing, true);
-assert.deepEqual(missing.rows[0]?.assets, rows[0]?.assets);
-assert.deepEqual(missing.rows[0]?.netAssets, rows[0]?.netAssets);
-assert.equal(allExchangeRatesMissing([]), false);
-assert.equal(allExchangeRatesMissing(converted.rows), false);
-assert.equal(allExchangeRatesMissing(missing.rows), true);
-assert.equal(allExchangeRatesMissing([...converted.rows, ...missing.rows]), false);
-
-let currencyReads = 0;
-const manyRates = Array.from({ length: 200 }, (_, index): ExchangeRateDto => new Proxy({
-  rateDate: `2026-06-${String(index % 28 + 1).padStart(2, "0")}`,
-  currency: index % 2 === 0 ? "USD" : "JPY",
-  twdPerUnit: index % 2 === 0 ? 32 : 0.2,
-}, {
-  get(target, property, receiver) {
-    if (property === "currency") currencyReads += 1;
-    return Reflect.get(target, property, receiver);
-  },
-}));
-convertDailyHistoryRows(Array.from({ length: 20 }, () => rows[0]!), manyRates, "USD");
-assert.ok(
-  currencyReads <= manyRates.length,
-  `expected rates to be grouped once, read currency ${currencyReads} times for ${manyRates.length} rates`,
-);
+test("amounts convert to one TWD value with the rate dates used", () => {
+  assert.deepEqual(
+    convertToTwd([{ currency: "TWD", value: 100 }, { currency: "USD", value: 2 }, { currency: "JPY", value: 1000 }], "2026-07-12", index),
+    { value: 100 + 64 + 200, rateDates: ["2026-07-11"] },
+  );
+  assert.equal(convertToTwd([{ currency: "EUR", value: 1 }], "2026-07-12", index), null, "a currency without any rate cannot convert");
+  assert.deepEqual(convertToTwd([], "2026-07-12", index), { value: 0, rateDates: [] });
+});

@@ -5,6 +5,9 @@ import type {
   AutomationRuntimeSnapshot,
 } from "../src/lib/desktop/api.ts";
 import {
+  OVERVIEW_CHART_FIELDS,
+  OVERVIEW_LIST_FIELDS,
+  OVERVIEW_SUMMARY_FIELDS,
   wrapDashboardBlock,
   type DashboardBlockPayload,
   type DashboardBlockRoute,
@@ -110,7 +113,6 @@ export function projectFinancialBlock(
   }
   if (block === "chart") {
     return record.dailyHistory
-      ?? record.sankey
       ?? record.transactions
       ?? record.spending
       ?? value;
@@ -136,16 +138,9 @@ function projectRouteBlockData(
   block: DashboardBlockKey,
 ): unknown {
   if (target === "overview") {
-    if (block === "summary") {
-      return pick(record, ["availability", "coverage", "sourceGaps", "importedAt", "summary"]);
-    }
-    if (block === "chart") {
-      return pick(record, ["historyAvailability", "dailyHistory", "accounts", "exchangeRates"]);
-    }
-    if (block === "list") {
-      return pick(record, ["historyAvailability", "dailyHistory", "exchangeRates", "latestExchangeRateDate"]);
-    }
-    return pick(record, ["sankey", "sankeyExchangeRates", "sankeyLatestExchangeRateDate"]);
+    if (block === "summary") return pick(record, OVERVIEW_SUMMARY_FIELDS);
+    if (block === "chart") return pick(record, OVERVIEW_CHART_FIELDS);
+    return pick(record, OVERVIEW_LIST_FIELDS);
   }
   if (target === "assets") {
     if (block === "summary") return pick(record, ["accounts"]);

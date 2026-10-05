@@ -26,12 +26,10 @@ function emptyOverview(): OverviewPageDto {
     importedAt: null,
     summary: [],
     dailyHistory: [],
+    dailyHistoryByAccount: {},
     accounts: [],
-    sankey: null,
-    sankeyExchangeRates: [],
-    sankeyLatestExchangeRateDate: null,
+    holdingPrices: [],
     exchangeRates: [],
-    latestExchangeRateDate: null,
   };
 }
 

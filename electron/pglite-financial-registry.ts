@@ -2,8 +2,7 @@ import { SpendingPageVersionError, type SpendingPageReadResult } from "../src/li
 import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
-import type { OverviewPageDto } from "../src/lib/overview/types.ts";
-import { buildCanonicalOverviewSankeyGraph } from "../src/lib/overview/server/overview-sankey.ts";
+import type { OverviewHoldingPriceDto, OverviewPageDto } from "../src/lib/overview/types.ts";
 import {
   applySpendingSummaryDelta,
   type SpendingCandidatePageDto,
@@ -38,7 +37,7 @@ import type {
   SpendingStrongConfirmResult,
 } from "../src/lib/spending/model.ts";
 import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
-import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
+import type { AccountRowDto, CurrencyAmountDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
 import type {
   CanonicalOverviewAmount,
 } from "../src/ledger/canonical/canonical-overview-query.ts";
@@ -51,7 +50,8 @@ import {
   selectPGliteOverviewAssets,
   selectPGliteOverviewLiabilities,
 } from "../src/ledger/pglite/overview.ts";
-import { readPGliteDailyHistory, readPGliteDailyHistoryWithAccounts } from "../src/ledger/pglite/daily-history.ts";
+import { readPGliteDailyHistoryWithAccounts, type PGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
+import { readPGliteHoldingPrices, type PGliteHoldingPrice } from "../src/ledger/pglite/holding-prices.ts";
 import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
@@ -495,7 +495,8 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
 function mapOverview(
   result: CanonicalOverviewCurrentQueryResult,
   rates: readonly ExchangeRateRecord[],
-  dailyHistory: readonly DailyHistoryRowDto[],
+  history: PGliteDailyHistory,
+  prices: readonly PGliteHoldingPrice[],
 ): OverviewPageDto {
   const projection = result.projection;
   const accounts: AccountRowDto[] = projection.accounts.map((account) => ({
@@ -503,6 +504,7 @@ function mapOverview(
     canonicalAccountId: account.id,
     label: account.label,
     institution: account.institution,
+    institutionKey: account.integrationNamespace,
     product: account.product,
     group: account.group,
     kind: account.kind,
@@ -515,27 +517,42 @@ function mapOverview(
     valueAvailability: account.availability,
     ...(account.creditCard ? { creditCard: mapCanonicalCreditCard(account.creditCard) } : {}),
   }));
-  const currencies = [...new Set(projection.positions.map((position) => position.currency).filter((currency) => currency !== "TWD"))];
-  const rateMap = new Map(rates.map((rate) => [rate.currency, rate]));
   return {
     availability: projection.availability,
     coverage: projection.availability === "unavailable" ? "unavailable" : projection.sourceGaps.length > 0 || projection.availability !== "available" ? "partial" : "complete",
-    historyAvailability: dailyHistory.length > 0 ? "available" : "unavailable",
+    historyAvailability: history.dailyHistory.length > 0 ? "available" : "unavailable",
     sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
     importedAt: projection.importedAt,
     summary: overviewSummary(accounts),
-    dailyHistory: dailyHistory.map((row) => ({ ...row })),
+    dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
+    dailyHistoryByAccount: history.dailyHistoryByAccount,
     accounts,
-    sankey: buildCanonicalOverviewSankeyGraph(projection.positions, rateMap),
-    sankeyExchangeRates: rates.filter((rate) => currencies.includes(rate.currency)).map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-    sankeyLatestExchangeRateDate: latestRateDate(rates.filter((rate) => currencies.includes(rate.currency))),
+    holdingPrices: holdingPricesForPositions(projection.positions, prices),
     exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-    latestExchangeRateDate: latestRateDate(rates),
   };
 }
 
-function latestRateDate(rows: readonly { rateDate: string }[]): string | null {
-  return rows.reduce<string | null>((latest, row) => !latest || row.rateDate > latest ? row.rateDate : latest, null);
+function holdingPricesForPositions(
+  positions: CanonicalOverviewCurrentQueryResult["projection"]["positions"],
+  prices: readonly PGliteHoldingPrice[],
+): OverviewHoldingPriceDto[] {
+  const byPosition = new Map<string, PGliteHoldingPrice[]>();
+  for (const price of prices) {
+    const key = `${price.accountId}:${price.securityId}`;
+    byPosition.set(key, [...(byPosition.get(key) ?? []), price]);
+  }
+  return positions.map((position) => {
+    const observations = byPosition.get(position.id) ?? [];
+    return {
+      accountId: position.accountId,
+      symbol: position.symbol,
+      name: position.name,
+      kind: position.kind,
+      cash: observations.some((observation) => observation.securityType === "cash"),
+      currency: observations.at(-1)?.currency ?? position.currency,
+      observations: observations.map(({ date, price }) => ({ date, price })),
+    };
+  });
 }
 
 type PGliteReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
@@ -584,31 +601,30 @@ export function createPGliteFinancialRegistry(
   };
   return Object.freeze({
     async overviewCurrent(expectedSources = []) {
-      // Keep the canonical projection and the rate rows in one repeatable
-      // read transaction.  A worker commit between two independent queries
-      // could otherwise produce a DTO whose knowledge point and Sankey rates
-      // come from different snapshots.
+      // Keep the canonical projection, history, prices, and rate rows in one
+      // repeatable read transaction so a worker commit between queries cannot
+      // mix snapshots.
       return store.transaction(async (transaction) => {
         const result = await createPGliteCanonicalOverviewQuery(
           transaction,
           { expectedSources },
         ).current();
-        const dailyHistory = await readPGliteDailyHistory(
+        const history = await readPGliteDailyHistoryWithAccounts(
           transaction,
           result.projection.knowledgePoint,
           result.projection.accounts,
         );
+        const prices = await readPGliteHoldingPrices(transaction, result.projection.knowledgePoint);
         const currencies = [...new Set([
           ...result.projection.positions.map((position) => position.currency),
-          ...dailyHistory.flatMap((row) => [
+          ...history.dailyHistory.flatMap((row) => [
             ...row.netAssets,
-            ...row.dailyChange,
             ...row.assets,
             ...row.liabilities,
           ].map((amount) => amount.currency)),
         ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
         const rates = currencies.length === 0 ? [] : await readExchangeRatesOnReader(transaction, currencies);
-        return mapOverview(result, rates, dailyHistory);
+        return mapOverview(result, rates, history, prices);
       });
     },
     async assetsCurrent(expectedSources = []) {
@@ -1101,8 +1117,8 @@ export function createPGliteFinancialLiveViews(
         // admissions, e-invoice/card commits, and projection rebuilds can
         // change the knowledge point even when a current projection marker
         // is unchanged.  The aggregate is one bounded dependency row rather
-        // than a materialized history result.  Overview also consumes
-        // exchange rates for Sankey conversion.  Automation progress/history
+        // than a materialized history result.  Overview also converts
+        // with exchange rates.  Automation progress/history
         // has its own runtime stream and must not invalidate a complete
         // financial DTO on every task update.
         const dependencyQueries = [

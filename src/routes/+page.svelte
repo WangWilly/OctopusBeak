@@ -73,6 +73,9 @@
     type BlockStateMap,
   } from "$lib/shared-shell/block-load-state.ts";
   import {
+    OVERVIEW_CHART_FIELDS,
+    OVERVIEW_LIST_FIELDS,
+    OVERVIEW_SUMMARY_FIELDS,
     wrapDashboardBlock,
     type DashboardBlockPayload,
     type DashboardBlockRoute,
@@ -373,31 +376,12 @@
   }
 
   function overviewBlocks(value: OverviewPageDto): BlockStateMap<DashboardBlockPayload> {
+    const pick = <Field extends keyof OverviewPageDto>(fields: readonly Field[]) =>
+      Object.fromEntries(fields.map((field) => [field, value[field]])) as Pick<OverviewPageDto, Field>;
     return {
-      summary: readyDashboardBlock("overview", "summary", {
-        availability: value.availability,
-        coverage: value.coverage,
-        sourceGaps: value.sourceGaps,
-        importedAt: value.importedAt,
-        summary: value.summary,
-      }),
-      chart: readyDashboardBlock("overview", "chart", {
-        historyAvailability: value.historyAvailability,
-        dailyHistory: value.dailyHistory,
-        accounts: value.accounts,
-        exchangeRates: value.exchangeRates,
-      }),
-      list: readyDashboardBlock("overview", "list", {
-        historyAvailability: value.historyAvailability,
-        dailyHistory: value.dailyHistory,
-        exchangeRates: value.exchangeRates,
-        latestExchangeRateDate: value.latestExchangeRateDate,
-      }),
-      details: readyDashboardBlock("overview", "details", {
-        sankey: value.sankey,
-        sankeyExchangeRates: value.sankeyExchangeRates,
-        sankeyLatestExchangeRateDate: value.sankeyLatestExchangeRateDate,
-      }),
+      summary: readyDashboardBlock("overview", "summary", pick(OVERVIEW_SUMMARY_FIELDS)),
+      chart: readyDashboardBlock("overview", "chart", pick(OVERVIEW_CHART_FIELDS)),
+      list: readyDashboardBlock("overview", "list", pick(OVERVIEW_LIST_FIELDS)),
     };
   }
 
