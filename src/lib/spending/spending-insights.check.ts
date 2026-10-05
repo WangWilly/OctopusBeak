@@ -141,6 +141,9 @@ test("an in-progress month compares against baseline months cut at the same day"
   assert.equal(october.pace[4]?.cumulative, 450);
   assert.equal(october.pace[5]?.cumulative, null);
   assert.equal(october.pace[19]?.usual, 1200);
+  assert.equal(october.pace[4]?.amount && money(october.pace[4].amount), "TWD 450");
+  assert.equal(october.pace[5]?.amount, null);
+  assert.equal(october.pace[1]?.usualAmount && money(october.pace[1].usualAmount), "TWD 200");
   assert.deepEqual(october.days.slice(4, 7).map((day) => day.tone), ["quiet", "future", "future"]);
 });
 
