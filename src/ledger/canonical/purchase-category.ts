@@ -1,6 +1,11 @@
 import type { CanonicalSpendingCategorization } from "./canonical-spending-contracts.ts";
 import type { ExactMoney } from "./spending-recognition-contracts.ts";
-import { personalCategoryLabels, type PersonalCategoryLabels } from "./transaction-taxonomy.ts";
+import type {
+  PurchaseCategory,
+  PurchaseCategoryOrigin,
+  PurchaseItemCategorization,
+} from "../../lib/spending/purchase-category-view.ts";
+import { personalCategoryLabels } from "./transaction-taxonomy.ts";
 
 /**
  * The Purchase category (ADR 0038): a query-time reading of one purchase-basis
@@ -17,43 +22,13 @@ import { personalCategoryLabels, type PersonalCategoryLabels } from "./transacti
  *   only when the items reconcile exactly to the counted bank amount.
  */
 
-export type PurchaseCategoryOrigin = "user" | "source" | "derived";
-export type PurchaseCategorySubject = "transaction" | "items";
-
-export type PurchaseItemCategorization = Readonly<{
-  sequence: number;
-  origin: "user" | "derived";
-  categoryCode: string;
-  taxonomyId: string;
-  taxonomyVersion: string;
-  assertionId: string;
-}>;
-
-export type PurchaseCategoryComponent = Readonly<{
-  categoryCode: string;
-  labels: PersonalCategoryLabels | null;
-  taxonomyId: string;
-  taxonomyVersion: string;
-  amount: ExactMoney;
-}>;
-
-export type PurchaseCategory =
-  | Readonly<{
-      mode: "single";
-      origin: PurchaseCategoryOrigin;
-      subject: PurchaseCategorySubject;
-      categoryCode: string;
-      labels: PersonalCategoryLabels | null;
-      taxonomyId: string;
-      taxonomyVersion: string;
-    }>
-  | Readonly<{
-      mode: "split";
-      origin: PurchaseCategoryOrigin;
-      subject: PurchaseCategorySubject;
-      components: readonly PurchaseCategoryComponent[];
-    }>
-  | Readonly<{ mode: "absent" }>;
+export type {
+  PurchaseCategory,
+  PurchaseCategoryComponent,
+  PurchaseCategoryOrigin,
+  PurchaseCategorySubject,
+  PurchaseItemCategorization,
+} from "../../lib/spending/purchase-category-view.ts";
 
 export type PurchaseCategoryItem = Readonly<{
   sequence: number;
