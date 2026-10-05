@@ -52,13 +52,18 @@ const exactSummary: SpendingPurchaseReportSummaryDto = {
       { currency: "TWD", coefficient: "2500", scale: 2, count: 1 },
     ] },
   ],
+  categoryTotalsByMonth: [
+    { month: "2026-01", currency: "TWD", categoryCode: null, coefficient: "10000", scale: 2, count: 1 },
+    { month: "2026-01", currency: "USD", categoryCode: null, coefficient: "250", scale: 2, count: 1 },
+    { month: "2026-02", currency: "TWD", categoryCode: null, coefficient: "2500", scale: 2, count: 1 },
+  ],
 };
 const crossMonthConfirmed = applySpendingSummaryDelta(exactSummary, 6, 7, {
   before: [
-    { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 } },
-    { date: "2026-02-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 } },
+    { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 }, category: { mode: "absent" as const } },
+    { date: "2026-02-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } },
   ],
-  after: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 } }],
+  after: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } }],
 });
 const compactActionResult = {
   action: "confirm" as const,
@@ -69,10 +74,10 @@ const compactActionResult = {
   transactionIdentityId: "transaction-1",
   summaryDelta: {
     before: [
-      { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 } },
-      { date: "2026-02-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 } },
+      { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 }, category: { mode: "absent" as const } },
+      { date: "2026-02-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } },
     ],
-    after: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 } }],
+    after: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } }],
   },
   affectedRecords: [],
 };
@@ -113,10 +118,10 @@ assert.deepEqual(
   "a cross-month link moves only the linked transaction amount onto the invoice date and removes an emptied day/month",
 );
 const restoredLargeScale = applySpendingSummaryDelta(crossMonthConfirmed, 7, 8, {
-  before: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 } }],
+  before: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } }],
   after: [
-    { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 } },
-    { date: "2026-02-01", amount: { currency: "TWD", coefficient: "25000", scale: 3 } },
+    { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 }, category: { mode: "absent" as const } },
+    { date: "2026-02-01", amount: { currency: "TWD", coefficient: "25000", scale: 3 }, category: { mode: "absent" as const } },
   ],
 });
 assert.deepEqual(

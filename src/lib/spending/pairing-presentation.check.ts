@@ -35,6 +35,8 @@ const record = {
   link: null,
   difference: null,
   refund: null,
+  category: { mode: "absent" as const },
+  itemCategorizations: [],
 };
 
 test("pairing presentation preserves the worker-owned transaction view", () => {

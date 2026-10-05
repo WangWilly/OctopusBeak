@@ -25,6 +25,8 @@ function record(purchaseId: string, possibleDuplicate = false): SpendingPurchase
     link: null,
     difference: null,
     refund: null,
+    category: { mode: "absent" },
+    itemCategorizations: [],
   };
 }
 

@@ -3,6 +3,7 @@ import {
   type SpendingCategory,
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+import type { PurchaseCategory } from "../../ledger/canonical/purchase-category.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
@@ -49,7 +50,25 @@ export type SpendingPurchaseReportSummaryDto = Readonly<{
       count: number;
     }> [];
   }> [];
+  /**
+   * Per-month Purchase category totals (ADR 0038), keyed by canonical code.
+   * `categoryCode: null` is the query-time Unclassified bucket. A split
+   * purchase counts once per touched code with that code's amount.
+   */
+  categoryTotalsByMonth: readonly SpendingCategoryMonthTotal[];
 }>;
+
+export type SpendingCategoryMonthTotal = Readonly<{
+  month: string;
+  currency: string;
+  categoryCode: string | null;
+  coefficient: string;
+  scale: number;
+  count: number;
+}>;
+
+/** The record-page selector for purchases whose Purchase category is absent. */
+export const SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR = "unclassified" as const;
 
 export type SpendingPurchaseReportDto = PurchaseReport & Readonly<{
   /** Present on the compact active-page response; omitted by legacy full reads. */
@@ -104,6 +123,8 @@ export type SpendingRecordPageRequest = Readonly<{
   day?: string | null;
   cursor?: string | null;
   limit?: number;
+  /** Canonical codes, or SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR; the renderer expands display groups. */
+  categoryCodes?: readonly string[] | null;
 }>;
 
 /** Change one purchase's category (ADR 0038). A null code clears the user lineage. */
@@ -128,6 +149,7 @@ export type SpendingRecordPageDto = Readonly<{
   knowledgeAt: number;
   month: string | null;
   day: string | null;
+  categoryCodes: readonly string[] | null;
   records: readonly SpendingPurchaseReportView["records"][number][];
   nextCursor: string | null;
 }>;
@@ -199,7 +221,39 @@ export type SpendingPageActionResult = Readonly<{
 export type SpendingSummaryDeltaLine = Readonly<{
   date: string;
   amount: Readonly<{ currency: string; coefficient: string; scale: number }> | null;
+  category: PurchaseCategory;
 }>;
+
+function categoryTotalsAtScale(
+  rows: readonly SpendingCategoryMonthTotal[],
+  targetScale: number,
+  lines: readonly Readonly<{ line: SpendingSummaryDeltaLine; direction: 1 | -1 }>[],
+): readonly SpendingCategoryMonthTotal[] {
+  const values = new Map<string, { month: string; currency: string; categoryCode: string | null; coefficient: bigint; count: number }>();
+  const add = (month: string, currency: string, categoryCode: string | null, coefficient: string, scale: number, count: number, direction: 1 | -1) => {
+    const key = `${month}|${currency}|${categoryCode ?? ""}`;
+    const current = values.get(key) ?? { month, currency, categoryCode, coefficient: 0n, count: 0 };
+    current.coefficient += BigInt(direction) * BigInt(coefficient) * summaryPowerOfTen(targetScale - scale);
+    current.count += direction * count;
+    if (current.count < 0) throw new Error("Spending summary delta removed a missing category amount.");
+    values.set(key, current);
+  };
+  for (const row of rows) add(row.month, row.currency, row.categoryCode, row.coefficient, row.scale, row.count, 1);
+  for (const { line, direction } of lines) {
+    if (!line.amount) continue;
+    const month = line.date.slice(0, 7);
+    if (line.category.mode === "split") {
+      for (const component of line.category.components)
+        add(month, component.amount.currency, component.categoryCode, component.amount.coefficient, component.amount.scale, 1, direction);
+      continue;
+    }
+    add(month, line.amount.currency, line.category.mode === "single" ? line.category.categoryCode : null, line.amount.coefficient, line.amount.scale, 1, direction);
+  }
+  return Object.freeze([...values.values()]
+    .filter((value) => value.count > 0)
+    .sort((left, right) => left.month.localeCompare(right.month) || left.currency.localeCompare(right.currency) || (left.categoryCode ?? "").localeCompare(right.categoryCode ?? ""))
+    .map((value) => Object.freeze({ month: value.month, currency: value.currency, categoryCode: value.categoryCode, coefficient: value.coefficient.toString(), scale: targetScale, count: value.count })));
+}
 
 const SPENDING_SUMMARY_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 
@@ -257,11 +311,15 @@ export function applySpendingSummaryDelta(
     throw new TypeError("Spending summary delta date is invalid.");
 
   const deltaAmounts = [...delta.before, ...delta.after]
-    .flatMap((line) => line.amount ? [line.amount.scale] : []);
+    .flatMap((line) => [
+      ...(line.amount ? [line.amount.scale] : []),
+      ...(line.category.mode === "split" ? line.category.components.map((component) => component.amount.scale) : []),
+    ]);
   const existingScales = [
     ...summary.totalsByCurrency,
     ...summary.monthTotals.flatMap((month) => month.totalsByCurrency),
     ...summary.dayTotals.flatMap((day) => day.totalsByCurrency),
+    ...summary.categoryTotalsByMonth,
   ].map((amount) => amount.scale);
   const scale = Math.max(0, ...existingScales, ...deltaAmounts);
   const allMoneyDeltas = [
@@ -350,6 +408,10 @@ export function applySpendingSummaryDelta(
     totalsByCurrency,
     monthTotals,
     dayTotals,
+    categoryTotalsByMonth: categoryTotalsAtScale(summary.categoryTotalsByMonth, scale, [
+      ...delta.before.map((line) => ({ line, direction: -1 as const })),
+      ...delta.after.map((line) => ({ line, direction: 1 as const })),
+    ]),
   });
 }
 

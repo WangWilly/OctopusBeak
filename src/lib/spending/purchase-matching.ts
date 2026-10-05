@@ -12,6 +12,13 @@ import {
   createSpendingPairingIndex,
   type SpendingPairingIndex,
 } from "./pairing-index.ts";
+import type {
+  PurchaseCategory,
+  PurchaseItemCategorization,
+} from "../../ledger/canonical/purchase-category.ts";
+
+export type SpendingPurchaseCategoryView = PurchaseCategory;
+export type SpendingPurchaseItemCategorizationView = PurchaseItemCategorization;
 
 export type SpendingMatchingMoney = Readonly<{
   coefficient: string;
@@ -94,6 +101,8 @@ export type SpendingPurchaseRecordView = Readonly<{
     exactAmountEqual: boolean;
   }> | null;
   refund: Readonly<{ provenanceReference: string }> | null;
+  category: SpendingPurchaseCategoryView;
+  itemCategorizations: readonly SpendingPurchaseItemCategorizationView[];
 }>;
 
 export type SpendingPurchaseCandidateView = Readonly<{

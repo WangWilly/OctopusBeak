@@ -47,6 +47,8 @@ function spendingRecord(
     link: null,
     difference: null,
     refund: null,
+    category: { mode: "absent" },
+    itemCategorizations: [],
   } as const;
 }
 
@@ -81,6 +83,7 @@ function compactSummary(recordCount = 2) {
     totalsByCurrency: recordCount ? [total] : [],
     monthTotals: recordCount ? [{ month: "2026-10", recordCount, activeDayCount: 1, pendingCandidateCount: null, totalsByCurrency: [total] }] : [],
     dayTotals: recordCount ? [{ month: "2026-10", date, recordCount, totalsByCurrency: [total] }] : [],
+    categoryTotalsByMonth: [],
   };
 }
 
