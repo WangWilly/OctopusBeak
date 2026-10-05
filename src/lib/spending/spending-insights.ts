@@ -128,20 +128,20 @@ export type TrendMonth = Readonly<{
   usual: Money | null;
   usualValue: number | null;
   status: "complete" | "in-progress" | "first-imported" | "before-history";
-  /** Only months with records can be opened. */
+  /** Months with records and today's month can be opened. */
   selectable: boolean;
 }>;
 
 export type ReadMonthInput = Readonly<{
-  /** Falls back to the newest month when absent from history. */
-  month: string | null;
+  /** The page's active month. A month without a summary row reads as empty. */
+  month: string;
   /** `YYYY-MM-DD` in the ledger's calendar. */
   today: string;
 }>;
 
 export type ReadTrendInput = Readonly<{
   currency: string;
-  /** The window ends at the newest month and slides back only to keep this month in view. */
+  /** The window ends at today's month, or a later month with data, and slides back only to keep this month in view. */
   selectedMonth: string;
   today: string;
   length?: number;
@@ -150,9 +150,7 @@ export type ReadTrendInput = Readonly<{
 export function readSpendingMonth(summary: SpendingSummary, input: ReadMonthInput): MonthReading | null {
   const index = indexFor(summary);
   if (!index) return null;
-  const month = input.month !== null && index.monthRows.has(input.month as MonthKey)
-    ? input.month as MonthKey
-    : index.newest;
+  const month = input.month as MonthKey;
   const span = spanOf(month, input.today);
   const row = index.monthRows.get(month);
   const pending = row?.pendingCandidateCount ?? null;
@@ -178,7 +176,7 @@ export function readSpendingTrend(summary: SpendingSummary, input: ReadTrendInpu
   const length = input.length ?? 12;
   const currency = input.currency as CurrencyCode;
   const todayMonth = input.today.slice(0, 7);
-  let end = index.newest;
+  let end = index.newest > todayMonth ? index.newest : todayMonth as MonthKey;
   if (input.selectedMonth <= addMonths(end, -length)) end = addMonths(input.selectedMonth as MonthKey, length - 1);
   return Array.from({ length }, (_, offset) => {
     const month = addMonths(end, offset - length + 1);
@@ -196,7 +194,7 @@ export function readSpendingTrend(summary: SpendingSummary, input: ReadTrendInpu
         : month === todayMonth
           ? "in-progress"
           : month === index.historyStart ? "first-imported" : "complete",
-      selectable: index.monthRows.has(month),
+      selectable: index.monthRows.has(month) || month === todayMonth,
     });
   });
 }
@@ -210,7 +208,7 @@ export type SpendingCardState = "data" | "empty";
  * empties out only when no month has any.
  */
 export type SpendingCards = Readonly<{
-  /** The selected history month, else the newest, else today's month. */
+  /** The page's active month. */
   month: MonthKey;
   span: MonthSpan;
   monthPanel: SpendingCardState;
@@ -219,8 +217,7 @@ export type SpendingCards = Readonly<{
 
 export function readSpendingCards(summary: SpendingSummary, input: ReadMonthInput): SpendingCards {
   const rows = new Map(summary.monthTotals.map((row) => [row.month, row]));
-  const newest = summary.monthTotals.map((row) => row.month).sort().at(-1);
-  const month = (input.month !== null && rows.has(input.month) ? input.month : newest ?? input.today.slice(0, 7)) as MonthKey;
+  const month = input.month as MonthKey;
   return Object.freeze({
     month,
     span: spanOf(month, input.today),

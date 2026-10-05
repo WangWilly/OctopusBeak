@@ -233,11 +233,25 @@ test("the duplicate caveat follows the month's pending pair count", () => {
   assert.deepEqual(caveat(4), { kind: "may-include-duplicates", pendingPairs: 4 });
 });
 
-test("an unknown month falls back to the newest month and an empty summary reads nothing", () => {
+test("a month without a summary row reads as that month with nothing in it, and an empty summary reads nothing", () => {
   const summary = summaryOf({ "2026-08-01": 100, "2026-09-01": 100 });
-  assert.equal(readSpendingMonth(summary, { month: "2026-07", today: "2026-10-05" })?.month, "2026-09");
-  assert.equal(readSpendingMonth(summary, { month: null, today: "2026-10-05" })?.month, "2026-09");
-  assert.equal(readSpendingMonth({ monthTotals: [], dayTotals: [] }, { month: null, today: "2026-10-05" }), null);
+  const quiet = readSpendingMonth(summary, { month: "2026-10", today: "2026-10-05" });
+  assert.equal(quiet?.month, "2026-10");
+  assert.equal(quiet?.span.kind, "in-progress");
+  assert.equal(quiet?.recordCount, 0);
+  assert.equal(quiet?.latestRecordDate, null);
+  assert.deepEqual(quiet?.byCurrency.get("TWD" as never)?.total, { currency: "TWD", coefficient: "0", scale: 0 });
+  assert.equal(readSpendingMonth(summary, { month: "2026-07", today: "2026-10-05" })?.month, "2026-07");
+  assert.equal(readSpendingMonth({ monthTotals: [], dayTotals: [] }, { month: "2026-10", today: "2026-10-05" }), null);
+});
+
+test("the trend ends at today's month even before it has a purchase, and that month can be opened", () => {
+  const trend = readSpendingTrend(summaryOf({ "2026-08-12": 300, "2026-09-03": 120 }), { currency: "TWD", selectedMonth: "2026-10", today: "2026-10-05" });
+  const last = trend.at(-1);
+  assert.deepEqual([last?.month, last?.status, last?.value, last?.selectable], ["2026-10", "in-progress", 0, true]);
+  assert.equal(trend.find((month) => month.month === "2026-09")?.value, 120);
+  const later = readSpendingTrend(summaryOf({ "2026-09-03": 120, "2026-11-02": 50 }), { currency: "TWD", selectedMonth: "2026-10", today: "2026-10-05" });
+  assert.equal(later.at(-1)?.month, "2026-11", "a later month with data still ends the window");
 });
 
 test("the trend is a fixed window of zero-filled months that keeps the selected month in view", () => {
@@ -341,7 +355,7 @@ test("the category breakdown rolls codes into groups, keeps Unclassified and sha
 
 test("each card empties out from its own data, not from one page-wide switch", () => {
   const today = "2026-10-05";
-  const none = readSpendingCards({ monthTotals: [], dayTotals: [] }, { month: null, today });
+  const none = readSpendingCards({ monthTotals: [], dayTotals: [] }, { month: "2026-10", today });
   assert.deepEqual(
     { month: none.month, span: none.span.kind, monthPanel: none.monthPanel, trend: none.trend },
     { month: "2026-10", span: "in-progress", monthPanel: "empty", trend: "empty" },
@@ -349,10 +363,13 @@ test("each card empties out from its own data, not from one page-wide switch", (
   );
 
   const history = summaryOf({ "2026-08-12": 300, "2026-09-03": 120 });
-  const newest = readSpendingCards(history, { month: null, today });
-  assert.deepEqual([newest.month, newest.monthPanel, newest.trend], ["2026-09", "data", "data"]);
-  assert.equal(readSpendingCards(history, { month: "2026-08", today }).month, "2026-08");
-  assert.equal(readSpendingCards(history, { month: "2025-01", today }).month, "2026-09", "a month outside history falls back to the newest");
+  const quietToday = readSpendingCards(history, { month: "2026-10", today });
+  assert.deepEqual(
+    [quietToday.month, quietToday.span.kind, quietToday.monthPanel, quietToday.trend],
+    ["2026-10", "in-progress", "empty", "data"],
+    "today's month without purchases empties its own cards while history keeps the trend",
+  );
+  assert.deepEqual([readSpendingCards(history, { month: "2026-08", today }).month, readSpendingCards(history, { month: "2026-08", today }).monthPanel], ["2026-08", "data"]);
 
   const emptied = {
     ...history,

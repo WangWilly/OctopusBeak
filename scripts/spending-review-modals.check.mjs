@@ -70,6 +70,7 @@ function installReads({ records, pair }) {
 
 async function openPage(browser, server, { hidden = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.clock.setFixedTime(new Date("2026-10-05T12:00:00+08:00"));
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(spendingDesktopApiInitScript(model) + `;(${installReads.toString()})(${JSON.stringify({ records, pair })});`);

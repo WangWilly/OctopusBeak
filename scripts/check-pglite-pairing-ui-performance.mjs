@@ -336,6 +336,7 @@ async function runSingle(runNumber) {
     const uiWorkerStartupMs = actual.startupMs;
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await page.clock.setFixedTime(new Date("2026-12-31T12:00:00+08:00"));
     const errors = [];
     const bridgeTimings = [];
     const prewarmVersions = [];

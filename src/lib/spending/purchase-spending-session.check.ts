@@ -126,6 +126,22 @@ function reportWithTwoMonths(records: readonly ReturnType<typeof spendingRecord>
   } as PurchaseSpendingReport;
 }
 
+function reportForMonths(knowledgeAt: number, months: readonly string[]): PurchaseSpendingReport {
+  const base = report(knowledgeAt);
+  const summary = base.summary!;
+  const row = summary.monthTotals[0]!;
+  const day = summary.dayTotals[0]!;
+  return {
+    ...base,
+    summary: {
+      ...summary,
+      recordCount: months.length,
+      monthTotals: months.map((month) => ({ ...row, month })),
+      dayTotals: months.map((month) => ({ ...day, month, date: `${month}-01` })),
+    },
+  } as PurchaseSpendingReport;
+}
+
 function candidatePageItem(index: number) {
   const candidateId = `candidate-${index}`;
   const baseInvoice = invoiceRecord(`Invoice ${index}`, [candidateId]);
@@ -256,13 +272,73 @@ function createSession(
   transport: PurchaseSpendingTransport,
   clock = new TestClock(),
   refreshSummary = async () => {},
+  today = "2026-10-05",
 ) {
-  const session = createPurchaseSpendingSession({ report: reportValue, canonical: canonical(reportValue.knowledgeAt), refreshSummary, transport, clock });
+  const session = createPurchaseSpendingSession({ report: reportValue, canonical: canonical(reportValue.knowledgeAt), refreshSummary, transport, clock, today });
   let snapshot!: PurchaseSpendingSnapshot;
   session.state.subscribe((next) => { snapshot = next; });
   const current = () => snapshot;
   return { session, clock, current };
 }
+
+test("the page opens on today's month when the ledger has no purchases at all", async () => {
+  const { calls, transport } = makeTransport({
+    loadRecordPage: async (input: any) => {
+      calls.recordPages.push(input);
+      return recordPage(input, []);
+    },
+  });
+  const { session, clock, current } = createSession(reportForMonths(1, []), transport, undefined, undefined, "2026-10-05");
+  session.start();
+  assert.equal(current().selectedMonth, null);
+  assert.equal(current().activeMonth, "2026-10");
+  assert.deepEqual(current().months, ["2026-10"]);
+  await waitFor(() => calls.recordPages.length === 1 && !current().recordPageLoading);
+  assert.equal((calls.recordPages[0] as any).month, "2026-10");
+  await clock.advanceBy(1_200);
+  await waitFor(() => current().monthCandidateCount === 0);
+  assert.equal(calls.candidatePages[0]?.input.month, "2026-10");
+  assert.deepEqual(current().report.records, []);
+  assert.equal(current().pageError, "");
+  session.dispose();
+});
+
+test("today's month without purchases is the default and older history stays one step back", async () => {
+  const { calls, transport } = makeTransport({
+    loadRecordPage: async (input: any) => {
+      calls.recordPages.push(input);
+      return recordPage(input, input.month === "2026-09" ? [invoiceRecord("September purchase")] : []);
+    },
+  });
+  const { session, current } = createSession(reportForMonths(1, ["2026-08", "2026-09"]), transport, undefined, undefined, "2026-10-05");
+  session.start();
+  assert.equal(current().activeMonth, "2026-10");
+  assert.deepEqual(current().months, ["2026-08", "2026-09", "2026-10"], "today's month joins the data months and no later month is added");
+  await waitFor(() => calls.recordPages.length === 1 && !current().recordPageLoading);
+  assert.equal((calls.recordPages[0] as any).month, "2026-10");
+  assert.deepEqual(current().report.records, []);
+  assert.equal(current().pageError, "");
+
+  session.chooseMonth("2026-09");
+  await waitFor(() => current().report.records.some((record) => record.description === "September purchase"));
+  assert.equal(current().activeMonth, "2026-09");
+  assert.equal((calls.recordPages.at(-1) as any).month, "2026-09");
+  session.dispose();
+});
+
+test("an explicit month choice wins over today's month across a newer summary", async () => {
+  const { calls, transport } = makeTransport();
+  const { session, current } = createSession(reportForMonths(1, ["2026-09"]), transport, undefined, undefined, "2026-10-05");
+  session.start();
+  session.chooseMonth("2026-09");
+  await waitFor(() => calls.recordPages.some((input: any) => input.month === "2026-09"));
+  session.receiveLive(reportForMonths(2, ["2026-09", "2026-10"]), canonical(2));
+  await waitFor(() => current().report.knowledgeAt === 2);
+  assert.equal(current().selectedMonth, "2026-09");
+  assert.equal(current().activeMonth, "2026-09");
+  assert.equal((calls.recordPages.at(-1) as any).month, "2026-09");
+  session.dispose();
+});
 
 test("month and day changes ignore late reads from earlier selections", async () => {
   const pending: ReturnType<typeof deferred<any>>[] = [];

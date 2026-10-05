@@ -151,6 +151,9 @@ export function createSpendingDesktopApi(
     spending: {
       load: loadSpending,
       loadBlock: blockValue,
+      loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
+      loadCandidatePage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, items: [], totalCandidateCount: 0, strongCandidateCount: 0, nextOffset: null }),
+      cancelCandidatePage: async () => true,
       rankPairingCandidates: async (input) => ({
         dataVersion: input.dataVersion,
         candidates: [],
@@ -293,6 +296,9 @@ function installSpendingDesktopApi(model) {
         return spendingPage;
       },
       loadBlock: blockValue,
+      loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
+      loadCandidatePage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, items: [], totalCandidateCount: 0, strongCandidateCount: 0, nextOffset: null }),
+      cancelCandidatePage: async () => true,
       rankPairingCandidates: async (input) => ({ dataVersion: input.dataVersion, candidates: [], totalCandidateCount: 0, nextOffset: null }),
       prewarmPairingCandidates: async (input) => ({ dataVersion: input.dataVersion, reused: false }),
       loadPendingOverview: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, pendingCount: 0, strongCount: 0, affectedByCurrency: [], strongPairs: [] }),

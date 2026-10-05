@@ -88,6 +88,7 @@ test("Spending page reads stop failed retries, recover stale versions and preser
     for (const scenario of ["failure", "stale", "candidate-stale", "retain", "pairing-live", "action-race"]) {
       await t.test(scenario, async () => {
         const page = await browser.newPage();
+        await page.clock.setFixedTime(new Date("2026-10-05T12:00:00+08:00"));
         try {
           await page.addInitScript(spendingDesktopApiInitScript(model) + `;(${installReads.toString()})(${JSON.stringify({ model, scenario })});`);
           await page.goto(server.resolvedUrls.local[0] + "#/spending");
