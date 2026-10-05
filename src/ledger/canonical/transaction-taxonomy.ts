@@ -1105,6 +1105,19 @@ export function assertValidTaxonomyPackage(
   return taxonomyPackage;
 }
 
+export type PersonalCategoryLabels = Readonly<{ en: string; zhHant: string }>;
+
+/** zh-TW and en labels of one published Personal Category code, or null for an unregistered code. */
+export function personalCategoryLabels(
+  code: string,
+  taxonomyPackage: TransactionTaxonomyPackage = TRANSACTION_TAXONOMY_PACKAGE_V1,
+): PersonalCategoryLabels | null {
+  const definition = taxonomyPackage.categories.find((entry) => entry.code === code);
+  const localized = definition ? taxonomyPackage.localizations[definition.localizationKey] : undefined;
+  if (!localized?.en || !localized["zh-Hant"]) return null;
+  return { en: localized.en, zhHant: localized["zh-Hant"] };
+}
+
 export function taxonomyDefinitionsForField(
   field: EnrichmentField,
   taxonomyPackage: TransactionTaxonomyPackage = TRANSACTION_TAXONOMY_PACKAGE_V1,
