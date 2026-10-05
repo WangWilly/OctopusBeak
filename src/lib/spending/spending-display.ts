@@ -62,9 +62,19 @@ export function recordCategoryCode(record: Pick<PurchaseRecord, "category">): st
   return record.category.mode === "single" ? record.category.categoryCode : null;
 }
 
+const LEGAL_NAME_TAIL = /(股份有限公司|有限公司)[\s\S]*$/u;
+
+/** 統一超商股份有限公司宜蘭縣第一三二分公司 reads as 統一超商; the source card keeps the full name. */
+function shortSellerName(name: string): string {
+  return name.replace(LEGAL_NAME_TAIL, "").trim() || name;
+}
+
+/** A merged purchase is titled by its store description; an invoice by its short seller name. */
 export function recordMerchant(t: Translation, record: PurchaseRecord): string {
+  if (record.basis === "linked" && record.transaction?.description) return record.transaction.description;
+  const seller = record.invoice?.revision.seller.name;
+  if (seller) return shortSellerName(seller);
   return record.description
-    ?? record.invoice?.revision.seller.name
     ?? record.transaction?.description
     ?? t.purchaseSpending.merchantUnavailable;
 }
