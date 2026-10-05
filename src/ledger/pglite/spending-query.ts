@@ -60,6 +60,7 @@ import {
   type SpendingPageDto,
   type SpendingRecordPageRequest,
   type SpendingRecordPageDto,
+  type SpendingRecordBasisFilter,
   type SpendingCandidatePageRequest,
   type SpendingCandidatePageDto,
   type SpendingCandidatePairRef,
@@ -2094,6 +2095,8 @@ type SpendingRecordCursor = Readonly<{
   month: string | null;
   day: string | null;
   categoryCodes: readonly string[] | null;
+  query: string | null;
+  basis: SpendingRecordBasisFilter | null;
   occurrence: string;
   purchaseId: string;
 }>;
@@ -2104,7 +2107,7 @@ function spendingRecordCursorToken(cursor: SpendingRecordCursor): string {
 
 function spendingRecordCursorFromToken(
   token: string | null | undefined,
-  request: Readonly<{ knowledgeAt: number; month: string | null; day: string | null; categoryCodes: readonly string[] | null }>,
+  request: Readonly<{ knowledgeAt: number; month: string | null; day: string | null; categoryCodes: readonly string[] | null; query: string | null; basis: SpendingRecordBasisFilter | null }>,
 ): SpendingRecordCursor | null {
   if (!token) return null;
   try {
@@ -2112,6 +2115,7 @@ function spendingRecordCursorFromToken(
     if (parsed.schemaVersion !== 1 || parsed.knowledgeAt !== request.knowledgeAt
         || parsed.month !== request.month || parsed.day !== request.day
         || JSON.stringify(parsed.categoryCodes ?? null) !== JSON.stringify(request.categoryCodes)
+        || (parsed.query ?? null) !== request.query || (parsed.basis ?? null) !== request.basis
         || typeof parsed.occurrence !== "string" || !ISO_DATE.test(parsed.occurrence.slice(0, 10))
         || typeof parsed.purchaseId !== "string" || parsed.purchaseId.length === 0)
       throw new Error("invalid cursor fields");
@@ -2119,6 +2123,27 @@ function spendingRecordCursorFromToken(
   } catch (error) {
     throw new Error("Spending record cursor is stale or invalid; reload the current page.", { cause: error });
   }
+}
+
+/** A record search: lowercased text for substring matching, and the exact amount it may also denote. */
+type SpendingRecordSearch = Readonly<{ text: string; amount: string | null }>;
+
+const SEARCH_AMOUNT = /^(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)(?:\.\d+)?$/u;
+
+function recordSearch(query: string | null): SpendingRecordSearch | null {
+  if (query === null) return null;
+  const trimmed = query.trim();
+  if (trimmed === "") return null;
+  return Object.freeze({
+    text: trimmed.toLowerCase(),
+    amount: SEARCH_AMOUNT.test(trimmed) ? trimmed.replaceAll(",", "") : null,
+  });
+}
+
+function recordBasisFilter(value: SpendingRecordPageRequest["basis"]): SpendingRecordBasisFilter | null {
+  if (value === undefined || value === null) return null;
+  if (value !== "linked") throw new TypeError("Spending record page basis filter is invalid.");
+  return value;
 }
 
 function validSpendingMonth(value: string): boolean {
@@ -2511,7 +2536,13 @@ export async function queryCurrentSpendingRecordPage(
   if (day !== null && (!validSpendingDate(day) || month !== day.slice(0, 7)))
     throw new TypeError("Spending record page day must belong to its month.");
   const categoryCodes = normalizedCategoryCodes(request.categoryCodes);
-  const cursor = spendingRecordCursorFromToken(request.cursor, { knowledgeAt: current, month, day, categoryCodes });
+  if (request.query !== undefined && request.query !== null && typeof request.query !== "string")
+    throw new TypeError("Spending record page query must be text.");
+  const query = request.query?.trim() ? request.query.trim() : null;
+  if (query !== null && month === null) throw new TypeError("Spending record page search needs a month.");
+  const search = recordSearch(query);
+  const basis = recordBasisFilter(request.basis);
+  const cursor = spendingRecordCursorFromToken(request.cursor, { knowledgeAt: current, month, day, categoryCodes, query, basis });
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
     ? Math.min(request.limit ?? 50, 100)
     : 50;
@@ -2527,22 +2558,33 @@ export async function queryCurrentSpendingRecordPage(
       .filter((purchase) => purchaseCategoryMatchesSelectors(purchase.category, selectors))
       .map((purchase) => purchase.purchaseId);
     if (matchingPurchaseIds.length === 0) {
-      return Object.freeze({ schemaVersion: 1, knowledgeAt: current, month, day, categoryCodes, records: Object.freeze([]), nextCursor: null });
+      return Object.freeze({ schemaVersion: 1, knowledgeAt: current, month, day, categoryCodes, query, basis, records: Object.freeze([]), nextCursor: null });
     }
   }
   const categoryFilter = matchingPurchaseIds === null
     ? ""
     : `AND purchase_rows.purchase_id IN (${matchingPurchaseIds.map(() => "?").join(",")})`;
+  const basisFilter = basis === null ? "" : "AND purchase_rows.basis = ?";
+  const searchJoins = search === null ? "" : `
+        LEFT JOIN einvoice_invoice_revisions search_invoice ON search_invoice.revision_id = purchase_rows.invoice_revision_id
+        LEFT JOIN current_transactions search_current ON search_current.transaction_id = purchase_rows.transaction_id
+        LEFT JOIN transaction_revisions search_transaction ON search_transaction.revision_id = search_current.revision_id`;
+  const searchFilter = search === null ? "" : `AND (
+           strpos(LOWER(COALESCE(search_invoice.seller_name, '')), ?) > 0
+        OR strpos(LOWER(COALESCE(search_transaction.description, '')), ?) > 0
+        ${search.amount === null ? "" : "OR (purchase_rows.amount_coefficient IS NOT NULL AND purchase_rows.amount_coefficient::numeric = CAST(? AS numeric) * POWER(10::numeric, purchase_rows.amount_scale))"})`;
   const params: unknown[] = [current, current];
   if (month !== null) params.push(month);
   if (day !== null) params.push(day);
   if (cursor !== null) params.push(cursor.occurrence, cursor.occurrence, cursor.purchaseId);
   if (matchingPurchaseIds !== null) params.push(...matchingPurchaseIds);
+  if (basis !== null) params.push(basis);
+  if (search !== null) params.push(search.text, search.text, ...(search.amount === null ? [] : [search.amount]));
   params.push(limit + 1);
   const result = await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}, selected_rows AS (
       SELECT purchase_rows.*
-        FROM purchase_rows
-       WHERE TRUE ${monthFilter} ${dayFilter} ${cursorFilter} ${categoryFilter}
+        FROM purchase_rows ${searchJoins}
+       WHERE TRUE ${monthFilter} ${dayFilter} ${cursorFilter} ${categoryFilter} ${basisFilter} ${searchFilter}
        ORDER BY purchase_rows.occurrence_value DESC, purchase_rows.purchase_id ASC
        LIMIT ?
     )
@@ -2584,6 +2626,8 @@ export async function queryCurrentSpendingRecordPage(
     month,
     day,
     categoryCodes,
+    query,
+    basis,
     records: Object.freeze(pageRecords),
     nextCursor: hasNext && last ? spendingRecordCursorToken({
       schemaVersion: 1,
@@ -2591,6 +2635,8 @@ export async function queryCurrentSpendingRecordPage(
       month,
       day,
       categoryCodes,
+      query,
+      basis,
       occurrence: stringValue(last.occurrence_value, "Spending page occurrence"),
       purchaseId: stringValue(last.purchase_id, "Spending page purchase identity"),
     }) : null,
