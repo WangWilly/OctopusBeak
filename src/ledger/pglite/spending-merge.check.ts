@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import { applyPGliteSpendingPageAction } from "./spending-command.ts";
+import { applyPGliteSpendingPageAction, confirmPGliteSpendingStrongCandidates } from "./spending-command.ts";
 
 type Seeded = Readonly<{
   fixture: SpendingCategoryFixture;
@@ -116,6 +116,103 @@ test("a revoked link returns neither its pair nor anything else to the pending s
     const pairs = pairsOf(after.items);
     assert.equal(pairs.includes(`${seeded.linkedInvoice}/${seeded.linkedPayment}`), false, "a decided pair stays out of the pending set");
     assert.equal(after.totalCandidateCount, 7, "the revoked sides pair with their other unlinked same-amount neighbors");
+  } finally {
+    await seeded.fixture.close();
+  }
+});
+
+async function decisionState(fixture: SpendingCategoryFixture) {
+  const result = await fixture.store.query<{ commits: number | string; events: number | string; links: number | string }>(
+    `SELECT (SELECT COUNT(*) FROM canonical_commits) AS commits,
+            (SELECT COUNT(*) FROM spending_dedup_decision_events) AS events,
+            (SELECT COUNT(*) FROM current_spending_dedup_links) AS links`,
+  );
+  const row = result.rows[0]!;
+  return { commits: Number(row.commits), events: Number(row.events), links: Number(row.links) };
+}
+
+test("strong-match batch confirmation writes one commit with one evidence-bearing event per shown pair", async () => {
+  const seeded = await seed();
+  try {
+    const query = createPGliteSpendingQuery(seeded.fixture.store);
+    const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
+    const shown = await query.pendingOverview({ knowledgeAt: shownKnowledgeAt });
+    await seeded.fixture.addTransaction({ amount: "999", date: "2026-11-20", description: "Unrelated" });
+    const before = await decisionState(seeded.fixture);
+    const result = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
+    assert.equal(result.status, "committed", "an unrelated newer commit does not reject the batch");
+    if (result.status !== "committed") return;
+    const after = await decisionState(seeded.fixture);
+    assert.deepEqual(after, { commits: before.commits + 1, events: before.events + 2, links: before.links + 2 });
+    assert.equal(result.knowledgeAt, result.baseKnowledgeAt + 1);
+    const events = (await seeded.fixture.store.query<{ evidence_json: string; event_kind: string }>(
+      `SELECT event.evidence_json, event.event_kind
+         FROM spending_dedup_decision_events event
+         JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+        WHERE commit_row.commit_sequence = $1`,
+      [result.knowledgeAt],
+    )).rows;
+    assert.equal(events.length, 2);
+    for (const event of events) {
+      const evidence = JSON.parse(event.evidence_json) as Record<string, unknown>;
+      assert.equal(event.event_kind, "confirmed");
+      assert.equal(evidence.decisionOrigin, "strong-match-batch");
+      assert.equal(evidence.strength, "strong");
+      assert.equal(evidence.shownKnowledgeAt, shownKnowledgeAt);
+      assert.equal((evidence.reasons as Record<string, unknown>).merchantMatch, true);
+    }
+    const overview = await query.pendingOverview({ knowledgeAt: result.knowledgeAt });
+    assert.equal(overview.strongCount, 0);
+    assert.equal(overview.pendingCount, 3);
+  } finally {
+    await seeded.fixture.close();
+  }
+});
+
+test("a shown pair that became ambiguous rejects the whole batch without writing and returns the recomputed strong set", async () => {
+  const seeded = await seed();
+  try {
+    const query = createPGliteSpendingQuery(seeded.fixture.store);
+    const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
+    const shown = await query.pendingOverview({ knowledgeAt: shownKnowledgeAt });
+    assert.equal(shown.strongPairs.length, 2);
+    await seeded.fixture.addTransaction({ amount: "100", date: "2026-09-04", description: "全家便利商店 信義店", card: { consumeDate: "2026-09-04" } });
+    const before = await decisionState(seeded.fixture);
+    const result = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
+    assert.equal(result.status, "conflict");
+    if (result.status !== "conflict") return;
+    assert.deepEqual(await decisionState(seeded.fixture), before, "a rejected batch writes nothing");
+    assert.deepEqual(result.conflicts.map((pair) => pair.invoiceIdentityId), [seeded.strongInvoice]);
+    assert.deepEqual(result.strongPairs.map((pair) => `${pair.invoiceIdentityId}/${pair.transactionIdentityId}`), [`${seeded.crossMonthInvoice}/${seeded.crossMonthPayment}`]);
+    const retry = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt: result.knowledgeAt, pairs: result.strongPairs });
+    assert.equal(retry.status, "committed", "the re-offered set confirms");
+  } finally {
+    await seeded.fixture.close();
+  }
+});
+
+test("a shown pair that is no longer pending, or was only possible, rejects the batch", async () => {
+  const seeded = await seed();
+  try {
+    const query = createPGliteSpendingQuery(seeded.fixture.store);
+    const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
+    const page = await query.candidatePage({ knowledgeAt: shownKnowledgeAt, month: null, limit: 100 });
+    const strongItem = page.items.find((item) => item.candidate.invoiceId === seeded.strongInvoice)!;
+    const possibleItem = page.items.find((item) => item.candidate.invoiceId === seeded.fallbackInvoice)!;
+    const ref = (item: typeof strongItem) => ({ candidateId: item.candidate.candidateId, invoiceIdentityId: item.candidate.invoiceId, transactionIdentityId: item.candidate.transactionId });
+    const before = await decisionState(seeded.fixture);
+    const possible = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem), ref(possibleItem)] });
+    assert.equal(possible.status, "conflict");
+    assert.deepEqual(await decisionState(seeded.fixture), before);
+    await applyPGliteSpendingPageAction(seeded.fixture.store, {
+      action: "deny", kind: "candidate", candidateId: strongItem.candidate.candidateId,
+      invoiceIdentityId: seeded.strongInvoice, transactionIdentityId: seeded.strongPayment, dataVersion: shownKnowledgeAt,
+    });
+    const afterDeny = await decisionState(seeded.fixture);
+    const denied = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem)] });
+    assert.equal(denied.status, "conflict");
+    assert.deepEqual(await decisionState(seeded.fixture), afterDeny);
+    assert.throws(() => confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [] }), /at least one/u);
   } finally {
     await seeded.fixture.close();
   }
