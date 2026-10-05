@@ -246,6 +246,16 @@ const en = {
       leisure: "Health and leisure",
       other: "Other services",
     },
+    categoryGroups: {
+      dining: "Dining",
+      daily: "Daily",
+      transport: "Transport",
+      shopping: "Shopping",
+      home: "Home",
+      leisure: "Leisure",
+      other: "Other",
+    },
+    unclassifiedCategory: "Unclassified",
     viewDetails: "View details",
     invoiceRowAria: (invoice: string, seller: string, amount: string) =>
       `${invoice}, ${seller}, ${amount}, view details`,
@@ -1248,6 +1258,16 @@ const zh: typeof en = {
       leisure: "健康休閒",
       other: "其他服務",
     },
+    categoryGroups: {
+      dining: "餐飲",
+      daily: "日常",
+      transport: "交通",
+      shopping: "購物",
+      home: "居家",
+      leisure: "休閒",
+      other: "其他",
+    },
+    unclassifiedCategory: "未分類",
     viewDetails: "查看明細",
     invoiceRowAria: (invoice, seller, amount) =>
       `${invoice}，${seller}，${amount}，查看明細`,
