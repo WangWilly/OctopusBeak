@@ -19,6 +19,7 @@ import {
   admitPGliteCanonicalSourceCaptureInTransaction,
   type PGliteCanonicalCommitOptions,
 } from "./canonical-source-store.ts";
+import { syncEInvoiceItemCategorizations } from "./einvoice-item-categorization.ts";
 import type { PGliteTransaction, PGliteStore } from "./transaction.ts";
 import { PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND } from "./workflow-commands.ts";
 
@@ -466,7 +467,7 @@ async function persistInvoice(
   input: CanonicalEInvoiceCaptureInput,
   invoice: Invoice,
   admitted: Awaited<ReturnType<typeof admitPGliteCanonicalSourceCaptureInTransaction>>,
-): Promise<{ insertedInvoice: boolean; insertedRevision: boolean; duplicate: boolean; itemCount: number }> {
+): Promise<{ invoiceId: Uint8Array; insertedInvoice: boolean; insertedRevision: boolean; duplicate: boolean; itemCount: number }> {
   const sourceRecordId = admitted.sourceRecordIdsByOccurrence.get(invoice.occurrenceKey);
   if (!sourceRecordId) throw new Error(`E-Invoice source record is missing: ${invoice.occurrenceKey}`);
   const existingInvoice = await first<{ invoice_id: unknown }>(transaction, `SELECT invoice_id
@@ -493,7 +494,7 @@ async function persistInvoice(
     ) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING revision_id`, [revisionId, sourceRecordId, admitted.captureId, admitted.commitId]);
     if (observed.length > 0)
       await insertEvent(transaction, { invoiceId, revisionId, sourceRecordId, captureId: admitted.captureId, commitId: admitted.commitId, kind: "observed", eventAt: input.observedAt });
-    return { insertedInvoice: !existingInvoice, insertedRevision: false, duplicate: true, itemCount: 0 };
+    return { invoiceId, insertedInvoice: !existingInvoice, insertedRevision: false, duplicate: true, itemCount: 0 };
   }
   const sameNumber = await first<{ revision_id: unknown }>(transaction, "SELECT revision_id FROM einvoice_invoice_revisions WHERE invoice_id = ? AND revision_number = ?", [invoiceId, invoice.revisionNumber]);
   if (sameNumber) fail("revision-conflict", `E-Invoice revision number ${invoice.revisionNumber} already belongs to another source revision.`);
@@ -527,7 +528,7 @@ async function persistInvoice(
     WHERE invoice_id = ? AND revision_number < ? ORDER BY revision_number DESC LIMIT 1`, [invoiceId, invoice.revisionNumber]);
   if (prior)
     await insertEvent(transaction, { invoiceId, revisionId: prior.revision_id as Uint8Array, sourceRecordId, captureId: admitted.captureId, commitId: admitted.commitId, kind: "superseded", eventAt: input.observedAt, reason: `superseded-by-revision-${invoice.revisionNumber}` });
-  return { insertedInvoice: !existingInvoice, insertedRevision: true, duplicate: false, itemCount };
+  return { invoiceId, insertedInvoice: !existingInvoice, insertedRevision: true, duplicate: false, itemCount };
 }
 
 export async function commitPGliteCanonicalEInvoiceCapture(
@@ -561,6 +562,11 @@ export async function commitPGliteCanonicalEInvoiceCapture(
       if (result.insertedRevision) insertedRevisionCount += 1;
       if (result.duplicate) observedDuplicateCount += 1;
       itemCount += result.itemCount;
+      await syncEInvoiceItemCategorizations(transaction, {
+        invoiceId: result.invoiceId,
+        commitId: admitted.commitId,
+        observedAt: snapshot.observedAt,
+      });
     }
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return Object.freeze({
