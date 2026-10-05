@@ -106,6 +106,23 @@ export type SpendingRecordPageRequest = Readonly<{
   limit?: number;
 }>;
 
+/** Change one purchase's category (ADR 0038). A null code clears the user lineage. */
+export type SpendingPurchaseCategoryRequest = Readonly<{
+  purchaseId: string;
+  knowledgeAt: number;
+  categoryCode: string | null;
+}>;
+
+export type SpendingPurchaseCategoryResult = Readonly<{
+  purchaseId: string;
+  /** The subject that received the User Assertions: the transaction, or every invoice item. */
+  subject: "transaction" | "items";
+  categoryCode: string | null;
+  baseKnowledgeAt: number;
+  /** Equal to baseKnowledgeAt when the request changed nothing. */
+  knowledgeAt: number;
+}>;
+
 export type SpendingRecordPageDto = Readonly<{
   schemaVersion: 1;
   knowledgeAt: number;

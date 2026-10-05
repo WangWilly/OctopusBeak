@@ -84,6 +84,7 @@ import type { PGliteFinancialPageClient } from "./pglite-financial-registry.ts";
 import type {
   SpendingCandidatePageRequest,
   SpendingPageActionRequest,
+  SpendingPurchaseCategoryRequest,
   SpendingRecordPageRequest,
 } from "../src/lib/spending/model.ts";
 import { projectFinancialBlock } from "./financial-page-block-loader.ts";
@@ -306,6 +307,9 @@ export function registerOctopusBeakIpc({
   });
   ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
     return pgliteFinancial.applySpendingPageAction(request);
+  });
+  ipcMain.handle("spending:set-purchase-category", async (_event, request: SpendingPurchaseCategoryRequest) => {
+    return pgliteFinancial.setSpendingPurchaseCategory(request);
   });
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
     financialPages.rankPairingCandidates(input),

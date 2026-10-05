@@ -24,6 +24,8 @@ import type {
   SpendingPairingCandidatesResult,
   SpendingLinkActionInput,
   SpendingPurchaseActionResult,
+  SpendingPurchaseCategoryRequest,
+  SpendingPurchaseCategoryResult,
 } from "../src/lib/spending/model.ts";
 import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
@@ -141,6 +143,7 @@ export type PGliteFinancialPageClient = Readonly<{
   loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
   loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
   applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
+  setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
   loadBlock(
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
     block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey,
@@ -305,6 +308,12 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
     case "financial.spending.denyCandidate":
     case "financial.spending.revokeLink":
       return args.length === 1 && plainRecord(args[0]);
+    case "financial.spending.setPurchaseCategory":
+      return args.length === 1 && plainRecord(args[0])
+        && stringField(args[0], "purchaseId")
+        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
+        && ((args[0] as Record<string, unknown>).categoryCode === null
+          || typeof (args[0] as Record<string, unknown>).categoryCode === "string");
     case "financial.source.admit":
       return args.length === 1 && sourceEvidenceShape(args[0]);
     case "financial.source.commit":
@@ -664,6 +673,9 @@ export function createPGliteFinancialRegistry(
     revokeLink(input) {
       return commands.revokeLink(input);
     },
+    setPurchaseCategory(input) {
+      return commands.setPurchaseCategory(input);
+    },
     sourceAdmit: (request, options) => source.admit(request, options),
     sourceCommit: (request, options) => source.commit(request, options),
     sourceCommitBatch: (request, options) => source.commitBatch(request, options),
@@ -702,6 +714,7 @@ async function invoke(
     case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
     case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
     case "financial.spending.revokeLink": return registry.revokeLink(args[0] as SpendingLinkActionInput);
+    case "financial.spending.setPurchaseCategory": return registry.setPurchaseCategory(args[0] as SpendingPurchaseCategoryRequest);
     case "financial.source.admit": return registry.sourceAdmit(args[0] as PGliteCanonicalSourceAdmissionRequest, options);
     case "financial.source.commit": return registry.sourceCommit(args[0] as PGliteCanonicalFinancialCommitRequest, options);
     case "financial.source.commitBatch": return registry.sourceCommitBatch(args[0] as PGliteCanonicalFinancialCommitBatchRequest, options);
@@ -839,6 +852,9 @@ export function createPGliteFinancialPageClient(
     },
     applySpendingPageAction(request: SpendingPageActionRequest) {
       return rpc.request("financial.spending.confirmCandidate", [{ __spendingPageAction: request }]) as Promise<SpendingPageActionResult>;
+    },
+    setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest) {
+      return rpc.registry.setPurchaseCategory(request);
     },
     async loadBlock(pageName: "overview" | "assets" | "liabilities" | "spending" | "automation", block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey, options?: { expectedVersion?: number }, automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto, automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot) {
       void options;
