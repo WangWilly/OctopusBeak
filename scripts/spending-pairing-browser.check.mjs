@@ -147,7 +147,8 @@ try {
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
   await page.locator("[data-purchase-report]").waitFor();
-  await page.locator("[data-open-pairing]").first().click();
+  await page.locator("[data-purchase-record][data-basis='invoice']").first().click();
+  await page.locator("[data-purchase-modal] [data-open-pairing]").click();
   await page.locator("[data-pairing-dialog]").waitFor();
   await page.locator("[data-pairing-dialog] .payment-option").first().waitFor();
   assert.equal(

@@ -52,6 +52,7 @@
   import MonthPaceChart from "./MonthPaceChart.svelte";
   import MonthTrendChart from "./MonthTrendChart.svelte";
   import SpendingMergeModal from "./SpendingMergeModal.svelte";
+  import SpendingPurchaseModal from "./SpendingPurchaseModal.svelte";
   import { moneyText, type ExactMoney } from "./money-text.ts";
 
   type PurchaseReport = PurchaseSpendingReport;
@@ -124,6 +125,7 @@
   let searchText = "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let mergeTab: "pending" | "merged" | null = null;
+  let detailRecord: PurchaseRecord | null = null;
   const reportDerivedCache = new WeakMap<object, {
     months: readonly string[];
     availableCurrencies: readonly string[];
@@ -240,6 +242,10 @@
     ? reading.caveat.kind === "may-include-duplicates"
     : report.totalStatus === "includes-pending-confirmation";
   $: filterActive = recordFilter.group !== null || recordFilter.query !== "";
+  $: liveRecords = visibleRecordsOf(report, activeMonthForReport(report, activeMonth), selectedDay);
+  $: detailShown = detailRecord ? currentRecordFor(liveRecords, detailRecord) : null;
+  $: detailIndex = detailShown ? liveRecords.findIndex((record) => record.purchaseId === detailShown.purchaseId) : -1;
+  $: detailPendingItem = detailShown ? pendingItemFor(detailShown) : null;
 
   function amountText(amount: ExactMoney | null, signed = false) {
     if (!amount) return $t.purchaseSpending.amountUnavailable;
@@ -339,6 +345,30 @@
     return [...totals.values()].sort((left, right) => left.currency.localeCompare(right.currency));
   }
 
+  function visibleRecordsOf(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+    return sourceReport.records
+      .filter((record) => (month === null || record.occurrence.value.startsWith(`${month}-`)) && (day === null || record.occurrence.value.startsWith(day)))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+  }
+
+  function currentRecordFor(records: readonly PurchaseRecord[], previous: PurchaseRecord) {
+    return records.find((record) => record.purchaseId === previous.purchaseId)
+      ?? records.find((record) => (previous.invoice && record.invoice?.invoiceId === previous.invoice.invoiceId)
+        || (previous.transaction && record.transaction?.transactionId === previous.transaction.transactionId))
+      ?? previous;
+  }
+
+  function pendingItemFor(record: PurchaseRecord) {
+    const items = $spendingState.candidateItems.filter((item) => record.candidateIds.includes(item.candidate.candidateId));
+    return items.find((item) => item.candidate.strength === "strong") ?? items[0] ?? null;
+  }
+
+  function stepPurchase(offset: -1 | 1) {
+    const next = liveRecords[detailIndex + offset];
+    if (next) detailRecord = next;
+  }
+
   function groupRecordsByDate(records: readonly PurchaseRecord[]) {
     const groups = new Map<string, PurchaseRecord[]>();
     for (const record of records) {
@@ -378,10 +408,15 @@
   }
 
   function openPurchase(record: PurchaseRecord) {
-    if (record.basis === "invoice" && record.invoice) spendingSession.openPairing(record);
+    detailRecord = record;
+  }
+
+  function openPairing(record: PurchaseRecord) {
+    spendingSession.openPairing(record);
   }
 
   function openMerge(tab: "pending" | "merged" = "pending") {
+    detailRecord = null;
     mergeTab = tab;
   }
 
@@ -728,19 +763,15 @@
             </header>
             {#each group.records as record (record.purchaseId)}
               {@const groups = recordGroups(record)}
-              {@const opensPairing = record.basis === "invoice" && Boolean(record.invoice)}
-              <svelte:element
-                this={opensPairing ? "button" : "div"}
-                type={opensPairing ? "button" : undefined}
+              <button
+                type="button"
                 class="purchase-record"
                 data-purchase-record
                 data-basis={record.basis}
                 data-transaction-id={record.transaction?.transactionId ?? ""}
                 data-possible-duplicate={record.possibleDuplicate}
-                data-open-pairing={opensPairing ? "" : undefined}
-                aria-label={opensPairing ? $t.spendingReview.openPurchase(recordLabel(record)) : undefined}
-                disabled={opensPairing ? busyAction !== null || isUpdating : undefined}
-                onclick={opensPairing ? () => openPurchase(record) : undefined}
+                aria-label={$t.spendingReview.openPurchase(recordLabel(record))}
+                onclick={() => openPurchase(record)}
               >
                 <span class="category-dot" style:background={SPENDING_GROUP_COLORS[groups[0] ?? "unclassified"]} aria-hidden="true"></span>
                 <span class="record-texts">
@@ -753,8 +784,8 @@
                   <span class="status-tag pending" data-status="pending"><GitMerge size={12} strokeWidth={2.2} aria-hidden="true" />{$t.spendingReview.statusPending}</span>
                 {/if}
                 <strong class="record-amount money" data-sensitive>{amountText(record.amount, record.basis === "refund")}</strong>
-                <span class="record-chevron" aria-hidden="true">{#if opensPairing}<ChevronRight size={16} strokeWidth={2} />{/if}</span>
-              </svelte:element>
+                <span class="record-chevron" aria-hidden="true"><ChevronRight size={16} strokeWidth={2} /></span>
+              </button>
             {/each}
           </section>
         {:else}
@@ -825,6 +856,23 @@
           <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null || isUpdating} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
+    {/if}
+
+    {#if detailShown && !mergeTab}
+      <SpendingPurchaseModal
+        record={detailShown}
+        pendingItem={detailPendingItem}
+        pendingTotal={pendingOverviewCount}
+        position={{ index: detailIndex, total: liveRecords.length }}
+        {review}
+        busy={busyAction !== null || isUpdating}
+        onStep={stepPurchase}
+        onDecide={(pair, action) => void decidePair(pair, action)}
+        onRevoke={(record) => void revokeLink(record)}
+        onOpenPairing={openPairing}
+        onOpenMerge={openMerge}
+        onClose={() => detailRecord = null}
+      />
     {/if}
 
     {#if mergeTab}
@@ -952,9 +1000,8 @@
   .day-totals .money { font-size: 13px; font-weight: 750; }
   .purchase-record { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: 62px; padding: 12px var(--space-5); border: 0; border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent); background: var(--surface); color: var(--fg); font: inherit; text-align: left; }
   .purchase-day-group .purchase-record:last-child { border-bottom: 0; }
-  button.purchase-record { cursor: pointer; }
-  button.purchase-record:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 4%, white); }
-  button.purchase-record:disabled { cursor: progress; }
+  .purchase-record { cursor: pointer; }
+  .purchase-record:hover { background: color-mix(in oklch, var(--accent) 4%, white); }
   .record-texts { display: grid; flex: 1; gap: 2px; min-width: 0; }
   .record-texts strong { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .record-texts > span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

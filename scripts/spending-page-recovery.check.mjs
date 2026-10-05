@@ -106,7 +106,8 @@ test("Spending page reads stop failed retries, recover stale versions and preser
             assert.equal(await page.evaluate(() => window.__refreshes), 2);
             assert.equal(await page.getByRole("alert").count(), 0);
           } else if (scenario === "pairing-live" || scenario === "action-race") {
-            await page.locator("[data-open-pairing]").click();
+            await page.locator("[data-purchase-record]").click();
+            await page.locator("[data-purchase-modal] [data-open-pairing]").click();
             await page.locator('input[name="spending-payment"]').check();
             if (scenario === "action-race") {
               await page.locator("[data-confirm-direct-pair]").click();
