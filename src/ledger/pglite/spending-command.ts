@@ -10,6 +10,8 @@ import {
   resolvePGliteSpendingCandidate,
   itemCategorizationRows,
   linkedPurchaseRecord,
+  pendingPairRef,
+  queryPendingSpendingCandidates,
   subtractInvoiceTotal,
   targetedPGlitePurchaseReportAfterRecognitionMutation,
   type PGliteSpendingReader,
@@ -36,6 +38,9 @@ import type {
   SpendingPageActionRequest,
   SpendingPageActionResult,
   SpendingSummaryDeltaLine,
+  SpendingCandidatePairRef,
+  SpendingStrongConfirmRequest,
+  SpendingStrongConfirmResult,
 } from "../../lib/spending/model.ts";
 import { createSpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
@@ -252,6 +257,7 @@ async function decide(
   input: SpendingDecisionInput,
   kind: "confirmed" | "denied",
   requireCurrent = false,
+  sharedCommit?: Readonly<{ id: Uint8Array; sequence: number }>,
 ): Promise<DecisionResult> {
   const pair = await requirePair(transaction, input);
   if (requireCurrent) await requireCurrentPair(transaction, input);
@@ -288,7 +294,7 @@ async function decide(
   if (kind === "denied" && (activeInvoice.rows.length || activeTransaction.rows.length)) throw new Error("An active spending link must be revoked before denial.");
   if (input.origin.kind !== "user") throw new Error("PGlite Spending user commands may only use user decision origin.");
   const userId = required(input.origin.userId, "Decision user");
-  const created = await commit(transaction, "user/local");
+  const created = sharedCommit ?? await commit(transaction, "user/local");
   const eventId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
   await txQuery(
     transaction,
@@ -905,6 +911,82 @@ export function revokePGliteSpendingLink(writer: PGliteSpendingWriter, input: Sp
   });
 }
 
+function strongConfirmPairs(input: SpendingStrongConfirmRequest): readonly SpendingCandidatePairRef[] {
+  if (!input || typeof input !== "object" || !Array.isArray(input.pairs) || input.pairs.length === 0)
+    throw new TypeError("Strong-match confirmation needs at least one shown pair.");
+  if (!Number.isSafeInteger(input.shownKnowledgeAt) || input.shownKnowledgeAt < 0)
+    throw new TypeError("Strong-match confirmation shown data version is invalid.");
+  const pairs = input.pairs.map((pair) => Object.freeze({
+    candidateId: required(pair?.candidateId, "Candidate id"),
+    invoiceIdentityId: idString(bytes(pair?.invoiceIdentityId, "Invoice identity")),
+    transactionIdentityId: idString(bytes(pair?.transactionIdentityId, "Transaction identity")),
+  }));
+  const keys = new Set(pairs.map((pair) => `${pair.invoiceIdentityId}/${pair.transactionIdentityId}`));
+  if (keys.size !== pairs.length) throw new TypeError("Strong-match confirmation lists a pair twice.");
+  return pairs;
+}
+
+/**
+ * Confirm every shown strong pair in one commit, or none. The strong set is
+ * recomputed inside the write transaction; a shown pair that is no longer
+ * pending or no longer strong rejects the whole batch without a write and
+ * returns the recomputed strong set. Other commits since the pairs were shown
+ * do not reject by themselves.
+ */
+export function confirmPGliteSpendingStrongCandidates(
+  writer: PGliteSpendingWriter,
+  input: SpendingStrongConfirmRequest,
+): Promise<SpendingStrongConfirmResult> {
+  const shown = strongConfirmPairs(input);
+  return writer.transaction(async (transaction) => {
+    const base = await latest(transaction);
+    if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
+    const pending = await queryPendingSpendingCandidates(transaction, base);
+    const strong = pending.pairs.filter((pair) => pair.strength === "strong");
+    const strongByPair = new Map(strong.map((pair) => [`${pair.invoiceId}/${pair.transactionId}`, pair]));
+    const conflicts = shown.filter((pair) => !strongByPair.has(`${pair.invoiceIdentityId}/${pair.transactionIdentityId}`));
+    if (conflicts.length > 0) {
+      return Object.freeze({
+        status: "conflict" as const,
+        knowledgeAt: base,
+        conflicts: Object.freeze(conflicts),
+        strongPairs: Object.freeze(strong.map(pendingPairRef)),
+      });
+    }
+    const created = await commit(transaction, "user/local");
+    const confirmed: (SpendingCandidatePairRef & Readonly<{ eventId: string }>)[] = [];
+    for (const shownPair of shown) {
+      const pair = strongByPair.get(`${shownPair.invoiceIdentityId}/${shownPair.transactionIdentityId}`)!;
+      const link = await decide(transaction, {
+        invoiceId: pair.invoiceId,
+        transactionId: pair.transactionId,
+        decisionKey: `spending/user/confirmed/${pair.candidateId}`,
+        origin: { kind: "user", userId: LOCAL_USER_ID },
+        evidenceKnowledgeSequence: base,
+        evidence: {
+          decisionOrigin: "strong-match-batch",
+          candidateKey: pair.candidateId,
+          algorithm: pair.algorithm,
+          algorithmVersion: pair.algorithmVersion,
+          similarityEvidence: pair.similarityEvidence,
+          strength: pair.strength,
+          reasons: pair.reasons,
+          shownKnowledgeAt: input.shownKnowledgeAt,
+        },
+      }, "confirmed", false, created) as SpendingDedupLinkView;
+      if (link.decisionCommitSequence !== created.sequence)
+        throw new Error("Strong-match confirmation reused an earlier decision.");
+      confirmed.push(Object.freeze({ ...pendingPairRef(pair), eventId: link.eventId }));
+    }
+    return Object.freeze({
+      status: "committed" as const,
+      baseKnowledgeAt: base,
+      knowledgeAt: created.sequence,
+      confirmed: Object.freeze(confirmed),
+    });
+  });
+}
+
 export const confirmSpendingCandidatePGlite = confirmPGliteSpendingCandidate;
 export const denySpendingCandidatePGlite = denyPGliteSpendingCandidate;
 export const revokeSpendingLinkPGlite = revokePGliteSpendingLink;
@@ -926,6 +1008,7 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     revokeLink: (input: SpendingLinkActionInput) => revokePGliteSpendingLink(writer, input),
     pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
     setPurchaseCategory: (input: SpendingPurchaseCategoryRequest) => setPGliteSpendingPurchaseCategory(writer, input),
+    confirmStrongCandidates: (input: SpendingStrongConfirmRequest) => confirmPGliteSpendingStrongCandidates(writer, input),
   });
 }
 
