@@ -5,6 +5,7 @@ const source = readFileSync(new URL("./PurchaseSpendingDashboard.svelte", import
 const paceSource = readFileSync(new URL("./MonthPaceChart.svelte", import.meta.url), "utf8");
 const trendSource = readFileSync(new URL("./MonthTrendChart.svelte", import.meta.url), "utf8");
 const mergeSource = readFileSync(new URL("./SpendingMergeModal.svelte", import.meta.url), "utf8");
+const detailSource = readFileSync(new URL("./SpendingPurchaseModal.svelte", import.meta.url), "utf8");
 const chartSources = [["pace", paceSource], ["trend", trendSource]] as const;
 const dictionarySource = readFileSync(new URL("../../i18n/i18n.ts", import.meta.url), "utf8");
 const matchingSource = readFileSync(new URL("../purchase-matching.ts", import.meta.url), "utf8");
@@ -95,6 +96,16 @@ assert.match(mergeSource, /review\.confirmStrong\(\)/);
 assert.match(mergeSource, /review\.showMergeLists\(\)/);
 assert.doesNotMatch(mergeSource, /可能重複|退款|possibleDuplicate|refund/);
 assert.doesNotMatch(mergeSource, /\$locale ===/);
+// Modals C/D: link differences and invoice items moved from the row into the
+// detail modal; no 可能重複 warning and no 帳單號碼相符 chip exist to show.
+assert.match(source, /<SpendingPurchaseModal/);
+assert.match(detailSource, /data-link-difference/);
+assert.match(detailSource, /data-item-details/);
+assert.match(detailSource, /review\.setPurchaseCategory\(record\.purchaseId, code\)/);
+assert.match(detailSource, /chooseCategory\(null\)/);
+assert.match(detailSource, /data-open-pairing onclick=\{\(\) => onOpenPairing\(record\)\}/);
+assert.doesNotMatch(detailSource, /可能重複|帳單號碼/);
+assert.doesNotMatch(detailSource, /\$locale ===/);
 assert.match(source, /data-total-candidate-count=\{pairingCandidateTotal\}/);
 assert.match(dictionarySource, /只看本月/);
 assert.match(dictionarySource, /查看全部/);
@@ -116,7 +127,7 @@ assert.doesNotMatch(matchingSource, /from ["']node:/u);
 assert.doesNotMatch(matchingSource, /from ["'][^"']*(?:canonical|server)[^"']*["']/u);
 
 const canonicalSource = readFileSync(new URL("./CanonicalSpendingDashboard.svelte", import.meta.url), "utf8");
-for (const [name, component] of [["purchase", source], ["canonical", canonicalSource], ["merge", mergeSource], ...chartSources] as const) {
+for (const [name, component] of [["purchase", source], ["canonical", canonicalSource], ["merge", mergeSource], ["detail", detailSource], ...chartSources] as const) {
   const markup = component.slice(component.indexOf("</script>"), component.indexOf("<style>"));
   for (const match of markup.matchAll(/\{[^{}]*(?:amountText|AmountText)\b[^{}]*\}/g)) {
     const before = markup.slice(0, match.index);
