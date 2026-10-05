@@ -11,6 +11,7 @@ import {
   itemCategorizationRows,
   linkedPurchaseRecord,
   pendingPairRef,
+  pendingPairInMonth,
   queryPendingSpendingCandidates,
   recordedAtIso,
   subtractInvoiceTotal,
@@ -948,7 +949,8 @@ export function confirmPGliteSpendingStrongCandidates(
     const base = await latest(transaction);
     if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
     const pending = await queryPendingSpendingCandidates(transaction, base);
-    const strong = pending.pairs.filter((pair) => pair.strength === "strong");
+    const month = input.month ?? null;
+    const strong = pending.pairs.filter((pair) => pair.strength === "strong" && (month === null || pendingPairInMonth(pair, month)));
     const strongByPair = new Map(strong.map((pair) => [`${pair.invoiceId}/${pair.transactionId}`, pair]));
     const conflicts = shown.filter((pair) => !strongByPair.has(`${pair.invoiceIdentityId}/${pair.transactionIdentityId}`));
     if (conflicts.length > 0) {
