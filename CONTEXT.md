@@ -412,11 +412,11 @@ A view of consumption organized by the purchase rather than bank posting, in whi
 _Avoid_: Booked outflow total, bank posting month as purchase month
 
 **Purchase category**:
-The query-time Personal Category reading of one purchase-basis Spending purchase (ADR 0038, proposed): a bank-only purchase reads its transaction's Current Categorization, an invoice-only purchase reads its invoice items as one agreed code, an exact split, or Unclassified, and a linked purchase prefers user over automatic and then transaction over items, splitting only when items reconcile exactly to the counted bank amount. It is never stored and never becomes a transaction Category Allocation.
+The query-time Personal Category reading of one purchase-basis Spending purchase (ADR 0038): a bank-only purchase reads its transaction's Current Categorization, an invoice-only purchase reads its invoice items as one agreed code, an exact split, or Unclassified, and a linked purchase prefers user over automatic and then transaction over items, splitting only when items reconcile exactly to the counted bank amount. It is never stored and never becomes a transaction Category Allocation.
 _Avoid_: Invoice category, stored purchase category, guessed split
 
 **Spending category group**:
-A presentation-only rollup (ADR 0038, proposed) of every Personal Category code into exactly one of the groups the Spending page shows (餐飲, 日常, 交通, 購物, 居家, 休閒, 其他). 其他 holds registered codes outside the six named groups and is distinct from the Unclassified presentation bucket.
+A presentation-only rollup (ADR 0038) of every Personal Category code into exactly one of the groups the Spending page shows (餐飲, 日常, 交通, 購物, 居家, 休閒, 其他). 其他 holds registered codes outside the six named groups and is distinct from the Unclassified presentation bucket.
 _Avoid_: Category code, taxonomy node, uncategorized
 
 **Spending deduplication link**:

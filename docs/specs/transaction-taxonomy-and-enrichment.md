@@ -3,7 +3,7 @@
 Accepted amendment: [ADR 0024](../adr/0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements. [Revised ADR 0009](../adr/0009-reset-legacy-financial-data-before-canonical-collection.md) replaces quarantine and delayed cleanup with a direct canonical-only reset for a product with no existing users.
 
 
-Proposed amendment: [ADR 0038](../adr/0038-invoice-item-categories-and-purchase-category.md) defines the storage, routing, origin, and query contract for invoice-item Personal Categories that §3 and §6 already name: the e-invoice item `(invoice_id, item sequence)` becomes a second subject of the Assertion spine and of §7's categorization family, routes gain `subject_kind = einvoice_item`, and purchase-basis Spending reads a query-time Purchase category. Transaction rules, including exact reconciliation before invoice items may categorize a transaction, are unchanged.
+Accepted amendment: [ADR 0038](../adr/0038-invoice-item-categories-and-purchase-category.md) defines the storage, routing, origin, and query contract for invoice-item Personal Categories that §3 and §6 already name: the e-invoice item `(invoice_id, item sequence)` becomes a second subject of the Assertion spine and of §7's categorization family, routes gain `subject_kind = einvoice_item`, and purchase-basis Spending reads a query-time Purchase category. Transaction rules, including exact reconciliation before invoice items may categorize a transaction, are unchanged.
 
 Status: implementation-ready planning specification
 
@@ -375,7 +375,7 @@ Implementation is acceptable only when automated tests prove:
 19. `receipt` is admitted only as a versioned Derived inflow fallback, is excluded from income totals, and is superseded by later precise evidence without changing the source financial fact;
 20. evidence precedence classifies explicit transfer, payment, withdrawal, investment, and fee semantics before applying the `purchase` outflow fallback, while generic 「轉帳」 and 「買入」 labels alone never establish internal transfer or investment funding; and
 21. asset-account non-investment outflows with no more specific evidence receive a versioned Derived `purchase` assertion and are covered by the gross-posted-outflow Spending policy, subject to the policy's normal status and completeness checks;
-22. (ADR 0038, once accepted) an item User Assertion survives an invoice revision that keeps the item's facts and is withdrawn, falling back to the routed Derived result, when the facts change or the item disappears;
+22. (ADR 0038) an item User Assertion survives an invoice revision that keeps the item's facts and is withdrawn, falling back to the routed Derived result, when the facts change or the item disappears;
 23. the Purchase category reads bank-only, invoice-only (single code, exact split, Unclassified, zero items, incomplete items, negative lines), and linked purchases as ADR 0038 defines, including user-before-automatic precedence across the transaction and its items and no split when items do not reconcile to the counted bank amount; and
 24. at most one active automatic route exists per subject kind, field, and scope, and clearing a user item categorization falls back to that route's result.
 
