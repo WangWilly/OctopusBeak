@@ -288,3 +288,50 @@ test("records carry only a ****dddd card mask, the institution, and the latest s
     await fixture.close();
   }
 });
+
+test("month insights find the largest purchase per currency and same-merchant totals by exact identity", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const first = await fixture.commitInvoice({ stableKey: "MA00000001:2026-09-03", date: "2026-09-03", sellerTaxId: "11111111", sellerName: "Seller A", items: [{ sequence: 1, name: "A", amount: "100" }] });
+    await fixture.commitInvoice({ stableKey: "MA00000002:2026-09-04", date: "2026-09-04", sellerTaxId: "11111111", sellerName: "Seller A 信義店", items: [{ sequence: 1, name: "A", amount: "250" }] });
+    const linkedInvoice = await fixture.commitInvoice({ stableKey: "MA00000003:2026-09-05", date: "2026-09-05", sellerTaxId: "11111111", sellerName: "Seller A", items: [{ sequence: 1, name: "A", amount: "80" }] });
+    const linkedPayment = await fixture.addTransaction({ amount: "81", date: "2026-09-05", description: "SELLER A" });
+    await fixture.link(linkedInvoice, linkedPayment);
+    await fixture.commitInvoice({ stableKey: "MA00000004:2026-09-06", date: "2026-09-06", sellerTaxId: "99999999", sellerName: "Seller A", items: [{ sequence: 1, name: "A", amount: "70" }] });
+    await fixture.commitInvoice({ stableKey: "MA00000005:2026-09-07", date: "2026-09-07", sellerTaxId: "22222222", sellerName: "Big Store", items: [{ sequence: 1, name: "TV", amount: "1000" }] });
+    await fixture.addTransaction({ amount: "60", date: "2026-09-08", description: "Seller A" });
+    const coffee = await fixture.addTransaction({ amount: "120", date: "2026-09-09", description: "STARBUCKS  Taipei" });
+    await fixture.addTransaction({ amount: "130", date: "2026-09-10", description: "starbucks taipei" });
+    await fixture.addTransaction({ amount: "140", date: "2026-09-11", description: "Starbucks Taipei 101" });
+    await fixture.addTransaction({ amount: "3050", scale: 2, currency: "USD", date: "2026-09-12", description: "Amazon" });
+    await fixture.addTransaction({ amount: "2000", date: "2026-10-01", description: "starbucks taipei" });
+    const query = createPGliteSpendingQuery(fixture.store);
+    const knowledgeAt = await fixture.knowledgeAt();
+
+    const insight = await query.monthInsight({ knowledgeAt, month: "2026-09" });
+    assert.deepEqual(insight.largestByCurrency.map((entry) => ({ amount: entry.amount, occurrence: entry.occurrence, label: entry.merchantLabel })), [
+      { amount: { coefficient: "1000", scale: 0, currency: "TWD" }, occurrence: "2026-09-07T13:45", label: "Big Store" },
+      { amount: { coefficient: "3050", scale: 2, currency: "USD" }, occurrence: "2026-09-12", label: "Amazon" },
+    ]);
+    assert.ok(insight.largestByCurrency[0]!.purchaseId.startsWith("invoice:"));
+
+    const seller = await query.merchantStats({ knowledgeAt, purchaseId: `invoice:${first}` });
+    assert.deepEqual({ merchant: seller.merchant, count: seller.count, totals: seller.totalsByCurrency, month: seller.month }, {
+      merchant: { kind: "seller-tax-id", taxId: "11111111" },
+      count: 3,
+      totals: [{ currency: "TWD", coefficient: "431", scale: 0, count: 3 }],
+      month: "2026-09",
+    }, "invoice-backed purchases match by tax ID, linked ones at their bank amount, never by seller name");
+
+    const bank = await query.merchantStats({ knowledgeAt, purchaseId: `transaction:${coffee}` });
+    assert.deepEqual({ merchant: bank.merchant, count: bank.count, totals: bank.totalsByCurrency }, {
+      merchant: { kind: "bank-description", description: "starbucks taipei" },
+      count: 2,
+      totals: [{ currency: "TWD", coefficient: "250", scale: 0, count: 2 }],
+    }, "bank-only purchases match by exact normalized description within the month");
+    await assert.rejects(query.merchantStats({ knowledgeAt, purchaseId: "transaction:00000000-0000-0000-0000-000000000000" }), /not a current purchase/u);
+    await assert.rejects(query.monthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-09" }), /data version is stale/u);
+  } finally {
+    await fixture.close();
+  }
+});

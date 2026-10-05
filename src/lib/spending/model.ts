@@ -10,6 +10,7 @@ import type {
   SpendingCandidateReasons,
   SpendingCandidateStrength,
 } from "../../ledger/canonical/spending-match-strength.ts";
+import type { MerchantIdentity } from "../../ledger/canonical/spending-month-insights.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
 export type {
@@ -257,6 +258,42 @@ export type SpendingMergeLogDto = Readonly<{
   /** Newest decision first. */
   entries: readonly SpendingMergeLogEntry[];
   nextCursor: string | null;
+}>;
+
+export type SpendingMonthInsightRequest = Readonly<{ knowledgeAt: number; month: string }>;
+
+/** 最高消費: the month's single largest purchase in one currency. */
+export type SpendingLargestPurchaseDto = Readonly<{
+  purchaseId: string;
+  amount: SpendingMoneyDto;
+  occurrence: string;
+  merchantLabel: string | null;
+}>;
+
+export type SpendingMonthInsightDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  month: string;
+  largestByCurrency: readonly SpendingLargestPurchaseDto[];
+}>;
+
+export type SpendingMerchantStatsRequest = Readonly<{ knowledgeAt: number; purchaseId: string }>;
+
+/** Exact merchant identity: seller tax ID for invoice-backed purchases, normalized bank text otherwise. */
+export type SpendingMerchantIdentity = MerchantIdentity;
+
+/** 本月同商家: purchases in the given purchase's month with the same merchant identity. */
+export type SpendingMerchantStatsDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  purchaseId: string;
+  month: string;
+  /** Null when the purchase has no merchant identity (no tax ID or blank description). */
+  merchant: SpendingMerchantIdentity | null;
+  merchantLabel: string | null;
+  /** Includes the given purchase. */
+  count: number;
+  totalsByCurrency: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[];
 }>;
 
 /** 合併所有高度相符: confirm exactly the strong pairs the user was shown. */
