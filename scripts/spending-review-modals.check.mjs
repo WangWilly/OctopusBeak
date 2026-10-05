@@ -122,7 +122,8 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
       await page.waitForFunction(() => window.__calls.strong.length === 2);
       const strong = await page.evaluate(() => window.__calls.strong);
       assert.equal(strong[0].pairs.length, 2);
-      assert.deepEqual(strong[1], { shownKnowledgeAt: 7, pairs: [strong[0].pairs[0]] }, "the second press confirms the recomputed set");
+      assert.match(strong[0].month ?? "", /^\d{4}-\d{2}$/u, "the batch carries the page's month");
+      assert.deepEqual(strong[1], { shownKnowledgeAt: 7, month: strong[0].month, pairs: [strong[0].pairs[0]] }, "the second press confirms the recomputed set in the same month");
 
       await page.locator("[data-merge-modal] [data-pair-id='cand-1'] [data-confirm-candidate]").click();
       await page.waitForFunction(() => window.__calls.actions.length === 1);

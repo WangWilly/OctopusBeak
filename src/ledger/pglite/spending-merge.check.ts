@@ -389,3 +389,37 @@ test("record search and the linked filter compose with day, category, and the ke
     await fixture.close();
   }
 });
+
+test("the merge overview and strong batch stay inside the selected month", async () => {
+  const seeded = await seed();
+  try {
+    const { fixture } = seeded;
+    const query = createPGliteSpendingQuery(fixture.store);
+    const knowledgeAt = await fixture.knowledgeAt();
+    const pairKey = (pair: { invoiceIdentityId: string; transactionIdentityId: string }) => `${pair.invoiceIdentityId}/${pair.transactionIdentityId}`;
+    const september = `${seeded.strongInvoice}/${seeded.strongPayment}`;
+    const crossMonth = `${seeded.crossMonthInvoice}/${seeded.crossMonthPayment}`;
+
+    const all = await query.pendingOverview({ knowledgeAt });
+    assert.ok(all.strongPairs.map(pairKey).includes(september), "without a month the overview stays global");
+    const october = await query.pendingOverview({ knowledgeAt, month: "2026-10" });
+    assert.ok(!october.strongPairs.map(pairKey).includes(september), "October does not offer September's strong pair");
+    assert.ok(october.pendingCount < all.pendingCount, "the October count leaves September-only pairs out");
+    assert.ok(october.strongPairs.every((pair) => pairKey(pair) === crossMonth), "October offers only pairs that touch October");
+
+    const crossed = await confirmPGliteSpendingStrongCandidates(fixture.store, {
+      shownKnowledgeAt: knowledgeAt, month: "2026-10", pairs: all.strongPairs.filter((pair) => pairKey(pair) === september),
+    });
+    assert.equal(crossed.status, "conflict", "a September pair cannot be merged from October");
+    assert.equal(await fixture.knowledgeAt(), knowledgeAt, "the rejected batch wrote nothing");
+
+    const septemberView = await query.pendingOverview({ knowledgeAt, month: "2026-09" });
+    assert.ok(septemberView.strongPairs.map(pairKey).includes(september));
+    const result = await confirmPGliteSpendingStrongCandidates(fixture.store, {
+      shownKnowledgeAt: knowledgeAt, month: "2026-09", pairs: septemberView.strongPairs.filter((pair) => pairKey(pair) === september),
+    });
+    assert.equal(result.status, "committed");
+  } finally {
+    await seeded.fixture.close();
+  }
+});

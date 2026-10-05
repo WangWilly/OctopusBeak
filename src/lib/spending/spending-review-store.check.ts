@@ -55,7 +55,7 @@ function harness(overrides: Partial<Record<keyof SpendingReviewTransport, (...ar
   return { store, calls, current: () => snapshot, refreshes: () => refreshes };
 }
 
-test("the global overview and month insight follow the page version and month", async () => {
+test("the month overview and month insight follow the page version and month", async () => {
   const { store, calls, current } = harness();
   store.sync(1, "2026-10");
   await settle();
@@ -66,11 +66,11 @@ test("the global overview and month insight follow the page version and month", 
   assert.equal(calls.overview!.length, 1, "an unchanged version and month do not reread");
   store.sync(1, "2026-09");
   await settle();
-  assert.equal(calls.overview!.length, 1, "the pending count is global, not per month");
+  assert.deepEqual(calls.overview!.map((input) => input.month), ["2026-10", "2026-09"], "the pending count follows the selected month");
   assert.deepEqual(calls.insight!.map((input) => input.month), ["2026-10", "2026-09"]);
   store.sync(2, "2026-09");
   await settle();
-  assert.deepEqual(calls.overview!.map((input) => input.knowledgeAt), [1, 2]);
+  assert.deepEqual(calls.overview!.map((input) => input.knowledgeAt), [1, 1, 2]);
 });
 
 test("a reply for an older version never replaces the newer overview", async () => {
@@ -97,8 +97,9 @@ test("merge lists load only while shown, page by page, and reload on a new versi
   await settle();
   assert.equal(current().pending.items.length, 50);
   assert.deepEqual(current().pending.meta, { total: 60, strong: 2 });
-  assert.equal(calls.candidates![0].month, null, "the merge modal lists every month");
+  assert.equal(calls.candidates![0].month, "2026-10", "the merge modal lists the selected month");
   assert.equal(calls.records![0].basis, "linked");
+  assert.equal(calls.records![0].month, "2026-10", "merged purchases follow the selected month");
   await store.morePending();
   assert.equal(current().pending.items.length, 60);
   assert.equal(current().pending.hasMore, false);
@@ -125,10 +126,10 @@ test("bulk merge confirms the shown strong set, refreshes on commit and re-offer
       return { status: "committed", baseKnowledgeAt: 4, knowledgeAt: 6, confirmed: [{ ...pairRef(1), eventId: "e" }] };
     },
   });
-  store.sync(4, null);
+  store.sync(4, "2026-10");
   await settle();
   await store.confirmStrong();
-  assert.deepEqual(calls.strong![0], { shownKnowledgeAt: 4, pairs: [pairRef(1), pairRef(2)] });
+  assert.deepEqual(calls.strong![0], { shownKnowledgeAt: 4, month: "2026-10", pairs: [pairRef(1), pairRef(2)] });
   assert.deepEqual(current().strongBatch, { kind: "conflict", offered: 1 });
   assert.equal(current().overview?.strongCount, 1);
   assert.equal(refreshes(), 0, "a rejected batch wrote nothing");

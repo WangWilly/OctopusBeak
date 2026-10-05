@@ -2758,7 +2758,7 @@ export async function queryPendingSpendingCandidates(
   return Object.freeze({ knowledgeAt, pairs: Object.freeze(pairs) });
 }
 
-function pendingPairInMonth(pair: PendingSpendingCandidate, month: string): boolean {
+export function pendingPairInMonth(pair: PendingSpendingCandidate, month: string): boolean {
   return pair.invoiceDate.startsWith(`${month}-`) || pair.transactionDate.startsWith(`${month}-`);
 }
 
@@ -2854,7 +2854,7 @@ export async function queryCurrentSpendingCandidatePage(
   });
 }
 
-/** The global pending count, strong set, and the invoice amounts at stake. */
+/** The pending count, strong set, and invoice amounts at stake, for one month or all of them. */
 export async function queryCurrentSpendingPendingOverview(
   reader: PGliteSpendingReader,
   request: SpendingPendingOverviewRequest,
@@ -2864,18 +2864,20 @@ export async function queryCurrentSpendingPendingOverview(
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("pending-overview", current);
   const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
+  const month = request.month ?? null;
+  const pairs = month === null ? pending.pairs : pending.pairs.filter((pair) => pendingPairInMonth(pair, month));
   const affected = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
   const countedInvoices = new Set<string>();
-  for (const pair of pending.pairs) {
+  for (const pair of pairs) {
     if (countedInvoices.has(pair.invoiceId)) continue;
     countedInvoices.add(pair.invoiceId);
     addTotal(affected, pair.amount);
   }
-  const strong = pending.pairs.filter((pair) => pair.strength === "strong");
+  const strong = pairs.filter((pair) => pair.strength === "strong");
   return Object.freeze({
     schemaVersion: 1,
     knowledgeAt: current,
-    pendingCount: pending.pairs.length,
+    pendingCount: pairs.length,
     strongCount: strong.length,
     affectedByCurrency: Object.freeze(totals(affected).map((total) => Object.freeze(total))),
     strongPairs: Object.freeze(strong.map(pendingPairRef)),

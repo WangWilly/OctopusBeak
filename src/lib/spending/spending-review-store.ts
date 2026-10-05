@@ -199,7 +199,7 @@ export function createSpendingReviewStore(options: Readonly<{
     const requestId = `spending-review-${storeId}-${++candidateRequest}`;
     activeCandidateRequests.add(requestId);
     try {
-      const page = await transport.loadCandidatePage({ knowledgeAt, month: null, offset: offset ?? 0, limit: PAGE_SIZE }, requestId);
+      const page = await transport.loadCandidatePage({ knowledgeAt, month, offset: offset ?? 0, limit: PAGE_SIZE }, requestId);
       if ("stale" in page) return page;
       return { items: page.items, next: page.nextOffset, meta: { total: page.totalCandidateCount, strong: page.strongCandidateCount } };
     } finally {
@@ -207,7 +207,7 @@ export function createSpendingReviewStore(options: Readonly<{
     }
   }, (next) => publish({ pending: next }));
   const merged = new PagedResource<SpendingPurchaseRecordView, null, string>(reader, async (knowledgeAt, cursor) => {
-    const page = await transport.loadRecordPage({ knowledgeAt, basis: "linked", cursor, limit: PAGE_SIZE });
+    const page = await transport.loadRecordPage({ knowledgeAt, month, basis: "linked", cursor, limit: PAGE_SIZE });
     if ("stale" in page) return page;
     return { items: page.records, next: page.nextCursor, meta: null };
   }, (next) => publish({ merged: next }));
@@ -228,7 +228,7 @@ export function createSpendingReviewStore(options: Readonly<{
   async function loadOverview(knowledgeAt: number) {
     const token = ++overviewToken;
     try {
-      const overview = await reader.read(knowledgeAt, () => transport.loadPendingOverview({ knowledgeAt }));
+      const overview = await reader.read(knowledgeAt, () => transport.loadPendingOverview({ knowledgeAt, month }));
       if (overview && token === overviewToken) publish({ overview });
     } catch {
       // The top-bar count is advisory; the merge modal shows its own list errors.
@@ -275,10 +275,12 @@ export function createSpendingReviewStore(options: Readonly<{
       if (!versionChanged && !monthChanged) return;
       reader.observe(knowledgeAt);
       publish({ knowledgeAt });
-      if (versionChanged) {
-        void loadOverview(knowledgeAt);
-        loadVisible(knowledgeAt);
+      if (monthChanged) {
+        pending.reset();
+        merged.reset();
       }
+      void loadOverview(knowledgeAt);
+      loadVisible(knowledgeAt);
       if (nextMonth) void loadMonthInsight(knowledgeAt, nextMonth);
       else publish({ monthInsight: null });
     },
@@ -314,7 +316,7 @@ export function createSpendingReviewStore(options: Readonly<{
       if (!overview || overview.strongPairs.length === 0 || value.strongBatch.kind === "busy" || disposed) return;
       publish({ strongBatch: { kind: "busy" } });
       try {
-        const result = await transport.confirmStrongCandidates({ shownKnowledgeAt: overview.knowledgeAt, pairs: overview.strongPairs });
+        const result = await transport.confirmStrongCandidates({ shownKnowledgeAt: overview.knowledgeAt, month, pairs: overview.strongPairs });
         if (disposed) return;
         if (result.status === "conflict") {
           publish({
