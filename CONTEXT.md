@@ -396,7 +396,7 @@ An immutable, atomically versioned analytical distribution of one Financial Tran
 _Avoid_: Multiple category labels, transaction amount correction, partial allocation, guessed remainder
 
 **Current categorization**:
-The mutually exclusive current analytical treatment of one Financial Transaction as one Personal Category, one complete Category Allocation, or absence. An active complete User Categorization takes precedence over the one Source or Derived result selected by Automatic Enrichment Authority Routing; switching between single and allocated modes supersedes the prior mode atomically, and clearing the user lineage returns to the currently routed automatic result. A failed or partial Import Run preserves the prior automatic categorization, while a successful complete-scope run that proves prior reconciliation unsupported withdraws the whole allocation and never retains a partial component or guesses a single category from it.
+The mutually exclusive current analytical treatment of one Financial Transaction, or one e-invoice item under ADR 0038, as one Personal Category, one complete Category Allocation, or absence. An active complete User Categorization takes precedence over the one Source or Derived result selected by Automatic Enrichment Authority Routing; switching between single and allocated modes supersedes the prior mode atomically, and clearing the user lineage returns to the currently routed automatic result. A failed or partial Import Run preserves the prior automatic categorization, while a successful complete-scope run that proves prior reconciliation unsupported withdraws the whole allocation and never retains a partial component or guesses a single category from it.
 _Avoid_: Simultaneous single and allocated category, partial split, run-failure withdrawal, implicit category fallback
 
 **Relation-backed categorization**:
@@ -404,12 +404,20 @@ A versioned Derived Categorization for a refund or reversal that inherits an ori
 _Avoid_: Source category copy, fuzzy refund match, proportional allocation guess, orphaned inherited category
 
 **Unclassified presentation bucket**:
-The query-time sum of transactions that satisfy a report's independent financial inclusion rules but have no Current Categorization at the requested Canonical Knowledge Point. It is never a taxonomy code or Assertion target, remains unavailable for user selection, participates in report totals and classification-coverage metrics, and receives the whole transaction amount when no complete Category Allocation exists.
+The query-time sum of transactions, or purchase-basis Spending purchases whose Purchase category is absent, that satisfy a report's independent financial inclusion rules but have no categorization at the requested Canonical Knowledge Point. It is never a taxonomy code or Assertion target, remains unavailable for user selection, participates in report totals and classification-coverage metrics, and receives the whole transaction amount when no complete Category Allocation exists.
 _Avoid_: `other` category, persisted unknown, dropped amount, partial-allocation remainder
 
 **Purchase-basis spending**:
 A view of consumption organized by the purchase rather than bank posting, in which unmatched invoices also contribute spending and an evidence-linked or user-confirmed invoice/payment pair contributes only the bank debit amount in its currency while source financial records retain their own identities, dates, and amounts. Source-proven purchase refunds reduce spending in the refund occurrence period without requiring a link to the original purchase; a missing purchase or refund occurrence date may use an explicitly labeled bank posting date, replaced when a reliable occurrence date becomes available.
 _Avoid_: Booked outflow total, bank posting month as purchase month
+
+**Purchase category**:
+The query-time Personal Category reading of one purchase-basis Spending purchase (ADR 0038, proposed): a bank-only purchase reads its transaction's Current Categorization, an invoice-only purchase reads its invoice items as one agreed code, an exact split, or Unclassified, and a linked purchase prefers user over automatic and then transaction over items, splitting only when items reconcile exactly to the counted bank amount. It is never stored and never becomes a transaction Category Allocation.
+_Avoid_: Invoice category, stored purchase category, guessed split
+
+**Spending category group**:
+A presentation-only rollup (ADR 0038, proposed) of every Personal Category code into exactly one of the groups the Spending page shows (餐飲, 日常, 交通, 購物, 居家, 休閒, 其他). 其他 holds registered codes outside the six named groups and is distinct from the Unclassified presentation bucket.
+_Avoid_: Category code, taxonomy node, uncategorized
 
 **Spending deduplication link**:
 A revocable, traceable report-level association identifying one invoice and one payment transaction as evidence of the same purchase in the first version, established automatically only by reliable source evidence or otherwise by explicit user confirmation; similarity alone cannot establish it. The user-facing action that explicitly confirms this association is called **Pairing** (「配對」). The association follows legitimate revisions of the same source identity without renewed confirmation, preventing duplicate recognition under the spending policy without merging canonical identities or rewriting source financial facts.
