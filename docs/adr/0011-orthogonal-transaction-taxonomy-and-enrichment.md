@@ -1,5 +1,7 @@
 # Orthogonal transaction taxonomy and enrichment
 
+Proposed amendment: [ADR 0038](./0038-invoice-item-categories-and-purchase-category.md) adds the e-invoice item as a second categorization subject of the Assertion spine and defines the query-time Purchase category for purchase-basis Spending.
+
 Accepted amendment: [ADR 0024](./0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements.
 
 
