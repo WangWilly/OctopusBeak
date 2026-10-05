@@ -69,11 +69,13 @@ import {
   calendarDayDistance,
   exactMoneyEqual,
   exactMoneyKey,
-  createSpendingManualPairingIndex,
-  rankSpendingManualPaymentCandidates,
   type SpendingMatchingInvoice,
   type SpendingMatchingTransaction,
 } from "../../lib/spending/purchase-matching.ts";
+import {
+  createSpendingManualPairingIndex,
+  rankSpendingManualPaymentCandidates,
+} from "../canonical/spending-manual-pairing.ts";
 import type {
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
