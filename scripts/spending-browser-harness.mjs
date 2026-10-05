@@ -113,9 +113,7 @@ export function createSpendingDesktopApi(
   { spendingLoad } = {},
 ) {
   let version = { ...currentDataVersion };
-  const spendingPage = model && typeof model === "object" && ("canonical" in model || "purchaseReport" in model)
-    ? model
-    : { canonical: model };
+  const spendingPage = model;
   const loadSpending = spendingLoad ?? (async () => spendingPage);
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
@@ -255,9 +253,7 @@ function installSpendingDesktopApi(model) {
     credentialGroups: [],
   };
   let version = { version: 0, stale: false, changedAt: null };
-  const spendingPage = model && typeof model === "object" && ("canonical" in model || "purchaseReport" in model)
-    ? model
-    : { canonical: model };
+  const spendingPage = model;
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   window.__spendingLoadCount = 0;
