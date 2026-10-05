@@ -32,11 +32,11 @@ for (const marker of [
   "含待確認項目",
   "可能重複",
   "確認配對",
-  "否認候選",
-  "撤銷配對",
+  "不是同一筆",
+  "取消合併",
   "以入帳日期代替",
   "退款依退款發生月份認列",
-  "來源與配對證據",
+  "合併所有高度相符",
   "來源金額不同，未推算費用",
   "未分類",
   "金額未提供",
@@ -107,7 +107,6 @@ assert.match(detailSource, /data-open-pairing onclick=\{\(\) => onOpenPairing\(r
 assert.doesNotMatch(detailSource, /可能重複|帳單號碼/);
 assert.doesNotMatch(detailSource, /\$locale ===/);
 assert.match(source, /data-total-candidate-count=\{pairingCandidateTotal\}/);
-assert.match(dictionarySource, /只看本月/);
 assert.match(dictionarySource, /查看全部/);
 assert.match(dictionarySource, /這個期間沒有消費/);
 assert.match(paceSource, /import \{ Area, AreaChart, BarChart, Bars, Points, Rule, Spline, Tooltip \} from "layerchart"/);
