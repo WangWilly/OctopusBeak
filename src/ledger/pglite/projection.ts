@@ -385,13 +385,101 @@ async function refreshCurrentFields(
   );
 }
 
+/**
+ * Reselects the active user categorization of each affected transaction into
+ * the generation.  A single category follows the transaction; an allocation is
+ * kept only while its booked total still equals the current revision's amount,
+ * so a revision that changes the amount drops the allocation instead of
+ * exposing a partial one.
+ */
+export async function refreshGenerationTransactionCategorizations(
+  transaction: PGliteTransaction,
+  generationId: number,
+  affected: readonly Uint8Array[],
+  projectionCommitId: Uint8Array,
+): Promise<void> {
+  if (affected.length === 0) return;
+  await query(
+    transaction,
+    `DELETE FROM projection_generation_transaction_categorizations
+      WHERE generation_id = ?
+        AND transaction_id IN (${inList(affected)})`,
+    [generationId, ...affected],
+  );
+  await query(
+    transaction,
+    `WITH active_user AS (
+       SELECT assertion.assertion_id, assertion.transaction_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY assertion.transaction_id
+                ORDER BY created.commit_sequence DESC, encode(assertion.assertion_id, 'hex') DESC
+              ) AS rank
+         FROM assertions assertion
+         JOIN canonical_commits created ON created.commit_id = assertion.created_commit_id
+        WHERE assertion.target_kind = 'transaction'
+          AND assertion.field_name = 'category'
+          AND assertion.origin = 'user'
+          AND assertion.transaction_id IN (${inList(affected)})
+          AND COALESCE((
+            SELECT transition.event_kind
+              FROM assertion_transitions transition
+              JOIN canonical_commits event_commit ON event_commit.commit_id = transition.commit_id
+             WHERE transition.assertion_id = assertion.assertion_id
+             ORDER BY event_commit.commit_sequence DESC, encode(transition.event_id, 'hex') DESC
+             LIMIT 1
+          ), 'observed') NOT IN ('withdrawn', 'superseded')
+     ), selected AS (
+       SELECT active_user.assertion_id, active_user.transaction_id,
+              generation_row.revision_id, revision.amount_coefficient, revision.amount_scale, revision.currency
+         FROM active_user
+         JOIN projection_generation_transactions generation_row
+           ON generation_row.generation_id = ? AND generation_row.transaction_id = active_user.transaction_id
+         JOIN transaction_revisions revision ON revision.revision_id = generation_row.revision_id
+        WHERE active_user.rank = 1
+     )
+     INSERT INTO projection_generation_transaction_categorizations(
+       generation_id, transaction_id, revision_id, assertion_id, mode, category_code,
+       taxonomy_id, taxonomy_version, allocation_set_id, component_ordinal,
+       amount_coefficient, amount_scale, amount_currency,
+       booked_coefficient, booked_scale, booked_currency,
+       conversion_evidence_kind, conversion_evidence_id, conversion_from_currency,
+       conversion_to_currency, conversion_evidence_json, conversion_id, projection_commit_id
+     )
+     SELECT ?::bigint, selected.transaction_id, selected.revision_id, value.assertion_id, 'single', value.category_code,
+            value.taxonomy_id, value.taxonomy_version, NULL, 0,
+            NULL, NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, NULL, NULL, ?::bytea
+       FROM selected
+       JOIN transaction_categorization_values value ON value.assertion_id = selected.assertion_id
+      WHERE value.mode = 'single'
+     UNION ALL
+     SELECT ?::bigint, selected.transaction_id, selected.revision_id, value.assertion_id, 'allocated', component.category_code,
+            component.taxonomy_id, component.taxonomy_version, component.allocation_set_id, component.component_ordinal,
+            component.amount_coefficient, component.amount_scale, component.amount_currency,
+            component.booked_coefficient, component.booked_scale, component.booked_currency,
+            component.conversion_evidence_kind, component.conversion_evidence_id, component.conversion_from_currency,
+            component.conversion_to_currency, component.conversion_evidence_json, component.conversion_id, ?::bytea
+       FROM selected
+       JOIN transaction_categorization_values value ON value.assertion_id = selected.assertion_id
+       JOIN category_allocation_sets allocation ON allocation.allocation_set_id = value.allocation_set_id
+       JOIN category_allocation_components component ON component.allocation_set_id = allocation.allocation_set_id
+      WHERE value.mode = 'allocated'
+        AND allocation.booked_currency = selected.currency
+        AND allocation.booked_coefficient::numeric * power(10::numeric, -allocation.booked_scale)
+          = selected.amount_coefficient::numeric * power(10::numeric, -selected.amount_scale)`,
+    [...affected, generationId, generationId, projectionCommitId, generationId, projectionCommitId],
+  );
+}
+
 async function syncGenerationTransactions(
   transaction: PGliteTransaction,
   generationId: number,
   affected: readonly Uint8Array[],
+  projectionCommitId: Uint8Array,
 ): Promise<void> {
   if (affected.length === 0) return;
   for (const table of [
+    "projection_generation_transaction_categorizations",
     "projection_generation_transaction_fields",
     "projection_generation_transaction_selection",
     "projection_generation_transactions",
@@ -438,6 +526,7 @@ async function syncGenerationTransactions(
       WHERE field.transaction_id IN (${inList(affected)})`,
     [generationId, ...affected],
   );
+  await refreshGenerationTransactionCategorizations(transaction, generationId, affected, projectionCommitId);
 }
 
 async function updateGenerationKnowledge(
@@ -1093,7 +1182,7 @@ export async function refreshPGliteCurrentProjectionInTransaction(
   const affectedAccounts = await resolveAffectedAccountIds(transaction, context, affected);
   await refreshCurrentTransactions(transaction, context, affected);
   await refreshCurrentFields(transaction, context, affected);
-  await syncGenerationTransactions(transaction, generationId, affected);
+  await syncGenerationTransactions(transaction, generationId, affected, context.commitId);
   await refreshCurrentAccountsAndBalances(transaction, generationId, context, affectedAccounts);
   const current = await readCurrentTransactions(
     transaction,

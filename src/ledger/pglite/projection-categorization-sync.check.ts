@@ -180,3 +180,87 @@ test("a capture that re-observes a user-categorized transaction keeps its genera
     await store.close();
   }
 });
+
+async function writeUserAllocation(store: PGliteStore, current: Current, components: readonly { code: string; amount: string }[]): Promise<Uint8Array> {
+  const commitId = uuid();
+  const sequence = Number((await store.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits")).rows[0]!.value);
+  await store.query(
+    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, $2, $3, 'user/local', 'user_assertion')",
+    [commitId, sequence, Date.now() * 1000],
+  );
+  const assertionId = uuid();
+  const allocationSetId = uuid();
+  await store.query(
+    `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+     VALUES ($1, $2, 'category', 'transaction', 'user', 'local-user', 'user/categorization/v1', NULL, '__allocation__', $3)`,
+    [assertionId, current.transactionId, commitId],
+  );
+  await store.query(
+    `INSERT INTO assertion_transitions(event_id, assertion_id, transaction_id, field_name, capture_id, scope_id, run_id, enrichment_run_id, coordinate_id, user_id, commit_id, event_kind)
+     VALUES ($1, $2, $3, 'category', NULL, NULL, NULL, NULL, NULL, 'local-user', $4, 'observed')`,
+    [uuid(), assertionId, current.transactionId, commitId],
+  );
+  await store.query(
+    "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES ($1, NULL, NULL, NULL, NULL, $2)",
+    [assertionId, commitId],
+  );
+  const total = components.reduce((sum, component) => sum + BigInt(component.amount), 0n).toString();
+  await store.query(
+    `INSERT INTO category_allocation_sets(allocation_set_id, assertion_id, transaction_id, booked_coefficient, booked_scale, booked_currency, created_commit_id)
+     VALUES ($1, $2, $3, $4, 0, 'TWD', $5)`,
+    [allocationSetId, assertionId, current.transactionId, total, commitId],
+  );
+  for (const [index, component] of components.entries()) {
+    await store.query(
+      `INSERT INTO category_allocation_components(
+         allocation_set_id, component_ordinal, taxonomy_id, taxonomy_version, taxonomy_dimension, category_code,
+         amount_coefficient, amount_scale, amount_currency, booked_coefficient, booked_scale, booked_currency
+       ) VALUES ($1, $2, 'transaction-taxonomy', 'v1', 'category', $3, $4, 0, 'TWD', $4, 0, 'TWD')`,
+      [allocationSetId, index + 1, component.code, component.amount],
+    );
+  }
+  await store.query(
+    `INSERT INTO transaction_categorization_values(assertion_id, transaction_id, mode, category_code, allocation_set_id, taxonomy_id, taxonomy_version, taxonomy_dimension, created_commit_id)
+     VALUES ($1, $2, 'allocated', NULL, $3, 'transaction-taxonomy', 'v1', 'category', $4)`,
+    [assertionId, current.transactionId, allocationSetId, commitId],
+  );
+  for (const [index, component] of components.entries()) {
+    await store.query(
+      `INSERT INTO projection_generation_transaction_categorizations(
+         generation_id, transaction_id, revision_id, assertion_id, mode, category_code, taxonomy_id, taxonomy_version,
+         allocation_set_id, component_ordinal, amount_coefficient, amount_scale, amount_currency,
+         booked_coefficient, booked_scale, booked_currency, projection_commit_id
+       ) VALUES ($1, $2, $3, $4, 'allocated', $5, 'transaction-taxonomy', 'v1', $6, $7, $8, 0, 'TWD', $8, 0, 'TWD', $9)`,
+      [current.generationId, current.transactionId, current.revisionId, assertionId, component.code, allocationSetId, index + 1, component.amount, commitId],
+    );
+  }
+  return assertionId;
+}
+
+test("re-sync keeps a reconciling user allocation and drops one that does not reconcile", async () => {
+  for (const [components, expected, label] of [
+    [[{ code: "food_and_groceries", amount: "60" }, { code: "household_goods_and_services", amount: "40" }], ["food_and_groceries", "household_goods_and_services"], "a reconciling allocation survives re-observation"],
+    [[{ code: "food_and_groceries", amount: "60" }, { code: "household_goods_and_services", amount: "30" }], [], "an allocation whose booked total differs from the revision amount is not exposed"],
+  ] as const) {
+    const database = await PGlite.create();
+    const store = new PGliteStore(database);
+    try {
+      await applyPgliteBaseline(database);
+      await commitPGliteCanonicalDepositCapture(store, cathayDepositCapture("categorization-sync-first", "100"));
+      const current = await currentTransaction(store);
+      const assertionId = await writeUserAllocation(store, current, components);
+      assert.equal((await generationCategorizations(store, current.transactionId)).length, 2);
+
+      await commitPGliteCanonicalDepositCapture(store, cathayDepositCapture("categorization-sync-recurrent", "100"));
+
+      assert.deepEqual((await generationCategorizations(store, current.transactionId)).map((row) => row.categoryCode), expected, label);
+      const lineage = await store.query<{ event_kind: string }>(
+        "SELECT event_kind FROM assertion_transitions WHERE assertion_id = $1 ORDER BY event_kind",
+        [assertionId],
+      );
+      assert.deepEqual(lineage.rows.map((row) => row.event_kind), ["observed"], "the user lineage itself is untouched");
+    } finally {
+      await store.close();
+    }
+  }
+});
