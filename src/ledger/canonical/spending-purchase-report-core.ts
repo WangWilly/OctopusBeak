@@ -19,6 +19,12 @@ import {
   invoiceMatchingMoney,
   transactionPurchaseDate,
 } from "../../lib/spending/purchase-matching.ts";
+import {
+  readPurchaseCategory,
+  type PurchaseCategory,
+  type PurchaseCategoryItem,
+  type PurchaseItemCategorization,
+} from "./purchase-category.ts";
 
 export type PurchaseOccurrence = Readonly<{
   value: string;
@@ -46,7 +52,14 @@ export type PurchaseRecord = Readonly<{
     exactAmountEqual: boolean;
   }>;
   refund: SpendingRefundView | null;
+  /** The query-time Purchase category (ADR 0038); never stored. */
+  category: PurchaseCategory;
+  /** Current categorization of each invoice item, by item sequence. */
+  itemCategorizations: readonly PurchaseItemCategorization[];
 }>;
+
+/** Current item categorizations keyed by canonical invoice id. */
+export type PurchaseItemCategorizationIndex = ReadonlyMap<string, readonly PurchaseItemCategorization[]>;
 
 export type PurchaseReport = Readonly<{
   status: "ok";
@@ -112,6 +125,31 @@ function dateAllowed(value: string, request: PurchaseReportRequest): boolean {
 }
 
 const invoiceMoney = invoiceMatchingMoney;
+
+export function purchaseCategoryItems(invoice: CanonicalEInvoiceView): readonly PurchaseCategoryItem[] {
+  return invoice.revision.items.map((item) => ({
+    sequence: item.sequence,
+    completeness: item.completeness,
+    amount: item.amount ? { coefficient: item.amount.coefficient, scale: item.amount.scale, currency: item.amount.currency } : null,
+  }));
+}
+
+/** Reads one record's Purchase category from its views. */
+export function purchaseRecordCategory(input: Readonly<{
+  basis: PurchaseRecord["basis"];
+  amount: ExactMoney | null;
+  invoice: CanonicalEInvoiceView | null;
+  transaction: CanonicalSpendingTransaction | null;
+  itemCategorizations: readonly PurchaseItemCategorization[];
+}>): PurchaseCategory {
+  return readPurchaseCategory({
+    basis: input.basis,
+    countedAmount: input.amount,
+    transaction: input.transaction ? { categorization: input.transaction.categorization } : null,
+    invoice: input.invoice ? { total: invoiceMoney(input.invoice), items: purchaseCategoryItems(input.invoice) } : null,
+    itemCategorizations: input.itemCategorizations,
+  });
+}
 
 function invoiceOccurrence(invoice: CanonicalEInvoiceView): PurchaseOccurrence {
   return {
@@ -213,8 +251,11 @@ export function composePurchaseReport(input: Readonly<{
   invoices: readonly CanonicalEInvoiceView[];
   transactions: readonly CanonicalSpendingTransaction[];
   recognition: SpendingRecognitionSnapshot;
+  itemCategorizations?: PurchaseItemCategorizationIndex;
 }>): PurchaseReport {
   const { request, knowledgeAt, invoices, transactions, recognition } = input;
+  const itemCategorizationsOf = (invoiceId: string): readonly PurchaseItemCategorization[] =>
+    input.itemCategorizations?.get(invoiceId) ?? [];
   const normalizedInvoices = invoices.map((item) => ({
     ...item,
     invoiceId: canonicalPurchaseUuid(item.invoiceId, "Purchase invoice identity"),
@@ -246,6 +287,7 @@ export function composePurchaseReport(input: Readonly<{
     const occurrence = invoiceOccurrence(invoice);
     if (!dateAllowed(occurrence.value, request)) continue;
     const invoiceAmount = invoiceMoney(invoice);
+    const itemCategorizations = itemCategorizationsOf(invoice.invoiceId);
     records.push({
       purchaseId: `link:${link.eventId}`,
       basis: "linked",
@@ -265,6 +307,8 @@ export function composePurchaseReport(input: Readonly<{
         exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, transaction.amount) : false,
       },
       refund: null,
+      category: purchaseRecordCategory({ basis: "linked", amount: transaction.amount, invoice, transaction, itemCategorizations }),
+      itemCategorizations,
     });
   }
   for (const invoice of invoiceById.values()) {
@@ -272,6 +316,7 @@ export function composePurchaseReport(input: Readonly<{
     const occurrence = invoiceOccurrence(invoice);
     if (!dateAllowed(occurrence.value, request)) continue;
     const candidates = candidatesByInvoice.get(invoice.invoiceId) ?? [];
+    const itemCategorizations = itemCategorizationsOf(invoice.invoiceId);
     records.push({
       purchaseId: `invoice:${invoice.invoiceId}`,
       basis: "invoice",
@@ -286,6 +331,8 @@ export function composePurchaseReport(input: Readonly<{
       link: null,
       difference: null,
       refund: null,
+      category: purchaseRecordCategory({ basis: "invoice", amount: invoiceMoney(invoice), invoice, transaction: null, itemCategorizations }),
+      itemCategorizations,
     });
   }
   const normalizedRefunds = recognition.refunds.map((refund) => ({
@@ -312,6 +359,8 @@ export function composePurchaseReport(input: Readonly<{
       link: null,
       difference: null,
       refund: null,
+      category: purchaseRecordCategory({ basis: "bank-transaction", amount: transaction.amount, invoice: null, transaction, itemCategorizations: [] }),
+      itemCategorizations: [],
     });
   }
   for (const refund of normalizedRefunds) {
@@ -333,6 +382,8 @@ export function composePurchaseReport(input: Readonly<{
       link: null,
       difference: null,
       refund,
+      category: { mode: "absent" },
+      itemCategorizations: [],
     });
   }
   const totals = new Map<string, { value: Decimal; count: number }>();

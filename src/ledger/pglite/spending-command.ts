@@ -8,11 +8,14 @@ import {
   queryPGliteSpendingDirectPair,
   querySpendingRecognition,
   resolvePGliteSpendingCandidate,
+  itemCategorizationRows,
   linkedPurchaseRecord,
   subtractInvoiceTotal,
   targetedPGlitePurchaseReportAfterRecognitionMutation,
   type PGliteSpendingReader,
 } from "./spending-query.ts";
+import { purchaseRecordCategory } from "../canonical/spending-purchase-report-core.ts";
+import type { PurchaseCategory, PurchaseItemCategorization } from "../canonical/purchase-category.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -476,6 +479,7 @@ function targetedPairingPatch(
     invoice: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["invoice"];
     payment: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["payment"];
     recognition: Awaited<ReturnType<typeof queryPGliteSpendingRecognitionPair>>;
+    itemCategorizations: readonly PurchaseItemCategorization[];
     candidateId?: string;
     mutation: "confirmed" | "denied";
   }>,
@@ -506,7 +510,7 @@ function targetedPairingPatch(
       : Object.freeze([]);
   const recordOperations: SpendingPurchaseReportPatch["recordOperations"] = mutation === "confirmed"
     ? (() => {
-        const linked = linkedPurchaseRecord(invoice, payment, active!, context.candidateIds.filter((id) => id !== (candidateId ?? context.actedCandidateId)));
+        const linked = linkedPurchaseRecord(invoice, payment, active!, context.candidateIds.filter((id) => id !== (candidateId ?? context.actedCandidateId)), input.itemCategorizations);
         const tieOffset = context.sameDatePurchaseIds.findIndex((id) => id.localeCompare(linked.purchaseId) > 0);
         const index = context.recordInsertIndex + (tieOffset < 0 ? context.sameDatePurchaseIds.length : tieOffset);
         return Object.freeze([
@@ -615,6 +619,7 @@ async function candidateAction(
         context, beforeKnowledgeAt: knowledgeAt, totalsByCurrency: input.totalsByCurrency!,
         invoiceId: resolved.candidate.invoiceId, transactionId: resolved.candidate.transactionId,
         invoice: resolved.invoice, payment: resolved.transaction, recognition,
+        itemCategorizations: (await itemCategorizationRows(transaction, [resolved.candidate.invoiceId])).get(resolved.candidate.invoiceId) ?? [],
         candidateId, mutation: kind,
       });
     }
@@ -703,10 +708,7 @@ export async function applyPGliteSpendingPageAction(
         input.transactionIdentityId,
         current,
       );
-      summaryBefore = Object.freeze([
-        summaryLine(invoice.revision.occurrence.value, invoice.revision.total),
-        summaryLine(payment.effectiveOn, payment.amount),
-      ]);
+      summaryBefore = await standaloneSummaryLines(transaction, invoice, payment);
       await confirmPGliteSpendingDedupLink(transaction, {
         invoiceIdentityId: input.invoiceIdentityId,
         transactionIdentityId: input.transactionIdentityId,
@@ -731,10 +733,7 @@ export async function applyPGliteSpendingPageAction(
           input.transactionIdentityId,
           current,
         );
-        summaryBefore = Object.freeze([
-          summaryLine(invoice.revision.occurrence.value, invoice.revision.total),
-          summaryLine(payment.effectiveOn, payment.amount),
-        ]);
+        summaryBefore = await standaloneSummaryLines(transaction, invoice, payment);
       }
       const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
         invoiceId: resolved.candidate.invoiceId,
@@ -792,8 +791,9 @@ export async function applyPGliteSpendingPageAction(
 function summaryLine(
   date: string,
   amount: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
+  category: PurchaseCategory,
 ): SpendingSummaryDeltaLine {
-  return Object.freeze({ date: date.slice(0, 10), amount });
+  return Object.freeze({ date: date.slice(0, 10), amount, category });
 }
 
 function summaryLineFromRecord(
@@ -801,7 +801,25 @@ function summaryLineFromRecord(
 ): SpendingSummaryDeltaLine {
   return summaryLine(record.occurrence.value, record.amount
     ? { currency: record.amount.currency, coefficient: record.amount.coefficient, scale: record.amount.scale }
-    : null);
+    : null, record.category);
+}
+
+/** The invoice-only and bank-only lines a direct confirmation replaces, with their Purchase categories. */
+async function standaloneSummaryLines(
+  transaction: PGliteTransaction,
+  invoice: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["invoice"],
+  payment: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["payment"],
+): Promise<readonly SpendingSummaryDeltaLine[]> {
+  const itemCategorizations = (await itemCategorizationRows(transaction, [invoice.invoiceId])).get(invoice.invoiceId) ?? [];
+  const invoiceAmount = invoice.revision.total
+    ? { currency: invoice.revision.total.currency, coefficient: invoice.revision.total.coefficient, scale: invoice.revision.total.scale }
+    : null;
+  return Object.freeze([
+    summaryLine(invoice.revision.occurrence.value, invoiceAmount,
+      purchaseRecordCategory({ basis: "invoice", amount: invoiceAmount, invoice, transaction: null, itemCategorizations })),
+    summaryLine(payment.effectiveOn, payment.amount,
+      purchaseRecordCategory({ basis: "bank-transaction", amount: payment.amount, invoice: null, transaction: payment, itemCategorizations: [] })),
+  ]);
 }
 
 export function confirmPGliteSpendingCandidate(writer: PGliteSpendingWriter, input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult> {
@@ -840,6 +858,7 @@ export function confirmPGliteSpendingCandidate(writer: PGliteSpendingWriter, inp
         totalsByCurrency: input.totalsByCurrency,
         invoiceId: input.invoiceIdentityId, transactionId: input.transactionIdentityId,
         invoice, payment, recognition, mutation: "confirmed",
+        itemCategorizations: (await itemCategorizationRows(transaction, [input.invoiceIdentityId])).get(input.invoiceIdentityId) ?? [],
       });
     }
     const before = await currentSnapshotForAction(writer, transaction, false);
