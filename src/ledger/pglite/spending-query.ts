@@ -43,7 +43,11 @@ import {
   type PurchaseItemCategorization,
 } from "../canonical/purchase-category.ts";
 import type { PurchaseLineage } from "../canonical/spending-purchase-contracts.ts";
-import type { PurchaseReport } from "../canonical/spending-purchase-report-core.ts";
+import {
+  cardMaskLastFour,
+  type PurchasePaymentSourceIndex,
+  type PurchaseReport,
+} from "../canonical/spending-purchase-report-core.ts";
 import type {
   CurrentSpendingQueryResult,
   HistoricalSpendingQueryResult,
@@ -1812,6 +1816,7 @@ export function linkedPurchaseRecord(
     refund: null,
     category: purchaseRecordCategory({ basis: "linked", amount: payment.amount, invoice, transaction: payment, itemCategorizations }),
     itemCategorizations,
+    paymentSource: null,
   };
 }
 
@@ -1896,6 +1901,7 @@ function standaloneInvoiceRecord(
     refund: null,
     category: purchaseRecordCategory({ basis: "invoice", amount: total, invoice: linked.invoice, transaction: null, itemCategorizations: linked.itemCategorizations }),
     itemCategorizations: linked.itemCategorizations,
+    paymentSource: null,
   };
 }
 
@@ -1921,6 +1927,7 @@ function standaloneTransactionRecord(
     refund: null,
     category: purchaseRecordCategory({ basis: "bank-transaction", amount: linked.transaction.amount, invoice: null, transaction: linked.transaction, itemCategorizations: [] }),
     itemCategorizations: [],
+    paymentSource: linked.paymentSource,
   };
 }
 
@@ -2112,6 +2119,55 @@ function validSpendingDate(value: string): boolean {
   if (!ISO_DATE.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+/**
+ * Bank-side display facts for the given transactions: the card mask reduced
+ * to `****dddd`, and the cycle of the latest statement revision that lists the
+ * transaction. Account numbers and instrument keys never leave this query.
+ */
+export async function queryPaymentSourceFacts(
+  reader: PGliteSpendingReader,
+  transactionIds: readonly string[],
+): Promise<PurchasePaymentSourceIndex> {
+  if (transactionIds.length === 0) return new Map();
+  const result = rows(await pgliteQuery<Row>(reader,
+    `SELECT current_row.transaction_id, instrument.card_mask, statement.cycle_start, statement.cycle_end
+       FROM current_transactions current_row
+       LEFT JOIN LATERAL (
+         SELECT detail.instrument_id
+           FROM canonical_credit_card_transaction_details detail
+          WHERE detail.revision_id = current_row.revision_id
+          ORDER BY detail.source_record_id
+          LIMIT 1
+       ) detail ON TRUE
+       LEFT JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = detail.instrument_id
+       LEFT JOIN LATERAL (
+         SELECT revision.cycle_start, revision.cycle_end
+           FROM canonical_credit_card_statement_memberships membership
+           JOIN canonical_credit_card_statement_revisions revision
+             ON revision.statement_revision_id = membership.statement_revision_id
+          WHERE membership.transaction_id = current_row.transaction_id
+            AND revision.revision_number = (
+              SELECT MAX(latest.revision_number)
+                FROM canonical_credit_card_statement_revisions latest
+               WHERE latest.statement_id = revision.statement_id)
+          ORDER BY revision.cycle_end DESC
+          LIMIT 1
+       ) statement ON TRUE
+      WHERE current_row.transaction_id IN (${transactionIds.map(() => "?").join(",")})`,
+    transactionIds.map((value) => bytes(value, "Payment source transaction")),
+  ));
+  return new Map(result.map((row) => [
+    idString(row.transaction_id, "Payment source transaction"),
+    Object.freeze({
+      cardMask: cardMaskLastFour(nullableString(row.card_mask)),
+      billingPeriod: row.cycle_start === null || row.cycle_start === undefined ? null : Object.freeze({
+        start: stringValue(row.cycle_start, "Statement cycle start"),
+        end: stringValue(row.cycle_end, "Statement cycle end"),
+      }),
+    }),
+  ]));
 }
 
 function sqlUuid(expression: string): string {
@@ -2489,11 +2545,12 @@ export async function queryCurrentSpendingRecordPage(
   const visibleRows = selected.slice(0, limit);
   const invoiceIds = [...new Set(visibleRows.flatMap((row) => row.invoice_id ? [idString(row.invoice_id, "Spending page invoice")] : []))];
   const transactionIds = [...new Set(visibleRows.flatMap((row) => row.transaction_id ? [idString(row.transaction_id, "Spending page transaction")] : []))];
-  const [invoiceViews, spending, recognition, itemCategorizations] = await Promise.all([
+  const [invoiceViews, spending, recognition, itemCategorizations, paymentSources] = await Promise.all([
     invoices(reader, current, false, undefined, invoiceIds),
     querySpendingReport(reader, "current", current, null, { transactionIds }),
     querySpendingRecognition(reader, { knowledgeAt: current, invoiceIds, transactionIds }),
     itemCategorizationRows(reader, invoiceIds),
+    queryPaymentSourceFacts(reader, transactionIds),
   ]);
   const composed = composePurchaseReport({
     request: { kind: "current" },
@@ -2502,6 +2559,7 @@ export async function queryCurrentSpendingRecordPage(
     transactions: spending.includedTransactions,
     recognition,
     itemCategorizations,
+    paymentSources,
   });
   const recordById = new Map(composed.records.map((record) => [record.purchaseId, record]));
   const pageRecords = visibleRows.flatMap((row) => {
@@ -2544,7 +2602,7 @@ export async function queryCurrentSpendingActionRecords(
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new Error("Spending action records data version is stale; reload Spending.");
-  const [invoiceViews, spending, recognition, itemCategorizations] = await Promise.all([
+  const [invoiceViews, spending, recognition, itemCategorizations, paymentSources] = await Promise.all([
     invoices(reader, current, false, undefined, [request.invoiceIdentityId]),
     querySpendingReport(reader, "current", current, null, {
       transactionIds: [request.transactionIdentityId],
@@ -2555,6 +2613,7 @@ export async function queryCurrentSpendingActionRecords(
       transactionIds: [request.transactionIdentityId],
     }),
     itemCategorizationRows(reader, [request.invoiceIdentityId]),
+    queryPaymentSourceFacts(reader, [request.transactionIdentityId]),
   ]);
   const composed = composePurchaseReport({
     request: { kind: "current" },
@@ -2563,6 +2622,7 @@ export async function queryCurrentSpendingActionRecords(
     transactions: spending.includedTransactions,
     recognition,
     itemCategorizations,
+    paymentSources,
   });
   return Object.freeze(composed.records.filter((record) =>
     record.invoice?.invoiceId === request.invoiceIdentityId ||
@@ -2674,11 +2734,12 @@ export async function queryCurrentSpendingCandidatePage(
   const candidatePage = candidates.slice(offset, offset + limit);
   const invoiceIds = [...new Set(candidatePage.map((item) => item.invoiceId))];
   const transactionIds = [...new Set(candidatePage.map((item) => item.transactionId))];
-  const [invoiceViews, spending, recognition, itemCategorizations] = await Promise.all([
+  const [invoiceViews, spending, recognition, itemCategorizations, paymentSources] = await Promise.all([
     invoices(reader, current, false, undefined, invoiceIds),
     querySpendingReport(reader, "current", current, null, { transactionIds }),
     querySpendingRecognition(reader, { knowledgeAt: current, invoiceIds, transactionIds }),
     itemCategorizationRows(reader, invoiceIds),
+    queryPaymentSourceFacts(reader, transactionIds),
   ]);
   const report = composePurchaseReport({
     request: { kind: "current" },
@@ -2686,6 +2747,7 @@ export async function queryCurrentSpendingCandidatePage(
     invoices: invoiceViews,
     transactions: spending.includedTransactions,
     itemCategorizations,
+    paymentSources,
     recognition: Object.freeze({
       knowledgeAt: current,
       candidates: Object.freeze([]),
@@ -3196,7 +3258,8 @@ export async function queryCurrentSpendingMergeLog(
             invoice.currency AS invoice_currency,
             payment.description AS payment_description, payment.amount_coefficient AS payment_amount_coefficient,
             payment.amount_scale AS payment_amount_scale, payment.currency AS payment_currency,
-            COALESCE(detail.consume_date, detail.posting_date, payment.effective_on) AS payment_date
+            COALESCE(detail.consume_date, detail.posting_date, payment.effective_on) AS payment_date,
+            payment_scope.integration_namespace AS payment_institution
        FROM spending_dedup_decision_events event
        JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
        LEFT JOIN LATERAL (
@@ -3210,6 +3273,9 @@ export async function queryCurrentSpendingMergeLog(
        ) invoice ON TRUE
        LEFT JOIN current_transactions current_row ON current_row.transaction_id = event.transaction_id
        LEFT JOIN transaction_revisions payment ON payment.revision_id = current_row.revision_id
+       LEFT JOIN financial_transactions payment_identity ON payment_identity.transaction_id = event.transaction_id
+       LEFT JOIN financial_accounts payment_account ON payment_account.account_id = payment_identity.account_id
+       LEFT JOIN source_connections payment_scope ON payment_scope.source_connection_id = payment_account.source_connection_id
        LEFT JOIN LATERAL (
          SELECT consume_date, posting_date
            FROM canonical_credit_card_transaction_details detail
@@ -3224,6 +3290,8 @@ export async function queryCurrentSpendingMergeLog(
     params,
   ));
   const visible = result.slice(0, limit);
+  const paymentSources = await queryPaymentSourceFacts(reader, [...new Set(visible.flatMap((row) =>
+    row.payment_amount_coefficient === null || row.payment_amount_coefficient === undefined ? [] : [idString(row.transaction_id, "Merge log transaction")]))]);
   const entries = visible.map((row) => Object.freeze({
     eventId: idString(row.event_id, "Merge log event"),
     kind: stringValue(row.event_kind, "Merge log event kind") as SpendingMergeLogEntry["kind"],
@@ -3242,6 +3310,8 @@ export async function queryCurrentSpendingMergeLog(
       description: nullableString(row.payment_description),
       date: stringValue(row.payment_date, "Merge log payment date"),
       amount: exactMoney(row, "payment_amount_coefficient", "payment_amount_scale", "payment_currency"),
+      institution: stringValue(row.payment_institution, "Merge log payment institution"),
+      cardMask: paymentSources.get(idString(row.transaction_id, "Merge log transaction"))?.cardMask ?? null,
     }),
   }));
   const last = entries.at(-1);

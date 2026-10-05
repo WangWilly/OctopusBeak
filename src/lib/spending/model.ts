@@ -245,6 +245,9 @@ export type SpendingMergeLogEntry = Readonly<{
     description: string | null;
     date: string;
     amount: SpendingMoneyDto;
+    institution: string;
+    /** Only ever `****dddd`. */
+    cardMask: string | null;
   }> | null;
 }>;
 

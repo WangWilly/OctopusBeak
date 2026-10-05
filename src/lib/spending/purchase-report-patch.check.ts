@@ -27,6 +27,7 @@ function record(purchaseId: string, possibleDuplicate = false): SpendingPurchase
     refund: null,
     category: { mode: "absent" },
     itemCategorizations: [],
+    paymentSource: null,
   };
 }
 
