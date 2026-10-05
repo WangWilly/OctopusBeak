@@ -3056,7 +3056,6 @@ function spendingInvoiceDto(invoice: CanonicalEInvoiceView): SpendingInvoiceDto 
       unitPrice: item.unitPrice === null ? null : Number(item.unitPrice.coefficient) / 10 ** item.unitPrice.scale,
       paidAmount: item.amount === null ? null : Number(item.amount.coefficient) / 10 ** item.amount.scale,
       productName: item.name,
-      category: "other" as const,
       completeness: item.completeness,
     })),
     revisionKind: invoice.revision.revisionKind === "revised" ? "revised" : "issued",
