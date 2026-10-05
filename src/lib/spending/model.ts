@@ -3,7 +3,7 @@ import {
   type SpendingCategory,
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
-import type { PurchaseCategory } from "../../ledger/canonical/purchase-category.ts";
+import type { PurchaseCategory } from "./purchase-category-view.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
