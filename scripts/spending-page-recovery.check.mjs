@@ -15,6 +15,7 @@ const model = {
       currencies: ["TWD"], totalsByCurrency: [total],
       monthTotals: [{ month: "2026-10", recordCount: 1, activeDayCount: 1, pendingCandidateCount: null, totalsByCurrency: [total] }],
       dayTotals: [{ month: "2026-10", date: "2026-10-01", recordCount: 1, totalsByCurrency: [total] }],
+      categoryTotalsByMonth: [{ month: "2026-10", currency: "TWD", categoryCode: null, coefficient: "100", scale: 0, count: 1 }],
     },
   }, invoices: [],
 };
@@ -63,9 +64,10 @@ function installReads({ model, scenario }) {
     const purchase = {
       purchaseId: "transaction:fixture", basis: pairingScenario ? "invoice" : "bank-transaction", amount: { currency: "TWD", coefficient: "100", scale: 0 },
       occurrence: { value: "2026-10-01", precision: "date", timeZone: "Asia/Taipei", basis: "purchase-date" },
-      description, invoice: pairingScenario ? { invoiceId: "invoice-fixture", revision: { seller: { name: description }, occurrence: { value: "2026-10-01", precision: "date", timeZone: "Asia/Taipei", basis: "purchase-date" }, total: { currency: "TWD", coefficient: "100", scale: 0 }, items: [] } } : null,
+      description, invoice: pairingScenario ? { invoiceId: "invoice-fixture", revision: { invoiceNumber: "AB-00000001", seller: { name: description }, occurrence: { value: "2026-10-01", precision: "date", timeZone: "Asia/Taipei", basis: "purchase-date" }, total: { currency: "TWD", coefficient: "100", scale: 0 }, items: [] } } : null,
       transaction: { transactionId: "fixture", effectiveOn: "2026-10-01", consumeDate: null, postingDate: null, description, amount: { currency: "TWD", coefficient: "100", scale: 0 }, stream: "checking", effectiveDateBasis: null },
       items: [], possibleDuplicate: false, candidateIds: [], link: null, difference: null, refund: null,
+      category: { mode: "absent" }, itemCategorizations: [], paymentSource: null,
     };
     window.__purchase = purchase;
     return { schemaVersion: 1, knowledgeAt: request.knowledgeAt, month: request.month, day: request.day ?? null, records: [purchase], nextCursor: null };

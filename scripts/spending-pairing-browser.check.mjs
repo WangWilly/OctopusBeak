@@ -41,6 +41,9 @@ function transactionRecord(index) {
     link: null,
     difference: null,
     refund: null,
+    category: { mode: "absent" },
+    itemCategorizations: [],
+    paymentSource: null,
   };
 }
 
@@ -55,6 +58,7 @@ const invoiceRecordValue = {
   invoice: {
     invoiceId,
     revision: {
+      invoiceNumber: "AB-00000001",
       seller: { name: "Fixture invoice" },
       occurrence: occurrence("2026-07-02"),
       total: invoiceAmount,
@@ -68,6 +72,9 @@ const invoiceRecordValue = {
   link: null,
   difference: null,
   refund: null,
+  category: { mode: "absent" },
+  itemCategorizations: [],
+  paymentSource: null,
 };
 
 const candidateValues = Array.from({ length: 60 }, (_, index) => {
