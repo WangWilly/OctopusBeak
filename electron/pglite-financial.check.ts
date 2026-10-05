@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { fixtureInvoice } from "../src/ledger/pglite/spending-test-fixture.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
@@ -643,4 +644,61 @@ test("financial operation names stay allowlisted and transport failures are type
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"), true);
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("financial.source.commit"), true);
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("SELECT 1" as PGliteFinancialOperation), false);
+});
+
+test("a purchase category change publishes a new Spending version that reads the user category", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-category-check-"));
+  const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
+    execArgv: ["--experimental-strip-types"],
+    workerData: { dataDir },
+  });
+  const client = createPGliteViewWorkerClient(worker);
+  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
+  const snapshots: Array<{ purchaseReport: { knowledgeAt: number; summary?: { monthTotals: readonly { month: string }[] } } }> = [];
+  let stop: (() => Promise<void>) | null = null;
+  try {
+    stop = await client.subscribe("financial.spending.current", {}, (rows) => {
+      snapshots.push(rows[0] as (typeof snapshots)[number]);
+    });
+    await waitFor(() => snapshots.length >= 1);
+    await client.financial.registry.einvoiceCommit({
+      captureId: "category-change-invoice",
+      sourceConnectionKey: "sha256:category-change-connection",
+      identityEpoch: "sha256:category-change-epoch",
+      subjectDigest: "sha256:category-change-subject",
+      observedAt: "2026-09-02T00:00:00Z",
+      scope: {
+        startDate: "2026-09-01",
+        endDate: "2026-09-30",
+        kind: "bounded-range",
+        completeness: "complete-range",
+        invoiceCompleteness: "complete",
+        itemCompleteness: "complete",
+        absenceAuthority: "comparable-complete-range",
+      },
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { fixture: "category-change" } }],
+      invoices: [fixtureInvoice({ stableKey: "AB33333333:2026-09-03", sellerName: "全聯實業股份有限公司", items: [{ sequence: 1, name: "鮮奶", amount: "90" }] })],
+    } as never);
+    await waitFor(() => (snapshots.at(-1)?.purchaseReport.summary?.monthTotals.length ?? 0) > 0);
+    const before = snapshots.at(-1)!.purchaseReport;
+    const month = before.summary!.monthTotals[0]!.month;
+    const recordsAt = async (knowledgeAt: number) => {
+      const read = await page.loadSpendingRecordPage({ knowledgeAt, month, limit: 50 });
+      assert.ok(!("stale" in read), "the record page must read the published version");
+      return read.records;
+    };
+    const records = await recordsAt(before.knowledgeAt);
+    const purchase = records.find((record) => record.basis === "invoice");
+    assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
+    const result = await page.setSpendingPurchaseCategory({ purchaseId: purchase.purchaseId, knowledgeAt: before.knowledgeAt, categoryCode: "dining" });
+    assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
+    await waitFor(() => (snapshots.at(-1)?.purchaseReport.knowledgeAt ?? 0) >= result.knowledgeAt);
+    const after = (await recordsAt(result.knowledgeAt)).find((record) => record.purchaseId === purchase.purchaseId);
+    assert.equal(after?.category.mode, "single");
+    assert.equal(after?.category.mode === "single" ? after.category.categoryCode : null, "dining");
+  } finally {
+    await stop?.();
+    await worker.terminate();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });

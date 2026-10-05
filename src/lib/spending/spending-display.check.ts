@@ -11,6 +11,7 @@ import {
   reasonTexts,
   recordCategoryText,
   recordGroups,
+  recordCategoryDetailText,
   recordMerchant,
 } from "./spending-display.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
@@ -122,4 +123,12 @@ test("purchase titles read like the design: the store for merged purchases, the 
   assert.equal(recordMerchant(zh, record({ basis: "invoice", description: "明口小吃店", invoice: { revision: { seller: { name: "明口小吃店", taxId: "1" } } }, transaction: null })), "明口小吃店");
   assert.equal(recordMerchant(zh, record()), "全聯福利中心");
   assert.equal(recordMerchant(zh, record({ description: "全聯實業股份有限公司頭城青雲分公司" })), "全聯實業", "card descriptions drop the legal-entity tail too");
+});
+
+test("the detail category names the exact code so a change inside one group is visible", () => {
+  const single = (categoryCode: string) => record({ category: { mode: "single", origin: "user", subject: "items", categoryCode, labels: null, taxonomyId: "transaction-taxonomy", taxonomyVersion: "v1" } });
+  assert.equal(recordCategoryDetailText(zh, single("food_and_groceries")), `日常 · ${personalCategoryLabels("food_and_groceries")?.zhHant}`);
+  assert.notEqual(recordCategoryDetailText(zh, single("food_and_groceries")), recordCategoryDetailText(zh, single("personal_and_family_care")));
+  assert.equal(recordCategoryDetailText(zh, single("transportation")), "交通", "a code named like its group is not repeated");
+  assert.equal(recordCategoryDetailText(zh, record()), recordCategoryText(zh, record()));
 });
