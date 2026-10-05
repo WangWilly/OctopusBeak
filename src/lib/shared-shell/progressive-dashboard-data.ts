@@ -3,7 +3,6 @@ import type { AutomationPageModel } from "../automation/types.ts";
 import type { LiabilitiesPageDto } from "../liabilities/types.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
 import type { SpendingPurchaseReportView } from "../spending/purchase-matching.ts";
-import type { SpendingPageDto } from "../spending/model.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
 import { selectAutomationBlockModel } from "../automation/runtime-sync.ts";
@@ -153,15 +152,4 @@ export function resolveAutomationBlock(
   pendingActions?: readonly AutomationActionToken[],
 ): AutomationPageModel {
   return selectAutomationBlockModel(fallback, block?.automation, runtime, pendingActions);
-}
-
-/**
- * Empty is a real product state. A block may legitimately have zero totals;
- * do not turn that into a fabricated available purchase view while the full
- * route DTO is still loading.
- */
-export function isEmptySpendingPage(page: SpendingPageDto): boolean {
-  return page.canonical.availability === "empty"
-    && (page.purchaseReport?.records.length ?? 0) === 0
-    && (page.invoices?.length ?? 0) === 0;
 }

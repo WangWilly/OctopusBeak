@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowRight, ChevronLeft, ChevronRight, GitMerge, Link, Search, TrendingUp } from "@lucide/svelte";
+  import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
@@ -29,6 +29,7 @@
   import {
     projectMonthEnd,
     readCategoryBreakdown,
+    readSpendingCards,
     readSpendingMonth,
     readSpendingTrend,
     readTrendStats,
@@ -126,6 +127,7 @@
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let mergeTab: "pending" | "merged" | null = null;
   let detailRecord: PurchaseRecord | null = null;
+  let basisOpen = false;
   const reportDerivedCache = new WeakMap<object, {
     months: readonly string[];
     availableCurrencies: readonly string[];
@@ -219,6 +221,8 @@
       ? report.summary.dayTotals.find((summary) => summary.date === selectedDay)?.recordCount ?? 0
       : monthSummary?.recordCount ?? 0
     : 0;
+  $: cards = report.summary ? readSpendingCards(report.summary, { month: activeMonth, today }) : null;
+  $: monthEmpty = cards?.monthPanel === "empty";
   $: reading = report.summary ? readSpendingMonth(report.summary, { month: activeMonth, today }) : null;
   $: current = reading?.byCurrency.get(selectedCurrency as CurrencyCode) ?? null;
   $: monthFigure = current?.total ?? visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
@@ -226,7 +230,7 @@
     ? readSpendingTrend(report.summary, { currency: selectedCurrency, selectedMonth: reading.month, today })
     : [];
   $: trendStats = readTrendStats(trend);
-  $: projection = reading && current ? projectMonthEnd(current, reading.span) : null;
+  $: projection = reading && current && !monthEmpty ? projectMonthEnd(current, reading.span) : null;
   $: breakdown = reading && report.summary
     ? readCategoryBreakdown(report.summary.categoryTotalsByMonth, { month: reading.month, currency: selectedCurrency })
     : [];
@@ -450,8 +454,8 @@
   eyebrow={$t.spending.eyebrow}
   title={$t.spending.title}
   sideLabel={$t.purchaseSpending.monthlyTotal}
-  sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "--"}
-  sideSub={pendingAffectsTotal ? $t.purchaseSpending.includesPending : $t.purchaseSpending.purchaseBasisTotal}
+  sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "—"}
+  sideSub={monthEmpty ? $t.purchaseSpending.noSpendingData : pendingAffectsTotal ? $t.purchaseSpending.includesPending : $t.purchaseSpending.purchaseBasisTotal}
 >
   <svelte:fragment slot="topbar-leading">
     {#if report.summary}
@@ -486,7 +490,7 @@
               <button type="button" class="icon-button" aria-label={$t.spendingInsight.previousMonth} disabled={!previousMonthKey} onclick={() => previousMonthKey && chooseMonth(previousMonthKey)}>
                 <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
               </button>
-              <h2 id="spending-month-title">{activeMonth ? monthText(activeMonth, $locale) : $t.purchaseSpending.allMonths}</h2>
+              <h2 id="spending-month-title">{cards ? monthText(cards.month, $locale) : activeMonth ? monthText(activeMonth, $locale) : $t.purchaseSpending.allMonths}</h2>
               <button type="button" class="icon-button" aria-label={$t.spendingInsight.nextMonth} disabled={!nextMonthKey} onclick={() => nextMonthKey && chooseMonth(nextMonthKey)}>
                 <ChevronRight size={16} strokeWidth={2.2} aria-hidden="true" />
               </button>
@@ -499,7 +503,9 @@
                   {/each}
                 </div>
               {/if}
-              {#if reading}
+              {#if monthEmpty}
+                <span class="data-through" data-month-empty><Calendar size={13} strokeWidth={2} aria-hidden="true" />{$t.spendingReview.noData}</span>
+              {:else if reading}
                 <span class="data-through">
                   {#if reading.latestRecordDate}
                     {reading.span.kind === "in-progress"
@@ -514,9 +520,17 @@
           </header>
 
           <div class="month-figure">
-            <span class="figure-label">{reading?.span.kind === "in-progress" ? $t.spendingReview.monthSpendingInProgress : $t.spendingReview.monthSpending}</span>
-            <strong class="money" data-sensitive>{amountText(monthFigure)}</strong>
-            {#if reading && current}
+            <span class="figure-label">{(cards?.span ?? reading?.span)?.kind === "in-progress" ? $t.spendingReview.monthSpendingInProgress : $t.spendingReview.monthSpending}</span>
+            {#if monthEmpty}
+              <strong class="figure-placeholder" aria-label={$t.spendingReview.noData}>—</strong>
+              <p class="month-standing" data-standing="no-data">
+                <span class="standing-chip"><CircleDashed size={13} strokeWidth={2.2} aria-hidden="true" />{$t.spendingReview.noData}</span>
+                <span class="muted">{$t.spendingReview.compareAfterImport}</span>
+              </p>
+            {:else}
+              <strong class="money" data-sensitive>{amountText(monthFigure)}</strong>
+            {/if}
+            {#if reading && current && !monthEmpty}
               {#if current.standing.kind === "no-usual"}
                 <p class="month-standing muted">{$t.spendingInsight.usualNotYet(3 - (current.usual.kind === "unavailable" ? current.usual.fullMonthsAvailable : 0))}</p>
               {:else}
@@ -541,7 +555,25 @@
             {/if}
           </div>
 
-          {#if reading && current}
+          {#if monthEmpty}
+            <dl class="month-facts" data-month-facts-empty>
+              <div>
+                <dt>{$t.spendingReview.dailyMean}</dt>
+                <dd class="fact-placeholder">—</dd>
+                <dd class="fact-sub">{$t.spendingReview.usualPrefix} —</dd>
+              </div>
+              <div>
+                <dt>{$t.spendingReview.largestPurchase}</dt>
+                <dd class="fact-placeholder">—</dd>
+                <dd class="fact-sub">—</dd>
+              </div>
+              <div class="pending-fact" data-total-status="complete">
+                <dt>{$t.spendingReview.pendingPairs}</dt>
+                <dd class="num fact-placeholder">{$t.spendingReview.pairsCount(0)}</dd>
+                <dd class="fact-sub">{$t.spendingReview.noPendingPairs}</dd>
+              </div>
+            </dl>
+          {:else if reading && current}
             <dl class="month-facts">
               <div>
                 <dt>{$t.spendingReview.dailyMean}</dt>
@@ -582,13 +614,16 @@
           {/if}
         </div>
 
-        {#if reading}
+        {#if reading || monthEmpty}
           <section class="category-breakdown" aria-labelledby="spending-category-title" data-category-breakdown>
             <header>
               <h2 id="spending-category-title">{$t.spendingReview.categoryTitle}</h2>
               <span>{$t.spendingReview.categoryShare}</span>
             </header>
-            {#if breakdown.length > 0}
+            {#if monthEmpty}
+              <div class="category-bar" aria-hidden="true"></div>
+              <p class="category-empty">{$t.spendingReview.categoryNoData}</p>
+            {:else if breakdown.length > 0}
               <div class="category-bar" aria-hidden="true">
                 {#each breakdown.filter((row) => row.share > 0) as row (row.key)}
                   <span style:flex-grow={row.share} style:background={SPENDING_GROUP_COLORS[row.key]}></span>
@@ -612,7 +647,7 @@
       </section>
     </ProgressiveBlock>
 
-    {#if reading}
+    {#if cards}
       <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
         <div class="charts-row">
           <section class="card pace-card" aria-labelledby="spending-pace-title">
@@ -621,15 +656,21 @@
                 <h2 id="spending-pace-title">{$t.spendingReview.paceTitle}</h2>
                 <p>{$t.spendingReview.paceMeta}</p>
               </div>
-              <ul class="pace-legend">
+              {#if !monthEmpty}<ul class="pace-legend">
                 <li><span class="legend-line" aria-hidden="true"></span>{$t.spendingInsight.seriesThisMonth}</li>
                 {#if current?.usual.kind === "available"}
                   <li><span class="legend-dash" aria-hidden="true"></span>{$t.spendingInsight.seriesUsual}</li>
                   <li><span class="legend-band" aria-hidden="true"></span>{$t.spendingReview.seriesUsualRange}</li>
                 {/if}
-              </ul>
+              </ul>{/if}
             </header>
-            {#if current}
+            {#if monthEmpty}
+              <div class="card-placeholder pace-placeholder" data-pace-empty>
+                <span class="placeholder-icon" aria-hidden="true"><ChartLine size={18} strokeWidth={2} /></span>
+                <strong>{$t.spendingReview.paceEmptyTitle}</strong>
+                <p>{$t.spendingReview.paceEmptyBody}</p>
+              </div>
+            {:else if current && reading}
               {#if chartReady}
                 <MonthPaceChart reading={current} span={reading.span} {selectedDay} onSelectDay={chooseDay} />
               {:else}
@@ -675,35 +716,48 @@
                 <p>{selectedCurrency}</p>
               </div>
             </header>
-            {#if chartReady}
-              <MonthTrendChart months={trend} selectedMonth={reading.month} onSelectMonth={chooseMonth} />
-            {:else}
-              <div class="trend-chart-pending" aria-hidden="true"></div>
-            {/if}
-            <dl class="trend-stats" data-trend-stats>
-              {#if projection?.kind === "projected"}
-                <div data-month-end-projection>
-                  <dt>{$t.spendingReview.projection}<small>{$t.spendingReview.projectionBasis(projection.basisDays)}</small></dt>
-                  <dd class="accent"><span aria-hidden="true">≈ </span><span class="money" data-sensitive>{amountText(projection.amount)}</span></dd>
-                </div>
-              {/if}
-              {#if current?.usual.kind === "available"}
-                <div>
-                  <dt>{$t.spendingReview.usualMean}</dt>
-                  <dd><span class="money" data-sensitive>{amountText(current.usual.fullMonthMean)}</span></dd>
-                </div>
-              {/if}
-              <div>
-                <dt>{$t.spendingReview.twelveMonthMean}</dt>
-                <dd>{#if trendStats.monthlyMean}<span class="money" data-sensitive>{amountText(trendStats.monthlyMean)}</span>{:else}<span class="muted">{$t.spendingReview.notEnoughMonths}</span>{/if}</dd>
+            {#if cards.trend === "empty" || !reading}
+              <div class="card-placeholder trend-placeholder" data-trend-empty>
+                <span class="placeholder-icon" aria-hidden="true"><ChartColumn size={18} strokeWidth={2} /></span>
+                <strong>{$t.spendingReview.trendEmptyTitle}</strong>
+                <p>{$t.spendingReview.trendEmptyBody}</p>
               </div>
-              {#if trendStats.highest}
-                <div>
-                  <dt>{$t.spendingReview.highestMonth}<small>{monthText(trendStats.highest.month, $locale)}</small></dt>
-                  <dd><span class="money" data-sensitive>{amountText(trendStats.highest.total)}</span></dd>
-                </div>
+              <dl class="trend-stats" data-trend-stats>
+                {#each [$t.spendingReview.projection, $t.spendingReview.usualMean, $t.spendingReview.twelveMonthMean, $t.spendingReview.highestMonth] as label (label)}
+                  <div><dt>{label}</dt><dd class="muted">—</dd></div>
+                {/each}
+              </dl>
+            {:else}
+              {#if chartReady}
+                <MonthTrendChart months={trend} selectedMonth={reading.month} onSelectMonth={chooseMonth} />
+              {:else}
+                <div class="trend-chart-pending" aria-hidden="true"></div>
               {/if}
-            </dl>
+              <dl class="trend-stats" data-trend-stats>
+                {#if projection?.kind === "projected"}
+                  <div data-month-end-projection>
+                    <dt>{$t.spendingReview.projection}<small>{$t.spendingReview.projectionBasis(projection.basisDays)}</small></dt>
+                    <dd class="accent"><span aria-hidden="true">≈ </span><span class="money" data-sensitive>{amountText(projection.amount)}</span></dd>
+                  </div>
+                {/if}
+                {#if current?.usual.kind === "available"}
+                  <div>
+                    <dt>{$t.spendingReview.usualMean}</dt>
+                    <dd><span class="money" data-sensitive>{amountText(current.usual.fullMonthMean)}</span></dd>
+                  </div>
+                {/if}
+                <div>
+                  <dt>{$t.spendingReview.twelveMonthMean}</dt>
+                  <dd>{#if trendStats.monthlyMean}<span class="money" data-sensitive>{amountText(trendStats.monthlyMean)}</span>{:else}<span class="muted">{$t.spendingReview.notEnoughMonths}</span>{/if}</dd>
+                </div>
+                {#if trendStats.highest}
+                  <div>
+                    <dt>{$t.spendingReview.highestMonth}<small>{monthText(trendStats.highest.month, $locale)}</small></dt>
+                    <dd><span class="money" data-sensitive>{amountText(trendStats.highest.total)}</span></dd>
+                  </div>
+                {/if}
+              </dl>
+            {/if}
           </section>
         </div>
       </ProgressiveBlock>
@@ -712,6 +766,7 @@
     <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
     {@const detailsReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
     {@const detailsActiveMonth = activeMonthForReport(detailsReport, activeMonth)}
+    {@const detailsPeriodMonth = cards?.month ?? detailsActiveMonth}
     {@const detailsMonthRecords = detailsReport.records.filter((record) => detailsActiveMonth === null || record.occurrence.value.startsWith(`${detailsActiveMonth}-`))}
     {@const detailsVisibleRecords = detailsMonthRecords
       .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
@@ -723,7 +778,7 @@
         <div class="records-title">
           <div>
             <h2 id="spending-records-title">{$t.purchaseSpending.purchases}</h2>
-            <p>{$t.spendingReview.purchasesMeta(selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth, $locale) : $t.purchaseSpending.allRecords, report.summary ? periodRecordCount : detailsVisibleRecords.length)}</p>
+            <p>{$t.spendingReview.purchasesMeta(selectedDay ? dateText(selectedDay) : detailsPeriodMonth ? monthText(detailsPeriodMonth, $locale) : $t.purchaseSpending.allRecords, report.summary ? periodRecordCount : detailsVisibleRecords.length)}</p>
           </div>
           {#if selectedDay}<button type="button" class="button secondary" onclick={() => spendingSession.chooseDay(null)}>{$t.purchaseSpending.showFullMonth}</button>{/if}
           {#if report.summary}
@@ -793,6 +848,23 @@
             {#if filterActive}
               <strong>{$t.spendingReview.noMatches}</strong>
               <button type="button" class="button" onclick={clearRecordFilter}>{$t.spendingReview.clearFilter}</button>
+            {:else if monthEmpty}
+              <div class="records-empty" data-records-empty>
+                <span class="records-empty-icon" aria-hidden="true"><ReceiptText size={24} strokeWidth={1.8} /></span>
+                <strong>{$t.spendingReview.recordsEmptyTitle}</strong>
+                <p>{$t.spendingReview.recordsEmptyBody}</p>
+                <div class="records-empty-actions">
+                  <a class="button primary" href="#/automation" data-go-automation><RefreshCw size={15} strokeWidth={2} aria-hidden="true" />{$t.spendingReview.goToAutomation}</a>
+                  <button type="button" class="button" aria-expanded={basisOpen} aria-controls="spending-basis" data-learn-basis onclick={() => basisOpen = !basisOpen}><Info size={15} strokeWidth={2} aria-hidden="true" />{$t.spendingReview.learnBasis}</button>
+                </div>
+                {#if basisOpen}
+                  <section class="spending-basis" id="spending-basis" aria-labelledby="spending-basis-title" data-spending-basis>
+                    <h3 id="spending-basis-title">{$t.purchaseSpending.basisTitle}</h3>
+                    <p>{$t.purchaseSpending.basisDescription}</p>
+                    <p>{$t.purchaseSpending.refundPeriod}</p>
+                  </section>
+                {/if}
+              </div>
             {:else}
               <strong>{$t.purchaseSpending.noPurchases}</strong><span>{$t.purchaseSpending.chooseOtherPeriod}</span>
             {/if}
@@ -917,9 +989,11 @@
   .month-nav { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .month-nav h2 { font-size: 20px; white-space: nowrap; }
   .month-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); }
-  .data-through { padding: 6px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 12px; font-weight: 560; white-space: nowrap; }
+  .data-through { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 12px; font-weight: 560; white-space: nowrap; }
   .month-figure { display: grid; gap: 6px; min-width: 0; }
   .figure-label, .month-facts dt { color: var(--muted); font-size: 11px; font-weight: 720; letter-spacing: 0.06em; }
+  .figure-placeholder { color: var(--muted); font-size: clamp(32px, 3.4vw, 44px); font-weight: 750; line-height: 1.1; }
+  .month-facts .fact-placeholder { color: var(--muted); }
   .month-figure > .money { font-size: clamp(32px, 3.4vw, 44px); font-weight: 750; line-height: 1.1; letter-spacing: -0.02em; overflow-wrap: anywhere; }
   .month-standing { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; font-size: 14px; line-height: 1.5; }
   .month-standing.muted { font-size: 13px; }
@@ -963,6 +1037,12 @@
   .legend-dash { width: 14px; height: 0; border-top: 2px dashed var(--muted); }
   .legend-band { width: 14px; height: 10px; border-radius: 2px; background: color-mix(in oklch, var(--muted) 12%, transparent); }
   .month-chart-pending { min-height: 340px; border-radius: 12px; background: var(--surface-soft); }
+  .card-placeholder { display: grid; place-content: center; justify-items: center; gap: var(--space-2); padding: var(--space-6); border-radius: 12px; background: var(--surface-soft); text-align: center; }
+  .card-placeholder strong { font-size: 14px; font-weight: 650; }
+  .card-placeholder p { max-width: 300px; margin: 0; color: var(--muted); font-size: 12px; line-height: 18px; }
+  .placeholder-icon { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); }
+  .pace-placeholder { min-height: 380px; }
+  .trend-placeholder { min-height: 226px; }
   .trend-chart-pending { min-height: 240px; border-radius: 12px; background: var(--surface-soft); }
   .day-detail { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
   .day-detail > span { color: var(--muted); }
@@ -1014,6 +1094,18 @@
   .records-more .button { width: 100%; }
   .purchase-empty { display: grid; justify-items: center; gap: var(--space-2); padding: var(--space-8) var(--space-5); border-top: 1px solid var(--border); color: var(--muted); text-align: center; }
   .purchase-empty strong { color: var(--fg); }
+  .records-empty { display: grid; justify-items: center; gap: 12px; padding: 32px 0 40px; }
+  .records-empty-icon { display: grid; place-items: center; width: 56px; height: 56px; border-radius: var(--radius-lg); background: var(--accent-soft); color: var(--accent); }
+  .records-empty strong { font-size: 18px; font-weight: 700; }
+  .records-empty p { max-width: 440px; margin: 0; font-size: 13px; line-height: 21px; }
+  .records-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); padding-top: var(--space-2); }
+  .records-empty-actions .button { text-decoration: none; }
+  .records-empty-actions .button.primary:hover { background: color-mix(in oklch, var(--fg) 86%, white); }
+  .records-empty-actions .button:not(.primary):hover { background: var(--surface-soft); }
+  .records-empty-actions .button:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
+  .spending-basis { display: grid; gap: 6px; max-width: 440px; padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-soft); text-align: left; }
+  .spending-basis h3 { margin: 0; color: var(--fg); font-size: 13px; font-weight: 700; }
+  .spending-basis p { font-size: 12px; line-height: 1.6; }
   .purchase-canonical-note { margin: 0; color: var(--muted); font-size: 12px; }
 
   .pairing-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: var(--space-5); background: rgba(14, 18, 28, 0.44); -webkit-backdrop-filter: blur(10px) saturate(0.84); backdrop-filter: blur(10px) saturate(0.84); }
