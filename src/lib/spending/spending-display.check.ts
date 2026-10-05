@@ -121,4 +121,5 @@ test("purchase titles read like the design: the store for merged purchases, the 
   assert.equal(recordMerchant(zh, record({ basis: "invoice", description: seller, invoice, transaction: null })), "統一超商");
   assert.equal(recordMerchant(zh, record({ basis: "invoice", description: "明口小吃店", invoice: { revision: { seller: { name: "明口小吃店", taxId: "1" } } }, transaction: null })), "明口小吃店");
   assert.equal(recordMerchant(zh, record()), "全聯福利中心");
+  assert.equal(recordMerchant(zh, record({ description: "全聯實業股份有限公司頭城青雲分公司" })), "全聯實業", "card descriptions drop the legal-entity tail too");
 });
