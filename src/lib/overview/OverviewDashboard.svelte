@@ -1,22 +1,26 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import AllocationDonutCard from "$lib/overview/components/AllocationDonutCard.svelte";
-  import DailyHistoryTable from "$lib/overview/components/DailyHistoryTable.svelte";
-  import OverviewSankeyCard from "$lib/overview/components/OverviewSankeyCard.svelte";
-  import SnapshotSparkline from "$lib/overview/components/SnapshotSparkline.svelte";
-  import { locale, t, translateKnownLabel, type Translation } from "$lib/i18n/i18n.ts";
+  import { Landmark, RefreshCw } from "@lucide/svelte";
+  import AllocationCard, { type AllocationTile } from "$lib/overview/components/AllocationCard.svelte";
+  import DailyChangeCard from "$lib/overview/components/DailyChangeCard.svelte";
+  import DailyHistoryModal from "$lib/overview/components/DailyHistoryModal.svelte";
+  import NetWorthCard from "$lib/overview/components/NetWorthCard.svelte";
+  import OverviewTicker from "$lib/overview/components/OverviewTicker.svelte";
+  import TodayChangeCard from "$lib/overview/components/TodayChangeCard.svelte";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
-    allExchangeRatesMissing,
-    convertDailyHistoryRows,
-    dailyHistoryCurrencies,
-  } from "$lib/overview/exchange-rate-display.ts";
-  import { translateSummaryBreakdown } from "$lib/overview/summary-breakdown.ts";
+    ASSET_CATEGORY_COLOR,
+    formatShortDate,
+    formatTwd,
+    liabilityColor,
+    maskedAccountDigits,
+  } from "$lib/overview/overview-format.ts";
+  import { dateInTimeZone, readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
-  import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
   import {
     safeSourceGapLabel,
     sourceGapCounts,
   } from "$lib/shared-ledger/account-display.ts";
+  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
@@ -24,13 +28,7 @@
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
-  import {
-    resolveOverviewChart,
-    resolveOverviewDetails,
-    resolveOverviewList,
-    resolveOverviewSummary,
-  } from "$lib/shared-shell/progressive-dashboard-data.ts";
-  import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
+  import { resolveOverview } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import {
@@ -40,8 +38,7 @@
   } from "$lib/onboarding/target-observer.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
-  const dailyCurrencyStorageKey = "overview.dailyAssetChanges.currency";
-  const sankeyCurrencyStorageKey = "overview.portfolioFlow.currency";
+  type OverviewBlocks = DashboardBlockValueMap["overview"];
 
   export let overview: OverviewPageDto;
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
@@ -49,52 +46,36 @@
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let onboardingEmptyState = false;
 
-  let snapshotCurrency = "TWD";
-  let dailyCurrency = "TWD";
-  let sankeyCurrency = "TWD";
+  let detailOpen = false;
 
-  function blockState(key: string): BlockState<DashboardBlockPayload> {
+  function blockState(key: keyof OverviewBlocks): BlockState<DashboardBlockPayload> {
     return blocks[key] ?? { status: "loading" };
   }
 
-  function overviewBlockData<Key extends keyof DashboardBlockValueMap["overview"]>(
+  function overviewBlockData<Key extends keyof OverviewBlocks>(
+    states: typeof blocks,
     key: Key,
-    payload: DashboardBlockPayload | undefined,
-  ): DashboardBlockValueMap["overview"][Key] | undefined {
+  ): OverviewBlocks[Key] | undefined {
+    const state = states[key];
+    const payload = state && "data" in state ? state.data : undefined;
     return payload?.route === "overview" && payload.block === key
-      ? payload.data as DashboardBlockValueMap["overview"][Key]
+      ? payload.data as OverviewBlocks[Key]
       : undefined;
   }
 
-  function metricsFor(summary: SummaryMetricDto[]) {
-    return summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
-  }
-
-  $: metrics = metricsFor(overview.summary);
-  $: netMetric = metrics[0] ?? null;
-  $: netAmounts = netMetric?.amounts ?? [];
-  $: sideValue = formatAmountLines(netAmounts.slice(0, 1));
-  $: sideSub =
-    netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") ||
-    $t.common.importedAt(formatImportedAt(overview.importedAt));
-  $: sideSubSensitive = netAmounts.length > 1;
-  $: history = overview.dailyHistory;
-  $: dailyCurrencies = dailyHistoryCurrencies(history);
-  $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
-  $: sankeyCurrencies = ["TWD", ...overview.sankeyExchangeRates.map((rate) => rate.currency)];
-  $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
-  $: convertedDailyHistory = convertDailyHistoryRows(
-    history,
-    overview.exchangeRates,
-    dailyCurrency,
-  ).rows;
-  $: twdDailyHistory = convertDailyHistoryRows(
-    history,
-    overview.exchangeRates,
-    "TWD",
-  ).rows;
-  $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
-  $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+  $: data = resolveOverview(overview, {
+    summary: overviewBlockData(blocks, "summary"),
+    chart: overviewBlockData(blocks, "chart"),
+    list: overviewBlockData(blocks, "list"),
+  });
+  $: model = readOverview(data, { today: dateInTimeZone(new Date(), $systemTimezone) });
+  $: netAmounts = overview.summary[0]?.amounts ?? [];
+  $: convertedNet = model.netWorth.value;
+  $: sideValue = convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1)) : formatTwd(convertedNet, $locale);
+  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") : "";
+  $: sideSub = nativeRest ||
+    (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
+  $: sideSubSensitive = nativeRest !== "";
   $: gapCounts = sourceGapCounts(overview.sourceGaps);
   $: currentStateLabel = overview.availability === "unavailable"
     ? $t.overview.currentUnavailable
@@ -105,13 +86,21 @@
         : overview.availability === "empty"
           ? $t.overview.currentEmpty
           : $t.overview.currentUnavailable;
-
-  onMount(() => {
-    const stored = localStorage.getItem(dailyCurrencyStorageKey);
-    dailyCurrency = stored && dailyCurrencies.includes(stored) ? stored : "TWD";
-    const storedSankey = localStorage.getItem(sankeyCurrencyStorageKey);
-    sankeyCurrency = storedSankey && sankeyCurrencies.includes(storedSankey) ? storedSankey : "TWD";
-  });
+  $: holdsForeign = data.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
+  $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
+    key: slice.category,
+    label: $t.overview.assetCategories[slice.category],
+    value: slice.value,
+    share: slice.share,
+    color: ASSET_CATEGORY_COLOR[slice.category],
+  }));
+  $: liabilityTiles = model.liabilityAllocation.slices.map((slice): AllocationTile => ({
+    key: slice.account.id,
+    label: liabilityLabel(slice.account, $t),
+    value: slice.value,
+    share: slice.share,
+    color: liabilityColor(slice.account.kind),
+  }));
 
   function formatImportedAt(value: string | null) {
     return value
@@ -119,26 +108,21 @@
       : $t.common.notYet;
   }
 
-  function selectValue(event: Event) {
-    return (event.currentTarget as HTMLSelectElement).value;
+  function liabilityLabel(account: OverviewPageDto["accounts"][number], dictionary: Translation) {
+    const digits = maskedAccountDigits(account.label);
+    const { institution, product } = localizeAccount(account, dictionary);
+    return `${institution} · ${product}${digits ? ` ${dictionary.overview.accountMask(digits)}` : ""}`;
   }
 
-  function selectDailyCurrency(event: Event) {
-    dailyCurrency = selectValue(event);
-    localStorage.setItem(dailyCurrencyStorageKey, dailyCurrency);
+  function rateNote(current: OverviewModel, foreign: boolean, dictionary: Translation) {
+    const date = current.assetAllocation.valuationDate;
+    return foreign && date && current.assetAllocation.slices.length > 0
+      ? dictionary.overview.allocationRateDate(formatShortDate(date, $locale))
+      : "";
   }
 
-  function selectSankeyCurrency(event: Event) {
-    sankeyCurrency = selectValue(event);
-    localStorage.setItem(sankeyCurrencyStorageKey, sankeyCurrency);
-  }
-
-  function translateSummaryMetric(metric: SummaryMetricDto, dictionary: Translation): SummaryMetricDto {
-    return {
-      ...metric,
-      label: translateKnownLabel(dictionary, metric.label),
-      breakdown: translateSummaryBreakdown(metric.breakdown, dictionary),
-    };
+  function unconvertedNote(currencies: string[]) {
+    return currencies.length === 0 ? "" : $t.overview.unconverted(currencies.join(", "));
   }
 </script>
 
@@ -150,17 +134,30 @@
   {sideValue}
   {sideSub}
   {sideSubSensitive}
-  syncLabel={$t.common.importedAt(formatImportedAt(overview.importedAt))}
+  syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
-  <div class="content">
+  <div class="content overview-content">
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+      <OverviewTicker ticker={model.ticker} />
+    </ProgressiveBlock>
     {#if overview.availability === "empty"}
       <section
-        class="card projection-state overview-empty-state"
+        class="overview-empty-state"
         role="status"
         data-overview-state="empty"
-        use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.empty" }}
+        aria-label={$t.overview.currentEmpty}
       >
-        {$t.overview.currentEmpty}
+        <span class="empty-icon" aria-hidden="true"><Landmark size={20} strokeWidth={1.8} /></span>
+        <div class="empty-copy">
+          <strong>{$t.overview.emptyTitle}</strong>
+          <p>{$t.overview.emptyBody}</p>
+        </div>
+        <a
+          class="button primary"
+          href="#/automation"
+          data-go-automation
+          use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.empty" }}
+        ><RefreshCw size={15} strokeWidth={2} aria-hidden="true" />{$t.overview.goToAutomation}</a>
       </section>
     {/if}
     {#if overview.coverage !== "complete" && overview.availability !== "empty"}
@@ -183,174 +180,121 @@
         {/if}
       </div>
     {/if}
-    <ProgressiveBlock
-      label="summary"
-      state={blockState("summary")}
-      retry={() => retryBlock("summary")}
-      let:data
-    >
-      {@const summaryBlock = overviewBlockData("summary", data)}
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <section
-        aria-label={$t.overview.summaryAria}
+        aria-label={$t.overview.netWorth}
         use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.summary" }}
       >
-        <SummaryStrip metrics={metricsFor(resolveOverviewSummary(overview, summaryBlock))} />
+        <NetWorthCard
+          netWorth={model.netWorth}
+          series={model.series}
+          asOfLabel={model.netWorth.asOf ? formatImportedAt(model.netWorth.asOf) : ""}
+        />
       </section>
     </ProgressiveBlock>
-
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
-      {@const chartBlock = overviewBlockData("chart", data)}
-      {@const chartData = resolveOverviewChart(overview, chartBlock)}
-      {@const chartHistory = chartData.dailyHistory}
-      {@const snapshotCurrencies = dailyHistoryCurrencies(chartHistory)}
-      {@const activeSnapshotCurrency = snapshotCurrencies.includes(snapshotCurrency) ? snapshotCurrency : snapshotCurrencies[0]}
-      <section class="grid layout-2">
-      <article class="card">
-        <div class="panel-title">
-          <h2>{$t.overview.snapshotHistory}</h2>
-          {#if snapshotCurrencies.length > 1}
-            <label class="chip select-chip" for="snapshot-currency">
-              <select
-                id="snapshot-currency"
-                aria-label={$t.overview.snapshotHistoryCurrency}
-                value={activeSnapshotCurrency}
-                onchange={(event) => (snapshotCurrency = selectValue(event))}
-              >
-                {#each snapshotCurrencies as currency}
-                  <option value={currency}>{currency}</option>
-                {/each}
-              </select>
-            </label>
-          {:else}
-            <span class="chip panel-title-lead">{activeSnapshotCurrency}</span>
-          {/if}
-          <span class="chip">{$t.common.days30}</span>
-        </div>
-        {#if chartData.historyAvailability !== "available" || chartHistory.length === 0}
-          <div class="projection-state history-state" role="status" data-overview-state="history-unavailable">
-            {$t.overview.historyUnavailable}
-          </div>
-        {:else}
-          <div class="pad">
-            <SnapshotSparkline rows={chartHistory.slice(-30)} currency={activeSnapshotCurrency} label={$t.overview.snapshotHistory} diverging />
-          </div>
-        {/if}
-      </article>
-
-      <div class="overview-allocation-stack">
-        <AllocationDonutCard title={$t.overview.assetAllocation} accounts={chartData.accounts} mode="asset" />
-        <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={chartData.accounts} mode="liability" />
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+      <div class="overview-row change-row">
+        <DailyChangeCard
+          bars={model.dailyBars}
+          hasDetail={model.historyRows.length > 0}
+          openDetail={() => (detailOpen = true)}
+        />
+        <TodayChangeCard change={model.todayChange} />
       </div>
-      </section>
     </ProgressiveBlock>
-
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
-      {@const listBlock = overviewBlockData("list", data)}
-      {@const listData = resolveOverviewList(overview, listBlock)}
-      {@const latestRateDate = listData.latestExchangeRateDate}
-      <section class="card daily-card">
-      <div class="panel-title">
-        <h2>{$t.overview.dailyAssetChanges}</h2>
-        {#if allDailyRatesMissing}
-          <span class="chip missing-rate-status" role="status">
-            {$t.overview.exchangeRatesMissingNative}
-          </span>
-        {:else if dailyCurrencies.length > 1}
-          <label class="chip select-chip" for="daily-base-currency">
-            {$t.common.base}
-            <select
-              id="daily-base-currency"
-              aria-label={$t.overview.dailyAssetChangesBaseCurrency}
-              value={dailyCurrency}
-              onchange={selectDailyCurrency}
-            >
-              {#each dailyCurrencies as currency}
-                <option value={currency}>{currency}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
-        {#if latestRateDate}
-          <span class="chip">
-            {$t.overview.exchangeRatesThrough(latestRateDate)}
-          </span>
-        {/if}
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+      <div class="overview-row allocation-row">
+        <AllocationCard
+          state="assets"
+          title={$t.overview.assetAllocation}
+          total={model.assetAllocation.slices.length > 0 ? model.assetAllocation.total : null}
+          rateNote={rateNote(model, holdsForeign, $t)}
+          note={unconvertedNote(model.assetAllocation.unconvertedCurrencies)}
+          href="#/assets"
+          linkLabel={$t.nav.assets}
+          tiles={assetTiles}
+          emptyTitle={$t.overview.assetEmptyTitle}
+          emptyBody={$t.overview.assetEmptyBody}
+        />
+        <AllocationCard
+          state="liabilities"
+          title={$t.overview.liabilityAllocation}
+          total={model.liabilityAllocation.slices.length > 0 ? model.liabilityAllocation.total : null}
+          ratio={model.liabilityAllocation.ratio}
+          note={unconvertedNote(model.liabilityAllocation.unconvertedCurrencies)}
+          href="#/liabilities"
+          linkLabel={$t.nav.liabilities}
+          tiles={liabilityTiles}
+          emptyTitle={$t.overview.liabilityEmptyTitle}
+          emptyBody={$t.overview.liabilityEmptyBody}
+        />
       </div>
-      {#if listData.historyAvailability !== "available" || listData.dailyHistory.length === 0}
-        <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
-      {:else}
-        {#key dailyCurrency}
-          <DailyHistoryTable rows={listData.dailyHistory ?? convertedDailyHistory} currency={dailyCurrency} paginate />
-        {/key}
-      {/if}
-      </section>
-    </ProgressiveBlock>
-
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
-      {@const detailsBlock = overviewBlockData("details", data)}
-      {@const detailsData = resolveOverviewDetails(overview, detailsBlock)}
-      {@const sankey = detailsData.sankey}
-      {#if sankey}
-        <section class="card sankey-card">
-        <div class="panel-title">
-          <h2>{$t.overview.portfolioFlow}</h2>
-          {#if sankeyCurrencies.length > 1}
-            <label class="chip select-chip" for="sankey-base-currency">
-              {$t.common.base}
-              <select
-                id="sankey-base-currency"
-                aria-label={$t.overview.portfolioFlowBaseCurrency}
-                value={sankeyCurrency}
-                onchange={selectSankeyCurrency}
-              >
-                {#each sankeyCurrencies as currency}
-                  <option value={currency}>{currency}</option>
-                {/each}
-              </select>
-            </label>
-          {/if}
-          {#if detailsData.sankeyLatestExchangeRateDate}
-            <span class="chip">
-              {$t.overview.exchangeRatesThrough(detailsData.sankeyLatestExchangeRateDate)}
-            </span>
-          {/if}
-        </div>
-        <div class="pad overview-sankey-panel">
-          <OverviewSankeyCard
-            graph={sankey}
-            currency={sankeyCurrency}
-            exchangeRates={detailsData.sankeyExchangeRates}
-          />
-        </div>
-        </section>
-      {/if}
     </ProgressiveBlock>
   </div>
+  <DailyHistoryModal bind:open={detailOpen} rows={model.historyRows} />
 </DashboardShell>
 
 <style>
-  .overview-allocation-stack {
-    min-width: 0;
+  .overview-content {
     display: grid;
+    gap: var(--space-6);
+  }
+
+  .overview-row {
+    display: grid;
+    gap: var(--space-6);
+  }
+
+  .change-row {
+    grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
+  }
+
+  .allocation-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 1180px) {
+    .change-row,
+    .allocation-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .overview-empty-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-4);
+    padding: var(--space-5) var(--space-6);
+    border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
+    border-radius: var(--radius-lg);
+    background: var(--accent-soft);
   }
 
-  .panel-title-lead {
-    margin-left: auto;
+  .empty-icon {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--accent);
   }
 
-  .missing-rate-status {
-    color: var(--danger);
-    border-color: color-mix(in oklch, var(--danger) 28%, var(--border));
-    background: color-mix(in oklch, var(--danger) 9%, white);
+  .empty-copy {
+    flex: 1 1 320px;
+    min-width: 0;
   }
 
-  .overview-sankey-panel {
-    overflow: hidden;
+  .empty-copy strong {
+    font-size: 16px;
+    font-weight: 700;
   }
 
-  .sankey-card {
-    margin-top: var(--space-4);
+  .empty-copy p {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 13px;
   }
 
   .projection-state {
@@ -365,12 +309,6 @@
     background: var(--surface-soft);
   }
 
-  .history-state {
-    margin: var(--space-5);
-    min-height: 5rem;
-    align-items: center;
-  }
-
   .projection-gap-list {
     display: flex;
     flex-wrap: wrap;
@@ -381,5 +319,4 @@
     color: var(--fg);
     font-size: 12px;
   }
-
 </style>

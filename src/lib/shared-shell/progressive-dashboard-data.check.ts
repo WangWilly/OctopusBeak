@@ -12,7 +12,7 @@ import {
   resolveSpendingPurchaseReport,
   resolveAssetsList,
   resolveLiabilitiesDetails,
-  resolveOverviewSummary,
+  resolveOverview,
 } from "./progressive-dashboard-data.ts";
 import type { AutomationPageModel } from "$lib/automation/types.ts";
 
@@ -39,12 +39,10 @@ const overview = (summary: SummaryMetricDto[]): OverviewPageDto => ({
   importedAt: null,
   summary,
   dailyHistory: [],
+  dailyHistoryByAccount: {},
   accounts: [],
-  sankey: null,
-  sankeyExchangeRates: [],
-  sankeyLatestExchangeRateDate: null,
+  holdingPrices: [],
   exchangeRates: [],
-  latestExchangeRateDate: null,
 });
 
 const emptySpending = (): SpendingPageDto => ({
@@ -86,14 +84,16 @@ const emptySpending = (): SpendingPageDto => ({
 test("progressive dashboard adapters prefer a settled block and fall back to the route DTO", () => {
   const fallbackOverview = overview([{ label: "fallback", amounts: [], breakdown: [] }]);
   const blockSummary: DashboardBlockValueMap["overview"]["summary"] = {
-    availability: "available",
-    coverage: "complete",
-    sourceGaps: [],
-    importedAt: null,
+    ...fallbackOverview,
     summary: [{ label: "block", amounts: [], breakdown: [] }],
   };
-  assert.equal(resolveOverviewSummary(fallbackOverview, blockSummary)[0]?.label, "block");
-  assert.equal(resolveOverviewSummary(fallbackOverview)[0]?.label, "fallback");
+  const blockList: DashboardBlockValueMap["overview"]["list"] = {
+    ...fallbackOverview,
+    dailyHistoryByAccount: { account: [] },
+  };
+  assert.equal(resolveOverview(fallbackOverview, { summary: blockSummary }).summary[0]?.label, "block");
+  assert.deepEqual(resolveOverview(fallbackOverview, { list: blockList }).dailyHistoryByAccount, { account: [] });
+  assert.equal(resolveOverview(fallbackOverview, {}).summary[0]?.label, "fallback");
 
   const fallbackAssets = {
     availability: "available",
