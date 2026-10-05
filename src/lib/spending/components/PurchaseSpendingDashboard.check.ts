@@ -128,8 +128,7 @@ assert.doesNotMatch(source, /ledger\/canonical\/|node:/u);
 assert.doesNotMatch(matchingSource, /from ["']node:/u);
 assert.doesNotMatch(matchingSource, /from ["'][^"']*(?:canonical|server)[^"']*["']/u);
 
-const canonicalSource = readFileSync(new URL("./CanonicalSpendingDashboard.svelte", import.meta.url), "utf8");
-for (const [name, component] of [["purchase", source], ["canonical", canonicalSource], ["merge", mergeSource], ["detail", detailSource], ...chartSources] as const) {
+for (const [name, component] of [["purchase", source], ["merge", mergeSource], ["detail", detailSource], ...chartSources] as const) {
   const markup = component.slice(component.indexOf("</script>"), component.indexOf("<style>"));
   for (const match of markup.matchAll(/\{[^{}]*(?:amountText|AmountText)\b[^{}]*\}/g)) {
     const before = markup.slice(0, match.index);

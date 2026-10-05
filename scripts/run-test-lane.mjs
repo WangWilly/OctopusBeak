@@ -15,8 +15,6 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "scripts/site-browser.check.mjs",
   "scripts/spending-browser-harness.check.mjs",
   "scripts/spending-page-recovery.check.mjs",
-  "scripts/spending-chart-alternatives.check.mjs",
-  "scripts/spending-ledger-review.check.mjs",
   "scripts/spending-pairing-browser.check.mjs",
   "scripts/spending-review-modals.check.mjs",
   "scripts/spending-empty-state.check.mjs",

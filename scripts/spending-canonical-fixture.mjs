@@ -29,32 +29,6 @@ export function singleCategory(code) {
   };
 }
 
-export function allocatedCategory(components) {
-  return {
-    mode: "allocated",
-    code: null,
-    taxonomyId: TAXONOMY_ID,
-    taxonomyVersion: TAXONOMY_VERSION,
-    labels: null,
-    components: components.map(({ code, value, currency = "TWD" }) => ({
-      code,
-      taxonomyId: TAXONOMY_ID,
-      taxonomyVersion: TAXONOMY_VERSION,
-      labels: CATEGORY_LABELS[code] ?? null,
-      amount: amount(value, currency),
-    })),
-  };
-}
-
-export const absentCategory = {
-  mode: "absent",
-  code: null,
-  taxonomyId: null,
-  taxonomyVersion: null,
-  labels: null,
-  components: [],
-};
-
 export function record({
   id,
   date,
