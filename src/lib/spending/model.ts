@@ -134,7 +134,17 @@ export type SpendingRecordPageRequest = Readonly<{
   limit?: number;
   /** Canonical codes, or SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR; the renderer expands display groups. */
   categoryCodes?: readonly string[] | null;
+  /**
+   * Search within the month: a case-insensitive substring of the invoice
+   * seller or bank description, or an exact counted amount such as `1,444`.
+   * Requires month.
+   */
+  query?: string | null;
+  /** `linked` lists only merged purchases (已合併). */
+  basis?: SpendingRecordBasisFilter | null;
 }>;
+
+export type SpendingRecordBasisFilter = "linked";
 
 /** Change one purchase's category (ADR 0038). A null code clears the user lineage. */
 export type SpendingPurchaseCategoryRequest = Readonly<{
@@ -159,6 +169,8 @@ export type SpendingRecordPageDto = Readonly<{
   month: string | null;
   day: string | null;
   categoryCodes: readonly string[] | null;
+  query: string | null;
+  basis: SpendingRecordBasisFilter | null;
   records: readonly SpendingPurchaseReportView["records"][number][];
   nextCursor: string | null;
 }>;

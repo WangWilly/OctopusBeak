@@ -335,3 +335,57 @@ test("month insights find the largest purchase per currency and same-merchant to
     await fixture.close();
   }
 });
+
+test("record search and the linked filter compose with day, category, and the keyset cursor", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const coffeeInvoice = await fixture.commitInvoice({ stableKey: "SR00000001:2026-09-03", date: "2026-09-03", sellerTaxId: "30000001", sellerName: "Coffee Lab", items: [{ sequence: 1, name: "拿鐵", amount: "150" }] });
+    const coffeeBank = await fixture.addTransaction({ amount: "1444", date: "2026-09-03", description: "COFFEE LAB TAIPEI" });
+    const books = await fixture.addTransaction({ amount: "1444", date: "2026-09-04", description: "Books" });
+    const beans = await fixture.addTransaction({ amount: "99", date: "2026-09-05", description: "Coffee beans" });
+    const bakeryInvoice = await fixture.commitInvoice({ stableKey: "SR00000002:2026-09-06", date: "2026-09-06", sellerTaxId: "30000002", sellerName: "Bakery Coffee", items: [{ sequence: 1, name: "Bread", amount: "200" }] });
+    const bakeryBank = await fixture.addTransaction({ amount: "201", date: "2026-09-06", description: "Bakery" });
+    await fixture.link(bakeryInvoice, bakeryBank);
+    const teaInvoice = await fixture.commitInvoice({ stableKey: "SR00000003:2026-09-07", date: "2026-09-07", sellerTaxId: "30000003", sellerName: "Tea", items: [{ sequence: 1, name: "Tea", amount: "300" }] });
+    const teaBank = await fixture.addTransaction({ amount: "301", date: "2026-09-07", description: "Tea" });
+    await fixture.link(teaInvoice, teaBank);
+    await fixture.addTransaction({ amount: "50", date: "2026-10-01", description: "coffee" });
+    const query = createPGliteSpendingQuery(fixture.store);
+    const knowledgeAt = await fixture.knowledgeAt();
+    const ids = (page: Awaited<ReturnType<typeof query.recordPage>>) => page.records.map((record) => record.purchaseId).sort();
+    const page = (request: Omit<Parameters<typeof query.recordPage>[0], "knowledgeAt">) => query.recordPage({ knowledgeAt, ...request });
+
+    const coffee = await page({ month: "2026-09", query: "coffee", limit: 100 });
+    assert.deepEqual(ids(coffee), [`invoice:${coffeeInvoice}`, `transaction:${coffeeBank}`, `transaction:${beans}`, coffee.records.find((record) => record.basis === "linked")!.purchaseId].sort());
+    assert.equal(coffee.records.find((record) => record.basis === "linked")?.invoice?.invoiceId, bakeryInvoice, "a linked purchase matches on its invoice seller");
+    assert.equal(coffee.query, "coffee");
+    assert.deepEqual(ids(await page({ month: "2026-09", day: "2026-09-03", query: "Coffee", limit: 100 })), [`invoice:${coffeeInvoice}`, `transaction:${coffeeBank}`].sort());
+    assert.deepEqual(ids(await page({ month: "2026-09", query: "1,444", limit: 100 })), [`transaction:${coffeeBank}`, `transaction:${books}`].sort());
+    assert.deepEqual(ids(await page({ month: "2026-09", query: "1444", limit: 100 })), [`transaction:${coffeeBank}`, `transaction:${books}`].sort());
+
+    const unclassified = await page({ month: "2026-09", categoryCodes: ["unclassified"], limit: 100 });
+    const both = await page({ month: "2026-09", categoryCodes: ["unclassified"], query: "coffee", limit: 100 });
+    assert.deepEqual(ids(both), ids(coffee).filter((id) => ids(unclassified).includes(id)));
+    assert.equal(ids(both).length, 3, "the categorized coffee invoice drops out of the Unclassified search");
+
+    const firstPage = await page({ month: "2026-09", query: "coffee", limit: 2 });
+    assert.ok(firstPage.nextCursor);
+    const secondPage = await page({ month: "2026-09", query: "coffee", limit: 2, cursor: firstPage.nextCursor });
+    assert.deepEqual([...ids(firstPage), ...ids(secondPage)].sort(), ids(coffee));
+    assert.equal(secondPage.nextCursor, null);
+    await assert.rejects(page({ month: "2026-09", query: "tea", limit: 2, cursor: firstPage.nextCursor }), /cursor is stale or invalid/u);
+
+    const linkedFirst = await page({ month: "2026-09", basis: "linked", limit: 1 });
+    assert.equal(linkedFirst.basis, "linked");
+    assert.ok(linkedFirst.nextCursor);
+    const linkedSecond = await page({ month: "2026-09", basis: "linked", limit: 1, cursor: linkedFirst.nextCursor });
+    assert.deepEqual([...linkedFirst.records, ...linkedSecond.records].map((record) => record.basis), ["linked", "linked"]);
+    assert.deepEqual([...linkedFirst.records, ...linkedSecond.records].map((record) => record.invoice?.invoiceId).sort(), [bakeryInvoice, teaInvoice].sort());
+    assert.equal(linkedSecond.nextCursor, null);
+    assert.equal((await page({ month: "2026-09", basis: "linked", query: "coffee", limit: 100 })).records.length, 1);
+    assert.equal((await page({ month: "2026-09", basis: "linked", query: "books", limit: 100 })).records.length, 0);
+    await assert.rejects(page({ month: null, query: "coffee" }), /needs a month/u);
+  } finally {
+    await fixture.close();
+  }
+});
