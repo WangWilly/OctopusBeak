@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./PurchaseSpendingDashboard.svelte", import.meta.url), "utf8");
-const chartSource = readFileSync(new URL("./PurchaseActivityBarChart.svelte", import.meta.url), "utf8");
+const paceSource = readFileSync(new URL("./MonthPaceChart.svelte", import.meta.url), "utf8");
+const trendSource = readFileSync(new URL("./MonthTrendChart.svelte", import.meta.url), "utf8");
+const chartSources = [["pace", paceSource], ["trend", trendSource]] as const;
 const dictionarySource = readFileSync(new URL("../../i18n/i18n.ts", import.meta.url), "utf8");
 const matchingSource = readFileSync(new URL("../purchase-matching.ts", import.meta.url), "utf8");
 const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.url), "utf8");
@@ -12,13 +14,16 @@ assert.match(entry, /<PurchaseSpendingDashboard/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
 
 // Both headline amounts must use the selected month's report slice, not the
-// all-period purchaseReport totals supplied by the progressive block.
+// all-period purchaseReport totals supplied by the progressive block, and a
+// selected day must not replace the month figure.
 assert.match(source, /sideValue=\{visibleTotals\.length > 0/);
-assert.match(source, /<strong class="money" data-sensitive>\{amountText\(selectedMonthTotal\)\}<\/strong>/);
+assert.match(source, /\$: visibleTotals = totalsForMonth\(report, activeMonth\);/);
+assert.match(source, /\$: monthFigure = current\?\.total \?\? visibleTotals\.find/);
+assert.match(source, /<strong class="money" data-sensitive>\{amountText\(monthFigure\)\}<\/strong>/);
 assert.doesNotMatch(source, /summaryBlock\.purchaseReport\.totalsByCurrency\[0\]/);
 assert.match(source, /sideLabel=\{\$t\.purchaseSpending\.monthlyTotal\}/);
 assert.doesNotMatch(source, /\$locale === "zh-TW"/);
-assert.doesNotMatch(chartSource, /\$locale === "zh-TW"/);
+for (const [, chart] of chartSources) assert.doesNotMatch(chart, /\$locale ===/);
 
 for (const marker of [
   "當月消費合計",
@@ -60,12 +65,18 @@ assert.match(source, /data-show-more-payments/);
 assert.match(source, /showMorePayments/);
 assert.match(source, /slice\(0, candidateVisibleCount\)/);
 assert.match(source, /data-show-more-candidates/);
-assert.match(source, /<PurchaseActivityBarChart/);
-assert.match(source, /dailyChartData\(/);
-assert.match(source, /monthlyChartData\(/);
+// The month reading and the bounded trend come from the pure insights
+// module; the unbounded monthly mode and its toggle are gone.
+assert.match(source, /<MonthPaceChart reading=\{current\} span=\{reading\.span\} \{selectedDay\} onSelectDay=\{chooseDay\} \/>/);
+assert.match(source, /<MonthTrendChart months=\{trend\} selectedMonth=\{reading\.month\} onSelectMonth=\{chooseMonth\} \/>/);
+assert.match(source, /readSpendingMonth\(report\.summary, \{ month: activeMonth, today \}\)/);
+assert.match(source, /readSpendingTrend\(report\.summary, \{ currency: selectedCurrency, selectedMonth: reading\.month, today \}\)/);
+assert.match(source, /const today = taipeiDateKey\(Date\.now\(\) \/ 1000\);/);
+assert.doesNotMatch(source, /chartMode|monthlyChartData|dailyChartData|PurchaseActivityBarChart/);
 assert.match(source, /data-purchase-day/);
+assert.match(source, /dayTotalsFor\(reading, group\.date, group\.totals\)/);
 assert.match(source, /spendingSession\.chooseDay\(selectedDay === key \? null : key\)/);
-assert.match(source, /selectChartPeriodFromControl/);
+assert.match(source, /onchange=\{\(event\) => spendingSession\.chooseDay\(event\.currentTarget\.value \|\| null\)\}/);
 assert.match(dictionarySource, /選擇日期以篩選購買明細/);
 assert.match(source, /<option value="">\{\$t\.purchaseSpending\.showFullMonth\}/);
 assert.doesNotMatch(source, /showAllCandidates/);
@@ -75,9 +86,13 @@ assert.match(source, /data-total-candidate-count=\{pairingCandidateTotal\}/);
 assert.match(dictionarySource, /只看本月/);
 assert.match(dictionarySource, /查看全部/);
 assert.match(dictionarySource, /這個期間沒有消費/);
-assert.match(chartSource, /import \{ BarChart, defaultChartPadding \} from "layerchart"/);
-assert.match(chartSource, /onBarClick=\{selectBar\}/);
-assert.match(chartSource, /cRange=\{\["var\(--accent\)", "var\(--danger\)"\]\}/);
+assert.match(paceSource, /import \{ Area, AreaChart, BarChart, Bars, Points, Rule, Spline, Tooltip \} from "layerchart"/);
+assert.match(trendSource, /import \{ BarChart, Bars, Tooltip \} from "layerchart"/);
+// Tooltip hit areas sit above the bars, so selection must go through them.
+assert.match(paceSource, /tooltipContext=\{\{ mode: "band", onclick: selectDay \}\}/);
+assert.match(trendSource, /tooltipContext=\{\{ mode: "band", onclick: selectMonth \}\}/);
+assert.match(paceSource, /cDomain=\{\["spend", "heavy", "refund", "quiet", "future"\]\}/);
+assert.match(paceSource, /cRange=\{\["color-mix\(in oklch, var\(--accent\) 55%, transparent\)", "var\(--accent\)", "var\(--danger\)", "transparent", "transparent"\]\}/);
 assert.match(source, /data-pairing-feedback="open-dialog"/);
 assert.match(source, /data-pairing-feedback="confirm-busy"/);
 assert.match(source, /pairingCandidates: readonly SpendingPairingCandidateView\[\] \| null/);
@@ -88,7 +103,7 @@ assert.doesNotMatch(matchingSource, /from ["']node:/u);
 assert.doesNotMatch(matchingSource, /from ["'][^"']*(?:canonical|server)[^"']*["']/u);
 
 const canonicalSource = readFileSync(new URL("./CanonicalSpendingDashboard.svelte", import.meta.url), "utf8");
-for (const [name, component] of [["purchase", source], ["canonical", canonicalSource]] as const) {
+for (const [name, component] of [["purchase", source], ["canonical", canonicalSource], ...chartSources] as const) {
   const markup = component.slice(component.indexOf("</script>"), component.indexOf("<style>"));
   for (const match of markup.matchAll(/\{[^{}]*(?:amountText|AmountText)\b[^{}]*\}/g)) {
     const before = markup.slice(0, match.index);
@@ -97,6 +112,12 @@ for (const [name, component] of [["purchase", source], ["canonical", canonicalSo
   }
 }
 assert.doesNotMatch(source, /<option value=\{datum\.key\}>[^<]*datum\.value/);
-assert.match(chartSource, /tickLabelProps: \{ "data-sensitive": "" \}/);
-assert.match(chartSource, /root: \{ portal: false \}/);
-assert.match(chartSource, /item: \{ classes: \{ value: "money" \} \}/);
+for (const [name, chart] of chartSources) {
+  const yAxes = chart.match(/yAxis: \{/g)?.length ?? 0;
+  assert.ok(yAxes > 0, `${name} chart draws a y axis`);
+  assert.equal(chart.match(/tickLabelProps: \{ "data-sensitive": "" \}/g)?.length, yAxes, `${name} y ticks blur when values are hidden`);
+  const tooltips = chart.match(/<Tooltip\.Root /g)?.length ?? 0;
+  assert.ok(tooltips > 0, `${name} chart has a tooltip`);
+  assert.equal(chart.match(/<Tooltip\.Root \{context\} class="sparkline-tooltip" variant="none" portal=\{false\}>/g)?.length, tooltips, `${name} tooltips stay inside the chart`);
+  assert.match(chart, /<ul class="chart-data-summary" aria-label=/, `${name} chart keeps a screen-reader summary`);
+}

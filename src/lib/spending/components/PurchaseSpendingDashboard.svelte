@@ -540,7 +540,7 @@
 
         <div class="month-reading">
           <div class="month-figure">
-            <strong class="money month-total" data-sensitive>{amountText(monthFigure)}</strong>
+            <strong class="money" data-sensitive>{amountText(monthFigure)}</strong>
             {#if reading && current}
               {#if current.standing.kind === "no-usual"}
                 <p class="month-standing">{$t.spendingInsight.usualNotYet(3 - (current.usual.kind === "unavailable" ? current.usual.fullMonthsAvailable : 0))}</p>
@@ -845,7 +845,7 @@
 
   .month-reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: var(--space-5); align-items: start; margin: var(--space-6) 0 var(--space-4); }
   .month-figure { display: grid; gap: var(--space-2); min-width: 0; }
-  .month-total { font-size: clamp(22px, 2.5vw, 32px); font-weight: 750; line-height: 1.1; letter-spacing: -0.02em; }
+  .month-figure > .money { font-size: clamp(22px, 2.5vw, 32px); font-weight: 750; line-height: 1.1; letter-spacing: -0.02em; }
   .month-standing, .month-usual-range { margin: 0; font-size: 14px; line-height: 1.5; }
   .month-standing strong { margin-right: var(--space-2); font-weight: 700; }
   .month-standing[data-standing="above"] strong { color: var(--warn); }
