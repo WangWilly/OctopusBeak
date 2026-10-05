@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { createPGliteSpendingQuery } from "./spending-query.ts";
 import {
   parsePurchaseIdentity,
   setPGliteSpendingPurchaseCategory,
@@ -178,3 +179,34 @@ test("a linked purchase writes the transaction subject, not the items, and refun
     await fixture.close();
   }
 });
+
+test("the record page reads an invoice-only purchase's user category after the change", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const invoiceId = await fixture.commitInvoice({
+      stableKey: "AB22222222:2026-09-02",
+      sellerName: "全聯實業股份有限公司",
+      items: [{ sequence: 1, name: "鮮奶", amount: "90" }],
+    });
+    const purchaseId = `invoice:${invoiceId}`;
+    const query = createPGliteSpendingQuery(fixture.store as never);
+    const read = async (knowledgeAt: number) =>
+      (await query.recordPage({ knowledgeAt, month: "2026-09", limit: 50 })).records.find((record) => record.purchaseId === purchaseId)?.category;
+    const base = await fixture.knowledgeAt();
+    assert.deepEqual(pickCategory(await read(base)), { mode: "single", origin: "derived", categoryCode: "food_and_groceries" });
+    const set = await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId, knowledgeAt: base, categoryCode: "gifts_and_donations" });
+    assert.deepEqual(pickCategory(await read(set.knowledgeAt)), { mode: "single", origin: "user", categoryCode: "gifts_and_donations" });
+    const summary = (await query.summaryPage()).purchaseReport.summary;
+    assert.ok(
+      summary?.categoryTotalsByMonth?.some((row) => row.month === "2026-09" && row.categoryCode === "gifts_and_donations"),
+      "the month totals move to the user's category",
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+function pickCategory(category: unknown) {
+  const value = category as { mode: string; origin?: string; categoryCode?: string } | undefined;
+  return value && { mode: value.mode, origin: value.origin, categoryCode: value.categoryCode };
+}

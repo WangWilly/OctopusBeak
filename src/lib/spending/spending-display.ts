@@ -57,6 +57,15 @@ export function recordCategoryText(t: Translation, record: Pick<PurchaseRecord, 
   return groupLabel(t, groups[0] ?? "unclassified");
 }
 
+/** The group plus the exact code, so a change between codes of one group is visible. */
+export function recordCategoryDetailText(t: Translation, record: Pick<PurchaseRecord, "category">): string {
+  const category = record.category;
+  if (category.mode !== "single") return recordCategoryText(t, record);
+  const group = groupLabel(t, groupOfCode(category.categoryCode));
+  const code = codeLabel(t, category.categoryCode as PersonalCategoryCode);
+  return code === group ? group : `${group} · ${code}`;
+}
+
 /** The single code a purchase carries, for the picker's current choice. */
 export function recordCategoryCode(record: Pick<PurchaseRecord, "category">): string | null {
   return record.category.mode === "single" ? record.category.categoryCode : null;

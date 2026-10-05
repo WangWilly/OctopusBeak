@@ -20,7 +20,7 @@
     purchaseTimeText,
     reasonTexts,
     recordCategoryCode,
-    recordCategoryText,
+    recordCategoryDetailText,
     recordGroups,
     recordMerchant,
     timeOfDay,
@@ -129,7 +129,7 @@
             <span class="status-tag pending"><GitMerge size={12} strokeWidth={2.2} aria-hidden="true" />{$t.spendingReview.statusPending}</span>
           {/if}
         </div>
-        <p>{recordCategoryText($t, record)} · {longDateText(record.occurrence.value, $locale)}{record.occurrence.precision === "date" ? "" : ` ${timeOfDay(record.occurrence.value) ?? ""}`}</p>
+        <p>{recordCategoryDetailText($t, record)} · {longDateText(record.occurrence.value, $locale)}{record.occurrence.precision === "date" ? "" : ` ${timeOfDay(record.occurrence.value) ?? ""}`}</p>
       </div>
       <button type="button" class="icon-button" aria-label={$t.spendingReview.previousPurchase} disabled={position.index <= 0} data-previous-purchase onclick={() => onStep(-1)}><ChevronUp size={18} strokeWidth={2} aria-hidden="true" /></button>
       <button type="button" class="icon-button" aria-label={$t.spendingReview.nextPurchase} disabled={position.index >= position.total - 1} data-next-purchase onclick={() => onStep(1)}><ChevronDown size={18} strokeWidth={2} aria-hidden="true" /></button>
@@ -178,7 +178,7 @@
               <dt>{$t.spendingReview.category}</dt>
               <dd>
                 <span class="category-dot" style:background={SPENDING_GROUP_COLORS[mainGroup]} aria-hidden="true"></span>
-                <span>{recordCategoryText($t, record)}</span>
+                <span>{recordCategoryDetailText($t, record)}</span>
                 <button type="button" class="text-button" aria-expanded={pickerOpen} data-change-category onclick={() => pickerOpen = !pickerOpen}>{$t.spendingReview.change}</button>
               </dd>
             </div>
