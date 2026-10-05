@@ -116,6 +116,7 @@ const browser = await chromium.launch({ headless: true });
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.clock.setFixedTime(new Date("2026-07-20T12:00:00+08:00"));
   const errors = [];
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
