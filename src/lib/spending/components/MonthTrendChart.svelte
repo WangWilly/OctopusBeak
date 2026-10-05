@@ -52,8 +52,8 @@
     return typeof value === "string" && labelled.has(value) ? shortMonth(value) : "";
   }
 
-  function selectBar(_event: MouseEvent, detail: { data: TrendBar }) {
-    if (detail.data.selectable) onSelectMonth(detail.data.month);
+  function selectMonth(_event: MouseEvent, detail: { data: TrendBar | null }) {
+    if (detail.data?.selectable) onSelectMonth(detail.data.month);
   }
 </script>
 
@@ -75,7 +75,7 @@
       bandPadding={0.32}
       rule={false}
       padding={{ top: 8, right: 8, bottom: 24, left: 48 }}
-      onBarClick={selectBar}
+      tooltipContext={{ mode: "band", onclick: selectMonth }}
       props={{
         xAxis: { format: monthTick, ticks: months.map((month) => month.month) },
         yAxis: {
@@ -86,7 +86,7 @@
       }}
     >
       {#snippet marks()}
-        <Bars data={plotted} radius={3} rounded="edge" onBarClick={selectBar} key={(month: TrendBar) => month.month} />
+        <Bars data={plotted} radius={3} rounded="edge" key={(month: TrendBar) => month.month} />
         {#if selected.length > 0}
           <Bars data={selected} radius={3} rounded="edge" fill="none" stroke="var(--fg)" strokeWidth={2} class="trend-selected" />
         {/if}

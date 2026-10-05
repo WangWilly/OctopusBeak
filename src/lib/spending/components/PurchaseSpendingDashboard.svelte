@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { ChevronLeft, ChevronRight } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
-  import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
@@ -12,6 +11,7 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
   } from "../purchase-matching.ts";
   import {
+    taipeiDateKey,
     type SpendingPageDto,
     type SpendingPairingCandidateView,
   } from "../model.ts";
@@ -21,9 +21,15 @@
     type PurchaseSpendingFeedback,
     type PurchaseSpendingReport,
   } from "../purchase-spending-session.ts";
-  import PurchaseActivityBarChart, {
-    type PurchaseActivityDatum,
-  } from "./PurchaseActivityBarChart.svelte";
+  import {
+    readSpendingMonth,
+    readSpendingTrend,
+    type CurrencyCode,
+    type MonthReading,
+  } from "../spending-insights.ts";
+  import MonthPaceChart from "./MonthPaceChart.svelte";
+  import MonthTrendChart from "./MonthTrendChart.svelte";
+  import { moneyText, type ExactMoney } from "./money-text.ts";
 
   type PurchaseReport = PurchaseSpendingReport;
 
@@ -70,7 +76,7 @@
   let previousCanonical = fallbackCanonical;
   let selectedMonth: string | null = null;
   let chartReady = false;
-  let chartMode: "day" | "month" = "day";
+  const today = taipeiDateKey(Date.now() / 1000);
   let selectedCurrency = "";
   let selectedDay: string | null = null;
   let busyAction: string | null = null;
@@ -92,7 +98,6 @@
   const reportDerivedCache = new WeakMap<object, {
     months: readonly string[];
     availableCurrencies: readonly string[];
-    monthTotals: ReturnType<typeof totalsByMonthFor>;
     pendingCandidates: PurchaseReport["candidates"];
     candidateRecordsByKey: Map<string, PurchaseRecord>;
   }>();
@@ -171,7 +176,6 @@
     const derived = {
       months: monthsForReport(sourceReport),
       availableCurrencies: currenciesForReport(sourceReport),
-      monthTotals: totalsByMonthFor(sourceReport),
       pendingCandidates: sourceReport.candidates.filter((candidate) => candidate.status === "candidate"),
       candidateRecordsByKey: candidateRecordsByKeyFor(sourceReport),
     };
@@ -199,7 +203,6 @@
   $: reportDerived = reportDerivedFor(report);
   $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
-  $: monthRecords = recordsForMonth(report, activeMonth);
   $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
   $: availableCurrencies = reportDerived.availableCurrencies;
   $: if (!selectedCurrency || !availableCurrencies.includes(selectedCurrency)) selectedCurrency = availableCurrencies[0] ?? "TWD";
@@ -219,35 +222,58 @@
   ];
   $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId)
     ?? (validatedSelectedCandidate?.transactionId === selectedPaymentId ? validatedSelectedCandidate : null);
-  $: monthTotals = reportDerived.monthTotals;
-  $: visibleTotals = totalsForPeriod(report, activeMonth, selectedDay);
-  $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
+  $: visibleTotals = totalsForMonth(report, activeMonth);
   $: monthSummary = report.summary?.monthTotals.find((summary) => summary.month === activeMonth) ?? null;
   $: periodRecordCount = report.summary
     ? selectedDay
       ? report.summary.dayTotals.find((summary) => summary.date === selectedDay)?.recordCount ?? 0
       : monthSummary?.recordCount ?? 0
     : visibleRecords.length;
-  $: spendingDayCount = selectedDay
-    ? 1
-    : monthSummary?.activeDayCount ?? new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
-  $: recordGroups = groupRecordsByDate(visibleRecords);
-  $: chartData = chartMode === "day"
-    ? dailyChartDataFor(report, monthRecords, activeMonth, selectedCurrency)
-    : monthlyChartData(monthTotals, selectedCurrency);
+  $: reading = report.summary ? readSpendingMonth(report.summary, { month: activeMonth, today }) : null;
+  $: current = reading?.byCurrency.get(selectedCurrency as CurrencyCode) ?? null;
+  $: monthFigure = current?.total ?? visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
+  $: trend = reading && report.summary
+    ? readSpendingTrend(report.summary, { currency: selectedCurrency, selectedMonth: reading.month, today })
+    : [];
+  $: selectedDayReading = current?.days.find((day) => day.date === selectedDay) ?? null;
+  $: activeMonthIndex = activeMonth ? months.indexOf(activeMonth) : -1;
+  $: previousMonthKey = activeMonthIndex > 0 ? months[activeMonthIndex - 1] : null;
+  $: nextMonthKey = activeMonthIndex >= 0 ? months[activeMonthIndex + 1] ?? null : null;
+  $: pendingAffectsTotal = reading
+    ? reading.caveat.kind === "may-include-duplicates"
+    : report.totalStatus === "includes-pending-confirmation";
   $: candidateRecordsByKey = reportDerived.candidateRecordsByKey;
 
-  function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
-    return {
-      currency: amount.currency,
-      value: exactToNumber(amount),
-      exact: { coefficient: amount.coefficient, scale: amount.scale },
-    };
+  function amountText(amount: ExactMoney | null, signed = false) {
+    if (!amount) return $t.purchaseSpending.amountUnavailable;
+    return moneyText(amount, $locale, signed);
   }
 
-  function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    if (!amount) return $t.purchaseSpending.amountUnavailable;
-    return formatMoney(moneyValue(amount), { locale: $locale, signed });
+  function shortMonthText(value: string) {
+    return new Intl.DateTimeFormat($locale, { month: "short", timeZone: "UTC" })
+      .format(new Date(Date.UTC(Number(value.slice(0, 4)), Number(value.slice(5, 7)) - 1, 1)));
+  }
+
+  function monthDayText(value: string) {
+    return `${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}`;
+  }
+
+  function dayTotalsFor(sourceReading: MonthReading | null, date: string, loaded: readonly ExactMoney[]) {
+    if (!sourceReading || !date.startsWith(`${sourceReading.month}-`)) return loaded;
+    const index = Number(date.slice(8, 10)) - 1;
+    const exact = sourceReading.currencies.flatMap((currency) => {
+      const day = sourceReading.byCurrency.get(currency)?.days[index];
+      return day && day.tone !== "quiet" && day.tone !== "future" ? [day.net] : [];
+    });
+    return exact.length > 0 ? exact : loaded;
+  }
+
+  function chooseDay(key: string) {
+    spendingSession.chooseDay(selectedDay === key ? null : key);
+  }
+
+  function showPendingMatches() {
+    document.querySelector("[data-candidates]")?.scrollIntoView({ block: "start" });
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
@@ -362,81 +388,14 @@
     };
   }
 
-  function chartDataFor(
-    sourceReport: PurchaseReport,
-    mode: "day" | "month",
-    preferredMonth: string | null,
-    currency: string,
-  ) {
-    const active = activeMonthForReport(sourceReport, preferredMonth);
-    return mode === "day"
-      ? dailyChartDataFor(sourceReport, sourceReport.records, active, currency)
-      : monthlyChartData(totalsByMonthFor(sourceReport), currency);
-  }
-
   function currenciesForReport(sourceReport: PurchaseReport) {
     return sourceReport.summary?.currencies
       ?? [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
   }
 
-  function totalsByMonthFor(sourceReport: PurchaseReport) {
-    return sourceReport.summary
-      ? sourceReport.summary.monthTotals.flatMap((month) => month.totalsByCurrency.map((amount) => ({ month: month.month, amount })))
-      : totalsByMonth(sourceReport.records);
-  }
-
-  function totalsForPeriod(sourceReport: PurchaseReport, month: string | null, day: string | null) {
-    if (sourceReport.summary) {
-      if (day) return sourceReport.summary.dayTotals.find((row) => row.date === day)?.totalsByCurrency ?? [];
-      return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
-    }
-    return totalsByCurrency(day
-      ? sourceReport.records.filter((record) => record.occurrence.value.startsWith(day))
-      : sourceReport.records.filter((record) => month === null || record.occurrence.value.startsWith(`${month}-`)));
-  }
-
-  function dailyChartDataFor(
-    sourceReport: PurchaseReport,
-    records: readonly PurchaseRecord[],
-    month: string | null,
-    currency: string,
-  ) {
-    if (sourceReport.summary && month) {
-      const [year, monthNumber] = month.split("-").map(Number);
-      if (!year || !monthNumber) return [];
-      const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-      const totals = new Map(sourceReport.summary.dayTotals
-        .filter((row) => row.month === month)
-        .flatMap((row) => row.totalsByCurrency
-          .filter((amount) => amount.currency === currency)
-          .map((amount) => [row.date, exactToNumber(amount)] as const)));
-      return Array.from({ length: days }, (_, index) => {
-        const date = `${month}-${String(index + 1).padStart(2, "0")}`;
-        const value = totals.get(date) ?? 0;
-        return { key: date, label: `${monthNumber}/${index + 1}`, value, tone: value < 0 ? "refund" as const : "spend" as const };
-      });
-    }
-    return dailyChartData(records, month, currency);
-  }
-
-  function totalsByMonth(records: readonly PurchaseRecord[]) {
-    const totals = new Map<string, { coefficient: string; scale: number; currency: string; count: number }>();
-    for (const record of records) {
-      if (!record.amount) continue;
-      const key = `${record.occurrence.value.slice(0, 7)}|${record.amount.currency}`;
-      const previous = totals.get(key);
-      if (!previous) {
-        totals.set(key, { ...record.amount, count: 1 });
-        continue;
-      }
-      const scale = Math.max(previous.scale, record.amount.scale);
-      const coefficient = BigInt(previous.coefficient) * 10n ** BigInt(scale - previous.scale) +
-        BigInt(record.amount.coefficient) * 10n ** BigInt(scale - record.amount.scale);
-      totals.set(key, { currency: record.amount.currency, coefficient: coefficient.toString(), scale, count: previous.count + 1 });
-    }
-    return [...totals.entries()]
-      .map(([key, amount]) => ({ month: key.slice(0, key.indexOf("|")), amount }))
-      .sort((left, right) => left.month.localeCompare(right.month) || left.amount.currency.localeCompare(right.amount.currency));
+  function totalsForMonth(sourceReport: PurchaseReport, month: string | null) {
+    if (sourceReport.summary) return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
+    return totalsByCurrency(sourceReport.records.filter((record) => month === null || record.occurrence.value.startsWith(`${month}-`)));
   }
 
   function totalsByCurrency(records: readonly PurchaseRecord[]) {
@@ -475,62 +434,8 @@
     }));
   }
 
-  function dailyChartData(
-    records: readonly PurchaseRecord[],
-    month: string | null,
-    currency: string,
-  ): PurchaseActivityDatum[] {
-    if (!month) return [];
-    const [year, monthNumber] = month.split("-").map(Number);
-    if (!year || !monthNumber) return [];
-    const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-    const totals = new Map<string, number>();
-    for (const record of records) {
-      if (!record.amount || record.amount.currency !== currency) continue;
-      const date = record.occurrence.value.slice(0, 10);
-      totals.set(date, (totals.get(date) ?? 0) + exactToNumber(record.amount));
-    }
-    return Array.from({ length: days }, (_, index) => {
-      const day = String(index + 1).padStart(2, "0");
-      const key = `${month}-${day}`;
-      const value = totals.get(key) ?? 0;
-      return { key, label: `${monthNumber}/${index + 1}`, value, tone: value < 0 ? "refund" : "spend" };
-    });
-  }
-
-  function monthlyChartData(
-    rows: ReturnType<typeof totalsByMonth>,
-    currency: string,
-  ): PurchaseActivityDatum[] {
-    return rows
-      .filter((row) => row.amount.currency === currency)
-      .map((row) => ({
-        key: row.month,
-        label: row.month.slice(2).replace("-", "/"),
-        value: exactToNumber(row.amount),
-        tone: exactToNumber(row.amount) < 0 ? "refund" as const : "spend" as const,
-      }));
-  }
-
   function chooseMonth(month: string) {
     spendingSession.chooseMonth(month);
-  }
-
-  function selectChartPeriod(key: string) {
-    if (chartMode === "month") {
-      chooseMonth(key);
-      chartMode = "day";
-      return;
-    }
-    spendingSession.chooseDay(selectedDay === key ? null : key);
-  }
-
-  function selectChartPeriodFromControl(key: string) {
-    if (chartMode === "day") {
-      spendingSession.chooseDay(key || null);
-      return;
-    }
-    if (key) selectChartPeriod(key);
   }
 
   function confirmCandidate(candidateId: string) {
@@ -583,30 +488,13 @@
   title={$t.spending.title}
   sideLabel={$t.purchaseSpending.monthlyTotal}
   sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "--"}
-  sideSub={(report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : report.totalStatus === "includes-pending-confirmation")
-    ? $t.purchaseSpending.includesPending
-    : $t.purchaseSpending.purchaseBasisTotal}
+  sideSub={pendingAffectsTotal ? $t.purchaseSpending.includesPending : $t.purchaseSpending.purchaseBasisTotal}
 >
   <div class="content spending-dashboard purchase-spending" data-spending-canonical data-purchase-report>
-    <section class="card purchase-policy-card" data-policy-id="gross-posted-outflow">
-      <div class="policy-copy">
-        <h2>{$t.purchaseSpending.basisTitle}</h2>
-        <p>{$t.purchaseSpending.basisDescription}</p>
-      </div>
-      <span class="purchase-total-status" data-total-status={report.summary
-        ? monthCandidateCount === null ? "month-pending-unloaded" : monthCandidateCount > 0 ? "includes-pending-confirmation" : "month-clear"
-        : report.totalStatus}>
-        {report.summary
-          ? monthCandidateCount === null
-            ? $t.purchaseSpending.preparingCandidates
-            : monthCandidateCount > 0
-              ? $t.purchaseSpending.pendingCountWarning(monthCandidateCount)
-              : $t.purchaseSpending.noPendingMatches
-          : report.totalStatus === "includes-pending-confirmation"
-            ? $t.purchaseSpending.pendingCountWarning(pendingCandidates.length)
-            : $t.purchaseSpending.allSourcesConfirmed}
-      </span>
-    </section>
+    <details class="purchase-basis-banner" data-policy-id="gross-posted-outflow">
+      <summary><strong>{$t.purchaseSpending.basisTitle}</strong><span>{$t.spendingInsight.basisSummary}</span></summary>
+      <p>{$t.purchaseSpending.basisDescription}</p>
+    </details>
 
     {#if recordPageLoading || isUpdating}
       <p role="status" data-spending-updating>{$t.common.loading}</p>
@@ -618,90 +506,141 @@
     <div class="purchase-analysis-grid">
       <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
       {@const summaryBlock = spendingBlockData("summary", data)}
-      <section class="card purchase-summary-card">
-        <div class="section-heading">
-          <div>
-            <h2>{$t.purchaseSpending.purchaseTotal}</h2>
-            <p>{activeMonth ? monthText(activeMonth) : $t.purchaseSpending.allMonths}</p>
+      <section class="card spending-month-panel" data-month-panel aria-labelledby="spending-month-title">
+        <header class="month-panel-head">
+          <div class="month-nav">
+            <button type="button" class="button month-step" aria-label={$t.spendingInsight.previousMonth} disabled={!previousMonthKey} onclick={() => previousMonthKey && chooseMonth(previousMonthKey)}>
+              <ChevronLeft size={18} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+            <h2 id="spending-month-title">{activeMonth ? monthText(activeMonth) : $t.purchaseSpending.allMonths}</h2>
+            <button type="button" class="button month-step" aria-label={$t.spendingInsight.nextMonth} disabled={!nextMonthKey} onclick={() => nextMonthKey && chooseMonth(nextMonthKey)}>
+              <ChevronRight size={18} strokeWidth={2.2} aria-hidden="true" />
+            </button>
           </div>
-          {#if months.length > 0}
-            <label class="month-picker">
-              <span>{$t.purchaseSpending.month}</span>
-              <select value={activeMonth ?? ""} onchange={(event) => chooseMonth(event.currentTarget.value)}>
-                {#each [...months].reverse() as month}
-                  <option value={month}>{monthText(month)}</option>
+          <div class="month-controls">
+            {#if months.length > 0}
+              <label class="month-picker">
+                <span class="visually-hidden">{$t.purchaseSpending.month}</span>
+                <select value={activeMonth ?? ""} onchange={(event) => chooseMonth(event.currentTarget.value)}>
+                  {#each [...months].reverse() as month}
+                    <option value={month}>{monthText(month)}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+            {#if availableCurrencies.length > 1}
+              <div class="filters currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
+                {#each availableCurrencies as currency}
+                  <button type="button" class="filter-btn" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </header>
+
+        <div class="month-reading">
+          <div class="month-figure">
+            <strong class="money month-total" data-sensitive>{amountText(monthFigure)}</strong>
+            {#if reading && current}
+              {#if current.standing.kind === "no-usual"}
+                <p class="month-standing">{$t.spendingInsight.usualNotYet(3 - (current.usual.kind === "unavailable" ? current.usual.fullMonthsAvailable : 0))}</p>
+              {:else}
+                <p class="month-standing" data-standing={current.standing.kind}>
+                  <strong>{reading.span.kind === "in-progress" ? $t.spendingInsight.standingToDate[current.standing.kind] : $t.spendingInsight.standing[current.standing.kind]}</strong>
+                  <span class="standing-difference">{$t.spendingInsight.differencePrefix} <span class="money" data-sensitive>{amountText(current.standing.differenceFromMean, true)}</span> {$t.spendingInsight.differenceSuffix}</span>
+                </p>
+              {/if}
+              {#if current.usual.kind === "available"}
+                <p class="month-usual-range">
+                  {reading.span.kind === "in-progress" ? $t.spendingInsight.usualRangeToDate(reading.span.throughDay) : $t.spendingInsight.usualRange}
+                  <span class="money" data-sensitive>{amountText(current.usual.low)}</span>–<span class="money" data-sensitive>{amountText(current.usual.high)}</span>
+                </p>
+              {/if}
+            {/if}
+          </div>
+          {#if reading && current}
+            <dl class="month-facts">
+              <div>
+                <dt>{$t.spendingInsight.dailyMean}</dt>
+                <dd><span class="money" data-sensitive>{amountText(current.dailyMean)}</span></dd>
+                {#if current.usual.kind === "available"}<dd class="fact-sub">{$t.spendingInsight.usualDailyMean} <span class="money" data-sensitive>{amountText(current.usual.dailyMean)}</span></dd>{/if}
+              </div>
+              <div><dt>{$t.purchaseSpending.activeDays}</dt><dd class="num">{current.activeDays}</dd></div>
+              <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd class="num">{reading.recordCount}</dd></div>
+              <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd class="num">{reading.caveat.kind === "may-include-duplicates" ? reading.caveat.pendingPairs : reading.caveat.kind === "confirmed" ? 0 : "—"}</dd></div>
+            </dl>
+          {/if}
+        </div>
+
+        {#if reading?.caveat.kind === "checking"}
+          <p class="month-caveat" role="status" data-total-status="month-pending-unloaded">{$t.spendingInsight.checkingDuplicates}</p>
+        {:else if reading ? reading.caveat.kind === "may-include-duplicates" : (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
+          <p class="month-caveat caution" data-pending-total data-total-status="includes-pending-confirmation">
+            {$t.purchaseSpending.pendingTotalNote}
+            {#if report.summary}<button type="button" class="caveat-link" onclick={showPendingMatches}>{$t.spendingInsight.reviewPending}</button>{/if}
+          </p>
+        {/if}
+
+        {#if reading && current}
+          {#if chartReady}
+            <MonthPaceChart reading={current} span={reading.span} {selectedDay} onSelectDay={chooseDay} />
+          {:else}
+            <div class="month-chart-pending" aria-hidden="true"></div>
+          {/if}
+          {#if selectedDayReading}
+            <div class="day-detail" data-day-detail>
+              <strong>{dateText(selectedDayReading.date)}</strong>
+              <span class="money" data-sensitive>{amountText(selectedDayReading.net)}</span>
+              <span>{$t.purchaseSpending.dayPurchasesCount(selectedDayReading.recordCount)}</span>
+              {#if current.usual.kind === "available"}<span>{$t.spendingInsight.usualDailyMean} <span class="money" data-sensitive>{amountText(current.usual.dailyMean)}</span></span>{/if}
+              <button type="button" class="button secondary" onclick={() => spendingSession.chooseDay(null)}>{$t.purchaseSpending.showFullMonth}</button>
+            </div>
+          {/if}
+          <div class="chart-footer">
+            <label class="chart-period-picker">
+              <span>{$t.purchaseSpending.chooseDay}</span>
+              <select
+                aria-label={$t.purchaseSpending.chooseDayAria}
+                value={selectedDay ?? ""}
+                onchange={(event) => spendingSession.chooseDay(event.currentTarget.value || null)}
+              >
+                <option value="">{$t.purchaseSpending.showFullMonth}</option>
+                {#each current.days.filter((day) => day.tone !== "future") as day (day.date)}
+                  <option value={day.date}>{monthDayText(day.date)}</option>
                 {/each}
               </select>
             </label>
-          {/if}
-        </div>
-        <div class="summary-amount">
-          <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
-        </div>
-        <dl class="summary-facts">
-          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd class="num">{monthSummary?.recordCount ?? monthRecords.length}</dd></div>
-          <div><dt>{$t.purchaseSpending.activeDays}</dt><dd class="num">{spendingDayCount}</dd></div>
-          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd class="num">{monthCandidateCount ?? monthSummary?.pendingCandidateCount ?? "—"}</dd></div>
-        </dl>
-        {#if availableCurrencies.length > 1}
-          <div class="filters currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
-            {#each availableCurrencies as currency}
-              <button type="button" class="filter-btn" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
-            {/each}
+            <p class="chart-hint">{$t.purchaseSpending.dayHint}</p>
           </div>
-        {/if}
-        {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
-          <p class="pending-total-note" data-pending-total>{$t.purchaseSpending.pendingTotalNote}</p>
+          <div class="month-footnotes">
+            {#if current.usual.kind === "available"}
+              <p>{reading.span.kind === "in-progress"
+                ? $t.spendingInsight.usualBasisToDate(shortMonthText(current.usual.months[0]), shortMonthText(current.usual.months[2]), reading.span.throughDay)
+                : $t.spendingInsight.usualBasis(shortMonthText(current.usual.months[0]), shortMonthText(current.usual.months[2]))}</p>
+            {/if}
+            {#if reading.span.kind === "in-progress"}
+              <p>{reading.latestRecordDate ? `${$t.spendingInsight.dataThrough(monthDayText(reading.latestRecordDate))} · ` : ""}{$t.spendingInsight.throughDay(reading.span.throughDay, reading.span.daysInMonth)}</p>
+            {/if}
+          </div>
+        {:else if reading}
+          <p class="month-empty">{$t.spendingInsight.noCurrencyThisMonth(selectedCurrency)}</p>
         {/if}
       </section>
       </ProgressiveBlock>
 
-      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
-      {@const chartReport = resolveSpendingPurchaseReport(report, spendingBlockData("chart", data))}
-      {@const chartCurrencies = currenciesForReport(chartReport)}
-      {@const chartCurrency = chartCurrencies.includes(selectedCurrency) ? selectedCurrency : chartCurrencies[0] ?? "TWD"}
-      {@const blockChartData = chartDataFor(chartReport, chartMode, activeMonth, chartCurrency)}
-      <section class="card purchase-chart-card" aria-label={$t.purchaseSpending.chartAria} data-chart>
-        <div class="section-heading chart-heading">
-          <div>
-            <h2>{chartMode === "day" ? $t.purchaseSpending.dailySpending : $t.purchaseSpending.monthlySpending}</h2>
-            <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : $t.purchaseSpending.recentMonths}</p>
-          </div>
-          <div class="filters chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
-            <button type="button" class="filter-btn" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.daily}</button>
-            <button type="button" class="filter-btn" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; spendingSession.chooseDay(null); }}>{$t.purchaseSpending.monthly}</button>
-          </div>
-        </div>
-        {#if chartReady}
-          <PurchaseActivityBarChart
-            data={blockChartData}
-            selectedKey={chartMode === "day" ? selectedDay : activeMonth}
-            label={chartMode === "day" ? $t.purchaseSpending.dailyAmount : $t.purchaseSpending.monthlyAmount}
-            onSelect={selectChartPeriod}
-          />
-        {:else}
-          <div class="purchase-chart-pending" aria-hidden="true"></div>
-        {/if}
-        <div class="chart-footer">
-        <label class="chart-period-picker">
-          <span>{chartMode === "day" ? $t.purchaseSpending.chooseDay : $t.purchaseSpending.chooseMonth}</span>
-          <select
-            aria-label={chartMode === "day" ? $t.purchaseSpending.chooseDayAria : $t.purchaseSpending.chooseMonthAria}
-            value={chartMode === "day" ? selectedDay ?? "" : activeMonth ?? ""}
-            onchange={(event) => selectChartPeriodFromControl(event.currentTarget.value)}
-          >
-            {#if chartMode === "day"}<option value="">{$t.purchaseSpending.showFullMonth}</option>{/if}
-            {#each blockChartData as datum (datum.key)}
-              <option value={datum.key}>{datum.label}</option>
-            {/each}
-          </select>
-        </label>
-        <p class="chart-hint">{chartMode === "day"
-          ? $t.purchaseSpending.dayHint
-          : $t.purchaseSpending.monthHint}</p>
-        </div>
-      </section>
-      </ProgressiveBlock>
+      {#if reading}
+        <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+          <section class="card spending-trend-card" aria-labelledby="spending-trend-title">
+            <h2 id="spending-trend-title">{$t.spendingInsight.trendTitle}</h2>
+            <p class="trend-currency">{selectedCurrency}</p>
+            {#if chartReady}
+              <MonthTrendChart months={trend} selectedMonth={reading.month} onSelectMonth={chooseMonth} />
+            {:else}
+              <div class="trend-chart-pending" aria-hidden="true"></div>
+            {/if}
+          </section>
+        </ProgressiveBlock>
+      {/if}
     </div>
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
@@ -775,7 +714,7 @@
           <section class="purchase-day-group" data-purchase-day={group.date}>
             <header class="purchase-day-heading">
               <div><strong>{dateText(group.date)}</strong><span>{$t.purchaseSpending.dayPurchasesCount(group.records.length)}</span></div>
-              <div class="day-totals">{#each group.totals as total (total.currency)}<span class="money" data-sensitive>{amountText(total)}</span>{/each}</div>
+              <div class="day-totals">{#each dayTotalsFor(reading, group.date, group.totals) as total (total.currency)}<span class="money" data-sensitive>{amountText(total)}</span>{/each}</div>
             </header>
             {#each group.records as record (record.purchaseId)}
           <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-transaction-id={record.transaction?.transactionId ?? ""} data-possible-duplicate={record.possibleDuplicate}>
@@ -877,39 +816,69 @@
 <style>
   .purchase-spending { display: grid; gap: var(--space-6); }
   .purchase-spending :global(button) { transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
-  .purchase-policy-card, .purchase-summary-card, .purchase-chart-card, .purchase-candidates-card, .purchase-records-card, .purchase-action-error { min-width: 0; }
-  .purchase-policy-card { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-radius: var(--radius); }
-  .policy-copy { display: flex; align-items: baseline; gap: var(--space-4); min-width: 0; }
-  .policy-copy h2 { flex: 0 0 auto; margin: 0; font-size: 14px; }
-  .policy-copy p { max-width: 75ch; margin: 0; color: var(--muted); font-size: 13px; }
-  .purchase-total-status { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 720; white-space: nowrap; }
-  .purchase-total-status[data-total-status="month-clear"], .purchase-total-status[data-total-status="complete"] { color: var(--success); }
-  .purchase-total-status[data-total-status="includes-pending-confirmation"], .possible-duplicate, .purchase-action-error { color: var(--danger); }
+  .spending-month-panel, .spending-trend-card, .purchase-candidates-card, .purchase-records-card, .purchase-action-error { min-width: 0; }
+  .possible-duplicate, .purchase-action-error { color: var(--danger); }
   .purchase-action-error { padding: var(--space-4) var(--space-5); background: color-mix(in oklch, var(--danger) 8%, white); }
 
-  .purchase-analysis-grid { display: grid; grid-template-columns: minmax(290px, 0.7fr) minmax(0, 1.55fr); gap: var(--space-6); align-items: stretch; }
-  .purchase-analysis-grid .card { height: 100%; }
-  .purchase-summary-card, .purchase-chart-card, .purchase-candidates-card, .purchase-records-card { padding: var(--space-5); }
+  .purchase-basis-banner { padding: var(--space-2) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); font-size: 13px; }
+  .purchase-basis-banner summary { display: flex; align-items: baseline; gap: var(--space-3); cursor: pointer; list-style: none; }
+  .purchase-basis-banner summary::-webkit-details-marker { display: none; }
+  .purchase-basis-banner summary::after { content: ""; flex: 0 0 auto; align-self: center; width: 5px; height: 5px; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 180ms ease; }
+  .purchase-basis-banner[open] summary::after { transform: rotate(-135deg); }
+  .purchase-basis-banner summary strong { flex: 0 0 auto; color: var(--fg); font-size: 13px; }
+  .purchase-basis-banner p { max-width: 75ch; margin: var(--space-2) 0 var(--space-1); }
+
+  .purchase-analysis-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr); gap: var(--space-6); align-items: start; }
+  .spending-month-panel, .spending-trend-card, .purchase-candidates-card, .purchase-records-card { padding: var(--space-5); }
   .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
   .section-heading h2 { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.25; letter-spacing: -0.015em; }
   .section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-  .month-picker { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+
+  .month-panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3) var(--space-4); }
+  .month-nav { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+  .month-nav h2 { min-width: 0; margin: 0 var(--space-1); font-size: 16px; font-weight: 700; line-height: 1.3; }
+  .month-step { width: 40px; padding: 0; }
+  .month-step:disabled { opacity: 0.48; cursor: not-allowed; }
+  .month-step:focus-visible, .caveat-link:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
+  .month-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
   .month-picker select { min-height: 36px; padding: 0 34px 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--fg); }
-  .summary-amount { margin: var(--space-8) 0 var(--space-6); }
-  .summary-amount strong { font-size: 30px; line-height: 1; letter-spacing: -0.03em; }
-  .summary-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-block: 1px solid var(--border); }
-  .summary-facts div { min-width: 0; padding: var(--space-3) var(--space-2); }
-  .summary-facts div + div { border-left: 1px solid var(--border); }
-  .summary-facts dt { color: var(--muted); font-size: 11px; }
-  .summary-facts dd { margin: 4px 0 0; font-size: 20px; font-weight: 750; }
-  .currency-switch { margin-top: var(--space-4); }
-  .pending-total-note, .purchase-canonical-note { margin: var(--space-4) 0 0; color: var(--muted); font-size: 12px; }
-  .chart-heading { margin-bottom: var(--space-3); }
-  .purchase-chart-pending { min-height: 280px; }
-  .chart-footer { display: flex; align-items: center; justify-content: space-between; flex-direction: row-reverse; gap: var(--space-4); margin-top: var(--space-2); }
+
+  .month-reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: var(--space-5); align-items: start; margin: var(--space-6) 0 var(--space-4); }
+  .month-figure { display: grid; gap: var(--space-2); min-width: 0; }
+  .month-total { font-size: clamp(22px, 2.5vw, 32px); font-weight: 750; line-height: 1.1; letter-spacing: -0.02em; }
+  .month-standing, .month-usual-range { margin: 0; font-size: 14px; line-height: 1.5; }
+  .month-standing strong { margin-right: var(--space-2); font-weight: 700; }
+  .month-standing[data-standing="above"] strong { color: var(--warn); }
+  .month-usual-range, .standing-difference { color: var(--muted); }
+  .month-usual-range .money, .standing-difference .money { white-space: nowrap; }
+  .month-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border: 1px solid var(--border); border-radius: var(--radius); }
+  .month-facts > div { min-width: 0; padding: var(--space-3); }
+  .month-facts > div:nth-child(even) { border-left: 1px solid var(--border); }
+  .month-facts > div:nth-child(n + 3) { border-top: 1px solid var(--border); }
+  .month-facts dt { color: var(--muted); font-size: 11px; font-weight: 720; letter-spacing: 0.075em; text-transform: uppercase; }
+  .month-facts dd { margin: 4px 0 0; font-size: 18px; font-weight: 750; }
+  .month-facts .fact-sub { margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .month-facts .fact-sub .money { white-space: nowrap; }
+
+  .month-caveat { margin: 0 0 var(--space-3); color: var(--muted); font-size: 13px; }
+  .month-caveat.caution { color: var(--warn); }
+  .caveat-link { margin-left: var(--space-2); padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--accent); font: inherit; font-weight: 680; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .month-chart-pending { min-height: 340px; border-radius: 12px; background: var(--surface-soft); }
+  .trend-chart-pending { min-height: 240px; border-radius: 12px; background: var(--surface-soft); }
+  .day-detail { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
+  .day-detail > span { color: var(--muted); }
+  .day-detail > .money { color: var(--fg); font-weight: 750; }
+  .day-detail .button { min-height: 32px; margin-left: auto; }
+  .chart-footer { display: flex; align-items: center; justify-content: space-between; flex-direction: row-reverse; gap: var(--space-4); margin-top: var(--space-3); }
   .chart-period-picker { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: 11px; }
   .chart-period-picker select { min-height: 32px; max-width: 210px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
   .chart-hint { margin: 0; color: var(--muted); font-size: 11px; }
+  .month-footnotes { display: grid; gap: 2px; margin-top: var(--space-3); color: var(--muted); font-size: 12px; }
+  .month-footnotes p, .month-empty { margin: 0; }
+  .month-empty { padding: var(--space-8) 0; color: var(--muted); text-align: center; }
+  .spending-trend-card h2 { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
+  .trend-currency { margin: 4px 0 var(--space-3); color: var(--muted); font-size: 12px; }
+  .purchase-canonical-note { margin: var(--space-4) 0 0; color: var(--muted); font-size: 12px; }
 
   .purchase-candidates-card { display: grid; gap: var(--space-4); }
   .candidate-scope { display: flex; align-items: center; gap: var(--space-3); color: var(--muted); font-size: 12px; }
@@ -974,17 +943,24 @@
   @keyframes pairing-spin { to { transform: rotate(360deg); } }
   .candidate-empty.pairing-loading { display: flex; justify-content: center; }
   @media (prefers-reduced-motion: reduce) {
-    .item-list summary::before, .source-details summary::before { transition: none; }
+    .item-list summary::before, .source-details summary::before, .purchase-basis-banner summary::after { transition: none; }
   }
 
   @media (max-width: 1050px) {
     .purchase-analysis-grid { grid-template-columns: 1fr; }
+    .month-reading { grid-template-columns: 1fr; }
+    .month-facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .month-facts > div:nth-child(n + 2) { border-left: 1px solid var(--border); border-top: 0; }
     .candidate-row { grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr); }
     .candidate-actions { grid-column: 1 / -1; justify-content: start; }
   }
   @media (max-width: 680px) {
-    .purchase-policy-card, .policy-copy, .section-heading { align-items: flex-start; flex-direction: column; }
-    .purchase-total-status { white-space: normal; }
+    .section-heading { align-items: flex-start; flex-direction: column; }
+    .purchase-basis-banner summary { flex-wrap: wrap; }
+    .month-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .month-facts > div:nth-child(odd) { border-left: 0; }
+    .month-facts > div:nth-child(n + 3) { border-top: 1px solid var(--border); }
+    .day-detail .button { margin-left: 0; }
     .candidate-scope { width: 100%; justify-content: space-between; }
     .candidate-row { grid-template-columns: 1fr; }
     .candidate-compare { justify-items: start; text-align: left; }
@@ -994,8 +970,6 @@
     .purchase-record-side { text-align: left; }
     .purchase-day-heading { align-items: flex-start; }
     .purchase-day-heading, .purchase-day-heading > div { flex-direction: column; gap: 3px; }
-    .summary-facts { grid-template-columns: 1fr; }
-    .summary-facts div + div { border-left: 0; border-top: 1px solid var(--border); }
     .chart-footer, .chart-period-picker { align-items: stretch; flex-direction: column; }
     .chart-period-picker select { max-width: none; width: 100%; }
   }
