@@ -15,7 +15,7 @@ import {
 import type {
   PurchaseCategory,
   PurchaseItemCategorization,
-} from "../../ledger/canonical/purchase-category.ts";
+} from "./purchase-category-view.ts";
 
 export type SpendingPurchaseCategoryView = PurchaseCategory;
 export type SpendingPurchaseItemCategorizationView = PurchaseItemCategorization;
