@@ -98,6 +98,15 @@ export type SpendingPurchaseRecordView = Readonly<{
   refund: Readonly<{ provenanceReference: string }> | null;
   category: SpendingPurchaseCategoryView;
   itemCategorizations: readonly SpendingPurchaseItemCategorizationView[];
+  /** Null without a transaction or when the read did not load payment sources. */
+  paymentSource: SpendingPaymentSourceView | null;
+}>;
+
+/** The bank side's display facts; cardMask is only ever `****dddd`. */
+export type SpendingPaymentSourceView = Readonly<{
+  institution: string;
+  cardMask: string | null;
+  billingPeriod: Readonly<{ start: string; end: string }> | null;
 }>;
 
 export type SpendingPurchaseCandidateView = Readonly<{

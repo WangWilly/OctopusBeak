@@ -33,6 +33,32 @@ export type PurchaseOccurrence = Readonly<{
   basis: "purchase-date" | "posting-date-fallback" | "refund-date";
 }>;
 
+/**
+ * Display facts of a purchase's bank side. cardMask is only ever `****dddd`;
+ * billingPeriod is the cycle of the latest statement revision that lists the
+ * transaction.
+ */
+export type PurchasePaymentSourceFacts = Readonly<{
+  cardMask: string | null;
+  billingPeriod: Readonly<{ start: string; end: string }> | null;
+}>;
+
+export type PurchasePaymentSource = PurchasePaymentSourceFacts & Readonly<{
+  /** The transaction's integration namespace, such as `fubon` or `cathay`. */
+  institution: string;
+}>;
+
+/** Payment source facts keyed by canonical transaction id. */
+export type PurchasePaymentSourceIndex = ReadonlyMap<string, PurchasePaymentSourceFacts>;
+
+const CARD_MASK = /^[\d*xX\u2022\u00b7.\-\s]*(\d{4})$/u;
+
+/** Reduce a stored card mask to `****dddd`; anything that is not a mask becomes null. */
+export function cardMaskLastFour(value: string | null | undefined): string | null {
+  const match = CARD_MASK.exec((value ?? "").trim());
+  return match ? `****${match[1]}` : null;
+}
+
 export type PurchaseRecord = Readonly<{
   purchaseId: string;
   basis: "invoice" | "bank-transaction" | "linked" | "refund";
@@ -56,6 +82,11 @@ export type PurchaseRecord = Readonly<{
   category: PurchaseCategory;
   /** Current categorization of each invoice item, by item sequence. */
   itemCategorizations: readonly PurchaseItemCategorization[];
+  /**
+   * Bank-side display facts. Null when the record has no transaction, or when
+   * the read that composed it did not load payment sources.
+   */
+  paymentSource: PurchasePaymentSource | null;
 }>;
 
 /** Current item categorizations keyed by canonical invoice id. */
@@ -244,6 +275,20 @@ export function emptyPurchaseReport(
   });
 }
 
+/** A transaction's payment source, or null when there is no transaction or no index was loaded. */
+export function purchasePaymentSource(
+  transaction: CanonicalSpendingTransaction | null,
+  index: PurchasePaymentSourceIndex | undefined,
+): PurchasePaymentSource | null {
+  if (!transaction || !index) return null;
+  const facts = index.get(canonicalPurchaseUuid(transaction.transactionId, "Purchase transaction identity"));
+  return Object.freeze({
+    institution: transaction.integrationNamespace,
+    cardMask: facts?.cardMask ?? null,
+    billingPeriod: facts?.billingPeriod ?? null,
+  });
+}
+
 /** Pure report composition seam used by products and policy fixtures. */
 export function composePurchaseReport(input: Readonly<{
   request: PurchaseReportRequest;
@@ -252,8 +297,11 @@ export function composePurchaseReport(input: Readonly<{
   transactions: readonly CanonicalSpendingTransaction[];
   recognition: SpendingRecognitionSnapshot;
   itemCategorizations?: PurchaseItemCategorizationIndex;
+  paymentSources?: PurchasePaymentSourceIndex;
 }>): PurchaseReport {
   const { request, knowledgeAt, invoices, transactions, recognition } = input;
+  const paymentSourceOf = (transaction: CanonicalSpendingTransaction | null): PurchasePaymentSource | null =>
+    purchasePaymentSource(transaction, input.paymentSources);
   const itemCategorizationsOf = (invoiceId: string): readonly PurchaseItemCategorization[] =>
     input.itemCategorizations?.get(invoiceId) ?? [];
   const normalizedInvoices = invoices.map((item) => ({
@@ -309,6 +357,7 @@ export function composePurchaseReport(input: Readonly<{
       refund: null,
       category: purchaseRecordCategory({ basis: "linked", amount: transaction.amount, invoice, transaction, itemCategorizations }),
       itemCategorizations,
+      paymentSource: paymentSourceOf(transaction),
     });
   }
   for (const invoice of invoiceById.values()) {
@@ -333,6 +382,7 @@ export function composePurchaseReport(input: Readonly<{
       refund: null,
       category: purchaseRecordCategory({ basis: "invoice", amount: invoiceMoney(invoice), invoice, transaction: null, itemCategorizations }),
       itemCategorizations,
+      paymentSource: null,
     });
   }
   const normalizedRefunds = recognition.refunds.map((refund) => ({
@@ -361,6 +411,7 @@ export function composePurchaseReport(input: Readonly<{
       refund: null,
       category: purchaseRecordCategory({ basis: "bank-transaction", amount: transaction.amount, invoice: null, transaction, itemCategorizations: [] }),
       itemCategorizations: [],
+      paymentSource: paymentSourceOf(transaction),
     });
   }
   for (const refund of normalizedRefunds) {
@@ -384,6 +435,7 @@ export function composePurchaseReport(input: Readonly<{
       refund,
       category: { mode: "absent" },
       itemCategorizations: [],
+      paymentSource: paymentSourceOf(transactionById.get(refund.transactionId) ?? null),
     });
   }
   const totals = new Map<string, { value: Decimal; count: number }>();

@@ -250,11 +250,41 @@ test("links expose their decision time and the merge log pages decisions newest 
     });
     assert.deepEqual(revoked.payment, {
       transactionId: seeded.linkedPayment, description: "Books", date: "2026-09-15",
-      amount: { coefficient: "400", scale: 0, currency: "TWD" },
+      amount: { coefficient: "400", scale: 0, currency: "TWD" }, institution: "fubon", cardMask: null,
     });
     assert.ok(revoked.commitSequence > second.entries[0]!.commitSequence);
     await assert.rejects(query.mergeLog({ knowledgeAt: knowledgeAt - 1 }), /data version is stale/u);
   } finally {
     await seeded.fixture.close();
+  }
+});
+
+test("records carry only a ****dddd card mask, the institution, and the latest statement's billing period", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const dashed = await fixture.addTransaction({ amount: "11", date: "2026-09-02", description: "Dashed", card: { cardMask: "4311-****-****-5512", statement: { key: "2026-09", cycleStart: "2026-08-21", cycleEnd: "2026-09-20", revisions: [{ cycleStart: "2026-08-22", cycleEnd: "2026-09-21" }] } } });
+    const fullNumber = await fixture.addTransaction({ amount: "12", date: "2026-09-02", description: "Full number", card: { cardMask: "4311123412349876" } });
+    const token = await fixture.addTransaction({ amount: "13", date: "2026-09-02", description: "Token", card: { cardMask: "sha256:leakytoken1234" } });
+    const plain = await fixture.addTransaction({ amount: "14", date: "2026-09-02", description: "No card facts" });
+    const invoiceOnly = await fixture.commitInvoice({ stableKey: "IO00000001:2026-09-02", date: "2026-09-02", items: [{ sequence: 1, name: "Tea", amount: "15" }] });
+    const linkedInvoice = await fixture.commitInvoice({ stableKey: "LI00000001:2026-09-02", date: "2026-09-02", items: [{ sequence: 1, name: "Cake", amount: "16" }] });
+    const linkedPayment = await fixture.addTransaction({ amount: "16", date: "2026-09-02", description: "Cake", card: { cardMask: "****7788" } });
+    await fixture.link(linkedInvoice, linkedPayment);
+    const query = createPGliteSpendingQuery(fixture.store);
+    const page = await query.recordPage({ knowledgeAt: await fixture.knowledgeAt(), month: "2026-09", limit: 100 });
+    const source = (predicate: (record: (typeof page.records)[number]) => boolean) => page.records.find(predicate)?.paymentSource;
+    assert.deepEqual(source((record) => record.transaction?.transactionId === dashed), {
+      institution: "fubon", cardMask: "****5512", billingPeriod: { start: "2026-08-22", end: "2026-09-21" },
+    });
+    assert.deepEqual(source((record) => record.transaction?.transactionId === fullNumber), { institution: "fubon", cardMask: "****9876", billingPeriod: null });
+    assert.deepEqual(source((record) => record.transaction?.transactionId === token), { institution: "fubon", cardMask: null, billingPeriod: null });
+    assert.deepEqual(source((record) => record.transaction?.transactionId === plain), { institution: "fubon", cardMask: null, billingPeriod: null });
+    assert.equal(source((record) => record.invoice?.invoiceId === invoiceOnly && record.basis === "invoice"), null);
+    assert.deepEqual(source((record) => record.basis === "linked"), { institution: "fubon", cardMask: "****7788", billingPeriod: null });
+    const wire = JSON.stringify(page);
+    for (const leak of ["4311-", "43111234", "leakytoken", "fixture-instrument"])
+      assert.equal(wire.includes(leak), false, `the record page must not carry ${leak}`);
+  } finally {
+    await fixture.close();
   }
 });
