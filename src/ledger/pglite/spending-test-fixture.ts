@@ -32,6 +32,16 @@ export type FixtureTransactionInput = Readonly<{
   date?: string;
   description?: string;
   direction?: "outflow" | "inflow";
+  /** Credit-card facts: a consume date makes the transaction's date a purchase date. */
+  card?: FixtureCardFacts;
+}>;
+
+export type FixtureCardFacts = Readonly<{
+  consumeDate?: string | null;
+  postingDate?: string;
+  /** Stored as the instrument's card_mask, which may hold more than the last four digits. */
+  cardMask?: string | null;
+  statement?: Readonly<{ key: string; cycleStart: string; cycleEnd: string; revisions?: readonly Readonly<{ cycleStart: string; cycleEnd: string }>[] }>;
 }>;
 
 export type FixtureInvoiceItem = Readonly<{
@@ -110,6 +120,8 @@ export async function createSpendingCategoryFixture() {
   const bankCapture = uuidBytes();
   const account = uuidBytes();
   let captureCount = 0;
+  const instruments = new Map<string, Uint8Array>();
+  const statements = new Map<string, readonly Uint8Array[]>();
   await store.query(
     "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, $2, 'source_capture')",
     [sourceCommit, BANK_ROUTE],
@@ -194,6 +206,63 @@ export async function createSpendingCategoryFixture() {
         "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES ($1, $2, NULL, NULL, NULL, $3)",
         [assertionId, recordId, commitId],
       );
+      if (input.card) {
+        const card = input.card;
+        const maskKey = card.cardMask ?? "";
+        let instrument = instruments.get(maskKey);
+        if (!instrument) {
+          instrument = uuidBytes();
+          instruments.set(maskKey, instrument);
+          await transaction.query(
+            `INSERT INTO canonical_credit_card_instruments(instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle)
+             VALUES ($1, 'fubon', $2, $3, $4, 'primary', 'active')`,
+            [instrument, account, `fixture-instrument-${instruments.size}`, card.cardMask ?? null],
+          );
+        }
+        const consumeDate = card.consumeDate === undefined ? date : card.consumeDate;
+        await transaction.query(
+          `INSERT INTO canonical_credit_card_transaction_details(
+             integration_namespace, account_id, transaction_id, revision_id, source_record_id, capture_id,
+             instrument_id, billing_status, consume_date, posting_date, effective_date_basis, statement_key
+           ) VALUES ('fubon', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [account, transactionId, revisionId, recordId, bankCapture, instrument,
+            card.statement ? "billed" : "unbilled", consumeDate, card.postingDate ?? date,
+            consumeDate ? "consume-date" : "posting-date-fallback", card.statement?.key ?? null],
+        );
+        if (card.statement) {
+          let revisions = statements.get(card.statement.key);
+          if (!revisions) {
+            const statementId = uuidBytes();
+            await transaction.query(
+              "INSERT INTO canonical_credit_card_statements(statement_id, integration_namespace, account_id, statement_key) VALUES ($1, 'fubon', $2, $3)",
+              [statementId, account, card.statement.key],
+            );
+            const cycles = [{ cycleStart: card.statement.cycleStart, cycleEnd: card.statement.cycleEnd }, ...(card.statement.revisions ?? [])];
+            const created: Uint8Array[] = [];
+            for (const [index, cycle] of cycles.entries()) {
+              const statementRevisionId = uuidBytes();
+              created.push(statementRevisionId);
+              await transaction.query(
+                `INSERT INTO canonical_credit_card_statement_revisions(
+                   statement_revision_id, statement_id, revision_key, revision_number, created_capture_id,
+                   cycle_start, cycle_end, issue_date, due_date, currency, balance_coefficient, balance_scale,
+                   minimum_coefficient, minimum_scale, evidence_source_record_key
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, 'TWD', '0', 0, NULL, NULL, $3)`,
+                [statementRevisionId, statementId, `${card.statement.key}:${index + 1}`, index + 1, bankCapture, cycle.cycleStart, cycle.cycleEnd],
+              );
+            }
+            revisions = created;
+            statements.set(card.statement.key, revisions);
+          }
+          for (const statementRevisionId of revisions) {
+            await transaction.query(
+              `INSERT INTO canonical_credit_card_statement_memberships(statement_revision_id, transaction_id, transaction_revision_id, source_record_id)
+               VALUES ($1, $2, $3, $4)`,
+              [statementRevisionId, transactionId, revisionId, recordId],
+            );
+          }
+        }
+      }
       await refreshPGliteCurrentProjectionInTransaction(transaction, {
         commitId,
         cutoffSequence: sequence,
