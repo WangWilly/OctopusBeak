@@ -11,7 +11,7 @@ import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { confirmPGliteSpendingCandidate } from "./spending-command.ts";
 import { applySpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import { spendingPairingReportContext } from "../../lib/spending/model.ts";
-import { rankSpendingManualPaymentCandidates } from "../../lib/spending/purchase-matching.ts";
+import { rankSpendingManualPaymentCandidates } from "../canonical/spending-manual-pairing.ts";
 
 const transactions = Number(process.env.PGLITE_BENCHMARK_TRANSACTIONS ?? 100_000);
 const invoices = Number(process.env.PGLITE_BENCHMARK_INVOICES ?? 10_001);

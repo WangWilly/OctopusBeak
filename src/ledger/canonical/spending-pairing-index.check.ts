@@ -3,10 +3,12 @@ import test from "node:test";
 import {
   createSpendingManualPairingIndex,
   rankSpendingManualPaymentCandidates,
-  type SpendingMatchingInvoice,
-  type SpendingMatchingTransaction,
-} from "./purchase-matching.ts";
-import { SpendingPairingIndexCache } from "./pairing-index.ts";
+} from "./spending-manual-pairing.ts";
+import type {
+  SpendingMatchingInvoice,
+  SpendingMatchingTransaction,
+} from "../../lib/spending/purchase-matching.ts";
+import { SpendingPairingIndexCache } from "./spending-pairing-index.ts";
 
 const invoice = (date = "2026-09-01"): SpendingMatchingInvoice => ({
   revision: {

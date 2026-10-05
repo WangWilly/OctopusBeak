@@ -1,8 +1,8 @@
 import type {
   SpendingMatchingMoney,
   SpendingMatchingTransaction,
-  SpendingManualPaymentCandidate,
-} from "./purchase-matching.ts";
+} from "../../lib/spending/purchase-matching.ts";
+import type { SpendingManualPaymentCandidate } from "./spending-manual-pairing.ts";
 
 /**
  * The renderer should not repeatedly inspect the complete transaction DTO when
