@@ -57,7 +57,7 @@ test("merchant text below the threshold keeps the pair possible without a mercha
 });
 
 test("the threshold separates containment and shared tokens from unrelated text", () => {
-  assert.equal(MERCHANT_SIMILARITY_STRONG_THRESHOLD, 0.5);
+  assert.equal(MERCHANT_SIMILARITY_STRONG_THRESHOLD, 0.6);
   assert.equal(merchantSimilarity("Shop", "shop"), 1);
   assert.equal(merchantSimilarity("網路家庭國際資訊", "網路家庭"), 0.75);
   assert.equal(merchantSimilarity("Uber Eats", "Uber Trip"), 0.5);
@@ -67,5 +67,7 @@ test("the threshold separates containment and shared tokens from unrelated text"
   assert.ok(merchantSimilarity("樂購蝦皮股份有限公司", "蝦皮購物") >= MERCHANT_SIMILARITY_STRONG_THRESHOLD, "a shared Chinese brand bigram matches");
   assert.ok(merchantSimilarity("台灣電力股份有限公司", "中華電信") < MERCHANT_SIMILARITY_STRONG_THRESHOLD, "different companies stay below the threshold");
   assert.ok(merchantSimilarity("台北商店", "高雄商店") < MERCHANT_SIMILARITY_STRONG_THRESHOLD, "a shared generic suffix alone does not match");
+  assert.ok(merchantSimilarity("台灣三井不動產 南港", "ＬａＬａｐｏｒｔ 南港") < MERCHANT_SIMILARITY_STRONG_THRESHOLD, "a shared place name alone does not match");
+  assert.equal(merchantSimilarity("ＬａＬａｐｏｒｔ", "lalaport"), 1, "full-width letters fold to ASCII");
   assert.equal(merchantSimilarity(null, "Shop"), 0);
 });
