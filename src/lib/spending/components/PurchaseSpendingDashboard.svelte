@@ -12,6 +12,7 @@
   } from "../purchase-matching.ts";
   import {
     taipeiDateKey,
+    type SpendingCandidatePairRef,
     type SpendingPageDto,
     type SpendingPairingCandidateView,
   } from "../model.ts";
@@ -50,6 +51,7 @@
   } from "../spending-display.ts";
   import MonthPaceChart from "./MonthPaceChart.svelte";
   import MonthTrendChart from "./MonthTrendChart.svelte";
+  import SpendingMergeModal from "./SpendingMergeModal.svelte";
   import { moneyText, type ExactMoney } from "./money-text.ts";
 
   type PurchaseReport = PurchaseSpendingReport;
@@ -121,6 +123,7 @@
   let pageError = "";
   let searchText = "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let mergeTab: "pending" | "merged" | null = null;
   const reportDerivedCache = new WeakMap<object, {
     months: readonly string[];
     availableCurrencies: readonly string[];
@@ -378,7 +381,17 @@
     if (record.basis === "invoice" && record.invoice) spendingSession.openPairing(record);
   }
 
-  function openMerge() {}
+  function openMerge(tab: "pending" | "merged" = "pending") {
+    mergeTab = tab;
+  }
+
+  function decidePair(pair: SpendingCandidatePairRef, action: "confirm" | "deny") {
+    return action === "confirm" ? spendingSession.confirmCandidate(pair) : spendingSession.denyCandidate(pair);
+  }
+
+  function revokeLink(record: PurchaseRecord) {
+    return spendingSession.revokeLink(record);
+  }
 
   function closePairing() {
     spendingSession.closePairing();
@@ -412,7 +425,7 @@
         class="merge-trigger"
         data-open-merge
         aria-label={pendingOverviewCount === null ? $t.spendingReview.mergeButton : $t.spendingReview.mergeButtonAria(pendingOverviewCount)}
-        onclick={openMerge}
+        onclick={() => openMerge()}
       >
         <GitMerge size={15} strokeWidth={2} aria-hidden="true" />
         <span>{$t.spendingReview.mergeButton}</span>
@@ -522,7 +535,7 @@
                 {:else}
                   <dd class="num" class:accent={monthCandidateCount > 0}>{$t.spendingReview.pairsCount(monthCandidateCount)}</dd>
                   {#if monthCandidateCount > 0 || (pendingOverviewCount ?? 0) > 0}
-                    <dd class="fact-sub"><button type="button" class="text-link" onclick={openMerge}>{$t.spendingReview.openMerge}<ArrowRight size={13} strokeWidth={2.2} aria-hidden="true" /></button></dd>
+                    <dd class="fact-sub"><button type="button" class="text-link" onclick={() => openMerge()}>{$t.spendingReview.openMerge}<ArrowRight size={13} strokeWidth={2.2} aria-hidden="true" /></button></dd>
                   {/if}
                 {/if}
               </div>
@@ -732,7 +745,7 @@
                 <span class="category-dot" style:background={SPENDING_GROUP_COLORS[groups[0] ?? "unclassified"]} aria-hidden="true"></span>
                 <span class="record-texts">
                   <strong>{recordLabel(record)}</strong>
-                  <span>{recordCategoryText($t, record)} · {paymentMethodText($t, record)}{#if occurrenceBasisLabel(record)} · <span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}</span>
+                  <span>{recordCategoryText($t, record)} · {paymentMethodText($t, record)}{#if occurrenceBasisLabel(record)}{" · "}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}</span>
                 </span>
                 {#if record.basis === "linked"}
                   <span class="status-tag merged" data-status="merged"><Link size={12} strokeWidth={2.2} aria-hidden="true" />{$t.spendingReview.statusMerged}</span>
@@ -812,6 +825,17 @@
           <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null || isUpdating} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
+    {/if}
+
+    {#if mergeTab}
+      <SpendingMergeModal
+        {review}
+        initialTab={mergeTab}
+        busy={busyAction !== null || isUpdating}
+        onDecide={(pair, action) => void decidePair(pair, action)}
+        onRevoke={(record) => void revokeLink(record)}
+        onClose={() => mergeTab = null}
+      />
     {/if}
 
     {#if canonical.availability === "unavailable"}
