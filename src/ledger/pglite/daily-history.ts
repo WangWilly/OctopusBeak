@@ -17,6 +17,7 @@ type DailyHistoryEventRow = Readonly<{
   coefficient: string | null;
   scale: number | string | null;
   security_id: string | null;
+  observed_at: string | null;
 }>;
 
 type ExactAmount = Readonly<{ coefficient: string; scale: number }>;
@@ -138,6 +139,38 @@ export type PGliteDailyHistory = Readonly<{
 
 type AccountHistoryState = { assets: AmountBuckets; liabilities: AmountBuckets; holdings: Set<string> };
 
+/** One collection run of an investment account: every holding it reported shares one observed_at. */
+type HoldingCollection = Readonly<{ accountId: string; observedAt: string; securities: ReadonlySet<string> }>;
+
+/**
+ * Investment captures are complete holding snapshots, so a security that a
+ * newer collection of the same account no longer reports was sold. That
+ * collection takes effect on its earliest effective date. Funds report each
+ * holding on its own NAV date, which is why a collection is keyed by
+ * observed_at rather than by effective date.
+ */
+function holdingCollectionsByStart(rows: readonly DailyHistoryEventRow[]): Map<string, HoldingCollection[]> {
+  const collections = new Map<string, { accountId: string; observedAt: string; start: string; securities: Set<string> }>();
+  for (const row of rows) {
+    if (row.event_type !== "holding" || row.security_id === null || row.observed_at === null) continue;
+    const key = `${row.account_id}\u0000${row.observed_at}`;
+    const collection = collections.get(key);
+    if (!collection) {
+      collections.set(key, { accountId: row.account_id, observedAt: row.observed_at, start: row.event_date, securities: new Set([row.security_id]) });
+    } else {
+      collection.securities.add(row.security_id);
+      if (row.event_date < collection.start) collection.start = row.event_date;
+    }
+  }
+  const byStart = new Map<string, HoldingCollection[]>();
+  for (const { start, ...collection } of collections.values()) {
+    const starting = byStart.get(start) ?? [];
+    starting.push(collection);
+    byStart.set(start, starting);
+  }
+  return byStart;
+}
+
 /**
  * The per-account rows hold only that account's own balances and holdings on
  * the dates it changed; readers carry the latest row forward between dates.
@@ -162,6 +195,7 @@ export async function readPGliteDailyHistoryWithAccounts(
               revision.balance_coefficient AS coefficient,
               revision.balance_scale AS scale,
               NULL::text AS security_id,
+              NULL::text AS observed_at,
               ROW_NUMBER() OVER (
                 PARTITION BY account.account_id, observation.balance_kind,
                   revision.currency, substring(revision.effective_at, 1, 10)
@@ -197,6 +231,7 @@ export async function readPGliteDailyHistoryWithAccounts(
               holding.valuation_coefficient AS coefficient,
               holding.valuation_scale AS scale,
               encode(holding.security_id, 'hex') AS security_id,
+              holding.observed_at,
               ROW_NUMBER() OVER (
                 PARTITION BY holding.account_id, holding.security_id, holding.effective_on
                 ORDER BY holding.observed_at DESC, holding.revision_number DESC,
@@ -212,11 +247,11 @@ export async function readPGliteDailyHistoryWithAccounts(
           AND account.account_type = 'investment'
      )
      SELECT event_date, event_type, account_id, account_type,
-            integration_namespace, balance_kind, currency, coefficient, scale, security_id
+            integration_namespace, balance_kind, currency, coefficient, scale, security_id, observed_at
        FROM balance_candidates WHERE selection_rank = 1
      UNION ALL
      SELECT event_date, event_type, account_id, account_type,
-            integration_namespace, balance_kind, currency, coefficient, scale, security_id
+            integration_namespace, balance_kind, currency, coefficient, scale, security_id, observed_at
        FROM holding_candidates WHERE selection_rank = 1
       ORDER BY event_date, event_type, account_id, balance_kind, security_id, currency`,
     [knowledgePoint],
@@ -224,6 +259,7 @@ export async function readPGliteDailyHistoryWithAccounts(
 
   if (result.rows.length === 0) return { dailyHistory: [], dailyHistoryByAccount: {} };
 
+  const collectionsByStart = holdingCollectionsByStart(result.rows);
   const labelByAccount = new Map(accounts.map((account) => [account.id, account.label]));
   const accountOrder = new Map(accounts.map((account, index) => [account.id, index]));
   const balanceStates = new Map<string, DailyHistoryEventRow>();
@@ -250,6 +286,18 @@ export async function readPGliteDailyHistoryWithAccounts(
   for (let start = 0; start < result.rows.length;) {
     const date = result.rows[start]!.event_date;
     const changedAccounts = new Set<string>();
+    for (const collection of collectionsByStart.get(date) ?? []) {
+      const state = accountState(collection.accountId);
+      for (const securityId of [...state.holdings]) {
+        const key = `${collection.accountId}\u0000${securityId}`;
+        const held = holdingStates.get(key);
+        if (!held || collection.securities.has(securityId) || (held.observed_at ?? "") >= collection.observedAt) continue;
+        if (held.currency) adjust("assets", collection.accountId, held.currency, rowExact(held), -1);
+        holdingStates.delete(key);
+        state.holdings.delete(securityId);
+        changedAccounts.add(collection.accountId);
+      }
+    }
     let end = start;
     while (end < result.rows.length && result.rows[end]!.event_date === date) {
       const event = result.rows[end]!;
