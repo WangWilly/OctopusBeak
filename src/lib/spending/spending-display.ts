@@ -82,7 +82,7 @@ function institutionName(t: Translation, source: SpendingPaymentSourceView | nul
 /** 玉山銀行信用卡 末碼 5512, 台北富邦銀行帳戶扣款, or the stream when the institution is unknown. */
 export function paymentText(
   t: Translation,
-  transaction: NonNullable<PurchaseRecord["transaction"]>,
+  transaction: Readonly<{ stream: string }>,
   source: SpendingPaymentSourceView | null,
   withMask = true,
 ): string {
