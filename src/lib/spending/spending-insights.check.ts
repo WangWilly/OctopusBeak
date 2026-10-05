@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  projectMonthEnd,
+  readCategoryBreakdown,
   readSpendingMonth,
   readSpendingTrend,
+  readTrendStats,
   type CurrencyMonthReading,
   type Money,
   type SpendingSummary,
@@ -259,4 +262,78 @@ test("the trend is a fixed window of zero-filled months that keeps the selected 
   assert.equal(old[0]?.status, "first-imported");
   const early = readSpendingTrend(summaryOf({ "2026-09-01": 1 }), { currency: "TWD", selectedMonth: "2026-09", today: "2026-10-05" });
   assert.equal(early[0]?.status, "before-history");
+});
+
+test("the month-end projection extends the month-to-date pace linearly and only for an in-progress month", () => {
+  const summary = summaryOf({ "2026-10-01": 1000, "2026-10-03": 337 });
+  const reading = readSpendingMonth(summary, { month: "2026-10", today: "2026-10-05" });
+  assert.ok(reading);
+  const current = twd(summary, "2026-10", "2026-10-05");
+  const projection = projectMonthEnd(current, reading.span);
+  assert.equal(projection.kind, "projected");
+  assert.ok(projection.kind === "projected");
+  assert.equal(money(projection.amount), "TWD 8289", "1337 over 5 of 31 days, rounded to the currency scale");
+  assert.equal(projection.basisDays, 5);
+  assert.equal(projection.daysInMonth, 31);
+
+  const closed = readSpendingMonth(summary, { month: "2026-10", today: "2026-11-02" });
+  assert.ok(closed);
+  assert.deepEqual(projectMonthEnd(twd(summary, "2026-10", "2026-11-02"), closed.span), { kind: "not-applicable" });
+
+  const cents = summaryOf({ "2026-10-01": { USD: "10.01" } });
+  const centsReading = readSpendingMonth(cents, { month: "2026-10", today: "2026-10-03" });
+  assert.ok(centsReading);
+  const usd = centsReading.byCurrency.get("USD" as never);
+  assert.ok(usd);
+  const usdProjection = projectMonthEnd(usd, centsReading.span);
+  assert.ok(usdProjection.kind === "projected");
+  assert.equal(money(usdProjection.amount), "USD 103.44", "keeps the currency's own precision");
+});
+
+test("twelve-month statistics count only complete months", () => {
+  const summary = summaryOf({
+    "2026-01-01": 999,
+    "2026-02-01": 100,
+    "2026-04-01": 300,
+    "2026-10-02": 5000,
+  });
+  const trend = readSpendingTrend(summary, { currency: "TWD", selectedMonth: "2026-10", today: "2026-10-05" });
+  const stats = readTrendStats(trend);
+  assert.equal(stats.meanMonthCount, 8, "February through September; January is the partial first import and October is in progress");
+  assert.ok(stats.monthlyMean);
+  assert.equal(money(stats.monthlyMean), "TWD 50");
+  assert.equal(stats.highest?.month, "2026-04");
+  assert.equal(stats.highest && money(stats.highest.total), "TWD 300");
+  assert.deepEqual(readTrendStats(readSpendingTrend(summaryOf({ "2026-10-01": 1 }), { currency: "TWD", selectedMonth: "2026-10", today: "2026-10-05" })), {
+    monthlyMean: null,
+    meanMonthCount: 0,
+    highest: null,
+  });
+});
+
+test("the category breakdown rolls codes into groups, keeps Unclassified and shares positive spending", () => {
+  const row = (categoryCode: string | null, coefficient: string, count: number, overrides: Record<string, string> = {}) =>
+    ({ month: "2026-10", currency: "TWD", categoryCode, coefficient, scale: 0, count, ...overrides });
+  const rows = readCategoryBreakdown([
+    row("dining", "300", 2),
+    row("alcohol_and_tobacco", "100", 1),
+    row("housing_and_utilities", "500", 1),
+    row(null, "100", 3),
+    row("travel", "-50", 1),
+    row("future_code", "0", 1),
+    row("dining", "9999", 1, { month: "2026-09" }),
+    row("dining", "9999", 1, { currency: "USD" }),
+  ], { month: "2026-10", currency: "TWD" });
+  assert.deepEqual(rows.map((entry) => [entry.key, money(entry.amount), entry.count]), [
+    ["home", "TWD 500", 1],
+    ["dining", "TWD 400", 3],
+    ["unclassified", "TWD 100", 3],
+    ["other", "TWD 0", 1],
+    ["leisure", "TWD -50", 1],
+  ]);
+  assert.equal(rows[0]?.share, 0.5);
+  assert.equal(rows[1]?.share, 0.4);
+  assert.equal(rows[2]?.share, 0.1);
+  assert.equal(rows.at(-1)?.share, 0, "a net refund group takes no share");
+  assert.deepEqual(readCategoryBreakdown([], { month: "2026-10", currency: "TWD" }), []);
 });

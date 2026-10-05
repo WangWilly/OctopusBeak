@@ -6,7 +6,9 @@ import {
   normalizeExact,
   type ExactAmount,
 } from "../shared-money/exact.ts";
-import type { SpendingPurchaseReportSummaryDto } from "./model.ts";
+import { isPersonalCategoryCode } from "../../ledger/canonical/personal-category-codes.ts";
+import { SPENDING_CATEGORY_GROUP_IDS, spendingCategoryGroup, type SpendingCategoryGroup } from "./category-groups.ts";
+import type { SpendingCategoryMonthTotal, SpendingPurchaseReportSummaryDto } from "./model.ts";
 
 declare const brand: unique symbol;
 
@@ -197,6 +199,93 @@ export function readSpendingTrend(summary: SpendingSummary, input: ReadTrendInpu
       selectable: index.monthRows.has(month),
     });
   });
+}
+
+/**
+ * 月底推估: a straight line through the month-to-date pace. Only an
+ * in-progress month has one; `basisDays` is the elapsed days it rests on.
+ */
+export type MonthEndProjection =
+  | Readonly<{ kind: "projected"; amount: Money; basisDays: number; daysInMonth: number }>
+  | Readonly<{ kind: "not-applicable" }>;
+
+export function projectMonthEnd(reading: Pick<CurrencyMonthReading, "toDate">, span: MonthSpan): MonthEndProjection {
+  if (span.kind !== "in-progress" || span.throughDay < 1) return { kind: "not-applicable" };
+  const scaled = multiplyExact(reading.toDate, { coefficient: String(span.daysInMonth), scale: 0 });
+  const amount = divideExact(scaled, { coefficient: String(span.throughDay), scale: 0 }, reading.toDate.scale) ?? ZERO;
+  return Object.freeze({
+    kind: "projected",
+    amount: money(reading.toDate.currency, amount),
+    basisDays: span.throughDay,
+    daysInMonth: span.daysInMonth,
+  });
+}
+
+/**
+ * The 12-month card's statistics. Only complete months count: the in-progress
+ * month and the partial first import would drag the mean and the maximum.
+ */
+export type TrendStats = Readonly<{
+  monthlyMean: Money | null;
+  meanMonthCount: number;
+  highest: Readonly<{ month: MonthKey; total: Money }> | null;
+}>;
+
+export function readTrendStats(months: readonly TrendMonth[]): TrendStats {
+  const complete = months.filter((month) => month.status === "complete");
+  const first = complete[0];
+  if (!first) return { monthlyMean: null, meanMonthCount: 0, highest: null };
+  const currency = first.total.currency;
+  const scale = Math.max(0, ...complete.map((month) => month.total.scale));
+  const highest = complete.reduce((best, month) => compare(month.total, best.total) > 0 ? month : best, first);
+  return Object.freeze({
+    monthlyMean: money(currency, mean(complete.map((month) => month.total), complete.length, scale)),
+    meanMonthCount: complete.length,
+    highest: Object.freeze({ month: highest.month, total: highest.total }),
+  });
+}
+
+export type CategoryBreakdownKey = SpendingCategoryGroup | "unclassified";
+
+export type CategoryBreakdownRow = Readonly<{
+  key: CategoryBreakdownKey;
+  amount: Money;
+  /** Purchases touching the group; a split purchase counts once per code it touches. */
+  count: number;
+  /** Share of the month's positive spending, 0..1. A net-refund group has 0. */
+  share: number;
+}>;
+
+/**
+ * 分類: the month's Purchase category totals rolled into display groups, with
+ * the query-time Unclassified bucket kept as its own row instead of hidden.
+ * Rows are largest first.
+ */
+export function readCategoryBreakdown(
+  totals: readonly SpendingCategoryMonthTotal[],
+  input: Readonly<{ month: string; currency: string }>,
+): readonly CategoryBreakdownRow[] {
+  const groups = new Map<CategoryBreakdownKey, { amount: ExactAmount; count: number }>();
+  for (const row of totals) {
+    if (row.month !== input.month || row.currency !== input.currency) continue;
+    const key: CategoryBreakdownKey = row.categoryCode === null
+      ? "unclassified"
+      : isPersonalCategoryCode(row.categoryCode) ? spendingCategoryGroup(row.categoryCode) : "other";
+    const prior = groups.get(key) ?? { amount: ZERO, count: 0 };
+    groups.set(key, { amount: addExact(prior.amount, row), count: prior.count + row.count });
+  }
+  const positive = [...groups.values()].reduce<ExactAmount>((sum, group) => sign(group.amount) > 0 ? addExact(sum, group.amount) : sum, ZERO);
+  const positiveValue = exactToNumber(positive);
+  const order: readonly CategoryBreakdownKey[] = [...SPENDING_CATEGORY_GROUP_IDS, "unclassified"];
+  return Object.freeze([...groups.entries()]
+    .filter(([, group]) => group.count > 0 || sign(group.amount) !== 0)
+    .sort(([leftKey, left], [rightKey, right]) => compare(right.amount, left.amount) || order.indexOf(leftKey) - order.indexOf(rightKey))
+    .map(([key, group]) => Object.freeze({
+      key,
+      amount: money(input.currency as CurrencyCode, group.amount),
+      count: group.count,
+      share: sign(group.amount) > 0 && positiveValue > 0 ? exactToNumber(group.amount) / positiveValue : 0,
+    })));
 }
 
 type MonthRow = SpendingSummary["monthTotals"][number];
