@@ -21,10 +21,10 @@ INSERT INTO pglite_baseline_metadata(
   singleton_id, baseline_version, canonical_schema_version,
   canonical_schema_signature, table_count, index_count, trigger_count, view_count, foreign_key_count
 ) VALUES (
-  1, 1, 28,
+  1, 4, 28,
   'faa2f18e00dc585cf6ce078d05141ef9d700de650f40f9bace1e17fffbd827ce',
-  121, 98,
-  96, 9, 439
+  123, 104,
+  99, 9, 453
 ) ON CONFLICT (singleton_id) DO UPDATE SET
   baseline_version = EXCLUDED.baseline_version,
   canonical_schema_version = EXCLUDED.canonical_schema_version,
@@ -71,6 +71,9 @@ VALUES ('automatic_routes_package_no_delete', 'trigger', 'automatic_enrichment_a
       ('credit_card_balance_estimate_details_no_update', 'trigger', 'credit_card_balance_estimate_details', 'postgres-trigger'),
       ('einvoice_captures_no_delete', 'trigger', 'einvoice_captures', 'postgres-trigger'),
       ('einvoice_captures_no_update', 'trigger', 'einvoice_captures', 'postgres-trigger'),
+      ('einvoice_item_categorization_values_no_delete', 'trigger', 'einvoice_item_categorization_values', 'postgres-trigger'),
+      ('einvoice_item_categorization_values_no_update', 'trigger', 'einvoice_item_categorization_values', 'postgres-trigger'),
+      ('einvoice_item_categorization_values_origin_guard_insert', 'trigger', 'einvoice_item_categorization_values', 'postgres-trigger'),
       ('einvoice_invoice_revisions_no_delete', 'trigger', 'einvoice_invoice_revisions', 'postgres-trigger'),
       ('einvoice_invoice_revisions_no_update', 'trigger', 'einvoice_invoice_revisions', 'postgres-trigger'),
       ('einvoice_invoices_no_delete', 'trigger', 'einvoice_invoices', 'postgres-trigger'),
@@ -1057,7 +1060,7 @@ CREATE TABLE enrichment_producer_versions (
 );
 CREATE TABLE automatic_enrichment_authority_routes (
   route_id TEXT PRIMARY KEY,
-  subject_kind TEXT NOT NULL CHECK(subject_kind = 'transaction'),
+  subject_kind TEXT NOT NULL CHECK(subject_kind IN ('transaction','einvoice_item')),
   field_name TEXT NOT NULL CHECK(field_name IN ('kind','category','counterparty_role','counterparty_display')),
   scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global','source_stream')),
   scope_key TEXT,
@@ -1213,15 +1216,21 @@ CREATE TABLE "transaction_revisions" (
 );
 CREATE TABLE assertions (
   assertion_id BYTEA PRIMARY KEY CHECK(length(assertion_id) = 16),
-  transaction_id BYTEA NOT NULL,
+  transaction_id BYTEA,
+  invoice_id BYTEA,
+  item_sequence BIGINT,
   field_name TEXT NOT NULL CHECK(field_name IN ('transaction_revision','display_name','note','kind','category','counterparty_role','counterparty_display')),
-  target_kind TEXT NOT NULL CHECK(target_kind = 'transaction'),
+  target_kind TEXT NOT NULL CHECK(target_kind IN ('transaction','einvoice_item')),
   origin TEXT NOT NULL CHECK(origin IN ('source','derived','user')),
   producer_id TEXT NOT NULL,
   rule_lineage TEXT NOT NULL,
   revision_id BYTEA,
   value_text TEXT,
   created_commit_id BYTEA NOT NULL,
+  CHECK((target_kind = 'transaction' AND transaction_id IS NOT NULL AND invoice_id IS NULL AND item_sequence IS NULL)
+    OR (target_kind = 'einvoice_item' AND transaction_id IS NULL AND invoice_id IS NOT NULL
+        AND item_sequence IS NOT NULL AND item_sequence >= 1
+        AND field_name = 'category' AND origin IN ('derived','user'))),
   CHECK((origin = 'source' AND field_name = 'transaction_revision' AND revision_id IS NOT NULL AND value_text IS NULL)
     OR (origin IN ('source','derived','user') AND field_name IN ('kind','category','counterparty_role','counterparty_display') AND revision_id IS NULL AND value_text IS NOT NULL)
     OR (origin IN ('derived','user') AND field_name IN ('display_name','note') AND revision_id IS NULL AND value_text IS NOT NULL))
@@ -1238,7 +1247,9 @@ CREATE TABLE assertion_provenance (
 CREATE TABLE assertion_transitions (
   event_id BYTEA PRIMARY KEY CHECK(length(event_id) = 16),
   assertion_id BYTEA NOT NULL,
-  transaction_id BYTEA NOT NULL,
+  transaction_id BYTEA,
+  invoice_id BYTEA,
+  item_sequence BIGINT,
   field_name TEXT NOT NULL CHECK(field_name IN ('transaction_revision','display_name','note','kind','category','counterparty_role','counterparty_display')),
   capture_id BYTEA,
   scope_id BYTEA,
@@ -1247,7 +1258,9 @@ CREATE TABLE assertion_transitions (
   coordinate_id BYTEA,
   user_id TEXT,
   commit_id BYTEA NOT NULL,
-  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','restored'))
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('observed','superseded','withdrawn','restored')),
+  CHECK((transaction_id IS NOT NULL AND invoice_id IS NULL AND item_sequence IS NULL)
+    OR (transaction_id IS NULL AND invoice_id IS NOT NULL AND item_sequence IS NOT NULL AND item_sequence >= 1))
 );
 CREATE TABLE canonical_credit_card_statement_memberships (
   statement_revision_id BYTEA NOT NULL,
@@ -1351,7 +1364,9 @@ CREATE TABLE current_transactions (
 CREATE TABLE enrichment_run_outputs (
   output_id BYTEA PRIMARY KEY CHECK(length(output_id) = 16),
   run_id BYTEA NOT NULL,
-  transaction_id BYTEA NOT NULL,
+  transaction_id BYTEA,
+  invoice_id BYTEA,
+  item_sequence BIGINT,
   field_name TEXT NOT NULL CHECK(field_name IN ('kind','category','counterparty_role','counterparty_display')),
   output_state TEXT NOT NULL CHECK(output_state IN ('supported','unsupported')),
   origin TEXT CHECK(origin IN ('source','derived')),
@@ -1366,6 +1381,10 @@ CREATE TABLE enrichment_run_outputs (
   commit_id BYTEA NOT NULL,
   participation_key TEXT NOT NULL DEFAULT '',
   UNIQUE(run_id, transaction_id, field_name),
+  UNIQUE(run_id, invoice_id, item_sequence, field_name),
+  CHECK((transaction_id IS NOT NULL AND invoice_id IS NULL AND item_sequence IS NULL)
+    OR (transaction_id IS NULL AND invoice_id IS NOT NULL AND item_sequence IS NOT NULL AND item_sequence >= 1
+        AND field_name = 'category')),
   CHECK((output_state = 'supported' AND origin IS NOT NULL AND value_text IS NOT NULL)
     OR (output_state = 'unsupported' AND origin IS NULL AND value_text IS NULL))
 );
@@ -1734,6 +1753,37 @@ CREATE TABLE transaction_categorization_values (
   CHECK((mode = 'single' AND category_code IS NOT NULL AND allocation_set_id IS NULL)
     OR (mode = 'allocated' AND category_code IS NULL AND allocation_set_id IS NOT NULL))
 );
+CREATE TABLE einvoice_item_categorization_values (
+  assertion_id BYTEA PRIMARY KEY,
+  invoice_id BYTEA NOT NULL,
+  item_sequence BIGINT NOT NULL CHECK(item_sequence >= 1),
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  category_code TEXT NOT NULL,
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'category'),
+  item_fact_fingerprint TEXT NOT NULL,
+  route_id TEXT,
+  created_commit_id BYTEA NOT NULL,
+  CHECK((origin = 'derived' AND route_id IS NOT NULL) OR (origin = 'user' AND route_id IS NULL))
+);
+CREATE TABLE current_einvoice_item_categorizations (
+  invoice_id BYTEA NOT NULL,
+  item_sequence BIGINT NOT NULL CHECK(item_sequence >= 1),
+  field_name TEXT NOT NULL CHECK(field_name = 'category'),
+  assertion_id BYTEA NOT NULL,
+  origin TEXT NOT NULL CHECK(origin IN ('derived','user')),
+  category_code TEXT NOT NULL,
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  producer_version TEXT,
+  route_id TEXT,
+  projection_commit_id BYTEA NOT NULL,
+  PRIMARY KEY(invoice_id, item_sequence, field_name),
+  CHECK((origin = 'derived' AND route_id IS NOT NULL AND producer_version IS NOT NULL)
+    OR (origin = 'user' AND route_id IS NULL AND producer_version IS NULL))
+);
 CREATE INDEX idx_assertion_provenance_authority ON assertion_provenance(assertion_id, commit_id, source_record_id, run_id, coordinate_id);
 CREATE INDEX idx_assertion_provenance_record ON assertion_provenance(source_record_id, assertion_id, commit_id);
 CREATE INDEX idx_assertion_transitions_knowledge ON assertion_transitions(assertion_id, commit_id, event_kind, event_id);
@@ -1741,6 +1791,9 @@ CREATE INDEX idx_assertion_transitions_transaction ON assertion_transitions(tran
 CREATE UNIQUE INDEX idx_assertions_id_transaction
   ON assertions(assertion_id, transaction_id);
 CREATE INDEX idx_assertions_lineage ON assertions(transaction_id, field_name, origin, producer_id, rule_lineage, created_commit_id);
+CREATE INDEX idx_assertions_item_subject ON assertions(invoice_id, item_sequence, field_name, origin, created_commit_id);
+CREATE INDEX idx_assertion_transitions_item_subject ON assertion_transitions(invoice_id, item_sequence, field_name, commit_id, event_id);
+CREATE INDEX idx_einvoice_item_categorization_values_subject ON einvoice_item_categorization_values(invoice_id, item_sequence, origin, assertion_id);
 CREATE INDEX idx_balance_observation_revisions_current
         ON balance_observation_revisions(observation_id, commit_id, effective_at);
 CREATE INDEX idx_balance_observations_identity
@@ -1946,7 +1999,8 @@ INSERT INTO "automatic_enrichment_authority_routes" ("route_id", "subject_kind",
 ('linebank/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'linebank/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('fubon/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'fubon/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('post/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'post/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
-('ctbc/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'ctbc/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
+('ctbc/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'ctbc/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('einvoice/personal-invoices/item-category-enrichment/v1/category', 'einvoice_item', 'category', 'source_stream', 'einvoice/personal-invoices', 'einvoice/item-category-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
 ON CONFLICT DO NOTHING;
 INSERT INTO "canonical_grouped_role_contracts" ("producer_id", "producer_version", "contract_version", "admission_policy", "origin", "field_name", "evidence_kinds_json", "role_codes_json") VALUES
 ('cathay/domestic-deposit/automatic-enrichment', 'v1', 'cathay/domestic-deposit/counterparty-group/v1', 'admit', 'source', 'counterparty_role', '["explicit-source-field"]', '["merchant","marketplace","payment_platform","financial_institution"]'),
@@ -1957,7 +2011,8 @@ ON CONFLICT DO NOTHING;
 INSERT INTO "enrichment_producer_versions" ("producer_id", "producer_version", "taxonomy_id", "taxonomy_version", "confidence_threshold_basis_points") VALUES
 ('cathay/domestic-deposit/automatic-enrichment', 'v1', 'transaction-taxonomy', 'v1', 7500),
 ('credit-card/direction-enrichment', 'v1', 'transaction-taxonomy', 'v1', 7500),
-('bank/deposit-kind-enrichment', 'v4', 'transaction-taxonomy', 'v1', 7500)
+('bank/deposit-kind-enrichment', 'v4', 'transaction-taxonomy', 'v1', 7500),
+('einvoice/item-category-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000)
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_applicability" ("taxonomy_id", "taxonomy_version", "category_dimension", "category_code", "kind_dimension", "kind_code") VALUES
 ('transaction-taxonomy', 'v1', 'category', 'food_and_groceries', 'kind', 'purchase'),
@@ -2603,10 +2658,27 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'investment.trade.sell', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'refund', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'reversal', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
-('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'receipt', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]')
+('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'receipt', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'food_and_groceries', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'dining', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'alcohol_and_tobacco', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'clothing_and_footwear', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'housing_and_utilities', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'household_goods_and_services', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'healthcare', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'transportation', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'travel', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'information_and_communication', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'recreation_sports_and_culture', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'education', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'personal_and_family_care', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'insurance', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'taxes_and_government', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'gifts_and_donations', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'work_and_business', '["item-name","seller-tax-id","seller-name"]')
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_versions" ("taxonomy_id", "taxonomy_version", "status", "package_hash", "published_at_utc_us") VALUES
-('transaction-taxonomy', 'v1', 'published', 'sha256:4dbVF2o7v4Zox-FCmVb9A0pteRkVcnVbrzKB2tVGkL4', 0)
+('transaction-taxonomy', 'v1', 'published', 'sha256:OZAcDNxJ9u91Dy6SnAzjP0Wm79NKjnawZ-Nd_3MpK4o', 0)
 ON CONFLICT DO NOTHING;
 ALTER TABLE "active_projection_generation" ADD CONSTRAINT "fk_active_projection_generation_0" FOREIGN KEY ("switched_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "active_projection_generation" ADD CONSTRAINT "fk_active_projection_generation_1" FOREIGN KEY ("generation_id") REFERENCES "projection_generations" ("generation_id");
@@ -2622,9 +2694,11 @@ ALTER TABLE "assertion_transitions" ADD CONSTRAINT "fk_assertion_transitions_2" 
 ALTER TABLE "assertion_transitions" ADD CONSTRAINT "fk_assertion_transitions_3" FOREIGN KEY ("run_id") REFERENCES "derived_import_runs" ("run_id");
 ALTER TABLE "assertion_transitions" ADD CONSTRAINT "fk_assertion_transitions_4" FOREIGN KEY ("transaction_id") REFERENCES "financial_transactions" ("transaction_id");
 ALTER TABLE "assertion_transitions" ADD CONSTRAINT "fk_assertion_transitions_5" FOREIGN KEY ("assertion_id") REFERENCES "assertions" ("assertion_id");
+ALTER TABLE "assertion_transitions" ADD CONSTRAINT "fk_assertion_transitions_6" FOREIGN KEY ("invoice_id") REFERENCES "einvoice_invoices" ("invoice_id");
 ALTER TABLE "assertions" ADD CONSTRAINT "fk_assertions_0" FOREIGN KEY ("created_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "assertions" ADD CONSTRAINT "fk_assertions_1" FOREIGN KEY ("revision_id") REFERENCES "transaction_revisions" ("revision_id");
 ALTER TABLE "assertions" ADD CONSTRAINT "fk_assertions_2" FOREIGN KEY ("transaction_id") REFERENCES "financial_transactions" ("transaction_id");
+ALTER TABLE "assertions" ADD CONSTRAINT "fk_assertions_3" FOREIGN KEY ("invoice_id") REFERENCES "einvoice_invoices" ("invoice_id");
 ALTER TABLE "automatic_enrichment_authority_routes" ADD CONSTRAINT "fk_automatic_enrichment_authority_routes_0" FOREIGN KEY ("taxonomy_id", "taxonomy_version") REFERENCES "taxonomy_versions" ("taxonomy_id", "taxonomy_version");
 ALTER TABLE "automatic_enrichment_authority_routes" ADD CONSTRAINT "fk_automatic_enrichment_authority_routes_1" FOREIGN KEY ("producer_id", "producer_version") REFERENCES "enrichment_producer_versions" ("producer_id", "producer_version");
 ALTER TABLE "balance_observation_revisions" ADD CONSTRAINT "fk_balance_observation_revisions_0" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
@@ -2752,6 +2826,11 @@ ALTER TABLE "current_depository_balance_observations" ADD CONSTRAINT "fk_current
 ALTER TABLE "current_depository_balance_observations" ADD CONSTRAINT "fk_current_depository_balance_observations_3" FOREIGN KEY ("observation_id") REFERENCES "balance_observations" ("observation_id");
 ALTER TABLE "current_depository_balance_observations" ADD CONSTRAINT "fk_current_depository_balance_observations_4" FOREIGN KEY ("account_id") REFERENCES "financial_accounts" ("account_id");
 ALTER TABLE "current_depository_balance_observations" ADD CONSTRAINT "fk_current_depository_balance_observations_5" FOREIGN KEY ("generation_id") REFERENCES "projection_generations" ("generation_id");
+ALTER TABLE "current_einvoice_item_categorizations" ADD CONSTRAINT "fk_current_einvoice_item_categorizations_0" FOREIGN KEY ("invoice_id") REFERENCES "einvoice_invoices" ("invoice_id");
+ALTER TABLE "current_einvoice_item_categorizations" ADD CONSTRAINT "fk_current_einvoice_item_categorizations_1" FOREIGN KEY ("assertion_id") REFERENCES "assertions" ("assertion_id");
+ALTER TABLE "current_einvoice_item_categorizations" ADD CONSTRAINT "fk_current_einvoice_item_categorizations_2" FOREIGN KEY ("route_id") REFERENCES "automatic_enrichment_authority_routes" ("route_id");
+ALTER TABLE "current_einvoice_item_categorizations" ADD CONSTRAINT "fk_current_einvoice_item_categorizations_3" FOREIGN KEY ("projection_commit_id") REFERENCES "canonical_commits" ("commit_id");
+ALTER TABLE "current_einvoice_item_categorizations" ADD CONSTRAINT "fk_current_einvoice_item_categorizations_4" FOREIGN KEY ("taxonomy_id", "taxonomy_version") REFERENCES "taxonomy_versions" ("taxonomy_id", "taxonomy_version");
 ALTER TABLE "current_loan_accounts" ADD CONSTRAINT "fk_current_loan_accounts_0" FOREIGN KEY ("created_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "current_loan_accounts" ADD CONSTRAINT "fk_current_loan_accounts_1" FOREIGN KEY ("projection_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "current_loan_accounts" ADD CONSTRAINT "fk_current_loan_accounts_2" FOREIGN KEY ("account_id") REFERENCES "financial_accounts" ("account_id");
@@ -2814,6 +2893,12 @@ ALTER TABLE "einvoice_invoices" ADD CONSTRAINT "fk_einvoice_invoices_0" FOREIGN 
 ALTER TABLE "einvoice_invoices" ADD CONSTRAINT "fk_einvoice_invoices_1" FOREIGN KEY ("source_subject_id") REFERENCES "source_subjects" ("source_subject_id");
 ALTER TABLE "einvoice_invoices" ADD CONSTRAINT "fk_einvoice_invoices_2" FOREIGN KEY ("identity_epoch_id") REFERENCES "identity_epochs" ("identity_epoch_id");
 ALTER TABLE "einvoice_invoices" ADD CONSTRAINT "fk_einvoice_invoices_3" FOREIGN KEY ("source_connection_id") REFERENCES "source_connections" ("source_connection_id");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_0" FOREIGN KEY ("assertion_id") REFERENCES "assertions" ("assertion_id");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_1" FOREIGN KEY ("invoice_id") REFERENCES "einvoice_invoices" ("invoice_id");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_2" FOREIGN KEY ("taxonomy_id", "taxonomy_version", "taxonomy_dimension", "category_code") REFERENCES "taxonomy_codes" ("taxonomy_id", "taxonomy_version", "dimension", "code");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_3" FOREIGN KEY ("taxonomy_id", "taxonomy_version") REFERENCES "taxonomy_versions" ("taxonomy_id", "taxonomy_version");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_4" FOREIGN KEY ("created_commit_id") REFERENCES "canonical_commits" ("commit_id");
+ALTER TABLE "einvoice_item_categorization_values" ADD CONSTRAINT "fk_einvoice_item_categorization_values_5" FOREIGN KEY ("route_id") REFERENCES "automatic_enrichment_authority_routes" ("route_id");
 ALTER TABLE "einvoice_items" ADD CONSTRAINT "fk_einvoice_items_0" FOREIGN KEY ("revision_id") REFERENCES "einvoice_invoice_revisions" ("revision_id");
 ALTER TABLE "einvoice_revision_events" ADD CONSTRAINT "fk_einvoice_revision_events_0" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "einvoice_revision_events" ADD CONSTRAINT "fk_einvoice_revision_events_1" FOREIGN KEY ("capture_id") REFERENCES "source_captures" ("capture_id");
@@ -2831,6 +2916,7 @@ ALTER TABLE "enrichment_run_outputs" ADD CONSTRAINT "fk_enrichment_run_outputs_2
 ALTER TABLE "enrichment_run_outputs" ADD CONSTRAINT "fk_enrichment_run_outputs_3" FOREIGN KEY ("route_id") REFERENCES "automatic_enrichment_authority_routes" ("route_id");
 ALTER TABLE "enrichment_run_outputs" ADD CONSTRAINT "fk_enrichment_run_outputs_4" FOREIGN KEY ("transaction_id") REFERENCES "financial_transactions" ("transaction_id");
 ALTER TABLE "enrichment_run_outputs" ADD CONSTRAINT "fk_enrichment_run_outputs_5" FOREIGN KEY ("run_id") REFERENCES "enrichment_runs" ("run_id");
+ALTER TABLE "enrichment_run_outputs" ADD CONSTRAINT "fk_enrichment_run_outputs_6" FOREIGN KEY ("invoice_id") REFERENCES "einvoice_invoices" ("invoice_id");
 ALTER TABLE "enrichment_runs" ADD CONSTRAINT "fk_enrichment_runs_0" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "enrichment_runs" ADD CONSTRAINT "fk_enrichment_runs_1" FOREIGN KEY ("identity_epoch_id") REFERENCES "identity_epochs" ("identity_epoch_id");
 ALTER TABLE "enrichment_runs" ADD CONSTRAINT "fk_enrichment_runs_2" FOREIGN KEY ("source_connection_id") REFERENCES "source_connections" ("source_connection_id");
@@ -4339,6 +4425,63 @@ CREATE TRIGGER "transaction_categorization_values_origin_guard_insert"
   FOR EACH ROW EXECUTE FUNCTION "pglite_guard_transaction_categorization_values_origin_guard_insert"();
 
 
+CREATE OR REPLACE FUNCTION "pglite_guard_einvoice_item_categorization_values_no_delete"()
+RETURNS trigger LANGUAGE plpgsql AS $pglite$
+BEGIN
+  IF (TRUE) THEN
+    RAISE EXCEPTION '%', 'e-invoice item categorization values are immutable';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$pglite$;
+DROP TRIGGER IF EXISTS "einvoice_item_categorization_values_no_delete" ON "einvoice_item_categorization_values";
+CREATE TRIGGER "einvoice_item_categorization_values_no_delete"
+  BEFORE DELETE ON "einvoice_item_categorization_values"
+  FOR EACH ROW EXECUTE FUNCTION "pglite_guard_einvoice_item_categorization_values_no_delete"();
+
+
+CREATE OR REPLACE FUNCTION "pglite_guard_einvoice_item_categorization_values_no_update"()
+RETURNS trigger LANGUAGE plpgsql AS $pglite$
+BEGIN
+  IF (TRUE) THEN
+    RAISE EXCEPTION '%', 'e-invoice item categorization values are immutable';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$pglite$;
+DROP TRIGGER IF EXISTS "einvoice_item_categorization_values_no_update" ON "einvoice_item_categorization_values";
+CREATE TRIGGER "einvoice_item_categorization_values_no_update"
+  BEFORE UPDATE ON "einvoice_item_categorization_values"
+  FOR EACH ROW EXECUTE FUNCTION "pglite_guard_einvoice_item_categorization_values_no_update"();
+
+
+CREATE OR REPLACE FUNCTION "pglite_guard_einvoice_item_categorization_values_origin_guard_insert"()
+RETURNS trigger LANGUAGE plpgsql AS $pglite$
+BEGIN
+  IF (NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.invoice_id = NEW.invoice_id
+     AND assertion.item_sequence = NEW.item_sequence
+     AND assertion.field_name = 'category'
+     AND assertion.target_kind = 'einvoice_item'
+     AND assertion.origin = NEW.origin
+     AND assertion.value_text = NEW.category_code
+)) THEN
+    RAISE EXCEPTION '%', 'e-invoice item categorization assertion authority mismatch';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$pglite$;
+DROP TRIGGER IF EXISTS "einvoice_item_categorization_values_origin_guard_insert" ON "einvoice_item_categorization_values";
+CREATE TRIGGER "einvoice_item_categorization_values_origin_guard_insert"
+  BEFORE INSERT ON "einvoice_item_categorization_values"
+  FOR EACH ROW EXECUTE FUNCTION "pglite_guard_einvoice_item_categorization_values_origin_guard_insert"();
+
+
 CREATE OR REPLACE FUNCTION "pglite_guard_transaction_tag_assertion_origin_guard"()
 RETURNS trigger LANGUAGE plpgsql AS $pglite$
 BEGIN
@@ -4490,7 +4633,9 @@ BEGIN
             WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
               AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
               AND output.assertion_id = assertion.assertion_id
-              AND output.transaction_id = assertion.transaction_id
+              AND output.transaction_id IS NOT DISTINCT FROM assertion.transaction_id
+              AND output.invoice_id IS NOT DISTINCT FROM assertion.invoice_id
+              AND output.item_sequence IS NOT DISTINCT FROM assertion.item_sequence
               AND output.field_name = assertion.field_name
               AND (assertion.origin <> 'source' OR output.source_record_id IS NOT NULL)
               AND output.source_record_id IS NOT DISTINCT FROM NEW.source_record_id
@@ -4542,7 +4687,9 @@ BEGIN
             WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
               AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
               AND output.assertion_id = assertion.assertion_id
-              AND output.transaction_id = assertion.transaction_id
+              AND output.transaction_id IS NOT DISTINCT FROM assertion.transaction_id
+              AND output.invoice_id IS NOT DISTINCT FROM assertion.invoice_id
+              AND output.item_sequence IS NOT DISTINCT FROM assertion.item_sequence
               AND output.field_name = assertion.field_name
               AND (assertion.origin <> 'source' OR output.source_record_id IS NOT NULL)
               AND output.source_record_id IS NOT DISTINCT FROM NEW.source_record_id
@@ -4565,43 +4712,58 @@ CREATE OR REPLACE FUNCTION "pglite_guard_trg_assertion_transitions_integrity_ins
 RETURNS trigger LANGUAGE plpgsql AS $pglite$
 BEGIN
   IF (NOT EXISTS (
-  SELECT 1 FROM assertions assertion
-  WHERE assertion.assertion_id = NEW.assertion_id
-    AND assertion.transaction_id = NEW.transaction_id
-    AND assertion.field_name = NEW.field_name
-    AND (
-      assertion.origin = 'source'
-      OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
-          AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
-          AND NEW.user_id = assertion.producer_id)
-      OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
-          AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
-        SELECT 1 FROM derived_import_runs run
-        JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
-        JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
-        WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
-          AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
-          AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
-          AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
-          AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
-          AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
-          AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
-          AND registered.contract_version = 'v1'
-      ))
-      OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
-          AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
-          AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM enrichment_runs run
-            JOIN enrichment_run_outputs output ON output.run_id = run.run_id
-            WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
-              AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
-              AND output.assertion_id = assertion.assertion_id
-              AND output.transaction_id = assertion.transaction_id
-              AND output.field_name = assertion.field_name
-          ))
-    )
-)) THEN
+    SELECT 1 FROM assertions assertion
+    WHERE assertion.assertion_id = NEW.assertion_id
+      AND assertion.transaction_id IS NOT DISTINCT FROM NEW.transaction_id
+      AND assertion.invoice_id IS NOT DISTINCT FROM NEW.invoice_id
+      AND assertion.item_sequence IS NOT DISTINCT FROM NEW.item_sequence
+      AND assertion.field_name = NEW.field_name
+      AND (
+        assertion.origin = 'source'
+        OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+            AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
+            AND NEW.user_id = assertion.producer_id)
+        OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+            AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+          SELECT 1 FROM derived_import_runs run
+          JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+          JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+          WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+            AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+            AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+            AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+            AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+            AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+            AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+            AND registered.contract_version = 'v1'
+        ))
+        OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+            AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
+            AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM enrichment_runs run
+              JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+              WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+                AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+                AND output.transaction_id IS NOT DISTINCT FROM assertion.transaction_id
+              AND output.invoice_id IS NOT DISTINCT FROM assertion.invoice_id
+              AND output.item_sequence IS NOT DISTINCT FROM assertion.item_sequence
+                AND output.field_name = assertion.field_name
+                AND (
+                  ((NEW.event_kind = 'observed' OR NEW.event_kind = 'restored')
+                    AND output.output_state = 'supported'
+                    AND output.assertion_id = assertion.assertion_id)
+                  OR (NEW.event_kind = 'superseded' AND assertion.origin = 'derived'
+                    AND output.output_state = 'supported'
+                    AND output.assertion_id IS NOT NULL
+                    AND output.assertion_id <> assertion.assertion_id)
+                  OR (NEW.event_kind = 'withdrawn' AND assertion.origin = 'derived'
+                    AND output.output_state = 'unsupported'
+                    AND output.assertion_id IS NULL)
+                )
+            ))
+      )
+  )) THEN
     RAISE EXCEPTION '%', 'assertion transition coordinate mismatch';
   END IF;
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
@@ -4620,7 +4782,9 @@ BEGIN
   IF (NOT EXISTS (
   SELECT 1 FROM assertions assertion
   WHERE assertion.assertion_id = NEW.assertion_id
-    AND assertion.transaction_id = NEW.transaction_id
+    AND assertion.transaction_id IS NOT DISTINCT FROM NEW.transaction_id
+    AND assertion.invoice_id IS NOT DISTINCT FROM NEW.invoice_id
+    AND assertion.item_sequence IS NOT DISTINCT FROM NEW.item_sequence
     AND assertion.field_name = NEW.field_name
     AND (
       assertion.origin = 'source'
@@ -4649,7 +4813,9 @@ BEGIN
             JOIN enrichment_run_outputs output ON output.run_id = run.run_id
             WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
               AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
-              AND output.transaction_id = assertion.transaction_id
+              AND output.transaction_id IS NOT DISTINCT FROM assertion.transaction_id
+              AND output.invoice_id IS NOT DISTINCT FROM assertion.invoice_id
+              AND output.item_sequence IS NOT DISTINCT FROM assertion.item_sequence
               AND output.field_name = assertion.field_name
           ))
     )
@@ -4844,66 +5010,6 @@ DROP TRIGGER IF EXISTS "user_tags_no_update" ON "user_tags";
 CREATE TRIGGER "user_tags_no_update"
   BEFORE UPDATE ON "user_tags"
   FOR EACH ROW EXECUTE FUNCTION "pglite_guard_user_tags_no_update"();
-
-
-CREATE OR REPLACE FUNCTION "pglite_guard_trg_assertion_transitions_integrity_insert"()
-RETURNS trigger LANGUAGE plpgsql AS $pglite$
-BEGIN
-  IF (NOT EXISTS (
-    SELECT 1 FROM assertions assertion
-    WHERE assertion.assertion_id = NEW.assertion_id
-      AND assertion.transaction_id = NEW.transaction_id
-      AND assertion.field_name = NEW.field_name
-      AND (
-        assertion.origin = 'source'
-        OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
-            AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
-            AND NEW.user_id = assertion.producer_id)
-        OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
-            AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
-          SELECT 1 FROM derived_import_runs run
-          JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
-          JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
-          WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
-            AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
-            AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
-            AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
-            AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
-            AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
-            AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
-            AND registered.contract_version = 'v1'
-        ))
-        OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
-            AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
-            AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
-            AND EXISTS (
-              SELECT 1 FROM enrichment_runs run
-              JOIN enrichment_run_outputs output ON output.run_id = run.run_id
-              WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
-                AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
-                AND output.transaction_id = assertion.transaction_id
-                AND output.field_name = assertion.field_name
-                AND (
-                  ((NEW.event_kind = 'observed' OR NEW.event_kind = 'restored')
-                    AND output.output_state = 'supported'
-                    AND output.assertion_id = assertion.assertion_id)
-                  OR (NEW.event_kind = 'superseded' AND assertion.origin = 'derived'
-                    AND output.output_state = 'supported'
-                    AND output.assertion_id IS NOT NULL
-                    AND output.assertion_id <> assertion.assertion_id)
-                  OR (NEW.event_kind = 'withdrawn' AND assertion.origin = 'derived'
-                    AND output.output_state = 'unsupported'
-                    AND output.assertion_id IS NULL)
-                )
-            ))
-      )
-  )) THEN
-    RAISE EXCEPTION '%', 'assertion transition coordinate mismatch';
-  END IF;
-  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
-  RETURN NEW;
-END;
-$pglite$;
 
 
 CREATE OR REPLACE FUNCTION pglite_attestation_append_only_guard()

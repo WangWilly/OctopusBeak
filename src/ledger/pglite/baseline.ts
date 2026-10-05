@@ -17,7 +17,7 @@ import {
 import type { PGliteStore } from "./transaction.ts";
 
 /** The first PGlite schema is a consolidated, fresh-start baseline. */
-export const PGLITE_BASELINE_VERSION = 3;
+export const PGLITE_BASELINE_VERSION = 4;
 export const CANONICAL_SQLITE_SCHEMA_VERSION = 28;
 
 /**
@@ -30,11 +30,11 @@ export const CANONICAL_SQLITE_SCHEMA_SIGNATURE =
   "faa2f18e00dc585cf6ce078d05141ef9d700de650f40f9bace1e17fffbd827ce";
 
 const EXPECTED_OBJECT_COUNTS = Object.freeze({
-  table: 123 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.table,
-  index: 100 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.index,
-  trigger: 104 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.trigger,
+  table: 125 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.table,
+  index: 106 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.index,
+  trigger: 107 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.trigger,
   view: 9,
-  foreignKey: 440 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.foreignKey,
+  foreignKey: 454 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.foreignKey,
 });
 
 export type PGliteBaselineManifest = {
