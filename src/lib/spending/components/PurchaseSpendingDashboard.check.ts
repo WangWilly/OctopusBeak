@@ -65,8 +65,7 @@ assert.match(source, /data-show-more-payments/);
 assert.match(source, /showMorePayments/);
 assert.match(source, /slice\(0, candidateVisibleCount\)/);
 assert.match(source, /data-show-more-candidates/);
-// The month reading and the bounded trend come from the pure insights
-// module; the unbounded monthly mode and its toggle are gone.
+// The month reading and the bounded trend come from the pure insights module.
 assert.match(source, /<MonthPaceChart reading=\{current\} span=\{reading\.span\} \{selectedDay\} onSelectDay=\{chooseDay\} \/>/);
 assert.match(source, /<MonthTrendChart months=\{trend\} selectedMonth=\{reading\.month\} onSelectMonth=\{chooseMonth\} \/>/);
 assert.match(source, /readSpendingMonth\(report\.summary, \{ month: activeMonth, today \}\)/);
