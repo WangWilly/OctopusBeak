@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { PERSONAL_CATEGORY_CODES } from "./personal-category-codes.ts";
 
 /**
  * The transaction taxonomy package is the only authoring source for the
@@ -53,6 +54,27 @@ export const BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS = [
   "loan-relation",
   "credit-card-statement-relation",
 ] as const;
+/**
+ * E-invoice items are the second categorization subject (ADR 0038).  The
+ * producer reads one item's name first, then the invoice seller's tax ID,
+ * then the seller name; a rule that does not match emits nothing.
+ */
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_ID =
+  "einvoice/item-category-enrichment" as const;
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_VERSION = "v1" as const;
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_RULE_LINEAGE =
+  "einvoice/item-category-enrichment/v1" as const;
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_ROUTE_SCOPE =
+  "einvoice/personal-invoices" as const;
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_ROUTE_ID =
+  "einvoice/personal-invoices/item-category-enrichment/v1/category" as const;
+export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_EVIDENCE_KINDS = [
+  "item-name",
+  "seller-tax-id",
+  "seller-name",
+] as const;
+export type EInvoiceItemCategoryEvidenceKind =
+  (typeof EINVOICE_ITEM_CATEGORY_ENRICHMENT_EVIDENCE_KINDS)[number];
 export const BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES = [
   "cathay/foreign-currency-deposit",
   "yuanta/domestic-deposit",
@@ -123,9 +145,11 @@ export type ProducerCompatibility = Readonly<{
   evidenceKinds: readonly string[];
 }>;
 
+export type AutomaticEnrichmentSubjectKind = "transaction" | "einvoice_item";
+
 export type AutomaticEnrichmentRouteDefinition = Readonly<{
   routeId: string;
-  subjectKind: "transaction";
+  subjectKind: AutomaticEnrichmentSubjectKind;
   field: EnrichmentField;
   scopeKind: "source_stream" | "global";
   scopeKey: string | null;
@@ -223,25 +247,7 @@ const KIND_CODES = [
   "investment.corporate_action.expiration",
 ] as const;
 
-const CATEGORY_CODES = [
-  "food_and_groceries",
-  "dining",
-  "alcohol_and_tobacco",
-  "clothing_and_footwear",
-  "housing_and_utilities",
-  "household_goods_and_services",
-  "healthcare",
-  "transportation",
-  "travel",
-  "information_and_communication",
-  "recreation_sports_and_culture",
-  "education",
-  "personal_and_family_care",
-  "insurance",
-  "taxes_and_government",
-  "gifts_and_donations",
-  "work_and_business",
-] as const;
+const CATEGORY_CODES = PERSONAL_CATEGORY_CODES;
 
 const COUNTERPARTY_ROLE_CODES = [
   "merchant",
@@ -474,6 +480,34 @@ const BANK_TRANSACTION_KIND_PRODUCER_VERSION = {
   confidenceThresholdBasisPoints: 7_500,
 } as const;
 
+const EINVOICE_ITEM_CATEGORY_PRODUCER_VERSION = {
+  producerId: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  producerVersion: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+  confidenceThresholdBasisPoints: 10_000,
+} as const;
+
+const EINVOICE_ITEM_CATEGORY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
+  CATEGORY_CODES.map((code) => ({
+    producerId: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_ID,
+    producerVersion: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "category" as const,
+    outputCode: code,
+    evidenceKinds: [...EINVOICE_ITEM_CATEGORY_ENRICHMENT_EVIDENCE_KINDS],
+  }));
+
+const EINVOICE_ITEM_CATEGORY_ROUTE: AutomaticEnrichmentRouteDefinition = {
+  routeId: EINVOICE_ITEM_CATEGORY_ENRICHMENT_ROUTE_ID,
+  subjectKind: "einvoice_item",
+  field: "category",
+  scopeKind: "source_stream",
+  scopeKey: EINVOICE_ITEM_CATEGORY_ENRICHMENT_ROUTE_SCOPE,
+  producerId: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  producerVersion: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+  originPolicy: "derived",
+  validFromCommitSequence: 1,
+};
+
 const BANK_TRANSACTION_KIND_OUTPUT_CODES = [
   "purchase",
   "transfer.internal",
@@ -654,6 +688,7 @@ const PRODUCER_COMPATIBILITY = [
   ...CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY,
   ...BANK_TRANSACTION_KIND_DERIVED_COMPATIBILITY,
   ...CATHAY_BANK_KIND_DERIVED_COMPATIBILITY,
+  ...EINVOICE_ITEM_CATEGORY_DERIVED_COMPATIBILITY,
 ] as const;
 
 const AUTOMATIC_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] = (
@@ -801,11 +836,13 @@ export const TRANSACTION_TAXONOMY_PACKAGE_V1: TransactionTaxonomyPackage = {
     CATHAY_PRODUCER_VERSION,
     CREDIT_CARD_DIRECTION_PRODUCER_VERSION,
     BANK_TRANSACTION_KIND_PRODUCER_VERSION,
+    EINVOICE_ITEM_CATEGORY_PRODUCER_VERSION,
   ],
   automaticRoutes: [
     ...AUTOMATIC_ROUTES,
     ...CREDIT_CARD_DIRECTION_ROUTES,
     ...BANK_TRANSACTION_KIND_ROUTES,
+    EINVOICE_ITEM_CATEGORY_ROUTE,
   ],
   fixtures: FIXTURES,
 };
@@ -977,7 +1014,8 @@ export function validateTaxonomyPackage(
     routeKeys.add(`${route.subjectKind}:${route.field}:${route.scopeKey ?? ""}`);
     if (
       typeof route.routeId !== "string" || route.routeId.trim() === "" ||
-      route.subjectKind !== "transaction" ||
+      (route.subjectKind !== "transaction" && route.subjectKind !== "einvoice_item") ||
+      (route.subjectKind === "einvoice_item" && route.field !== "category") ||
       (route.field !== "kind" && route.field !== "category" &&
         route.field !== "counterparty_role" && route.field !== "counterparty_display") ||
       (route.scopeKind !== "global" && route.scopeKind !== "source_stream") ||
