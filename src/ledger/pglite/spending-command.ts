@@ -12,6 +12,7 @@ import {
   linkedPurchaseRecord,
   pendingPairRef,
   queryPendingSpendingCandidates,
+  recordedAtIso,
   subtractInvoiceTotal,
   targetedPGlitePurchaseReportAfterRecognitionMutation,
   type PGliteSpendingReader,
@@ -171,20 +172,23 @@ async function currentSnapshotForAction(
   return queryCurrentSpending(transaction);
 }
 
+type CommitRef = Readonly<{ id: Uint8Array; sequence: number; recordedAtUtcUs: number }>;
+
 async function commit(
   transaction: PGliteTransaction,
   authorityRoute: string,
-): Promise<Readonly<{ id: Uint8Array; sequence: number }>> {
+): Promise<CommitRef> {
   const id = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
   const sequence = (await latest(transaction)) + 1;
+  const recordedAtUtcUs = Date.now() * 1000;
   await txQuery(
     transaction,
     `INSERT INTO canonical_commits(
        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
      ) VALUES (?, ?, ?, ?, 'relation_resolution')`,
-    [id, sequence, Date.now() * 1000, authorityRoute],
+    [id, sequence, recordedAtUtcUs, authorityRoute],
   );
-  return { id, sequence };
+  return { id, sequence, recordedAtUtcUs };
 }
 
 async function requirePair(transaction: PGliteTransaction, pair: SpendingPair): Promise<Readonly<{ invoice: Uint8Array; transaction: Uint8Array }>> {
@@ -257,7 +261,7 @@ async function decide(
   input: SpendingDecisionInput,
   kind: "confirmed" | "denied",
   requireCurrent = false,
-  sharedCommit?: Readonly<{ id: Uint8Array; sequence: number }>,
+  sharedCommit?: CommitRef,
 ): Promise<DecisionResult> {
   const pair = await requirePair(transaction, input);
   if (requireCurrent) await requireCurrentPair(transaction, input);
@@ -274,7 +278,7 @@ async function decide(
   if (prior) {
     if (prior.event_kind !== kind || idString(prior.invoice_id) !== input.invoiceId || idString(prior.transaction_id) !== input.transactionId || prior.evidence_json !== evidenceJson) throw new Error("Decision key conflicts with an earlier decision.");
     if (kind === "denied") return input;
-    const commitRow = await txQuery<{ commit_sequence: number | string }>(transaction, "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
+    const commitRow = await txQuery<{ commit_sequence: number | string; recorded_at_utc_us: number | string }>(transaction, "SELECT commit_sequence, recorded_at_utc_us FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
     return {
       invoiceId: input.invoiceId,
       transactionId: input.transactionId,
@@ -282,6 +286,7 @@ async function decide(
       origin: prior.decision_origin as "user" | "source",
       evidenceKnowledgeSequence: numberValue(prior.evidence_knowledge_sequence, "Decision evidence sequence"),
       decisionCommitSequence: numberValue(commitRow.rows[0]?.commit_sequence, "Decision commit sequence"),
+      decidedAt: recordedAtIso(commitRow.rows[0]?.recorded_at_utc_us),
       evidence: parseJson(prior.evidence_json),
       userId: prior.user_id,
       authorityRoute: prior.authority_route,
@@ -319,6 +324,7 @@ async function decide(
       origin: "user",
       evidenceKnowledgeSequence,
       decisionCommitSequence: created.sequence,
+      decidedAt: recordedAtIso(created.recordedAtUtcUs),
       evidence: objectJson(input.evidence, "Decision evidence"),
       userId,
       authorityRoute: null,

@@ -73,6 +73,7 @@ export type SpendingPurchaseLinkView = Readonly<{
   eventId: string;
   origin: string;
   evidenceKnowledgeSequence: number;
+  decidedAt: string;
   evidence: Readonly<Record<string, unknown>>;
 }>;
 
