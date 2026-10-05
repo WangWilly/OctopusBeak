@@ -2636,7 +2636,7 @@ function pendingPairInMonth(pair: PendingSpendingCandidate, month: string): bool
   return pair.invoiceDate.startsWith(`${month}-`) || pair.transactionDate.startsWith(`${month}-`);
 }
 
-function pendingPairRef(pair: PendingSpendingCandidate): SpendingCandidatePairRef {
+export function pendingPairRef(pair: PendingSpendingCandidate): SpendingCandidatePairRef {
   return Object.freeze({
     candidateId: pair.candidate.candidateId,
     invoiceIdentityId: pair.invoiceId,

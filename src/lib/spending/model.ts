@@ -218,6 +218,30 @@ export type SpendingPendingOverviewDto = Readonly<{
 
 export type SpendingPendingOverviewRequest = Readonly<{ knowledgeAt: number }>;
 
+/** 合併所有高度相符: confirm exactly the strong pairs the user was shown. */
+export type SpendingStrongConfirmRequest = Readonly<{
+  /** The data version the shown pairs came from; a newer unrelated commit does not reject. */
+  shownKnowledgeAt: number;
+  pairs: readonly SpendingCandidatePairRef[];
+}>;
+
+export type SpendingStrongConfirmResult =
+  | Readonly<{
+      status: "committed";
+      baseKnowledgeAt: number;
+      /** The one commit holding every decision event of the batch. */
+      knowledgeAt: number;
+      confirmed: readonly (SpendingCandidatePairRef & Readonly<{ eventId: string }>)[];
+    }>
+  | Readonly<{
+      /** Nothing was written: a shown pair is no longer pending or no longer strong. */
+      status: "conflict";
+      knowledgeAt: number;
+      conflicts: readonly SpendingCandidatePairRef[];
+      /** The recomputed strong set to offer instead. */
+      strongPairs: readonly SpendingCandidatePairRef[];
+    }>;
+
 /** Worker-validated action from a compact, version-bound Spending page. */
 export type SpendingPageActionRequest = Readonly<{
   action: "confirm" | "deny";
