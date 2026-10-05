@@ -13,19 +13,48 @@
  */
 export const MERCHANT_SIMILARITY_STRONG_THRESHOLD = 0.5;
 
+const COMPANY_SUFFIX = /(股份有限公司|有限公司|企業社|分公司|公司|商行)/gu;
+const CJK_PAIR = /^[\p{Script=Han}]{2}$/u;
+
 function normalizedMerchant(value: string | null | undefined): string {
-  return (value ?? "").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return (value ?? "")
+    .toLocaleLowerCase()
+    .replace(COMPANY_SUFFIX, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
-/** 1 for equal text, 0.75 for containment, otherwise the shared-token ratio. */
+function characterPairs(value: string): string[] {
+  const compact = value.replace(/\s+/gu, "");
+  return [...compact].slice(0, -1).map((char, index) => char + [...compact][index + 1]);
+}
+
+/** Two-character brand prefixes such as 全聯 or 蝦皮 that appear in the other name. */
+function sharesLeadingBrand(a: string, b: string): boolean {
+  const leading = (value: string) => characterPairs(value)[0] ?? "";
+  const lead = (from: string, to: string) => CJK_PAIR.test(leading(from)) && characterPairs(to).includes(leading(from));
+  return lead(a, b) || lead(b, a);
+}
+
+/**
+ * 1 for equal text, 0.75 for containment, 0.6 for a shared Chinese brand
+ * prefix, otherwise the larger of the shared-token ratio and the shared
+ * character-pair ratio. Company suffixes are ignored.
+ */
 export function merchantSimilarity(left: string | null | undefined, right: string | null | undefined): number {
   const a = normalizedMerchant(left), b = normalizedMerchant(right);
   if (!a || !b) return 0;
   if (a === b) return 1;
   if (a.includes(b) || b.includes(a)) return 0.75;
+  if (sharesLeadingBrand(a, b)) return 0.6;
   const leftTokens = new Set(a.split(/\s+/u)), rightTokens = new Set(b.split(/\s+/u));
-  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  return intersection / Math.max(leftTokens.size, rightTokens.size);
+  const sharedTokens = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const leftPairs = new Set(characterPairs(a)), rightPairs = new Set(characterPairs(b));
+  const sharedPairs = [...leftPairs].filter((pair) => rightPairs.has(pair)).length;
+  return Math.max(
+    sharedTokens / Math.max(leftTokens.size, rightTokens.size),
+    leftPairs.size && rightPairs.size ? sharedPairs / Math.max(leftPairs.size, rightPairs.size) : 0,
+  );
 }
 
 export type SpendingCandidateStrength = "strong" | "possible";
