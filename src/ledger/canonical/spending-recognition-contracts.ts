@@ -52,6 +52,8 @@ export type SpendingDedupLinkView = SpendingPair & Readonly<{
   origin: "user" | "source";
   evidenceKnowledgeSequence: number;
   decisionCommitSequence: number;
+  /** When the decision was recorded: its commit's recorded_at, as an ISO-8601 UTC instant. */
+  decidedAt: string;
   evidence: Readonly<Record<string, unknown>>;
   userId: string | null;
   authorityRoute: string | null;

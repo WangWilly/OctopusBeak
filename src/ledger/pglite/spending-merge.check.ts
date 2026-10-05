@@ -217,3 +217,44 @@ test("a shown pair that is no longer pending, or was only possible, rejects the 
     await seeded.fixture.close();
   }
 });
+
+test("links expose their decision time and the merge log pages decisions newest first with both sides", async () => {
+  const seeded = await seed();
+  try {
+    const query = createPGliteSpendingQuery(seeded.fixture.store);
+    const linkedAt = await seeded.fixture.knowledgeAt();
+    const recorded = (await seeded.fixture.store.query<{ recorded_at_utc_us: number | string }>(
+      `SELECT commit_row.recorded_at_utc_us FROM spending_dedup_decision_events event
+         JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+        WHERE event.event_kind = 'confirmed'`,
+    )).rows[0]!;
+    const page = await query.recordPage({ knowledgeAt: linkedAt, month: "2026-09" });
+    const linked = page.records.find((record) => record.basis === "linked");
+    assert.equal(linked?.link?.decidedAt, new Date(Math.floor(Number(recorded.recorded_at_utc_us) / 1000)).toISOString());
+    assert.equal(linked?.link?.origin, "user");
+
+    await applyPGliteSpendingPageAction(seeded.fixture.store, {
+      action: "revoke", kind: "revoke", invoiceIdentityId: seeded.linkedInvoice, transactionIdentityId: seeded.linkedPayment, dataVersion: linkedAt,
+    });
+    const knowledgeAt = await seeded.fixture.knowledgeAt();
+    const first = await query.mergeLog({ knowledgeAt, limit: 2 });
+    assert.deepEqual(first.entries.map((entry) => entry.kind), ["revoked", "denied"]);
+    assert.ok(first.nextCursor);
+    const second = await query.mergeLog({ knowledgeAt, cursor: first.nextCursor, limit: 2 });
+    assert.deepEqual(second.entries.map((entry) => entry.kind), ["confirmed"]);
+    assert.equal(second.nextCursor, null);
+    const revoked = first.entries[0]!;
+    assert.deepEqual(revoked.invoice, {
+      invoiceId: seeded.linkedInvoice, invoiceNumber: "LK00000001", sellerName: "Books",
+      occurrence: "2026-09-15T13:45", amount: { coefficient: "400", scale: 0, currency: "TWD" },
+    });
+    assert.deepEqual(revoked.payment, {
+      transactionId: seeded.linkedPayment, description: "Books", date: "2026-09-15",
+      amount: { coefficient: "400", scale: 0, currency: "TWD" },
+    });
+    assert.ok(revoked.commitSequence > second.entries[0]!.commitSequence);
+    await assert.rejects(query.mergeLog({ knowledgeAt: knowledgeAt - 1 }), /data version is stale/u);
+  } finally {
+    await seeded.fixture.close();
+  }
+});

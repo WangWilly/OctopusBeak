@@ -61,6 +61,9 @@ import {
   type SpendingCandidatePairRef,
   type SpendingPendingOverviewDto,
   type SpendingPendingOverviewRequest,
+  type SpendingMergeLogDto,
+  type SpendingMergeLogEntry,
+  type SpendingMergeLogRequest,
   type SpendingPurchaseReportSummaryDto,
   type SpendingPurchaseReportDto,
   type SpendingSummaryDto,
@@ -1317,6 +1320,12 @@ async function invoices(
   return invoiceViewsFromRows(reader, resultRows);
 }
 
+/** A commit's recorded_at_utc_us as an ISO-8601 UTC instant with millisecond precision. */
+export function recordedAtIso(value: unknown): string {
+  const microseconds = numeric(value, "Commit recorded time");
+  return new Date(Math.floor(microseconds / 1000)).toISOString();
+}
+
 function linkFromRow(row: Row): SpendingDedupLinkView {
   return {
     invoiceId: idString(row.invoice_id, "Recognition invoice"),
@@ -1325,6 +1334,7 @@ function linkFromRow(row: Row): SpendingDedupLinkView {
     origin: stringValue(row.decision_origin, "Recognition origin") as "user" | "source",
     evidenceKnowledgeSequence: numeric(row.evidence_knowledge_sequence, "Recognition evidence sequence"),
     decisionCommitSequence: numeric(row.commit_sequence, "Recognition commit sequence"),
+    decidedAt: recordedAtIso(row.recorded_at_utc_us),
     evidence: jsonValue(row.evidence_json, "Recognition evidence"),
     userId: nullableString(row.user_id),
     authorityRoute: nullableString(row.authority_route),
@@ -1377,7 +1387,7 @@ export async function querySpendingRecognition(
   const pairIdentityFilter = pairIdentityFilters.length > 0 ? `AND (${pairIdentityFilters.join(" OR ")})` : "";
   const pairRows = rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
-       SELECT event.*, commit_row.commit_sequence,
+       SELECT event.*, commit_row.commit_sequence, commit_row.recorded_at_utc_us,
               ROW_NUMBER() OVER (PARTITION BY event.invoice_id, event.transaction_id ORDER BY commit_row.commit_sequence DESC, event.event_id DESC) AS event_rank
          FROM spending_dedup_decision_events event
          JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
@@ -1463,7 +1473,7 @@ export async function queryPGliteSpendingRecognitionPair(
   const invoiceId = bytes(request.invoiceId, "Recognition invoice");
   const transactionId = bytes(request.transactionId, "Recognition transaction");
   const eventRows = rows(await pgliteQuery<Row>(reader,
-    `SELECT event.*, commit_row.commit_sequence
+    `SELECT event.*, commit_row.commit_sequence, commit_row.recorded_at_utc_us
        FROM spending_dedup_decision_events event
        JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
       WHERE event.invoice_id = ? AND event.transaction_id = ?
@@ -1605,7 +1615,7 @@ async function recognitionLineage(
   transactionId: string,
 ): Promise<readonly Readonly<Record<string, unknown>>[]> {
   return Object.freeze(rows(await pgliteQuery<Row>(reader,
-    `SELECT event.*, commit_row.commit_sequence
+    `SELECT event.*, commit_row.commit_sequence, commit_row.recorded_at_utc_us
        FROM spending_dedup_decision_events event
        JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
       WHERE event.invoice_id = ? AND event.transaction_id = ?
@@ -3146,6 +3156,105 @@ function rankSpendingPaymentCandidatesFromSnapshot(
   };
 }
 
+type MergeLogCursor = Readonly<{ schemaVersion: 1; knowledgeAt: number; commitSequence: number; eventId: string }>;
+
+function mergeLogCursorFromToken(token: string | null | undefined, knowledgeAt: number): MergeLogCursor | null {
+  if (!token) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as Partial<MergeLogCursor>;
+    if (parsed.schemaVersion !== 1 || parsed.knowledgeAt !== knowledgeAt
+        || !Number.isSafeInteger(parsed.commitSequence) || typeof parsed.eventId !== "string" || !UUID.test(parsed.eventId))
+      throw new Error("invalid cursor fields");
+    return parsed as MergeLogCursor;
+  } catch (error) {
+    throw new Error("Spending merge log cursor is stale or invalid; reload the merge log.", { cause: error });
+  }
+}
+
+function optionalMoney(row: Row, coefficient: string, scale: string, currency: string): Money | null {
+  return row[coefficient] === null || row[coefficient] === undefined ? null : exactMoney(row, coefficient, scale, currency);
+}
+
+/** 合併紀錄: every confirmed, denied, and revoked decision, newest first, keyset paged. */
+export async function queryCurrentSpendingMergeLog(
+  reader: PGliteSpendingReader,
+  request: SpendingMergeLogRequest,
+): Promise<SpendingMergeLogDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new SpendingPageVersionError("merge-log", current);
+  const cursor = mergeLogCursorFromToken(request.cursor, current);
+  const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0 ? Math.min(request.limit ?? 50, 100) : 50;
+  const params: unknown[] = [current];
+  if (cursor) params.push(cursor.commitSequence, cursor.commitSequence, bytes(cursor.eventId, "Merge log cursor event"));
+  params.push(limit + 1);
+  const result = rows(await pgliteQuery<Row>(reader,
+    `SELECT event.event_id, event.event_kind, event.decision_origin, event.invoice_id, event.transaction_id,
+            commit_row.commit_sequence, commit_row.recorded_at_utc_us,
+            invoice.invoice_number, invoice.seller_name, invoice.occurrence_value,
+            invoice.amount_coefficient AS invoice_amount_coefficient, invoice.amount_scale AS invoice_amount_scale,
+            invoice.currency AS invoice_currency,
+            payment.description AS payment_description, payment.amount_coefficient AS payment_amount_coefficient,
+            payment.amount_scale AS payment_amount_scale, payment.currency AS payment_currency,
+            COALESCE(detail.consume_date, detail.posting_date, payment.effective_on) AS payment_date
+       FROM spending_dedup_decision_events event
+       JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+       LEFT JOIN LATERAL (
+         SELECT revision.invoice_number, revision.seller_name, revision.occurrence_value,
+                revision.amount_coefficient, revision.amount_scale, revision.currency
+           FROM einvoice_invoice_revisions revision
+           JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+          WHERE revision.invoice_id = event.invoice_id
+          ORDER BY revision.revision_number DESC, revision_commit.commit_sequence DESC, revision.revision_id DESC
+          LIMIT 1
+       ) invoice ON TRUE
+       LEFT JOIN current_transactions current_row ON current_row.transaction_id = event.transaction_id
+       LEFT JOIN transaction_revisions payment ON payment.revision_id = current_row.revision_id
+       LEFT JOIN LATERAL (
+         SELECT consume_date, posting_date
+           FROM canonical_credit_card_transaction_details detail
+          WHERE detail.revision_id = current_row.revision_id
+          ORDER BY detail.source_record_id
+          LIMIT 1
+       ) detail ON TRUE
+      WHERE commit_row.commit_sequence <= ?
+        ${cursor ? "AND (commit_row.commit_sequence < ? OR (commit_row.commit_sequence = ? AND event.event_id > ?))" : ""}
+      ORDER BY commit_row.commit_sequence DESC, event.event_id ASC
+      LIMIT ?`,
+    params,
+  ));
+  const visible = result.slice(0, limit);
+  const entries = visible.map((row) => Object.freeze({
+    eventId: idString(row.event_id, "Merge log event"),
+    kind: stringValue(row.event_kind, "Merge log event kind") as SpendingMergeLogEntry["kind"],
+    origin: stringValue(row.decision_origin, "Merge log origin") as SpendingMergeLogEntry["origin"],
+    decidedAt: recordedAtIso(row.recorded_at_utc_us),
+    commitSequence: numeric(row.commit_sequence, "Merge log commit sequence"),
+    invoice: row.invoice_number === null || row.invoice_number === undefined ? null : Object.freeze({
+      invoiceId: idString(row.invoice_id, "Merge log invoice"),
+      invoiceNumber: stringValue(row.invoice_number, "Merge log invoice number"),
+      sellerName: nullableString(row.seller_name),
+      occurrence: stringValue(row.occurrence_value, "Merge log invoice occurrence"),
+      amount: optionalMoney(row, "invoice_amount_coefficient", "invoice_amount_scale", "invoice_currency"),
+    }),
+    payment: row.payment_amount_coefficient === null || row.payment_amount_coefficient === undefined ? null : Object.freeze({
+      transactionId: idString(row.transaction_id, "Merge log transaction"),
+      description: nullableString(row.payment_description),
+      date: stringValue(row.payment_date, "Merge log payment date"),
+      amount: exactMoney(row, "payment_amount_coefficient", "payment_amount_scale", "payment_currency"),
+    }),
+  }));
+  const last = entries.at(-1);
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    entries: Object.freeze(entries),
+    nextCursor: result.length > limit && last ? Buffer.from(JSON.stringify({
+      schemaVersion: 1, knowledgeAt: current, commitSequence: last.commitSequence, eventId: last.eventId,
+    } satisfies MergeLogCursor), "utf8").toString("base64url") : null,
+  });
+}
+
 export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
   let pendingCache: PGlitePendingSpendingCandidates | null = null;
   const pendingAt = async (transaction: PGliteSpendingReader, knowledgeAt: number) => {
@@ -3174,6 +3283,8 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
         throw new SpendingPageVersionError("candidate", knowledgeAt);
       return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
     }),
+    mergeLog: (request: SpendingMergeLogRequest) =>
+      store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
     pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
       const knowledgeAt = await latest(transaction);
       if (knowledgeAt !== request.knowledgeAt)
