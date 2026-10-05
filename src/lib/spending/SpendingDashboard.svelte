@@ -4,7 +4,6 @@
   import type { SpendingPageDto } from "./model.ts";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { isEmptySpendingPage } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let spending: SpendingPageDto;
   export let refreshSummary: () => Promise<void> = async () => {};
@@ -12,14 +11,7 @@
   export let retryBlock: (key: string) => void = () => {};
 </script>
 
-{#if isEmptySpendingPage(spending)}
-  <CanonicalSpendingDashboard
-    spending={spending.canonical}
-    invoices={spending.invoices}
-    {blocks}
-    {retryBlock}
-  />
-{:else if spending.purchaseReport}
+{#if spending.purchaseReport}
   <PurchaseSpendingDashboard
     {refreshSummary}
     purchaseReport={spending.purchaseReport}

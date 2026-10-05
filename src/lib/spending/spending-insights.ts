@@ -201,6 +201,34 @@ export function readSpendingTrend(summary: SpendingSummary, input: ReadTrendInpu
   });
 }
 
+/** A card either draws the shown data or teaches what will appear once there is some. */
+export type SpendingCardState = "data" | "empty";
+
+/**
+ * Each card decides from its own data. The month panel, categories, pace and
+ * purchase list empty out for a month without purchases; the 12-month trend
+ * empties out only when no month has any.
+ */
+export type SpendingCards = Readonly<{
+  /** The selected history month, else the newest, else today's month. */
+  month: MonthKey;
+  span: MonthSpan;
+  monthPanel: SpendingCardState;
+  trend: SpendingCardState;
+}>;
+
+export function readSpendingCards(summary: SpendingSummary, input: ReadMonthInput): SpendingCards {
+  const rows = new Map(summary.monthTotals.map((row) => [row.month, row]));
+  const newest = summary.monthTotals.map((row) => row.month).sort().at(-1);
+  const month = (input.month !== null && rows.has(input.month) ? input.month : newest ?? input.today.slice(0, 7)) as MonthKey;
+  return Object.freeze({
+    month,
+    span: spanOf(month, input.today),
+    monthPanel: (rows.get(month)?.recordCount ?? 0) > 0 ? "data" : "empty",
+    trend: summary.monthTotals.some((row) => row.recordCount > 0) ? "data" : "empty",
+  });
+}
+
 /**
  * 月底推估: a straight line through the month-to-date pace. Only an
  * in-progress month has one; `basisDays` is the elapsed days it rests on.

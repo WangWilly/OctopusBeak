@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   projectMonthEnd,
   readCategoryBreakdown,
+  readSpendingCards,
   readSpendingMonth,
   readSpendingTrend,
   readTrendStats,
@@ -336,4 +337,32 @@ test("the category breakdown rolls codes into groups, keeps Unclassified and sha
   assert.equal(rows[2]?.share, 0.1);
   assert.equal(rows.at(-1)?.share, 0, "a net refund group takes no share");
   assert.deepEqual(readCategoryBreakdown([], { month: "2026-10", currency: "TWD" }), []);
+});
+
+test("each card empties out from its own data, not from one page-wide switch", () => {
+  const today = "2026-10-05";
+  const none = readSpendingCards({ monthTotals: [], dayTotals: [] }, { month: null, today });
+  assert.deepEqual(
+    { month: none.month, span: none.span.kind, monthPanel: none.monthPanel, trend: none.trend },
+    { month: "2026-10", span: "in-progress", monthPanel: "empty", trend: "empty" },
+    "with no history the page shows today's month and every card teaches",
+  );
+
+  const history = summaryOf({ "2026-08-12": 300, "2026-09-03": 120 });
+  const newest = readSpendingCards(history, { month: null, today });
+  assert.deepEqual([newest.month, newest.monthPanel, newest.trend], ["2026-09", "data", "data"]);
+  assert.equal(readSpendingCards(history, { month: "2026-08", today }).month, "2026-08");
+  assert.equal(readSpendingCards(history, { month: "2025-01", today }).month, "2026-09", "a month outside history falls back to the newest");
+
+  const emptied = {
+    ...history,
+    monthTotals: [...history.monthTotals, { month: "2026-10", recordCount: 0, activeDayCount: 0, pendingCandidateCount: 0, totalsByCurrency: [] }],
+  };
+  const quiet = readSpendingCards(emptied, { month: "2026-10", today });
+  assert.deepEqual(
+    [quiet.month, quiet.monthPanel, quiet.trend],
+    ["2026-10", "empty", "data"],
+    "a month without purchases empties its own cards while older months keep the trend",
+  );
+  assert.equal(readSpendingCards(emptied, { month: "2026-09", today }).monthPanel, "data");
 });

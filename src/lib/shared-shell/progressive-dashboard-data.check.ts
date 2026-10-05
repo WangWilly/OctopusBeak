@@ -8,7 +8,6 @@ import type { SpendingPageDto } from "$lib/spending/model.ts";
 import type { SpendingPurchaseReportView } from "$lib/spending/purchase-matching.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
 import {
-  isEmptySpendingPage,
   resolveAutomationBlock,
   resolveSpendingPurchaseReport,
   resolveAssetsList,
@@ -133,16 +132,6 @@ test("progressive dashboard adapters prefer a settled block and fall back to the
   };
   assert.equal(resolveLiabilitiesDetails(fallbackLiabilities, blockLiabilities).marginAccounts[0]?.id, "block");
   assert.equal(resolveLiabilitiesDetails(fallbackLiabilities).marginAccounts[0]?.id, "fallback");
-});
-
-test("an empty spending block keeps empty availability instead of fabricating zero totals", () => {
-  const page = emptySpending();
-  const block: DashboardBlockValueMap["spending"]["summary"] = {
-    canonical: page.canonical,
-    purchaseReport: page.purchaseReport,
-  };
-  assert.equal(block.canonical.availability, "empty");
-  assert.equal(isEmptySpendingPage({ ...page, canonical: block.canonical, purchaseReport: block.purchaseReport }), true);
 });
 
 test("settled spending and automation blocks provide their own content without replacing siblings", () => {

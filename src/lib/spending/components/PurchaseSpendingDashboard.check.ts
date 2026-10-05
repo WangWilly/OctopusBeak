@@ -14,6 +14,9 @@ const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.ur
 assert.match(entry, /spending\.purchaseReport/);
 assert.match(entry, /<PurchaseSpendingDashboard/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
+// An empty page is still the purchase page; each card reads its own empty state.
+assert.doesNotMatch(entry, /isEmptySpendingPage/);
+assert.match(source, /readSpendingCards\(report\.summary, \{ month: activeMonth, today \}\)/);
 
 // Both headline amounts must use the selected month's report slice, not the
 // all-period purchaseReport totals supplied by the progressive block, and a
