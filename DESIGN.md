@@ -350,6 +350,9 @@ The sidebar is a Slate Ink spine with white text at 62% opacity, 44px links at w
 ### Charts (Sparkline)
 The balance history is drawn with a 4px round-capped Ledger Blue line over a 14% accent area, with a Hairline grid and muted 11px axis labels. Dots are accent with a 3px white stroke. The tooltip is an ink body at 92% opacity with white text and a tabular figure.
 
+### Month Pace Chart (Spending)
+Answers "how is this month going against usual". The cumulative month-to-date line uses the Sparkline spec (Ledger Blue, round caps) and stops at the last day with data. Usual is a Graphite Muted dashed line to month end over a 12% muted band spanning the low to high of the 3 baseline months. A daily strip below shares the x axis: normal days are Ledger Blue at 55% (`color-mix`), the month's heaviest days (at most 3, at least twice the usual median day) are full Ledger Blue, refunds are Overdrawn Red, and the selected day gets a 2px ink outline. The companion 12-month trend draws complete months in full accent, the in-progress month at 55%, the first imported month at 35%, with a usual tick on each bar. Direction is stated in words, never colored red or green.
+
 ### Switch
 A 76×36px bordered control (8px radius) pairing an icon with a 30×18px pill track. The track is ink when on and Hairline when off. Its 12px white thumb slides 12px over 180ms. Used for the values-visible toggle and the per-source enable toggles.
 
