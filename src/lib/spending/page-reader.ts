@@ -4,7 +4,7 @@ export type SpendingPageReadResult<T> = T | Readonly<{ stale: true; knowledgeAt:
 /** Keep this typed error inside the query implementation; IPC returns its safe result. */
 export class SpendingPageVersionError extends Error {
   readonly knowledgeAt: number;
-  constructor(page: "record" | "candidate", knowledgeAt: number) {
+  constructor(page: "record" | "candidate" | "pending-overview" | "merge-log" | "month-insight" | "merchant-stats", knowledgeAt: number) {
     super(`Spending ${page} page data version is stale; reload Spending.`);
     this.knowledgeAt = knowledgeAt;
   }

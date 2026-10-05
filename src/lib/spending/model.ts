@@ -6,8 +6,16 @@ import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-re
 import type { PurchaseCategory } from "./purchase-category-view.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
+import type {
+  SpendingCandidateReasons,
+  SpendingCandidateStrength,
+} from "../../ledger/canonical/spending-match-strength.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
+export type {
+  SpendingCandidateReasons,
+  SpendingCandidateStrength,
+} from "../../ledger/canonical/spending-match-strength.ts";
 
 /**
  * The purchase-basis report is the active Spending contract.  It stays as a
@@ -156,14 +164,22 @@ export type SpendingRecordPageDto = Readonly<{
 
 export type SpendingCandidatePageRequest = Readonly<{
   knowledgeAt: number;
-  /** The selected calendar month; dashboard pairing pages are month-scoped. */
-  month: string;
+  /** A calendar month for the month panel, or null for every pending pair (the merge modal). */
+  month: string | null;
   offset?: number;
   limit?: number;
 }>;
 
+/** A pending pair as shown: strength and reasons are read-time, never stored. */
+export type SpendingPendingCandidateView = SpendingPurchaseReportView["candidates"][number] & Readonly<{
+  invoiceId: string;
+  transactionId: string;
+  strength: SpendingCandidateStrength;
+  reasons: SpendingCandidateReasons;
+}>;
+
 export type SpendingCandidatePageItem = Readonly<{
-  candidate: SpendingPurchaseReportView["candidates"][number];
+  candidate: SpendingPendingCandidateView;
   invoiceRecord: SpendingPurchaseReportView["records"][number] | null;
   paymentRecord: SpendingPurchaseReportView["records"][number] | null;
 }>;
@@ -171,12 +187,36 @@ export type SpendingCandidatePageItem = Readonly<{
 export type SpendingCandidatePageDto = Readonly<{
   schemaVersion: 1;
   knowledgeAt: number;
-  month: string;
+  month: string | null;
   items: readonly SpendingCandidatePageItem[];
-  /** Candidate count for this month only. */
+  /** Pending pairs in the requested scope: the month, or every month when month is null. */
   totalCandidateCount: number;
+  /** Strong pairs in the requested scope. */
+  strongCandidateCount: number;
   nextOffset: number | null;
 }>;
+
+/** One pair the user was shown, by identity. */
+export type SpendingCandidatePairRef = Readonly<{
+  candidateId: string;
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+}>;
+
+/** The global pending pairing state behind the top-bar 帳目合併 N and the merge modal header. */
+export type SpendingPendingOverviewDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  /** Pending pairs across all months. */
+  pendingCount: number;
+  strongCount: number;
+  /** Invoice amounts at stake, once per distinct invoice with a pending pair; count is invoices. */
+  affectedByCurrency: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[];
+  /** The 合併所有高度相符 set, in display order. */
+  strongPairs: readonly SpendingCandidatePairRef[];
+}>;
+
+export type SpendingPendingOverviewRequest = Readonly<{ knowledgeAt: number }>;
 
 /** Worker-validated action from a compact, version-bound Spending page. */
 export type SpendingPageActionRequest = Readonly<{
