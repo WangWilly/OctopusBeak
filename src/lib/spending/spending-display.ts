@@ -69,14 +69,11 @@ function shortSellerName(name: string): string {
   return name.replace(LEGAL_NAME_TAIL, "").trim() || name;
 }
 
-/** A merged purchase is titled by its store description; an invoice by its short seller name. */
+/** A merged purchase is titled by its store description, others by their name without the legal-entity tail. */
 export function recordMerchant(t: Translation, record: PurchaseRecord): string {
-  if (record.basis === "linked" && record.transaction?.description) return record.transaction.description;
-  const seller = record.invoice?.revision.seller.name;
-  if (seller) return shortSellerName(seller);
-  return record.description
-    ?? record.transaction?.description
-    ?? t.purchaseSpending.merchantUnavailable;
+  if (record.basis === "linked" && record.transaction?.description) return shortSellerName(record.transaction.description);
+  const name = record.invoice?.revision.seller.name ?? record.description ?? record.transaction?.description;
+  return name ? shortSellerName(name) : t.purchaseSpending.merchantUnavailable;
 }
 
 function lastFour(source: SpendingPaymentSourceView | null): string | null {
