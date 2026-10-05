@@ -225,7 +225,11 @@ export type SpendingPendingOverviewDto = Readonly<{
   strongPairs: readonly SpendingCandidatePairRef[];
 }>;
 
-export type SpendingPendingOverviewRequest = Readonly<{ knowledgeAt: number }>;
+export type SpendingPendingOverviewRequest = Readonly<{
+  knowledgeAt: number;
+  /** `YYYY-MM`: only pairs whose invoice or payment falls in the month. Omitted means every month. */
+  month?: string | null;
+}>;
 
 export type SpendingMergeLogRequest = Readonly<{
   knowledgeAt: number;
@@ -308,6 +312,8 @@ export type SpendingMerchantStatsDto = Readonly<{
 export type SpendingStrongConfirmRequest = Readonly<{
   /** The data version the shown pairs came from; a newer unrelated commit does not reject. */
   shownKnowledgeAt: number;
+  /** `YYYY-MM`: the strong set is recomputed inside this month only. Omitted means every month. */
+  month?: string | null;
   pairs: readonly SpendingCandidatePairRef[];
 }>;
 
