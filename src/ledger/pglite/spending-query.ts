@@ -68,6 +68,10 @@ import {
   type SpendingMergeLogDto,
   type SpendingMergeLogEntry,
   type SpendingMergeLogRequest,
+  type SpendingMerchantStatsDto,
+  type SpendingMerchantStatsRequest,
+  type SpendingMonthInsightDto,
+  type SpendingMonthInsightRequest,
   type SpendingPurchaseReportSummaryDto,
   type SpendingPurchaseReportDto,
   type SpendingSummaryDto,
@@ -86,6 +90,12 @@ import {
   createSpendingManualPairingIndex,
   rankSpendingManualPaymentCandidates,
 } from "../canonical/spending-manual-pairing.ts";
+import {
+  largestPurchasesByCurrency,
+  merchantLabel,
+  sameMerchantStats,
+  type MonthPurchaseFact,
+} from "../canonical/spending-month-insights.ts";
 import {
   classifyPendingCandidates,
   type ClassifiedPendingCandidate,
@@ -3218,6 +3228,89 @@ function rankSpendingPaymentCandidatesFromSnapshot(
   };
 }
 
+/**
+ * Counted non-refund purchases of one month with their merchant facts. The
+ * month is given directly or as the month of one purchase.
+ */
+async function queryMonthPurchaseFacts(
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  scope: Readonly<{ month: string } | { purchaseId: string }>,
+): Promise<readonly MonthPurchaseFact[]> {
+  const monthFilter = "month" in scope
+    ? "SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?"
+    : `SUBSTRING(purchase_rows.occurrence_value, 1, 7) = (
+         SELECT SUBSTRING(target.occurrence_value, 1, 7) FROM purchase_rows target WHERE target.purchase_id = ?)`;
+  const result = rows(await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}
+    SELECT purchase_rows.basis, purchase_rows.purchase_id, purchase_rows.occurrence_value,
+           purchase_rows.amount_coefficient, purchase_rows.amount_scale, purchase_rows.currency,
+           invoice_revision.seller_tax_id, invoice_revision.seller_name,
+           transaction_revision.description
+      FROM purchase_rows
+      LEFT JOIN einvoice_invoice_revisions invoice_revision ON invoice_revision.revision_id = purchase_rows.invoice_revision_id
+      LEFT JOIN current_transactions current_row ON current_row.transaction_id = purchase_rows.transaction_id
+      LEFT JOIN transaction_revisions transaction_revision ON transaction_revision.revision_id = current_row.revision_id
+     WHERE purchase_rows.basis <> 'refund' AND ${monthFilter}`,
+    [knowledgeAt, knowledgeAt, "month" in scope ? scope.month : scope.purchaseId],
+  ));
+  return result.map((row) => Object.freeze({
+    purchaseId: stringValue(row.purchase_id, "Month purchase identity"),
+    basis: stringValue(row.basis, "Month purchase basis") as MonthPurchaseFact["basis"],
+    occurrence: stringValue(row.occurrence_value, "Month purchase occurrence"),
+    amount: optionalMoney(row, "amount_coefficient", "amount_scale", "currency"),
+    sellerTaxId: nullableString(row.seller_tax_id),
+    sellerName: nullableString(row.seller_name),
+    bankDescription: nullableString(row.description),
+  }));
+}
+
+/** 最高消費: the month's largest single purchase per currency. */
+export async function queryCurrentSpendingMonthInsight(
+  reader: PGliteSpendingReader,
+  request: SpendingMonthInsightRequest,
+): Promise<SpendingMonthInsightDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new SpendingPageVersionError("month-insight", current);
+  if (!validSpendingMonth(request.month)) throw new TypeError("Spending month insight month is invalid.");
+  const facts = await queryMonthPurchaseFacts(reader, current, { month: request.month });
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    month: request.month,
+    largestByCurrency: largestPurchasesByCurrency(facts),
+  });
+}
+
+/** 本月同商家: the count and total of the purchase's month with its exact merchant identity. */
+export async function queryCurrentSpendingMerchantStats(
+  reader: PGliteSpendingReader,
+  request: SpendingMerchantStatsRequest,
+): Promise<SpendingMerchantStatsDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new SpendingPageVersionError("merchant-stats", current);
+  if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
+    throw new TypeError("Spending merchant stats purchase id is required.");
+  const purchaseId = request.purchaseId.trim();
+  const facts = await queryMonthPurchaseFacts(reader, current, { purchaseId });
+  const target = facts.find((fact) => fact.purchaseId === purchaseId);
+  if (!target) throw new Error("Spending merchant stats purchase is not a current purchase.");
+  const stats = sameMerchantStats(facts, purchaseId);
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    purchaseId,
+    month: target.occurrence.slice(0, 7),
+    merchant: stats?.merchant ?? null,
+    merchantLabel: stats?.merchantLabel ?? merchantLabel(target),
+    count: stats?.count ?? 1,
+    totalsByCurrency: stats?.totalsByCurrency ?? Object.freeze(target.amount
+      ? [Object.freeze({ ...target.amount, currency: target.amount.currency.toUpperCase(), count: 1 })]
+      : []),
+  });
+}
+
 type MergeLogCursor = Readonly<{ schemaVersion: 1; knowledgeAt: number; commitSequence: number; eventId: string }>;
 
 function mergeLogCursorFromToken(token: string | null | undefined, knowledgeAt: number): MergeLogCursor | null {
@@ -3353,6 +3446,10 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
         throw new SpendingPageVersionError("candidate", knowledgeAt);
       return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
     }),
+    monthInsight: (request: SpendingMonthInsightRequest) =>
+      store.transaction((transaction) => queryCurrentSpendingMonthInsight(transaction, request)),
+    merchantStats: (request: SpendingMerchantStatsRequest) =>
+      store.transaction((transaction) => queryCurrentSpendingMerchantStats(transaction, request)),
     mergeLog: (request: SpendingMergeLogRequest) =>
       store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
     pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
