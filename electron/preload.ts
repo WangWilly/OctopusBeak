@@ -96,6 +96,7 @@ const api: OctopusBeakApi = {
     loadCandidatePage: (input, requestId) => ipcRenderer.invoke("spending:candidate-page", input, requestId),
     cancelCandidatePage: (requestId) => ipcRenderer.invoke("spending:candidate-page-cancel", requestId),
     applyPageAction: (input) => ipcRenderer.invoke("spending:page-action", input),
+    setPurchaseCategory: (input) => ipcRenderer.invoke("spending:set-purchase-category", input),
     loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
     rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
     prewarmPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-prewarm", input),

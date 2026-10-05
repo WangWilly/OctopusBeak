@@ -20,6 +20,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "spending:candidate-page",
   "spending:candidate-page-cancel",
   "spending:page-action",
+  "spending:set-purchase-category",
   "spending:pairing-candidates",
   "spending:pairing-prewarm",
   "spending:confirmCandidate",

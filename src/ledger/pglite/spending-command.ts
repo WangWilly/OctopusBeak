@@ -35,6 +35,8 @@ import type {
   SpendingSummaryDeltaLine,
 } from "../../lib/spending/model.ts";
 import { createSpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
+import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
+import type { SpendingPurchaseCategoryRequest } from "../../lib/spending/model.ts";
 import type { SpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import type { SpendingPairingReportContext } from "../../lib/spending/model.ts";
 
@@ -904,6 +906,7 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     denyCandidate: (input: SpendingCandidateActionInput) => denyPGliteSpendingCandidate(writer, input),
     revokeLink: (input: SpendingLinkActionInput) => revokePGliteSpendingLink(writer, input),
     pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
+    setPurchaseCategory: (input: SpendingPurchaseCategoryRequest) => setPGliteSpendingPurchaseCategory(writer, input),
   });
 }
 

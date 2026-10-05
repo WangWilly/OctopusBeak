@@ -60,7 +60,8 @@ export type EInvoiceItemSyncInput = Readonly<{
 
 export type EInvoiceItemUserCategoryInput = Readonly<{
   invoiceId: Uint8Array;
-  commitId: Uint8Array;
+  /** The owning commit, or a provider that creates it on the first write. */
+  commitId: Uint8Array | (() => Promise<Uint8Array>);
   userId: string;
   categoryCode: string | null;
 }>;
@@ -412,11 +413,16 @@ export async function writeEInvoiceItemUserCategory(
   const items = latest?.state === "active" ? latest.items : [];
   const active = await readActiveItemAssertions(transaction, input.invoiceId);
   const userBySequence = new Map(active.filter((row) => row.origin === "user").map((row) => [row.sequence, row]));
+  let resolvedCommit: Uint8Array | null = input.commitId instanceof Uint8Array ? input.commitId : null;
+  const commit = async (): Promise<Uint8Array> => {
+    if (!resolvedCommit) resolvedCommit = await (input.commitId as () => Promise<Uint8Array>)();
+    return resolvedCommit;
+  };
   let written = 0;
   let withdrawn = 0;
   if (input.categoryCode === null) {
     for (const user of userBySequence.values()) {
-      await insertUserTransition(transaction, user, input.invoiceId, input.commitId, "withdrawn");
+      await insertUserTransition(transaction, user, input.invoiceId, await commit(), "withdrawn");
       withdrawn += 1;
     }
   } else {
@@ -424,7 +430,8 @@ export async function writeEInvoiceItemUserCategory(
       const fingerprint = einvoiceItemFactFingerprint(item);
       const previous = userBySequence.get(item.sequence);
       if (previous && previous.value === input.categoryCode && previous.fingerprint === fingerprint) continue;
-      if (previous) await insertUserTransition(transaction, previous, input.invoiceId, input.commitId, "superseded");
+      const commitId = await commit();
+      if (previous) await insertUserTransition(transaction, previous, input.invoiceId, commitId, "superseded");
       const assertionId = await insertItemAssertion(transaction, {
         invoiceId: input.invoiceId,
         sequence: item.sequence,
@@ -434,17 +441,17 @@ export async function writeEInvoiceItemUserCategory(
         code: input.categoryCode,
         fingerprint,
         routeId: null,
-        commitId: input.commitId,
+        commitId,
       });
       await query(transaction,
         `INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
          VALUES (?, NULL, NULL, NULL, NULL, ?)`,
-        [assertionId, input.commitId],
+        [assertionId, commitId],
       );
-      await insertUserTransition(transaction, { assertionId, sequence: item.sequence, producerId: input.userId }, input.invoiceId, input.commitId, "observed");
+      await insertUserTransition(transaction, { assertionId, sequence: item.sequence, producerId: input.userId }, input.invoiceId, commitId, "observed");
       written += 1;
     }
   }
-  await refreshCurrentEInvoiceItemCategorizations(transaction, input.invoiceId, input.commitId);
+  if (written + withdrawn > 0) await refreshCurrentEInvoiceItemCategorizations(transaction, input.invoiceId, await commit());
   return { written, withdrawn };
 }
