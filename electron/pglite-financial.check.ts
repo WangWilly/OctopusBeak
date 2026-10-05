@@ -555,12 +555,10 @@ test("financial live views recover after a transient read failure and stop durin
     importedAt: null,
     summary: [],
     dailyHistory: [],
+    dailyHistoryByAccount: {},
     accounts: [],
-    sankey: null,
-    sankeyExchangeRates: [],
-    sankeyLatestExchangeRateDate: null,
+    holdingPrices: [],
     exchangeRates: [],
-    latestExchangeRateDate: null,
   };
   let failNext = false;
   let blocked: Promise<typeof page> | null = null;

@@ -59,12 +59,10 @@ const emptyOverview = {
   importedAt: null,
   summary: [],
   dailyHistory: [],
+  dailyHistoryByAccount: {},
   accounts: [],
-  sankey: null,
-  sankeyExchangeRates: [],
-  sankeyLatestExchangeRateDate: null,
+  holdingPrices: [],
   exchangeRates: [],
-  latestExchangeRateDate: null,
 };
 
 const emptyAssets = {
@@ -224,12 +222,10 @@ function installSpendingDesktopApi(model) {
     importedAt: null,
     summary: [],
     dailyHistory: [],
+    dailyHistoryByAccount: {},
     accounts: [],
-    sankey: null,
-    sankeyExchangeRates: [],
-    sankeyLatestExchangeRateDate: null,
+    holdingPrices: [],
     exchangeRates: [],
-    latestExchangeRateDate: null,
   };
   const fixtureAssets = {
     availability: "empty",

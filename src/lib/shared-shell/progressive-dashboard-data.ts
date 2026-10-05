@@ -8,46 +8,12 @@ import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
 import { selectAutomationBlockModel } from "../automation/runtime-sync.ts";
 import type { AutomationActionToken } from "../automation/runtime-controller.ts";
 
-export function resolveOverviewSummary(
+/** A loaded block's fields win over the route DTO it was projected from. */
+export function resolveOverview(
   fallback: OverviewPageDto,
-  block?: DashboardBlockValueMap["overview"]["summary"],
-) {
-  return block?.summary ?? fallback.summary;
-}
-
-export function resolveOverviewChart(
-  fallback: OverviewPageDto,
-  block?: DashboardBlockValueMap["overview"]["chart"],
-): DashboardBlockValueMap["overview"]["chart"] {
-  return {
-    historyAvailability: block?.historyAvailability ?? fallback.historyAvailability,
-    dailyHistory: block?.dailyHistory ?? fallback.dailyHistory,
-    accounts: block?.accounts ?? fallback.accounts,
-    exchangeRates: block?.exchangeRates ?? fallback.exchangeRates,
-  };
-}
-
-export function resolveOverviewList(
-  fallback: OverviewPageDto,
-  block?: DashboardBlockValueMap["overview"]["list"],
-): DashboardBlockValueMap["overview"]["list"] {
-  return {
-    historyAvailability: block?.historyAvailability ?? fallback.historyAvailability,
-    dailyHistory: block?.dailyHistory ?? fallback.dailyHistory,
-    exchangeRates: block?.exchangeRates ?? fallback.exchangeRates,
-    latestExchangeRateDate: block?.latestExchangeRateDate ?? fallback.latestExchangeRateDate,
-  };
-}
-
-export function resolveOverviewDetails(
-  fallback: OverviewPageDto,
-  block?: DashboardBlockValueMap["overview"]["details"],
-): DashboardBlockValueMap["overview"]["details"] {
-  return {
-    sankey: block?.sankey ?? fallback.sankey,
-    sankeyExchangeRates: block?.sankeyExchangeRates ?? fallback.sankeyExchangeRates,
-    sankeyLatestExchangeRateDate: block?.sankeyLatestExchangeRateDate ?? fallback.sankeyLatestExchangeRateDate,
-  };
+  blocks: Partial<{ [Key in keyof DashboardBlockValueMap["overview"]]: DashboardBlockValueMap["overview"][Key] }>,
+): OverviewPageDto {
+  return { ...fallback, ...blocks.chart, ...blocks.list, ...blocks.summary };
 }
 
 export function resolveAssetsSummary(

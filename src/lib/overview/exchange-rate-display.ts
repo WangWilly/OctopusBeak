@@ -1,24 +1,39 @@
-import type {
-  CurrencyAmountDto,
-  DailyHistoryRowDto,
-  ExchangeRateDto,
-} from "../shared-ledger/types.ts";
+import type { CurrencyAmountDto, ExchangeRateDto } from "../shared-ledger/types.ts";
 
-const AMOUNT_KEYS = ["netAssets", "dailyChange", "assets", "liabilities"] as const;
-const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
+/** Rates per currency, sorted by rate date. */
+export type ExchangeRateIndex = ReadonlyMap<string, readonly ExchangeRateDto[]>;
 
-type SelectedRate = {
+export type SelectedRate = {
   rateDate: string | null;
   twdPerUnit: number;
 };
 
-function rateOnOrBefore(
-  ratesByCurrency: Map<string, ExchangeRateDto[]>,
+export type TwdConversion = {
+  value: number;
+  rateDates: string[];
+};
+
+export function indexExchangeRates(rates: readonly ExchangeRateDto[]): ExchangeRateIndex {
+  const index = new Map<string, ExchangeRateDto[]>();
+  for (const rate of rates) {
+    const currencyRates = index.get(rate.currency) ?? [];
+    currencyRates.push(rate);
+    index.set(rate.currency, currencyRates);
+  }
+  for (const currencyRates of index.values()) {
+    currencyRates.sort((left, right) => left.rateDate.localeCompare(right.rateDate));
+  }
+  return index;
+}
+
+/** Rates exist only on working days, so a date uses the newest rate on or before it. */
+export function rateOnOrBefore(
+  index: ExchangeRateIndex,
   currency: string,
   date: string,
 ): SelectedRate | null {
   if (currency === "TWD") return { rateDate: null, twdPerUnit: 1 };
-  const rates = ratesByCurrency.get(currency) ?? [];
+  const rates = index.get(currency) ?? [];
   let low = 0;
   let high = rates.length - 1;
   let rate: ExchangeRateDto | undefined;
@@ -35,84 +50,19 @@ function rateOnOrBefore(
   return rate ? { rateDate: rate.rateDate, twdPerUnit: rate.twdPerUnit } : null;
 }
 
-function convertAmounts(
-  amounts: CurrencyAmountDto[],
-  displayCurrency: string,
+/** Convert per-currency amounts to one TWD value at `date`, or null when any rate is missing. */
+export function convertToTwd(
+  amounts: readonly CurrencyAmountDto[],
   date: string,
-  ratesByCurrency: Map<string, ExchangeRateDto[]>,
-  usedDates: Set<string>,
-): CurrencyAmountDto[] | null {
-  if (amounts.length === 0) return [];
-  const displayRate = rateOnOrBefore(ratesByCurrency, displayCurrency, date);
-  if (!displayRate) return null;
-  if (displayRate.rateDate) usedDates.add(displayRate.rateDate);
+  index: ExchangeRateIndex,
+): TwdConversion | null {
   let value = 0;
+  const rateDates = new Set<string>();
   for (const amount of amounts) {
-    const sourceRate = rateOnOrBefore(ratesByCurrency, amount.currency, date);
-    if (!sourceRate) return null;
-    if (sourceRate.rateDate) usedDates.add(sourceRate.rateDate);
-    value += amount.value * sourceRate.twdPerUnit / displayRate.twdPerUnit;
+    const rate = rateOnOrBefore(index, amount.currency, date);
+    if (!rate) return null;
+    if (rate.rateDate) rateDates.add(rate.rateDate);
+    value += amount.value * rate.twdPerUnit;
   }
-  return [{ currency: displayCurrency, value }];
-}
-
-export function dailyHistoryCurrencies(rows: DailyHistoryRowDto[]) {
-  const currencies = new Set(["TWD"]);
-  for (const row of rows) {
-    for (const key of AMOUNT_KEYS) {
-      for (const amount of row[key]) {
-        if (amount.currency !== "UNKNOWN") currencies.add(amount.currency);
-      }
-    }
-  }
-  return [...currencies].sort((left, right) => {
-    const leftIndex = CURRENCY_ORDER.indexOf(left);
-    const rightIndex = CURRENCY_ORDER.indexOf(right);
-    return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex)
-      || left.localeCompare(right);
-  });
-}
-
-export function allExchangeRatesMissing(rows: DailyHistoryRowDto[]) {
-  return rows.length > 0 && rows.every((row) => row.exchangeRateMissing === true);
-}
-
-export function convertDailyHistoryRows(
-  rows: DailyHistoryRowDto[],
-  rates: ExchangeRateDto[],
-  displayCurrency: string,
-) {
-  const ratesByCurrency = new Map<string, ExchangeRateDto[]>();
-  for (const rate of rates) {
-    const currency = rate.currency;
-    const currencyRates = ratesByCurrency.get(currency) ?? [];
-    currencyRates.push(rate);
-    ratesByCurrency.set(currency, currencyRates);
-  }
-  for (const currencyRates of ratesByCurrency.values()) {
-    currencyRates.sort((left, right) => left.rateDate.localeCompare(right.rateDate));
-  }
-  return {
-    rows: rows.map((row): DailyHistoryRowDto => {
-      const usedDates = new Set<string>();
-      const converted = {
-        netAssets: convertAmounts(row.netAssets, displayCurrency, row.date, ratesByCurrency, usedDates),
-        dailyChange: convertAmounts(row.dailyChange, displayCurrency, row.date, ratesByCurrency, usedDates),
-        assets: convertAmounts(row.assets, displayCurrency, row.date, ratesByCurrency, usedDates),
-        liabilities: convertAmounts(row.liabilities, displayCurrency, row.date, ratesByCurrency, usedDates),
-      };
-      if (Object.values(converted).some((amounts) => amounts === null)) {
-        return { ...row, exchangeRateDates: [], exchangeRateMissing: true };
-      }
-      return {
-        ...row,
-        netAssets: converted.netAssets ?? [],
-        dailyChange: converted.dailyChange ?? [],
-        assets: converted.assets ?? [],
-        liabilities: converted.liabilities ?? [],
-        exchangeRateDates: [...usedDates].sort(),
-        exchangeRateMissing: false,
-      };
-    }),
-  };
+  return { value, rateDates: [...rateDates].sort() };
 }
