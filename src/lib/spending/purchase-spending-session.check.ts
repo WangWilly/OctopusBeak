@@ -444,39 +444,42 @@ test("a rejected payment page from a closed pairing cannot mutate the next dialo
   session.dispose();
 });
 
-test("candidate-page continuation cannot reveal stale rows after a month switch", async () => {
-  const stalePage = deferred<any>();
-  const firstItems = Array.from({ length: 50 }, (_, index) => candidatePageItem(index));
+test("the record filter reaches every record page read and a month switch clears it", async () => {
+  const items = [candidatePageItem(1), candidatePageItem(2)];
   const { calls, transport } = makeTransport({
-    loadRecordPage: async (input: any) => {
-      calls.recordPages.push(input);
-      return recordPage(input, input.month === "2026-09" ? [invoiceRecord("September")] : firstItems.map((item) => item.invoiceRecord as ReturnType<typeof spendingRecord>));
-    },
     loadCandidatePage: async (input: any, requestId: string) => {
       calls.candidatePages.push({ input, requestId });
-      if (input.offset === 0) return { schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month, items: firstItems, nextOffset: 50, totalCandidateCount: 70 };
-      return stalePage.promise;
+      return { schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month, items, nextOffset: null, totalCandidateCount: 2, strongCandidateCount: 1 };
     },
   });
   const clock = new TestClock();
   const { session, current } = createSession(reportWithTwoMonths(), transport, clock);
   session.start();
-  await waitFor(() => current().report.records.length === 50);
+  await waitFor(() => calls.recordPages.length === 1);
   await clock.advanceBy(1_200);
-  await waitFor(() => current().monthCandidateCount === 70);
-  for (let index = 0; index < 4; index += 1) await session.showMoreCandidates();
-  assert.equal(current().candidateVisibleCount, 50);
-  const staleContinuation = session.showMoreCandidates();
-  await waitFor(() => calls.candidatePages.length === 2);
+  await waitFor(() => current().candidateItems.length === 2);
+  assert.equal(current().monthCandidateCount, 2);
+
+  session.setRecordFilter({ group: "dining", query: "  1,444 " });
+  await waitFor(() => calls.recordPages.length === 2);
+  const filtered = calls.recordPages[1] as any;
+  assert.deepEqual([...filtered.categoryCodes].sort(), ["alcohol_and_tobacco", "dining"]);
+  assert.equal(filtered.query, "1,444");
+  assert.equal(filtered.month, "2026-10");
+  session.setRecordFilter({ group: "dining", query: "1,444" });
+  await settle();
+  assert.equal(calls.recordPages.length, 2, "an unchanged filter does not reload");
+
+  session.setRecordFilter({ group: "unclassified", query: "" });
+  await waitFor(() => calls.recordPages.length === 3);
+  assert.deepEqual((calls.recordPages[2] as any).categoryCodes, ["unclassified"]);
+  assert.equal("query" in (calls.recordPages[2] as any), false);
 
   session.chooseMonth("2026-09");
-  await waitFor(() => calls.recordPages.some((input: any) => input.month === "2026-09")
-    && current().selectedMonth === "2026-09");
-  assert.equal(current().candidateVisibleCount, 0);
-  stalePage.resolve({ schemaVersion: 1, knowledgeAt: 1, month: "2026-10", items: [], nextOffset: null, totalCandidateCount: 70 });
-  await staleContinuation;
-  assert.equal(current().selectedMonth, "2026-09");
-  assert.equal(current().candidateVisibleCount, 0);
+  await waitFor(() => calls.recordPages.length === 4);
+  assert.deepEqual(current().recordFilter, { group: null, query: "" });
+  assert.equal("categoryCodes" in (calls.recordPages[3] as any), false);
+  assert.deepEqual(current().candidateItems, [], "the previous month's pairs never show under the next month");
   session.dispose();
 });
 
@@ -542,7 +545,7 @@ test("dispose suppresses late read recovery and late financial action publicatio
   const second = createSession(report(1, [invoice, payment], [pairCandidate]), actionTransport);
   let actionEmissions = 0;
   second.session.state.subscribe(() => { actionEmissions += 1; });
-  const write = second.session.confirmCandidate("candidate-1");
+  const write = second.session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
   await waitFor(() => calls.actions.length === 1);
   const beforeLateResult = actionEmissions;
   second.session.dispose();

@@ -215,6 +215,7 @@
     <h1 class="topbar-title" class:visually-hidden={titleHidden}><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
 
     <div class="topbar-actions">
+      <slot name="topbar-leading" />
       <button
         class:refreshing={$refreshState.status === "refreshing"}
         class:stale={$refreshState.status === "stale"}

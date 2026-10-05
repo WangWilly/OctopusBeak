@@ -55,6 +55,7 @@ export type SpendingPurchaseItemView = Readonly<{
 export type SpendingPurchaseInvoiceView = Readonly<{
   invoiceId: string;
   revision: Readonly<{
+    invoiceNumber: string;
     seller: Readonly<{ name: string | null }>;
     occurrence: Readonly<{ value: string }>;
     total: SpendingMatchingMoney | null;

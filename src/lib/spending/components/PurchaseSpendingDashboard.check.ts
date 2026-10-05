@@ -57,14 +57,10 @@ assert.match(source, /spendingSession\.dispose\(\)/);
 assert.match(source, /spendingSession\.receiveLive\(purchaseReport, fallbackCanonical\)/);
 assert.doesNotMatch(source, /window\.octopusBeak\.spending\./);
 assert.match(source, /data-pending-total/);
-assert.match(source, /data-link-difference/);
-assert.match(source, /data-item-details/);
 assert.match(source, /role="dialog"/);
 assert.match(source, /slice\(0, paymentVisibleCount\)/);
 assert.match(source, /data-show-more-payments/);
 assert.match(source, /showMorePayments/);
-assert.match(source, /slice\(0, candidateVisibleCount\)/);
-assert.match(source, /data-show-more-candidates/);
 // The month reading and the bounded trend come from the pure insights module.
 assert.match(source, /<MonthPaceChart reading=\{current\} span=\{reading\.span\} \{selectedDay\} onSelectDay=\{chooseDay\} \/>/);
 assert.match(source, /<MonthTrendChart months=\{trend\} selectedMonth=\{reading\.month\} onSelectMonth=\{chooseMonth\} \/>/);
@@ -80,7 +76,15 @@ assert.match(dictionarySource, /選擇日期以篩選購買明細/);
 assert.match(source, /<option value="">\{\$t\.purchaseSpending\.showFullMonth\}/);
 assert.doesNotMatch(source, /showAllCandidates/);
 assert.doesNotMatch(source, /viewAllCount/);
-assert.match(source, /purchaseListView\(listReport, activeMonth, candidateVisibleCount\)/);
+// Spending v2 page A: the month reading, category shares, projection and the
+// global pending count come from the pure insights module and the review store.
+assert.match(source, /readCategoryBreakdown\(report\.summary\.categoryTotalsByMonth, \{ month: reading\.month, currency: selectedCurrency \}\)/);
+assert.match(source, /projectMonthEnd\(current, reading\.span\)/);
+assert.match(source, /readTrendStats\(trend\)/);
+assert.match(source, /review\.sync\(report\.knowledgeAt, activeMonth\)/);
+assert.match(source, /slot="topbar-leading"/);
+assert.match(source, /spendingSession\.setRecordFilter\(/);
+assert.doesNotMatch(source, /data-candidates|candidateVisibleCount|purchase-basis-banner/);
 assert.match(source, /data-total-candidate-count=\{pairingCandidateTotal\}/);
 assert.match(dictionarySource, /只看本月/);
 assert.match(dictionarySource, /查看全部/);
@@ -107,7 +111,7 @@ for (const [name, component] of [["purchase", source], ["canonical", canonicalSo
   for (const match of markup.matchAll(/\{[^{}]*(?:amountText|AmountText)\b[^{}]*\}/g)) {
     const before = markup.slice(0, match.index);
     if (/sideValue=$/.test(before)) continue;
-    assert.match(before, /<(?:span|strong) class="money" data-sensitive>$/, `${name} amount must blur when values are hidden: ${match[0]}`);
+    assert.match(before, /<(?:span|strong) class="(?:[\w-]+ )*money(?: [\w-]+)*" data-sensitive>$/, `${name} amount must blur when values are hidden: ${match[0]}`);
   }
 }
 assert.doesNotMatch(source, /<option value=\{datum\.key\}>[^<]*datum\.value/);
