@@ -16,6 +16,7 @@ import {
   type SpendingPairingCandidateView,
   type SpendingPurchaseReportSummaryDto,
   preserveSpendingMonthSelection,
+  spendingMonths,
 } from "./model.ts";
 import { applySpendingPurchaseReportPatch } from "./purchase-report-patch.ts";
 import { createSpendingPageReader } from "./page-reader.ts";
@@ -65,7 +66,11 @@ export type PurchaseSpendingSnapshot = Readonly<{
   report: PurchaseSpendingReport;
   isUpdating: boolean;
   canonical: SpendingPageDto["canonical"];
+  /** The user's explicit month; null follows today's month. */
   selectedMonth: string | null;
+  activeMonth: string;
+  /** Every month the page can open, oldest first. */
+  months: readonly string[];
   selectedDay: string | null;
   recordFilter: SpendingRecordFilter;
   busyAction: string | null;
@@ -94,6 +99,8 @@ export interface PurchaseSpendingSessionOptions {
   canonical: SpendingPageDto["canonical"];
   refreshSummary: () => Promise<void>;
   transport: PurchaseSpendingTransport;
+  /** `YYYY-MM-DD` in the ledger's calendar; its month is the default month. */
+  today: string;
   clock?: PurchaseSpendingClock;
 }
 
@@ -160,6 +167,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private readonly options: PurchaseSpendingSessionOptions;
   private readonly clock: PurchaseSpendingClock;
   private readonly sessionId: number;
+  private readonly todayMonth: string;
   private started = false;
   private disposed = false;
   private previousIncomingReport: PurchaseSpendingReport;
@@ -196,8 +204,9 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.options = options;
     this.clock = clock;
     this.sessionId = sessionId;
+    this.todayMonth = options.today.slice(0, 7);
     this.previousIncomingReport = options.report;
-    this.value = {
+    this.value = this.derive({
       report: options.report,
       isUpdating: false,
       canonical: options.canonical,
@@ -220,7 +229,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       validatedSelectedCandidate: null,
       pairingCandidateTotal: 0,
       pairingCandidatesLoading: false,
-    };
+    });
     const stateStore = this.store = writable(this.value);
     this.state = { subscribe: stateStore.subscribe };
     this.reader = createSpendingPageReader(() => this.disposed ? Promise.resolve() : this.options.refreshSummary());
@@ -228,18 +237,16 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
 
   private publish(patch: Partial<PurchaseSpendingSnapshot>) {
     if (this.disposed) return;
-    this.value = { ...this.value, ...patch };
+    this.value = this.derive({ ...this.value, ...patch });
     this.store.set(this.value);
+  }
+
+  private derive(snapshot: Omit<PurchaseSpendingSnapshot, "activeMonth" | "months">): PurchaseSpendingSnapshot {
+    return { ...snapshot, activeMonth: snapshot.selectedMonth ?? this.todayMonth, months: this.monthsFor(snapshot.report) };
   }
 
   private currentVersion() {
     return (this.pendingReport ?? this.value.report).knowledgeAt;
-  }
-
-  private activeMonth() {
-    const selected = this.value.selectedMonth;
-    if (selected) return selected;
-    return this.monthsFor(this.value.report).at(-1) ?? null;
   }
 
   start() {
@@ -266,6 +273,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       report.summary,
       current.selectedMonth,
       current.selectedDay,
+      this.todayMonth,
     );
     let nextReport = current.report;
     let pendingReport = this.pendingReport;
@@ -401,8 +409,8 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private ensureMonthData() {
     if (!this.started || this.disposed) return;
     const report = this.pendingReport ?? this.value.report;
-    const month = this.activeMonth();
-    if (!report.summary || !month) return;
+    const month = this.value.activeMonth;
+    if (!report.summary) return;
     const day = this.value.selectedDay;
     const key = `${report.knowledgeAt}:${month}:${day ?? ""}:${this.recordFilterKey()}`;
     if (key !== this.requestedMonthDataKey && key !== this.loadedMonthDataKey)
@@ -425,7 +433,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.publish({ recordPageLoading: true, pageError: "" });
     try {
       const page = await this.reader.read(knowledgeAt, () => this.options.transport.loadRecordPage(this.recordPageRequest(knowledgeAt, month, day)));
-      if (!page || !this.isCurrentMonthRequest(requestToken) || this.activeMonth() !== month) return;
+      if (!page || !this.isCurrentMonthRequest(requestToken) || this.value.activeMonth !== month) return;
       let report = this.value.report;
       let pendingReport = this.pendingReport;
       if (pendingReport) {
@@ -485,7 +493,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         limit: 50,
       }, requestId));
       if (!page || !this.isCurrentCandidateRequest(requestToken) || this.value.pairingInvoice
-        || this.value.report.knowledgeAt !== knowledgeAt || this.activeMonth() !== month) return;
+        || this.value.report.knowledgeAt !== knowledgeAt || this.value.activeMonth !== month) return;
       const items = offset === 0 ? page.items : Object.freeze([...this.candidatePageItems, ...page.items]);
       this.candidatePageItems = items;
       this.candidatePageNextOffset = page.nextOffset;
@@ -525,7 +533,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     const records = [...byId.values()].sort((left, right) =>
       right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
     const candidates = this.candidatePageItems.map((item) => item.candidate);
-    const activeMonth = this.activeMonth();
+    const activeMonth = this.value.activeMonth;
     const summary = Object.freeze({
       ...currentReport.summary,
       monthTotals: Object.freeze(currentReport.summary.monthTotals.map((month) => month.month === activeMonth && this.value.monthCandidateCount !== null
@@ -544,21 +552,21 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
 
   async loadMoreRecords() {
     const cursor = this.recordPageNextCursor;
-    const month = this.activeMonth();
-    if (!cursor || !month || !this.value.report.summary || this.value.recordPageLoading || this.disposed) return;
+    const month = this.value.activeMonth;
+    if (!cursor || !this.value.report.summary || this.value.recordPageLoading || this.disposed) return;
     const knowledgeAt = this.value.report.knowledgeAt;
     const day = this.value.selectedDay;
     const requestToken = this.monthDataRequestToken;
     this.publish({ recordPageLoading: true });
     try {
       const page = await this.reader.read(knowledgeAt, () => this.options.transport.loadRecordPage(this.recordPageRequest(knowledgeAt, month, day, cursor)));
-      if (!page || !this.isCurrentMonthRequest(requestToken) || this.value.report.knowledgeAt !== knowledgeAt || this.activeMonth() !== month) return;
+      if (!page || !this.isCurrentMonthRequest(requestToken) || this.value.report.knowledgeAt !== knowledgeAt || this.value.activeMonth !== month) return;
       this.recordPageRecords = this.recordPageRecords.concat(page.records);
       this.recordPageNextCursor = page.nextCursor;
       this.publish({ hasMoreRecords: page.nextCursor !== null });
       this.publishMonthPageRecords();
     } catch (error) {
-      if (this.isCurrentMonthRequest(requestToken) && this.value.report.knowledgeAt === knowledgeAt && this.activeMonth() === month)
+      if (this.isCurrentMonthRequest(requestToken) && this.value.report.knowledgeAt === knowledgeAt && this.value.activeMonth === month)
         this.publish({ pageError: errorMessage(error) });
     } finally {
       if (this.isCurrentMonthRequest(requestToken)) this.publish({ recordPageLoading: false });
@@ -590,8 +598,8 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     const reconciliation = reconcileSpendingPageActionSummary(report.summary, report.knowledgeAt, result);
     if (reconciliation.state === "newer-live-version") return;
     const liveAlreadyPublishedAction = reconciliation.state === "already-current";
-    const month = this.activeMonth();
-    const day = this.value.selectedDay && month && this.value.selectedDay.startsWith(`${month}-`) ? this.value.selectedDay : null;
+    const month = this.value.activeMonth;
+    const day = this.value.selectedDay?.startsWith(`${month}-`) ? this.value.selectedDay : null;
     const summary = reconciliation.summary;
     const matchesPair = (record: PurchaseRecord) =>
       record.invoice?.invoiceId === result.invoiceIdentityId || record.transaction?.transactionId === result.transactionIdentityId;
@@ -696,7 +704,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private async refreshRecordsAfterAction(knowledgeAt: number, month: string, day: string | null, key: string, requestToken: number) {
     try {
       const page = await this.reader.read(knowledgeAt, () => this.options.transport.loadRecordPage(this.recordPageRequest(knowledgeAt, month, day)));
-      if (!page || !this.isCurrentMonthRequest(requestToken) || this.value.report.knowledgeAt !== knowledgeAt || this.activeMonth() !== month) return;
+      if (!page || !this.isCurrentMonthRequest(requestToken) || this.value.report.knowledgeAt !== knowledgeAt || this.value.activeMonth !== month) return;
       this.recordPageRecords = page.records;
       this.recordPageNextCursor = page.nextCursor;
       this.publish({ hasMoreRecords: page.nextCursor !== null });
@@ -705,7 +713,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       this.scheduleCandidatePageLoad(knowledgeAt, month, `${knowledgeAt}:${month}`);
       this.syncPairingForCurrentVersion();
     } catch (error) {
-      if (this.isCurrentMonthRequest(requestToken) && this.value.report.knowledgeAt === knowledgeAt && this.activeMonth() === month)
+      if (this.isCurrentMonthRequest(requestToken) && this.value.report.knowledgeAt === knowledgeAt && this.value.activeMonth === month)
         this.publish({ pageError: errorMessage(error) });
     } finally {
       if (this.isCurrentMonthRequest(requestToken)) this.publish({ recordPageLoading: false });
@@ -746,7 +754,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         });
         if (!this.isCurrentAction(requestToken)) return;
         await this.acceptCompactPageAction(result);
-        if (!this.disposed) this.publish({ selectedMonth: this.activeMonth() });
+        if (!this.disposed) this.publish({ selectedMonth: this.value.activeMonth });
         return;
       }
       const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
@@ -769,7 +777,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         : await this.options.transport.denyCandidate(request);
       if (!this.isCurrentAction(requestToken)) return;
       const nextReport = applySpendingPurchaseReportPatch(report, next.patch);
-      this.publish({ report: nextReport, selectedMonth: this.activeMonth() });
+      this.publish({ report: nextReport, selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -823,8 +831,8 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     });
     this.pairingNextOffset = null;
     if (this.value.busyAction === null) this.flushRecordRefreshAfterAction();
-    const month = this.activeMonth();
-    if (reloadMonthCandidates && this.value.report.summary && month)
+    const month = this.value.activeMonth;
+    if (reloadMonthCandidates && this.value.report.summary)
       this.scheduleCandidatePageLoad(this.value.report.knowledgeAt, month, this.candidatePageMonthKey);
   }
 
@@ -1004,7 +1012,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         });
         if (!this.isCurrentAction(requestToken)) return;
         await this.acceptCompactPageAction(result);
-        this.publish({ selectedMonth: this.activeMonth() });
+        this.publish({ selectedMonth: this.value.activeMonth });
         return;
       }
       const next = await this.options.transport.revokeLink({
@@ -1012,7 +1020,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         transactionId: record.link.transactionId,
       });
       if (!this.isCurrentAction(requestToken)) return;
-      this.publish({ report: applySpendingPurchaseReportPatch(report, next.patch), selectedMonth: this.activeMonth() });
+      this.publish({ report: applySpendingPurchaseReportPatch(report, next.patch), selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -1023,8 +1031,8 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private monthsFor(report: PurchaseSpendingReport) {
     const cached = this.monthsCache.get(report);
     if (cached) return cached;
-    const months = report.summary?.monthTotals.map((month) => month.month)
-      ?? [...new Set(report.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+    const months = spendingMonths(report.summary?.monthTotals.map((month) => month.month)
+      ?? report.records.map((record) => record.occurrence.value.slice(0, 7)), this.todayMonth);
     this.monthsCache.set(report, months);
     return months;
   }

@@ -3,6 +3,7 @@ import {
   applySpendingSummaryDelta,
   preserveSpendingMonthSelection,
   reconcileSpendingPageActionSummary,
+  spendingMonths,
   type SpendingPurchaseReportSummaryDto,
 } from "./model.ts";
 
@@ -133,22 +134,35 @@ assert.deepEqual(
   "a revoke can raise the exact aggregate scale without changing its numeric value",
 );
 assert.deepEqual(
-  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), "2026-01", "2026-01-01"),
+  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), "2026-01", "2026-01-01", "2026-12"),
   { selectedMonth: "2026-01", selectedDay: "2026-01-01" },
   "a new report version keeps a still-valid month/day selection after confirmation",
 );
 assert.deepEqual(
-  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), "2026-01", "2026-12-31"),
+  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), "2026-01", "2026-12-31", "2026-12"),
   { selectedMonth: "2026-01", selectedDay: null },
   "a day outside the retained month is cleared",
 );
 assert.deepEqual(
-  preserveSpendingMonthSelection(compactSummary(["2026-01"]), compactSummary(["2026-02"]), "2026-01", "2026-01-01"),
+  preserveSpendingMonthSelection(compactSummary(["2026-01"]), compactSummary(["2026-02"]), "2026-01", "2026-01-01", "2026-02"),
   { selectedMonth: null, selectedDay: null },
   "a removed month and its day are cleared",
 );
 assert.deepEqual(
-  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2027-01"]), null, "2026-12-31"),
+  preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), null, "2026-12-31", "2027-01"),
   { selectedMonth: null, selectedDay: null },
-  "an implicit latest-month selection advances when a newer month arrives",
+  "the implicit month is today's month, so a day from the newest data month is cleared",
 );
+assert.deepEqual(
+  preserveSpendingMonthSelection(compactSummary(["2026-12"]), compactSummary(["2026-12"]), null, "2027-01-03", "2027-01"),
+  { selectedMonth: null, selectedDay: "2027-01-03" },
+  "a day in today's month survives even before that month has data",
+);
+assert.deepEqual(
+  preserveSpendingMonthSelection(compactSummary(["2026-12"]), compactSummary(["2026-12"]), "2027-01", null, "2027-01"),
+  { selectedMonth: "2027-01", selectedDay: null },
+  "an explicit pick of today's empty month stays valid",
+);
+assert.deepEqual(spendingMonths(["2026-09", "2026-08"], "2026-10"), ["2026-08", "2026-09", "2026-10"], "today's month joins the data months");
+assert.deepEqual(spendingMonths(["2026-10", "2026-11"], "2026-10"), ["2026-10", "2026-11"], "today's month is listed once, and later data months stay");
+assert.deepEqual(spendingMonths([], "2026-10"), ["2026-10"], "a ledger with no data still opens today's month");

@@ -62,11 +62,13 @@
   export let fallbackCanonical: SpendingPageDto["canonical"];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let refreshSummary: () => Promise<void> = async () => {};
+  const today = taipeiDateKey(Date.now() / 1000);
   const spendingSession = createPurchaseSpendingSession({
     report: purchaseReport,
     canonical: fallbackCanonical,
     refreshSummary: () => refreshSummary(),
     transport: createDesktopPurchaseSpendingTransport(),
+    today,
   });
   const spendingState = spendingSession.state;
   const review = createSpendingReviewStore({
@@ -104,9 +106,7 @@
   let canonical = fallbackCanonical;
   let previousReport = purchaseReport;
   let previousCanonical = fallbackCanonical;
-  let selectedMonth: string | null = null;
   let chartReady = false;
-  const today = taipeiDateKey(Date.now() / 1000);
   let selectedCurrency = "";
   let selectedDay: string | null = null;
   let busyAction: string | null = null;
@@ -128,15 +128,13 @@
   let mergeTab: "pending" | "merged" | null = null;
   let detailRecord: PurchaseRecord | null = null;
   let basisOpen = false;
-  const reportDerivedCache = new WeakMap<object, {
-    months: readonly string[];
-    availableCurrencies: readonly string[];
-  }>();
+  const currenciesCache = new WeakMap<object, readonly string[]>();
 
   $: report = $spendingState.report;
   $: isUpdating = $spendingState.isUpdating;
   $: canonical = $spendingState.canonical;
-  $: selectedMonth = $spendingState.selectedMonth;
+  $: activeMonth = $spendingState.activeMonth;
+  $: months = $spendingState.months;
   $: selectedDay = $spendingState.selectedDay;
   $: recordFilter = $spendingState.recordFilter;
   $: busyAction = $spendingState.busyAction;
@@ -172,15 +170,13 @@
     };
   });
 
-  function reportDerivedFor(sourceReport: PurchaseReport) {
-    const cached = reportDerivedCache.get(sourceReport);
+  function currenciesFor(sourceReport: PurchaseReport) {
+    const cached = currenciesCache.get(sourceReport);
     if (cached) return cached;
-    const derived = {
-      months: monthsForReport(sourceReport),
-      availableCurrencies: currenciesForReport(sourceReport),
-    };
-    reportDerivedCache.set(sourceReport, derived);
-    return derived;
+    const currencies = sourceReport.summary?.currencies
+      ?? [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+    currenciesCache.set(sourceReport, currencies);
+    return currencies;
   }
 
   $: if (purchaseReport !== previousReport || fallbackCanonical !== previousCanonical) {
@@ -200,11 +196,8 @@
   $: pairingFeedbackText = pairingFeedback === "selectionUnavailable"
     ? $t.purchaseSpending.pairingSelectionUnavailable
     : "";
-  $: reportDerived = reportDerivedFor(report);
-  $: months = reportDerived.months;
-  $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
   $: if (report.summary) review.sync(report.knowledgeAt, activeMonth);
-  $: availableCurrencies = reportDerived.availableCurrencies;
+  $: availableCurrencies = currenciesFor(report);
   $: if (!selectedCurrency || !availableCurrencies.includes(selectedCurrency)) selectedCurrency = availableCurrencies[0] ?? "TWD";
   $: visibleEligiblePayments = [
     ...(validatedSelectedCandidate && selectedPaymentId === validatedSelectedCandidate.transactionId &&
@@ -239,14 +232,14 @@
     : undefined;
   $: pendingOverviewCount = $reviewState.overview?.pendingCount ?? null;
   $: selectedDayReading = current?.days.find((day) => day.date === selectedDay) ?? null;
-  $: activeMonthIndex = activeMonth ? months.indexOf(activeMonth) : -1;
+  $: activeMonthIndex = months.indexOf(activeMonth);
   $: previousMonthKey = activeMonthIndex > 0 ? months[activeMonthIndex - 1] : null;
   $: nextMonthKey = activeMonthIndex >= 0 ? months[activeMonthIndex + 1] ?? null : null;
   $: pendingAffectsTotal = reading
     ? reading.caveat.kind === "may-include-duplicates"
     : report.totalStatus === "includes-pending-confirmation";
   $: filterActive = recordFilter.group !== null || recordFilter.query !== "";
-  $: liveRecords = visibleRecordsOf(report, activeMonthForReport(report, activeMonth), selectedDay);
+  $: liveRecords = visibleRecordsOf(report, activeMonth, selectedDay);
   $: detailShown = detailRecord ? currentRecordFor(liveRecords, detailRecord) : null;
   $: detailIndex = detailShown ? liveRecords.findIndex((record) => record.purchaseId === detailShown.purchaseId) : -1;
   $: detailPendingItem = detailShown ? pendingItemFor(detailShown) : null;
@@ -308,24 +301,9 @@
     return `${negative ? "-" : ""}${padded.slice(0, split)}.${padded.slice(split)}`;
   }
 
-  function monthsForReport(sourceReport: PurchaseReport) {
-    return sourceReport.summary?.monthTotals.map((month) => month.month)
-      ?? [...new Set(sourceReport.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
-  }
-
-  function activeMonthForReport(sourceReport: PurchaseReport, preferred: string | null) {
-    const months = monthsForReport(sourceReport);
-    return preferred && months.includes(preferred) ? preferred : months.at(-1) ?? null;
-  }
-
-  function currenciesForReport(sourceReport: PurchaseReport) {
-    return sourceReport.summary?.currencies
-      ?? [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
-  }
-
-  function totalsForMonth(sourceReport: PurchaseReport, month: string | null) {
+  function totalsForMonth(sourceReport: PurchaseReport, month: string) {
     if (sourceReport.summary) return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
-    return totalsByCurrency(sourceReport.records.filter((record) => month === null || record.occurrence.value.startsWith(`${month}-`)));
+    return totalsByCurrency(sourceReport.records.filter((record) => record.occurrence.value.startsWith(`${month}-`)));
   }
 
   function totalsByCurrency(records: readonly PurchaseRecord[]) {
@@ -349,9 +327,9 @@
     return [...totals.values()].sort((left, right) => left.currency.localeCompare(right.currency));
   }
 
-  function visibleRecordsOf(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+  function visibleRecordsOf(sourceReport: PurchaseReport, month: string, day: string | null) {
     return sourceReport.records
-      .filter((record) => (month === null || record.occurrence.value.startsWith(`${month}-`)) && (day === null || record.occurrence.value.startsWith(day)))
+      .filter((record) => record.occurrence.value.startsWith(`${month}-`) && (day === null || record.occurrence.value.startsWith(day)))
       .slice()
       .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
   }
@@ -490,7 +468,7 @@
               <button type="button" class="icon-button" aria-label={$t.spendingInsight.previousMonth} disabled={!previousMonthKey} onclick={() => previousMonthKey && chooseMonth(previousMonthKey)}>
                 <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
               </button>
-              <h2 id="spending-month-title">{cards ? monthText(cards.month, $locale) : activeMonth ? monthText(activeMonth, $locale) : $t.purchaseSpending.allMonths}</h2>
+              <h2 id="spending-month-title">{monthText(activeMonth, $locale)}</h2>
               <button type="button" class="icon-button" aria-label={$t.spendingInsight.nextMonth} disabled={!nextMonthKey} onclick={() => nextMonthKey && chooseMonth(nextMonthKey)}>
                 <ChevronRight size={16} strokeWidth={2.2} aria-hidden="true" />
               </button>
@@ -765,9 +743,7 @@
 
     <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
     {@const detailsReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
-    {@const detailsActiveMonth = activeMonthForReport(detailsReport, activeMonth)}
-    {@const detailsPeriodMonth = cards?.month ?? detailsActiveMonth}
-    {@const detailsMonthRecords = detailsReport.records.filter((record) => detailsActiveMonth === null || record.occurrence.value.startsWith(`${detailsActiveMonth}-`))}
+    {@const detailsMonthRecords = detailsReport.records.filter((record) => record.occurrence.value.startsWith(`${activeMonth}-`))}
     {@const detailsVisibleRecords = detailsMonthRecords
       .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
       .slice()
@@ -778,7 +754,7 @@
         <div class="records-title">
           <div>
             <h2 id="spending-records-title">{$t.purchaseSpending.purchases}</h2>
-            <p>{$t.spendingReview.purchasesMeta(selectedDay ? dateText(selectedDay) : detailsPeriodMonth ? monthText(detailsPeriodMonth, $locale) : $t.purchaseSpending.allRecords, report.summary ? periodRecordCount : detailsVisibleRecords.length)}</p>
+            <p>{$t.spendingReview.purchasesMeta(selectedDay ? dateText(selectedDay) : monthText(activeMonth, $locale), report.summary ? periodRecordCount : detailsVisibleRecords.length)}</p>
           </div>
           {#if selectedDay}<button type="button" class="button secondary" onclick={() => spendingSession.chooseDay(null)}>{$t.purchaseSpending.showFullMonth}</button>{/if}
           {#if report.summary}

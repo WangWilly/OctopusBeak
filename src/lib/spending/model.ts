@@ -95,30 +95,29 @@ export type SpendingSummaryDto = Readonly<{
   }>;
   }>;
 
+/**
+ * Months the Spending page can open, oldest first: every month with data plus
+ * today's month, which is the page's default even before it has a purchase.
+ */
+export function spendingMonths(dataMonths: readonly string[], todayMonth: string): readonly string[] {
+  return Object.freeze([...new Set([...dataMonths, todayMonth])].sort());
+}
+
 /** Preserve a user's month/day selection when a compact summary version changes. */
 export function preserveSpendingMonthSelection(
   previousSummary: Pick<SpendingPurchaseReportSummaryDto, "monthTotals"> | undefined,
   nextSummary: Pick<SpendingPurchaseReportSummaryDto, "monthTotals"> | undefined,
   selectedMonth: string | null,
   selectedDay: string | null,
+  todayMonth: string,
 ): Readonly<{ selectedMonth: string | null; selectedDay: string | null }> {
   if (!previousSummary || !nextSummary) return { selectedMonth: null, selectedDay: null };
-
-  if (selectedMonth !== null) {
-    if (!nextSummary.monthTotals.some((month) => month.month === selectedMonth))
-      return { selectedMonth: null, selectedDay: null };
-    return {
-      selectedMonth,
-      selectedDay: selectedDay?.startsWith(`${selectedMonth}-`) ? selectedDay : null,
-    };
-  }
-
-  const nextActiveMonth = nextSummary.monthTotals.at(-1)?.month ?? null;
+  const months = spendingMonths(nextSummary.monthTotals.map((month) => month.month), todayMonth);
+  if (selectedMonth !== null && !months.includes(selectedMonth)) return { selectedMonth: null, selectedDay: null };
+  const activeMonth = selectedMonth ?? todayMonth;
   return {
-    selectedMonth: null,
-    selectedDay: selectedDay && nextActiveMonth && selectedDay.startsWith(`${nextActiveMonth}-`)
-      ? selectedDay
-      : null,
+    selectedMonth,
+    selectedDay: selectedDay?.startsWith(`${activeMonth}-`) ? selectedDay : null,
   };
 }
 
