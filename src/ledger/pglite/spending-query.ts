@@ -58,6 +58,9 @@ import {
   type SpendingRecordPageDto,
   type SpendingCandidatePageRequest,
   type SpendingCandidatePageDto,
+  type SpendingCandidatePairRef,
+  type SpendingPendingOverviewDto,
+  type SpendingPendingOverviewRequest,
   type SpendingPurchaseReportSummaryDto,
   type SpendingPurchaseReportDto,
   type SpendingSummaryDto,
@@ -76,6 +79,11 @@ import {
   createSpendingManualPairingIndex,
   rankSpendingManualPaymentCandidates,
 } from "../canonical/spending-manual-pairing.ts";
+import {
+  classifyPendingCandidates,
+  type ClassifiedPendingCandidate,
+  type PendingCandidateFacts,
+} from "../canonical/spending-match-strength.ts";
 import type {
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
@@ -890,13 +898,11 @@ export async function queryPGliteSpendingDirectPair(
   return { invoice, payment };
 }
 
-type DeterministicCandidatePairRow = Readonly<{
-  invoiceId: string;
-  transactionId: string;
+type DeterministicCandidatePairRow = PendingCandidateFacts & Readonly<{
   candidateId: string;
   invoiceDate: string;
   transactionDate: string;
-  dateDistanceDays: number;
+  amount: Money;
   algorithm: string;
   algorithmVersion: string;
   similarityEvidence: Readonly<Record<string, unknown>>;
@@ -907,38 +913,23 @@ function deterministicCandidateKey(invoiceId: string, transactionId: string): st
 }
 
 /**
- * Return only the pair identities that can satisfy the canonical inferred
- * candidate rule.  The candidate id is a one-way digest, so an ephemeral id
- * cannot be looked up by itself.  Read the two indexed current projections
- * separately, bucket transactions by exact money, and apply the seven-day
- * window in JavaScript.  This avoids an invoice-by-transaction numeric join
- * over the whole benchmark fixture while retaining the canonical matcher as
- * the final validator below.
+ * Return every pair that satisfies the canonical inferred candidate rule:
+ * exact amount and currency, at most seven calendar days apart. The candidate
+ * id is a one-way digest, so an ephemeral id cannot be looked up by itself.
+ * Read the two indexed current projections separately, bucket transactions by
+ * exact money, and apply the seven-day window in JavaScript. This avoids an
+ * invoice-by-transaction numeric join over the whole benchmark fixture while
+ * retaining the canonical matcher as the final validator for actions.
  */
-function spendingMonthDateBounds(month: string): Readonly<{ start: string; end: string }> {
-  const start = `${month}-01`;
-  const first = new Date(`${start}T00:00:00.000Z`);
-  const next = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 1));
-  next.setUTCDate(next.getUTCDate() - 1);
-  return { start, end: next.toISOString().slice(0, 10) };
-}
-
-function shiftIsoDate(value: string, days: number): string {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
 async function queryDeterministicCandidatePairs(
   reader: PGliteSpendingReader,
-  month?: string,
 ): Promise<readonly DeterministicCandidatePairRow[]> {
-  const monthBounds = month === undefined ? null : spendingMonthDateBounds(month);
   const invoiceRows = rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
        SELECT revision.invoice_id, revision.amount_coefficient,
               revision.amount_scale, revision.currency,
-              revision.occurrence_value, revision.state,
+              revision.occurrence_value, revision.occurrence_origin,
+              revision.seller_name, revision.state,
               ROW_NUMBER() OVER (
                 PARTITION BY revision.invoice_id
                 ORDER BY revision.revision_number DESC,
@@ -948,25 +939,12 @@ async function queryDeterministicCandidatePairs(
          FROM einvoice_invoice_revisions revision
          JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
      )
-     SELECT invoice_id, amount_coefficient, amount_scale, currency, occurrence_value
+     SELECT invoice_id, amount_coefficient, amount_scale, currency,
+            occurrence_value, occurrence_origin, seller_name
        FROM ranked
-      WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL
-        ${monthBounds ? "AND occurrence_value BETWEEN ? AND ?" : ""}`,
-    monthBounds ? [shiftIsoDate(monthBounds.start, -7), shiftIsoDate(monthBounds.end, 7)] : [],
+      WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL`,
   ));
-  const activeLinkedInvoiceRows = monthBounds
-    ? rows(await pgliteQuery<Row>(reader, "SELECT invoice_id FROM current_spending_dedup_links"))
-    : [];
-  const linkedInvoiceIds = new Set(activeLinkedInvoiceRows.map((row) => idString(row.invoice_id, "Linked candidate invoice")));
-  // For a month-scoped dashboard page, every valid pair has its transaction
-  // date within seven days of an invoice date that is either in the month or
-  // within seven days of a transaction date in the month. Therefore the
-  // union is completely covered by the month window extended by seven days.
-  // Keep the global no-bounds path for per-invoice Pairing ranking.
-  const transactions = await queryPairingTransactionsDirect(reader, monthBounds ? {
-    start: shiftIsoDate(monthBounds.start, -7),
-    end: shiftIsoDate(monthBounds.end, 7),
-  } : undefined);
+  const transactions = await queryPairingTransactionsDirect(reader);
   const byMoney = new Map<string, PairingTransaction[]>();
   for (const transaction of transactions) {
     const key = exactMoneyKey(transaction.amount);
@@ -978,21 +956,25 @@ async function queryDeterministicCandidatePairs(
   for (const row of invoiceRows) {
     const amount = exactMoney(row, "amount_coefficient", "amount_scale", "currency");
     const invoiceId = idString(row.invoice_id, "Candidate invoice");
-    if (monthBounds && linkedInvoiceIds.has(invoiceId)) continue;
     const invoiceDate = stringValue(row.occurrence_value, "Candidate invoice occurrence");
+    const invoiceDateBasis = row.occurrence_origin === "source-reported" ? "purchase-date" as const : "posting-date-fallback" as const;
     const candidates = byMoney.get(exactMoneyKey(amount)) ?? [];
     for (const transaction of candidates) {
       const transactionDate = transaction.consumeDate ?? transaction.postingDate ?? transaction.effectiveOn;
       const dateDistanceDays = calendarDayDistance(invoiceDate, transactionDate);
       if (!Number.isFinite(dateDistanceDays) || dateDistanceDays > 7) continue;
-      if (monthBounds && !invoiceDate.startsWith(`${month}-`) && !transactionDate.startsWith(`${month}-`)) continue;
       pairs.push(Object.freeze({
         invoiceId,
         transactionId: transaction.transactionId,
         candidateId: deterministicCandidateKey(invoiceId, transaction.transactionId),
         invoiceDate,
         transactionDate,
-        dateDistanceDays,
+        dayDistance: dateDistanceDays,
+        invoiceDateBasis,
+        transactionDateBasis: transaction.consumeDate ? "purchase-date" as const : "posting-date-fallback" as const,
+        sellerName: nullableString(row.seller_name),
+        bankDescription: transaction.description,
+        amount,
         algorithm: "amount-currency-date-similarity",
         algorithmVersion: "v2",
         similarityEvidence: Object.freeze({
@@ -1003,7 +985,7 @@ async function queryDeterministicCandidatePairs(
       }));
     }
   }
-  pairs.sort((left, right) => left.dateDistanceDays - right.dateDistanceDays || left.invoiceId.localeCompare(right.invoiceId) || left.transactionId.localeCompare(right.transactionId));
+  pairs.sort((left, right) => left.dayDistance - right.dayDistance || left.invoiceId.localeCompare(right.invoiceId) || left.transactionId.localeCompare(right.transactionId));
   return Object.freeze(pairs);
 }
 
@@ -2577,109 +2559,108 @@ export async function queryCurrentSpendingActionRecords(
     record.transaction?.transactionId === request.transactionIdentityId));
 }
 
-type MonthSpendingCandidate = Readonly<{
-  candidate: PurchaseReport["candidates"][number];
-  invoiceId: string;
-  transactionId: string;
+export type PendingSpendingCandidate = ClassifiedPendingCandidate<DeterministicCandidatePairRow> & Readonly<{
+  /** The durable candidate when one was materialized for the pair, else the ephemeral digest view. */
+  candidate: SpendingCandidateView;
 }>;
 
-async function queryDurableCandidatePairsForMonth(
-  reader: PGliteSpendingReader,
-  knowledgeAt: number,
-  month: string,
-): Promise<ReadonlySet<string>> {
-  const rowsForMonth = rows(await pgliteQuery<Row>(reader,
-    `WITH invoice_ranked AS (
-       SELECT revision.invoice_id, revision.state, revision.occurrence_value,
-              ROW_NUMBER() OVER (
-                PARTITION BY revision.invoice_id
-                ORDER BY revision.revision_number DESC, commit_row.commit_sequence DESC, revision.revision_id DESC
-              ) AS revision_rank
-         FROM einvoice_invoice_revisions revision
-         JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
-        WHERE commit_row.commit_sequence <= ?
-     )
-     SELECT candidate.invoice_id, candidate.transaction_id
-       FROM spending_match_candidates candidate
-       JOIN canonical_commits created ON created.commit_id = candidate.created_commit_id
-       JOIN invoice_ranked invoice ON invoice.invoice_id = candidate.invoice_id AND invoice.revision_rank = 1 AND invoice.state = 'active'
-       JOIN current_spending_pairing_entries transaction_row ON transaction_row.transaction_id = candidate.transaction_id
-      WHERE created.commit_sequence <= ?
-        AND (SUBSTRING(invoice.occurrence_value, 1, 7) = ?
-             OR SUBSTRING(COALESCE(transaction_row.consume_date, transaction_row.posting_date, transaction_row.effective_on), 1, 7) = ?)
-        AND NOT EXISTS (SELECT 1 FROM current_spending_dedup_links link WHERE link.invoice_id = candidate.invoice_id)
-        AND NOT EXISTS (SELECT 1 FROM current_spending_dedup_links link WHERE link.transaction_id = candidate.transaction_id)`,
-    [knowledgeAt, knowledgeAt, month, month],
-  ));
-  return new Set(rowsForMonth.map((row) => pairKey(
-    idString(row.invoice_id, "Month candidate invoice"),
-    idString(row.transaction_id, "Month candidate transaction"),
-  )));
-}
+/** The global pending candidate set at one data version, classified by strength. */
+export type PGlitePendingSpendingCandidates = Readonly<{
+  knowledgeAt: number;
+  pairs: readonly PendingSpendingCandidate[];
+}>;
 
-async function queryCurrentMonthSpendingCandidates(
+/**
+ * Every pending pair across all months: the deterministic candidates whose
+ * invoice and payment are both unlinked and whose pair carries no decision
+ * event (confirmed, denied, or revoked). Strength is classified over this
+ * whole set, so a month or page view never changes a pair's strength.
+ */
+export async function queryPendingSpendingCandidates(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
-  month: string,
-): Promise<readonly MonthSpendingCandidate[]> {
-  const [recognition, durableMonthPairs, deterministicPairs] = await Promise.all([
-    querySpendingRecognition(reader, { knowledgeAt }),
-    queryDurableCandidatePairsForMonth(reader, knowledgeAt, month),
-    queryDeterministicCandidatePairs(reader, month),
+): Promise<PGlitePendingSpendingCandidates> {
+  const [deterministic, linkRows, decisionRows, durableRows] = await Promise.all([
+    queryDeterministicCandidatePairs(reader),
+    pgliteQuery<Row>(reader, "SELECT invoice_id, transaction_id FROM current_spending_dedup_links").then(rows),
+    pgliteQuery<Row>(reader, "SELECT DISTINCT invoice_id, transaction_id FROM spending_dedup_decision_events").then(rows),
+    pgliteQuery<Row>(reader,
+      `SELECT candidate.candidate_id, candidate.invoice_id, candidate.transaction_id,
+              candidate.algorithm, candidate.algorithm_version, candidate.similarity_evidence_json
+         FROM spending_match_candidates candidate
+         JOIN canonical_commits created ON created.commit_id = candidate.created_commit_id
+        ORDER BY created.commit_sequence, candidate.candidate_id`).then(rows),
   ]);
-  const durableCandidates = recognition.candidates.filter((candidate) =>
-    candidate.status === "candidate" && durableMonthPairs.has(pairKey(candidate.invoiceId, candidate.transactionId)),
-  );
-  const statusByPair = new Map<string, string>();
-  for (const candidate of recognition.candidates)
-    statusByPair.set(pairKey(candidate.invoiceId, candidate.transactionId), candidate.status);
-  for (const link of recognition.activeLinks)
-    statusByPair.set(pairKey(link.invoiceId, link.transactionId), "confirmed");
-  for (const denied of recognition.denied)
-    statusByPair.set(pairKey(denied.invoiceId, denied.transactionId), "denied");
-  const pendingDurablePairs = new Set(durableCandidates.map((candidate) => pairKey(candidate.invoiceId, candidate.transactionId)));
-  const inferred = deterministicPairs
-    .filter((pair) => {
-      const key = pairKey(pair.invoiceId, pair.transactionId);
-      const status = statusByPair.get(key);
-      return status === undefined && !pendingDurablePairs.has(key);
-    })
-    .map((pair) => Object.freeze({
-      candidate: Object.freeze({
-        invoiceId: pair.invoiceId,
-        transactionId: pair.transactionId,
-        candidateId: pair.candidateId,
-        algorithm: pair.algorithm,
-        algorithmVersion: pair.algorithmVersion,
-        similarityEvidence: pair.similarityEvidence,
-        status: "candidate" as const,
-      }),
+  const linkedInvoices = new Set(linkRows.map((row) => idString(row.invoice_id, "Linked invoice")));
+  const linkedTransactions = new Set(linkRows.map((row) => idString(row.transaction_id, "Linked transaction")));
+  const decided = new Set(decisionRows.map((row) => pairKey(
+    idString(row.invoice_id, "Decision invoice"),
+    idString(row.transaction_id, "Decision transaction"),
+  )));
+  const durable = new Map<string, SpendingCandidateView>();
+  for (const row of durableRows) {
+    const invoiceId = idString(row.invoice_id, "Candidate invoice");
+    const transactionId = idString(row.transaction_id, "Candidate transaction");
+    const key = pairKey(invoiceId, transactionId);
+    if (durable.has(key)) continue;
+    durable.set(key, Object.freeze({
+      invoiceId,
+      transactionId,
+      candidateId: idString(row.candidate_id, "Candidate identity"),
+      algorithm: stringValue(row.algorithm, "Candidate algorithm"),
+      algorithmVersion: stringValue(row.algorithm_version, "Candidate algorithm version"),
+      similarityEvidence: jsonValue(row.similarity_evidence_json, "Candidate similarity evidence"),
+      status: "candidate" as const,
+    }));
+  }
+  const pending = deterministic.filter((pair) =>
+    !linkedInvoices.has(pair.invoiceId)
+    && !linkedTransactions.has(pair.transactionId)
+    && !decided.has(pairKey(pair.invoiceId, pair.transactionId)));
+  const pairs = classifyPendingCandidates(pending).map((pair) => Object.freeze({
+    ...pair,
+    candidate: durable.get(pairKey(pair.invoiceId, pair.transactionId)) ?? Object.freeze({
       invoiceId: pair.invoiceId,
       transactionId: pair.transactionId,
-    }));
-  const durable = durableCandidates.map((candidate) => Object.freeze({
-    candidate,
-    invoiceId: candidate.invoiceId,
-    transactionId: candidate.transactionId,
+      candidateId: pair.candidateId,
+      algorithm: pair.algorithm,
+      algorithmVersion: pair.algorithmVersion,
+      similarityEvidence: pair.similarityEvidence,
+      status: "candidate" as const,
+    }),
   }));
-  return Object.freeze([...durable, ...inferred]);
+  return Object.freeze({ knowledgeAt, pairs: Object.freeze(pairs) });
 }
 
-/** Read one asynchronous, month-bound pending-pairing slice. */
+function pendingPairInMonth(pair: PendingSpendingCandidate, month: string): boolean {
+  return pair.invoiceDate.startsWith(`${month}-`) || pair.transactionDate.startsWith(`${month}-`);
+}
+
+function pendingPairRef(pair: PendingSpendingCandidate): SpendingCandidatePairRef {
+  return Object.freeze({
+    candidateId: pair.candidate.candidateId,
+    invoiceIdentityId: pair.invoiceId,
+    transactionIdentityId: pair.transactionId,
+  });
+}
+
+/** Read one pending-pairing slice: one month, or every month when month is null. */
 export async function queryCurrentSpendingCandidatePage(
   reader: PGliteSpendingReader,
   request: SpendingCandidatePageRequest,
-  cachedCandidates?: readonly MonthSpendingCandidate[],
+  cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingCandidatePageDto> {
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("candidate", current);
-  if (!validSpendingMonth(request.month)) throw new TypeError("Spending candidate page month is invalid.");
+  const month = request.month ?? null;
+  if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending candidate page month is invalid.");
   const offset = Number.isSafeInteger(request.offset) && (request.offset ?? 0) >= 0 ? request.offset ?? 0 : 0;
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
     ? Math.min(request.limit ?? 20, 100)
     : 20;
-  const candidates = cachedCandidates ?? await queryCurrentMonthSpendingCandidates(reader, current, request.month);
+  const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
+  const candidates = month === null ? pending.pairs : pending.pairs.filter((pair) => pendingPairInMonth(pair, month));
   const candidatePage = candidates.slice(offset, offset + limit);
   const invoiceIds = [...new Set(candidatePage.map((item) => item.invoiceId))];
   const transactionIds = [...new Set(candidatePage.map((item) => item.transactionId))];
@@ -2723,20 +2704,53 @@ export async function queryCurrentSpendingCandidatePage(
       recordById.get(`invoice:${item.invoiceId}`),
       invoiceCandidateIds.get(item.invoiceId),
     );
-    if (!invoiceRecord) throw new Error("Spending month candidate invoice is not visible at this data version.");
+    if (!invoiceRecord) throw new Error("Spending candidate invoice is not visible at this data version.");
     const paymentRecord = withCandidateIds(
       recordById.get(`transaction:${item.transactionId}`),
       transactionCandidateIds.get(item.transactionId),
     );
-    return [{ candidate: item.candidate, invoiceRecord, paymentRecord }];
+    return [{
+      candidate: Object.freeze({ ...item.candidate, strength: item.strength, reasons: item.reasons }),
+      invoiceRecord,
+      paymentRecord,
+    }];
   });
   return Object.freeze({
     schemaVersion: 1,
     knowledgeAt: current,
-    month: request.month,
+    month,
     items: Object.freeze(items),
     totalCandidateCount: candidates.length,
+    strongCandidateCount: candidates.filter((pair) => pair.strength === "strong").length,
     nextOffset: offset + items.length < candidates.length ? offset + items.length : null,
+  });
+}
+
+/** The global pending count, strong set, and the invoice amounts at stake. */
+export async function queryCurrentSpendingPendingOverview(
+  reader: PGliteSpendingReader,
+  request: SpendingPendingOverviewRequest,
+  cachedPending?: PGlitePendingSpendingCandidates,
+): Promise<SpendingPendingOverviewDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new SpendingPageVersionError("pending-overview", current);
+  const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
+  const affected = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
+  const countedInvoices = new Set<string>();
+  for (const pair of pending.pairs) {
+    if (countedInvoices.has(pair.invoiceId)) continue;
+    countedInvoices.add(pair.invoiceId);
+    addTotal(affected, pair.amount);
+  }
+  const strong = pending.pairs.filter((pair) => pair.strength === "strong");
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    pendingCount: pending.pairs.length,
+    strongCount: strong.length,
+    affectedByCurrency: Object.freeze(totals(affected).map((total) => Object.freeze(total))),
+    strongPairs: Object.freeze(strong.map(pendingPairRef)),
   });
 }
 
@@ -3133,11 +3147,12 @@ function rankSpendingPaymentCandidatesFromSnapshot(
 }
 
 export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
-  let monthCandidateCache: Readonly<{
-    knowledgeAt: number;
-    month: string;
-    candidates: readonly MonthSpendingCandidate[];
-  }> | null = null;
+  let pendingCache: PGlitePendingSpendingCandidates | null = null;
+  const pendingAt = async (transaction: PGliteSpendingReader, knowledgeAt: number) => {
+    if (pendingCache?.knowledgeAt !== knowledgeAt)
+      pendingCache = await queryPendingSpendingCandidates(transaction, knowledgeAt);
+    return pendingCache;
+  };
   return Object.freeze({
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
@@ -3157,14 +3172,13 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       const knowledgeAt = await latest(transaction);
       if (knowledgeAt !== request.knowledgeAt)
         throw new SpendingPageVersionError("candidate", knowledgeAt);
-      if (!monthCandidateCache || monthCandidateCache.knowledgeAt !== knowledgeAt || monthCandidateCache.month !== request.month) {
-        monthCandidateCache = Object.freeze({
-          knowledgeAt,
-          month: request.month,
-          candidates: await queryCurrentMonthSpendingCandidates(transaction, knowledgeAt, request.month),
-        });
-      }
-      return queryCurrentSpendingCandidatePage(transaction, request, monthCandidateCache.candidates);
+      return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
+    }),
+    pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
+      const knowledgeAt = await latest(transaction);
+      if (knowledgeAt !== request.knowledgeAt)
+        throw new SpendingPageVersionError("pending-overview", knowledgeAt);
+      return queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, knowledgeAt));
     }),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
     page: async (request?: Parameters<typeof querySpendingPage>[1]) => {
