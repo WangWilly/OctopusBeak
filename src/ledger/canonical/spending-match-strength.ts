@@ -5,19 +5,18 @@
  */
 
 /**
- * Minimum merchantSimilarity between the invoice seller name and the bank
- * description for a 商家相符 reason and a strong match. The initial value is
- * chosen from fixtures, where a shared merchant token in a two- or
- * three-token description scores 0.5 and unrelated text scores 0. Calibrate it
- * on real data later.
+ * Calibrated on real data (2026-10-05, 237 pending pairs): every sampled pair
+ * at 0.6 (shared brand prefix) was the same merchant, while 0.5 came only from
+ * a shared place-name token, which would pair unrelated shops in one area.
  */
-export const MERCHANT_SIMILARITY_STRONG_THRESHOLD = 0.5;
+export const MERCHANT_SIMILARITY_STRONG_THRESHOLD = 0.6;
 
 const COMPANY_SUFFIX = /(股份有限公司|有限公司|企業社|分公司|公司|商行)/gu;
 const CJK_PAIR = /^[\p{Script=Han}]{2}$/u;
 
 function normalizedMerchant(value: string | null | undefined): string {
   return (value ?? "")
+    .normalize("NFKC")
     .toLocaleLowerCase()
     .replace(COMPANY_SUFFIX, " ")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
