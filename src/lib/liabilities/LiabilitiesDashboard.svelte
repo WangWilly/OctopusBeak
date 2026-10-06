@@ -18,6 +18,7 @@
     type AccountKind,
     type AccountRowDto,
   } from "$lib/shared-ledger/types.ts";
+  import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { accountShares, dateInTimeZone, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
   import { currencyCount, formatMoney } from "$lib/shared-money/money.ts";
@@ -79,7 +80,7 @@
   $: summaryInput = resolveLiabilitiesSummary(liabilities, settledSummaryBlock(blocks));
   $: summary = readLiabilitiesSummary(summaryInput, { today });
   $: liabilityAccounts = liabilities.accounts;
-  $: isEmpty = liabilities.availability === "empty";
+  $: isEmpty = awaitingFirstData(liabilities);
   $: usesEstimatedCredit = summaryInput.accounts.some((account) =>
     account.amountLines.some((amount) =>
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
@@ -153,8 +154,9 @@
       <div class="empty-banner">
         <EmptySourceBanner title={$t.liabilities.empty.bannerTitle} body={$t.liabilities.empty.bannerBody} />
       </div>
+    {:else}
+      <ProjectionStateBanner projection={liabilities} />
     {/if}
-    <ProjectionStateBanner projection={liabilities} />
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <PageTotalCard
         label={isEmpty ? $t.liabilities.empty.totalLabel : $t.liabilities.total(summaryInput.accounts.length)}
