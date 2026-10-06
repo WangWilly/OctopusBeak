@@ -922,7 +922,7 @@ ol {
 
 .demo-frame video {
   width: 100%;
-  aspect-ratio: 585 / 332;
+  aspect-ratio: 16 / 9;
   object-fit: cover;
 }
 
