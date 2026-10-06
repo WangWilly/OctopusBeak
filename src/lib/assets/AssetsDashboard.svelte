@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { ChartLine } from "@lucide/svelte";
+
   import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
@@ -18,6 +20,8 @@
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
+  import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -34,6 +38,9 @@
   export let focusAccountId: string | null = null;
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
+
+  const EMPTY_TILE_CATEGORIES = ["brokerage", "crypto", "bank", "fund", "foreign"] as const;
+  const EMPTY_TILE_COLOR = "color-mix(in oklch, var(--muted) 45%, transparent)";
 
   let search = "";
   let chartCurrency = "TWD";
@@ -60,9 +67,10 @@
   $: today = dateInTimeZone(new Date(), $systemTimezone);
   $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledSummaryBlock(blocks)), { today });
   $: assetAccounts = assets.accounts;
+  $: isEmpty = assets.availability === "empty";
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
-  $: sideValue = summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
-  $: sideSub = $t.assets.sideSub(
+  $: sideValue = isEmpty ? "—" : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
+  $: sideSub = isEmpty ? $t.assets.empty.side : $t.assets.sideSub(
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
   );
@@ -106,6 +114,11 @@
   bind:search
 >
   <div class="content">
+    {#if isEmpty}
+      <div class="empty-banner">
+        <EmptySourceBanner title={$t.assets.empty.bannerTitle} body={$t.assets.empty.bannerBody} />
+      </div>
+    {/if}
     <ProjectionStateBanner projection={assets} />
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <PageTotalCard
@@ -113,11 +126,17 @@
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
-        notes={summary.state === "ready" && summary.unconvertedCurrencies.length > 0
-          ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
-          : []}
+        notes={isEmpty
+          ? [$t.assets.empty.totalNote]
+          : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
+            ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
+            : []}
       >
-        {#if summary.state === "ready"}
+        {#if isEmpty}
+          {#each EMPTY_TILE_CATEGORIES as category}
+            <SummaryTile color={EMPTY_TILE_COLOR} head={$t.overview.assetCategories[category]} value="—" sub="–" share={0} />
+          {/each}
+        {:else if summary.state === "ready"}
           {#each summary.slices as slice (slice.category)}
             <SummaryTile
               color={ASSET_CATEGORY_COLOR[slice.category]}
@@ -165,11 +184,15 @@
         {/if}
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart
-          chart={stackedChart}
-          currency={chartCurrency}
-          label={$t.overview.assetAllocation}
-        />
+        {#if isEmpty}
+          <EmptyPanel icon={ChartLine} title={$t.assets.empty.chartTitle} body={$t.assets.empty.chartBody} />
+        {:else}
+          <StackedBalanceChart
+            chart={stackedChart}
+            currency={chartCurrency}
+            label={$t.overview.assetAllocation}
+          />
+        {/if}
       </div>
       </section>
     </ProgressiveBlock>
@@ -191,3 +214,9 @@
     </ProgressiveBlock>
   </div>
 </DashboardShell>
+
+<style>
+  .empty-banner {
+    margin-bottom: var(--space-6);
+  }
+</style>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { CalendarX, ChartLine } from "@lucide/svelte";
+
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     readLiabilitiesSummary,
@@ -26,6 +28,8 @@
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
+  import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -46,6 +50,7 @@
 
   const DUE_SOON_DAYS = 3;
   const CARD_COLOR = liabilityColor("credit-card");
+  const EMPTY_TILE_COLOR = "color-mix(in oklch, var(--muted) 45%, transparent)";
 
   let search = "";
   let chartCurrency = "TWD";
@@ -74,13 +79,14 @@
   $: summaryInput = resolveLiabilitiesSummary(liabilities, settledSummaryBlock(blocks));
   $: summary = readLiabilitiesSummary(summaryInput, { today });
   $: liabilityAccounts = liabilities.accounts;
+  $: isEmpty = liabilities.availability === "empty";
   $: usesEstimatedCredit = summaryInput.accounts.some((account) =>
     account.amountLines.some((amount) =>
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: sideValue = summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
-  $: sideSub = $t.liabilities.sideSub(
+  $: sideValue = isEmpty ? "—" : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
+  $: sideSub = isEmpty ? $t.liabilities.empty.side : $t.liabilities.sideSub(
     liabilityAccounts.length,
     currencyCount(liabilityAccounts.map((account) => account.amountLines)),
   );
@@ -143,22 +149,33 @@
   bind:search
 >
   <div class="content">
+    {#if isEmpty}
+      <div class="empty-banner">
+        <EmptySourceBanner title={$t.liabilities.empty.bannerTitle} body={$t.liabilities.empty.bannerBody} />
+      </div>
+    {/if}
     <ProjectionStateBanner projection={liabilities} />
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <PageTotalCard
-        label={$t.liabilities.total(summaryInput.accounts.length)}
+        label={isEmpty ? $t.liabilities.empty.totalLabel : $t.liabilities.total(summaryInput.accounts.length)}
         ariaLabel={$t.liabilities.metricsAria}
         goodWhen="down"
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
-        notes={[
+        notes={isEmpty ? [$t.liabilities.empty.totalNote] : [
           summary.state === "ready" && summary.unconvertedCurrencies.length > 0
             ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
             : "",
           usesEstimatedCredit ? $t.overview.creditCardEstimateBasis : "",
         ].filter(Boolean)}
       >
-        {#if summary.state === "ready"}
+        {#if isEmpty}
+          <div class="empty-payments">
+            <strong><CalendarX size={15} strokeWidth={1.8} aria-hidden="true" />{$t.liabilities.empty.paymentsTitle}</strong>
+            <span>{$t.liabilities.empty.paymentsBody}</span>
+          </div>
+          <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.utilization} value="—" sub="–" share={0} />
+        {:else if summary.state === "ready"}
           {#each summary.payments as payment (payment.account.id)}
             <SummaryTile
               color={CARD_COLOR}
@@ -218,11 +235,15 @@
         {/if}
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart
-          chart={stackedChart}
-          currency={chartCurrency}
-          label={$t.liabilities.debtExposure}
-        />
+        {#if isEmpty}
+          <EmptyPanel icon={ChartLine} title={$t.liabilities.empty.chartTitle} body={$t.liabilities.empty.chartBody} />
+        {:else}
+          <StackedBalanceChart
+            chart={stackedChart}
+            currency={chartCurrency}
+            label={$t.liabilities.debtExposure}
+          />
+        {/if}
       </div>
       </section>
     </ProgressiveBlock>
@@ -264,3 +285,32 @@
     </ProgressiveBlock>
   </div>
 </DashboardShell>
+
+<style>
+  .empty-banner {
+    margin-bottom: var(--space-6);
+  }
+
+  .empty-payments {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-width: 0;
+    padding-right: var(--space-4);
+    border-right: 1px solid var(--border);
+  }
+
+  .empty-payments strong {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .empty-payments span {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+</style>

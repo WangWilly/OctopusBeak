@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Landmark, RefreshCw } from "@lucide/svelte";
   import AllocationCard, { type AllocationTile } from "$lib/overview/components/AllocationCard.svelte";
   import DailyChangeCard from "$lib/overview/components/DailyChangeCard.svelte";
   import DailyHistoryModal from "$lib/overview/components/DailyHistoryModal.svelte";
@@ -23,6 +22,7 @@
   } from "$lib/shared-ledger/account-display.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -142,24 +142,14 @@
       <OverviewTicker ticker={model.ticker} />
     </ProgressiveBlock>
     {#if overview.availability === "empty"}
-      <section
-        class="overview-empty-state"
-        role="status"
+      <EmptySourceBanner
+        title={$t.overview.emptyTitle}
+        body={$t.overview.emptyBody}
+        ariaLabel={$t.overview.currentEmpty}
         data-overview-state="empty"
-        aria-label={$t.overview.currentEmpty}
-      >
-        <span class="empty-icon" aria-hidden="true"><Landmark size={20} strokeWidth={1.8} /></span>
-        <div class="empty-copy">
-          <strong>{$t.overview.emptyTitle}</strong>
-          <p>{$t.overview.emptyBody}</p>
-        </div>
-        <a
-          class="button primary"
-          href="#/automation"
-          data-go-automation
-          use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.empty" }}
-        ><RefreshCw size={15} strokeWidth={2} aria-hidden="true" />{$t.overview.goToAutomation}</a>
-      </section>
+        {onboardingTargets}
+        onboardingTargetId="overview.empty"
+      />
     {/if}
     {#if overview.coverage !== "complete" && overview.availability !== "empty"}
       <div
@@ -259,43 +249,6 @@
     .allocation-row {
       grid-template-columns: minmax(0, 1fr);
     }
-  }
-
-  .overview-empty-state {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-4);
-    padding: var(--space-5) var(--space-6);
-    border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
-    border-radius: var(--radius-lg);
-    background: var(--accent-soft);
-  }
-
-  .empty-icon {
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius);
-    background: var(--surface);
-    color: var(--accent);
-  }
-
-  .empty-copy {
-    flex: 1 1 320px;
-    min-width: 0;
-  }
-
-  .empty-copy strong {
-    font-size: 16px;
-    font-weight: 700;
-  }
-
-  .empty-copy p {
-    margin: 2px 0 0;
-    color: var(--muted);
-    font-size: 13px;
   }
 
   .projection-state {

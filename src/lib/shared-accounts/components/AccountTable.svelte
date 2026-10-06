@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { List } from "@lucide/svelte";
   import { tick } from "svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
@@ -17,10 +18,16 @@
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
   import TransactionModal from "./TransactionModal.svelte";
+  import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
 
   type Filter = {
     id: AccountKind | "all";
     label: string;
+  };
+  /** Before anything syncs, offer the categories a person would expect to connect. */
+  const EMPTY_PAGE_FILTERS: Record<"asset" | "liability", ReadonlyArray<Filter["id"]>> = {
+    asset: ["all", "bank", "fund", "brokerage", "crypto", "foreign"],
+    liability: ["all", "credit-card", "loan"],
   };
   type SortKey = "label" | "institution" | "type" | "balance" | "allocation";
   type SortDirection = "asc" | "desc";
@@ -71,9 +78,12 @@
   ] satisfies Filter[];
 
   $: availableKinds = new Set(accounts.map((account) => account.kind));
-  $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter(
-    (item) => item.id === "all" || availableKinds.has(item.id),
+  $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter((item) =>
+    accounts.length === 0
+      ? EMPTY_PAGE_FILTERS[mode].includes(item.id)
+      : item.id === "all" || availableKinds.has(item.id),
   );
+  $: emptyCopy = mode === "asset" ? $t.assets.empty : $t.liabilities.empty;
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
   $: filtered = accounts.flatMap((account) => {
@@ -243,103 +253,109 @@
 <section class="layout-accounts">
   <div>
     <div class="account-list card">
-      <div
-        class="table-wrap account-table-wrap"
-        class:account-table-wrap-animating={tableWrapAnimating}
-        bind:this={tableWrap}
-        style:height={tableWrapHeight}
-      >
-        <table class="table">
-          <thead>
-            <tr>
-              {#each sortColumns as column}
-                <th
-                  class:right={column.right}
-                  class:institution-cell={column.key === "institution"}
-                  aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                >
-                  <button
-                    class="sort-button"
-                    class:right={column.right}
-                    class:sorted={sortKey === column.key}
-                    type="button"
-                    on:click={() => toggleSort(column.key)}
-                  >
-                    <span>{column.label}</span>
-                    <span
-                      class:active={sortKey === column.key}
-                      class:asc={sortKey === column.key && sortDirection === "asc"}
-                      class="sort-mark"
-                      aria-hidden="true"
-                    ></span>
-                  </button>
-                </th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each sorted as account}
-              {@const share = shares.get(account.id)}
-              {@const availableBalanceBasis = account.amountLines.some((amount) =>
-                amount.traces?.some((trace) => trace.balanceKind === "available"),
-              )}
-              {@const estimatedCreditBasis = account.amountLines.some((amount) =>
-                amount.traces?.some((trace) => trace.estimateKind === "estimate"),
-              )}
-              <tr
-                class:selected={account.id === selectedAccountId}
-                class="account-card"
-                data-account-id={account.id}
-                tabindex={account.id === selectedAccountId ? 0 : -1}
-                on:click={() => selectAccount(account.id)}
-              >
-                <td>
-                  <span class="account-name">
-                    <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
-                    <strong>{account.label}</strong>
-                  </span>
-                  <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
-                </td>
-                <td class="institution-cell">{account.institution}</td>
-                <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
-                <td class="right">
-                  <strong
-                    class="money"
-                    data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
-                    title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
-                  >
-                    {#if account.valueAvailability === "awaiting"}
-                      <span>{$t.overview.currentAwaiting}</span>
-                    {:else if account.valueAvailability === "unavailable"}
-                      <span>{$t.accounts.noAvailableData}</span>
-                    {:else}
-                      {formatAmountLines(account.amountLines)}
-                    {/if}
-                  </strong><br />
-                  {#if availableBalanceBasis}
-                    <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
-                  {/if}
-                  {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
-                    <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
-                  {/if}
-                </td>
-                <td class="right">
-                  {#if account.valueAvailability === "available" && share !== undefined}
-                    <span class="account-meta num" data-sensitive>{formatShare(share, $locale)}</span>
-                    <div class="row-bar" aria-hidden="true">
-                      <span data-sensitive style={`width:${share * 100}%`}></span>
-                    </div>
-                  {/if}
-                </td>
-              </tr>
-            {:else}
+      {#if accounts.length === 0}
+        <div class="account-empty">
+          <EmptyPanel icon={List} title={emptyCopy.listTitle} body={emptyCopy.listBody} />
+        </div>
+      {:else}
+        <div
+          class="table-wrap account-table-wrap"
+          class:account-table-wrap-animating={tableWrapAnimating}
+          bind:this={tableWrap}
+          style:height={tableWrapHeight}
+        >
+          <table class="table">
+            <thead>
               <tr>
-                <td colspan="5">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
+                {#each sortColumns as column}
+                  <th
+                    class:right={column.right}
+                    class:institution-cell={column.key === "institution"}
+                    aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+                  >
+                    <button
+                      class="sort-button"
+                      class:right={column.right}
+                      class:sorted={sortKey === column.key}
+                      type="button"
+                      on:click={() => toggleSort(column.key)}
+                    >
+                      <span>{column.label}</span>
+                      <span
+                        class:active={sortKey === column.key}
+                        class:asc={sortKey === column.key && sortDirection === "asc"}
+                        class="sort-mark"
+                        aria-hidden="true"
+                      ></span>
+                    </button>
+                  </th>
+                {/each}
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {#each sorted as account}
+                {@const share = shares.get(account.id)}
+                {@const availableBalanceBasis = account.amountLines.some((amount) =>
+                  amount.traces?.some((trace) => trace.balanceKind === "available"),
+                )}
+                {@const estimatedCreditBasis = account.amountLines.some((amount) =>
+                  amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+                )}
+                <tr
+                  class:selected={account.id === selectedAccountId}
+                  class="account-card"
+                  data-account-id={account.id}
+                  tabindex={account.id === selectedAccountId ? 0 : -1}
+                  on:click={() => selectAccount(account.id)}
+                >
+                  <td>
+                    <span class="account-name">
+                      <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
+                      <strong>{account.label}</strong>
+                    </span>
+                    <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
+                  </td>
+                  <td class="institution-cell">{account.institution}</td>
+                  <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
+                  <td class="right">
+                    <strong
+                      class="money"
+                      data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
+                      title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
+                    >
+                      {#if account.valueAvailability === "awaiting"}
+                        <span>{$t.overview.currentAwaiting}</span>
+                      {:else if account.valueAvailability === "unavailable"}
+                        <span>{$t.accounts.noAvailableData}</span>
+                      {:else}
+                        {formatAmountLines(account.amountLines)}
+                      {/if}
+                    </strong><br />
+                    {#if availableBalanceBasis}
+                      <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
+                    {/if}
+                    {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
+                      <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
+                    {/if}
+                  </td>
+                  <td class="right">
+                    {#if account.valueAvailability === "available" && share !== undefined}
+                      <span class="account-meta num" data-sensitive>{formatShare(share, $locale)}</span>
+                      <div class="row-bar" aria-hidden="true">
+                        <span data-sensitive style={`width:${share * 100}%`}></span>
+                      </div>
+                    {/if}
+                  </td>
+                </tr>
+              {:else}
+                <tr>
+                  <td colspan="5">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
       {#if latestUpdated}
         <p class="account-meta table-updated">{$t.accounts.updated(latestUpdated)}</p>
       {/if}
@@ -353,6 +369,10 @@
 <CreditCardStatementsModal bind:open={statementsOpen} account={selectedAccount} />
 
 <style>
+  .account-empty {
+    padding: var(--space-5);
+  }
+
   .sort-button {
     width: 100%;
     min-height: 24px;
