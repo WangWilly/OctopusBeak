@@ -7,6 +7,7 @@ import type {
 import {
   buildStackedBalanceChartData,
   selectStackedBalanceChartSeries,
+  stackedBalanceChartState,
 } from "./stacked-balance-chart-data.ts";
 
 const accounts = [
@@ -109,6 +110,23 @@ const carriedLoanBalance = buildStackedBalanceChartData({
 });
 assert.deepEqual(carriedLoanBalance.series.find((series) => series.key === "loan")?.data.map((point) => point.value), [500, 500]);
 assert.deepEqual(carriedLoanBalance.totals.map((point) => point.value), [500, 620]);
+
+const singleDay = buildStackedBalanceChartData({
+  accounts,
+  dailyHistoryByAccount: { "bank-a": [row("2026-10-06", 100, 0)], "fund-a": [row("2026-10-06", 300, 0)] },
+  filter: "all",
+  currency: "TWD",
+  mode: "asset",
+});
+assert.equal(stackedBalanceChartState(singleDay), "single-day", "one recorded date cannot be drawn as a trend");
+assert.equal(
+  stackedBalanceChartState(buildStackedBalanceChartData({ accounts, dailyHistoryByAccount, filter: "all", currency: "TWD", mode: "asset" })),
+  "trend",
+);
+assert.equal(
+  stackedBalanceChartState(buildStackedBalanceChartData({ accounts, dailyHistoryByAccount: {}, filter: "all", currency: "TWD", mode: "asset" })),
+  "empty",
+);
 
 function account(id: string, label: string, kind: AccountKind, value: number): AccountRowDto {
   const group =
