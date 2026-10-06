@@ -88,6 +88,13 @@ export function buildStackedBalanceChartData(options: {
   };
 }
 
+export type StackedBalanceChartState = "empty" | "single-day" | "trend";
+
+export function stackedBalanceChartState(chart: StackedBalanceChartData): StackedBalanceChartState {
+  if (chart.series.length === 0) return "empty";
+  return chart.dates.length < 2 ? "single-day" : "trend";
+}
+
 export function selectStackedBalanceChartSeries(
   chart: StackedBalanceChartData,
   selectedKeys: string[],
