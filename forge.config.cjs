@@ -7,7 +7,6 @@ const notaryProfile = process.env.OCTOPUSBEAK_NOTARY_PROFILE || "OctopusBeakNota
 const notaryKeychain = process.env.OCTOPUSBEAK_NOTARY_KEYCHAIN;
 const desktopOAuthConfigRelativePath = "data/google-oauth/google-oauth-desktop-client.json";
 const desktopOAuthConfigPath = join(__dirname, desktopOAuthConfigRelativePath);
-
 function assertDesktopOAuthConfig() {
   if (!existsSync(desktopOAuthConfigPath) || !statSync(desktopOAuthConfigPath).isFile()) {
     throw new Error(`Desktop Google OAuth client config is required for packaging: ${desktopOAuthConfigRelativePath}`);
@@ -62,6 +61,15 @@ module.exports = {
       platforms: ["darwin"],
       config: {
         format: "ULFO",
+        icon: "electron/assets/icon.icns",
+        background: "electron/assets/dmg-background.png",
+        iconSize: 112,
+        contents: ({ appPath }) => [
+          { x: 170, y: 220, type: "file", path: appPath },
+          { x: 490, y: 220, type: "link", path: "/Applications" },
+          { x: 170, y: 640, type: "position", path: ".background" },
+          { x: 490, y: 640, type: "position", path: ".VolumeIcon.icns" },
+        ],
       },
     },
     {

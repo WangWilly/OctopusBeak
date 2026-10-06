@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -122,4 +122,19 @@ test("Forge prePackage fails fast when the Desktop OAuth file is missing", () =>
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("Forge DMG uses the OctopusBeak volume icon and branded drag-to-install window", () => {
+  const dmg = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-dmg").config;
+  assert.equal(dmg.icon, forgeConfig.packagerConfig.icon + ".icns");
+  for (const asset of [dmg.icon, dmg.background, dmg.background.replace(/\.png$/, "@2x.png")]) {
+    assert.ok(statSync(join(repoRoot, asset)).isFile(), `${asset} must exist`);
+  }
+  const contents = dmg.contents({ appPath: "/tmp/OctopusBeak.app" });
+  assert.deepEqual(contents.map(({ type, path }) => [type, path]), [
+    ["file", "/tmp/OctopusBeak.app"],
+    ["link", "/Applications"],
+    ["position", ".background"],
+    ["position", ".VolumeIcon.icns"],
+  ]);
 });
