@@ -150,8 +150,10 @@ Environment secret; do not relax the packager's path or validation rules.
 Check that the account is an exact Test user in the Testing project, the Gmail
 API is enabled in that project, and the client belongs to that project. A
 valid-looking JSON file cannot authorize an account that is outside the
-allowlist. If the refresh token is expired or revoked, reconnect from the app;
-do not copy a token into CI.
+allowlist. A Testing-status refresh token expires after seven days. The next
+Cathay run then opens Google authorization in the system browser before it
+sends the OTP; complete it there. A revoked token can also be reconnected from
+the app. Do not copy a token into CI.
 
 ### Gmail OTP is not retrieved
 
