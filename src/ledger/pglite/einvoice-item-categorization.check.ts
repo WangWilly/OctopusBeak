@@ -9,6 +9,7 @@ import {
   PGLITE_EINVOICE_ROUTE,
 } from "./einvoice.ts";
 import { writeEInvoiceItemUserCategory } from "./einvoice-item-categorization.ts";
+import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import { PGliteStore } from "./transaction.ts";
 import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput, CanonicalEInvoiceItemInput } from "../canonical/einvoice-contract.ts";
 
@@ -159,6 +160,27 @@ test("a committed capture derives item categories by name first, then seller, an
 
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-revoked", [invoice(3, [], { revoked: true })]));
     assert.deepEqual(await currentRows(store), [], "a revoked invoice has no current item categorization");
+  } finally {
+    await store.close();
+  }
+});
+
+test("a full enrichment refresh, as a credit-card commit runs it, ignores item category assertions", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-full-refresh", [invoice(1, [item(1, "拿鐵", "120")])]));
+    assert.equal((await currentRows(store)).length, 1);
+    const commitId = await userCommit(store);
+    const cutoffSequence = Number((await store.query<{ value: number | string }>("SELECT MAX(commit_sequence) AS value FROM canonical_commits")).rows[0]!.value);
+    await store.transaction((transaction) => refreshPGliteCurrentProjectionInTransaction(transaction, {
+      commitId,
+      cutoffSequence,
+      refreshEnrichmentAll: true,
+    }));
+    const leaked = await store.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM current_transaction_enrichment WHERE field_name = 'category'");
+    assert.equal(Number(leaked.rows[0]?.count), 0);
   } finally {
     await store.close();
   }
