@@ -453,3 +453,17 @@ test("rehydrating a pending overview preparation retries the persisted stage", a
   assert.equal(controller.state?.phase, "overview");
   assert.deepEqual(navigated, ["overview"]);
 });
+
+test("leaving onboarding records when it ended, for Settings to report", () => {
+  const exited = harness();
+  exited.controller.hydrate(configuredState("running", { taskId: "bank-task", runId: "run-1", startedAt: timestamp }));
+  exited.controller.exit();
+  assert.equal(exited.controller.state?.status, "exited");
+  assert.equal(exited.controller.state?.endedAt, timestamp);
+
+  const finished = harness();
+  finished.controller.hydrate(configuredState("overview"));
+  finished.controller.finish();
+  assert.equal(finished.controller.state?.status, "completed");
+  assert.equal(finished.controller.state?.endedAt, timestamp);
+});
