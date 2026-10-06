@@ -35,7 +35,7 @@ const AUTHENTICATED_MARKER_SELECTOR = [
   "#form1",
 ].join(", ");
 const LOGIN_FORM_SELECTOR =
-  "#m1_userCaptcha, input[type='password']";
+  "#m1_userCaptcha, #m1_inputOTP, input[type='password']";
 
 const frameIdentities = new WeakMap<object, string>();
 
@@ -152,6 +152,19 @@ export type FubonCaptchaAcquisitionDependencies = Readonly<{
   assistAndPause: () => Promise<void>;
   submit: () => Promise<FubonCurrentFrameSubmitResult>;
   maxAttempts?: number;
+}>;
+
+export type FubonCurrentFrameOtpResult = Readonly<{
+  status: "ready" | "no-challenge" | "reacquire-human-assistance";
+  reason?:
+    | "frame-missing"
+    | "current-frame-changed"
+    | "document-changed"
+    | "input-identities-changed"
+    | "captcha-identity-changed"
+    | "otp-empty"
+    | "frame-detached"
+    | "deadline";
 }>;
 
 export type FubonPostLoginOutcomeOptions = Readonly<{
@@ -1036,6 +1049,90 @@ export async function runFubonCaptchaAcquisition(
   return { status: "reacquire-human-assistance", reason: "deadline" };
 }
 
+/** Inspect the OTP only in the current document. No OTP value leaves it. */
+export async function inspectFubonOtpFromCurrentFrame(
+  page: Page,
+  options: FubonCurrentFrameSubmitOptions = {},
+): Promise<FubonCurrentFrameOtpResult> {
+  const frameName = options.frameName ?? FUBON_LOGIN_FRAME_NAME;
+  const timeoutMs = Math.max(
+    1,
+    options.timeoutMs ?? DEFAULT_CURRENT_FRAME_TRANSACTION_TIMEOUT_MS,
+  );
+  const frame = page.frame({ name: frameName });
+  if (!frame) {
+    return { status: "reacquire-human-assistance", reason: "frame-missing" };
+  }
+  const before =
+    options.before ?? options.assistanceBefore ?? options.beforeSnapshot;
+  if (before) {
+    let current: FubonLoginAssistanceSnapshot | undefined;
+    try {
+      current = await readFubonLoginGeneration(page, {
+        frameName,
+        timeoutMs,
+      });
+    } catch (error) {
+      return {
+        status: "reacquire-human-assistance",
+        reason: isRecoverableLoginFrameError(error)
+          ? "frame-detached"
+          : "deadline",
+      };
+    }
+    if (!current) {
+      return { status: "reacquire-human-assistance", reason: "frame-missing" };
+    }
+    const changed = snapshotChangeReason(before, current);
+    if (changed) {
+      return {
+        status: "reacquire-human-assistance",
+        reason:
+          changed === "input-identities-changed" ||
+          changed === "captcha-identity-changed"
+            ? changed
+            : changed === "current-frame-changed"
+              ? "current-frame-changed"
+              : "document-changed",
+      };
+    }
+  }
+
+  try {
+    return await frame.locator("html").evaluate(
+      () => {
+        const otp = document.querySelector<HTMLInputElement>("#m1_inputOTP");
+        if (!otp) return { status: "no-challenge" } as const;
+        if (!otp.isConnected || !otp.value.trim()) {
+          return {
+            status: "reacquire-human-assistance",
+            reason: "otp-empty",
+          } as const;
+        }
+        if (
+          !otp.isConnected ||
+          document.querySelector("#m1_inputOTP") !== otp
+        ) {
+          return {
+            status: "reacquire-human-assistance",
+            reason: "current-frame-changed",
+          } as const;
+        }
+        return { status: "ready" } as const;
+      },
+      undefined,
+      { timeout: timeoutMs },
+    );
+  } catch (error) {
+    return {
+      status: "reacquire-human-assistance",
+      reason: isRecoverableLoginFrameError(error)
+        ? "frame-detached"
+        : "deadline",
+    };
+  }
+}
+
 export function fubonCaptchaAssistanceStage(
   frame: Frame,
 ): WorkflowHumanAssistanceStage {
@@ -1090,6 +1187,30 @@ export function fubonCaptchaAssistanceStage(
       initialZoom: 1.15,
     },
   };
+}
+
+async function currentOtpChallengeVisible(
+  page: Page,
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const frame = page.frame({ name: FUBON_LOGIN_FRAME_NAME });
+    if (
+      frame &&
+      (await frame
+        .locator("#m1_inputOTP")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      return true;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await page.waitForTimeout(Math.min(100, remainingMs));
+    }
+  }
+  return false;
 }
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -1185,6 +1306,35 @@ export async function completeFubonHumanLoginWithAssistance(
       throw new FubonSubmitOutcomeUncertainError(submit.reason);
     if (submit.status !== "submitted")
       throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
+
+    if (await withAbort(currentOtpChallengeVisible(page), signal)) {
+      for (;;) {
+        signal.throwIfAborted();
+        const otpBefore = await readFubonLoginGeneration(page);
+        const frame = await waitForLoginFrame(
+          page,
+          FUBON_LOGIN_FRAME_NAME,
+          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+        );
+        await assistance({
+          stageId: "fubon-login-otp",
+          title: "Enter the Fubon OTP",
+          targets: [{
+            id: "otp-input",
+            label: "OTP input",
+            semanticId: "fubon.login.otp-input",
+            modes: ["click", "type"],
+            locator: frame.locator("#m1_inputOTP"),
+          }],
+          contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
+          completion: { mode: "inline", targetIds: ["otp-input"] },
+          focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
+        });
+        const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
+        if (otp.status === "ready" || otp.status === "no-challenge") break;
+      }
+    }
 
     await withAbort(waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true }), signal);
   } finally {
