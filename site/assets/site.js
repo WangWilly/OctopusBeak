@@ -87,6 +87,13 @@ const translated = [...document.querySelectorAll("[data-i18n]")];
 const chinese = new Map(translated.map((element) => [element, element.textContent]));
 const chineseMeta = { title: document.title, description: meta.description[0].content };
 const buttons = document.querySelectorAll("[data-lang-button]");
+// The demo video has an English cut: each element names its English file in data-src-en / data-poster-en.
+const localizedMedia = [...document.querySelectorAll("[data-src-en], [data-poster-en]")].map((element) => ({
+  element,
+  attribute: element.hasAttribute("data-src-en") ? "src" : "poster",
+  chinese: element.getAttribute(element.hasAttribute("data-src-en") ? "src" : "poster"),
+  english: element.dataset.srcEn ?? element.dataset.posterEn,
+}));
 
 function setLanguage(language, updateUrl) {
   const english = language === "en";
@@ -99,6 +106,14 @@ function setLanguage(language, updateUrl) {
   for (const button of buttons) {
     button.setAttribute("aria-pressed", String(button.dataset.langButton === selected));
   }
+  const reloaded = new Set();
+  for (const { element, attribute, chinese: zh, english: en } of localizedMedia) {
+    const wanted = english ? en : zh;
+    if (element.getAttribute(attribute) === wanted) continue;
+    element.setAttribute(attribute, wanted);
+    reloaded.add(element.closest("video"));
+  }
+  for (const video of reloaded) video.load();
 
   const title = english ? EN["meta.title"] : chineseMeta.title;
   const description = english ? EN["meta.description"] : chineseMeta.description;
