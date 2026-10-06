@@ -42,6 +42,7 @@
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
@@ -264,8 +265,9 @@
     const hasAutomationData = routeDataCache.read("automation") !== undefined
       || Object.values(routeBlocks.automation ?? {}).some((state) => "data" in state);
     if (route !== "automation" && route !== "settings" && financialLiveEnabled) return;
+    // Settings reports source and exchange-rate status from Automation's data.
     void loadRoute(
-      route,
+      route === "settings" ? "automation" : route,
       route === "automation" && previousRoute !== "automation" && hasAutomationData
         ? { automationRefreshReason: "route-entry" }
         : {},
@@ -512,6 +514,14 @@
   $: liabilitiesRenderValue = liabilitiesValue;
   $: spendingRenderValue = spendingValue;
   $: automationRenderValue = automationValue ?? progressiveAutomation();
+  $: settingsAutomation = route === "settings" && automationRenderValue
+    ? {
+      linkedSources: linkedSourceCount(automationRenderValue.credentialGroups, automationRenderValue.automation.credentials),
+      exchangeRateLastRun: latestExchangeRateRun(
+        mergeAutomationRuntime(automationRenderValue.automation, automationRuntimeSnapshot, automationPendingActions).tasks,
+      ),
+    }
+    : null;
 
   function loadRouteBlock(
     key: DashboardBlockKey,
@@ -1230,6 +1240,10 @@
 {:else}
   <SettingsPage
     onboardingStatus={onboardingState?.status ?? null}
+    onboardingEndedAt={onboardingState?.endedAt ?? null}
+    onboardingLinkedSources={settingsAutomation?.linkedSources ?? 0}
+    onboardingFirstSyncSucceeded={onboardingState?.overviewReadiness === "accounts"}
+    exchangeRateLastRun={settingsAutomation?.exchangeRateLastRun ?? null}
     onRestartOnboarding={restartOnboarding}
     {onboardingRestartPending}
     {onboardingRestartError}

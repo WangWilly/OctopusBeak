@@ -227,6 +227,7 @@ export function createOnboardingController(port: OnboardingControllerPort) {
               ...previous,
               status: "exited",
               error: error instanceof Error ? error.message : String(error),
+              endedAt: previous.endedAt ?? port.now(),
             });
           }
           return false;
@@ -242,7 +243,7 @@ export function createOnboardingController(port: OnboardingControllerPort) {
     exit() {
       if (!state || state.status !== "active") return;
       generation += 1;
-      save({ ...state, status: "exited", error: null });
+      save({ ...state, status: "exited", error: null, endedAt: port.now() });
     },
 
     finish() {
@@ -253,7 +254,7 @@ export function createOnboardingController(port: OnboardingControllerPort) {
         || !["overview-empty", "complete"].includes(state.storyNodeId)
       ) return;
       generation += 1;
-      save({ ...state, status: "completed", error: null });
+      save({ ...state, status: "completed", error: null, endedAt: port.now() });
     },
 
     addSource() {

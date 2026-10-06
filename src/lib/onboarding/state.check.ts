@@ -117,7 +117,8 @@ test("v3 setup migrates to entry without discarding saved institution selection"
   }));
 
   const migrated = readOnboardingState(storage as unknown as Storage);
-  assert.equal(migrated?.version, 4);
+  assert.equal(migrated?.version, 5);
+  assert.equal(migrated?.endedAt, null);
   assert.equal(migrated?.storyNodeId, "source-entry");
   assert.equal(migrated?.selectedCredentialGroupId, "bank");
   assert.equal(migrated?.sourceConfiguredAt, "2026-10-01T00:00:00.000Z");
@@ -238,4 +239,24 @@ test("task disclosure follows explicit workflow nodes and stays scoped to the se
     });
   }
   assert.equal(onboardingTaskDisclosure("complete", "bank", [disclosureTask]), null);
+});
+
+test("v4 progressions migrate to v5 without an end time, and v5 keeps its end time", () => {
+  const storage = new MemoryStorage();
+  const { endedAt: _endedAt, ...current } = {
+    ...createOnboardingState(null, "2026-10-04T00:00:00.000Z", "v4-completed"),
+    status: "completed" as const,
+  };
+  storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ ...current, version: 4 }));
+  const migrated = readOnboardingState(storage as unknown as Storage);
+  assert.equal(migrated?.version, 5);
+  assert.equal(migrated?.status, "completed");
+  assert.equal(migrated?.endedAt, null);
+
+  const ended = { ...current, version: 5, endedAt: "2026-10-05T08:30:00.000Z" };
+  storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(ended));
+  assert.equal(readOnboardingState(storage as unknown as Storage)?.endedAt, "2026-10-05T08:30:00.000Z");
+
+  storage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ ...ended, endedAt: "yesterday" }));
+  assert.equal(readOnboardingState(storage as unknown as Storage), null);
 });
