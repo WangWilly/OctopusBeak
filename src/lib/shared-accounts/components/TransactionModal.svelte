@@ -2,7 +2,6 @@
   import {
     ArrowDownLeft,
     ArrowUpRight,
-    CalendarDays,
     Check,
     ChevronDown,
     ChevronLeft,
@@ -30,7 +29,7 @@
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
-  import DateRangePopover from "./DateRangePopover.svelte";
+  import DateRangeFilter from "./DateRangeFilter.svelte";
 
   export let open = false;
   export let account: AccountRowDto | null = null;
@@ -62,10 +61,6 @@
   $: counts = flowCounts(inRange);
   $: filtered = flow === "all" ? inRange : filterTransactions(inRange, { range: null, flow, timeZone: $systemTimezone });
   $: current = pageOf(filtered, page, PAGE_SIZE);
-  $: rangeLabel = range
-    ? `${range.start.replaceAll("-", "/")} – ${range.end.slice(0, 4) === range.start.slice(0, 4) ? range.end.slice(5).replace("-", "/") : range.end.replaceAll("-", "/")}`
-    : $t.transactions.rangePresets.all;
-
   function close() {
     open = false;
     menu = null;
@@ -145,30 +140,16 @@
       </AccountModalHeader>
 
       <div class="transactions-toolbar">
-        <div class="menu-anchor">
-          <button
-            class="filter-chip"
-            class:applied={range !== null}
-            type="button"
-            aria-expanded={menu === "range"}
-            aria-label={`${$t.transactions.dateRange}: ${rangeLabel}`}
-            on:click={() => toggleMenu("range")}
-          >
-            <CalendarDays size={15} strokeWidth={2} aria-hidden="true" />
-            <span class:num={range !== null}>{rangeLabel}</span>
-            <ChevronDown class="chevron" size={14} strokeWidth={2} aria-hidden="true" />
-          </button>
-          {#if menu === "range"}
-            <DateRangePopover
-              {range}
-              {preset}
-              {today}
-              {countIn}
-              onApply={applyRange}
-              onClose={() => (menu = null)}
-            />
-          {/if}
-        </div>
+        <DateRangeFilter
+          {range}
+          {preset}
+          {today}
+          {countIn}
+          open={menu === "range"}
+          onToggle={() => toggleMenu("range")}
+          onClose={() => (menu = null)}
+          onApply={applyRange}
+        />
         <div class="menu-anchor">
           <button
             class="filter-chip"

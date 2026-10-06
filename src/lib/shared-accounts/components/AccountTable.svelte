@@ -373,7 +373,12 @@
   transactions={selectedTransactions}
   twdValue={selectedAccount ? twdValues.get(selectedAccount.id) ?? null : null}
 />
-<AccountHistoryModal bind:open={historyOpen} account={selectedAccount} rows={selectedDailyHistory} />
+<AccountHistoryModal
+  bind:open={historyOpen}
+  account={selectedAccount}
+  rows={selectedDailyHistory}
+  transactions={selectedTransactions}
+/>
 <CreditCardStatementsModal bind:open={statementsOpen} account={selectedAccount} />
 
 <style>
