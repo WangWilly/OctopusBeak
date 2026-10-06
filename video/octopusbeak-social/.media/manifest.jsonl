@@ -1,0 +1,14 @@
+{"id":"bgm_001","type":"bgm","path":"assets/bgm/track.mp3","source":"search","description":"upbeat confident minimal tech pop, light percussion and plucked synth, clear pulse around 110 bpm, social promo energy, clean ending","duration":30,"provenance":{"provider":"heygen","prompt":"upbeat confident minimal tech pop, light percussion and plucked synth, clear pulse around 110 bpm, social promo energy, clean ending"}}
+{"id":"sfx_001","type":"sfx","path":"assets/sfx/soft-pop.mp3","source":"search","description":"soft pop","duration":0.7,"provenance":{"provider":"heygen","prompt":"soft pop"}}
+{"id":"sfx_002","type":"sfx","path":"assets/sfx/keyboard-typing-short.mp3","source":"search","description":"keyboard typing short","duration":54.6,"provenance":{"provider":"heygen","prompt":"keyboard typing short"}}
+{"id":"sfx_003","type":"sfx","path":"assets/sfx/whoosh.mp3","source":"search","description":"whoosh","duration":1.6,"provenance":{"provider":"heygen","prompt":"whoosh"}}
+{"id":"sfx_004","type":"sfx","path":"assets/sfx/book-open.mp3","source":"search","description":"book open","duration":1,"provenance":{"provider":"heygen","prompt":"book open"}}
+{"id":"sfx_005","type":"sfx","path":"assets/sfx/printer-tick.mp3","source":"search","description":"printer tick","duration":7,"provenance":{"provider":"heygen","prompt":"printer tick"}}
+{"id":"sfx_006","type":"sfx","path":"assets/sfx/stamp.mp3","source":"search","description":"stamp","duration":1.8,"provenance":{"provider":"heygen","prompt":"stamp"}}
+{"id":"sfx_007","type":"sfx","path":"assets/sfx/button-click.mp3","source":"search","description":"button click","duration":0.2,"provenance":{"provider":"heygen","prompt":"button click"}}
+{"id":"sfx_008","type":"sfx","path":"assets/sfx/rising-whoosh.mp3","source":"search","description":"rising whoosh","duration":4.4,"provenance":{"provider":"heygen","prompt":"rising whoosh"}}
+{"id":"sfx_009","type":"sfx","path":"assets/sfx/cash-register-ding.mp3","source":"search","description":"cash register ding","duration":1.2,"provenance":{"provider":"heygen","prompt":"cash register ding"}}
+{"id":"sfx_010","type":"sfx","path":"assets/sfx/paper-flick.mp3","source":"search","description":"paper flick","duration":1,"provenance":{"provider":"heygen","prompt":"paper flick"}}
+{"id":"sfx_011","type":"sfx","path":"assets/sfx/book-close.mp3","source":"search","description":"book close","duration":1,"provenance":{"provider":"heygen","prompt":"book close"}}
+{"id":"sfx_012","type":"sfx","path":"assets/sfx/soft-whoosh.mp3","source":"search","description":"soft whoosh","duration":1.8,"provenance":{"provider":"heygen","prompt":"soft whoosh"}}
+{"id":"sfx_013","type":"sfx","path":"assets/sfx/chime.mp3","source":"search","description":"chime","duration":0.7,"provenance":{"provider":"heygen","prompt":"chime"}}

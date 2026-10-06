@@ -1,0 +1,376 @@
+<template>
+  <div data-hf-id="hf-hri1" id="root" data-composition-id="06-close" data-start="0" data-duration="4.5" data-width="1080" data-height="1920">
+    <style>
+    @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"), local("PingFang TC Medium"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+    @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("Menlo-Regular"); }
+    @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("Menlo-Bold"); }
+
+      @font-face {
+        font-family: "06-close-sans";
+        font-weight: 400;
+        src: local("PingFang TC Regular"), local("PingFangTC-Regular"), local("PingFang TC");
+      }
+      @font-face {
+        font-family: "06-close-sans";
+        font-weight: 600 700;
+        src: local("PingFang TC Semibold"), local("PingFangTC-Semibold");
+      }
+      @font-face {
+        font-family: "06-close-mono";
+        font-weight: 400 600;
+        src: local("SF Mono Regular"), local("SFMono-Regular"), local("SF Mono");
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        font-family: "06-close-sans", "PingFang TC", sans-serif;
+      }
+      [id="06-close-defs"] {
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+      }
+      /* ── Ground (full-duration clip) ── */
+      [id="06-close-ground"] {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        background: linear-gradient(135deg, #071f4a 0%, #0d4672 52%, #12808f 100%);
+      }
+      [id="06-close-waves"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        opacity: 0.5;
+      }
+      [id="06-close-rosette"] {
+        position: absolute;
+        left: -10px;
+        top: 410px;
+        width: 1100px;
+        height: 1100px;
+        opacity: 0.2;
+        color: #edf4f1;
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-rosette"] svg,
+      [id="06-close-cover-rosette"] svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      /* ── World (the one camera; static here) ── */
+      [id="06-close-world"] {
+        position: absolute;
+        inset: 0;
+      }
+      /* ── Closed passbook cover (handoff_in geometry) ── */
+      [id="06-close-cover"] {
+        position: absolute;
+        left: 80px;
+        top: 300px;
+        width: 920px;
+        height: 1240px;
+        border-radius: 10px 28px 28px 10px;
+        background: #0a2a5c;
+        box-shadow: 0 40px 80px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-cover-rosette"] {
+        position: absolute;
+        left: 80px;
+        top: 240px;
+        width: 760px;
+        height: 760px;
+        color: #edf4f1;
+        opacity: 0.35;
+      }
+      [id="06-close-cover-border"] {
+        position: absolute;
+        inset: 28px;
+        border: 2px solid #edf4f1;
+        border-radius: 6px 14px 14px 6px;
+      }
+      [id="06-close-cover-icon"] {
+        position: absolute;
+        left: 370px;
+        top: 370px;
+        width: 180px;
+        height: 180px;
+        display: block;
+      }
+      .\30 6-close-cover-line {
+        position: absolute;
+        left: 0;
+        width: 920px;
+        text-align: center;
+        white-space: nowrap;
+      }
+      [id="06-close-cover-title"] {
+        top: 570px;
+        height: 120px;
+        line-height: 120px;
+        font-size: 88px;
+        font-weight: 700;
+        color: #ffffff;
+      }
+      [id="06-close-cover-kind"] {
+        top: 680px;
+        height: 60px;
+        line-height: 60px;
+        font-size: 40px;
+        letter-spacing: 0.4em;
+        text-indent: 0.4em;
+        color: #edf4f1;
+      }
+      [id="06-close-cover-tagline"] {
+        top: 775px;
+        height: 70px;
+        line-height: 70px;
+        font-size: 48px;
+        color: #edf4f1;
+      }
+      /* ── Sun Yat-sen (teal-tinted engraving) ── */
+      [id="06-close-sun-stage"] {
+        position: absolute;
+        left: 0;
+        top: 600px;
+        width: 1080px;
+        height: 940px;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 140px), transparent 100%);
+        mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 140px), transparent 100%);
+      }
+      [id="06-close-glow"] {
+        position: absolute;
+        left: 410px;
+        top: 90px;
+        width: 900px;
+        height: 900px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 50% 50%, rgba(95, 212, 201, 0.95) 0%, rgba(24, 169, 164, 0.55) 34%, rgba(18, 128, 143, 0) 70%);
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-sun"] {
+        position: absolute;
+        left: 665px;
+        top: 400px;
+        width: 541px;
+        height: 540px;
+        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16%);
+        mask-image: linear-gradient(to right, transparent 0, #000 16%);
+      }
+      [id="06-close-sun"] img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        filter: grayscale(1) sepia(1) hue-rotate(130deg) saturate(1.6) brightness(0.95);
+      }
+      /* ── Headline ── */
+      .\30 6-close-line {
+        position: absolute;
+        left: 90px;
+        height: 140px;
+        line-height: 140px;
+        font-size: 100px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      [id="06-close-line1"] {
+        top: 894px;
+      }
+      [id="06-close-line2"] {
+        top: 1014px;
+      }
+      .\30 6-close-frag {
+        display: inline-block;
+        opacity: 0;
+        background: linear-gradient(100deg, #ffffff 0%, #c4f5ee 55%, #5fd4c9 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      [id="06-close-lock"] {
+        display: inline-block;
+        width: 64px;
+        height: 64px;
+        margin-right: 22px;
+        vertical-align: -2px;
+        opacity: 0;
+        color: #c4f5ee;
+      }
+      [id="06-close-lock"] svg {
+        display: block;
+        width: 64px;
+        height: 64px;
+      }
+      /* ── CTA ── */
+      [id="06-close-pill"] {
+        position: absolute;
+        left: 90px;
+        top: 1180px;
+        height: 100px;
+        line-height: 100px;
+        padding: 0 46px;
+        border-radius: 999px;
+        background: #c9efe9;
+        color: #0e1217;
+        font-size: 48px;
+        font-weight: 600;
+        white-space: nowrap;
+        box-shadow: 0 18px 40px rgba(3, 18, 40, 0.35);
+      }
+      [id="06-close-url"] {
+        position: absolute;
+        left: 92px;
+        top: 1316px;
+        height: 48px;
+        line-height: 48px;
+        font-family: "06-close-mono", "SF Mono", ui-monospace, Menlo, monospace;
+        font-size: 30px;
+        color: #c4f5ee;
+        white-space: nowrap;
+      }
+    </style>
+
+    <svg data-hf-id="hf-maby" id="06-close-defs" xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
+      <defs data-hf-id="hf-mh0t">
+        <symbol data-hf-id="hf-qxye" id="06-close-rosette-sym" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g data-hf-id="hf-k7gm" id="06-close-ro"><path data-hf-id="hf-two8" id="06-close-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-hagz" href="#06-close-ro0" transform="rotate(9)" /><use data-hf-id="hf-7oyf" href="#06-close-ro0" transform="rotate(18)" /><use data-hf-id="hf-wi7l" href="#06-close-ro0" transform="rotate(27)" /><use data-hf-id="hf-3v73" href="#06-close-ro0" transform="rotate(36)" /><use data-hf-id="hf-ib5p" href="#06-close-ro0" transform="rotate(45)" /><use data-hf-id="hf-9c73" href="#06-close-ro0" transform="rotate(54)" /><use data-hf-id="hf-tyyx" href="#06-close-ro0" transform="rotate(63)" /><use data-hf-id="hf-aycn" href="#06-close-ro0" transform="rotate(72)" /><use data-hf-id="hf-2n19" href="#06-close-ro0" transform="rotate(81)" /><use data-hf-id="hf-blbb" href="#06-close-ro0" transform="rotate(90)" /><use data-hf-id="hf-45mo" href="#06-close-ro0" transform="rotate(99)" /><use data-hf-id="hf-8mer" href="#06-close-ro0" transform="rotate(108)" /><use data-hf-id="hf-pk4b" href="#06-close-ro0" transform="rotate(117)" /><use data-hf-id="hf-vhlf" href="#06-close-ro0" transform="rotate(126)" /><use data-hf-id="hf-o003" href="#06-close-ro0" transform="rotate(135)" /><use data-hf-id="hf-1j97" href="#06-close-ro0" transform="rotate(144)" /><use data-hf-id="hf-t8tf" href="#06-close-ro0" transform="rotate(153)" /><use data-hf-id="hf-kcgr" href="#06-close-ro0" transform="rotate(162)" /><use data-hf-id="hf-cuvf" href="#06-close-ro0" transform="rotate(171)" /><use data-hf-id="hf-iscj" href="#06-close-ro0" transform="rotate(180)" /><use data-hf-id="hf-y1vw" href="#06-close-ro0" transform="rotate(189)" /><use data-hf-id="hf-y8fm" href="#06-close-ro0" transform="rotate(198)" /><use data-hf-id="hf-71hj" href="#06-close-ro0" transform="rotate(207)" /><use data-hf-id="hf-zmi5" href="#06-close-ro0" transform="rotate(216)" /><use data-hf-id="hf-xvsf" href="#06-close-ro0" transform="rotate(225)" /><use data-hf-id="hf-slch" href="#06-close-ro0" transform="rotate(234)" /><use data-hf-id="hf-3csf" href="#06-close-ro0" transform="rotate(243)" /><use data-hf-id="hf-ryot" href="#06-close-ro0" transform="rotate(252)" /><use data-hf-id="hf-4yxz" href="#06-close-ro0" transform="rotate(261)" /><use data-hf-id="hf-auqx" href="#06-close-ro0" transform="rotate(270)" /><use data-hf-id="hf-8zhe" href="#06-close-ro0" transform="rotate(279)" /><use data-hf-id="hf-1xhy" href="#06-close-ro0" transform="rotate(288)" /><use data-hf-id="hf-9f3a" href="#06-close-ro0" transform="rotate(297)" /><use data-hf-id="hf-b4y7" href="#06-close-ro0" transform="rotate(306)" /><use data-hf-id="hf-9br3" href="#06-close-ro0" transform="rotate(315)" /><use data-hf-id="hf-cza3" href="#06-close-ro0" transform="rotate(324)" /><use data-hf-id="hf-zayr" href="#06-close-ro0" transform="rotate(333)" /><use data-hf-id="hf-i83r" href="#06-close-ro0" transform="rotate(342)" /><use data-hf-id="hf-nn5j" href="#06-close-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-hgck" href="#06-close-ro" transform="rotate(1.1)" /><use data-hf-id="hf-l7lr" href="#06-close-ro" transform="rotate(2.3)" /><use data-hf-id="hf-yokp" href="#06-close-ro" transform="rotate(3.4)" /><use data-hf-id="hf-4akv" href="#06-close-ro" transform="rotate(4.5)" /><use data-hf-id="hf-kq2l" href="#06-close-ro" transform="rotate(5.6)" /><use data-hf-id="hf-j9hy" href="#06-close-ro" transform="rotate(6.8)" /><use data-hf-id="hf-x3dm" href="#06-close-ro" transform="rotate(7.9)" /><g data-hf-id="hf-9byz" id="06-close-rb"><path data-hf-id="hf-6lqu" id="06-close-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-zkkx" href="#06-close-rb0" transform="rotate(15)" /><use data-hf-id="hf-pnms" href="#06-close-rb0" transform="rotate(30)" /><use data-hf-id="hf-r0eg" href="#06-close-rb0" transform="rotate(45)" /><use data-hf-id="hf-s2zl" href="#06-close-rb0" transform="rotate(60)" /><use data-hf-id="hf-ea23" href="#06-close-rb0" transform="rotate(75)" /><use data-hf-id="hf-szau" href="#06-close-rb0" transform="rotate(90)" /><use data-hf-id="hf-yc8f" href="#06-close-rb0" transform="rotate(105)" /><use data-hf-id="hf-lfw6" href="#06-close-rb0" transform="rotate(120)" /><use data-hf-id="hf-stzw" href="#06-close-rb0" transform="rotate(135)" /><use data-hf-id="hf-fd61" href="#06-close-rb0" transform="rotate(150)" /><use data-hf-id="hf-ozil" href="#06-close-rb0" transform="rotate(165)" /><use data-hf-id="hf-e290" href="#06-close-rb0" transform="rotate(180)" /><use data-hf-id="hf-8zze" href="#06-close-rb0" transform="rotate(195)" /><use data-hf-id="hf-f32s" href="#06-close-rb0" transform="rotate(210)" /><use data-hf-id="hf-7lhg" href="#06-close-rb0" transform="rotate(225)" /><use data-hf-id="hf-ui6p" href="#06-close-rb0" transform="rotate(240)" /><use data-hf-id="hf-1hwb" href="#06-close-rb0" transform="rotate(255)" /><use data-hf-id="hf-047u" href="#06-close-rb0" transform="rotate(270)" /><use data-hf-id="hf-awbm" href="#06-close-rb0" transform="rotate(285)" /><use data-hf-id="hf-izce" href="#06-close-rb0" transform="rotate(300)" /><use data-hf-id="hf-h19w" href="#06-close-rb0" transform="rotate(315)" /><use data-hf-id="hf-gxs5" href="#06-close-rb0" transform="rotate(330)" /><use data-hf-id="hf-m5fp" href="#06-close-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-lit9" href="#06-close-rb" transform="rotate(1.9)" /><use data-hf-id="hf-30cc" href="#06-close-rb" transform="rotate(3.8)" /><use data-hf-id="hf-8v6c" href="#06-close-rb" transform="rotate(5.6)" /><use data-hf-id="hf-jxoz" href="#06-close-rb" transform="rotate(7.5)" /><use data-hf-id="hf-iez6" href="#06-close-rb" transform="rotate(9.4)" /><use data-hf-id="hf-fya2" href="#06-close-rb" transform="rotate(11.3)" /><use data-hf-id="hf-llyy" href="#06-close-rb" transform="rotate(13.1)" /><g data-hf-id="hf-svch" id="06-close-rh"><path data-hf-id="hf-e031" id="06-close-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-h8tv" href="#06-close-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-atdd" href="#06-close-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-qnsg" href="#06-close-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-ig0s" href="#06-close-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-o1ud" href="#06-close-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-vv9r" href="#06-close-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-umu3" href="#06-close-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-3dmw" href="#06-close-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-83df" href="#06-close-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-xxf4" href="#06-close-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-jkhz" href="#06-close-rh" transform="rotate(5.5)" /><use data-hf-id="hf-h57l" href="#06-close-rh" transform="rotate(10.9)" /><use data-hf-id="hf-1cnc" href="#06-close-rh" transform="rotate(16.4)" /><use data-hf-id="hf-2bny" href="#06-close-rh" transform="rotate(21.8)" /><use data-hf-id="hf-22h5" href="#06-close-rh" transform="rotate(27.3)" /><g data-hf-id="hf-5duy" id="06-close-rc"><path data-hf-id="hf-kxy9" id="06-close-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-k3d5" href="#06-close-rc0" transform="rotate(30)" /><use data-hf-id="hf-geks" href="#06-close-rc0" transform="rotate(60)" /><use data-hf-id="hf-ap6b" href="#06-close-rc0" transform="rotate(90)" /><use data-hf-id="hf-4zx9" href="#06-close-rc0" transform="rotate(120)" /><use data-hf-id="hf-6ksi" href="#06-close-rc0" transform="rotate(150)" /><use data-hf-id="hf-pxc7" href="#06-close-rc0" transform="rotate(180)" /><use data-hf-id="hf-zt83" href="#06-close-rc0" transform="rotate(210)" /><use data-hf-id="hf-jbla" href="#06-close-rc0" transform="rotate(240)" /><use data-hf-id="hf-ha11" href="#06-close-rc0" transform="rotate(270)" /><use data-hf-id="hf-uufl" href="#06-close-rc0" transform="rotate(300)" /><use data-hf-id="hf-0ggq" href="#06-close-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-jkwx" href="#06-close-rc" transform="rotate(3.8)" /><use data-hf-id="hf-5ltu" href="#06-close-rc" transform="rotate(7.5)" /><use data-hf-id="hf-ginh" href="#06-close-rc" transform="rotate(11.3)" /><use data-hf-id="hf-44ku" href="#06-close-rc" transform="rotate(15)" /><use data-hf-id="hf-w433" href="#06-close-rc" transform="rotate(18.8)" /><use data-hf-id="hf-6ltl" href="#06-close-rc" transform="rotate(22.5)" /><use data-hf-id="hf-e1tz" href="#06-close-rc" transform="rotate(26.3)" /><g data-hf-id="hf-s3oo" id="06-close-ri"><path data-hf-id="hf-b2eo" id="06-close-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-sbp0" href="#06-close-ri0" transform="rotate(40)" /><use data-hf-id="hf-4kig" href="#06-close-ri0" transform="rotate(80)" /><use data-hf-id="hf-4qd7" href="#06-close-ri0" transform="rotate(120)" /><use data-hf-id="hf-e5pb" href="#06-close-ri0" transform="rotate(160)" /><use data-hf-id="hf-qza8" href="#06-close-ri0" transform="rotate(200)" /><use data-hf-id="hf-di1w" href="#06-close-ri0" transform="rotate(240)" /><use data-hf-id="hf-k2h4" href="#06-close-ri0" transform="rotate(280)" /><use data-hf-id="hf-l4dx" href="#06-close-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-ozyd" href="#06-close-ri" transform="rotate(6.7)" /><use data-hf-id="hf-3y21" href="#06-close-ri" transform="rotate(13.3)" /><use data-hf-id="hf-396o" href="#06-close-ri" transform="rotate(20)" /><use data-hf-id="hf-09zh" href="#06-close-ri" transform="rotate(26.7)" /><use data-hf-id="hf-xmy3" href="#06-close-ri" transform="rotate(33.3)" /></symbol>
+<g data-hf-id="hf-6opx" id="06-close-w" fill="none" stroke="currentColor"><path data-hf-id="hf-7t4c" id="06-close-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-8ptv" href="#06-close-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-8fxs" href="#06-close-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-anvh" href="#06-close-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-rmah" href="#06-close-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-wnio" href="#06-close-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-lz6z" href="#06-close-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-nhzu" href="#06-close-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-6b35" href="#06-close-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-gxwa" href="#06-close-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-w28b" href="#06-close-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-63rk" href="#06-close-wl" transform="translate(300 75)" /><use data-hf-id="hf-wzkn" href="#06-close-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-jss2" href="#06-close-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-8pyu" href="#06-close-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-mi2f" href="#06-close-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-yipw" href="#06-close-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-k169" href="#06-close-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-j66i" href="#06-close-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-ccpt" href="#06-close-wl" transform="translate(0 150)" /><use data-hf-id="hf-5a5b" href="#06-close-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-29nw" href="#06-close-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-6xen" href="#06-close-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-x2qi" href="#06-close-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-dspl" href="#06-close-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-hv9n" href="#06-close-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-3cco" href="#06-close-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-o0q9" href="#06-close-wl" transform="translate(300 225)" /><use data-hf-id="hf-gs36" href="#06-close-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-5707" href="#06-close-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-qlhi" href="#06-close-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-g70d" href="#06-close-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-n674" href="#06-close-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-6u7r" href="#06-close-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-3hxu" href="#06-close-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-rvxi" href="#06-close-wl" transform="translate(0 300)" /><use data-hf-id="hf-8eho" href="#06-close-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-xwbd" href="#06-close-wl" transform="translate(75 318.8)" /></g>
+        <pattern data-hf-id="hf-207y" id="06-close-waves-teal" patternUnits="userSpaceOnUse" width="600" height="300" style="color:#18a9a4"><use data-hf-id="hf-pc99" href="#06-close-w" /></pattern>
+      </defs>
+    </svg>
+
+    <div data-hf-id="hf-tn1u" id="06-close-ground" class="clip" data-start="0" data-duration="4.5" data-track-index="0">
+      <svg data-hf-id="hf-96vx" id="06-close-waves" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" aria-hidden="true">
+        <rect data-hf-id="hf-snjm" width="1080" height="1920" fill="url(#06-close-waves-teal)" />
+      </svg>
+      <div data-hf-id="hf-9no9" id="06-close-rosette">
+        <svg data-hf-id="hf-u77w" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 920" aria-hidden="true"><use data-hf-id="hf-zffx" href="#06-close-rosette-sym" width="920" height="920" /></svg>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-if90" id="06-close-world" class="clip" data-start="0" data-duration="4.5" data-track-index="1">
+      <div data-hf-id="hf-esqo" id="06-close-sun-stage">
+        <div data-hf-id="hf-ywz2" id="06-close-glow"></div>
+        <div data-hf-id="hf-xth1" id="06-close-sun"><img data-hf-id="hf-igsv" src="assets/sun-phone-thumbs-up.webp" alt=""></div>
+      </div>
+
+      <div data-hf-id="hf-ka7e" id="06-close-cover">
+        <div data-hf-id="hf-3ax3" id="06-close-cover-rosette">
+          <svg data-hf-id="hf-wtno" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 920" aria-hidden="true"><use data-hf-id="hf-g335" href="#06-close-rosette-sym" width="920" height="920" /></svg>
+        </div>
+        <div data-hf-id="hf-kn7t" id="06-close-cover-border"></div>
+        <img data-hf-id="hf-mfph" id="06-close-cover-icon" src="assets/app-icon-180.png" alt="OctopusBeak">
+        <div data-hf-id="hf-f1hq" id="06-close-cover-title" class="06-close-cover-line">OctopusBeak</div>
+        <div data-hf-id="hf-3sn8" id="06-close-cover-kind" class="06-close-cover-line">PASSBOOK</div>
+        <div data-hf-id="hf-95zh" id="06-close-cover-tagline" class="06-close-cover-line">Auto-collects on your Mac</div>
+      </div>
+
+      <div data-hf-id="hf-ta6z" id="06-close-line1" class="06-close-line"><span data-hf-id="hf-cr2t" id="06-close-lock"><svg data-hf-id="hf-1xi4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true"><path data-hf-id="hf-5l52" d="M19 29V20a13 13 0 0 1 26 0v9" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" /><rect data-hf-id="hf-3aju" x="9" y="28" width="46" height="33" rx="8" fill="currentColor" /><circle data-hf-id="hf-s0l8" cx="32" cy="42" r="4.5" fill="#0d4672" /><rect data-hf-id="hf-hdst" x="30" y="44" width="4" height="9" rx="2" fill="#0d4672" /></svg></span><span data-hf-id="hf-xy8s" id="06-close-f1" class="06-close-frag">Data&#160;</span><span data-hf-id="hf-xpa2" id="06-close-f2" class="06-close-frag">stays</span></div>
+      <div data-hf-id="hf-kmb4" id="06-close-line2" class="06-close-line"><span data-hf-id="hf-2506" id="06-close-f3" class="06-close-frag">on your&#160;</span><span data-hf-id="hf-w3ag" id="06-close-f4" class="06-close-frag">Mac</span></div>
+
+      <div data-hf-id="hf-bg21" id="06-close-pill">Download macOS Beta</div>
+      <div data-hf-id="hf-yb6c" id="06-close-url">wangwilly.github.io/OctopusBeak</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        window.__timelines = window.__timelines || {};
+        const root = document.querySelector('[data-composition-id="06-close"]');
+        const $ = (id) => root.querySelector('[id="06-close-' + id + '"]');
+        const tl = gsap.timeline({ paused: true });
+
+        const DUR = 4.5;
+        const FRAME_START = 25.5;
+        const ROSETTE_DEG_PER_S = 0.6;
+
+        const rosette = $("rosette");
+        const cover = $("cover");
+        const tagline = $("cover-tagline");
+        const sun = $("sun");
+        const glow = $("glow");
+        const lock = $("lock");
+        const pill = $("pill");
+        const url = $("url");
+
+        // Ground: rosette angle is film-continuous, 0.6°/s from the film's t=0.
+        tl.fromTo(
+          rosette,
+          { rotation: ROSETTE_DEG_PER_S * FRAME_START },
+          { rotation: ROSETTE_DEG_PER_S * (FRAME_START + DUR), duration: DUR, ease: "none" },
+          0,
+        );
+
+        // Scene 1 (0.0–0.8): the closed cover shrinks to 0.42 and rises so its centre lands at (540,560).
+        // nudge-curve: power3.in ramp (10%) → linear burst (65%) → power4.out tail (25%); tail ≥ 3× ramp.
+        const DY = 560 - 920;
+        const S0 = 1;
+        const S1 = 0.42;
+        const at = (f) => S0 + (S1 - S0) * f;
+        tl.fromTo(
+          cover,
+          { y: 0, scale: S0 },
+          { y: DY * 0.1, scale: at(0.1), duration: 0.16, ease: "power3.in", immediateRender: true },
+          0,
+        );
+        tl.to(cover, { y: DY * 0.75, scale: at(0.75), duration: 0.14, ease: "none" }, 0.16);
+        tl.to(cover, { y: DY, scale: S1, duration: 0.5, ease: "power4.out" }, 0.3);
+        tl.fromTo(tagline, { opacity: 1 }, { opacity: 0, duration: 0.45, ease: "power2.out" }, 0.05);
+
+        // Scene 2 (0.5–1.6): Sun rises from below into the bottom-right; a mint bloom lands with his settle.
+        tl.fromTo(sun, { y: 560 }, { y: 0, duration: 1.1, ease: "power3.out" }, 0.5);
+        tl.fromTo(glow, { opacity: 0, scale: 0.85 }, { opacity: 0.3, scale: 1, duration: 0.9, ease: "power2.out" }, 0.7);
+
+        // Scene 3 (1.0–2.0): waterfall-entry — binary arrival, whip up from below, overlapping cascade.
+        const F = 1 / 60;
+        const cascade = [
+          { el: lock, y: 48, d: 0.12 },
+          { el: $("f1"), y: 80, d: 0.19 },
+          { el: $("f2"), y: 50, d: 0.16 },
+          { el: $("f3"), y: 70, d: 0.17 },
+          { el: $("f4"), y: 78, d: 0.16 },
+        ];
+        const gaps = [2 * F, -F, 4 * F, -F];
+        let t = 1.0;
+        cascade.forEach(({ el, y, d }, i) => {
+          tl.set(el, { opacity: 1, y }, t);
+          tl.to(el, { y: 0, duration: d, ease: "power4.out" }, t);
+          if (i < gaps.length) t += d + gaps[i];
+        });
+
+        // Scene 4 (2.0–2.8): download pill rises in; URL wipes on left→right beneath it.
+        tl.fromTo(pill, { opacity: 0, y: 36 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 2.0);
+        tl.fromTo(
+          url,
+          { clipPath: "inset(0% 100% 0% 0%)", opacity: 1 },
+          { clipPath: "inset(0% 0% 0% 0%)", duration: 0.5, ease: "power3.out" },
+          2.3,
+        );
+
+        // Scene 5 (2.8–4.1): hold — only the rosette keeps turning.
+
+        // Scene 6 (4.1–4.5): loop seam — everything but the ground fades out.
+        tl.fromTo(
+          $("world"),
+          { opacity: 1 },
+          { opacity: 0, duration: 0.4, ease: "power1.in", immediateRender: false },
+          4.1,
+        );
+
+        window.__timelines["06-close"] = tl;
+      })();
+    </script>
+  </div>
+</template>

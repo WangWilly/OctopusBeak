@@ -1,0 +1,59 @@
+{
+  "lines": [
+    {
+      "id": "01",
+      "sfx": [
+        "soft pop",
+        "soft pop",
+        "keyboard typing short"
+      ]
+    },
+    {
+      "id": "02",
+      "sfx": [
+        "whoosh",
+        "book open"
+      ]
+    },
+    {
+      "id": "03",
+      "sfx": [
+        "printer tick",
+        "printer tick",
+        "printer tick",
+        "stamp"
+      ]
+    },
+    {
+      "id": "04",
+      "sfx": [
+        "button click",
+        "printer tick",
+        "printer tick",
+        "printer tick",
+        "printer tick",
+        "stamp"
+      ]
+    },
+    {
+      "id": "05",
+      "sfx": [
+        "rising whoosh",
+        "cash register ding",
+        "paper flick",
+        "stamp",
+        "book close"
+      ]
+    },
+    {
+      "id": "06",
+      "sfx": [
+        "soft whoosh",
+        "chime"
+      ]
+    }
+  ],
+  "bgm": {
+    "mode": "none"
+  }
+}
