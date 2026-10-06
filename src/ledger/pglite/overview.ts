@@ -6,6 +6,7 @@ import type {
   CanonicalOverviewAmount,
   CanonicalOverviewAmountTrace,
   CanonicalOverviewCreditCardBalance,
+  CanonicalOverviewCreditCardStatement,
   CanonicalOverviewCurrentQueryResult,
   CanonicalOverviewExpectedSource,
   CanonicalOverviewPosition,
@@ -132,6 +133,44 @@ type InvestmentTransactionRow = Readonly<{
   funding_evidence_json: string;
   description: string | null;
 }>;
+
+type StatementRow = Readonly<{
+  account_id: string;
+  statement_id: string;
+  statement_revision_id: string;
+  statement_key: string;
+  revision_number: number | string;
+  cycle_start: string;
+  cycle_end: string;
+  issue_date: string;
+  due_date: string;
+  currency: string;
+  balance_coefficient: string;
+  balance_scale: number | string;
+  minimum_coefficient: string | null;
+  minimum_scale: number | string | null;
+  memberships: readonly { transactionId: string; transactionRevisionId: string; sourceRecordId: string }[] | string;
+}>;
+
+function mapStatement(row: StatementRow): CanonicalOverviewCreditCardStatement {
+  const memberships = typeof row.memberships === "string" ? JSON.parse(row.memberships) as Exclude<StatementRow["memberships"], string> : row.memberships;
+  return {
+    statementId: row.statement_id,
+    statementRevisionId: row.statement_revision_id,
+    statementKey: row.statement_key,
+    revisionNumber: Number(row.revision_number),
+    cycleStart: row.cycle_start,
+    cycleEnd: row.cycle_end,
+    issueDate: row.issue_date,
+    dueDate: row.due_date,
+    currency: row.currency,
+    statementBalance: { coefficient: row.balance_coefficient, scale: Number(row.balance_scale) },
+    minimumPayment: row.minimum_coefficient === null || row.minimum_scale === null
+      ? null
+      : { coefficient: row.minimum_coefficient, scale: Number(row.minimum_scale) },
+    memberships: memberships.map((membership) => ({ ...membership })),
+  };
+}
 
 function normalizeExact(value: { coefficient: string; scale: number }): { coefficient: string; scale: number } {
   let coefficient = BigInt(value.coefficient);
@@ -472,6 +511,7 @@ function mapProjection(
   holdings: readonly HoldingRow[],
   margins: readonly MarginRow[],
   investmentTransactions: readonly InvestmentTransactionRow[],
+  statements: readonly StatementRow[],
   knowledgePoint: number,
   expectedSources: readonly CanonicalOverviewExpectedSource[],
 ): CanonicalOverviewProjection {
@@ -504,6 +544,12 @@ function mapProjection(
     const bucket = marginsByAccount.get(row.account_id) ?? [];
     bucket.push(row);
     marginsByAccount.set(row.account_id, bucket);
+  }
+  const statementsByAccount = new Map<string, CanonicalOverviewCreditCardStatement[]>();
+  for (const row of statements) {
+    const bucket = statementsByAccount.get(row.account_id) ?? [];
+    bucket.push(mapStatement(row));
+    statementsByAccount.set(row.account_id, bucket);
   }
   const transactionDtos = mapTransactions(transactions, investmentTransactions);
   const txCount = new Map<string, number>();
@@ -565,7 +611,7 @@ function mapProjection(
       marginAmounts,
       positions: accountPositions,
       ...(account.account_type === "credit"
-        ? { creditCard: { statements: [], ...(creditCardBalance ? { currentUsedCredit: creditCardBalance } : {}) } }
+        ? { creditCard: { statements: statementsByAccount.get(account.account_id) ?? [], ...(creditCardBalance ? { currentUsedCredit: creditCardBalance } : {}) } }
         : {}),
       transactionCount: txCount.get(account.account_id) ?? 0,
       observedAt,
@@ -831,13 +877,63 @@ async function readProjection(
       ORDER BY investment_transaction.effective_on, investment_transaction.transaction_id`,
     [knowledgeAt, financialAt ?? null],
   );
-  const [accounts, balances, transactions, holdings, margins, investmentTransactions] = await Promise.all([
+  // A statement belongs to the financial date it was issued; a reissue keeps
+  // its statement and only the newest committed revision is current.
+  const statementsQuery = store.query<StatementRow>(
+    `WITH candidates AS (
+       SELECT encode(statement.account_id, 'hex') AS account_id,
+              encode(statement.statement_id, 'hex') AS statement_id,
+              revision.statement_revision_id,
+              statement.statement_key,
+              revision.revision_number,
+              revision.cycle_start,
+              revision.cycle_end,
+              revision.issue_date,
+              revision.due_date,
+              revision.currency,
+              revision.balance_coefficient,
+              revision.balance_scale,
+              revision.minimum_coefficient,
+              revision.minimum_scale,
+              ROW_NUMBER() OVER (
+                PARTITION BY revision.statement_id
+                ORDER BY revision.revision_number DESC, commit_row.commit_sequence DESC
+              ) AS selection_rank
+         FROM canonical_credit_card_statement_revisions revision
+         JOIN canonical_credit_card_statements statement ON statement.statement_id = revision.statement_id
+         JOIN source_captures capture ON capture.capture_id = revision.created_capture_id
+         JOIN canonical_commits commit_row ON commit_row.commit_id = capture.commit_id
+        WHERE commit_row.commit_sequence <= $1
+          AND ($2::text IS NULL OR revision.issue_date <= $2)
+     )
+     SELECT candidate.account_id, candidate.statement_id,
+            encode(candidate.statement_revision_id, 'hex') AS statement_revision_id,
+            candidate.statement_key, candidate.revision_number, candidate.cycle_start,
+            candidate.cycle_end, candidate.issue_date, candidate.due_date, candidate.currency,
+            candidate.balance_coefficient, candidate.balance_scale,
+            candidate.minimum_coefficient, candidate.minimum_scale,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                       'transactionId', encode(membership.transaction_id, 'hex'),
+                       'transactionRevisionId', encode(membership.transaction_revision_id, 'hex'),
+                       'sourceRecordId', encode(membership.source_record_id, 'hex')
+                     ) ORDER BY membership.transaction_id)
+                FROM canonical_credit_card_statement_memberships membership
+               WHERE membership.statement_revision_id = candidate.statement_revision_id
+            ), '[]'::json) AS memberships
+       FROM candidates candidate
+      WHERE candidate.selection_rank = 1
+      ORDER BY candidate.account_id, candidate.due_date DESC, candidate.statement_key`,
+    [knowledgeAt, financialAt ?? null],
+  );
+  const [accounts, balances, transactions, holdings, margins, investmentTransactions, statements] = await Promise.all([
     accountsQuery,
     balancesQuery,
     transactionsQuery,
     holdingsQuery,
     marginsQuery,
     investmentTransactionsQuery,
+    statementsQuery,
   ]);
   return mapProjection(
     accounts.rows,
@@ -846,6 +942,7 @@ async function readProjection(
     holdings.rows,
     margins.rows,
     investmentTransactions.rows,
+    statements.rows,
     knowledgeAt,
     expectedSources,
   );
