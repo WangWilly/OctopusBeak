@@ -51,7 +51,11 @@ test("every SVG symbol, pattern, and filter is referenced", () => {
 
 test("no copy describes the import stopping for the user", () => {
   // Imports run start to finish in one click; the page must not promise a hand-off that no longer exists.
-  const copy = [html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, ""), js.slice(0, js.indexOf("};"))].join("\n");
+  // The video player's pause control is about playback, not imports, so its label is left out.
+  const copy = [html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, ""), js.slice(0, js.indexOf("};"))]
+    .join("\n")
+    .replace(/data-i18n="player\.pause">[^<]*</g, "")
+    .replace(/"player\.pause": "[^"]*",/g, "");
   const handOff = /接手|OTP|驗證碼|暫停|停下來|判斷|step in|verification|\bpause|\bhand(?:s|off|-off|ed)?\b/gi;
   assert.deepEqual([...copy.matchAll(handOff)].map((match) => match[0]), []);
 });

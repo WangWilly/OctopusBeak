@@ -10,8 +10,19 @@ const EN = {
   "hero.title2": " imported in one click.",
   "hero.titleTone": " Every number traces to its source.",
   "hero.lead": "OctopusBeak collects your accounts from 11 Taiwanese institutions plus e-invoices and builds one financial overview on your Mac that you can check line by line.",
-  "hero.demo": "Watch the demo",
+  "hero.demo": "Watch the intro",
   "cta.requirements": "Requires Apple silicon · Beta",
+  "demo.subtitle": "One purchase, counted twice? How OctopusBeak merges duplicate entries · 0:30",
+  "demo.close": "Close",
+  "demo.hint": "Press Esc or click outside to close",
+  "demo.cta": "Download OctopusBeak free",
+  "player.seek": "Playback position",
+  "player.play": "Play",
+  "player.pause": "Pause",
+  "player.mute": "Mute",
+  "player.unmute": "Unmute",
+  "player.speed": "Playback speed",
+  "player.fullscreen": "Full screen",
   "sources.title": "11 institutions plus e-invoices,",
   "sources.titleTone": " in a single import.",
   "sources.lead": "Deposits, credit cards, loans, brokerage, funds, foreign currency, and MaiCoin crypto, side by side in one place you can check. More sources are on the way.",
@@ -87,13 +98,13 @@ const translated = [...document.querySelectorAll("[data-i18n]")];
 const chinese = new Map(translated.map((element) => [element, element.textContent]));
 const chineseMeta = { title: document.title, description: meta.description[0].content };
 const buttons = document.querySelectorAll("[data-lang-button]");
-// The demo video has an English cut: each element names its English file in data-src-en / data-poster-en.
-const localizedMedia = [...document.querySelectorAll("[data-src-en], [data-poster-en]")].map((element) => ({
-  element,
-  attribute: element.hasAttribute("data-src-en") ? "src" : "poster",
-  chinese: element.getAttribute(element.hasAttribute("data-src-en") ? "src" : "poster"),
-  english: element.dataset.srcEn ?? element.dataset.posterEn,
-}));
+// The demo video has an English cut: each element names its English file in data-src-en / data-poster-en / data-href-en.
+const LOCALIZED_ATTRIBUTES = { srcEn: "src", posterEn: "poster", hrefEn: "href" };
+const localizedMedia = [...document.querySelectorAll("[data-src-en], [data-poster-en], [data-href-en]")].map((element) => {
+  const key = Object.keys(LOCALIZED_ATTRIBUTES).find((name) => name in element.dataset);
+  const attribute = LOCALIZED_ATTRIBUTES[key];
+  return { element, attribute, chinese: element.getAttribute(attribute), english: element.dataset[key] };
+});
 
 function setLanguage(language, updateUrl) {
   const english = language === "en";
@@ -111,7 +122,8 @@ function setLanguage(language, updateUrl) {
     const wanted = english ? en : zh;
     if (element.getAttribute(attribute) === wanted) continue;
     element.setAttribute(attribute, wanted);
-    reloaded.add(element.closest("video"));
+    const video = element.closest("video");
+    if (video) reloaded.add(video);
   }
   for (const video of reloaded) video.load();
 
@@ -135,6 +147,72 @@ for (const button of buttons) {
 }
 
 if (new URLSearchParams(window.location.search).get("lang") === "en") setLanguage("en", false);
+
+// Demo modal: the intro card and the hero button open it; Esc, the close button, or a backdrop click close it.
+const demoModal = document.getElementById("demo-modal");
+if (demoModal && typeof demoModal.showModal === "function") {
+  const player = demoModal.querySelector(".player");
+  const video = player.querySelector("video");
+  const seek = player.querySelector('input[type="range"]');
+  const time = player.querySelector(".player-time");
+  const speedValue = player.querySelector(".player-speed-value");
+  const SPEEDS = [1, 1.5, 2];
+
+  const clock = (seconds) => {
+    const whole = Math.max(0, Math.floor(seconds || 0));
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+  };
+  const sync = () => {
+    const duration = video.duration || 0;
+    const played = duration ? video.currentTime / duration : 0;
+    const buffered = duration && video.buffered.length ? video.buffered.end(video.buffered.length - 1) / duration : 0;
+    seek.value = String(Math.round(played * 1000));
+    player.style.setProperty("--played", `${played * 100}%`);
+    player.style.setProperty("--buffered", `${buffered * 100}%`);
+    time.textContent = `${clock(video.currentTime)} / ${clock(duration || 30)}`;
+  };
+  const syncState = () => {
+    player.classList.toggle("is-playing", !video.paused);
+    player.classList.toggle("is-muted", video.muted);
+  };
+
+  for (const opener of document.querySelectorAll("[data-demo-open]")) {
+    opener.addEventListener("click", (event) => {
+      event.preventDefault();
+      demoModal.showModal();
+      video.play().catch(() => {});
+    });
+  }
+  demoModal.addEventListener("click", (event) => {
+    if (event.target === demoModal || event.target.closest("[data-demo-close]")) demoModal.close();
+  });
+  demoModal.addEventListener("close", () => video.pause());
+
+  for (const name of ["timeupdate", "progress", "loadedmetadata", "seeked", "emptied"]) video.addEventListener(name, sync);
+  for (const name of ["play", "pause", "volumechange", "emptied"]) video.addEventListener(name, syncState);
+  video.addEventListener("ratechange", () => (speedValue.textContent = `${video.playbackRate}×`));
+  video.addEventListener("click", () => (video.paused ? video.play().catch(() => {}) : video.pause()));
+  seek.addEventListener("input", () => {
+    if (video.duration) video.currentTime = (Number(seek.value) / 1000) * video.duration;
+  });
+  player.addEventListener("click", (event) => {
+    const control = event.target.closest("[data-player]");
+    if (!control) return;
+    const action = control.dataset.player;
+    if (action === "toggle") video.paused ? video.play().catch(() => {}) : video.pause();
+    if (action === "mute") video.muted = !video.muted;
+    if (action === "speed") {
+      const next = SPEEDS[(SPEEDS.indexOf(video.playbackRate) + 1) % SPEEDS.length];
+      video.playbackRate = next;
+      speedValue.textContent = `${next}×`;
+    }
+    if (action === "fullscreen") {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (player.requestFullscreen) player.requestFullscreen();
+      else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    }
+  });
+}
 
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const finePointer = matchMedia("(hover: hover) and (pointer: fine)").matches;
