@@ -9,16 +9,16 @@ const macOptions = integratedTitleBarOptions("darwin");
 
 assert.deepEqual(macOptions, {
   titleBarStyle: "hiddenInset",
-  trafficLightPosition: { x: 14, y: 23 },
+  trafficLightPosition: { x: 14, y: 17 },
 });
 assert.equal(Object.hasOwn(macOptions, "frame"), false);
 
 assert.deepEqual(integratedTitleBarOptions("win32"), {});
 assert.deepEqual(integratedTitleBarOptions("linux"), {});
 
-assert.deepEqual(trafficLightPositionForScale(75), { x: 14, y: 16 });
-assert.deepEqual(trafficLightPositionForScale(100), { x: 14, y: 23 });
-assert.deepEqual(trafficLightPositionForScale(150), { x: 14, y: 38 });
+assert.deepEqual(trafficLightPositionForScale(75), { x: 14, y: 11 });
+assert.deepEqual(trafficLightPositionForScale(100), { x: 14, y: 17 });
+assert.deepEqual(trafficLightPositionForScale(150), { x: 14, y: 29 });
 
 assert.equal(isFiniteDisplayScale(75), true);
 assert.equal(isFiniteDisplayScale(100), true);

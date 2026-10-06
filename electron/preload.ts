@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 import type {
   DataViewErrorEvent,
   DataViewRowsEvent,
@@ -62,15 +62,9 @@ const dataViews = {
   },
 };
 
-function displayScaleZoomFactor(percent: number) {
-  if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
-  return Math.min(1.5, Math.max(0.75, percent / 100));
-}
-
 const api: OctopusBeakApi = {
   display: {
     setScale(percent) {
-      webFrame.setZoomFactor(displayScaleZoomFactor(percent));
       ipcRenderer.send("display:setScale", percent);
     },
   },

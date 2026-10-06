@@ -1,4 +1,5 @@
 import type { BrowserWindowConstructorOptions } from "electron";
+import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 
 type IntegratedTitleBarOptions = Pick<
   BrowserWindowConstructorOptions,
@@ -13,7 +14,7 @@ export const isFiniteDisplayScale = (value: unknown): value is number =>
 
 export function trafficLightPositionForScale(percent: number) {
   if (!isFiniteDisplayScale(percent)) throw new TypeError("Display scale must be finite.");
-  const zoomFactor = Math.min(1.5, Math.max(0.75, percent / 100));
+  const zoomFactor = displayScaleZoomFactor(percent);
   return {
     x: defaultTrafficLightPosition.x,
     y: Math.round(
