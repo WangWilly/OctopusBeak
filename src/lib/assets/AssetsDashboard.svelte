@@ -10,6 +10,7 @@
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
+  import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { historyPointKey } from "$lib/shared-ledger/types.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import { currencyCount } from "$lib/shared-money/money.ts";
@@ -67,7 +68,7 @@
   $: today = dateInTimeZone(new Date(), $systemTimezone);
   $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledSummaryBlock(blocks)), { today });
   $: assetAccounts = assets.accounts;
-  $: isEmpty = assets.availability === "empty";
+  $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: sideValue = isEmpty ? "—" : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
   $: sideSub = isEmpty ? $t.assets.empty.side : $t.assets.sideSub(
@@ -118,8 +119,9 @@
       <div class="empty-banner">
         <EmptySourceBanner title={$t.assets.empty.bannerTitle} body={$t.assets.empty.bannerBody} />
       </div>
+    {:else}
+      <ProjectionStateBanner projection={assets} />
     {/if}
-    <ProjectionStateBanner projection={assets} />
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <PageTotalCard
         label={totalLabel(summary)}

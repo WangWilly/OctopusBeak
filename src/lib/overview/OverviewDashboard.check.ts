@@ -51,7 +51,7 @@ test("overview keeps its onboarding spotlight targets", () => {
   assert.match(source, /id: "overview\.summary"/);
   assert.match(
     source,
-    /overview\.availability === "empty"[\s\S]*?<EmptySourceBanner[\s\S]*?onboardingTargetId="overview\.empty"/,
+    /\{#if awaitingData\}[\s\S]*?<EmptySourceBanner[\s\S]*?onboardingTargetId="overview\.empty"/,
     "the empty state's call to action is the spotlight target",
   );
   assert.match(
@@ -60,8 +60,8 @@ test("overview keeps its onboarding spotlight targets", () => {
     "the banner registers its automation link as the target",
   );
   const coverageProjectionState = source.slice(
-    source.indexOf('overview.coverage !== "complete" && overview.availability !== "empty"'),
-    source.indexOf("\n      </div>\n    {/if}", source.indexOf('overview.coverage !== "complete" && overview.availability !== "empty"')),
+    source.indexOf('overview.coverage !== "complete" && !awaitingData'),
+    source.indexOf("\n      </div>\n    {/if}", source.indexOf('overview.coverage !== "complete" && !awaitingData')),
   );
   assert.match(coverageProjectionState, /id: onboardingEmptyState \? "overview\.empty" : null/);
   assert.match(coverageProjectionState, /class="projection-gap-list"[\s\S]*safeSourceGapLabel\(gap\)/);

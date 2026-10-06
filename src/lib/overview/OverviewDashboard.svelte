@@ -20,6 +20,7 @@
     safeSourceGapLabel,
     sourceGapCounts,
   } from "$lib/shared-ledger/account-display.ts";
+  import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
@@ -77,6 +78,7 @@
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
+  $: awaitingData = awaitingFirstData(overview);
   $: gapCounts = sourceGapCounts(overview.sourceGaps);
   $: currentStateLabel = overview.availability === "unavailable"
     ? $t.overview.currentUnavailable
@@ -141,7 +143,7 @@
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <OverviewTicker ticker={model.ticker} />
     </ProgressiveBlock>
-    {#if overview.availability === "empty"}
+    {#if awaitingData}
       <EmptySourceBanner
         title={$t.overview.emptyTitle}
         body={$t.overview.emptyBody}
@@ -151,7 +153,7 @@
         onboardingTargetId="overview.empty"
       />
     {/if}
-    {#if overview.coverage !== "complete" && overview.availability !== "empty"}
+    {#if overview.coverage !== "complete" && !awaitingData}
       <div
         class="projection-state"
         role="status"
