@@ -16,42 +16,13 @@ const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const LFS_ATTRIBUTE =
   "src/lib/welcome/assets/** filter=lfs diff=lfs merge=lfs -text";
 
+const DESIGN_IMAGES = "~/.pencil/documents/f9aed551-7c26-4bcf-a3a6-95444a3ebc6f/images";
+
+/** Hero window screens for slides 3-5, shared by both locales as in the design. */
 const SCREENSHOTS = [
-  ["01-overview", "1-overview", "icon-eye.png"],
-  ["02-overview-net-change", "2-overview-net-change", "icon-eye-manifer.png"],
-  [
-    "03-overview-portfolio-flow",
-    "3-overview-portfolio-flow",
-    "icon-eye-manifer.png",
-  ],
-  ["04-asset", "4-asset", "icon-asset.png"],
-  [
-    "05-asset-brokerage-trades",
-    "5-asset-brokerage-trades",
-    "icon-asset-magnifer.png",
-  ],
-  [
-    "06-asset-brokerage-positions",
-    "6-asset-brokerage-positions",
-    "icon-asset-magnifer.png",
-  ],
-  [
-    "07-liability-changes",
-    "7-liability-changes",
-    "icon-asset-magnifer.png",
-  ],
-  ["08-spending", "8-spending", "icon-spending.png"],
-  ["09-receipt-list", "9-receipt-list", "icon-spending-magnifer.png"],
-  [
-    "10-receipt-detail",
-    "10-receipt-detail",
-    "icon-spending-magnifer.png",
-  ],
-  [
-    "11-credential-settings",
-    "11-credential-settings",
-    "icon-keyvault.png",
-  ],
+  ["01-overview", "welcome/tVIHe.png"],
+  ["04-asset", "welcome/fSqDk.png"],
+  ["08-spending", "welcome/c7mU4.png"],
 ];
 
 const ASSETS = [
@@ -61,7 +32,7 @@ const ASSETS = [
     kind: "app-icon",
   },
   {
-    source: "~/Downloads/ChatGPT Image Aug 7 2026 from rasterizeText.png",
+    source: `${DESIGN_IMAGES}/site/b2ca0feac6a1cee5.png`,
     destination: "src/lib/welcome/assets/ink-background.png",
     kind: "background",
   },
@@ -70,22 +41,10 @@ const ASSETS = [
     destination: "src/lib/welcome/assets/curved-arrow-animation.svg",
     kind: "illustration",
   },
-  ...SCREENSHOTS.flatMap(([base, sourceDirectory]) => [
-    {
-      source: `~/Documents/ob-welcome/${sourceDirectory}/en.png`,
-      destination: `src/lib/welcome/assets/screenshots/${base}.en.png`,
-      kind: "screenshot",
-    },
-    {
-      source: `~/Documents/ob-welcome/${sourceDirectory}/zh.png`,
-      destination: `src/lib/welcome/assets/screenshots/${base}.zh-TW.png`,
-      kind: "screenshot",
-    },
-  ]),
-  ...SCREENSHOTS.map(([base, sourceDirectory, iconName]) => ({
-    source: `~/Documents/ob-welcome/${sourceDirectory}/${iconName}`,
-    destination: `src/lib/welcome/assets/icons/${base}.png`,
-    kind: "icon",
+  ...SCREENSHOTS.map(([base, source]) => ({
+    source: `${DESIGN_IMAGES}/${source}`,
+    destination: `src/lib/welcome/assets/screenshots/${base}.png`,
+    kind: "screenshot",
   })),
 ];
 
@@ -262,9 +221,24 @@ export function expectedWelcomeAssetDestinations() {
   return ASSETS.map(({ destination }) => destination);
 }
 
-export async function generateWelcomeAssets() {
+/**
+ * Regenerates the given destinations (all of them when none are given) and
+ * keeps the recorded manifest entry for the rest, whose sources may no longer
+ * exist on this machine.
+ */
+export async function generateWelcomeAssets(destinations = []) {
+  const recorded = new Map(
+    JSON.parse(await readFile(resolve(REPO_ROOT, MANIFEST_PATH), "utf8"))
+      .map((entry) => [entry.destination, entry]),
+  );
   const manifest = [];
   for (const asset of ASSETS) {
+    if (destinations.length && !destinations.includes(asset.destination)) {
+      const entry = recorded.get(asset.destination);
+      if (!entry) throw new Error(`${asset.destination} has no recorded manifest entry`);
+      manifest.push(entry);
+      continue;
+    }
     const sourcePath = expandedSource(asset.source);
     const source = await readFile(sourcePath);
     const optimized = asset.kind === "illustration"
@@ -298,73 +272,6 @@ export async function generateWelcomeAssets() {
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
   return manifest;
-}
-
-function paeth(left, above, upperLeft) {
-  const estimate = left + above - upperLeft;
-  const leftDistance = Math.abs(estimate - left);
-  const aboveDistance = Math.abs(estimate - above);
-  const upperLeftDistance = Math.abs(estimate - upperLeft);
-  if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance) {
-    return left;
-  }
-  return aboveDistance <= upperLeftDistance ? above : upperLeft;
-}
-
-function rgbaAlphaStats(parsed) {
-  const { width, height } = parsed.metadata;
-  const stride = width * 4;
-  const previous = Buffer.alloc(stride);
-  let inputOffset = 0;
-  let transparent = 0;
-  let visible = 0;
-  let transparentBorder = 0;
-  let borderPixels = 0;
-
-  for (let y = 0; y < height; y += 1) {
-    const filter = parsed.inflated[inputOffset];
-    inputOffset += 1;
-    const current = Buffer.allocUnsafe(stride);
-    for (let x = 0; x < stride; x += 1) {
-      const encoded = parsed.inflated[inputOffset + x];
-      const left = x >= 4 ? current[x - 4] : 0;
-      const above = previous[x];
-      const upperLeft = x >= 4 ? previous[x - 4] : 0;
-      let predictor;
-      switch (filter) {
-        case 0:
-          predictor = 0;
-          break;
-        case 1:
-          predictor = left;
-          break;
-        case 2:
-          predictor = above;
-          break;
-        case 3:
-          predictor = Math.floor((left + above) / 2);
-          break;
-        case 4:
-          predictor = paeth(left, above, upperLeft);
-          break;
-        default:
-          throw new Error(`unsupported PNG filter ${filter}`);
-      }
-      current[x] = (encoded + predictor) & 0xff;
-    }
-    inputOffset += stride;
-    for (let x = 0; x < width; x += 1) {
-      const alpha = current[x * 4 + 3];
-      if (alpha === 0) transparent += 1;
-      if (alpha > 0) visible += 1;
-      if (y === 0 || y === height - 1 || x === 0 || x === width - 1) {
-        borderPixels += 1;
-        if (alpha === 0) transparentBorder += 1;
-      }
-    }
-    current.copy(previous);
-  }
-  return { transparent, visible, transparentBorder, borderPixels };
 }
 
 function commandOutput(command, args) {
@@ -480,19 +387,6 @@ export async function validateWelcomeAssets() {
         if (entry.decodedPixelSha256 !== hash) {
           errors.push("decoded scanline hash differs");
         }
-        if (entry.kind === "icon") {
-          if (parsed.metadata.colorType !== 6) {
-            errors.push("feature icon is not RGBA");
-          } else {
-            const stats = rgbaAlphaStats(parsed);
-            if (stats.transparent === 0 || stats.visible === 0) {
-              errors.push("feature icon lacks both transparent and visible pixels");
-            }
-            if (stats.transparentBorder / stats.borderPixels < 0.95) {
-              errors.push("feature icon border is not at least 95% transparent");
-            }
-          }
-        }
       }
       if (entry.finalBytes !== bytes.length) errors.push("finalBytes differs");
       if (!Number.isInteger(entry.originalBytes) || entry.originalBytes < bytes.length) {
@@ -569,7 +463,7 @@ export async function validateWelcomeAssets() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const manifest = await generateWelcomeAssets();
+  const manifest = await generateWelcomeAssets(process.argv.slice(2));
   const originalBytes = manifest.reduce(
     (total, entry) => total + entry.originalBytes,
     0,
