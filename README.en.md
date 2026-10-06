@@ -1,4 +1,4 @@
-![OctopusBeak banner](docs/assets/octopusbeak-readme-banner.webp)
+![OctopusBeak banner](docs/assets/octopusbeak-readme-banner-en.webp)
 
 # OctopusBeak
 
@@ -24,25 +24,25 @@ The DMG is the recommended installer. A ZIP and `SHA256SUMS.txt` are also availa
 
 The overview combines imported bank deposits, foreign currency, funds, brokerage accounts, crypto assets, and loans. Daily snapshots show changes over time, allocation, and liability exposure.
 
-![OctopusBeak overview in English](docs/assets/readme-overview-en.png)
+![OctopusBeak overview (Traditional Chinese UI)](site/assets/screens/overview.webp)
 
 ### Inspect asset changes and account details
 
 The Assets page groups bank, fund, brokerage, crypto, and foreign-currency accounts. Review balance trends, then open an account to inspect trades or positions.
 
-![OctopusBeak Assets page in English](docs/assets/readme-assets-en.png)
+![OctopusBeak Assets page (Traditional Chinese UI)](site/assets/screens/assets.webp)
 
 ### Organize E-Invoices and account spending
 
 The Spending page combines E-Invoices and account expenses, grouped by month and category. You can inspect invoice items and correct their categories.
 
-![OctopusBeak Spending page in English](docs/assets/readme-spending-en.png)
+![OctopusBeak Spending page (Traditional Chinese UI)](site/assets/screens/spending.webp)
 
 ### Collect data from the desktop app
 
 The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect.
 
-![OctopusBeak sign-in settings in English](docs/assets/readme-automation-settings-en.png)
+![OctopusBeak sign-in settings (Traditional Chinese UI)](site/assets/screens/credentials.webp)
 
 ## First run
 
@@ -66,12 +66,12 @@ The app remembers onboarding progress, so you can quit and continue later. You c
 | HNCB | TWD deposits |
 | CTBC | TWD deposits |
 | Post Office | TWD deposits |
-| SinoPac | TWD deposits; foreign-currency canonical transactions (human-attested identity contract) |
+| SinoPac | TWD deposits, foreign currency |
 | LINE Bank | TWD deposits and foreign currency |
 | E-Invoice | Personal invoices and purchased items |
 | MAX / MaiCoin | Crypto balances and statement rows |
 
-SinoPac foreign-currency data is retained as traceable account records, and rows that satisfy the human-attested identity contract are promoted to canonical Financial Transactions. Advertised canonical foreign-currency support currently includes SinoPac, Yuanta, Cathay, and LINE Bank.
+Foreign-currency transaction details are currently supported for SinoPac, Yuanta, Cathay, and LINE Bank.
 
 ## Your data stays on your device
 
@@ -118,7 +118,7 @@ npm run workflow:dev -- fixture
 
 See the [workflow development guide](docs/agents/workflow-development.md) for how to add and test a provider. Run production bank, invoice, and synchronization tasks through the desktop app's automation interface.
 
-The desktop PGlite worker stores financial data in `data/pglite/`.
+Both development and packaged builds store financial data in `~/Library/Application Support/OctopusBeak/data/pglite/`. Set `OCTOPUSBEAK_USER_DATA` to use a different data directory.
 
 </details>
 
@@ -133,8 +133,7 @@ The desktop PGlite worker stores financial data in `data/pglite/`.
 | `src/lib/spending/` | E-Invoice and spending UI |
 | `src/lib/automation/` | Automation UI and server helpers |
 | `electron/` | Electron main process and runtime helpers |
-| `data/pglite/` | Local PGlite data |
-| `~/Library/Application Support/OctopusBeak/` | Packaged app runtime data |
+| `~/Library/Application Support/OctopusBeak/` | App runtime data, including the local ledger in `data/pglite/` |
 
 Before committing changes, run:
 
