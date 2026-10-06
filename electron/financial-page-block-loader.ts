@@ -5,6 +5,8 @@ import type {
   AutomationRuntimeSnapshot,
 } from "../src/lib/desktop/api.ts";
 import {
+  ASSETS_SUMMARY_FIELDS,
+  LIABILITIES_SUMMARY_FIELDS,
   OVERVIEW_CHART_FIELDS,
   OVERVIEW_LIST_FIELDS,
   OVERVIEW_SUMMARY_FIELDS,
@@ -143,12 +145,12 @@ function projectRouteBlockData(
     return pick(record, OVERVIEW_LIST_FIELDS);
   }
   if (target === "assets") {
-    if (block === "summary") return pick(record, ["accounts"]);
+    if (block === "summary") return pick(record, ASSETS_SUMMARY_FIELDS);
     if (block === "chart") return pick(record, ["accounts", "dailyHistory", "dailyHistoryByAccount"]);
     return pick(record, ["accounts", "positionsByAccount", "transactionsByAccount", "dailyHistoryByAccount"]);
   }
   if (target === "liabilities") {
-    if (block === "summary") return pick(record, ["accounts"]);
+    if (block === "summary") return pick(record, LIABILITIES_SUMMARY_FIELDS);
     if (block === "chart") return pick(record, ["accounts", "dailyHistory", "dailyHistoryByAccount"]);
     if (block === "list") return pick(record, ["accounts", "transactionsByAccount", "dailyHistoryByAccount"]);
     return pick(record, ["marginAccounts", "transactionsByAccount"]);

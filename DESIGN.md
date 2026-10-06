@@ -108,10 +108,6 @@ components:
     rounded: "{rounded.md}"
     padding: "0 12px"
     height: "28px"
-  currency-chip:
-    textColor: "{colors.graphite-muted}"
-    rounded: "{rounded.pill}"
-    padding: "5px 8px"
   card:
     backgroundColor: "{colors.paper-white}"
     rounded: "{rounded.lg}"
@@ -282,9 +278,9 @@ Weights are fine-grained (560, 680, 720, 750) to match SF's variable axis. Don't
 
 **Rhythm.** A 4px base scale (4, 8, 12, 16, 20, 24, 32, 40). Card padding is 20px, grid gaps are 16px, and section gaps are 24px.
 
-**Grids.** Metric cards use `repeat(auto-fit, minmax(min(100%, 260px), 1fr))`. Detail layouts are `1.35fr / 0.65fr` with a 320px floor on the aside.
+**Grids.** Summary tiles in a page total card use `repeat(auto-fit, minmax(104px, 1fr))`. Detail layouts are `1.35fr / 0.65fr` with a 320px floor on the aside.
 
-**Breakpoints (app).** At 1180px the sidebar narrows to 216px, metrics drop to two columns, and two-column layouts stack. At 760px the shell becomes a single column, the sidebar becomes a static three-column nav, and the top bar shrinks to 56px.
+**Breakpoints (app).** At 1180px the sidebar narrows to 216px, a page total card moves its tiles under the figure, and two-column layouts stack. At 760px the shell becomes a single column, the sidebar becomes a static three-column nav, and the top bar shrinks to 56px.
 
 **Site.** The container is 1232px with a `clamp(16px, 4vw, 64px)` gutter and `clamp(64px, 9vw, 132px)` section padding. Sections are inset rounded panels (`clamp(8px, 1.1vw, 16px)` inset, `clamp(24px, 2.8vw, 40px)` radius) stacked with a gap of one inset. Site breakpoints are 1100, 900, and 760px.
 
@@ -307,7 +303,7 @@ The system is flat at rest and lifts only what floats. Content cards, tables, an
 
 ## Shapes
 
-Gently rounded, never pill-shaped except for status chips and tracks. Use 6px for tooltips, 8px for small icon controls and segmented filters, 10px (`--radius`) for buttons, inputs, chips, and nav links, 12px for popovers and filter groups, and 16px (`--radius-lg`) for cards, modals, and the selection bar. Full pills (999px) are reserved for currency chips, switch tracks, and progress bars. Collapsed sidebar nav items become 48px squares with a 14px radius. On the site, panels and the hero's bottom edge take the larger fluid `panel` radius.
+Gently rounded, never pill-shaped except for status chips and tracks. Use 6px for tooltips, 8px for small icon controls and segmented filters, 10px (`--radius`) for buttons, inputs, chips, and nav links, 12px for popovers and filter groups, and 16px (`--radius-lg`) for cards, modals, and the selection bar. Full pills (999px) are reserved for switch tracks and progress bars. Collapsed sidebar nav items become 48px squares with a 14px radius. On the site, panels and the hero's bottom edge take the larger fluid `panel` radius.
 
 ## Components
 
@@ -324,7 +320,6 @@ The feel is precise and quiet: compact controls, ink-filled primary actions, the
 
 ### Chips
 - **Status chip:** 28px, Paper Soft fill, Hairline border, muted 12px uppercase text at weight 720 with 0.06em tracking. `.good` swaps to Settled Green text on a 10% green tint.
-- **Currency chip:** a pill with a muted 7% tint, a softened border, and 12px text at weight 700 that never wraps. It lists the per-currency amounts in metric cards.
 
 ### Segmented Filters
 A frosted pill group (12px radius, 4px inset) of transparent 28px segments in muted text. The pressed segment (`aria-pressed="true"`) gets a 72% paper fill, a hairline, and a hairline lift. A standalone pressed filter uses an ink fill instead.
@@ -335,7 +330,7 @@ A frosted pill group (12px radius, 4px inset) of transparent 28px segments in mu
 - **Shadow Strategy:** none (Flat-By-Default).
 - **Border:** 1px Hairline.
 - **Internal Padding:** 20px. Panel titles are 60px bands with a bottom hairline.
-- **Metric card:** at least 144px tall, an uppercase label at the top, and a large tabular figure plus currency chips at the bottom.
+- **Page total card:** the top of Assets and Liabilities. The left side holds a muted label, the converted TWD figure, and the 近 30 天 change, colored by whether it is good for that page (a drop in debt is green). A hairline divides it from summary tiles, each a colored square and label, a tabular value, a muted sub line, and a 4px share bar in the tile's Data Series color. An estimated value carries a muted «≈». Every value, sub amount, and bar blurs when values are hidden.
 
 ### Inputs / Fields
 - **Style:** 44px tall, 10px radius, Hairline border, white fill.
@@ -426,5 +421,5 @@ Security-print SVG textures (rosette, wave field, and rule) are inked through `c
 - **Don't** introduce pure black, pure grey, or untinted `rgba(0,0,0,…)` shadows. Neutrals and shadows are slate-tinted.
 - **Don't** round font weights to the 100s. The fine-grained weights (560, 680, 720, 750) are deliberate.
 - **Don't** add bouncy, springy, or scale-heavy motion. Transitions run 140–220ms with `ease` or `cubic-bezier(0.2, 0.8, 0.2, 1)`.
-- **Don't** use pills for buttons. Pills are for status chips, currency chips, and tracks only. Stage-number discs and milestone dots are the only other round shapes.
+- **Don't** use pills for buttons. Pills are for status chips and tracks only. Stage-number discs and milestone dots are the only other round shapes.
 - **Don't** signal a warning or failure with a solid fill. Tint the container (6–10%) and color the text or border instead.

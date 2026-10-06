@@ -105,6 +105,7 @@ test("progressive dashboard adapters prefer a settled block and fall back to the
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
     dailyHistory: [],
+    exchangeRates: [],
   } as AssetsPageDto;
   const blockAssets: DashboardBlockValueMap["assets"]["list"] = {
     accounts: [account("block")],
@@ -125,6 +126,7 @@ test("progressive dashboard adapters prefer a settled block and fall back to the
     accounts: [],
     dailyHistoryByAccount: {},
     dailyHistory: [],
+    exchangeRates: [],
   } as LiabilitiesPageDto;
   const blockLiabilities: DashboardBlockValueMap["liabilities"]["details"] = {
     marginAccounts: [account("block")],

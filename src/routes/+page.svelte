@@ -387,7 +387,12 @@
 
   function assetsBlocks(value: AssetsPageDto): BlockStateMap<DashboardBlockPayload> {
     return {
-      summary: readyDashboardBlock("assets", "summary", { accounts: value.accounts }),
+      summary: readyDashboardBlock("assets", "summary", {
+        accounts: value.accounts,
+        dailyHistory: value.dailyHistory,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+        exchangeRates: value.exchangeRates,
+      }),
       chart: readyDashboardBlock("assets", "chart", {
         accounts: value.accounts,
         dailyHistory: value.dailyHistory,
@@ -404,7 +409,12 @@
 
   function liabilitiesBlocks(value: LiabilitiesPageDto): BlockStateMap<DashboardBlockPayload> {
     return {
-      summary: readyDashboardBlock("liabilities", "summary", { accounts: value.accounts }),
+      summary: readyDashboardBlock("liabilities", "summary", {
+        accounts: value.accounts,
+        dailyHistory: value.dailyHistory,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+        exchangeRates: value.exchangeRates,
+      }),
       chart: readyDashboardBlock("liabilities", "chart", {
         accounts: value.accounts,
         dailyHistory: value.dailyHistory,

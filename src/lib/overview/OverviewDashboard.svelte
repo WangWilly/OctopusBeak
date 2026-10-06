@@ -14,7 +14,8 @@
     liabilityColor,
     maskedAccountDigits,
   } from "$lib/overview/overview-format.ts";
-  import { dateInTimeZone, readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
+  import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
+  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import {
     safeSourceGapLabel,

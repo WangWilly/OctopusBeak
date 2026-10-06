@@ -41,6 +41,7 @@ test("margin exposure keeps an independent investment-kind filter", () => {
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
     dailyHistory: [],
+    exchangeRates: [],
   } as LiabilitiesPageDto;
   const block = { marginAccounts: [account("block")], transactionsByAccount: { block: [] } };
   assert.equal(resolveLiabilitiesDetails(fallback, block).marginAccounts[0]?.id, "block");

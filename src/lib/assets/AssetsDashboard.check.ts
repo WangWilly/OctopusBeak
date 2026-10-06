@@ -37,6 +37,7 @@ test("assets settled list block overrides the route fallback for shared account 
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
     dailyHistory: [],
+    exchangeRates: [],
   } as AssetsPageDto;
   const block = {
     accounts: [account("block")],

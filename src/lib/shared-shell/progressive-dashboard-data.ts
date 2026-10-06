@@ -20,7 +20,12 @@ export function resolveAssetsSummary(
   fallback: AssetsPageDto,
   block?: DashboardBlockValueMap["assets"]["summary"],
 ): DashboardBlockValueMap["assets"]["summary"] {
-  return { accounts: block?.accounts ?? fallback.accounts };
+  return {
+    accounts: block?.accounts ?? fallback.accounts,
+    dailyHistory: block?.dailyHistory ?? fallback.dailyHistory,
+    dailyHistoryByAccount: block?.dailyHistoryByAccount ?? fallback.dailyHistoryByAccount,
+    exchangeRates: block?.exchangeRates ?? fallback.exchangeRates,
+  };
 }
 
 export function resolveAssetsChart(
@@ -50,7 +55,12 @@ export function resolveLiabilitiesSummary(
   fallback: LiabilitiesPageDto,
   block?: DashboardBlockValueMap["liabilities"]["summary"],
 ): DashboardBlockValueMap["liabilities"]["summary"] {
-  return { accounts: block?.accounts ?? fallback.accounts };
+  return {
+    accounts: block?.accounts ?? fallback.accounts,
+    dailyHistory: block?.dailyHistory ?? fallback.dailyHistory,
+    dailyHistoryByAccount: block?.dailyHistoryByAccount ?? fallback.dailyHistoryByAccount,
+    exchangeRates: block?.exchangeRates ?? fallback.exchangeRates,
+  };
 }
 
 export function resolveLiabilitiesChart(

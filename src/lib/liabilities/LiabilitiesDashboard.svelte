@@ -1,23 +1,30 @@
 <script lang="ts">
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import {
+    readLiabilitiesSummary,
+    type UpcomingPayment,
+  } from "$lib/liabilities/liabilities-summary.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
+  import { formatShare, formatShortDate, formatTwd, formatTwdNumber, liabilityColor } from "$lib/overview/overview-format.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
+  import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
+  import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
   import {
     historyPointKey,
     type AccountKind,
     type AccountRowDto,
-    type CurrencyAmountDto,
-    type SummaryMetricDto,
   } from "$lib/shared-ledger/types.ts";
-  import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
+  import { accountShares, dateInTimeZone, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
+  import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
+  import { currencyCount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
-  import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
+  import { localizeAccount, localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
     buildStackedBalanceChartData,
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
-  import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
@@ -37,6 +44,9 @@
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
+  const DUE_SOON_DAYS = 3;
+  const CARD_COLOR = liabilityColor("credit-card");
+
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
@@ -55,15 +65,21 @@
       : undefined;
   }
 
+  function settledSummaryBlock(states: typeof blocks) {
+    const state = states.summary;
+    return liabilitiesBlockData("summary", state && "data" in state ? state.data : undefined);
+  }
+
+  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: summaryInput = resolveLiabilitiesSummary(liabilities, settledSummaryBlock(blocks));
+  $: summary = readLiabilitiesSummary(summaryInput, { today });
   $: liabilityAccounts = liabilities.accounts;
-  $: usesEstimatedCredit = liabilityAccounts.some((account) =>
+  $: usesEstimatedCredit = summaryInput.accounts.some((account) =>
     account.amountLines.some((amount) =>
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: metrics = buildMetrics(liabilityAccounts, $t);
-  $: liabilityValue = metrics[0]?.amounts ?? [];
-  $: sideValue = formatAmountLines(liabilityValue.slice(0, 1));
+  $: sideValue = summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
   $: sideSub = $t.liabilities.sideSub(
     liabilityAccounts.length,
     currencyCount(liabilityAccounts.map((account) => account.amountLines)),
@@ -80,72 +96,30 @@
     currency: chartCurrency,
     mode: "liability",
   });
-  function buildMetrics(sourceAccounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
-    const accounts = localizeAccounts(sourceAccounts, dictionary);
-    const largest = largestAccount(accounts);
-    const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
-    const loanAccounts = accounts.filter((account) => account.kind === "loan");
-    const cryptoAccounts = accounts.filter((account) => account.kind === "crypto");
-    const otherAccounts = accounts.filter((account) => account.kind === "other");
-    const foreignDebtAccounts = accounts.filter((account) =>
-      account.amountLines.some((amount) => amount.currency !== "TWD"),
+
+  function marginShares(accounts: AccountRowDto[]) {
+    return accountShares(
+      accounts,
+      indexExchangeRates(summaryInput.exchangeRates),
+      valuationDateFor(summaryInput.dailyHistory, accounts, today),
     );
-    const metrics: SummaryMetricDto[] = [
-      {
-        label: dictionary.liabilities.metricTotalDebt,
-        amounts: totalAmounts(accounts),
-        breakdown: [
-          cardAccounts.length ? dictionary.common.countLabel(dictionary.accounts.creditCard, cardAccounts.length) : null,
-          loanAccounts.length ? dictionary.common.countLabel(dictionary.accounts.loan, loanAccounts.length) : null,
-          cryptoAccounts.length ? dictionary.common.countLabel(dictionary.accounts.crypto, cryptoAccounts.length) : null,
-          otherAccounts.length ? dictionary.common.countLabel(dictionary.accounts.other, otherAccounts.length) : null,
-        ].filter(Boolean) as string[],
-      },
-    ];
-
-    if (largest) {
-      metrics.push({
-        label: dictionary.liabilities.metricLargestFacility,
-        amounts: largest.amountLines,
-        breakdown: [largest.label],
-      });
-    }
-    if (cardAccounts.length > 0) {
-      metrics.push({
-        label: dictionary.liabilities.metricCardBalance,
-        amounts: totalAmounts(cardAccounts),
-        breakdown: [cardAccounts.map((account) => account.institution).slice(0, 3).join(" + ")],
-      });
-    }
-    if (foreignDebtAccounts.length > 0) {
-      metrics.push({
-        label: dictionary.liabilities.metricForeignDebt,
-        amounts: totalAmounts(foreignDebtAccounts),
-        breakdown: foreignDebtAccounts.map((account) => account.label).slice(0, 3),
-      });
-    }
-    return metrics;
   }
 
-  function totalAmounts(accounts: AccountRowDto[]): CurrencyAmountDto[] {
-    const bucket = new Map<string, number>();
-    for (const account of accounts) {
-      for (const amount of account.amountLines) {
-        bucket.set(amount.currency, (bucket.get(amount.currency) ?? 0) + amount.value);
-      }
-    }
-    return [...bucket.entries()]
-      .filter(([, value]) => Math.abs(value) > 0.000001)
-      .sort(([left], [right]) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right))
-      .map(([currency, value]) => ({ currency, value }));
+  function paymentHead(payment: UpcomingPayment, dictionary: Translation) {
+    return payment.kind === "statement"
+      ? `${formatShortDate(payment.dueDate, $locale)} · ${dictionary.liabilities.dueIn(payment.daysUntil)}`
+      : dictionary.liabilities.cardInUse;
   }
 
-  function largestAccount(accounts: AccountRowDto[]) {
-    return [...accounts].sort((left, right) => primaryValue(right) - primaryValue(left))[0] ?? null;
+  function paymentAmount(payment: UpcomingPayment) {
+    return payment.amount.currency === "TWD"
+      ? formatTwdNumber(payment.amount.value, $locale)
+      : formatMoney(payment.amount, { locale: $locale });
   }
 
-  function primaryValue(account: AccountRowDto) {
-    return Math.abs(account.amountLines.find((amount) => amount.currency === "TWD")?.value ?? account.amountLines[0]?.value ?? 0);
+  function accountShort(account: AccountRowDto, dictionary: Translation) {
+    const { institution, product } = localizeAccount(account, dictionary);
+    return `${institution} ${product}`;
   }
 
   function currencyOrder(value: string) {
@@ -170,17 +144,45 @@
 >
   <div class="content">
     <ProjectionStateBanner projection={liabilities} />
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
-      {@const summaryBlock = liabilitiesBlockData("summary", data)}
-      {@const summaryDataBlock = resolveLiabilitiesSummary(liabilities, summaryBlock)}
-      <section aria-label={$t.liabilities.metricsAria}>
-        <SummaryStrip metrics={buildMetrics(summaryDataBlock.accounts, $t)} />
-        {#if usesEstimatedCredit}
-          <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
-            {$t.overview.creditCardEstimateBasis}
-          </p>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+      <PageTotalCard
+        label={$t.liabilities.total(summaryInput.accounts.length)}
+        ariaLabel={$t.liabilities.metricsAria}
+        goodWhen="down"
+        total={summary.state === "ready" ? summary.total : null}
+        trailing={summary.state === "ready" ? summary.trailing : null}
+        notes={[
+          summary.state === "ready" && summary.unconvertedCurrencies.length > 0
+            ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
+            : "",
+          usesEstimatedCredit ? $t.overview.creditCardEstimateBasis : "",
+        ].filter(Boolean)}
+      >
+        {#if summary.state === "ready"}
+          {#each summary.payments as payment (payment.account.id)}
+            <SummaryTile
+              color={CARD_COLOR}
+              head={paymentHead(payment, $t)}
+              urgent={payment.kind === "statement" && payment.daysUntil <= DUE_SOON_DAYS}
+              approx={payment.kind === "card-estimate"}
+              value={paymentAmount(payment)}
+              sub={accountShort(payment.account, $t)}
+              subTitle={localizeAccount(payment.account, $t).label}
+              share={payment.share}
+            />
+          {/each}
+          {#if summary.utilization}
+            <SummaryTile
+              color={CARD_COLOR}
+              head={$t.liabilities.utilization}
+              value={formatShare(summary.utilization.ratio, $locale)}
+              sub={`${formatTwdNumber(summary.utilization.used, $locale)} / ${formatTwdNumber(summary.utilization.limit, $locale)}`}
+              subSensitive
+              share={summary.utilization.ratio}
+            />
+          {/if}
         {/if}
-      </section>
+      </PageTotalCard>
     </ProgressiveBlock>
 
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
@@ -235,6 +237,7 @@
         bind:filter={accountFilter}
         transactionsByAccount={listDataBlock.transactionsByAccount}
         dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
+        shares={summary.state === "ready" ? summary.shares : new Map()}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>
@@ -254,22 +257,10 @@
           bind:filter={marginFilter}
           transactionsByAccount={detailsDataBlock.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+          shares={marginShares(detailsDataBlock.marginAccounts)}
         />
         </section>
       {/if}
     </ProgressiveBlock>
   </div>
 </DashboardShell>
-
-<style>
-  .balance-basis {
-    margin: 0 0 var(--space-6);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-soft);
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 400;
-  }
-</style>
