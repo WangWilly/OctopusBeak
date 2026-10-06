@@ -6,9 +6,14 @@ const forceTextSource = await readFile(new URL("./ForceText.svelte", import.meta
 const welcomeSource = await readFile(new URL("./FirstRunWelcome.svelte", import.meta.url), "utf8");
 const arrowSource = await readFile(new URL("./assets/curved-arrow-animation.svg", import.meta.url), "utf8");
 
-test("ForceText keeps particles legible and strongly separated", () => {
-  assert.match(forceTextSource, /forceCollide<[^>]+>\(2\)\.strength\(1\)/);
-  assert.match(forceTextSource, /<circle[^>]+r=\"2\"/);
+test("ForceText spells the heading with particles alone", () => {
+  // No solid text is layered over the particles; the lattice itself must read as the word.
+  assert.doesNotMatch(forceTextSource, /<text\b/);
+  assert.doesNotMatch(forceTextSource, /fillText/);
+  // Ambient drift stays under the 3px lattice spacing so strokes never blur together.
+  for (const match of forceTextSource.matchAll(/Math\.(?:sin|cos)\([^)]*\)\s*\*\s*([\d.]+)/g)) {
+    assert.ok(Number(match[1]) < 1.5, `drift ${match[1]} exceeds half the lattice spacing`);
+  }
 });
 
 test("slide 2 uses the supplied static curved arrow", () => {

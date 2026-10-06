@@ -1,36 +1,39 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import {
+    Archive,
+    ArrowLeft,
+    ArrowRight,
+    CalendarRange,
+    ChartLine,
+    Coins,
+    History,
+    ListFilter,
+    LockKeyhole,
+    ReceiptText,
+    RefreshCw,
+    Scale,
+    Tags,
+    ToggleRight,
+  } from "@lucide/svelte";
 
+  import cathayLogo from "../../../site/assets/logos/cathay.webp";
+  import ctbcLogo from "../../../site/assets/logos/ctbc.webp";
+  import einvoiceLogo from "../../../site/assets/logos/einvoice.webp";
+  import esunLogo from "../../../site/assets/logos/esun.webp";
+  import fubonLogo from "../../../site/assets/logos/fubon.webp";
+  import hncbLogo from "../../../site/assets/logos/hncb.webp";
+  import linebankLogo from "../../../site/assets/logos/linebank.webp";
+  import postLogo from "../../../site/assets/logos/post.webp";
+  import sinopacLogo from "../../../site/assets/logos/sinopac.webp";
+  import yuantaLogo from "../../../site/assets/logos/yuanta-bank.webp";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import appIcon from "./assets/app-icon.png";
   import curvedArrow from "./assets/curved-arrow-animation.svg";
   import inkBackground from "./assets/ink-background.png";
-  import iconOverview from "./assets/icons/01-overview.png";
-  import iconAssets from "./assets/icons/04-asset.png";
-  import iconSpending from "./assets/icons/08-spending.png";
-  import iconCredentials from "./assets/icons/11-credential-settings.png";
-  import overviewEn from "./assets/screenshots/01-overview.en.png";
-  import overviewZh from "./assets/screenshots/01-overview.zh-TW.png";
-  import netChangeEn from "./assets/screenshots/02-overview-net-change.en.png";
-  import netChangeZh from "./assets/screenshots/02-overview-net-change.zh-TW.png";
-  import portfolioEn from "./assets/screenshots/03-overview-portfolio-flow.en.png";
-  import portfolioZh from "./assets/screenshots/03-overview-portfolio-flow.zh-TW.png";
-  import assetsEn from "./assets/screenshots/04-asset.en.png";
-  import assetsZh from "./assets/screenshots/04-asset.zh-TW.png";
-  import tradesEn from "./assets/screenshots/05-asset-brokerage-trades.en.png";
-  import tradesZh from "./assets/screenshots/05-asset-brokerage-trades.zh-TW.png";
-  import positionsEn from "./assets/screenshots/06-asset-brokerage-positions.en.png";
-  import positionsZh from "./assets/screenshots/06-asset-brokerage-positions.zh-TW.png";
-  import liabilitiesEn from "./assets/screenshots/07-liability-changes.en.png";
-  import liabilitiesZh from "./assets/screenshots/07-liability-changes.zh-TW.png";
-  import spendingEn from "./assets/screenshots/08-spending.en.png";
-  import spendingZh from "./assets/screenshots/08-spending.zh-TW.png";
-  import receiptListEn from "./assets/screenshots/09-receipt-list.en.png";
-  import receiptListZh from "./assets/screenshots/09-receipt-list.zh-TW.png";
-  import receiptDetailEn from "./assets/screenshots/10-receipt-detail.en.png";
-  import receiptDetailZh from "./assets/screenshots/10-receipt-detail.zh-TW.png";
-  import credentialsEn from "./assets/screenshots/11-credential-settings.en.png";
-  import credentialsZh from "./assets/screenshots/11-credential-settings.zh-TW.png";
+  import overviewScreen from "./assets/screenshots/01-overview.png";
+  import assetsScreen from "./assets/screenshots/04-asset.png";
+  import spendingScreen from "./assets/screenshots/08-spending.png";
   import ForceText from "./ForceText.svelte";
   import {
     reduceFirstRunWelcome,
@@ -42,15 +45,29 @@
   export let onStateChange: (next: FirstRunWelcomeState) => void;
   export let onComplete: (choice: "start" | "later") => void;
 
-  type ProductSlide = {
-    number: 3 | 4 | 5 | 6;
-    title: string;
-    body: string;
-    note?: string;
-    icon: string;
-    main: string;
-    foreground: string[];
-  };
+  type TourSlide = 3 | 4 | 5;
+
+  const STAGE_WIDTH = 1440;
+  const STAGE_HEIGHT = 900;
+  const HERO_SCREENS = { 3: overviewScreen, 4: assetsScreen, 5: spendingScreen } as const;
+  const TOUR_ICONS = {
+    3: [Scale, Coins, ChartLine],
+    4: [Archive, ListFilter, History],
+    5: [ReceiptText, Tags, CalendarRange],
+  } as const;
+  const AUTOMATION_ICONS = [LockKeyhole, RefreshCw, ToggleRight];
+  const INSTITUTIONS = [
+    { name: "Taipei Fubon Bank", logo: fubonLogo },
+    { name: "E.SUN Bank", logo: esunLogo },
+    { name: "Cathay United Bank", logo: cathayLogo },
+    { name: "CTBC Bank", logo: ctbcLogo },
+    { name: "Bank SinoPac", logo: sinopacLogo },
+    { name: "Hua Nan Bank", logo: hncbLogo },
+    { name: "Yuanta Bank", logo: yuantaLogo },
+    { name: "LINE Bank", logo: linebankLogo },
+    { name: "Chunghwa Post", logo: postLogo },
+    { name: "E-Invoice Platform", logo: einvoiceLogo },
+  ];
 
   let root: HTMLElement;
   let introductionIcon: HTMLButtonElement;
@@ -69,50 +86,19 @@
   let completeTimer: ReturnType<typeof setTimeout> | undefined;
   let motionQuery: MediaQueryList | undefined;
 
-  $: currentSlide = state.currentSlide;
-  $: slide = currentSlide >= 3 ? productSlide(currentSlide as 3 | 4 | 5 | 6, $locale) : null;
-  $: progressText = $t.firstRunWelcome.progress(currentSlide, 6);
+  let viewportWidth = STAGE_WIDTH;
+  let viewportHeight = STAGE_HEIGHT;
 
-  function productSlide(number: 3 | 4 | 5 | 6, language: Locale): ProductSlide {
-    const localized = language === "zh-TW";
-    if (number === 3) return {
-      number,
-      title: $t.firstRunWelcome.overviewTitle,
-      body: $t.firstRunWelcome.overviewBody,
-      icon: iconOverview,
-      main: localized ? overviewZh : overviewEn,
-      foreground: [localized ? netChangeZh : netChangeEn, localized ? portfolioZh : portfolioEn],
-    };
-    if (number === 4) return {
-      number,
-      title: $t.firstRunWelcome.assetsTitle,
-      body: $t.firstRunWelcome.assetsBody,
-      icon: iconAssets,
-      main: localized ? assetsZh : assetsEn,
-      foreground: [
-        localized ? tradesZh : tradesEn,
-        localized ? positionsZh : positionsEn,
-        localized ? liabilitiesZh : liabilitiesEn,
-      ],
-    };
-    if (number === 5) return {
-      number,
-      title: $t.firstRunWelcome.spendingTitle,
-      body: $t.firstRunWelcome.spendingBody,
-      icon: iconSpending,
-      main: localized ? spendingZh : spendingEn,
-      foreground: [localized ? receiptListZh : receiptListEn, localized ? receiptDetailZh : receiptDetailEn],
-    };
-    return {
-      number,
-      title: $t.firstRunWelcome.automationTitle,
-      body: $t.firstRunWelcome.automationBody,
-      note: $t.firstRunWelcome.credentialsNote,
-      icon: iconCredentials,
-      main: localized ? credentialsZh : credentialsEn,
-      foreground: [],
-    };
-  }
+  $: currentSlide = state.currentSlide;
+  $: tourSlide = currentSlide >= 3 && currentSlide <= 5 ? currentSlide as TourSlide : null;
+  $: tour = tourSlide ? $t.firstRunWelcome.tour[tourSlide - 3] : null;
+  $: progressText = $t.firstRunWelcome.progress(currentSlide, 6);
+  // The tour is composed on a fixed 1440x900 stage; below the floor the hero
+  // window bleeds off the right edge instead of shrinking the copy further.
+  $: stageScale = Math.min(1.25, Math.max(0.78, Math.min(
+    viewportWidth / STAGE_WIDTH,
+    viewportHeight / STAGE_HEIGHT,
+  )));
 
   function requestTransition(action: FirstRunWelcomeAction, duration = 320) {
     if (transitionLocked) return;
@@ -188,6 +174,10 @@
     root?.querySelector<HTMLElement>(`[data-slide="${nextSlide}"] [data-focus-default]`)?.focus();
   }
 
+  function skipIntroduction() {
+    requestTransition({ type: "skip-introduction" });
+  }
+
   function navigate(nextDirection: "forward" | "backward") {
     if (nextDirection === "backward") requestTransition({ type: "previous" });
     else requestTransition({ type: "next" });
@@ -243,30 +233,38 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} bind:innerWidth={viewportWidth} bind:innerHeight={viewportHeight} />
+
+{#snippet stepProgress(step: number)}
+  <div class="step-progress" aria-hidden="true">
+    <span class="step-count">{String(step).padStart(2, "0")} / 06</span>
+    <span class="step-bars">
+      {#each [1, 2, 3, 4, 5, 6] as item}<span class:filled={item <= step}></span>{/each}
+    </span>
+  </div>
+{/snippet}
 
 <main
   class="welcome"
   class:transitioning={transitionLocked}
   class:backward={direction === "backward"}
   class:reduced-motion={reducedMotion}
+  class:latin={$locale === "en"}
+  style={`--ink-background:url(${inkBackground});--stage-scale:${stageScale}`}
   bind:this={root}
   onpointermove={handlePointerMove}
   onwheel={handleWheel}
 >
   <div class="window-drag-region" aria-hidden="true"></div>
-  <div class="progress" aria-hidden="true">
-    {#each [1, 2, 3, 4, 5, 6] as item}<span class:active={item === currentSlide}></span>{/each}
-  </div>
+  {#if currentSlide <= 2}
+    <div class="progress" aria-hidden="true">
+      {#each [1, 2, 3, 4, 5, 6] as item}<span class:active={item === currentSlide}></span>{/each}
+    </div>
+  {/if}
   <span class="visually-hidden" aria-live="polite">{progressText}</span>
 
   {#if currentSlide === 1}
-    <section
-      class="intro-slide language-slide"
-      data-slide="1"
-      style={`--ink-background:url(${inkBackground})`}
-      aria-labelledby="welcome-language-heading"
-    >
+    <section class="intro-slide language-slide" data-slide="1" aria-labelledby="welcome-language-heading">
       <div id="welcome-language-heading" class="force-heading">
         <ForceText text={$t.firstRunWelcome.languageHeading} {reducedMotion} />
       </div>
@@ -296,19 +294,14 @@
           onclick={confirmLanguage}
         >
           {$t.firstRunWelcome.continue}
-          <span aria-hidden="true">→</span>
+          <ArrowRight size={18} aria-hidden="true" />
         </button>
       {/if}
     </section>
   {:else if currentSlide === 2}
-    <section
-      class="intro-slide introduction-slide"
-      data-slide="2"
-      style={`--ink-background:url(${inkBackground})`}
-      aria-labelledby="welcome-introduction-heading"
-    >
+    <section class="intro-slide introduction-slide" data-slide="2" aria-labelledby="welcome-introduction-heading">
       <button class="intro-back" data-focus-default type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
-        <span aria-hidden="true">←</span>
+        <ArrowLeft size={18} aria-hidden="true" />
       </button>
       <button bind:this={introductionIcon} class="introduction-icon app-icon-shell" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
         <img src={appIcon} alt="" aria-hidden="true" draggable="false" />
@@ -319,32 +312,89 @@
       </div>
       <img class="icon-arrow" src={curvedArrow} alt="" aria-hidden="true" draggable="false" />
     </section>
-  {:else if slide}
-    <section class="product-slide" data-slide={slide.number} aria-labelledby={`welcome-slide-${slide.number}-heading`}>
-      <div class="screenshots" aria-hidden="true">
-        <img class="main-screenshot" src={slide.main} alt="" draggable="false" />
-        {#each slide.foreground as foreground, index}
-          <img class={`foreground foreground-${index + 1}`} src={foreground} alt="" draggable="false" />
-        {/each}
-      </div>
-      <div class="copy-region" style={`--feature-mask:url(${slide.icon})`}>
-        <div class="feature-mask" aria-hidden="true"></div>
-        <div class="copy">
-          <h1 id={`welcome-slide-${slide.number}-heading`} data-focus-default tabindex="-1">{slide.title}</h1>
-          <p>{slide.body}</p>
-          {#if slide.note}<p class="credential-note">{slide.note}</p>{/if}
-          {#if slide.number === 6}
-            <div class="final-actions">
-              <button class="primary-action" type="button" onclick={() => chooseAutomation("start")}>{$t.firstRunWelcome.startSetup}</button>
-              <button class="secondary-action" type="button" onclick={() => chooseAutomation("later")}>{$t.firstRunWelcome.maybeLater}</button>
-            </div>
-          {/if}
+  {:else if tourSlide && tour}
+    <section class="stage-slide tour-slide" data-slide={tourSlide} aria-labelledby={`welcome-slide-${tourSlide}-heading`}>
+      <div class="stage">
+        <div class="hero-window" aria-hidden="true">
+          <div class="titlebar"><span></span><span></span><span></span></div>
+          <img src={HERO_SCREENS[tourSlide]} alt="" draggable="false" />
         </div>
-        <div class="navigation">
-          <button type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}><span aria-hidden="true">←</span></button>
-          {#if slide.number < 6}
-            <button type="button" aria-label={$t.firstRunWelcome.next} onclick={() => navigate("forward")}><span aria-hidden="true">→</span></button>
-          {/if}
+        <div class="panel">
+          {@render stepProgress(tourSlide)}
+          <h1 id={`welcome-slide-${tourSlide}-heading`} data-focus-default tabindex="-1">{tour.title}</h1>
+          <p class="subtitle">{tour.subtitle}</p>
+          <ul class="features">
+            {#each tour.features as feature, index}
+              {@const Icon = TOUR_ICONS[tourSlide][index]}
+              <li>
+                <span class="feature-icon" aria-hidden="true"><Icon size={20} /></span>
+                <span class="feature-copy">
+                  <strong>{feature.title}</strong>
+                  <span>{feature.body}</span>
+                </span>
+              </li>
+            {/each}
+          </ul>
+          <div class="tour-navigation">
+            <button class="round-button" type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
+              <ArrowLeft size={20} aria-hidden="true" />
+            </button>
+            <button class="pill-button primary" type="button" onclick={() => navigate("forward")}>
+              {$t.firstRunWelcome.next}
+              <ArrowRight size={18} aria-hidden="true" />
+            </button>
+            <button class="skip-button" type="button" onclick={skipIntroduction}>{$t.firstRunWelcome.skipIntroduction}</button>
+          </div>
+        </div>
+        <div class="callout" aria-hidden="true">
+          <img src={appIcon} alt="" draggable="false" />
+          <span>
+            <span class="callout-label">{tour.callout.label}</span>
+            <strong>{tour.callout.value}</strong>
+            <span class="callout-detail">{tour.callout.detail}</span>
+          </span>
+        </div>
+      </div>
+    </section>
+  {:else if currentSlide === 6}
+    <section class="stage-slide automation-slide" data-slide="6" aria-labelledby="welcome-slide-6-heading">
+      <div class="stage">
+        <div class="automation-progress">{@render stepProgress(6)}</div>
+        <div class="automation-mascot app-icon-shell" aria-hidden="true">
+          <img src={appIcon} alt="" draggable="false" />
+        </div>
+        <h1 id="welcome-slide-6-heading" data-focus-default tabindex="-1">{$t.firstRunWelcome.automationTitle}</h1>
+        <p class="subtitle">{$t.firstRunWelcome.automationBody}</p>
+        <div class="trust-card">
+          <ul class="highlights">
+            {#each $t.firstRunWelcome.automationHighlights as highlight, index}
+              {@const Icon = AUTOMATION_ICONS[index]}
+              <li>
+                <span class="feature-icon" aria-hidden="true"><Icon size={20} /></span>
+                <strong>{highlight.title}</strong>
+                <span>{highlight.body}</span>
+              </li>
+            {/each}
+          </ul>
+          <div class="institutions">
+            <span class="institutions-label">{$t.firstRunWelcome.supportedInstitutions}</span>
+            <ul>
+              {#each INSTITUTIONS as institution}
+                <li><img src={institution.logo} alt={institution.name} title={institution.name} draggable="false" /></li>
+              {/each}
+            </ul>
+            <span class="institutions-more">{$t.firstRunWelcome.moreInstitutions}</span>
+          </div>
+        </div>
+        <div class="final-actions">
+          <button class="round-button" type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
+            <ArrowLeft size={20} aria-hidden="true" />
+          </button>
+          <button class="pill-button primary" type="button" onclick={() => chooseAutomation("start")}>
+            {$t.firstRunWelcome.startSetup}
+            <ArrowRight size={18} aria-hidden="true" />
+          </button>
+          <button class="pill-button secondary" type="button" onclick={() => chooseAutomation("later")}>{$t.firstRunWelcome.maybeLater}</button>
         </div>
       </div>
     </section>
@@ -372,7 +422,7 @@
     inset: 0;
     overflow: hidden;
     color: var(--deep-blue);
-    background: #edf4f1;
+    background: #edf4f1 var(--ink-background) center / cover no-repeat;
     font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     touch-action: auto;
   }
@@ -418,16 +468,6 @@
     background: var(--deep-blue);
   }
 
-  .product-slide {
-    position: absolute;
-    inset: 0;
-    animation: slide-in 320ms cubic-bezier(.2, .8, .2, 1) both;
-  }
-
-  .backward .product-slide {
-    animation-name: slide-in-back;
-  }
-
   .intro-slide {
     position: absolute;
     inset: 0;
@@ -438,9 +478,6 @@
     justify-content: center;
     box-sizing: border-box;
     padding: 54px 28px 36px;
-    background-image: var(--ink-background);
-    background-position: center;
-    background-size: cover;
   }
 
   .force-heading {
@@ -620,173 +657,441 @@
     cursor: pointer;
   }
 
-  .product-slide {
-    display: grid;
-    grid-template-columns: minmax(0, 62fr) minmax(340px, 38fr);
-    background: linear-gradient(135deg, #e7f0ec 0%, #f5f7f4 58%, #dcebe6 100%);
+  .stage-slide {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    animation: slide-in 320ms cubic-bezier(.2, .8, .2, 1) both;
   }
 
-  .screenshots {
-    position: relative;
-    display: grid;
-    min-width: 0;
-    padding: clamp(72px, 9vh, 108px) clamp(32px, 4vw, 72px) clamp(50px, 7vh, 82px);
-    place-items: center;
-    perspective: 1400px;
+  .backward .stage-slide {
+    animation-name: slide-in-back;
   }
 
-  .main-screenshot {
-    display: block;
-    width: min(100%, 980px);
-    max-height: 76vh;
-    border: 1px solid rgb(7 31 74 / 10%);
-    border-radius: 22px;
-    object-fit: contain;
-    box-shadow: 0 32px 80px rgb(7 31 74 / 18%);
+  .stage {
+    position: absolute;
+    top: 50%;
+    left: max(0px, calc((100% - 1440px * var(--stage-scale)) / 2));
+    width: 1440px;
+    height: 900px;
+    transform: translateY(-50%) scale(var(--stage-scale));
+    transform-origin: 0 50%;
+  }
+
+  .tour-slide {
+    background: linear-gradient(90deg, rgb(7 31 74 / 35%) 0%, rgb(7 31 74 / 0%) 55%);
+  }
+
+  .automation-slide {
+    background: radial-gradient(ellipse 55% 60% at 50% 50%, rgb(255 255 255 / 85%) 0%, rgb(255 255 255 / 45%) 50%, rgb(255 255 255 / 0%) 100%);
+  }
+
+  .step-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .step-count {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+
+  .step-bars {
+    display: flex;
+    flex: 1;
+    gap: 6px;
+  }
+
+  .step-bars span {
+    flex: 1;
+    height: 4px;
+    border-radius: 999px;
+    background: rgb(7 31 74 / 12%);
+  }
+
+  .step-bars span.filled {
+    background: var(--deep-blue);
+  }
+
+  .hero-window {
+    position: absolute;
+    top: 143px;
+    left: 600px;
+    display: flex;
+    flex-direction: column;
+    width: 920px;
+    height: 614.5px;
+    overflow: hidden;
+    border-radius: 14px;
+    background: white;
+    outline: 1px solid rgb(255 255 255 / 60%);
+    box-shadow: 0 32px 80px rgb(7 31 74 / 35%);
     transform: translate(var(--parallax-x), var(--parallax-y));
     transition: transform 180ms ease-out;
+  }
+
+  .titlebar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    height: 33.5px;
+    padding: 0 14px;
+    border-bottom: 1px solid #dbdee2;
+    background: #eef1f4;
+  }
+
+  .titlebar span {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ff5f57;
+  }
+
+  .titlebar span:nth-child(2) {
+    background: #febc2e;
+  }
+
+  .titlebar span:nth-child(3) {
+    background: #28c840;
+  }
+
+  .hero-window img {
+    display: block;
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    object-fit: cover;
+    object-position: left top;
     user-select: none;
     -webkit-user-drag: none;
   }
 
-  .foreground {
+  .panel {
     position: absolute;
-    width: clamp(190px, 24vw, 380px);
-    max-height: 32vh;
-    border: 1px solid rgb(255 255 255 / 72%);
-    border-radius: 17px;
-    object-fit: contain;
-    box-shadow: 0 20px 50px rgb(7 31 74 / 24%);
-    transition: transform 180ms ease-out;
+    top: 130px;
+    left: 72px;
+    box-sizing: border-box;
+    width: 500px;
+    padding: 48px;
+    border-radius: 28px;
+    background: rgb(255 255 255 / 90%);
+    outline: 1px solid white;
+    box-shadow: 0 24px 64px rgb(7 31 74 / 20%);
+    backdrop-filter: blur(12px);
   }
 
-  .foreground-1 {
-    right: 3.5%;
-    bottom: 7%;
-    transform: translate(calc(var(--parallax-x) * -1.25), calc(var(--parallax-y) * -1.25)) rotate(1.5deg);
+  .panel h1,
+  .automation-slide h1 {
+    margin: 56px 0 0;
+    font-size: 56px;
+    line-height: 64px;
+    letter-spacing: 2px;
   }
 
-  .foreground-2 {
-    left: 3.5%;
-    top: 16%;
-    transform: translate(calc(var(--parallax-x) * -1), calc(var(--parallax-y) * -1)) rotate(-1.2deg);
+  .latin .panel h1 {
+    font-size: 48px;
+    line-height: 53px;
+    letter-spacing: -0.5px;
   }
 
-  .foreground-3 {
-    left: 8%;
-    bottom: 4%;
-    width: clamp(170px, 20vw, 310px);
-    transform: translate(calc(var(--parallax-x) * -.8), calc(var(--parallax-y) * -.8)) rotate(-.5deg);
+  .latin.welcome .automation-slide h1 {
+    letter-spacing: -1px;
   }
 
-  .copy-region {
-    position: relative;
-    display: grid;
-    min-width: 0;
-    padding: clamp(82px, 13vh, 142px) clamp(34px, 5vw, 78px) 104px;
-    align-items: center;
-    overflow: hidden;
-    isolation: isolate;
-  }
-
-  .feature-mask {
-    position: absolute;
-    z-index: -1;
-    top: 7%;
-    right: -28%;
-    width: min(48vw, 620px);
-    aspect-ratio: 1;
-    opacity: .16;
-    background: linear-gradient(145deg, #0a4b9f 12%, #13b9a5 85%);
-    mask: var(--feature-mask) center / contain no-repeat;
-    -webkit-mask: var(--feature-mask) center / contain no-repeat;
-  }
-
-  .copy {
-    position: relative;
-    z-index: 1;
-  }
-
-  .copy h1 {
-    max-width: 560px;
-    margin: 0;
-    font-size: clamp(2.25rem, 4.1vw, 5.3rem);
-    line-height: .98;
-    letter-spacing: -.065em;
-  }
-
-  .copy > p {
-    max-width: 500px;
-    margin: 24px 0 0;
+  .subtitle {
+    margin: 12px 0 0;
     color: rgb(7 31 74 / 72%);
-    font-size: clamp(1.05rem, 1.5vw, 1.5rem);
-    line-height: 1.55;
+    font-size: 20px;
   }
 
-  .copy p.credential-note {
-    margin-top: 16px;
-    color: rgb(7 31 74 / 58%);
-    font-size: .92rem;
+  .features,
+  .highlights,
+  .institutions ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .features {
+    display: grid;
+    gap: 24px;
+    margin-top: 40px;
+    padding-top: 28px;
+    border-top: 1px solid rgb(7 31 74 / 12%);
+  }
+
+  .features li {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .feature-icon {
+    display: grid;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: rgb(7 31 74 / 6%);
+    place-items: center;
+  }
+
+  .feature-copy {
+    display: grid;
+    gap: 4px;
+  }
+
+  .features strong,
+  .highlights strong {
+    font-size: 16px;
+  }
+
+  .feature-copy span {
+    color: rgb(7 31 74 / 60%);
+    font-size: 14px;
+    line-height: 21px;
+  }
+
+  .tour-navigation {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 56px;
+  }
+
+  .round-button,
+  .pill-button,
+  .skip-button {
+    color: var(--deep-blue);
+    font: inherit;
     font-weight: 700;
+    cursor: pointer;
+  }
+
+  .round-button {
+    display: grid;
+    width: 52px;
+    height: 52px;
+    padding: 0;
+    border: 1px solid rgb(7 31 74 / 20%);
+    border-radius: 50%;
+    background: transparent;
+    place-items: center;
+  }
+
+  .pill-button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    padding: 0 24px 0 28px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 15px;
+  }
+
+  .pill-button.primary {
+    color: white;
+    background: var(--deep-blue);
+  }
+
+  .skip-button {
+    margin-left: auto;
+    padding: 8px 0;
+    border: 0;
+    color: rgb(7 31 74 / 60%);
+    background: none;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .callout {
+    position: absolute;
+    top: 676px;
+    left: 1000px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 22px 14px 14px;
+    border-radius: 20px;
+    background: rgb(255 255 255 / 92%);
+    outline: 1px solid white;
+    box-shadow: 0 20px 48px rgb(7 31 74 / 24%);
+    backdrop-filter: blur(10px);
+    transform: translate(calc(var(--parallax-x) * -1.25), calc(var(--parallax-y) * -1.25));
+    transition: transform 180ms ease-out;
+    white-space: nowrap;
+  }
+
+  .callout img {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+  }
+
+  .callout > span {
+    display: grid;
+    gap: 2px;
+  }
+
+  .callout strong {
+    font-family: var(--font-mono);
+    font-size: 22px;
+  }
+
+  .callout-label,
+  .callout-detail {
+    color: rgb(7 31 74 / 60%);
+    font-size: 12px;
+  }
+
+  .callout-label {
+    font-weight: 600;
+  }
+
+  .automation-slide .stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .automation-progress {
+    position: absolute;
+    top: 48px;
+    left: 560px;
+    width: 320px;
+  }
+
+  .automation-mascot {
+    width: 132px;
+    height: 132px;
+    border-radius: 32px;
+    filter: drop-shadow(0 24px 56px rgb(7 31 74 / 25%));
+  }
+
+  .automation-slide h1 {
+    margin-top: 36px;
+    font-size: 64px;
+    line-height: normal;
+  }
+
+  .trust-card {
+    width: 860px;
+    margin-top: 40px;
+    overflow: hidden;
+    border-radius: 24px;
+    background: rgb(255 255 255 / 90%);
+    outline: 1px solid white;
+    box-shadow: 0 24px 64px rgb(7 31 74 / 18%);
+    backdrop-filter: blur(12px);
+    text-align: left;
+  }
+
+  .highlights {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    padding: 28px 8px;
+  }
+
+  .highlights li {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 0 24px;
+  }
+
+  .highlights li + li {
+    border-left: 1px solid rgb(7 31 74 / 10%);
+  }
+
+  .highlights span:not(.feature-icon) {
+    color: rgb(7 31 74 / 60%);
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  .institutions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 18px 32px;
+    border-top: 1px solid rgb(7 31 74 / 8%);
+    background: rgb(7 31 74 / 3%);
+    color: rgb(7 31 74 / 60%);
+    font-size: 12px;
+  }
+
+  .institutions-label {
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  .institutions ul {
+    display: flex;
+    gap: 8px;
+  }
+
+  .institutions li {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: white;
+    outline: 1px solid rgb(7 31 74 / 8%);
+    box-shadow: 0 2px 6px rgb(7 31 74 / 8%);
+    place-items: center;
+  }
+
+  .institutions img {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
   }
 
   .final-actions {
     display: flex;
-    flex-wrap: wrap;
     gap: 12px;
-    margin-top: 34px;
+    margin-top: 40px;
   }
 
-  .final-actions button {
-    min-height: 50px;
-    padding: 0 22px;
-    border-radius: 15px;
-    font: inherit;
-    font-weight: 750;
-    cursor: pointer;
+  .final-actions .round-button {
+    width: 56px;
+    height: 56px;
+    background: rgb(255 255 255 / 70%);
   }
 
-  .primary-action {
-    border: 1px solid var(--deep-blue);
-    color: white;
-    background: var(--deep-blue);
-    box-shadow: 0 12px 28px rgb(7 31 74 / 22%);
+  .final-actions .pill-button {
+    height: 56px;
+    padding: 0 28px 0 32px;
+    font-size: 16px;
   }
 
-  .secondary-action {
-    border: 1px solid rgb(7 31 74 / 20%);
-    color: var(--deep-blue);
-    background: rgb(255 255 255 / 60%);
+  .final-actions .pill-button.primary {
+    box-shadow: 0 12px 28px rgb(7 31 74 / 30%);
   }
 
-  .navigation {
-    position: absolute;
-    z-index: 2;
-    right: clamp(34px, 5vw, 78px);
-    bottom: 32px;
-    left: clamp(34px, 5vw, 78px);
-    display: flex;
-    justify-content: space-between;
+  .final-actions .pill-button.secondary {
+    padding: 0 28px;
+    border-color: rgb(7 31 74 / 15%);
+    background: rgb(255 255 255 / 80%);
   }
 
-  .navigation button {
-    display: grid;
-    width: 48px;
-    height: 48px;
-    border: 1px solid rgb(7 31 74 / 18%);
-    border-radius: 50%;
-    color: var(--deep-blue);
-    background: rgb(255 255 255 / 62%);
-    font-size: 1.35rem;
-    place-items: center;
-    cursor: pointer;
-    backdrop-filter: blur(10px);
-  }
-
-  button:focus-visible,
-  [tabindex="-1"]:focus-visible {
+  button:focus-visible {
     outline: 3px solid #20a9ae;
     outline-offset: 4px;
+  }
+
+  [tabindex="-1"]:focus {
+    outline: none;
   }
 
   .circle-cover {
@@ -828,65 +1133,6 @@
     to { transform: translate(-50%, -50%) scale(160); opacity: 0; }
   }
 
-  @media (max-width: 850px) {
-    .product-slide {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(250px, 43fr) minmax(0, 57fr);
-    }
-
-    .copy-region {
-      grid-row: 1;
-      padding: 64px 28px 70px;
-    }
-
-    .screenshots {
-      grid-row: 2;
-      padding: 22px 28px 36px;
-    }
-
-    .copy h1 {
-      font-size: clamp(2rem, 8vw, 3.7rem);
-    }
-
-    .copy > p {
-      margin-top: 12px;
-      font-size: 1rem;
-    }
-
-    .final-actions {
-      margin-top: 18px;
-    }
-
-    .feature-mask {
-      top: -55%;
-      right: -8%;
-      width: 70vw;
-    }
-
-    .navigation {
-      right: 28px;
-      bottom: 14px;
-      left: 28px;
-    }
-
-    .navigation button {
-      width: 42px;
-      height: 42px;
-    }
-
-    .main-screenshot {
-      width: min(100%, 720px);
-      max-height: 46vh;
-      border-radius: 14px;
-    }
-
-    .foreground {
-      width: min(42vw, 260px);
-      max-height: 20vh;
-      border-radius: 10px;
-    }
-  }
-
   @media (max-width: 520px) {
     .language-options {
       width: min(100%, 340px);
@@ -916,12 +1162,12 @@
       transition-duration: 120ms !important;
     }
 
-    .product-slide {
+    .stage-slide {
       animation-name: reduced-fade;
     }
 
-    .main-screenshot,
-    .foreground {
+    .hero-window,
+    .callout {
       transform: none;
     }
 

@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { forceCollide, forceX, forceY, type Simulation } from "d3-force";
-  import { ForceSimulation } from "layerchart/svg";
+  import { forceSimulation, forceX, forceY, type Simulation } from "d3-force";
   import { onDestroy, onMount } from "svelte";
 
   import {
@@ -12,10 +11,14 @@
   export let text: string;
   export let reducedMotion = false;
 
+  const FONT_FAMILY = "Inter, ui-sans-serif, system-ui, sans-serif";
+  const PARTICLE_COLOR = "#071f4a";
+
   let host: HTMLDivElement;
+  let canvas: HTMLCanvasElement;
   let particles: TextParticle[] = [];
+  let latticeSpacing = 3;
   let simulation: Simulation<TextParticle, undefined> | null = null;
-  let stopped = true;
   let coolTimer: ReturnType<typeof setTimeout> | undefined;
   let ambientTimer: ReturnType<typeof setInterval> | undefined;
   let resizeObserver: ResizeObserver | undefined;
@@ -25,19 +28,14 @@
   let rebuildSignature = "";
   let ambientPhase = 0;
 
+  // The drift stays well under the lattice spacing so strokes never blur together.
   function animatedTargetX(datum: TextParticle) {
-    return datum.targetX + Math.sin(ambientPhase + datum.targetY * 0.045) * 1.4;
+    return datum.targetX + Math.sin(ambientPhase + datum.targetY * 0.045) * 0.5;
   }
 
   function animatedTargetY(datum: TextParticle) {
-    return datum.targetY + Math.cos(ambientPhase + datum.targetX * 0.035) * 1.1;
+    return datum.targetY + Math.cos(ambientPhase + datum.targetX * 0.035) * 0.4;
   }
-
-  $: forces = {
-    x: forceX<TextParticle>(animatedTargetX).strength(0.24),
-    y: forceY<TextParticle>(animatedTargetY).strength(0.24),
-    collide: forceCollide<TextParticle>(2).strength(1),
-  };
 
   $: if (mounted && host) {
     const signature = `${text}:${reducedMotion}`;
@@ -48,24 +46,54 @@
   }
 
   function rebuild(width: number, height: number) {
-    if (reducedMotion || typeof document === "undefined") return;
+    if (reducedMotion || typeof document === "undefined" || !canvas) return;
     rasterWidth = Math.max(260, Math.min(720, Math.round(width)));
     rasterHeight = Math.max(120, Math.round(height));
-    particles = rasterizeText(text, {
+    const pixelRatio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rasterWidth * pixelRatio);
+    canvas.height = Math.round(rasterHeight * pixelRatio);
+    ({ spacing: latticeSpacing, particles } = rasterizeText(text, {
       width: rasterWidth,
       height: rasterHeight,
-      font: `800 ${Math.round(rasterHeight * 0.82)}px Inter, ui-sans-serif, system-ui, sans-serif`,
-      maxPoints: Math.min(
-        text.length > 4 ? 520 : 420,
-        resolveTextParticleBudget(rasterWidth, window.devicePixelRatio),
-      ),
+      fontFamily: FONT_FAMILY,
+      fontWeight: 700,
+      maxPoints: resolveTextParticleBudget(rasterWidth, pixelRatio),
       seed: text === "歡迎" ? 0x6f63747a : 0x6f637465,
-    });
-    stopped = !shouldRun();
-    if (simulation) {
-      simulation.nodes(particles);
-      syncSimulationActivity();
+    }));
+    simulation?.stop();
+    simulation = forceSimulation(particles)
+      .alphaDecay(0.075)
+      .alphaMin(0.015)
+      .velocityDecay(0.38)
+      .force("x", forceX<TextParticle>(animatedTargetX).strength(0.24))
+      .force("y", forceY<TextParticle>(animatedTargetY).strength(0.24))
+      .on("tick", draw)
+      .stop();
+    if (!shouldRun()) {
+      for (const particle of particles) {
+        particle.x = particle.targetX;
+        particle.y = particle.targetY;
+      }
     }
+    draw();
+    syncSimulationActivity();
+  }
+
+  function draw() {
+    const context = canvas?.getContext("2d");
+    if (!context) return;
+    const radius = latticeSpacing * 0.46;
+    context.setTransform(canvas.width / rasterWidth, 0, 0, canvas.height / rasterHeight, 0, 0);
+    context.clearRect(0, 0, rasterWidth, rasterHeight);
+    context.fillStyle = PARTICLE_COLOR;
+    context.beginPath();
+    for (const particle of particles) {
+      const x = particle.x ?? particle.targetX;
+      const y = particle.y ?? particle.targetY;
+      context.moveTo(x + radius, y);
+      context.arc(x, y, radius, 0, Math.PI * 2);
+    }
+    context.fill();
   }
 
   function shouldRun() {
@@ -75,12 +103,10 @@
   function syncSimulationActivity() {
     if (!simulation) return;
     if (shouldRun()) {
-      stopped = false;
       simulation.alpha(Math.max(simulation.alpha(), 0.16)).alphaTarget(0.035).restart();
     } else {
       simulation.alphaTarget(0);
       simulation.stop();
-      stopped = true;
     }
   }
 
@@ -89,7 +115,7 @@
     const rect = host.getBoundingClientRect();
     const x = (event.clientX - rect.left) / rect.width * rasterWidth;
     const y = (event.clientY - rect.top) / rect.height * rasterHeight;
-    for (const particle of simulation.nodes()) {
+    for (const particle of particles) {
       const dx = (particle.x ?? particle.targetX) - x;
       const dy = (particle.y ?? particle.targetY) - y;
       const distance = Math.hypot(dx, dy);
@@ -99,7 +125,6 @@
         particle.vy = (particle.vy ?? 0) + dy / distance * strength;
       }
     }
-    stopped = false;
     simulation.alpha(0.18).alphaTarget(0.03).restart();
     clearTimeout(coolTimer);
     coolTimer = setTimeout(syncSimulationActivity, 220);
@@ -133,9 +158,11 @@
     clearTimeout(coolTimer);
     clearInterval(ambientTimer);
     resizeObserver?.disconnect();
-    window.removeEventListener("focus", syncSimulationActivity);
-    window.removeEventListener("blur", syncSimulationActivity);
-    document.removeEventListener("visibilitychange", syncSimulationActivity);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("focus", syncSimulationActivity);
+      window.removeEventListener("blur", syncSimulationActivity);
+      document.removeEventListener("visibilitychange", syncSimulationActivity);
+    }
     simulation?.stop();
   });
 </script>
@@ -149,29 +176,8 @@
   onpointerleave={syncSimulationActivity}
 >
   <h1 class:particle-heading={!reducedMotion}>{text}</h1>
-  {#if !reducedMotion && particles.length}
-    <div class="particle-layer" aria-hidden="true">
-      <ForceSimulation
-        data={{ nodes: particles }}
-        {forces}
-        {stopped}
-        alphaDecay={0.075}
-        alphaMin={0.015}
-        velocityDecay={0.38}
-        onStart={({ simulation: nextSimulation }) => {
-          simulation = nextSimulation;
-          syncSimulationActivity();
-        }}
-      >
-        {#snippet children({ nodes })}
-          <svg viewBox={`0 0 ${rasterWidth} ${rasterHeight}`} role="presentation">
-            {#each nodes as node}
-              <circle cx={node.x ?? node.targetX} cy={node.y ?? node.targetY} r="2"></circle>
-            {/each}
-          </svg>
-        {/snippet}
-      </ForceSimulation>
-    </div>
+  {#if !reducedMotion}
+    <canvas bind:this={canvas} aria-hidden="true"></canvas>
   {/if}
 </div>
 
@@ -198,16 +204,11 @@
     color: transparent;
   }
 
-  .particle-layer,
-  svg {
+  canvas {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-  }
-
-  circle {
-    fill: #071f4a;
   }
 
   .reduced {
