@@ -20,13 +20,17 @@ assert.match(settingsPageSource, /\{#each timezoneOptions as timezone\}/);
 assert.match(settingsPageSource, /id="settings-save-status"/);
 assert.match(settingsPageSource, /id="update-hour"/);
 assert.match(settingsPageSource, /id="update-minute"/);
-assert.match(settingsPageSource, /id="update-meridiem"/);
+assert.match(settingsPageSource, /const hours = Array\.from\(\{ length: 24 \}/, "the rate time reads in 24-hour form");
+assert.doesNotMatch(settingsPageSource, /meridiem/i);
 assert.match(settingsPageSource, /scheduleSettings/);
 assert.match(settingsPageSource, /languageDisplaySettings/);
 assert.doesNotMatch(settingsPageSource, /type="submit"/);
 assert.doesNotMatch(settingsPageSource, /linear-gradient/);
-assert.doesNotMatch(settingsPageSource, /display-scale-shortcuts kbd/);
 assert.doesNotMatch(settingsPageSource, /function chooseLocale\(value: Locale\) \{[^}]*saveStatus = "success";/);
 assert.doesNotMatch(settingsPageSource, /function changeDisplayScale\(value: number\) \{[^}]*saveStatus = "success";/);
-assert.match(settingsPageSource, /aria-label=\{\$t\.settings\.decreaseScale\}[\s\S]*?disabled=\{\$displayScale <= DISPLAY_SCALE_MIN\}/);
-assert.match(settingsPageSource, /aria-label=\{\$t\.settings\.increaseScale\}[\s\S]*?disabled=\{\$displayScale >= DISPLAY_SCALE_MAX\}/);
+assert.match(settingsPageSource, /type="range"\s+min=\{DISPLAY_SCALE_MIN\}\s+max=\{DISPLAY_SCALE_MAX\}\s+step=\{DISPLAY_SCALE_STEP\}/);
+assert.match(
+  settingsPageSource,
+  /oninput=\{\(event\) => \(draftScale = Number\(event\.currentTarget\.value\)\)\}\s*onchange=\{\(event\) => \{[^}]*changeDisplayScale\(/,
+  "dragging the size slider previews the value and zooms the app only on release",
+);

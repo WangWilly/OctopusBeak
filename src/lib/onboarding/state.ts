@@ -25,7 +25,7 @@ export type OnboardingRun = {
   startToken?: string | null;
 };
 export type OnboardingState = {
-  version: 4;
+  version: 5;
   status: OnboardingStatus;
   phase: OnboardingPhase;
   storyId: OnboardingStoryId;
@@ -37,6 +37,8 @@ export type OnboardingState = {
   /** Readiness evidence accepted before onboarding navigated to Overview. */
   overviewReadiness: OnboardingOverviewReadiness | null;
   error: string | null;
+  /** When the progression completed or exited; null while active or for records from before v5. */
+  endedAt: string | null;
 };
 
 type StorageReader = Pick<Storage, "getItem">;
@@ -64,7 +66,7 @@ export function createOnboardingState(
   progressionId: string = globalThis.crypto?.randomUUID?.() ?? `onboarding-${Date.now()}`,
 ): OnboardingState {
   return {
-    version: 4,
+    version: 5,
     status: "active",
     phase: "setup",
     storyId: ONBOARDING_STORY_ID,
@@ -79,6 +81,7 @@ export function createOnboardingState(
     trackedRun: null,
     overviewReadiness: null,
     error: null,
+    endedAt: null,
   };
 }
 
@@ -165,8 +168,9 @@ export function readOnboardingState(storage: StorageReader = localStorage): Onbo
       const overviewReadiness = (value.overviewReadiness ?? null) as OnboardingOverviewReadiness | null;
       const phase = value.phase as OnboardingPhase;
       return {
-        ...(value as unknown as Omit<OnboardingState, "version" | "storyId" | "storyNodeId">),
-        version: 4,
+        ...(value as unknown as Omit<OnboardingState, "version" | "storyId" | "storyNodeId" | "endedAt">),
+        version: 5,
+        endedAt: null,
         storyId: ONBOARDING_STORY_ID,
         // Legacy state never persisted presentation state. Only lifecycle facts
         // with durable meaning are mapped; setup always returns to the entry.
@@ -174,12 +178,16 @@ export function readOnboardingState(storage: StorageReader = localStorage): Onbo
         overviewReadiness,
       };
     }
-    if (value.version !== 4 || !validCurrentState(value)) return null;
+    if (value.version !== 4 && value.version !== 5) return null;
+    if (!validCurrentState(value) || (value.version === 5 && !isDateOrNull(value.endedAt))) return null;
 
     const storyIsCurrent = value.storyId === ONBOARDING_STORY_ID;
     const nodeIsCurrent = STORY_NODES.includes(value.storyNodeId as OnboardingNodeId);
     return {
       ...(value as unknown as OnboardingState),
+      version: 5,
+      // v4 never recorded when a progression ended.
+      endedAt: value.version === 5 ? value.endedAt as string | null : null,
       // Invalid story metadata resets only guidance. Run identity, readiness,
       // source selection, and lifecycle are retained for safety.
       storyId: ONBOARDING_STORY_ID,
