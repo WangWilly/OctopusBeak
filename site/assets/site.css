@@ -44,6 +44,14 @@
   --panel-inset: clamp(8px, 1.1vw, 16px);
   --panel-radius: clamp(24px, 2.8vw, 40px);
   --nav-height: 60px;
+  --page-zoom: 1;
+}
+
+/* The page reads best at 80% of its drawn size. Phones keep full size so body text stays legible. */
+@media (min-width: 761px) {
+  :root {
+    --page-zoom: 0.8;
+  }
 }
 
 *,
@@ -53,6 +61,7 @@
 }
 
 html {
+  zoom: var(--page-zoom);
   scroll-behavior: smooth;
   scroll-padding-top: 96px;
   -webkit-text-size-adjust: 100%;
@@ -410,7 +419,8 @@ ol {
   position: relative;
   display: grid;
   align-items: center;
-  min-height: max(680px, 100svh);
+  /* Zoom scales viewport units too, so undo it to keep the hero a full screen tall. */
+  min-height: max(680px, 100svh / var(--page-zoom));
   overflow: hidden;
   isolation: isolate;
   border-radius: 0 0 var(--panel-radius) var(--panel-radius);
