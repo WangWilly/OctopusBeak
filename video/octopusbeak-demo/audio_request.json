@@ -1,0 +1,11 @@
+{
+  "provider": "auto",
+  "speed": "1.0",
+  "lines": [],
+  "bgm": {
+    "mode": "retrieve",
+    "query": "calm confident minimal tech underscore, soft piano and warm pads with a light pulse, building gently, clean ending",
+    "blob": "每一筆帳都能自動合併，也點得回出處",
+    "arc": "Hook → Value → Match → Merge → Roll-up → Brand"
+  }
+}
