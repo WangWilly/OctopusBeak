@@ -8,6 +8,7 @@
   import { formatUtcDate } from "$lib/time/timezone.ts";
   import {
     selectStackedBalanceChartSeries,
+    stackedBalanceChartState,
     type StackedBalanceChartData,
   } from "./stacked-balance-chart-data.ts";
 
@@ -27,6 +28,7 @@
     lastSignature = chart.signature;
     resetYRange();
   }
+  $: chartState = stackedBalanceChartState(chart);
   $: visibleChart = selectStackedBalanceChartSeries(chart, selectedSeriesKeys);
   $: isSingleSeriesSelected = selectedSeriesKeys.length === 1;
   $: selectedKeySet = new Set(selectedSeriesKeys);
@@ -119,7 +121,7 @@
   }
 </script>
 
-{#if chart.series.length > 0}
+{#if chartState === "trend"}
   <div class="stacked-balance-chart">
     <div class="stacked-balance-controls">
       {#if hasYRange}
@@ -202,6 +204,10 @@
         </button>
       {/each}
     </div>
+  </div>
+{:else if chartState === "single-day"}
+  <div class="sparkline-empty compact" role="img" aria-label={ariaLabel}>
+    {$t.chart.singleDay(chart.totals[0]?.dateLabel ?? "")}
   </div>
 {:else}
   <div class="sparkline-empty compact" role="img" aria-label={ariaLabel}>
