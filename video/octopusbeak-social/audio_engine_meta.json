@@ -1,0 +1,167 @@
+{
+  "tts_provider": null,
+  "voice_id": null,
+  "bgm": {
+    "path": "assets/bgm/track.mp3",
+    "volume": 0.9,
+    "query": "upbeat confident minimal tech pop, light percussion and plucked synth, clear pulse around 110 bpm, social promo energy, clean ending",
+    "mode": "retrieve",
+    "duration_s": 30
+  },
+  "bgm_pending": false,
+  "bgm_provider": "heygen",
+  "bgm_pid": null,
+  "bgm_log": null,
+  "bgm_mode": "retrieve",
+  "bgm_target_duration_s": null,
+  "bgm_seed_duration_s": null,
+  "bgm_loop_count": null,
+  "voices": [],
+  "sfx": [
+    {
+      "id": "01",
+      "name": "soft pop",
+      "file": "assets/sfx/soft-pop.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.696,
+      "volume": 0.35
+    },
+    {
+      "id": "01",
+      "name": "keyboard typing short",
+      "file": "assets/sfx/keyboard-typing-short.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 54.648,
+      "volume": 0.35
+    },
+    {
+      "id": "02",
+      "name": "whoosh",
+      "file": "assets/sfx/whoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.58,
+      "volume": 0.35
+    },
+    {
+      "id": "02",
+      "name": "book open",
+      "file": "assets/sfx/book-open.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.008,
+      "volume": 0.35
+    },
+    {
+      "id": "03",
+      "name": "printer tick",
+      "file": "assets/sfx/printer-tick.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 7.016,
+      "volume": 0.35
+    },
+    {
+      "id": "03",
+      "name": "stamp",
+      "file": "assets/sfx/stamp.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.79,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "button click",
+      "file": "assets/sfx/button-click.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.24,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "printer tick",
+      "file": "assets/sfx/printer-tick.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 7.016,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "stamp",
+      "file": "assets/sfx/stamp.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.79,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "rising whoosh",
+      "file": "assets/sfx/rising-whoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 4.364,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "cash register ding",
+      "file": "assets/sfx/cash-register-ding.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.238,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "paper flick",
+      "file": "assets/sfx/paper-flick.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.008,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "stamp",
+      "file": "assets/sfx/stamp.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.79,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "book close",
+      "file": "assets/sfx/book-close.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.008,
+      "volume": 0.35
+    },
+    {
+      "id": "06",
+      "name": "soft whoosh",
+      "file": "assets/sfx/soft-whoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.834,
+      "volume": 0.35
+    },
+    {
+      "id": "06",
+      "name": "chime",
+      "file": "assets/sfx/chime.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.72,
+      "volume": 0.35
+    }
+  ],
+  "total_duration_s": 0
+}

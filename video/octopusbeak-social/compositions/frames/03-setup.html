@@ -1,0 +1,340 @@
+<template id="03-setup-template">
+  <div data-hf-id="hf-yoqp" id="root" data-composition-id="03-setup" data-start="0" data-duration="5" data-width="1080" data-height="1920">
+    <style>
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 400;
+        src: local("PingFang TC"), local("PingFangTC-Regular"), local("PingFang TC Regular");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 700;
+        src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"), local("PingFangTC-Medium");
+      }
+      @font-face {
+        font-family: "SF Mono";
+        font-weight: 500;
+        src: local("SFMono-Medium"), local("SF Mono Medium"), local("SFMono-Regular"), local("Menlo-Regular");
+      }
+      @font-face {
+        font-family: "SF Mono";
+        font-weight: 700;
+        src: local("SFMono-Bold"), local("SF Mono Bold"), local("SFMono-Semibold"), local("Menlo-Bold");
+      }
+
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+        color: #0e1217;
+      }
+      #root * { box-sizing: border-box; }
+
+      /* ── layer 0: ground ── */
+      #s03-ground {
+        position: absolute; inset: 0;
+        background: linear-gradient(135deg, #071f4a 0%, #0d4672 52%, #12808f 100%);
+        overflow: hidden;
+      }
+      #s03-ground-waves { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+      #s03-ground-rosette {
+        position: absolute; left: -10px; top: 410px; width: 1100px; height: 1100px;
+        color: #edf4f1; opacity: 0.2;
+        transform-origin: 50% 50%;
+        will-change: transform;
+      }
+      #s03-ground-rosette svg { width: 1100px; height: 1100px; display: block; }
+
+      /* ── layer 1: the passbook world ── */
+      #s03-stage { position: absolute; inset: 0; }
+      .s03-world { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+      #s03-book {
+        position: absolute; left: 80px; top: 300px; width: 920px; height: 1240px;
+        perspective: 2400px;
+        will-change: transform;
+      }
+      .s03-page {
+        position: absolute; left: 0; top: 0; width: 920px; height: 1240px;
+        border-radius: 10px 28px 28px 10px;
+        transform-origin: 0% 50%;
+      }
+      #s03-page-under { box-shadow: 0 40px 80px rgba(0, 0, 0, 0.35); }
+      #s03-page-top { backface-visibility: hidden; -webkit-backface-visibility: hidden; will-change: transform, opacity; }
+      .s03-paper {
+        position: absolute; inset: 0;
+        border-radius: 10px 28px 28px 10px;
+        overflow: hidden;
+        background:
+          radial-gradient(ellipse 75% 60% at 92% 95%, rgba(237, 244, 241, 1) 0%, rgba(237, 244, 241, 0.55) 40%, rgba(237, 244, 241, 0) 75%),
+          #fbfaf6;
+      }
+      .s03-paper svg { position: absolute; left: 0; top: 0; width: 920px; height: 1240px; }
+      /* ruled lines every 72px from canvas y=520 (page-local 220) */
+      .s03-rules {
+        position: absolute; left: 0; right: 0; top: 220px; bottom: 0;
+        background: repeating-linear-gradient(to bottom, #d9e2df 0px, #d9e2df 1px, transparent 1px, transparent 72px);
+      }
+      /* double microline at canvas x=150 (page-local 70) */
+      .s03-spine-a, .s03-spine-b {
+        position: absolute; top: 0; bottom: 0; width: 1px;
+        background: rgba(24, 169, 164, 0.38);
+      }
+      .s03-spine-a { left: 70px; }
+      .s03-spine-b { left: 75px; }
+
+      /* step badge: 112px teal ring, center canvas (210,420) → local (130,120) */
+      #s03-badge {
+        position: absolute; left: 74px; top: 64px; width: 112px; height: 112px;
+        border-radius: 50%;
+        background: #18a9a4;
+        box-shadow: inset 0 0 0 5px #18a9a4, inset 0 0 0 8px rgba(255, 255, 255, 0.85);
+        color: #ffffff;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace; font-weight: 700;
+        font-size: 64px; line-height: 112px; text-align: center;
+        transform-origin: 50% 50%;
+      }
+      /* step title: 92px 700, x=290 canvas (local 210), baseline y=450 canvas (local 150) */
+      #s03-title {
+        position: absolute; left: 210px; top: 70px; height: 100px;
+        font-size: 92px; font-weight: 700; line-height: 100px;
+        color: #0e1217; white-space: nowrap; letter-spacing: 0.02em;
+      }
+
+      /* the credentials clipping: canvas x 130–950, top 520 → local (50,220), 820×642 */
+      #s03-clip {
+        position: absolute; left: 50px; top: 220px; width: 820px; height: 642px;
+        padding: 12px;
+        background: #ffffff;
+        box-shadow: 0 2px 3px rgba(14, 18, 23, 0.12), 0 18px 36px rgba(14, 18, 23, 0.2);
+        transform-origin: 50% 50%;
+        will-change: transform;
+      }
+      #s03-clip-window {
+        position: relative; width: 796px; height: 618px;
+        overflow: hidden;
+        background: #ffffff;
+      }
+      #s03-zoom-outer {
+        position: absolute; left: 0; top: 0; width: 796px; height: 618px;
+        transform-origin: 50% 50%;
+        will-change: transform;
+      }
+      #s03-zoom-inner {
+        position: absolute; left: 0; top: 0; width: 796px; height: 618px;
+        will-change: transform;
+      }
+      /* source crop x 0–1300, y 170–1180 at k = 796/1300 */
+      #s03-shot {
+        position: absolute; left: 0; top: -104.1px; width: 1273.6px; height: 979.7px;
+        display: block;
+      }
+      #s03-tape {
+        position: absolute; left: 330px; top: -20px; width: 160px; height: 40px;
+        background: rgba(237, 244, 241, 0.62);
+        border-left: 1px dashed rgba(255, 255, 255, 0.7);
+        border-right: 1px dashed rgba(255, 255, 255, 0.7);
+        box-shadow: 0 1px 2px rgba(14, 18, 23, 0.12);
+        transform: rotate(3deg);
+      }
+
+      /* printed rows: canvas tops 1180 / 1252 / 1324 → local 880 / 952 / 1024 */
+      .s03-row {
+        position: absolute; left: 0; width: 920px; height: 60px;
+        display: flex; align-items: center;
+        white-space: nowrap;
+      }
+      #s03-row-1 { top: 880px; }
+      #s03-row-2 { top: 952px; }
+      #s03-row-3 { top: 1024px; }
+      .s03-date {
+        position: absolute; left: 92px; top: 0; height: 60px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace; font-weight: 500;
+        font-variant-numeric: tabular-nums;
+        font-size: 30px; line-height: 64px; color: #5e646a;
+      }
+      .s03-text {
+        position: absolute; left: 210px; top: 0; height: 60px;
+        display: flex; align-items: center; gap: 14px;
+        font-size: 46px; font-weight: 700; line-height: 60px; color: #0e1217;
+      }
+      .s03-text svg { width: 44px; height: 44px; flex: none; }
+      .s03-text svg path, .s03-text svg rect { fill: none; stroke: #18a9a4; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+
+      /* page stamp: 260px, center canvas (800,1380) → local (720,1080) */
+      #s03-stamp {
+        position: absolute; left: 600px; top: 990px; width: 260px; height: 260px;
+        mix-blend-mode: multiply;
+        color: #18a9a4;
+        transform-origin: 50% 50%;
+        will-change: transform, opacity;
+      }
+      #s03-stamp svg { width: 260px; height: 260px; display: block; overflow: visible; }
+    </style>
+
+    <!-- layer 0: ground (gradient + waves + rotating rosette) -->
+    <div data-hf-id="hf-7erd" id="s03-ground" class="clip" data-start="0" data-duration="5" data-track-index="0">
+      <svg data-hf-id="hf-pmnu" id="s03-ground-waves" viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs data-hf-id="hf-mh0t">
+<symbol data-hf-id="hf-x0jb" id="s03-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g data-hf-id="hf-0xjn" id="s03-ro"><path data-hf-id="hf-lzr9" id="s03-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-8cq6" href="#s03-ro0" transform="rotate(9)" /><use data-hf-id="hf-j0d8" href="#s03-ro0" transform="rotate(18)" /><use data-hf-id="hf-6abq" href="#s03-ro0" transform="rotate(27)" /><use data-hf-id="hf-qzhc" href="#s03-ro0" transform="rotate(36)" /><use data-hf-id="hf-zyfy" href="#s03-ro0" transform="rotate(45)" /><use data-hf-id="hf-y4m4" href="#s03-ro0" transform="rotate(54)" /><use data-hf-id="hf-qqie" href="#s03-ro0" transform="rotate(63)" /><use data-hf-id="hf-5avs" href="#s03-ro0" transform="rotate(72)" /><use data-hf-id="hf-samm" href="#s03-ro0" transform="rotate(81)" /><use data-hf-id="hf-qgss" href="#s03-ro0" transform="rotate(90)" /><use data-hf-id="hf-75ab" href="#s03-ro0" transform="rotate(99)" /><use data-hf-id="hf-8kly" href="#s03-ro0" transform="rotate(108)" /><use data-hf-id="hf-g27a" href="#s03-ro0" transform="rotate(117)" /><use data-hf-id="hf-1fh6" href="#s03-ro0" transform="rotate(126)" /><use data-hf-id="hf-8x2i" href="#s03-ro0" transform="rotate(135)" /><use data-hf-id="hf-0wsm" href="#s03-ro0" transform="rotate(144)" /><use data-hf-id="hf-2pzq" href="#s03-ro0" transform="rotate(153)" /><use data-hf-id="hf-o4du" href="#s03-ro0" transform="rotate(162)" /><use data-hf-id="hf-vlz6" href="#s03-ro0" transform="rotate(171)" /><use data-hf-id="hf-nkl2" href="#s03-ro0" transform="rotate(180)" /><use data-hf-id="hf-dubx" href="#s03-ro0" transform="rotate(189)" /><use data-hf-id="hf-hgo7" href="#s03-ro0" transform="rotate(198)" /><use data-hf-id="hf-2y3u" href="#s03-ro0" transform="rotate(207)" /><use data-hf-id="hf-80dg" href="#s03-ro0" transform="rotate(216)" /><use data-hf-id="hf-rpv2" href="#s03-ro0" transform="rotate(225)" /><use data-hf-id="hf-t2b0" href="#s03-ro0" transform="rotate(234)" /><use data-hf-id="hf-alx6" href="#s03-ro0" transform="rotate(243)" /><use data-hf-id="hf-6hn0" href="#s03-ro0" transform="rotate(252)" /><use data-hf-id="hf-d0xi" href="#s03-ro0" transform="rotate(261)" /><use data-hf-id="hf-6dec" href="#s03-ro0" transform="rotate(270)" /><use data-hf-id="hf-hpy3" href="#s03-ro0" transform="rotate(279)" /><use data-hf-id="hf-b7jn" href="#s03-ro0" transform="rotate(288)" /><use data-hf-id="hf-w78b" href="#s03-ro0" transform="rotate(297)" /><use data-hf-id="hf-86te" href="#s03-ro0" transform="rotate(306)" /><use data-hf-id="hf-nkeq" href="#s03-ro0" transform="rotate(315)" /><use data-hf-id="hf-sire" href="#s03-ro0" transform="rotate(324)" /><use data-hf-id="hf-0p82" href="#s03-ro0" transform="rotate(333)" /><use data-hf-id="hf-n9y2" href="#s03-ro0" transform="rotate(342)" /><use data-hf-id="hf-urje" href="#s03-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-xn4f" href="#s03-ro" transform="rotate(1.1)" /><use data-hf-id="hf-oono" href="#s03-ro" transform="rotate(2.3)" /><use data-hf-id="hf-423y" href="#s03-ro" transform="rotate(3.4)" /><use data-hf-id="hf-poh8" href="#s03-ro" transform="rotate(4.5)" /><use data-hf-id="hf-5xfm" href="#s03-ro" transform="rotate(5.6)" /><use data-hf-id="hf-ubeh" href="#s03-ro" transform="rotate(6.8)" /><use data-hf-id="hf-en5h" href="#s03-ro" transform="rotate(7.9)" /><g data-hf-id="hf-qq8e" id="s03-rb"><path data-hf-id="hf-y0m5" id="s03-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-7i0y" href="#s03-rb0" transform="rotate(15)" /><use data-hf-id="hf-i7lb" href="#s03-rb0" transform="rotate(30)" /><use data-hf-id="hf-v0tf" href="#s03-rb0" transform="rotate(45)" /><use data-hf-id="hf-cpoi" href="#s03-rb0" transform="rotate(60)" /><use data-hf-id="hf-hv28" href="#s03-rb0" transform="rotate(75)" /><use data-hf-id="hf-udbp" href="#s03-rb0" transform="rotate(90)" /><use data-hf-id="hf-t9ya" href="#s03-rb0" transform="rotate(105)" /><use data-hf-id="hf-n8un" href="#s03-rb0" transform="rotate(120)" /><use data-hf-id="hf-n2zt" href="#s03-rb0" transform="rotate(135)" /><use data-hf-id="hf-owvs" href="#s03-rb0" transform="rotate(150)" /><use data-hf-id="hf-2obk" href="#s03-rb0" transform="rotate(165)" /><use data-hf-id="hf-cyz9" href="#s03-rb0" transform="rotate(180)" /><use data-hf-id="hf-rjcn" href="#s03-rb0" transform="rotate(195)" /><use data-hf-id="hf-h7px" href="#s03-rb0" transform="rotate(210)" /><use data-hf-id="hf-uajl" href="#s03-rb0" transform="rotate(225)" /><use data-hf-id="hf-zeog" href="#s03-rb0" transform="rotate(240)" /><use data-hf-id="hf-kub2" href="#s03-rb0" transform="rotate(255)" /><use data-hf-id="hf-afyb" href="#s03-rb0" transform="rotate(270)" /><use data-hf-id="hf-yz6n" href="#s03-rb0" transform="rotate(285)" /><use data-hf-id="hf-ih57" href="#s03-rb0" transform="rotate(300)" /><use data-hf-id="hf-s8yl" href="#s03-rb0" transform="rotate(315)" /><use data-hf-id="hf-tkig" href="#s03-rb0" transform="rotate(330)" /><use data-hf-id="hf-w3fw" href="#s03-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-w5ly" href="#s03-rb" transform="rotate(1.9)" /><use data-hf-id="hf-crwz" href="#s03-rb" transform="rotate(3.8)" /><use data-hf-id="hf-kc9v" href="#s03-rb" transform="rotate(5.6)" /><use data-hf-id="hf-cx44" href="#s03-rb" transform="rotate(7.5)" /><use data-hf-id="hf-kubt" href="#s03-rb" transform="rotate(9.4)" /><use data-hf-id="hf-pb3n" href="#s03-rb" transform="rotate(11.3)" /><use data-hf-id="hf-ss3n" href="#s03-rb" transform="rotate(13.1)" /><g data-hf-id="hf-dg24" id="s03-rh"><path data-hf-id="hf-xc1o" id="s03-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-wjpc" href="#s03-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-ii96" href="#s03-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-rvpz" href="#s03-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-6ix1" href="#s03-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-tz4k" href="#s03-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-nny6" href="#s03-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-p6ue" href="#s03-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-olbt" href="#s03-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-giga" href="#s03-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-no61" href="#s03-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-o7qs" href="#s03-rh" transform="rotate(5.5)" /><use data-hf-id="hf-i9lw" href="#s03-rh" transform="rotate(10.9)" /><use data-hf-id="hf-h0v9" href="#s03-rh" transform="rotate(16.4)" /><use data-hf-id="hf-oeuz" href="#s03-rh" transform="rotate(21.8)" /><use data-hf-id="hf-dnps" href="#s03-rh" transform="rotate(27.3)" /><g data-hf-id="hf-uocf" id="s03-rc"><path data-hf-id="hf-u6ju" id="s03-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-zuhu" href="#s03-rc0" transform="rotate(30)" /><use data-hf-id="hf-olqn" href="#s03-rc0" transform="rotate(60)" /><use data-hf-id="hf-yqfk" href="#s03-rc0" transform="rotate(90)" /><use data-hf-id="hf-hg0g" href="#s03-rc0" transform="rotate(120)" /><use data-hf-id="hf-867b" href="#s03-rc0" transform="rotate(150)" /><use data-hf-id="hf-mm1u" href="#s03-rc0" transform="rotate(180)" /><use data-hf-id="hf-qgly" href="#s03-rc0" transform="rotate(210)" /><use data-hf-id="hf-pwt7" href="#s03-rc0" transform="rotate(240)" /><use data-hf-id="hf-01ig" href="#s03-rc0" transform="rotate(270)" /><use data-hf-id="hf-hoyg" href="#s03-rc0" transform="rotate(300)" /><use data-hf-id="hf-6ll7" href="#s03-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-x5ly" href="#s03-rc" transform="rotate(3.8)" /><use data-hf-id="hf-k9zx" href="#s03-rc" transform="rotate(7.5)" /><use data-hf-id="hf-ohvs" href="#s03-rc" transform="rotate(11.3)" /><use data-hf-id="hf-169f" href="#s03-rc" transform="rotate(15)" /><use data-hf-id="hf-z946" href="#s03-rc" transform="rotate(18.8)" /><use data-hf-id="hf-ncvc" href="#s03-rc" transform="rotate(22.5)" /><use data-hf-id="hf-9nwi" href="#s03-rc" transform="rotate(26.3)" /><g data-hf-id="hf-e7px" id="s03-ri"><path data-hf-id="hf-bvg9" id="s03-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-jhuv" href="#s03-ri0" transform="rotate(40)" /><use data-hf-id="hf-97mz" href="#s03-ri0" transform="rotate(80)" /><use data-hf-id="hf-5aa2" href="#s03-ri0" transform="rotate(120)" /><use data-hf-id="hf-dqy6" href="#s03-ri0" transform="rotate(160)" /><use data-hf-id="hf-t4g9" href="#s03-ri0" transform="rotate(200)" /><use data-hf-id="hf-4re5" href="#s03-ri0" transform="rotate(240)" /><use data-hf-id="hf-3bi9" href="#s03-ri0" transform="rotate(280)" /><use data-hf-id="hf-xnrs" href="#s03-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-c5qu" href="#s03-ri" transform="rotate(6.7)" /><use data-hf-id="hf-980k" href="#s03-ri" transform="rotate(13.3)" /><use data-hf-id="hf-jj6d" href="#s03-ri" transform="rotate(20)" /><use data-hf-id="hf-45dw" href="#s03-ri" transform="rotate(26.7)" /><use data-hf-id="hf-du4u" href="#s03-ri" transform="rotate(33.3)" /></symbol>
+      <g data-hf-id="hf-xt32" id="s03-w" fill="none" stroke="currentColor"><path data-hf-id="hf-syx9" id="s03-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-3f26" href="#s03-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-r685" href="#s03-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-h1t6" href="#s03-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-cnwi" href="#s03-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-2u41" href="#s03-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-chnc" href="#s03-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-wy2x" href="#s03-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-bus6" href="#s03-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-n9rl" href="#s03-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-u9sw" href="#s03-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-p1bb" href="#s03-wl" transform="translate(300 75)" /><use data-hf-id="hf-alls" href="#s03-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-10e5" href="#s03-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-idtr" href="#s03-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-uroq" href="#s03-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-qd6t" href="#s03-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-3xq0" href="#s03-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-wxmn" href="#s03-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-ask4" href="#s03-wl" transform="translate(0 150)" /><use data-hf-id="hf-iyak" href="#s03-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-ss2r" href="#s03-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-r90y" href="#s03-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-bqlb" href="#s03-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-1rl0" href="#s03-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-stp6" href="#s03-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-16bt" href="#s03-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-g96o" href="#s03-wl" transform="translate(300 225)" /><use data-hf-id="hf-xmhn" href="#s03-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-0ur2" href="#s03-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-o8fj" href="#s03-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-puy8" href="#s03-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-ou6p" href="#s03-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-sr7q" href="#s03-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-q6cf" href="#s03-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-bhwv" href="#s03-wl" transform="translate(0 300)" /><use data-hf-id="hf-iq6b" href="#s03-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-rrlu" href="#s03-wl" transform="translate(75 318.8)" /></g>
+      <pattern data-hf-id="hf-90bz" id="s03-waves-teal" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-rvyo" href="#s03-w" /></pattern>
+      <pattern data-hf-id="hf-irhf" id="s03-waves-ink" style="color: #0e1217" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-6qnc" href="#s03-w" /></pattern>
+          <path data-hf-id="hf-hz6o" id="s03-stamp-ring-path" d="M130 130 m-104 0 a104 104 0 1 1 208 0 a104 104 0 1 1 -208 0" />
+        </defs>
+        <rect data-hf-id="hf-koi4" width="1080" height="1920" fill="url(#s03-waves-teal)" opacity="0.5" />
+      </svg>
+      <div data-hf-id="hf-e20g" id="s03-ground-rosette">
+        <svg data-hf-id="hf-func" viewBox="0 0 1100 1100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <use data-hf-id="hf-gjb8" href="#s03-rosette" x="0" y="0" width="1100" height="1100" stroke-width="1" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- layer 1: the passbook -->
+    <div data-hf-id="hf-smmp" id="s03-stage" class="clip" data-start="0" data-duration="5" data-track-index="1">
+      <div data-hf-id="hf-cqjc" class="s03-world" id="s03-world">
+        <div data-hf-id="hf-hb8n" id="s03-book">
+          <!-- fresh blank ruled page underneath (revealed by the page turn) -->
+          <div data-hf-id="hf-was3" class="s03-page" id="s03-page-under">
+            <div data-hf-id="hf-yd9l" class="s03-paper">
+              <svg data-hf-id="hf-dd2g" viewBox="0 0 920 1240" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect data-hf-id="hf-5ose" width="920" height="1240" fill="url(#s03-waves-ink)" opacity="0.06" />
+              </svg>
+              <div data-hf-id="hf-xkjm" class="s03-rules"></div>
+              <div data-hf-id="hf-00e4" class="s03-spine-a"></div>
+              <div data-hf-id="hf-avvr" class="s03-spine-b"></div>
+            </div>
+          </div>
+
+          <!-- page one: prints itself, then turns away -->
+          <div data-hf-id="hf-vi9c" class="s03-page" id="s03-page-top">
+            <div data-hf-id="hf-nwyl" class="s03-paper">
+              <svg data-hf-id="hf-hgtc" viewBox="0 0 920 1240" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect data-hf-id="hf-509u" width="920" height="1240" fill="url(#s03-waves-ink)" opacity="0.06" />
+              </svg>
+              <div data-hf-id="hf-bcfa" class="s03-rules"></div>
+              <div data-hf-id="hf-h850" class="s03-spine-a"></div>
+              <div data-hf-id="hf-i93b" class="s03-spine-b"></div>
+            </div>
+
+            <div data-hf-id="hf-uyb4" id="s03-badge">1</div>
+            <div data-hf-id="hf-pssa" id="s03-title">設定一次</div>
+
+            <div data-hf-id="hf-8k2q" id="s03-clip">
+              <div data-hf-id="hf-j7n7" id="s03-clip-window">
+                <div data-hf-id="hf-jrb7" id="s03-zoom-outer">
+                  <div data-hf-id="hf-gkni" id="s03-zoom-inner">
+                    <img data-hf-id="hf-qs8d" id="s03-shot" src="assets/credentials.webp" alt="">
+                  </div>
+                </div>
+              </div>
+              <div data-hf-id="hf-stps" id="s03-tape"></div>
+            </div>
+
+            <div data-hf-id="hf-9yyu" class="s03-row" id="s03-row-1">
+              <div data-hf-id="hf-sfz7" class="s03-date">10/06</div>
+              <div data-hf-id="hf-k5bo" class="s03-text">
+                <svg data-hf-id="hf-35ls" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-gjri" d="M4.5 12.5l5 5 10-11" /></svg>選銀行
+              </div>
+            </div>
+            <div data-hf-id="hf-60ut" class="s03-row" id="s03-row-2">
+              <div data-hf-id="hf-0zqb" class="s03-date">10/06</div>
+              <div data-hf-id="hf-jbiu" class="s03-text">
+                <svg data-hf-id="hf-46qg" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-ng9e" d="M4.5 12.5l5 5 10-11" /></svg>勾要抓的資料
+              </div>
+            </div>
+            <div data-hf-id="hf-73kc" class="s03-row" id="s03-row-3">
+              <div data-hf-id="hf-0lfa" class="s03-date">10/06</div>
+              <div data-hf-id="hf-n6xw" class="s03-text">
+                <svg data-hf-id="hf-2ztd" viewBox="0 0 24 24" aria-hidden="true"><rect data-hf-id="hf-xp4g" x="5" y="10.5" width="14" height="10" rx="2.2" /><path data-hf-id="hf-q97v" d="M8.2 10.5V7.6a3.8 3.8 0 0 1 7.6 0v2.9M12 14.6v2" /></svg>密碼加密，只存在這台 Mac
+              </div>
+            </div>
+
+            <div data-hf-id="hf-3r6p" id="s03-stamp" data-layout-allow-overlap="">
+              <svg data-hf-id="hf-wb9s" viewBox="0 0 260 260" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <use data-hf-id="hf-pqgy" href="#s03-rosette" x="20" y="20" width="220" height="220" stroke-width="0.9" opacity="0.75" />
+                <circle data-hf-id="hf-j27r" cx="130" cy="130" r="127" fill="none" stroke="currentColor" stroke-width="4" />
+                <circle data-hf-id="hf-x8qz" cx="130" cy="130" r="118" fill="none" stroke="currentColor" stroke-width="1.5" />
+                <circle data-hf-id="hf-8xyd" cx="130" cy="130" r="88" fill="none" stroke="currentColor" stroke-width="2" />
+                <circle data-hf-id="hf-5w8g" cx="130" cy="130" r="62" fill="#fbfaf6" stroke="currentColor" stroke-width="3" />
+                <text data-hf-id="hf-scua" font-family="SF Mono, Menlo, monospace" font-weight="700" font-size="17" letter-spacing="3.2" fill="currentColor">
+                  <textpath data-hf-id="hf-4lfq" href="#s03-stamp-ring-path" startOffset="0">OCTOPUSBEAK · STEP 01 · OCTOPUSBEAK · STEP 01 ·</textpath>
+                </text>
+                <text data-hf-id="hf-rgyq" x="130" y="160" text-anchor="middle" font-family="SF Mono, Menlo, monospace" font-weight="700" font-size="88" fill="currentColor">1</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        window.__timelines = window.__timelines || {};
+        const tl = gsap.timeline({ paused: true });
+        const DUR = 5;
+        const FRAME_START = 8.5; // film time of this frame
+        const PRINT = { duration: 0.28, ease: "steps(8)" };
+        const CLIP_HIDDEN = "inset(0% 100% 0% 0%)";
+        const CLIP_SHOWN = "inset(0% 0% 0% 0%)";
+
+        // ── ground: rosette angle continuous across the film (0.6°/s) ──
+        tl.fromTo("#s03-ground-rosette",
+          { rotation: 0.6 * FRAME_START },
+          { rotation: 0.6 * (FRAME_START + DUR), duration: DUR, ease: "none" }, 0);
+
+        // ── Scene 1 (0.0–0.6): ① badge pops, title prints ──
+        tl.fromTo("#s03-badge",
+          { scale: 0, opacity: 0 },
+          { scale: 1, opacity: 1, duration: 0.45, ease: "back.out(1.3)" }, 0.05);
+        tl.fromTo("#s03-title",
+          { clipPath: CLIP_HIDDEN },
+          { clipPath: CLIP_SHOWN, duration: PRINT.duration, ease: PRINT.ease }, 0.28);
+
+        // ── Scene 2 (0.5–1.8): credentials clipping slides in from the right, lands at −2° ──
+        tl.fromTo("#s03-clip",
+          { x: 1000, rotation: 5 },
+          { x: 0, rotation: -2, duration: 0.7, ease: "power3.out" }, 0.5);
+        // coordinate-target-zoom toward the masked password rows.
+        // Target in window px (551, 305); window center (398, 309) → offset (153, −4); inner T = −offset.
+        tl.fromTo("#s03-zoom-outer", { scale: 1 },
+          { scale: 1.12, duration: 0.6, ease: "power3.inOut" }, 1.2);
+        tl.fromTo("#s03-zoom-inner", { x: 0, y: 0 },
+          { x: -153, y: 4, duration: 0.6, ease: "power3.inOut" }, 1.2);
+
+        // ── Scene 3 (1.9–3.6): three rows print, one tick each ──
+        ["#s03-row-1", "#s03-row-2", "#s03-row-3"].forEach(function (id, i) {
+          tl.fromTo(id,
+            { clipPath: CLIP_HIDDEN },
+            { clipPath: CLIP_SHOWN, duration: PRINT.duration, ease: PRINT.ease }, 1.95 + i * 0.6);
+        });
+
+        // ── Scene 4 (3.7–4.0): ① stamp slams + book shake ──
+        tl.fromTo("#s03-stamp",
+          { scale: 1.6, opacity: 0, rotation: -12 },
+          { scale: 1, opacity: 0.92, rotation: -12, duration: 0.18, ease: "expo.out" }, 3.7);
+        tl.fromTo("#s03-book", { x: 0, y: 0 }, { x: 3, y: 1, duration: 0.03, ease: "none" }, 3.82);
+        tl.to("#s03-book", { x: -2.2, y: -0.8, duration: 0.05, ease: "none" }, 3.85);
+        tl.to("#s03-book", { x: 1.4, y: 0.5, duration: 0.05, ease: "none" }, 3.9);
+        tl.to("#s03-book", { x: -0.6, y: -0.2, duration: 0.05, ease: "none" }, 3.95);
+        tl.to("#s03-book", { x: 0, y: 0, duration: 0.07, ease: "power1.out" }, 4.0);
+
+        // ── Scene 5 (4.0–4.4): hold ──
+
+        // ── Scene 6 (4.4–5.0): page turns over on the spine, fading past −90° ──
+        tl.fromTo("#s03-page-top",
+          { rotationY: 0 },
+          { rotationY: -180, duration: 0.55, ease: "power2.inOut" }, 4.4);
+        tl.fromTo("#s03-page-top",
+          { opacity: 1 },
+          { opacity: 0, duration: 0.2, ease: "none" }, 4.57);
+
+        tl.set({}, {}, DUR);
+        window.__timelines["03-setup"] = tl;
+      })();
+    </script>
+  </div>
+</template>

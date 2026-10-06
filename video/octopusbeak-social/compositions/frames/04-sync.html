@@ -1,0 +1,602 @@
+<template id="04-sync-template">
+  <div data-hf-id="hf-4g0v" id="root" data-composition-id="04-sync" data-start="0" data-duration="6" data-width="1080" data-height="1920">
+    <style>
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 400;
+        src: local("PingFang TC"), local("PingFangTC-Regular"), local("PingFang TC Regular");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 500;
+        src: local("PingFangTC-Medium"), local("PingFang TC Medium");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 700;
+        src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"), local("PingFangTC-Medium");
+      }
+      @font-face {
+        font-family: "SF Mono";
+        font-weight: 400;
+        src: local("SFMono-Regular"), local("SF Mono"), local("Menlo-Regular"), local("Menlo");
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+        color: #0e1217;
+      }
+      #root * {
+        box-sizing: border-box;
+      }
+      [id="04-sync-defs"] {
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+      }
+      .\30 4-sync-layer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+      }
+
+      /* ── track 0: ground ── */
+      [id="04-sync-ground"] {
+        background: linear-gradient(135deg, #071f4a 0%, #0d4672 55%, #12808f 100%);
+      }
+      [id="04-sync-waves"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        opacity: 0.5;
+      }
+      [id="04-sync-rosette"] {
+        position: absolute;
+        left: -10px;
+        top: 410px;
+        width: 1100px;
+        height: 1100px;
+        color: #edf4f1;
+        opacity: 0.2;
+      }
+      [id="04-sync-rosette"] svg {
+        display: block;
+        width: 1100px;
+        height: 1100px;
+      }
+
+      /* ── track 1: passbook ── */
+      [id="04-sync-book"] {
+        position: absolute;
+        left: 80px;
+        top: 300px;
+        width: 920px;
+        height: 1240px;
+        perspective: 2400px;
+      }
+      .\30 4-sync-page {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 920px;
+        height: 1240px;
+        border-radius: 10px 28px 28px 10px;
+        overflow: hidden;
+        background:
+          radial-gradient(ellipse 760px 640px at 100% 100%, rgba(237, 244, 241, 1) 0%, rgba(237, 244, 241, 0) 100%),
+          #fbfaf6;
+      }
+      [id="04-sync-under"] {
+        box-shadow: 0 40px 80px rgba(0, 0, 0, 0.35);
+      }
+      [id="04-sync-top"] {
+        transform-origin: left center;
+      }
+      .\30 4-sync-paper-waves {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 920px;
+        height: 1240px;
+        opacity: 0.06;
+      }
+      .\30 4-sync-rules {
+        position: absolute;
+        left: 0;
+        top: 220px;
+        width: 920px;
+        height: 1020px;
+        background: repeating-linear-gradient(to bottom, #d9e2df 0px, #d9e2df 1px, transparent 1px, transparent 72px);
+      }
+      .\30 4-sync-margin {
+        position: absolute;
+        top: 0;
+        width: 1px;
+        height: 1240px;
+        background: #18a9a4;
+        opacity: 0.35;
+      }
+
+      /* page anatomy */
+      [id="04-sync-badge"] {
+        position: absolute;
+        left: 74px;
+        top: 64px;
+        width: 112px;
+        height: 112px;
+        border-radius: 50%;
+        background: #18a9a4;
+        box-shadow: inset 0 0 0 4px #18a9a4, inset 0 0 0 7px rgba(255, 255, 255, 0.55);
+        color: #ffffff;
+        font-size: 64px;
+        font-weight: 700;
+        line-height: 112px;
+        text-align: center;
+      }
+      [id="04-sync-title"] {
+        position: absolute;
+        left: 210px;
+        top: 68px;
+        font-size: 92px;
+        font-weight: 700;
+        line-height: 92px;
+        white-space: nowrap;
+        color: #0e1217;
+      }
+
+      /* evidence clipping */
+      [id="04-sync-clip"] {
+        position: absolute;
+        left: 50px;
+        top: 220px;
+        width: 820px;
+        height: 174px;
+        padding: 12px;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(14, 18, 23, 0.18), 0 1px 3px rgba(14, 18, 23, 0.2);
+        transform-origin: 50% 50%;
+      }
+      .\30 4-sync-crop {
+        position: absolute;
+        top: 12px;
+        height: 150px;
+        overflow: hidden;
+      }
+      .\30 4-sync-crop img {
+        position: absolute;
+        top: 0;
+        width: 2178px;
+        height: 870px;
+        max-width: none;
+      }
+      [id="04-sync-crop-l"] {
+        left: 12px;
+        width: 430px;
+      }
+      [id="04-sync-crop-l"] img {
+        left: 0;
+      }
+      [id="04-sync-crop-r"] {
+        left: 510px;
+        width: 298px;
+        transform-origin: 143px 84px;
+      }
+      [id="04-sync-crop-r"] img {
+        left: -1880px;
+      }
+      [id="04-sync-ellipsis"] {
+        position: absolute;
+        left: 442px;
+        top: 12px;
+        width: 68px;
+        height: 150px;
+        line-height: 150px;
+        text-align: center;
+        font-size: 40px;
+        color: #9aa3a8;
+        letter-spacing: 2px;
+      }
+      [id="04-sync-tape"] {
+        position: absolute;
+        left: 340px;
+        top: -18px;
+        width: 140px;
+        height: 36px;
+        background: rgba(237, 244, 241, 0.72);
+        border-left: 1px dashed rgba(14, 18, 23, 0.12);
+        border-right: 1px dashed rgba(14, 18, 23, 0.12);
+        transform: rotate(-3deg);
+      }
+
+      /* printed sync rows */
+      .\30 4-sync-row {
+        position: absolute;
+        left: 0;
+        width: 920px;
+        height: 96px;
+      }
+      .\30 4-sync-logo {
+        position: absolute;
+        left: 110px;
+        top: 16px;
+        width: 64px;
+        height: 64px;
+        object-fit: contain;
+      }
+      .\30 4-sync-name {
+        position: absolute;
+        left: 196px;
+        top: 0;
+        height: 96px;
+        line-height: 96px;
+        font-size: 46px;
+        font-weight: 500;
+        white-space: nowrap;
+        color: #0e1217;
+      }
+      .\30 4-sync-bar {
+        position: absolute;
+        left: 520px;
+        top: 43px;
+        width: 260px;
+        height: 10px;
+        border-radius: 5px;
+        background: #dcefeb;
+        overflow: hidden;
+      }
+      .\30 4-sync-fill {
+        width: 100%;
+        height: 100%;
+        border-radius: 5px;
+        background: #18a9a4;
+        transform-origin: left center;
+      }
+      .\30 4-sync-done {
+        position: absolute;
+        left: 632px;
+        top: 0;
+        height: 96px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #2f7a55;
+        font-size: 40px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .\30 4-sync-done svg {
+        width: 44px;
+        height: 44px;
+        display: block;
+      }
+      .\30 4-sync-done path {
+        fill: none;
+        stroke: #2f7a55;
+        stroke-width: 5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      [id="04-sync-sub"] {
+        position: absolute;
+        left: 110px;
+        top: 880px;
+        height: 72px;
+        line-height: 72px;
+        font-size: 46px;
+        font-weight: 400;
+        white-space: nowrap;
+        color: #0e1217;
+      }
+      [id="04-sync-chip"] {
+        position: absolute;
+        left: 50px;
+        top: 970px;
+        height: 84px;
+        padding: 0 30px 0 22px;
+        border-radius: 42px;
+        background: #e3f4f2;
+        box-shadow: inset 0 0 0 1px rgba(24, 169, 164, 0.35);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #12808f;
+        font-size: 42px;
+        font-weight: 500;
+        white-space: nowrap;
+        transform-origin: 0% 50%;
+      }
+      [id="04-sync-chip"] svg {
+        width: 46px;
+        height: 46px;
+        display: block;
+      }
+
+      /* stamp */
+      [id="04-sync-stamp"] {
+        position: absolute;
+        left: 590px;
+        top: 950px;
+        width: 260px;
+        height: 260px;
+        mix-blend-mode: multiply;
+        transform-origin: 50% 50%;
+      }
+      [id="04-sync-stamp"] svg {
+        display: block;
+        width: 260px;
+        height: 260px;
+        overflow: visible;
+      }
+
+      /* ── track 2: cursor ── */
+      [id="04-sync-cursor"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 44px;
+        height: 60px;
+        transform-origin: 6px 4px;
+      }
+      [id="04-sync-cursor"] svg {
+        display: block;
+        width: 44px;
+        height: 60px;
+      }
+      [id="04-sync-ripple"] {
+        position: absolute;
+        left: 753px;
+        top: 592px;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        border: 3px solid #18a9a4;
+      }
+    </style>
+
+    <svg data-hf-id="hf-c8r3" id="04-sync-defs" width="0" height="0" aria-hidden="true">
+      <defs data-hf-id="hf-mh0t">
+<symbol data-hf-id="hf-jb3b" id="04-sync-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g data-hf-id="hf-7l03" id="04-sync-ro"><path data-hf-id="hf-9lsp" id="04-sync-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-a2ui" href="#04-sync-ro0" transform="rotate(9)" /><use data-hf-id="hf-56b4" href="#04-sync-ro0" transform="rotate(18)" /><use data-hf-id="hf-s4xe" href="#04-sync-ro0" transform="rotate(27)" /><use data-hf-id="hf-ah2k" href="#04-sync-ro0" transform="rotate(36)" /><use data-hf-id="hf-qhya" href="#04-sync-ro0" transform="rotate(45)" /><use data-hf-id="hf-cu4g" href="#04-sync-ro0" transform="rotate(54)" /><use data-hf-id="hf-7oqq" href="#04-sync-ro0" transform="rotate(63)" /><use data-hf-id="hf-ns5w" href="#04-sync-ro0" transform="rotate(72)" /><use data-hf-id="hf-uzhu" href="#04-sync-ro0" transform="rotate(81)" /><use data-hf-id="hf-sdxs" href="#04-sync-ro0" transform="rotate(90)" /><use data-hf-id="hf-3vlj" href="#04-sync-ro0" transform="rotate(99)" /><use data-hf-id="hf-vr02" href="#04-sync-ro0" transform="rotate(108)" /><use data-hf-id="hf-xvje" href="#04-sync-ro0" transform="rotate(117)" /><use data-hf-id="hf-mdy6" href="#04-sync-ro0" transform="rotate(126)" /><use data-hf-id="hf-mnam" href="#04-sync-ro0" transform="rotate(135)" /><use data-hf-id="hf-bate" href="#04-sync-ro0" transform="rotate(144)" /><use data-hf-id="hf-5jcq" href="#04-sync-ro0" transform="rotate(153)" /><use data-hf-id="hf-vr1i" href="#04-sync-ro0" transform="rotate(162)" /><use data-hf-id="hf-3wdy" href="#04-sync-ro0" transform="rotate(171)" /><use data-hf-id="hf-8lb6" href="#04-sync-ro0" transform="rotate(180)" /><use data-hf-id="hf-88yx" href="#04-sync-ro0" transform="rotate(189)" /><use data-hf-id="hf-8ckz" href="#04-sync-ro0" transform="rotate(198)" /><use data-hf-id="hf-goby" href="#04-sync-ro0" transform="rotate(207)" /><use data-hf-id="hf-p1zc" href="#04-sync-ro0" transform="rotate(216)" /><use data-hf-id="hf-ihua" href="#04-sync-ro0" transform="rotate(225)" /><use data-hf-id="hf-8o1c" href="#04-sync-ro0" transform="rotate(234)" /><use data-hf-id="hf-4ase" href="#04-sync-ro0" transform="rotate(243)" /><use data-hf-id="hf-fow0" href="#04-sync-ro0" transform="rotate(252)" /><use data-hf-id="hf-nulm" href="#04-sync-ro0" transform="rotate(261)" /><use data-hf-id="hf-m0rs" href="#04-sync-ro0" transform="rotate(270)" /><use data-hf-id="hf-cain" href="#04-sync-ro0" transform="rotate(279)" /><use data-hf-id="hf-eqof" href="#04-sync-ro0" transform="rotate(288)" /><use data-hf-id="hf-f533" href="#04-sync-ro0" transform="rotate(297)" /><use data-hf-id="hf-gyhy" href="#04-sync-ro0" transform="rotate(306)" /><use data-hf-id="hf-p3ue" href="#04-sync-ro0" transform="rotate(315)" /><use data-hf-id="hf-j6da" href="#04-sync-ro0" transform="rotate(324)" /><use data-hf-id="hf-qnym" href="#04-sync-ro0" transform="rotate(333)" /><use data-hf-id="hf-2n3i" href="#04-sync-ro0" transform="rotate(342)" /><use data-hf-id="hf-dypq" href="#04-sync-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-0ubv" href="#04-sync-ro" transform="rotate(1.1)" /><use data-hf-id="hf-zmcw" href="#04-sync-ro" transform="rotate(2.3)" /><use data-hf-id="hf-ahb6" href="#04-sync-ro" transform="rotate(3.4)" /><use data-hf-id="hf-nf4o" href="#04-sync-ro" transform="rotate(4.5)" /><use data-hf-id="hf-fgy6" href="#04-sync-ro" transform="rotate(5.6)" /><use data-hf-id="hf-ilvx" href="#04-sync-ro" transform="rotate(6.8)" /><use data-hf-id="hf-pd8p" href="#04-sync-ro" transform="rotate(7.9)" /><g data-hf-id="hf-zlam" id="04-sync-rb"><path data-hf-id="hf-46xt" id="04-sync-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-ksjq" href="#04-sync-rb0" transform="rotate(15)" /><use data-hf-id="hf-m1y3" href="#04-sync-rb0" transform="rotate(30)" /><use data-hf-id="hf-s9u7" href="#04-sync-rb0" transform="rotate(45)" /><use data-hf-id="hf-ijrq" href="#04-sync-rb0" transform="rotate(60)" /><use data-hf-id="hf-0bzw" href="#04-sync-rb0" transform="rotate(75)" /><use data-hf-id="hf-ffup" href="#04-sync-rb0" transform="rotate(90)" /><use data-hf-id="hf-70tq" href="#04-sync-rb0" transform="rotate(105)" /><use data-hf-id="hf-0og3" href="#04-sync-rb0" transform="rotate(120)" /><use data-hf-id="hf-cnv9" href="#04-sync-rb0" transform="rotate(135)" /><use data-hf-id="hf-pqc4" href="#04-sync-rb0" transform="rotate(150)" /><use data-hf-id="hf-i8qs" href="#04-sync-rb0" transform="rotate(165)" /><use data-hf-id="hf-26mx" href="#04-sync-rb0" transform="rotate(180)" /><use data-hf-id="hf-5w3n" href="#04-sync-rb0" transform="rotate(195)" /><use data-hf-id="hf-o621" href="#04-sync-rb0" transform="rotate(210)" /><use data-hf-id="hf-1udp" href="#04-sync-rb0" transform="rotate(225)" /><use data-hf-id="hf-d6gc" href="#04-sync-rb0" transform="rotate(240)" /><use data-hf-id="hf-qsc2" href="#04-sync-rb0" transform="rotate(255)" /><use data-hf-id="hf-vti7" href="#04-sync-rb0" transform="rotate(270)" /><use data-hf-id="hf-dbxn" href="#04-sync-rb0" transform="rotate(285)" /><use data-hf-id="hf-mdpr" href="#04-sync-rb0" transform="rotate(300)" /><use data-hf-id="hf-5h6x" href="#04-sync-rb0" transform="rotate(315)" /><use data-hf-id="hf-wif0" href="#04-sync-rb0" transform="rotate(330)" /><use data-hf-id="hf-m16o" href="#04-sync-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-alfu" href="#04-sync-rb" transform="rotate(1.9)" /><use data-hf-id="hf-cajr" href="#04-sync-rb" transform="rotate(3.8)" /><use data-hf-id="hf-h9gn" href="#04-sync-rb" transform="rotate(5.6)" /><use data-hf-id="hf-8ce0" href="#04-sync-rb" transform="rotate(7.5)" /><use data-hf-id="hf-redx" href="#04-sync-rb" transform="rotate(9.4)" /><use data-hf-id="hf-6r0f" href="#04-sync-rb" transform="rotate(11.3)" /><use data-hf-id="hf-wnm7" href="#04-sync-rb" transform="rotate(13.1)" /><g data-hf-id="hf-k3ik" id="04-sync-rh"><path data-hf-id="hf-euws" id="04-sync-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-rb2k" href="#04-sync-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-2ply" href="#04-sync-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-4g0b" href="#04-sync-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-zns1" href="#04-sync-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-9dg0" href="#04-sync-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-qy5m" href="#04-sync-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-3dua" href="#04-sync-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-ljkd" href="#04-sync-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-4sme" href="#04-sync-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-469p" href="#04-sync-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-cfvc" href="#04-sync-rh" transform="rotate(5.5)" /><use data-hf-id="hf-mhc0" href="#04-sync-rh" transform="rotate(10.9)" /><use data-hf-id="hf-mp9d" href="#04-sync-rh" transform="rotate(16.4)" /><use data-hf-id="hf-wtt3" href="#04-sync-rh" transform="rotate(21.8)" /><use data-hf-id="hf-3o3o" href="#04-sync-rh" transform="rotate(27.3)" /><g data-hf-id="hf-3jen" id="04-sync-rc"><path data-hf-id="hf-eij6" id="04-sync-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-chpq" href="#04-sync-rc0" transform="rotate(30)" /><use data-hf-id="hf-qrqr" href="#04-sync-rc0" transform="rotate(60)" /><use data-hf-id="hf-wh58" href="#04-sync-rc0" transform="rotate(90)" /><use data-hf-id="hf-fbvo" href="#04-sync-rc0" transform="rotate(120)" /><use data-hf-id="hf-5e8j" href="#04-sync-rc0" transform="rotate(150)" /><use data-hf-id="hf-mpiu" href="#04-sync-rc0" transform="rotate(180)" /><use data-hf-id="hf-ulga" href="#04-sync-rc0" transform="rotate(210)" /><use data-hf-id="hf-w5d3" href="#04-sync-rc0" transform="rotate(240)" /><use data-hf-id="hf-5ic4" href="#04-sync-rc0" transform="rotate(270)" /><use data-hf-id="hf-znm4" href="#04-sync-rc0" transform="rotate(300)" /><use data-hf-id="hf-ok8v" href="#04-sync-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-x4uy" href="#04-sync-rc" transform="rotate(3.8)" /><use data-hf-id="hf-2dyp" href="#04-sync-rc" transform="rotate(7.5)" /><use data-hf-id="hf-51l0" href="#04-sync-rc" transform="rotate(11.3)" /><use data-hf-id="hf-qom7" href="#04-sync-rc" transform="rotate(15)" /><use data-hf-id="hf-5m36" href="#04-sync-rc" transform="rotate(18.8)" /><use data-hf-id="hf-zmek" href="#04-sync-rc" transform="rotate(22.5)" /><use data-hf-id="hf-23ti" href="#04-sync-rc" transform="rotate(26.3)" /><g data-hf-id="hf-n2s5" id="04-sync-ri"><path data-hf-id="hf-jos9" id="04-sync-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-3ihn" href="#04-sync-ri0" transform="rotate(40)" /><use data-hf-id="hf-r5p3" href="#04-sync-ri0" transform="rotate(80)" /><use data-hf-id="hf-4scu" href="#04-sync-ri0" transform="rotate(120)" /><use data-hf-id="hf-t5ey" href="#04-sync-ri0" transform="rotate(160)" /><use data-hf-id="hf-woi5" href="#04-sync-ri0" transform="rotate(200)" /><use data-hf-id="hf-o7u1" href="#04-sync-ri0" transform="rotate(240)" /><use data-hf-id="hf-dpet" href="#04-sync-ri0" transform="rotate(280)" /><use data-hf-id="hf-oafw" href="#04-sync-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-kkh6" href="#04-sync-ri" transform="rotate(6.7)" /><use data-hf-id="hf-haeo" href="#04-sync-ri" transform="rotate(13.3)" /><use data-hf-id="hf-y8o9" href="#04-sync-ri" transform="rotate(20)" /><use data-hf-id="hf-j6ds" href="#04-sync-ri" transform="rotate(26.7)" /><use data-hf-id="hf-qmne" href="#04-sync-ri" transform="rotate(33.3)" /></symbol>
+      <g data-hf-id="hf-73ue" id="04-sync-w" fill="none" stroke="currentColor"><path data-hf-id="hf-x81d" id="04-sync-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-kdfu" href="#04-sync-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-dkrd" href="#04-sync-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-4s7a" href="#04-sync-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-qhe6" href="#04-sync-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-ny1h" href="#04-sync-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-rgs4" href="#04-sync-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-949p" href="#04-sync-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-ly3u" href="#04-sync-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-tnet" href="#04-sync-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-9m8s" href="#04-sync-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-yegb" href="#04-sync-wl" transform="translate(300 75)" /><use data-hf-id="hf-7kgk" href="#04-sync-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-vssp" href="#04-sync-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-jqwb" href="#04-sync-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-ssza" href="#04-sync-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-bi95" href="#04-sync-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-7lvg" href="#04-sync-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-7yoz" href="#04-sync-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-9g4o" href="#04-sync-wl" transform="translate(0 150)" /><use data-hf-id="hf-q4g0" href="#04-sync-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-n95j" href="#04-sync-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-cnji" href="#04-sync-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-qxkr" href="#04-sync-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-77dk" href="#04-sync-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-m46m" href="#04-sync-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-7c3p" href="#04-sync-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-atl0" href="#04-sync-wl" transform="translate(300 225)" /><use data-hf-id="hf-lbef" href="#04-sync-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-vw1m" href="#04-sync-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-0fnn" href="#04-sync-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-xz5w" href="#04-sync-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-74i5" href="#04-sync-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-lf5m" href="#04-sync-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-tutn" href="#04-sync-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-n8e3" href="#04-sync-wl" transform="translate(0 300)" /><use data-hf-id="hf-w0ov" href="#04-sync-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-3cb2" href="#04-sync-wl" transform="translate(75 318.8)" /></g>
+      <pattern data-hf-id="hf-gcq3" id="04-sync-waves-teal" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-q0ms" href="#04-sync-w" /></pattern>
+      <pattern data-hf-id="hf-3pdp" id="04-sync-waves-ink" style="color:#0e1217" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-nah8" href="#04-sync-w" /></pattern>
+      </defs>
+    </svg>
+
+    <!-- track 0: ground -->
+    <div data-hf-id="hf-kf6q" id="04-sync-ground" class="clip 04-sync-layer" data-start="0" data-duration="6" data-track-index="0">
+      <svg data-hf-id="hf-5khs" id="04-sync-waves" viewBox="0 0 1080 1920" aria-hidden="true">
+        <rect data-hf-id="hf-zy0k" x="0" y="0" width="1080" height="1920" fill="url(#04-sync-waves-teal)" />
+      </svg>
+      <div data-hf-id="hf-f3um" id="04-sync-rosette">
+        <svg data-hf-id="hf-j1c0" viewBox="0 0 920 920" aria-hidden="true"><use data-hf-id="hf-icc1" href="#04-sync-rosette" x="0" y="0" width="920" height="920" /></svg>
+      </div>
+    </div>
+
+    <!-- track 1: passbook -->
+    <div data-hf-id="hf-s3a4" id="04-sync-booklayer" class="clip 04-sync-layer" data-start="0" data-duration="6" data-track-index="1">
+      <div data-hf-id="hf-a46j" id="04-sync-book">
+        <!-- fresh blank page underneath (handoff_out) -->
+        <div data-hf-id="hf-8v5f" id="04-sync-under" class="04-sync-page">
+          <svg data-hf-id="hf-cnkt" class="04-sync-paper-waves" viewBox="0 0 920 1240" aria-hidden="true">
+            <rect data-hf-id="hf-bqn2" width="920" height="1240" fill="url(#04-sync-waves-ink)" />
+          </svg>
+          <div data-hf-id="hf-v0zq" class="04-sync-rules"></div>
+          <div data-hf-id="hf-21wi" class="04-sync-margin" style="left: 68px"></div>
+          <div data-hf-id="hf-d78f" class="04-sync-margin" style="left: 72px"></div>
+        </div>
+
+        <!-- the page being printed -->
+        <div data-hf-id="hf-02fk" id="04-sync-top" class="04-sync-page">
+          <svg data-hf-id="hf-9v8x" class="04-sync-paper-waves" viewBox="0 0 920 1240" aria-hidden="true">
+            <rect data-hf-id="hf-fog2" width="920" height="1240" fill="url(#04-sync-waves-ink)" />
+          </svg>
+          <div data-hf-id="hf-anyi" class="04-sync-rules"></div>
+          <div data-hf-id="hf-6n7q" class="04-sync-margin" style="left: 68px"></div>
+          <div data-hf-id="hf-yqfz" class="04-sync-margin" style="left: 72px"></div>
+
+          <div data-hf-id="hf-sqw5" id="04-sync-badge">2</div>
+          <div data-hf-id="hf-u482" id="04-sync-title">一鍵同步</div>
+
+          <div data-hf-id="hf-9sn2" id="04-sync-clip">
+            <div data-hf-id="hf-tvk1" id="04-sync-crop-l" class="04-sync-crop"><img data-hf-id="hf-oera" src="assets/sync-data.webp" alt=""></div>
+            <div data-hf-id="hf-jsv5" id="04-sync-ellipsis">…</div>
+            <div data-hf-id="hf-cndr" id="04-sync-crop-r" class="04-sync-crop"><img data-hf-id="hf-1q1m" src="assets/sync-data.webp" alt=""></div>
+            <div data-hf-id="hf-s46s" id="04-sync-tape"></div>
+          </div>
+
+          <div data-hf-id="hf-pnhu" id="04-sync-row-0" class="04-sync-row" style="top: 420px">
+            <img data-hf-id="hf-mx4o" class="04-sync-logo" src="assets/logos/fubon.webp" alt="">
+            <div data-hf-id="hf-2rm7" class="04-sync-name">台北富邦</div>
+            <div data-hf-id="hf-yurw" class="04-sync-bar"><div data-hf-id="hf-vszq" class="04-sync-fill"></div></div>
+            <div data-hf-id="hf-0rul" class="04-sync-done"><svg data-hf-id="hf-b65t" viewBox="0 0 44 44"><path data-hf-id="hf-h5nk" d="M8 23 L18 33 L37 12" /></svg><span data-hf-id="hf-y0l9">已完成</span></div>
+          </div>
+          <div data-hf-id="hf-uymo" id="04-sync-row-1" class="04-sync-row" style="top: 528px">
+            <img data-hf-id="hf-1r5r" class="04-sync-logo" src="assets/logos/esun.webp" alt="">
+            <div data-hf-id="hf-qxju" class="04-sync-name">玉山銀行</div>
+            <div data-hf-id="hf-zk9w" class="04-sync-bar"><div data-hf-id="hf-tll6" class="04-sync-fill"></div></div>
+            <div data-hf-id="hf-h0cx" class="04-sync-done"><svg data-hf-id="hf-57mt" viewBox="0 0 44 44"><path data-hf-id="hf-6fvc" d="M8 23 L18 33 L37 12" /></svg><span data-hf-id="hf-lgnl">已完成</span></div>
+          </div>
+          <div data-hf-id="hf-kdjb" id="04-sync-row-2" class="04-sync-row" style="top: 636px">
+            <img data-hf-id="hf-mnbf" class="04-sync-logo" src="assets/logos/yuanta-bank.webp" alt="">
+            <div data-hf-id="hf-v65a" class="04-sync-name">元大銀行</div>
+            <div data-hf-id="hf-ydct" class="04-sync-bar"><div data-hf-id="hf-tzw7" class="04-sync-fill"></div></div>
+            <div data-hf-id="hf-i7a0" class="04-sync-done"><svg data-hf-id="hf-6ejw" viewBox="0 0 44 44"><path data-hf-id="hf-58y9" d="M8 23 L18 33 L37 12" /></svg><span data-hf-id="hf-mnko">已完成</span></div>
+          </div>
+          <div data-hf-id="hf-4o9i" id="04-sync-row-3" class="04-sync-row" style="top: 744px">
+            <img data-hf-id="hf-246o" class="04-sync-logo" src="assets/logos/maicoin.webp" alt="">
+            <div data-hf-id="hf-hc7k" class="04-sync-name">MaiCoin</div>
+            <div data-hf-id="hf-yrnu" class="04-sync-bar"><div data-hf-id="hf-ue78" class="04-sync-fill"></div></div>
+            <div data-hf-id="hf-hsyz" class="04-sync-done"><svg data-hf-id="hf-608v" viewBox="0 0 44 44"><path data-hf-id="hf-5n9a" d="M8 23 L18 33 L37 12" /></svg><span data-hf-id="hf-m99n">已完成</span></div>
+          </div>
+
+          <div data-hf-id="hf-t0uk" id="04-sync-sub">自動登入、下載對帳單</div>
+
+          <div data-hf-id="hf-xzrm" id="04-sync-chip">
+            <svg data-hf-id="hf-iwz0" viewBox="0 0 48 48" aria-hidden="true">
+              <path data-hf-id="hf-u7s1" d="M24 5 L40 11 V23 C40 33 33 40 24 43 C15 40 8 33 8 23 V11 Z" fill="none" stroke="#18a9a4" stroke-width="3.5" stroke-linejoin="round" />
+              <path data-hf-id="hf-2cmp" d="M16 24 L22 30 L32 18" fill="none" stroke="#18a9a4" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span data-hf-id="hf-x5np">驗證碼在本機自動辨識</span>
+          </div>
+
+          <div data-hf-id="hf-y4cl" id="04-sync-stamp" data-layout-allow-overlap="">
+            <svg data-hf-id="hf-ua0y" viewBox="-130 -130 260 260" aria-hidden="true">
+              <defs data-hf-id="hf-vl9d">
+                <path data-hf-id="hf-2lgm" id="04-sync-stamp-ring" d="M -97 0 A 97 97 0 1 1 97 0 A 97 97 0 1 1 -97 0" />
+              </defs>
+              <g data-hf-id="hf-1nw7" transform="rotate(-12)" color="#18a9a4">
+                <circle data-hf-id="hf-uotk" r="125" fill="none" stroke="#18a9a4" stroke-width="5" />
+                <circle data-hf-id="hf-94kv" r="114" fill="none" stroke="#18a9a4" stroke-width="1.5" />
+                <circle data-hf-id="hf-33o3" r="80" fill="none" stroke="#18a9a4" stroke-width="1.5" />
+                <use data-hf-id="hf-71fh" href="#04-sync-rosette" x="-78" y="-78" width="156" height="156" opacity="0.6" />
+                <text data-hf-id="hf-d7ng" fill="#18a9a4" font-size="21" font-weight="700" letter-spacing="3" font-family="PingFang TC, sans-serif">
+                  <textpath data-hf-id="hf-luh8" href="#04-sync-stamp-ring">ONE-CLICK SYNC · 一鍵同步 · ONE-CLICK SYNC · 一鍵同步 ·</textpath>
+                </text>
+                <circle data-hf-id="hf-5pf4" r="44" fill="#fbfaf6" stroke="#18a9a4" stroke-width="3" />
+                <text data-hf-id="hf-ykns" y="25" text-anchor="middle" fill="#18a9a4" font-size="70" font-weight="700" font-family="PingFang TC, sans-serif">2</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- track 2: cursor + click ripple -->
+    <div data-hf-id="hf-6g02" id="04-sync-cursorlayer" class="clip 04-sync-layer" data-start="0" data-duration="6" data-track-index="2">
+      <div data-hf-id="hf-mwsi" id="04-sync-ripple"></div>
+      <div data-hf-id="hf-gqcq" id="04-sync-cursor">
+        <svg data-hf-id="hf-puyu" viewBox="0 0 44 60" aria-hidden="true">
+          <path data-hf-id="hf-4dbs" d="M6 4 L6 48 L17 37 L25 55 L32 52 L24 34 L39 34 Z" fill="#0e1217" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" />
+        </svg>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        var root = document.querySelector('[data-composition-id="04-sync"]');
+        var q = function (sel) { return root.querySelector(sel); };
+        var qa = function (sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); };
+
+        var FRAME_START = 13.5;
+        var DUR = 6;
+        var ROT_RATE = 0.6;
+        var PRINT_DUR = 0.28;
+        var PRINT_EASE = "steps(8)";
+        var CLIP_HIDDEN = "inset(0% 100% 0% 0%)";
+        var CLIP_SHOWN = "inset(0% 0% 0% 0%)";
+
+        var tl = gsap.timeline({ paused: true });
+
+        function print(el, at) {
+          tl.fromTo(el, { clipPath: CLIP_HIDDEN }, { clipPath: CLIP_SHOWN, duration: PRINT_DUR, ease: PRINT_EASE }, at);
+        }
+
+        // ground: rosette angle continuous across the film
+        tl.fromTo(
+          q('[id="04-sync-rosette"]'),
+          { rotation: ROT_RATE * FRAME_START },
+          { rotation: ROT_RATE * (FRAME_START + DUR), duration: DUR, ease: "none" },
+          0
+        );
+
+        // Scene 1 (0.0–0.6): badge pops, title prints
+        tl.fromTo(q('[id="04-sync-badge"]'), { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "power3.out" }, 0.05);
+        print(q('[id="04-sync-title"]'), 0.25);
+
+        // Scene 2 (0.6–1.4): clipping lands, cursor glides and clicks 同步全部
+        tl.fromTo(
+          q('[id="04-sync-clip"]'),
+          { y: -60, scale: 1.08, rotation: 4, opacity: 0 },
+          { y: 0, scale: 1, rotation: 1.5, opacity: 1, duration: 0.42, ease: "power3.out" },
+          0.6
+        );
+        var cursor = q('[id="04-sync-cursor"]');
+        var TIP_X = 783 - 6;
+        var TIP_Y = 622 - 4;
+        tl.fromTo(cursor, { x: 980, y: 940, opacity: 0 }, { x: 980, y: 940, opacity: 1, duration: 0.12, ease: "power1.out" }, 0.62);
+        tl.to(cursor, { x: TIP_X, y: TIP_Y, duration: 0.45, ease: "power3.out" }, 0.7);
+        var CLICK_AT = 1.2;
+        tl.to(cursor, { scale: 0.85, duration: 0.08, ease: "power2.in", yoyo: true, repeat: 1 }, CLICK_AT);
+        tl.to(q('[id="04-sync-crop-r"]'), { scale: 0.95, duration: 0.08, ease: "power2.in", yoyo: true, repeat: 1 }, CLICK_AT);
+        tl.fromTo(
+          q('[id="04-sync-ripple"]'),
+          { scale: 0, opacity: 1 },
+          { scale: 4, opacity: 0, duration: 0.6, ease: "power2.out", immediateRender: false },
+          CLICK_AT + 0.02
+        );
+        tl.set(q('[id="04-sync-ripple"]'), { scale: 0, opacity: 0 }, 0);
+        // cursor leaves the page once the machine takes over
+        tl.to(cursor, { x: 1180, y: 1180, duration: 0.6, ease: "power2.in" }, 1.55);
+
+        // Scene 3 (1.5–4.3): rows print, bars fill, 已完成 + ✓
+        var ROW_START = 1.5;
+        var ROW_STAGGER = 0.65;
+        var FILL_DUR = 0.45;
+        qa(".\\30 4-sync-row").forEach(function (row, i) {
+          var at = ROW_START + i * ROW_STAGGER;
+          var bar = row.querySelector(".\\30 4-sync-bar");
+          var fill = row.querySelector(".\\30 4-sync-fill");
+          var done = row.querySelector(".\\30 4-sync-done");
+          var check = done.querySelector("path");
+          var len = check.getTotalLength();
+          check.style.strokeDasharray = len;
+
+          print(row, at);
+          tl.fromTo(fill, { scaleX: 0 }, { scaleX: 1, duration: FILL_DUR, ease: "power2.out" }, at + PRINT_DUR);
+          var doneAt = at + PRINT_DUR + FILL_DUR + 0.02;
+          tl.fromTo(bar, { clipPath: "inset(0% 0% 0% 0%)" }, { clipPath: "inset(0% 61.5% 0% 0%)", duration: 0.12, ease: "steps(4)" }, doneAt);
+          tl.fromTo(done, { clipPath: CLIP_HIDDEN }, { clipPath: CLIP_SHOWN, duration: 0.2, ease: "steps(6)" }, doneAt + 0.04);
+          tl.fromTo(check, { strokeDashoffset: len }, { strokeDashoffset: 0, duration: 0.22, ease: "power2.out" }, doneAt + 0.04);
+        });
+
+        // Scene 4 (2.6–3.4): sub-line prints
+        print(q('[id="04-sync-sub"]'), 2.6);
+
+        // Scene 5 (3.4–4.3): chip springs in from its left edge
+        tl.fromTo(
+          q('[id="04-sync-chip"]'),
+          { scale: 0, opacity: 0, y: 16 },
+          { scale: 1, opacity: 1, y: 0, duration: 0.5, ease: "power3.out" },
+          3.4
+        );
+
+        // Scene 6 (4.5–4.8): stamp slams + book shake
+        var STAMP_AT = 4.5;
+        tl.fromTo(
+          q('[id="04-sync-stamp"]'),
+          { scale: 1.6, opacity: 0 },
+          { scale: 1, opacity: 0.92, duration: 0.18, ease: "expo.out" },
+          STAMP_AT
+        );
+        var book = q('[id="04-sync-book"]');
+        var shake = [3, -2.4, 1.6, -0.8, 0];
+        shake.forEach(function (x, i) {
+          tl.to(book, { x: x, y: i % 2 ? -x * 0.5 : x * 0.5, duration: 0.05, ease: "none" }, STAMP_AT + 0.18 + i * 0.05);
+        });
+
+        // Scene 7 (4.8–5.4): hold
+
+        // Scene 8 (5.4–6.0): the filled page turns over on the spine
+        var TURN_AT = 5.4;
+        var TURN_DUR = 0.55;
+        var top = q('[id="04-sync-top"]');
+        tl.fromTo(top, { rotationY: 0 }, { rotationY: -180, duration: TURN_DUR, ease: "power2.inOut" }, TURN_AT);
+        tl.fromTo(top, { opacity: 1 }, { opacity: 0, duration: 0.1, ease: "none", immediateRender: false }, TURN_AT + TURN_DUR * 0.45);
+
+        window.__timelines = window.__timelines || {};
+        window.__timelines["04-sync"] = tl;
+      })();
+    </script>
+  </div>
+</template>

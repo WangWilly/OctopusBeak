@@ -1,0 +1,462 @@
+<template>
+  <style>
+    @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"), local("PingFang TC Medium"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+    @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("Menlo-Regular"); }
+    @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("Menlo-Bold"); }
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      font-family: "PingFang TC", sans-serif;
+    }
+    [id="02-cover-ground"],
+    [id="02-cover-world"] {
+      position: absolute;
+      inset: 0;
+      width: 1080px;
+      height: 1920px;
+    }
+    [id="02-cover-ground"] {
+      background: linear-gradient(135deg, #071f4a 0%, #0d4672 52%, #12808f 100%);
+      overflow: hidden;
+    }
+    [id="02-cover-defs"] {
+      position: absolute;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+    }
+    [id="02-cover-waves"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1080px;
+      height: 1920px;
+      opacity: 0.5;
+    }
+    [id="02-cover-ground-rosette"] {
+      position: absolute;
+      left: -10px;
+      top: 410px;
+      width: 1100px;
+      height: 1100px;
+      color: #edf4f1;
+      opacity: 0.2;
+    }
+    [id="02-cover-ground-rosette"] svg {
+      display: block;
+      width: 1100px;
+      height: 1100px;
+    }
+
+    /* headline (handoff_in from 01-hook) */
+    [id="02-cover-headline"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1080px;
+      height: 1920px;
+      overflow: visible;
+    }
+    [id="02-cover-headline"] text {
+      font-family: "PingFang TC", sans-serif;
+      font-size: 104px;
+      font-weight: 600;
+    }
+
+    /* passbook — shared geometry: 920x1240 at (80, 300) */
+    [id="02-cover-book"] {
+      position: absolute;
+      left: 80px;
+      top: 300px;
+      width: 920px;
+      height: 1240px;
+      perspective: 2400px;
+    }
+    [id="02-cover-page"],
+    [id="02-cover-cover"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 920px;
+      height: 1240px;
+      border-radius: 10px 28px 28px 10px;
+      overflow: hidden;
+    }
+    [id="02-cover-page"] {
+      background:
+        radial-gradient(ellipse 80% 70% at 100% 100%, rgba(237, 244, 241, 1) 0%, rgba(237, 244, 241, 0) 100%),
+        #fbfaf6;
+      box-shadow: 0 40px 80px rgba(0, 0, 0, 0.35);
+    }
+    .c02-page-waves {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 920px;
+      height: 1240px;
+      opacity: 0.06;
+    }
+    .c02-page-rules {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 220px; /* canvas y = 520 */
+      height: 937px; /* 14 lines: 520 … 1456 */
+      background: repeating-linear-gradient(to bottom, #d9e2df 0px, #d9e2df 1px, transparent 1px, transparent 72px);
+    }
+    .c02-page-micro {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: #c9d8d4;
+    }
+    [id="02-cover-cover"] {
+      background: #0a2a5c;
+      transform-origin: left center;
+      box-shadow: 0 40px 80px rgba(0, 0, 0, 0.35);
+    }
+    .c02-cover-rosette {
+      position: absolute;
+      left: 80px; /* 760px centered on the 920x1240 cover */
+      top: 240px;
+      width: 760px;
+      height: 760px;
+      overflow: visible;
+    }
+    .c02-cover-border {
+      position: absolute;
+      inset: 28px;
+      border: 2px solid #edf4f1;
+      border-radius: 4px 14px 14px 4px;
+    }
+    [id="02-cover-icon"] {
+      position: absolute;
+      left: 370px; /* canvas center (540, 760) */
+      top: 370px;
+      width: 180px;
+      height: 180px;
+      display: block;
+      filter: drop-shadow(0 14px 24px rgba(0, 0, 0, 0.35));
+    }
+    .c02-line {
+      position: absolute;
+      left: 0;
+      width: 920px;
+      text-align: center;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .c02-line-title {
+      top: 586px; /* center y = 930 */
+      height: 88px;
+    }
+    [id="02-cover-title"] {
+      position: relative;
+      display: inline-block;
+      font-size: 88px;
+      font-weight: 700;
+      color: #ffffff;
+      line-height: 88px;
+    }
+    [id="02-cover-titletext"] {
+      display: inline-block;
+    }
+    [id="02-cover-hand"] {
+      position: absolute;
+      right: 100%;
+      margin-right: 22px;
+      bottom: 6px;
+      font-size: 56px;
+      font-weight: 600;
+      color: #ffffff;
+      line-height: 56px;
+      white-space: nowrap;
+    }
+    .c02-line-sub {
+      top: 690px; /* center y = 1010 */
+      height: 40px;
+    }
+    [id="02-cover-sub"] {
+      display: inline-block;
+      font-size: 40px;
+      line-height: 40px;
+      letter-spacing: 0.5em;
+      padding-left: 0.5em;
+      color: #edf4f1;
+      font-weight: 500;
+    }
+    .c02-line-tag {
+      top: 786px; /* center y = 1110 */
+      height: 48px;
+    }
+    [id="02-cover-tag"] {
+      display: inline-block;
+      font-size: 48px;
+      line-height: 48px;
+      color: #5fd4c9;
+      font-weight: 500;
+    }
+
+    /* logo tiles (handoff_in pile) */
+    .c02-pivot {
+      position: absolute;
+      left: 540px;
+      top: 760px;
+      width: 0;
+      height: 0;
+    }
+    .c02-tile {
+      position: absolute;
+      left: -100px;
+      top: -100px;
+      width: 200px;
+      height: 200px;
+      border-radius: 44px;
+      background: #ffffff;
+      box-shadow: 0 18px 36px rgba(0, 0, 0, 0.3);
+    }
+    .c02-tile img {
+      position: absolute;
+      left: 25px;
+      top: 25px;
+      width: 150px;
+      height: 150px;
+      object-fit: contain;
+      display: block;
+    }
+    .c02-ghost .c02-tile {
+      box-shadow: none;
+    }
+  </style>
+
+  <div data-hf-id="hf-kh8n" id="root" data-composition-id="02-cover" data-width="1080" data-height="1920">
+    <!-- ground: gradient + waves + rotating rosette (film-continuous angle) -->
+    <div data-hf-id="hf-mh85" id="02-cover-ground" class="clip" data-start="0" data-duration="4.5" data-track-index="0">
+      <svg data-hf-id="hf-aw9k" id="02-cover-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs data-hf-id="hf-mh0t">
+<symbol data-hf-id="hf-z8sz" id="02-cover-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g data-hf-id="hf-mb81" id="02-cover-ro"><path data-hf-id="hf-ww6r" id="02-cover-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-ouhe" href="#02-cover-ro0" transform="rotate(9)" /><use data-hf-id="hf-hwko" href="#02-cover-ro0" transform="rotate(18)" /><use data-hf-id="hf-dhdm" href="#02-cover-ro0" transform="rotate(27)" /><use data-hf-id="hf-sn90" href="#02-cover-ro0" transform="rotate(36)" /><use data-hf-id="hf-8o4q" href="#02-cover-ro0" transform="rotate(45)" /><use data-hf-id="hf-6uaw" href="#02-cover-ro0" transform="rotate(54)" /><use data-hf-id="hf-t16y" href="#02-cover-ro0" transform="rotate(63)" /><use data-hf-id="hf-naho" href="#02-cover-ro0" transform="rotate(72)" /><use data-hf-id="hf-q6mi" href="#02-cover-ro0" transform="rotate(81)" /><use data-hf-id="hf-ocso" href="#02-cover-ro0" transform="rotate(90)" /><use data-hf-id="hf-gu5b" href="#02-cover-ro0" transform="rotate(99)" /><use data-hf-id="hf-afi2" href="#02-cover-ro0" transform="rotate(108)" /><use data-hf-id="hf-4wiq" href="#02-cover-ro0" transform="rotate(117)" /><use data-hf-id="hf-cuie" href="#02-cover-ro0" transform="rotate(126)" /><use data-hf-id="hf-kc3q" href="#02-cover-ro0" transform="rotate(135)" /><use data-hf-id="hf-x5mi" href="#02-cover-ro0" transform="rotate(144)" /><use data-hf-id="hf-5c36" href="#02-cover-ro0" transform="rotate(153)" /><use data-hf-id="hf-3jr2" href="#02-cover-ro0" transform="rotate(162)" /><use data-hf-id="hf-d8y6" href="#02-cover-ro0" transform="rotate(171)" /><use data-hf-id="hf-cpfu" href="#02-cover-ro0" transform="rotate(180)" /><use data-hf-id="hf-6x6p" href="#02-cover-ro0" transform="rotate(189)" /><use data-hf-id="hf-8r6z" href="#02-cover-ro0" transform="rotate(198)" /><use data-hf-id="hf-oxt2" href="#02-cover-ro0" transform="rotate(207)" /><use data-hf-id="hf-9myo" href="#02-cover-ro0" transform="rotate(216)" /><use data-hf-id="hf-hsoa" href="#02-cover-ro0" transform="rotate(225)" /><use data-hf-id="hf-fyug" href="#02-cover-ro0" transform="rotate(234)" /><use data-hf-id="hf-blli" href="#02-cover-ro0" transform="rotate(243)" /><use data-hf-id="hf-mzp4" href="#02-cover-ro0" transform="rotate(252)" /><use data-hf-id="hf-4hky" href="#02-cover-ro0" transform="rotate(261)" /><use data-hf-id="hf-2js0" href="#02-cover-ro0" transform="rotate(270)" /><use data-hf-id="hf-0h1j" href="#02-cover-ro0" transform="rotate(279)" /><use data-hf-id="hf-qc9z" href="#02-cover-ro0" transform="rotate(288)" /><use data-hf-id="hf-mk7b" href="#02-cover-ro0" transform="rotate(297)" /><use data-hf-id="hf-0c4e" href="#02-cover-ro0" transform="rotate(306)" /><use data-hf-id="hf-4nfy" href="#02-cover-ro0" transform="rotate(315)" /><use data-hf-id="hf-r46u" href="#02-cover-ro0" transform="rotate(324)" /><use data-hf-id="hf-yls6" href="#02-cover-ro0" transform="rotate(333)" /><use data-hf-id="hf-dr6u" href="#02-cover-ro0" transform="rotate(342)" /><use data-hf-id="hf-lwja" href="#02-cover-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-gtmr" href="#02-cover-ro" transform="rotate(1.1)" /><use data-hf-id="hf-u9mw" href="#02-cover-ro" transform="rotate(2.3)" /><use data-hf-id="hf-0lne" href="#02-cover-ro" transform="rotate(3.4)" /><use data-hf-id="hf-ytm8" href="#02-cover-ro" transform="rotate(4.5)" /><use data-hf-id="hf-5f8m" href="#02-cover-ro" transform="rotate(5.6)" /><use data-hf-id="hf-2mk5" href="#02-cover-ro" transform="rotate(6.8)" /><use data-hf-id="hf-0nm9" href="#02-cover-ro" transform="rotate(7.9)" /><g data-hf-id="hf-hhys" id="02-cover-rb"><path data-hf-id="hf-w0o9" id="02-cover-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-hqta" href="#02-cover-rb0" transform="rotate(15)" /><use data-hf-id="hf-3ifn" href="#02-cover-rb0" transform="rotate(30)" /><use data-hf-id="hf-dsav" href="#02-cover-rb0" transform="rotate(45)" /><use data-hf-id="hf-p8em" href="#02-cover-rb0" transform="rotate(60)" /><use data-hf-id="hf-l2qc" href="#02-cover-rb0" transform="rotate(75)" /><use data-hf-id="hf-cwmh" href="#02-cover-rb0" transform="rotate(90)" /><use data-hf-id="hf-90pi" href="#02-cover-rb0" transform="rotate(105)" /><use data-hf-id="hf-31uz" href="#02-cover-rb0" transform="rotate(120)" /><use data-hf-id="hf-m9j1" href="#02-cover-rb0" transform="rotate(135)" /><use data-hf-id="hf-w1r0" href="#02-cover-rb0" transform="rotate(150)" /><use data-hf-id="hf-u8jw" href="#02-cover-rb0" transform="rotate(165)" /><use data-hf-id="hf-4brl" href="#02-cover-rb0" transform="rotate(180)" /><use data-hf-id="hf-bbh7" href="#02-cover-rb0" transform="rotate(195)" /><use data-hf-id="hf-aevl" href="#02-cover-rb0" transform="rotate(210)" /><use data-hf-id="hf-hxat" href="#02-cover-rb0" transform="rotate(225)" /><use data-hf-id="hf-qxsk" href="#02-cover-rb0" transform="rotate(240)" /><use data-hf-id="hf-at96" href="#02-cover-rb0" transform="rotate(255)" /><use data-hf-id="hf-hktj" href="#02-cover-rb0" transform="rotate(270)" /><use data-hf-id="hf-b5j7" href="#02-cover-rb0" transform="rotate(285)" /><use data-hf-id="hf-2gmv" href="#02-cover-rb0" transform="rotate(300)" /><use data-hf-id="hf-aoa9" href="#02-cover-rb0" transform="rotate(315)" /><use data-hf-id="hf-0rc4" href="#02-cover-rb0" transform="rotate(330)" /><use data-hf-id="hf-243s" href="#02-cover-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-un36" href="#02-cover-rb" transform="rotate(1.9)" /><use data-hf-id="hf-ztxb" href="#02-cover-rb" transform="rotate(3.8)" /><use data-hf-id="hf-ixtb" href="#02-cover-rb" transform="rotate(5.6)" /><use data-hf-id="hf-764g" href="#02-cover-rb" transform="rotate(7.5)" /><use data-hf-id="hf-72ct" href="#02-cover-rb" transform="rotate(9.4)" /><use data-hf-id="hf-ueon" href="#02-cover-rb" transform="rotate(11.3)" /><use data-hf-id="hf-6abr" href="#02-cover-rb" transform="rotate(13.1)" /><g data-hf-id="hf-dnc6" id="02-cover-rh"><path data-hf-id="hf-c2s6" id="02-cover-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-bbb8" href="#02-cover-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-jwhq" href="#02-cover-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-cd6r" href="#02-cover-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-c76h" href="#02-cover-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-0uuw" href="#02-cover-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-2kaq" href="#02-cover-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-shyi" href="#02-cover-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-bdlx" href="#02-cover-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-i55q" href="#02-cover-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-byg5" href="#02-cover-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-bsog" href="#02-cover-rh" transform="rotate(5.5)" /><use data-hf-id="hf-nnnc" href="#02-cover-rh" transform="rotate(10.9)" /><use data-hf-id="hf-4weh" href="#02-cover-rh" transform="rotate(16.4)" /><use data-hf-id="hf-03wf" href="#02-cover-rh" transform="rotate(21.8)" /><use data-hf-id="hf-h564" href="#02-cover-rh" transform="rotate(27.3)" /><g data-hf-id="hf-i9ml" id="02-cover-rc"><path data-hf-id="hf-p30m" id="02-cover-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-jajq" href="#02-cover-rc0" transform="rotate(30)" /><use data-hf-id="hf-9w2z" href="#02-cover-rc0" transform="rotate(60)" /><use data-hf-id="hf-rowk" href="#02-cover-rc0" transform="rotate(90)" /><use data-hf-id="hf-l44s" href="#02-cover-rc0" transform="rotate(120)" /><use data-hf-id="hf-ydtn" href="#02-cover-rc0" transform="rotate(150)" /><use data-hf-id="hf-ep3i" href="#02-cover-rc0" transform="rotate(180)" /><use data-hf-id="hf-0dpe" href="#02-cover-rc0" transform="rotate(210)" /><use data-hf-id="hf-p4y7" href="#02-cover-rc0" transform="rotate(240)" /><use data-hf-id="hf-2fx8" href="#02-cover-rc0" transform="rotate(270)" /><use data-hf-id="hf-w3as" href="#02-cover-rc0" transform="rotate(300)" /><use data-hf-id="hf-iocn" href="#02-cover-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-0wmq" href="#02-cover-rc" transform="rotate(3.8)" /><use data-hf-id="hf-wxo9" href="#02-cover-rc" transform="rotate(7.5)" /><use data-hf-id="hf-vgn0" href="#02-cover-rc" transform="rotate(11.3)" /><use data-hf-id="hf-hkx3" href="#02-cover-rc" transform="rotate(15)" /><use data-hf-id="hf-4896" href="#02-cover-rc" transform="rotate(18.8)" /><use data-hf-id="hf-zb9g" href="#02-cover-rc" transform="rotate(22.5)" /><use data-hf-id="hf-s166" href="#02-cover-rc" transform="rotate(26.3)" /><g data-hf-id="hf-hlg7" id="02-cover-ri"><path data-hf-id="hf-lntn" id="02-cover-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-uxoj" href="#02-cover-ri0" transform="rotate(40)" /><use data-hf-id="hf-9rpr" href="#02-cover-ri0" transform="rotate(80)" /><use data-hf-id="hf-zkkm" href="#02-cover-ri0" transform="rotate(120)" /><use data-hf-id="hf-d1sy" href="#02-cover-ri0" transform="rotate(160)" /><use data-hf-id="hf-eef9" href="#02-cover-ri0" transform="rotate(200)" /><use data-hf-id="hf-id8h" href="#02-cover-ri0" transform="rotate(240)" /><use data-hf-id="hf-jt4d" href="#02-cover-ri0" transform="rotate(280)" /><use data-hf-id="hf-0gok" href="#02-cover-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-fxc2" href="#02-cover-ri" transform="rotate(6.7)" /><use data-hf-id="hf-47dk" href="#02-cover-ri" transform="rotate(13.3)" /><use data-hf-id="hf-iegx" href="#02-cover-ri" transform="rotate(20)" /><use data-hf-id="hf-gdfc" href="#02-cover-ri" transform="rotate(26.7)" /><use data-hf-id="hf-qytu" href="#02-cover-ri" transform="rotate(33.3)" /></symbol>
+<g data-hf-id="hf-nd98" id="02-cover-w" fill="none" stroke="currentColor"><path data-hf-id="hf-fb7t" id="02-cover-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-xswy" href="#02-cover-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-tq4x" href="#02-cover-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-hlha" href="#02-cover-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-3846" href="#02-cover-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-5xql" href="#02-cover-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-f44c" href="#02-cover-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-aaud" href="#02-cover-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-1foi" href="#02-cover-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-o3v1" href="#02-cover-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-cm1g" href="#02-cover-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-lrk3" href="#02-cover-wl" transform="translate(300 75)" /><use data-hf-id="hf-av30" href="#02-cover-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-ex2p" href="#02-cover-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-361f" href="#02-cover-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-idse" href="#02-cover-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-zua9" href="#02-cover-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-dw38" href="#02-cover-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-csiz" href="#02-cover-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-e900" href="#02-cover-wl" transform="translate(0 150)" /><use data-hf-id="hf-eyiw" href="#02-cover-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-rclb" href="#02-cover-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-47ie" href="#02-cover-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-0e2r" href="#02-cover-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-crcg" href="#02-cover-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-s6hy" href="#02-cover-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-7c0d" href="#02-cover-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-8fxo" href="#02-cover-wl" transform="translate(300 225)" /><use data-hf-id="hf-q3pb" href="#02-cover-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-7c9u" href="#02-cover-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-lgqz" href="#02-cover-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-f35o" href="#02-cover-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-5511" href="#02-cover-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-pwde" href="#02-cover-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-kx2b" href="#02-cover-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-mn37" href="#02-cover-wl" transform="translate(0 300)" /><use data-hf-id="hf-afon" href="#02-cover-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-2zau" href="#02-cover-wl" transform="translate(75 318.8)" /></g>
+<pattern data-hf-id="hf-jvfd" id="02-cover-waves-teal" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-dbj0" href="#02-cover-w" /></pattern>
+<pattern data-hf-id="hf-xojp" id="02-cover-waves-ink" style="color:#0a2a5c" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-idn8" href="#02-cover-w" /></pattern>
+          <lineargradient data-hf-id="hf-4iyr" id="02-cover-headgrad" x1="0" y1="0" x2="0" y2="1">
+            <stop data-hf-id="hf-qu5k" offset="0.15" stop-color="#ffffff" />
+            <stop data-hf-id="hf-zupt" offset="0.78" stop-color="#c4f5ee" />
+            <stop data-hf-id="hf-n14o" offset="1" stop-color="#7adbd1" />
+          </lineargradient>
+          <lineargradient data-hf-id="hf-32um" id="02-cover-sheengrad" x1="0" y1="0" x2="1" y2="0">
+            <stop data-hf-id="hf-8srp" offset="0" stop-color="#ffffff" stop-opacity="0" />
+            <stop data-hf-id="hf-cu53" offset="0.5" stop-color="#ffffff" stop-opacity="1" />
+            <stop data-hf-id="hf-wfhg" offset="1" stop-color="#ffffff" stop-opacity="0" />
+          </lineargradient>
+          <mask data-hf-id="hf-xfqp" id="02-cover-sheenmask" maskUnits="userSpaceOnUse" x="-460" y="-460" width="920" height="920">
+            <g data-hf-id="hf-pfwd" transform="rotate(-28)">
+              <rect data-hf-id="hf-9y1u" id="02-cover-sheenband" x="-180" y="-900" width="360" height="1800" fill="url(#02-cover-sheengrad)" />
+            </g>
+          </mask>
+        </defs>
+      </svg>
+      <svg data-hf-id="hf-ne7i" id="02-cover-waves" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" aria-hidden="true">
+        <rect data-hf-id="hf-4kj0" x="0" y="0" width="1080" height="1920" fill="url(#02-cover-waves-teal)" />
+      </svg>
+      <div data-hf-id="hf-uo96" id="02-cover-ground-rosette">
+        <svg data-hf-id="hf-func" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1100" aria-hidden="true">
+          <use data-hf-id="hf-pfu7" href="#02-cover-rosette" x="0" y="0" width="1100" height="1100" />
+        </svg>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-w2rl" id="02-cover-world" class="clip" data-start="0" data-duration="4.5" data-track-index="1">
+      <!-- the passbook: page underneath, cover on top; rises from below behind the tile pile -->
+      <div data-hf-id="hf-khit" id="02-cover-book">
+        <div data-hf-id="hf-wqir" id="02-cover-page">
+          <svg data-hf-id="hf-frmt" class="c02-page-waves" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1240" aria-hidden="true">
+            <rect data-hf-id="hf-s7vj" x="0" y="0" width="920" height="1240" fill="url(#02-cover-waves-ink)" />
+          </svg>
+          <div data-hf-id="hf-qu8x" class="c02-page-rules"></div>
+          <div data-hf-id="hf-1yzw" class="c02-page-micro" style="left: 67px"></div>
+          <div data-hf-id="hf-napu" class="c02-page-micro" style="left: 72px"></div>
+        </div>
+        <div data-hf-id="hf-vr23" id="02-cover-cover">
+          <svg data-hf-id="hf-fvct" class="c02-cover-rosette" xmlns="http://www.w3.org/2000/svg" viewBox="-460 -460 920 920" aria-hidden="true">
+            <use data-hf-id="hf-hz8b" href="#02-cover-rosette" x="-460" y="-460" width="920" height="920" style="color: #edf4f1" opacity="0.35" />
+            <g data-hf-id="hf-h27r" mask="url(#02-cover-sheenmask)">
+              <use data-hf-id="hf-wqnq" href="#02-cover-rosette" x="-460" y="-460" width="920" height="920" style="color: #ffffff" stroke-width="2.2" opacity="0.25" />
+              <circle data-hf-id="hf-574l" cx="0" cy="0" r="450" fill="#ffffff" opacity="0.07" />
+            </g>
+          </svg>
+          <div data-hf-id="hf-1s2m" class="c02-cover-border"></div>
+          <img data-hf-id="hf-olwq" id="02-cover-icon" src="assets/app-icon-180.png" alt="">
+          <div data-hf-id="hf-lic5" class="c02-line c02-line-title">
+            <span data-hf-id="hf-n8c3" id="02-cover-title"><span data-hf-id="hf-ckr2" id="02-cover-hand">Meet</span><span data-hf-id="hf-gpxq" id="02-cover-titletext">OctopusBeak</span></span>
+          </div>
+          <div data-hf-id="hf-i5ax" class="c02-line c02-line-sub"><span data-hf-id="hf-ardx" id="02-cover-sub">PASSBOOK</span></div>
+          <div data-hf-id="hf-zdi7" class="c02-line c02-line-tag"><span data-hf-id="hf-31to" id="02-cover-tag">Auto-collects on your Mac</span></div>
+        </div>
+      </div>
+
+      <!-- headline carried in from 01-hook: x=90, baselines 420 / 560, 104px -->
+      <svg data-hf-id="hf-ffd4" id="02-cover-headline" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" aria-hidden="true">
+        <g data-hf-id="hf-kti3" id="02-cover-head1"><text data-hf-id="hf-nfu1" x="90" y="420" fill="url(#02-cover-headgrad)">12 banks,</text></g>
+        <g data-hf-id="hf-c5m8" id="02-cover-head2"><text data-hf-id="hf-3sci" x="90" y="560" fill="url(#02-cover-headgrad)">12 logins a month?</text></g>
+      </svg>
+
+      <!-- echo ghosts (behind) then the twelve tiles; filled by the script -->
+      <div data-hf-id="hf-zapu" id="02-cover-ghosts"></div>
+      <div data-hf-id="hf-za5p" id="02-cover-tiles"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      var ID = "02-cover";
+      var host = document.querySelector('[data-composition-id="' + ID + '"]');
+      var root = host.matches("#root") ? host : host.querySelector("#root") || host;
+      function $(id) {
+        return root.querySelector('[id="' + ID + "-" + id + '"]');
+      }
+
+      // ---- tiles: built deterministically from the 01-hook pile spec ----
+      var LOGOS = [
+        "fubon", "esun", "yuanta-bank",
+        "yuanta-securities", "cathay", "hncb",
+        "ctbc", "post", "sinopac",
+        "linebank", "einvoice", "maicoin"
+      ];
+      var ROT = [-6, 4, -3, 7, -5, 2, 5, -7, 3, -4, 6, -2];
+      var COLS = [260, 540, 820];
+      var ROWS = [820, 1040, 1260, 1480];
+      var CX = 540, CY = 760; // icon spot on the cover
+      var GHOST_LAG = [0.035, 0.07, 0.105];
+      var GHOST_OP = [0.42, 0.26, 0.12];
+
+      function makeTile(logo, extraClass) {
+        var pivot = document.createElement("div");
+        pivot.className = "c02-pivot" + (extraClass ? " " + extraClass : "");
+        var tile = document.createElement("div");
+        tile.className = "c02-tile";
+        var img = document.createElement("img");
+        img.src = "assets/logos/" + logo + ".webp";
+        img.alt = "";
+        tile.appendChild(img);
+        pivot.appendChild(tile);
+        return { pivot: pivot, tile: tile };
+      }
+
+      var tiles = [];
+      var ghosts = [];
+      var tilesLayer = $("tiles");
+      var ghostsLayer = $("ghosts");
+      for (var i = 0; i < 12; i++) {
+        var t = makeTile(LOGOS[i]);
+        tilesLayer.appendChild(t.pivot);
+        tiles.push(t);
+        var g = [];
+        for (var k = 0; k < 3; k++) {
+          var gh = makeTile(LOGOS[i], "c02-ghost");
+          ghostsLayer.appendChild(gh.pivot);
+          g.push(gh);
+        }
+        ghosts.push(g);
+      }
+
+      var tl = gsap.timeline({ paused: true });
+      var DUR = 4.5;
+      var FRAME_START = 4.0;
+
+      // ---- ground: rosette angle continuous across the film (0.6 deg/s) ----
+      tl.fromTo(
+        $("ground-rosette"),
+        { rotation: 0.6 * FRAME_START },
+        { rotation: 0.6 * (FRAME_START + DUR), duration: DUR, ease: "none" },
+        0
+      );
+
+      // ---- Scene 1 (0.0–0.6): headline lifts out, cover rises from below behind the pile ----
+      tl.fromTo([$("head1"), $("head2")], { y: 0, opacity: 1 }, { y: -60, opacity: 0, duration: 0.6, ease: "power3.out" }, 0);
+      // starts fully below the canvas so the cut from 01-hook shows no cover yet (spec: +900)
+      tl.fromTo($("book"), { y: 1640 }, { y: 0, duration: 0.6, ease: "expo.out" }, 0);
+
+      // ---- Scene 2 (0.5–1.6): tiles spiral into the icon spot, 3-ghost echo trail ----
+      var SPIN = 150;
+      var TRAVEL = 0.55;
+      function travel(p, tile, i, t0, op) {
+        var x0 = COLS[i % 3] - CX;
+        var y0 = ROWS[Math.floor(i / 3)] - CY;
+        tl.fromTo(p, { rotation: 0 }, { rotation: SPIN, duration: TRAVEL, ease: "power3.in" }, t0);
+        tl.fromTo(
+          tile,
+          { x: x0, y: y0, rotation: ROT[i], scale: 1 },
+          { x: 0, y: 0, rotation: -SPIN, scale: 0.2, duration: TRAVEL, ease: "power3.in" },
+          t0
+        );
+        if (op !== undefined) {
+          tl.fromTo(p, { opacity: 0 }, { opacity: op, duration: 0.001, ease: "none", immediateRender: true }, t0);
+        }
+        tl.set(p, { opacity: 0 }, t0 + TRAVEL);
+      }
+      for (var j = 0; j < 12; j++) {
+        var start = 0.5 + j * 0.05;
+        travel(tiles[j].pivot, tiles[j].tile, j, start);
+        for (var m = 0; m < 3; m++) {
+          travel(ghosts[j][m].pivot, ghosts[j][m].tile, j, start + GHOST_LAG[m], GHOST_OP[m]);
+        }
+      }
+      // icon pulse as the last tile lands (1.6s)
+      var landed = 0.5 + 11 * 0.05 + TRAVEL;
+      tl.fromTo($("icon"), { scale: 1 }, { scale: 1.08, duration: 0.12, ease: "power3.out" }, landed);
+      tl.to($("icon"), { scale: 1, duration: 0.28, ease: "power3.out" }, landed + 0.12);
+
+      // ---- Scene 3 (1.4–2.6): cover type carries the line — waterfall arrivals with stepped clip ----
+      var F = 1 / 60;
+      function arrive(el, at, travelY, dur) {
+        tl.set(el, { opacity: 1, y: travelY }, at);
+        tl.to(el, { y: 0, duration: dur, ease: "power4.out" }, at);
+        tl.fromTo(
+          el,
+          { clipPath: "inset(0% 0% 100% 0%)" },
+          { clipPath: "inset(0% 0% 0% 0%)", duration: dur + 0.06, ease: "steps(6)", immediateRender: false },
+          at
+        );
+      }
+      var hand = $("hand"), sub = $("sub"), tag = $("tag");
+      gsap.set([hand, sub, tag], { opacity: 0 });
+      var titleText = $("titletext");
+      gsap.set(titleText, { opacity: 0 });
+
+      var t1 = 1.4;
+      arrive(hand, t1, 48, 0.16);
+      var t2 = 1.6; // anchor lands with the icon pulse
+      arrive(titleText, t2, 76, 0.2);
+      var t3 = t2 + 0.2 + 2 * F;
+      arrive(sub, t3, 44, 0.15);
+      var t4 = t3 + 0.15 + 3 * F;
+      arrive(tag, t4, 46, 0.16);
+      // 交給 leaves so the cover settles on the shared cover spec
+      tl.to(hand, { opacity: 0, duration: 0.3, ease: "power3.out" }, 2.6);
+
+      // ---- Scene 4 (2.6–3.3): one diagonal light sheen across the cover rosette ----
+      tl.fromTo($("sheenband"), { attr: { x: -900 } }, { attr: { x: 540 }, duration: 0.62, ease: "power2.inOut" }, 2.64);
+
+      // ---- Scene 5 (3.3–4.5): cover swings open on the spine; blank ruled page holds ----
+      var OPEN_AT = 3.3, OPEN_DUR = 0.7;
+      tl.fromTo($("cover"), { rotationY: 0 }, { rotationY: -180, duration: OPEN_DUR, ease: "power2.inOut" }, OPEN_AT);
+      // power2.inOut is symmetric: the cover is edge-on (−90°) at the midpoint
+      tl.fromTo($("cover"), { opacity: 1 }, { opacity: 0, duration: 0.08, ease: "none", immediateRender: false }, OPEN_AT + OPEN_DUR / 2 - 0.04);
+
+      // pad to the full frame length (hold on the blank page)
+      tl.set({}, {}, DUR);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines[ID] = tl;
+    })();
+  </script>
+</template>
