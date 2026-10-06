@@ -39,12 +39,12 @@ These two commitments are what set it apart. Future work must protect both:
 
 ## Brand Commitments
 
-- Name: **OctopusBeak**. Existing assets: `docs/assets/octopusbeak-readme-banner.webp` and `static/favicon.webp`.
+- Name: **OctopusBeak**. Existing assets: `docs/assets/octopusbeak-readme-banner.webp` (zh) and `docs/assets/octopusbeak-readme-banner-en.webp` (en), both rendered from the site hero by `scripts/readme-banner.mjs`, and `static/favicon.webp`.
 - Voice: plain, factual, reassuring about data handling. It says exactly what the app does and doesn't do, with no hype. Traditional Chinese copy reads as natural Taiwanese usage.
 
 ## Evidence on Hand
 
-- Real product screenshots in both locales: `docs/assets/readme-{overview,assets,spending,automation-settings}-{zh,en}.png`.
+- Real product screenshots (Traditional Chinese UI), shared by the site and the READMEs: `site/assets/screens/*.webp`.
 - Site design references: `docs/assets/octopusbeak-site-*.png|jpg`, `docs/assets/onboarding-precision-spotlight.png`.
 - No testimonials, user counts, press, security audits, or certifications exist. Do not invent any.
 

@@ -24,25 +24,25 @@
 
 總覽會整理匯入的銀行存款、外幣、基金、證券、加密資產與貸款。快照歷史保留每天的變化，也能看出資產配置和負債曝險。
 
-![OctopusBeak 繁體中文總覽](docs/assets/readme-overview-zh.png)
+![OctopusBeak 總覽](site/assets/screens/overview.webp)
 
 ### 查看資產變化與帳戶明細
 
 資產頁依銀行、基金、券商、加密資產與外幣分組。你可以查看餘額趨勢，再往下查交易或持倉。
 
-![OctopusBeak 繁體中文資產頁](docs/assets/readme-assets-zh.png)
+![OctopusBeak 資產頁](site/assets/screens/assets.webp)
 
 ### 整理電子發票與帳戶支出
 
 消費頁把電子發票和帳戶支出放在一起，依月份與類別統計。發票品項可以逐筆查看，也能自行修正分類。
 
-![OctopusBeak 繁體中文消費頁](docs/assets/readme-spending-zh.png)
+![OctopusBeak 消費頁](site/assets/screens/spending.webp)
 
 ### 從桌面程式收集資料
 
-自動化頁面集中管理資料來源、登入資料、執行紀錄與人工協助。每個來源可以個別啟用，並選擇要收集的對帳單類型。
+自動化頁面集中管理資料來源、登入資料、與執行紀錄。每個來源可以個別啟用，並選擇要收集的對帳單類型。
 
-![OctopusBeak 繁體中文登入資料設定](docs/assets/readme-automation-settings-zh.png)
+![OctopusBeak 登入資料設定](site/assets/screens/credentials.webp)
 
 ## 第一次使用
 
@@ -66,12 +66,12 @@
 | 華南銀行（HNCB） | 台幣存款 |
 | 中國信託銀行（CTBC） | 台幣存款 |
 | 中華郵政（Post Office） | 台幣存款 |
-| 永豐銀行（SinoPac） | 台幣存款、外幣 canonical 交易（human-attested identity contract） |
+| 永豐銀行（SinoPac） | 台幣存款、外幣 |
 | LINE Bank | 台幣存款、外幣 |
 | 電子發票（E-Invoice） | 發票與消費品項 |
 | MAX / MaiCoin | 加密資產餘額與交易紀錄 |
 
-SinoPac 外幣資料會保留為可追溯的帳務來源記錄，符合 human-attested identity contract 的列會升格為 canonical Financial Transaction。外幣 canonical 交易目前在 SinoPac、元大、國泰世華與 LINE Bank 的 advertised readiness 中提供。
+外幣交易明細目前支援永豐、元大、國泰世華與 LINE Bank。
 
 ## 資料留在你的裝置
 
@@ -118,7 +118,7 @@ npm run workflow:dev -- fixture
 
 新增與測試 workflow 的步驟請參閱[開發指引](docs/agents/workflow-development.md)。正式的銀行、發票與同步工作請從桌面 App 的自動化介面執行。
 
-金融資料由桌面程式的 PGlite worker 儲存在 `data/pglite/`。
+開發版與安裝版都把金融資料存在 `~/Library/Application Support/OctopusBeak/data/pglite/`。設定 `OCTOPUSBEAK_USER_DATA` 可改用其他資料目錄。
 
 </details>
 
@@ -133,8 +133,7 @@ npm run workflow:dev -- fixture
 | `src/lib/spending/` | 電子發票與消費介面 |
 | `src/lib/automation/` | 自動化介面與伺服器端輔助程式 |
 | `electron/` | Electron 主程序與執行環境輔助程式 |
-| `data/pglite/` | 本機 PGlite 資料 |
-| `~/Library/Application Support/OctopusBeak/` | 安裝版的執行資料 |
+| `~/Library/Application Support/OctopusBeak/` | App 執行資料，含 `data/pglite/` 本機帳本 |
 
 提交變更前請執行：
 
