@@ -5,31 +5,26 @@ import { translations } from "../../i18n/i18n.ts";
 
 const source = readFileSync(new URL("./CreditCardStatementsModal.svelte", import.meta.url), "utf8");
 
-test("credit-card statement view keeps statement values separate from provider fields", () => {
-  assert.equal(translations.en.statements.notObserved, "Not observed");
-  assert.equal(translations["zh-TW"].statements.notObserved, "尚未觀測");
-  assert.equal(translations.en.statements.statement, "Statement");
-  assert.match(translations.en.statements.statementTransactionCount(1), /statement transaction/);
-  assert.match(translations.en.statements.statementTransactionCount(2), /statement transactions/);
-  assert.match(source, /statement\.statementBalance/);
-  assert.match(source, /statement\.minimumPayment/);
-  assert.match(source, /statement\.cycleStart[\s\S]*statement\.cycleEnd/);
-  assert.match(source, /statement\.dueDate/);
-  assert.doesNotMatch(source, /statement\.statementRevision\(/);
-  assert.doesNotMatch(source, /membershipIdentity/);
-  assert.match(source, /statements\.providerBalance[\s\S]*statements\.notObserved/);
-  assert.match(source, /statements\.amountDue[\s\S]*statements\.notObserved/);
-  assert.match(source, /statements\.creditLimit[\s\S]*statements\.notObserved/);
+test("the headline is the statement's own amount, never presented as a provider balance", () => {
+  assert.equal(translations["zh-TW"].statements.latestStatementAmount, "最新對帳單金額");
+  assert.match(source, /statements\.latestStatementAmount[\s\S]*?statements\[0\]\.statementBalance/);
+  assert.doesNotMatch(source, /providerBalance|currentBalance/);
 });
 
-test("credit-card statement membership exposes exact revision lineage on demand", () => {
-  assert.match(source, /membership\.transactionId/);
-  assert.match(source, /membership\.transactionRevisionId/);
-  assert.match(source, /membership\.sourceRecordId/);
+test("each statement row shows its cycle, dates, minimum and amount from the latest revision", () => {
+  assert.match(source, /latestStatementRevisions\(account\?\.creditCard\?\.statements \?\? \[\]\)/);
+  assert.match(source, /statement\.cycleStart[\s\S]*statement\.cycleEnd/);
+  assert.match(source, /statement\.issueDate/);
+  assert.match(source, /statement\.dueDate/);
+  assert.match(source, /amount\(statement\.minimumPayment\)/);
+  assert.match(source, /amount\(statement\.statementBalance\)/);
+});
+
+test("statement membership exposes exact revision lineage on demand", () => {
   assert.match(source, /data-transaction-id=\{membership\.transactionId\}/);
   assert.match(source, /data-transaction-revision-id=\{membership\.transactionRevisionId\}/);
   assert.match(source, /data-source-record-id=\{membership\.sourceRecordId\}/);
-  assert.match(source, /<details class="statement-evidence">/);
+  assert.match(source, /\{#if transactionsShownId === statement\.statementId\}/);
 });
 
 test("empty statement collections have an explicit state", () => {
