@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "preferences": {
+    "destination": {
+      "value": "website",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:20:21.658Z"
+    },
+    "aspect": {
+      "value": "1920x1080",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:20:21.916Z"
+    },
+    "language": {
+      "value": "zh-TW",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:20:22.109Z"
+    },
+    "flow": {
+      "value": "automation",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:20:22.327Z"
+    },
+    "storyboard": {
+      "value": "no",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:20:22.504Z"
+    },
+    "style_preset.product-launch-video": {
+      "value": "cartesian",
+      "confirmed_in": [
+        "octopusbeak-demo"
+      ],
+      "updated_at": "2026-10-06T07:21:27.038Z"
+    }
+  },
+  "sightings": {}
+}

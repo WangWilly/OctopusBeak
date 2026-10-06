@@ -1,0 +1,631 @@
+<template id="02-value-template">
+  <div data-hf-id="hf-4fyv" id="root" data-composition-id="02-value" data-start="0" data-duration="4" data-width="1920" data-height="1080">
+    <style>
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 400;
+        src: local("PingFang TC"), local("PingFangTC-Regular"), local("PingFang TC Regular");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 500;
+        src: local("PingFangTC-Medium"), local("PingFang TC Medium");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 600;
+        src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"), local("PingFangTC-Medium");
+      }
+      @font-face {
+        font-family: "SF Mono";
+        font-weight: 700;
+        src: local("SFMono-Bold"), local("SF Mono Bold"), local("SFMono-Semibold"), local("Menlo-Bold"), local("Menlo");
+      }
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+        color: #0e1217;
+      }
+      #root * {
+        box-sizing: border-box;
+      }
+      [id="02-value-defs"] {
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+      }
+      .\30 2-value-layer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+      }
+
+      /* ── track 0: deep-blue field (Frame 1 handoff_out) ── */
+      [id="02-value-blue"] {
+        background: #071f4a;
+      }
+      [id="02-value-blue-waves"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        opacity: 0.14;
+      }
+      [id="02-value-rosette"] {
+        position: absolute;
+        left: 1050px;
+        top: -30px;
+        width: 900px;
+        height: 900px;
+        color: #edf4f1;
+        opacity: 0.22;
+      }
+      [id="02-value-rosette"] svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* ── track 1: paper wipe (mask wrapper x + inner counter-x) ── */
+      [id="02-value-wipe"] {
+        position: absolute;
+        left: -400px;
+        top: 0;
+        width: 2320px;
+        height: 1080px;
+        overflow: hidden;
+      }
+      [id="02-value-paper"] {
+        position: absolute;
+        left: 400px;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        background:
+          radial-gradient(ellipse 70% 70% at 88% 88%, #edf4f1 0%, rgba(237, 244, 241, 0.6) 35%, rgba(237, 244, 241, 0) 70%),
+          #f9fafc;
+      }
+      [id="02-value-paper"] svg {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+      }
+      /* the wave band rides the wipe edge (same tween, same ease) */
+      [id="02-value-band"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 440px;
+        height: 1080px;
+        background: linear-gradient(90deg, rgba(24, 169, 164, 0) 0%, rgba(24, 169, 164, 0.22) 50%, rgba(24, 169, 164, 0) 100%);
+        -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 30%, #000 70%, transparent 100%);
+        mask-image: linear-gradient(90deg, transparent 0%, #000 30%, #000 70%, transparent 100%);
+      }
+      [id="02-value-band"] svg {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 440px;
+        height: 1080px;
+      }
+
+      /* ── track 2: slips → rows ── */
+      .\30 2-value-mover {
+        position: absolute;
+        top: 620px;
+        width: 640px;
+        height: 200px;
+      }
+      .\30 2-value-plate {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 640px;
+        height: 200px;
+        background: #ffffff;
+        border: 1px solid #dbdee2;
+        border-radius: 24px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12), 0 34px 70px rgba(2, 8, 23, 0.38);
+      }
+      .\30 2-value-slip {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 640px;
+        height: 200px;
+        padding: 20px 32px 0 32px;
+        overflow: hidden;
+        border-radius: 24px;
+      }
+      .\30 2-value-head {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        height: 60px;
+      }
+      .\30 2-value-icon {
+        width: 60px;
+        height: 60px;
+        border-radius: 16px;
+        background: #f1f4f6;
+        flex: none;
+      }
+      .\30 2-value-icon svg {
+        display: block;
+        width: 60px;
+        height: 60px;
+      }
+      .\30 2-value-label {
+        font-size: 48px;
+        line-height: 1;
+        font-weight: 600;
+        color: #0e1217;
+        white-space: nowrap;
+      }
+      .\30 2-value-amount {
+        margin-top: 8px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        font-size: 84px;
+        line-height: 1;
+        color: #0e1217;
+        white-space: nowrap;
+      }
+      .\30 2-value-rule {
+        display: block;
+        margin-top: 10px;
+        width: 576px;
+        height: 14px;
+        overflow: visible;
+      }
+      /* card-world source row — pixel-identical to Frame 3's handoff_in rows */
+      .\30 2-value-row {
+        position: absolute;
+        left: -180px;
+        top: 40px;
+        width: 1000px;
+        height: 120px;
+        border-radius: 20px;
+        background: #ffffff;
+        border: 1px solid #dbdee2;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+      }
+      .\30 2-value-ico {
+        position: absolute;
+        left: 24px;
+        top: 32px;
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        background: #f1f4f6;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .\30 2-value-ico svg {
+        width: 32px;
+        height: 32px;
+        fill: none;
+        stroke: #5e646a;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .\30 2-value-txt {
+        position: absolute;
+        left: 92px;
+        top: 14px;
+        white-space: nowrap;
+      }
+      .\30 2-value-h {
+        font-size: 44px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        line-height: 52px;
+        color: #0e1217;
+      }
+      .\30 2-value-m {
+        font-size: 30px;
+        font-weight: 400;
+        line-height: 40px;
+        color: #5e646a;
+      }
+      .\30 2-value-amt {
+        position: absolute;
+        right: 80px;
+        top: 0;
+        height: 120px;
+        font-family: "SF Mono", monospace;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        font-size: 60px;
+        line-height: 120px;
+        color: #0e1217;
+        white-space: nowrap;
+      }
+
+      /* ── track 3: headline ── */
+      /* 130px, line-height 1: baseline ~112px below the box top (matches Frame 1: tops 188 / 328) */
+      .\30 2-value-line {
+        position: absolute;
+        left: 200px;
+        font-size: 130px;
+        line-height: 1;
+        font-weight: 500;
+        white-space: nowrap;
+        letter-spacing: 0.01em;
+      }
+      .\30 2-value-tok {
+        position: relative;
+        display: inline-block;
+        vertical-align: top;
+      }
+      .\30 2-value-grad {
+        display: inline-block;
+        color: #ffffff;
+        background: linear-gradient(180deg, #5fd4c9 0%, #c4f5ee 38%, #ffffff 74%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .\30 2-value-ink {
+        position: absolute;
+        left: 0;
+        top: 0;
+        color: #0e1217;
+        opacity: 0;
+      }
+      /* discrete-text-sequence slots: min-width = widest state, so the swap never jitters */
+      [id="02-value-slot-a"] {
+        min-width: 262.6px;
+      }
+      [id="02-value-slot-b"] {
+        min-width: 393.9px;
+      }
+      .\30 2-value-new {
+        position: absolute;
+        left: 0;
+        top: 0;
+        color: #17a29e;
+      }
+      [id="02-value-new-a"] {
+        color: #0e1217;
+      }
+      [id="02-value-strike"] {
+        position: absolute;
+        left: -8px;
+        top: 45px;
+        width: 278px;
+        height: 28px;
+        overflow: visible;
+      }
+      /* new line one: icon + OctopusBeak + 找出同一筆消費， (80px, baseline ≈ 200) */
+      [id="02-value-l1new"] {
+        position: absolute;
+        left: 200px;
+        top: 128px;
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        font-size: 80px;
+        line-height: 1;
+        font-weight: 500;
+        color: #0e1217;
+        white-space: nowrap;
+      }
+      .\30 2-value-nw {
+        display: inline-block;
+      }
+      [id="02-value-appicon"] {
+        display: block;
+        width: 72px;
+        height: 72px;
+        border-radius: 16px;
+      }
+      [id="02-value-cjk"] {
+        display: flex;
+        letter-spacing: 0.01em;
+      }
+    </style>
+
+    <svg data-hf-id="hf-qucv" id="02-value-defs" aria-hidden="true" width="0" height="0">
+      <defs data-hf-id="hf-mh0t">
+      <symbol data-hf-id="hf-j5cz" id="02-value-rosette-sym" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g data-hf-id="hf-etlv" id="02-value-ro"><path data-hf-id="hf-2nrt" id="02-value-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-k77c" href="#02-value-ro0" transform="rotate(9)" /><use data-hf-id="hf-kwqy" href="#02-value-ro0" transform="rotate(18)" /><use data-hf-id="hf-sh50" href="#02-value-ro0" transform="rotate(27)" /><use data-hf-id="hf-nbra" href="#02-value-ro0" transform="rotate(36)" /><use data-hf-id="hf-8570" href="#02-value-ro0" transform="rotate(45)" /><use data-hf-id="hf-7mve" href="#02-value-ro0" transform="rotate(54)" /><use data-hf-id="hf-hfzg" href="#02-value-ro0" transform="rotate(63)" /><use data-hf-id="hf-g8lq" href="#02-value-ro0" transform="rotate(72)" /><use data-hf-id="hf-a3hw" href="#02-value-ro0" transform="rotate(81)" /><use data-hf-id="hf-rwey" href="#02-value-ro0" transform="rotate(90)" /><use data-hf-id="hf-e85t" href="#02-value-ro0" transform="rotate(99)" /><use data-hf-id="hf-fyxc" href="#02-value-ro0" transform="rotate(108)" /><use data-hf-id="hf-lpb8" href="#02-value-ro0" transform="rotate(117)" /><use data-hf-id="hf-tg7g" href="#02-value-ro0" transform="rotate(126)" /><use data-hf-id="hf-8hc0" href="#02-value-ro0" transform="rotate(135)" /><use data-hf-id="hf-tyw0" href="#02-value-ro0" transform="rotate(144)" /><use data-hf-id="hf-o8jw" href="#02-value-ro0" transform="rotate(153)" /><use data-hf-id="hf-veic" href="#02-value-ro0" transform="rotate(162)" /><use data-hf-id="hf-o15c" href="#02-value-ro0" transform="rotate(171)" /><use data-hf-id="hf-9ipc" href="#02-value-ro0" transform="rotate(180)" /><use data-hf-id="hf-7fyv" href="#02-value-ro0" transform="rotate(189)" /><use data-hf-id="hf-dbrt" href="#02-value-ro0" transform="rotate(198)" /><use data-hf-id="hf-poy4" href="#02-value-ro0" transform="rotate(207)" /><use data-hf-id="hf-8pke" href="#02-value-ro0" transform="rotate(216)" /><use data-hf-id="hf-jatk" href="#02-value-ro0" transform="rotate(225)" /><use data-hf-id="hf-2nwm" href="#02-value-ro0" transform="rotate(234)" /><use data-hf-id="hf-pfn8" href="#02-value-ro0" transform="rotate(243)" /><use data-hf-id="hf-pynq" href="#02-value-ro0" transform="rotate(252)" /><use data-hf-id="hf-4j14" href="#02-value-ro0" transform="rotate(261)" /><use data-hf-id="hf-riry" href="#02-value-ro0" transform="rotate(270)" /><use data-hf-id="hf-pg1h" href="#02-value-ro0" transform="rotate(279)" /><use data-hf-id="hf-om0x" href="#02-value-ro0" transform="rotate(288)" /><use data-hf-id="hf-mlh1" href="#02-value-ro0" transform="rotate(297)" /><use data-hf-id="hf-9rhg" href="#02-value-ro0" transform="rotate(306)" /><use data-hf-id="hf-yf08" href="#02-value-ro0" transform="rotate(315)" /><use data-hf-id="hf-utf0" href="#02-value-ro0" transform="rotate(324)" /><use data-hf-id="hf-i128" href="#02-value-ro0" transform="rotate(333)" /><use data-hf-id="hf-caq4" href="#02-value-ro0" transform="rotate(342)" /><use data-hf-id="hf-dytk" href="#02-value-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-0gwx" href="#02-value-ro" transform="rotate(1.1)" /><use data-hf-id="hf-mm1y" href="#02-value-ro" transform="rotate(2.3)" /><use data-hf-id="hf-v3do" href="#02-value-ro" transform="rotate(3.4)" /><use data-hf-id="hf-6pa6" href="#02-value-ro" transform="rotate(4.5)" /><use data-hf-id="hf-kbdc" href="#02-value-ro" transform="rotate(5.6)" /><use data-hf-id="hf-x69z" href="#02-value-ro" transform="rotate(6.8)" /><use data-hf-id="hf-dfwz" href="#02-value-ro" transform="rotate(7.9)" /><g data-hf-id="hf-4mam" id="02-value-rb"><path data-hf-id="hf-kaez" id="02-value-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-u11s" href="#02-value-rb0" transform="rotate(15)" /><use data-hf-id="hf-3rux" href="#02-value-rb0" transform="rotate(30)" /><use data-hf-id="hf-b9g9" href="#02-value-rb0" transform="rotate(45)" /><use data-hf-id="hf-2aoc" href="#02-value-rb0" transform="rotate(60)" /><use data-hf-id="hf-pceq" href="#02-value-rb0" transform="rotate(75)" /><use data-hf-id="hf-wl9v" href="#02-value-rb0" transform="rotate(90)" /><use data-hf-id="hf-5hkc" href="#02-value-rb0" transform="rotate(105)" /><use data-hf-id="hf-wffh" href="#02-value-rb0" transform="rotate(120)" /><use data-hf-id="hf-7tj3" href="#02-value-rb0" transform="rotate(135)" /><use data-hf-id="hf-y0aq" href="#02-value-rb0" transform="rotate(150)" /><use data-hf-id="hf-qlva" href="#02-value-rb0" transform="rotate(165)" /><use data-hf-id="hf-jkg7" href="#02-value-rb0" transform="rotate(180)" /><use data-hf-id="hf-wsqp" href="#02-value-rb0" transform="rotate(195)" /><use data-hf-id="hf-r8qb" href="#02-value-rb0" transform="rotate(210)" /><use data-hf-id="hf-alfv" href="#02-value-rb0" transform="rotate(225)" /><use data-hf-id="hf-cypa" href="#02-value-rb0" transform="rotate(240)" /><use data-hf-id="hf-8t10" href="#02-value-rb0" transform="rotate(255)" /><use data-hf-id="hf-ax51" href="#02-value-rb0" transform="rotate(270)" /><use data-hf-id="hf-ljhp" href="#02-value-rb0" transform="rotate(285)" /><use data-hf-id="hf-m9xt" href="#02-value-rb0" transform="rotate(300)" /><use data-hf-id="hf-vh97" href="#02-value-rb0" transform="rotate(315)" /><use data-hf-id="hf-rvyy" href="#02-value-rb0" transform="rotate(330)" /><use data-hf-id="hf-mobe" href="#02-value-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-ez0g" href="#02-value-rb" transform="rotate(1.9)" /><use data-hf-id="hf-4bc1" href="#02-value-rb" transform="rotate(3.8)" /><use data-hf-id="hf-j6kx" href="#02-value-rb" transform="rotate(5.6)" /><use data-hf-id="hf-qc8y" href="#02-value-rb" transform="rotate(7.5)" /><use data-hf-id="hf-8i57" href="#02-value-rb" transform="rotate(9.4)" /><use data-hf-id="hf-nru5" href="#02-value-rb" transform="rotate(11.3)" /><use data-hf-id="hf-a1tp" href="#02-value-rb" transform="rotate(13.1)" /><g data-hf-id="hf-rc4c" id="02-value-rh"><path data-hf-id="hf-nf8s" id="02-value-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-2l76" href="#02-value-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-it8s" href="#02-value-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-ur69" href="#02-value-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-i4ur" href="#02-value-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-xjsi" href="#02-value-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-828s" href="#02-value-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-i0b4" href="#02-value-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-1qpn" href="#02-value-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-nbeo" href="#02-value-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-vb0z" href="#02-value-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-n042" href="#02-value-rh" transform="rotate(5.5)" /><use data-hf-id="hf-simu" href="#02-value-rh" transform="rotate(10.9)" /><use data-hf-id="hf-ehwj" href="#02-value-rh" transform="rotate(16.4)" /><use data-hf-id="hf-nqeh" href="#02-value-rh" transform="rotate(21.8)" /><use data-hf-id="hf-nhc6" href="#02-value-rh" transform="rotate(27.3)" /><g data-hf-id="hf-8ken" id="02-value-rc"><path data-hf-id="hf-3bp8" id="02-value-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-69ic" href="#02-value-rc0" transform="rotate(30)" /><use data-hf-id="hf-aj8h" href="#02-value-rc0" transform="rotate(60)" /><use data-hf-id="hf-dn5i" href="#02-value-rc0" transform="rotate(90)" /><use data-hf-id="hf-y5ti" href="#02-value-rc0" transform="rotate(120)" /><use data-hf-id="hf-s33d" href="#02-value-rc0" transform="rotate(150)" /><use data-hf-id="hf-uu5g" href="#02-value-rc0" transform="rotate(180)" /><use data-hf-id="hf-plec" href="#02-value-rc0" transform="rotate(210)" /><use data-hf-id="hf-92hd" href="#02-value-rc0" transform="rotate(240)" /><use data-hf-id="hf-eoii" href="#02-value-rc0" transform="rotate(270)" /><use data-hf-id="hf-zr8u" href="#02-value-rc0" transform="rotate(300)" /><use data-hf-id="hf-tnph" href="#02-value-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-fnss" href="#02-value-rc" transform="rotate(3.8)" /><use data-hf-id="hf-qbkj" href="#02-value-rc" transform="rotate(7.5)" /><use data-hf-id="hf-lj7u" href="#02-value-rc" transform="rotate(11.3)" /><use data-hf-id="hf-znmd" href="#02-value-rc" transform="rotate(15)" /><use data-hf-id="hf-p1c4" href="#02-value-rc" transform="rotate(18.8)" /><use data-hf-id="hf-ubjy" href="#02-value-rc" transform="rotate(22.5)" /><use data-hf-id="hf-rmuc" href="#02-value-rc" transform="rotate(26.3)" /><g data-hf-id="hf-s3s5" id="02-value-ri"><path data-hf-id="hf-ygfd" id="02-value-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-hdk9" href="#02-value-ri0" transform="rotate(40)" /><use data-hf-id="hf-92qt" href="#02-value-ri0" transform="rotate(80)" /><use data-hf-id="hf-1bp8" href="#02-value-ri0" transform="rotate(120)" /><use data-hf-id="hf-sv14" href="#02-value-ri0" transform="rotate(160)" /><use data-hf-id="hf-r7gb" href="#02-value-ri0" transform="rotate(200)" /><use data-hf-id="hf-0msf" href="#02-value-ri0" transform="rotate(240)" /><use data-hf-id="hf-lsr7" href="#02-value-ri0" transform="rotate(280)" /><use data-hf-id="hf-4w8e" href="#02-value-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-h0s4" href="#02-value-ri" transform="rotate(6.7)" /><use data-hf-id="hf-wgge" href="#02-value-ri" transform="rotate(13.3)" /><use data-hf-id="hf-d82v" href="#02-value-ri" transform="rotate(20)" /><use data-hf-id="hf-4zs2" href="#02-value-ri" transform="rotate(26.7)" /><use data-hf-id="hf-ruc4" href="#02-value-ri" transform="rotate(33.3)" /></symbol>
+      <g data-hf-id="hf-ihem" id="02-value-w" fill="none" stroke="currentColor"><path data-hf-id="hf-sqs7" id="02-value-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-ytnc" href="#02-value-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-6vkz" href="#02-value-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-c9c8" href="#02-value-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-gijc" href="#02-value-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-oi2r" href="#02-value-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-0uda" href="#02-value-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-sozf" href="#02-value-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-4ftg" href="#02-value-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-q1ar" href="#02-value-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-9afu" href="#02-value-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-smwt" href="#02-value-wl" transform="translate(300 75)" /><use data-hf-id="hf-zboq" href="#02-value-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-h5jn" href="#02-value-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-lboh" href="#02-value-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-hmqk" href="#02-value-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-g1l3" href="#02-value-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-bfci" href="#02-value-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-nao5" href="#02-value-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-90pa" href="#02-value-wl" transform="translate(0 150)" /><use data-hf-id="hf-tx6a" href="#02-value-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-myh1" href="#02-value-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-ejno" href="#02-value-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-gc0p" href="#02-value-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-fb9i" href="#02-value-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-w0dg" href="#02-value-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-yy1b" href="#02-value-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-n1au" href="#02-value-wl" transform="translate(300 225)" /><use data-hf-id="hf-cd4h" href="#02-value-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-acj8" href="#02-value-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-bhv1" href="#02-value-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-u38q" href="#02-value-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-3h0v" href="#02-value-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-v2qw" href="#02-value-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-mjfd" href="#02-value-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-y9j9" href="#02-value-wl" transform="translate(0 300)" /><use data-hf-id="hf-zgil" href="#02-value-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-s8wc" href="#02-value-wl" transform="translate(75 318.8)" /></g>
+      <pattern data-hf-id="hf-kujc" id="02-value-waves-teal" style="color:#5fd4c9" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-yzdy" href="#02-value-w" /></pattern>
+      <pattern data-hf-id="hf-m7qt" id="02-value-waves-ink" style="color:#0e1217" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-qiwa" href="#02-value-w" /></pattern>
+      <pattern data-hf-id="hf-v6zo" id="02-value-waves-band" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-qx7b" href="#02-value-w" /></pattern>
+      <pattern data-hf-id="hf-v2p5" id="02-value-microline" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="120" height="14"><g data-hf-id="hf-dh8a" fill="none" stroke="currentColor"><path data-hf-id="hf-9xgd" d="M-20 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-16 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-12 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-8 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 M-4 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0" stroke-width="0.5" /><path data-hf-id="hf-pvay" d="M0 0.5H120M0 13.5H120" /><path data-hf-id="hf-jglx" d="M0 7H120" stroke-dasharray="1 2" /></g></pattern>
+      </defs>
+    </svg>
+
+    <!-- Track 0: deep-blue banknote field (continues Frame 1 exactly) -->
+    <div data-hf-id="hf-n72h" id="02-value-blue" class="clip 02-value-layer" data-start="0" data-duration="4" data-track-index="0">
+      <svg data-hf-id="hf-wc0d" id="02-value-blue-waves" viewBox="0 0 1920 1080" aria-hidden="true">
+        <rect data-hf-id="hf-7egw" x="0" y="0" width="1920" height="1080" fill="url(#02-value-waves-teal)" />
+      </svg>
+      <div data-hf-id="hf-zji6" id="02-value-rosette">
+        <svg data-hf-id="hf-xh7y" viewBox="0 0 920 920" aria-hidden="true"><use data-hf-id="hf-9h51" href="#02-value-rosette-sym" x="0" y="0" width="920" height="920" /></svg>
+      </div>
+    </div>
+
+    <!-- Track 1: paper ground revealed by a left→right wipe; wave band rides the edge -->
+    <div data-hf-id="hf-119n" id="02-value-wipe-layer" class="clip 02-value-layer" data-start="0" data-duration="4" data-track-index="1">
+      <div data-hf-id="hf-mm2t" id="02-value-wipe">
+        <div data-hf-id="hf-4kiy" id="02-value-paper">
+          <svg data-hf-id="hf-9keb" viewBox="0 0 1920 1080" aria-hidden="true">
+            <rect data-hf-id="hf-acmp" width="1920" height="1080" fill="url(#02-value-waves-ink)" opacity="0.08" />
+          </svg>
+        </div>
+      </div>
+      <div data-hf-id="hf-les9" id="02-value-band">
+        <svg data-hf-id="hf-ewzr" viewBox="0 0 440 1080" aria-hidden="true">
+          <rect data-hf-id="hf-bz0y" width="440" height="1080" fill="url(#02-value-waves-band)" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- Track 2: the two slips glide + morph into the card-world source rows -->
+    <div data-hf-id="hf-v0et" id="02-value-objects" class="clip 02-value-layer" data-start="0" data-duration="4" data-track-index="2">
+      <div data-hf-id="hf-njgl" id="02-value-mover-a" class="02-value-mover" style="left: 280px">
+        <div data-hf-id="hf-58bk" id="02-value-plate-a" class="02-value-plate"></div>
+        <div data-hf-id="hf-x4ke" id="02-value-slip-a" data-layout-allow-overlap class="02-value-slip">
+          <div data-layout-allow-overlap data-hf-id="hf-lv7p" class="02-value-head">
+            <div data-layout-allow-overlap data-hf-id="hf-vel8" class="02-value-icon">
+              <svg data-hf-id="hf-5ygs" viewBox="0 0 60 60" fill="none" stroke="#5e646a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path data-hf-id="hf-xcfz" d="M19 14h22v32l-4-3-3.7 3-3.6-3-3.7 3-3.7-3-3.3 3z" />
+                <path data-hf-id="hf-j9wa" d="M33.5 23.5c-.8-1.2-2.1-1.8-3.6-1.8-2 0-3.4 1-3.4 2.6 0 3.6 7.3 2 7.3 5.8 0 1.7-1.6 2.8-3.8 2.8-1.7 0-3.1-.7-3.9-2M30 19.6v2.1M30 32.9v2.1" />
+              </svg>
+            </div>
+            <div data-layout-allow-overlap data-hf-id="hf-cx4k" class="02-value-label">電子發票</div>
+          </div>
+          <div data-layout-allow-overlap data-hf-id="hf-8col" class="02-value-amount">TWD 1,444</div>
+          <svg data-hf-id="hf-5qkz" class="02-value-rule" viewBox="0 0 576 14" aria-hidden="true">
+            <path data-hf-id="hf-a95y" d="M0 7H576" fill="none" stroke="url(#02-value-microline)" stroke-width="14" />
+          </svg>
+        </div>
+        <div data-hf-id="hf-atic" id="02-value-row-a" class="02-value-row">
+          <div data-hf-id="hf-q7zy" class="02-value-ico">
+            <svg data-hf-id="hf-ulu9" viewBox="0 0 24 24"><path data-hf-id="hf-zf00" d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path data-hf-id="hf-xgmo" d="M14.5 8.5c-.4-.7-1.4-1-2.5-1-1.4 0-2.3.7-2.3 1.6 0 2.1 4.8 1.2 4.8 3.4 0 1-1 1.7-2.5 1.7-1.2 0-2.1-.4-2.6-1.1M12 6.3v1.2M12 14.2v1.3" /></svg>
+          </div>
+          <div data-hf-id="hf-zhw1" class="02-value-txt">
+            <div data-hf-id="hf-34vq" class="02-value-h">電子發票 AB-38201745</div>
+            <div data-hf-id="hf-af0y" class="02-value-m">10/3 18:21 · 全聯實業</div>
+          </div>
+          <div data-hf-id="hf-ztgh" class="02-value-amt">TWD 1,444</div>
+        </div>
+      </div>
+
+      <div data-hf-id="hf-cc6f" id="02-value-mover-b" class="02-value-mover" style="left: 1000px">
+        <div data-hf-id="hf-g3t7" id="02-value-plate-b" class="02-value-plate"></div>
+        <div data-hf-id="hf-t6gd" id="02-value-slip-b" data-layout-allow-overlap class="02-value-slip">
+          <div data-layout-allow-overlap data-hf-id="hf-pb4p" class="02-value-head">
+            <div data-layout-allow-overlap data-hf-id="hf-tjf8" class="02-value-icon">
+              <svg data-hf-id="hf-dh6c" viewBox="0 0 60 60" fill="none" stroke="#5e646a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect data-hf-id="hf-99te" x="15" y="19" width="30" height="22" rx="4" />
+                <path data-hf-id="hf-91iu" d="M15 26h30M20 35h7" />
+              </svg>
+            </div>
+            <div data-layout-allow-overlap data-hf-id="hf-h688" class="02-value-label">玉山信用卡 5512</div>
+          </div>
+          <div data-layout-allow-overlap data-hf-id="hf-om09" class="02-value-amount">TWD 1,444</div>
+          <svg data-hf-id="hf-pmwj" class="02-value-rule" viewBox="0 0 576 14" aria-hidden="true">
+            <path data-hf-id="hf-0sx6" d="M0 7H576" fill="none" stroke="url(#02-value-microline)" stroke-width="14" />
+          </svg>
+        </div>
+        <div data-hf-id="hf-lozz" id="02-value-row-b" class="02-value-row">
+          <div data-hf-id="hf-s8o2" class="02-value-ico">
+            <svg data-hf-id="hf-1tol" viewBox="0 0 24 24"><rect data-hf-id="hf-z1ue" x="3" y="5.5" width="18" height="13" rx="2.5" /><path data-hf-id="hf-tark" d="M3 10h18M7 14.5h4" /></svg>
+          </div>
+          <div data-hf-id="hf-237p" class="02-value-txt">
+            <div data-hf-id="hf-bs9d" class="02-value-h">玉山信用卡 末碼 5512</div>
+            <div data-hf-id="hf-y5ab" class="02-value-m">10/3 消費 · 10/4 入帳</div>
+          </div>
+          <div data-hf-id="hf-c35h" class="02-value-amt">TWD 1,444</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Track 3: headline — 兩次 struck and swapped to 一次, then re-set as the product line -->
+    <div data-hf-id="hf-3f24" id="02-value-type" class="clip 02-value-layer" data-start="0" data-duration="4" data-track-index="3">
+      <div data-hf-id="hf-nlnu" id="02-value-head">
+        <div data-hf-id="hf-d36y" id="02-value-l1old" data-layout-allow-overlap class="02-value-line" style="top: 188px">
+          <span data-layout-allow-overlap data-hf-id="hf-vamg" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-epk8" class="02-value-grad">同</span><span data-layout-allow-overlap data-hf-id="hf-p8cc" class="02-value-ink">同</span></span><span data-layout-allow-overlap data-hf-id="hf-q5ts" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-315o" class="02-value-grad">一</span><span data-layout-allow-overlap data-hf-id="hf-0afc" class="02-value-ink">一</span></span><span data-layout-allow-overlap data-hf-id="hf-oywp" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-ked2" class="02-value-grad">筆</span><span data-layout-allow-overlap data-hf-id="hf-17ui" class="02-value-ink">筆</span></span><span data-layout-allow-overlap data-hf-id="hf-pd7q" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-d41g" class="02-value-grad">消</span><span data-layout-allow-overlap data-hf-id="hf-tzu8" class="02-value-ink">消</span></span><span data-layout-allow-overlap data-hf-id="hf-o6an" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-0xct" class="02-value-grad">費</span><span data-layout-allow-overlap data-hf-id="hf-e17d" class="02-value-ink">費</span></span><span data-layout-allow-overlap data-hf-id="hf-oklo" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-2bxk" class="02-value-grad">，</span><span data-layout-allow-overlap data-hf-id="hf-yid8" class="02-value-ink">，</span></span>
+        </div>
+        <div data-hf-id="hf-6568" id="02-value-l2" class="02-value-line" style="top: 328px">
+          <span data-hf-id="hf-x5mt" id="02-value-slot-a" class="02-value-tok"><span data-hf-id="hf-7bo8" id="02-value-old-a" data-layout-allow-overlap class="02-value-tok"><span data-layout-allow-overlap data-hf-id="hf-ndol" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-zuh0" class="02-value-grad">記</span><span data-layout-allow-overlap data-hf-id="hf-tji8" class="02-value-ink">記</span></span><span data-layout-allow-overlap data-hf-id="hf-nrzm" class="02-value-tok 02-value-ch"><span data-layout-allow-overlap data-hf-id="hf-oyk6" class="02-value-grad">了</span><span data-layout-allow-overlap data-hf-id="hf-j1dm" class="02-value-ink">了</span></span></span><span data-hf-id="hf-l11h" id="02-value-new-a" data-layout-allow-overlap class="02-value-new"></span></span><span data-hf-id="hf-13qu" id="02-value-slot-b" class="02-value-tok"><span data-hf-id="hf-fzk3" id="02-value-old-b" data-layout-allow-overlap class="02-value-tok"><span data-layout-allow-overlap data-hf-id="hf-w4rb" class="02-value-grad">兩次？</span><svg data-hf-id="hf-zbxl" id="02-value-strike" viewBox="0 0 278 14" preserveAspectRatio="none" aria-hidden="true">
+                <path data-hf-id="hf-cq85" id="02-value-strike-core" d="M0 7H278" fill="none" stroke="#18a9a4" stroke-width="3" />
+                <path data-hf-id="hf-maii" id="02-value-strike-path" d="M0 7H278" fill="none" stroke="url(#02-value-microline)" stroke-width="14" /></svg></span><span data-hf-id="hf-r6ra" id="02-value-new-b" data-layout-allow-overlap class="02-value-new"></span></span>
+        </div>
+        <div data-hf-id="hf-gsc9" id="02-value-l1new">
+          <img data-hf-id="hf-odi7" id="02-value-appicon" class="02-value-nw" src="assets/site-icon.webp" alt="">
+          <span data-hf-id="hf-0eld" id="02-value-nw-brand" class="02-value-nw">OctopusBeak</span>
+          <span data-hf-id="hf-p6r5" id="02-value-cjk"><span data-hf-id="hf-p3ft" id="02-value-nw-1" class="02-value-nw">找出</span><span data-hf-id="hf-lo30" id="02-value-nw-2" class="02-value-nw">同一筆</span><span data-hf-id="hf-hn36" id="02-value-nw-3" class="02-value-nw">消費，</span></span>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        var $ = function (id) {
+          return document.getElementById("02-value-" + id);
+        };
+        var tl = gsap.timeline({ paused: true });
+        var DUR = 4;
+
+        // ── Scene 1 (0.0–1.0): microline strike through 兩次, hard swap to 一次。 ──
+        var strike = [$("strike-core"), $("strike-path")];
+        var strikeLen = $("strike-path").getTotalLength();
+        tl.fromTo(
+          strike,
+          { strokeDasharray: strikeLen, strokeDashoffset: strikeLen },
+          { strokeDashoffset: 0, duration: 0.4, ease: "power2.out" },
+          0.15,
+        );
+        // 兩次？ (with its strike) drops out of the slot…
+        tl.to($("old-b"), { y: 46, opacity: 0, duration: 0.13, ease: "power2.in" }, 0.6);
+
+        // …and 一次。 / later 只算 land as discrete states (reverse-searched each update, no tween on the text).
+        var SEQ_B = [
+          { t: 0, text: "" },
+          { t: 0.74, text: "一次。" },
+        ];
+        var SEQ_A = [
+          { t: 0, text: "" },
+          { t: 1.82, text: "只算" },
+        ];
+        function textAt(seq, time) {
+          for (var i = seq.length - 1; i >= 0; i--) {
+            if (time >= seq[i].t) return seq[i].text;
+          }
+          return "";
+        }
+        var newA = $("new-a");
+        var newB = $("new-b");
+        var driver = { t: 0 };
+        tl.fromTo(
+          driver,
+          { t: 0 },
+          {
+            t: DUR,
+            duration: DUR,
+            ease: "none",
+            onUpdate: function () {
+              newA.textContent = textAt(SEQ_A, driver.t);
+              newB.textContent = textAt(SEQ_B, driver.t);
+            },
+          },
+          0,
+        );
+
+        // ── Scene 2 (1.0–2.2): deep blue washes to paper behind a left→right wave band ──
+        // Edge E travels −220 → 2140. Wrapper right edge = 1920 + x, so x = E − 1920; the paper
+        // counter-translates so it stays pinned to the frame. The band shares the exact tween (velocity-matched).
+        var WIPE_START = 1.02;
+        var WIPE_DUR = 1.05;
+        var WIPE_EASE = "power2.inOut";
+        tl.fromTo($("wipe"), { x: -2140 }, { x: 220, duration: WIPE_DUR, ease: WIPE_EASE }, WIPE_START);
+        tl.fromTo($("paper"), { x: 2140 }, { x: -220, duration: WIPE_DUR, ease: WIPE_EASE }, WIPE_START);
+        tl.fromTo($("band"), { x: -440 }, { x: 1920, duration: WIPE_DUR, ease: WIPE_EASE }, WIPE_START);
+
+        // Type recolors white → ink glyph by glyph, each the moment the wipe edge crosses it
+        // (crossing time solved once at build from the wipe's own ease; 一次。 keeps its teal).
+        var wipeEase = gsap.parseEase(WIPE_EASE);
+        function edgeTime(x) {
+          var target = (x + 220) / 2360;
+          var lo = 0;
+          var hi = 1;
+          for (var k = 0; k < 40; k++) {
+            var mid = (lo + hi) / 2;
+            if (wipeEase(mid) < target) lo = mid;
+            else hi = mid;
+          }
+          return WIPE_START + lo * WIPE_DUR;
+        }
+        var ADV = 131.3; // 130px CJK advance + 0.01em tracking
+        var chars = document.querySelectorAll('[data-composition-id="02-value"] .\\30 2-value-ch');
+        Array.prototype.forEach.call(chars, function (ch, i) {
+          var col = i < 6 ? i : i - 6; // 同一筆消費， on line one, 記了 on line two — both start at x=200
+          var t = edgeTime(200 + ADV * col + ADV / 2);
+          tl.fromTo(ch.querySelector(".\\30 2-value-ink"), { opacity: 0 }, { opacity: 1, duration: 0.08, ease: "none" }, t);
+        });
+
+        // Old line one zooms through and out; 記了 drops from its slot.
+        tl.to(
+          $("l1old"),
+          { scale: 1.06, opacity: 0, filter: "blur(10px)", transformOrigin: "0% 60%", duration: 0.26, ease: "power2.in" },
+          1.5,
+        );
+        tl.to($("old-a"), { y: 40, opacity: 0, duration: 0.14, ease: "power2.in" }, 1.56);
+        // Line two rises to its new slot (baseline 440 → 360); 只算 snaps in at 1.82 via SEQ_A.
+        tl.fromTo($("l2"), { y: 0 }, { y: -80, duration: 0.42, ease: "power3.inOut" }, 1.56);
+
+        // New line one: icon + OctopusBeak + 找出 同一筆 消費， — per-word staggered reveal.
+        ["appicon", "nw-brand", "nw-1", "nw-2", "nw-3"].forEach(function (id, i) {
+          tl.fromTo(
+            $(id),
+            { opacity: 0, x: -28, y: 18, filter: "blur(8px)" },
+            { opacity: 1, x: 0, y: 0, filter: "blur(0px)", duration: 0.42, ease: "power3.out" },
+            1.66 + i * 0.09,
+          );
+        });
+
+        // ── Scene 3 (2.2–3.4): slips straighten and glide into the stacked row pair, morphing slip → row ──
+        var MORPH_START = 2.2;
+        var MORPH_DUR = 1.1;
+        var SX = 1000 / 640;
+        var SY = 120 / 200;
+        // radius is pre-scale: divide per axis so the APPARENT corner lands at Frame 3's 20px
+        var R_END = (20 / SX).toFixed(2) + "px " + (20 / SY).toFixed(2) + "px";
+        function morph(key, rotFrom, dx, dy) {
+          tl.fromTo(
+            $("mover-" + key),
+            { x: 0, y: 0, rotation: rotFrom },
+            { x: dx, y: dy, rotation: 0, duration: MORPH_DUR, ease: "power3.out" },
+            MORPH_START,
+          );
+          tl.fromTo(
+            $("plate-" + key),
+            {
+              scaleX: 1,
+              scaleY: 1,
+              borderTopLeftRadius: "24px 24px",
+              borderTopRightRadius: "24px 24px",
+              borderBottomLeftRadius: "24px 24px",
+              borderBottomRightRadius: "24px 24px",
+              boxShadow: "0 18px 40px rgba(15,23,42,0.12), 0 34px 70px rgba(2,8,23,0.38)",
+            },
+            {
+              scaleX: SX,
+              scaleY: SY,
+              borderTopLeftRadius: R_END,
+              borderTopRightRadius: R_END,
+              borderBottomLeftRadius: R_END,
+              borderBottomRightRadius: R_END,
+              boxShadow: "0 18px 40px rgba(15,23,42,0), 0 34px 70px rgba(2,8,23,0)",
+              duration: MORPH_DUR,
+              ease: "power3.out",
+            },
+            MORPH_START,
+          );
+          // old slip content out in the first ~35%, real row in over the last ~45% (shape-only blink between)
+          tl.fromTo(
+            $("slip-" + key),
+            { opacity: 1 },
+            { opacity: 0, duration: MORPH_DUR * 0.35, ease: "power1.in" },
+            MORPH_START,
+          );
+          tl.fromTo(
+            $("row-" + key),
+            { opacity: 0 },
+            { opacity: 1, duration: MORPH_DUR * 0.45, ease: "power1.out" },
+            MORPH_START + MORPH_DUR * 0.55,
+          );
+        }
+        // invoice (600,720) −2° → (1220,470); card (1320,720) 2° → (1220,610)
+        morph("a", -2, 620, -250);
+        morph("b", 2, -100, -110);
+
+        // ── Scene 4 (3.4–4.0): the headline lifts and clears; rows hold at the handoff ──
+        tl.to($("head"), { y: -70, opacity: 0, duration: 0.45, ease: "power2.in" }, 3.4);
+
+        tl.set({}, {}, DUR);
+
+        window.__timelines = window.__timelines || {};
+        window.__timelines["02-value"] = tl;
+      })();
+    </script>
+  </div>
+</template>

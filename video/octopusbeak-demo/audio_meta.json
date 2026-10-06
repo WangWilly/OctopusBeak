@@ -1,0 +1,12 @@
+{
+  "bgm": {
+    "path": "assets/bgm/track-30s.mp3",
+    "volume": 0.9,
+    "query": "calm confident minimal tech underscore, soft piano and warm pads with a light pulse, building gently, clean ending",
+    "duration_s": 30,
+    "note": "Cut from assets/bgm/track.mp3 at 7s so the track's own ending lands on the video's end; 0.4s fade-in, 1.5s fade-out."
+  },
+  "bgm_pending": false,
+  "voices": [],
+  "sfx": []
+}
