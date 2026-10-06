@@ -1120,7 +1120,8 @@ async function refreshCurrentEnrichment(
          JOIN automatic_enrichment_authority_routes route ON route.route_id = output.route_id
          LEFT JOIN enrichment_taxonomy_assertion_values typed
            ON typed.assertion_id = assertion.assertion_id
-        WHERE created.commit_sequence <= ?
+        WHERE assertion.target_kind = 'transaction'
+          AND created.commit_sequence <= ?
           ${refreshAll ? "" : `AND assertion.transaction_id IN (${inList(affected)})`}
           AND route.valid_from_commit_sequence <= ?
           AND (route.valid_to_commit_sequence IS NULL OR ? < route.valid_to_commit_sequence)
