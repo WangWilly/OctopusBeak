@@ -237,7 +237,6 @@ assert.match(
   source,
   /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*renderedPendingActions\)/,
 );
-assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);
 assert.match(source, /class="sync-sheet"/);
@@ -256,7 +255,7 @@ assert.match(source, /class="modal-body credential-layout"/);
 assert.match(source, /class="credential-provider-list"/);
 assert.match(
   source,
-  /\.credential-modal\s*\{[\s\S]*?height: min\(960px, calc\(100vh - 40px\)\);[\s\S]*?max-height: min\(960px, calc\(100vh - 40px\)\);/,
+  /\.credential-modal\s*\{[\s\S]*?height: min\(800px, calc\(100vh - 40px\)\);[\s\S]*?max-height: min\(800px, calc\(100vh - 40px\)\);/,
 );
 assert.match(
   source,
@@ -369,11 +368,12 @@ assert.deepEqual(
   [{ taskId: "source-task" }],
 );
 
-assert.match(source, /statementSelectionDrafts/);
+assert.doesNotMatch(source, /statementSelectionDrafts|let credentialDrafts|groupEnabled\[/);
+assert.match(source, /let credentialChanges: CredentialChanges = NO_CREDENTIAL_CHANGES/);
 assert.match(source, /<fieldset[^>]*class="statement-selection"/);
 assert.match(
   source,
-  /<legend>\{\$t\.automation\.statementsToCollect\}<\/legend>/,
+  /<legend class="visually-hidden">\{\$t\.automation\.statementsToCollect\}<\/legend>/,
 );
 assert.match(source, /type="checkbox"/);
 assert.match(source, /selectedStatementTypeIds/);
@@ -404,15 +404,10 @@ assert.match(source, /productOutcomeStatuses\[product\.status\]/);
 assert.match(source, /productSkipReasons\[product\.skipReason\]/);
 assert.match(source, /product\.status === "failed" && product\.committedCount > 0/);
 assert.match(source, /productRetainedCount\(product\.committedCount\)/);
-assert.match(source, /\.statement-selection:focus\s*\{/);
 assert.match(source, /\.statement-type-option:focus-within\s*\{/);
 assert.match(
   source,
-  /\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
-);
-assert.match(
-  source,
-  /@media \(max-width: 820px\)[\s\S]*?\.statement-type-grid\s*\{[\s\S]*?grid-template-columns: 1fr/,
+  /@media \(max-width: 820px\)[\s\S]*?\.credential-layout\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
 );
 
 const saveCredentialsSource = source.slice(
@@ -440,37 +435,23 @@ assert.match(
   /if \(invalid\) \{[\s\S]*?credentialSearch = "";[\s\S]*?selectedCredentialGroupId = invalid\.id;[\s\S]*?await tick\(\);[\s\S]*?getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/,
 );
 
-const credentialGroupStatusSource = source.slice(
-  source.indexOf("function credentialGroupStatus"),
-  source.indexOf("function updateCredentialDraft"),
+const railStatusSource = source.slice(
+  source.indexOf("function credentialGroupSyncStatus"),
+  source.indexOf("function lastSyncSummary"),
 );
-assert.match(
-  credentialGroupStatusSource,
-  /if \(group\.statementSetupRequired && group\.selectedStatementTypeIds\.length\) return dictionary\.automation\.needsSetup/,
-);
-assert.match(
-  credentialGroupStatusSource,
-  /function credentialGroupStatus\(group: CredentialGroupDto, enabled: boolean, selectedCount: number, dictionary: Translation\)/,
-);
-assert.doesNotMatch(
-  credentialGroupStatusSource,
-  /groupEnabled|statementSelectionDrafts/,
-);
-assert.doesNotMatch(credentialGroupStatusSource, /group\.id === "fubon"/);
-assert.match(
-  credentialGroupStatusSource,
-  /if \(group\.statementTypes\?\.length && !selectedCount\) return dictionary\.automation\.needsSetup;[\s\S]*?selectedStatementCount\(selectedCount, group\.statementTypes\.length\)/,
-);
-
+assert.match(railStatusSource, /credentialState\(key, sourceAutomation\) === "missing"/);
+assert.match(railStatusSource, /task\.status === "needs_setup"/);
+assert.match(railStatusSource, /if \(!time\) return \{ tone: "muted", label: labels\.never/);
+assert.doesNotMatch(railStatusSource, /group\.id === "fubon"/);
+assert.match(source, /\{#each railEnabledGroups as group \(group\.id\)\}/);
+assert.match(source, /\{#each railAvailableGroups as group \(group\.id\)\}/);
+assert.match(source, /onclick=\{\(\) => enableAndSelectGroup\(group\.id\)\}/);
+assert.match(source, /class="credential-footer"/);
 assert.match(
   source,
-  /\$: credentialGroupStatuses = Object\.fromEntries\([\s\S]*?groupEnabled\[group\.id\] !== false,[\s\S]*?statementSelectionDrafts\[group\.id\]\?\.length \?\? 0,[\s\S]*?\$t/,
+  /disabled=\{Boolean\(credentialChanges\.editor\)[\s\S]*?!canSubmitCredentials\(onboardingSourceSelection, onboardingCredentialsReady\)[\s\S]*?!pendingChanges\.length\)\}/,
 );
-assert.match(source, /<span>\{credentialGroupStatuses\[group\.id\]\}<\/span>/);
-assert.doesNotMatch(
-  source,
-  /<span>\{credentialGroupStatus\(group, \$t\)\}<\/span>/,
-);
+assert.match(source, /if \(credentialChanges\.editor\) \{\s*event\.preventDefault\(\);\s*credentialChanges = closeCredentialEditor\(credentialChanges\);/);
 
 const statementFieldsetSource = source.slice(
   source.indexOf('<fieldset\n                class="statement-selection"'),
@@ -487,7 +468,7 @@ assert.match(
 assert.match(statementFieldsetSource, /aria-invalid=\{statementSelectionError/);
 assert.match(
   statementFieldsetSource,
-  /id=\{`\$\{selectedCredentialGroup\.id\}-statement-error`\}/,
+  /id=\{`\$\{group\.id\}-statement-error`\}/,
 );
 assert.match(statementFieldsetSource, /aria-live="polite"/);
 assert.doesNotMatch(statementFieldsetSource, /\{#if statementSelectionError\}/);
@@ -497,7 +478,7 @@ assert.match(
 );
 assert.match(
   source,
-  /selectedCredentialGroup\.credentialFields as credentialField/,
+  /group\.credentialFields as credentialField \(credentialField\.key\)/,
 );
 assert.match(source, /selectCertificateFile\(key\)/);
 assert.match(source, /invalidCredentialFileReasons\?\.\[key\]/);
@@ -509,10 +490,10 @@ assert.match(
   source,
   /if \(reason === "invalid-extension"\) return \$t\.automation\.invalidCertificateExtension;/,
 );
-assert.match(source, /class="setup-guide"/);
+assert.match(source, /class="setup-guide" class:open=\{setupGuideOpen\}/);
 assert.match(
   source,
-  /openSetupGuideLink\(selectedCredentialGroup\.id, guideLink\.id\)/,
+  /openSetupGuideLink\(group\.id, guideLink\.id\)/,
 );
 assert.doesNotMatch(
   saveCredentialsSource.slice(
@@ -534,16 +515,21 @@ const credentialFocusSource = source.slice(
 assert.match(credentialFocusSource, /focusedCredentialKey = key/);
 assert.match(
   credentialFocusSource,
-  /credentialInputValue\(credentialDrafts\[key\] \?\? "", redaction, true\)/,
+  /credentialInputValue\(credentialFieldText\(key\), redaction, true\)/,
 );
 assert.match(
   credentialFocusSource,
-  /credentialInputValue\(credentialDrafts\[key\] \?\? "", redaction, false\)/,
+  /credentialInputValue\(credentialFieldText\(key\), redaction, false\)/,
 );
 assert.match(
   source,
-  /value=\{credentialInputValue\([\s]*credentialDrafts\[key\] \?\? "",[\s]*credentialField\.redaction,[\s]*focusedCredentialKey === key,[\s]*\)\}/,
+  /value=\{credentialInputValue\([\s]*credentialFieldText\(key\),[\s]*credentialField\.redaction,[\s]*focusedCredentialKey === key,[\s]*\)\}/,
 );
+assert.match(
+  source,
+  /value=\{credentialInputValue\([\s]*credentialChanges\.editor\.draft,[\s]*credentialField\.redaction,[\s]*focusedCredentialKey === key,[\s]*\)\}/,
+);
+assert.doesNotMatch(source, /storedCredentialValue|credentialValues\[/);
 assert.match(
   source,
   /onfocus=\{\(event\) => focusCredentialInput\(key, credentialField\.redaction, event\)\}/,
@@ -554,9 +540,10 @@ assert.match(
 );
 assert.match(
   source,
-  /\[key\]: \(event\.currentTarget as HTMLInputElement\)\.value/,
+  /stageCredentialValue\(\s*credentialChanges,\s*key,\s*\(event\.currentTarget as HTMLInputElement\)\.value,/,
 );
-assert.match(saveCredentialsSource, /credentialDrafts,/);
+assert.match(saveCredentialsSource, /credentialDrafts: setupInput\.credentialDrafts,/);
+assert.match(saveCredentialsSource, /if \(credentialChanges\.editor\) return;/);
 assert.doesNotMatch(saveCredentialsSource, /credentialInputValue/);
 
 assert.match(source, /id="cathay-gmail-otp-title"/);
