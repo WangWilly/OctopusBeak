@@ -80,6 +80,7 @@ const EN = {
   "footer.tagline": "Scattered accounts. One clear picture.",
   "footer.contents": "On this page",
   "footer.download": "Download",
+  "footer.releases": "Other versions and checksums",
 };
 
 const LOCALES = { "zh-Hant": "zh_TW", en: "en_US" };
@@ -339,7 +340,7 @@ if (finePointer && !reducedMotion) {
     visitor.cta = engaged;
     renderPose();
   };
-  for (const cta of document.querySelectorAll('a[href$="/releases/latest"]')) {
+  for (const cta of document.querySelectorAll("[data-download]")) {
     cta.addEventListener("pointerenter", () => setCta(true));
     cta.addEventListener("pointerleave", () => setCta(false));
     cta.addEventListener("focus", () => setCta(true));
