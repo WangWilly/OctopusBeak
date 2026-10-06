@@ -8,6 +8,7 @@ import {
   commitPGliteCanonicalCreditCardCapture,
   type PGliteCanonicalCreditCardCaptureRequest,
 } from "./credit-card.ts";
+import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { PGliteStore } from "./transaction.ts";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 
@@ -320,6 +321,70 @@ test("PGlite credit-card command keeps identity, instrument, statements, lifecyc
       { coefficient: "500", effectiveAt: "2026-09-22T00:00:00.000000000Z" },
       { coefficient: "500", effectiveAt: "2026-09-23T00:00:00.000000000Z" },
     ]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("the overview reads each stored statement's newest visible revision onto its card account", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = await commitPGliteCanonicalCreditCardCapture(store, capture("credit-card-statement-a"));
+    const template = capture("credit-card-statement-b");
+    const reissued: PGliteCanonicalCreditCardCaptureRequest = {
+      ...template,
+      statements: [{
+        ...template.statements[0]!,
+        revisionKey: "statement-revision-2",
+        dueDate: "2026-10-22",
+        balance: { coefficient: "1200", scale: 0 },
+      }],
+    };
+    const second = await commitPGliteCanonicalCreditCardCapture(store, reissued);
+    const overview = createPGliteCanonicalOverviewQuery(store);
+    const statementsOf = (projection: Awaited<ReturnType<typeof overview.current>>["projection"]) =>
+      projection.accounts.flatMap((account) => account.creditCard?.statements ?? []).map((statement) => ({
+        statementKey: statement.statementKey,
+        revisionNumber: statement.revisionNumber,
+        cycleStart: statement.cycleStart,
+        cycleEnd: statement.cycleEnd,
+        issueDate: statement.issueDate,
+        dueDate: statement.dueDate,
+        currency: statement.currency,
+        statementBalance: statement.statementBalance,
+        minimumPayment: statement.minimumPayment,
+        memberships: statement.memberships.length,
+        hexIds: /^[0-9a-f]{32}$/u.test(statement.statementId) && /^[0-9a-f]{32}$/u.test(statement.statementRevisionId),
+      }));
+    const statement = {
+      statementKey: "statement-1",
+      cycleStart: "2026-09-01",
+      cycleEnd: "2026-09-30",
+      issueDate: "2026-10-01",
+      currency: "TWD",
+      minimumPayment: { coefficient: "100", scale: 0 },
+      memberships: 1,
+      hexIds: true,
+    };
+    assert.deepEqual(statementsOf((await overview.current()).projection), [{
+      ...statement,
+      revisionNumber: 2,
+      dueDate: "2026-10-22",
+      statementBalance: { coefficient: "1200", scale: 0 },
+    }], "a reissue replaces the earlier revision instead of listing both");
+    assert.deepEqual(statementsOf((await overview.historical({ knowledgeAt: first.commitSequence })).projection), [{
+      ...statement,
+      revisionNumber: 1,
+      dueDate: "2026-10-20",
+      statementBalance: { coefficient: "1000", scale: 0 },
+    }], "a revision committed after the knowledge point is not visible");
+    assert.deepEqual(
+      statementsOf((await overview.historical({ knowledgeAt: second.commitSequence, financialAt: "2026-09-30" })).projection),
+      [],
+      "a statement issued after the financial date is not visible",
+    );
   } finally {
     await store.close();
   }
