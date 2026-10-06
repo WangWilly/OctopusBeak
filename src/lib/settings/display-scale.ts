@@ -1,16 +1,18 @@
 import { writable } from "svelte/store";
+import { DISPLAY_SCALE_BASE_ZOOM } from "./display-zoom.ts";
 
 export const DISPLAY_SCALE_MIN = 75;
 export const DISPLAY_SCALE_MAX = 150;
 export const DISPLAY_SCALE_STEP = 5;
 export const DISPLAY_SCALE_DEFAULT = 100;
-export const displayScaleStorageKey = "octopusbeak-display-scale";
+export const displayScaleStorageKey = "octopusbeak-display-scale-v2";
+export const legacyDisplayScaleStorageKey = "octopusbeak-display-scale";
 
 export function supportsDisplayScale(bridge: unknown) {
   return typeof (bridge as { display?: { setScale?: unknown } } | null)?.display?.setScale === "function";
 }
 
-type DisplayScaleStorage = Pick<Storage, "getItem" | "setItem">;
+type DisplayScaleStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 type DisplayScaleKeyEvent = Pick<
   KeyboardEvent,
   "key" | "metaKey" | "ctrlKey" | "altKey" | "defaultPrevented"
@@ -29,7 +31,13 @@ export function normalizeDisplayScale(value: unknown) {
 
 export function readStoredDisplayScale(storage = browserStorage()) {
   const stored = storage?.getItem(displayScaleStorageKey);
-  return stored == null ? DISPLAY_SCALE_DEFAULT : normalizeDisplayScale(stored);
+  if (stored != null) return normalizeDisplayScale(stored);
+  const legacy = storage?.getItem(legacyDisplayScaleStorageKey);
+  if (legacy == null || !storage) return DISPLAY_SCALE_DEFAULT;
+  const migrated = normalizeDisplayScale(Number(legacy) / (DISPLAY_SCALE_BASE_ZOOM * 100) * 100);
+  writeStoredDisplayScale(migrated, storage);
+  storage.removeItem(legacyDisplayScaleStorageKey);
+  return migrated;
 }
 
 export function writeStoredDisplayScale(value: number, storage = browserStorage()) {
