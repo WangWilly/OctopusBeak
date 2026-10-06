@@ -4,15 +4,18 @@ import {
   applyDisplayScale,
   displayScaleShortcut,
   displayScaleStorageKey,
+  legacyDisplayScaleStorageKey,
   normalizeDisplayScale,
   readStoredDisplayScale,
   supportsDisplayScale,
 } from "./display-scale.ts";
+import { displayScaleZoomFactor } from "./display-zoom.ts";
 
 class MemoryStorage {
   #items = new Map<string, string>();
   getItem(key: string) { return this.#items.get(key) ?? null; }
   setItem(key: string, value: string) { this.#items.set(key, value); }
+  removeItem(key: string) { this.#items.delete(key); }
 }
 
 const storage = new MemoryStorage();
@@ -63,3 +66,20 @@ assert.equal(shortcut("other", "0", { metaKey: true }), null);
 assert.equal(shortcut("mac", "0", { altKey: true }), null);
 assert.equal(shortcut("mac", "0", { defaultPrevented: true }), null);
 assert.equal(shortcut("mac", "0", { metaKey: false }), null);
+
+const legacy = new MemoryStorage();
+legacy.setItem(legacyDisplayScaleStorageKey, "80");
+assert.equal(readStoredDisplayScale(legacy), 100, "the old 80% is the new 100%, so the screen looks the same");
+assert.equal(legacy.getItem(displayScaleStorageKey), "100");
+assert.equal(legacy.getItem(legacyDisplayScaleStorageKey), null);
+legacy.setItem(legacyDisplayScaleStorageKey, "100");
+assert.equal(readStoredDisplayScale(legacy), 100, "the migrated value wins over a stale legacy key");
+const legacyDefault = new MemoryStorage();
+legacyDefault.setItem(legacyDisplayScaleStorageKey, "100");
+assert.equal(readStoredDisplayScale(legacyDefault), 125);
+assert.equal(displayScaleZoomFactor(100), 0.8, "100% renders at the old 80% zoom");
+assert.equal(displayScaleZoomFactor(125), 1);
+assert.equal(displayScaleZoomFactor(75), 0.6);
+assert.equal(displayScaleZoomFactor(150), 1.2);
+assert.equal(displayScaleZoomFactor(50), displayScaleZoomFactor(75));
+assert.throws(() => displayScaleZoomFactor(Number.NaN), { name: "TypeError" });

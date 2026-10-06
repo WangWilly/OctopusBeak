@@ -57,6 +57,7 @@ import {
   type PGliteViewIpcRegistration,
 } from "./pglite-ipc.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
+import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
@@ -191,8 +192,9 @@ export function registerOctopusBeakIpc({
     // The details block reports a retryable, user-facing error if this fails.
   });
   ipcMain.on("display:setScale", (event, percent: unknown) => {
-    if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
+    event.sender.setZoomFactor(displayScaleZoomFactor(percent));
+    if (process.platform !== "darwin") return;
     BrowserWindow.fromWebContents(event.sender)?.setWindowButtonPosition(
       trafficLightPositionForScale(percent),
     );
