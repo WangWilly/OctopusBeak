@@ -95,6 +95,11 @@
     <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
+    <symbol id="i-bars" viewBox="0 0 24 24"><rect width="4" height="16" x="6" y="4" rx="1" /><rect width="4" height="16" x="14" y="4" rx="1" /></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6a1.4 1.4 0 0 1-1 .4H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5ZM16 9a5 5 0 0 1 0 6M19.4 18.4a9 9 0 0 0 0-12.8" /></symbol>
+    <symbol id="i-volume-off" viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6a1.4 1.4 0 0 1-1 .4H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5ZM22 9l-6 6M16 9l6 6" /></symbol>
+    <symbol id="i-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></symbol>
   </svg>
 
   <header class="site-header">
@@ -143,9 +148,9 @@
               <span data-i18n="cta.download">下載 macOS Beta</span>
               <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
             </a>
-            <a class="btn btn-glass btn-lg" href="#demo">
+            <a class="btn btn-glass btn-lg" href="#demo" data-demo-open>
               <svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg>
-              <span data-i18n="hero.demo">觀看示範</span>
+              <span data-i18n="hero.demo">觀看介紹</span>
             </a>
           </div>
           <ul class="facts">
@@ -240,15 +245,15 @@
           </li>
 
           <li class="tile tile-demo reveal" id="demo">
-            <div class="tile-head">
-              <span class="tile-no tile-no-play"><svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg></span>
-              <span class="tile-text"><strong data-i18n="hero.demo">觀看示範</strong></span>
-            </div>
-            <div class="demo-frame">
-              <video controls loop playsinline preload="none" poster="assets/octopusbeak-demo-poster.webp" data-poster-en="assets/octopusbeak-demo-en-poster.webp" aria-label="OctopusBeak product demonstration">
-                <source src="assets/octopusbeak-demo.mp4" data-src-en="assets/octopusbeak-demo-en.mp4" type="video/mp4" />
-              </video>
-            </div>
+            <a class="tile-link" href="assets/octopusbeak-demo.mp4" data-href-en="assets/octopusbeak-demo-en.mp4" data-demo-open>
+              <span class="tile-head">
+                <span class="tile-no tile-no-play"><svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg></span>
+                <span class="tile-text"><strong data-i18n="hero.demo">觀看介紹</strong></span>
+              </span>
+              <span class="demo-frame">
+                <img class="frag" src="assets/octopusbeak-demo-poster.webp" data-src-en="assets/octopusbeak-demo-en-poster.webp" width="960" height="540" loading="lazy" decoding="async" alt="" />
+              </span>
+            </a>
           </li>
         </ol>
       </div>
@@ -342,6 +347,61 @@
       </div>
     </section>
   </main>
+
+  <dialog class="video-modal" id="demo-modal" aria-labelledby="demo-modal-title">
+    <div class="video-modal-head">
+      <span class="tile-no tile-no-play"><svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg></span>
+      <div class="video-modal-titles">
+        <h2 id="demo-modal-title" data-i18n="hero.demo">觀看介紹</h2>
+        <p data-i18n="demo.subtitle">同一筆消費，記了兩次？OctopusBeak 如何自動合併重複帳目 · 0:30</p>
+      </div>
+      <button class="video-modal-close" type="button" data-demo-close>
+        <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+        <span class="sr-only" data-i18n="demo.close">關閉</span>
+      </button>
+    </div>
+    <div class="player">
+      <video playsinline preload="none" poster="assets/octopusbeak-demo-poster.webp" data-poster-en="assets/octopusbeak-demo-en-poster.webp">
+        <source src="assets/octopusbeak-demo.mp4" data-src-en="assets/octopusbeak-demo-en.mp4" type="video/mp4" />
+      </video>
+      <div class="player-controls">
+        <label class="player-progress">
+          <span class="sr-only" data-i18n="player.seek">播放進度</span>
+          <input type="range" min="0" max="1000" step="1" value="0" />
+        </label>
+        <div class="player-row">
+          <button class="player-btn" type="button" data-player="toggle">
+            <svg class="icon icon-fill player-when-stopped" aria-hidden="true"><use href="#i-play" /></svg>
+            <svg class="icon icon-fill player-when-playing" aria-hidden="true"><use href="#i-bars" /></svg>
+            <span class="sr-only player-when-stopped" data-i18n="player.play">播放</span>
+            <span class="sr-only player-when-playing" data-i18n="player.pause">暫停</span>
+          </button>
+          <button class="player-btn" type="button" data-player="mute">
+            <svg class="icon player-when-sound" aria-hidden="true"><use href="#i-volume" /></svg>
+            <svg class="icon player-when-muted" aria-hidden="true"><use href="#i-volume-off" /></svg>
+            <span class="sr-only player-when-sound" data-i18n="player.mute">靜音</span>
+            <span class="sr-only player-when-muted" data-i18n="player.unmute">取消靜音</span>
+          </button>
+          <span class="player-time">0:00 / 0:30</span>
+          <button class="player-speed" type="button" data-player="speed">
+            <span class="sr-only" data-i18n="player.speed">播放速度</span>
+            <span class="player-speed-value">1×</span>
+          </button>
+          <button class="player-btn" type="button" data-player="fullscreen">
+            <svg class="icon" aria-hidden="true"><use href="#i-maximize" /></svg>
+            <span class="sr-only" data-i18n="player.fullscreen">全螢幕</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="video-modal-foot">
+      <p data-i18n="demo.hint">按 Esc 或點擊背景即可關閉</p>
+      <a class="btn btn-paper" href="https://github.com/WangWilly/OctopusBeak/releases/latest">
+        <span data-i18n="demo.cta">免費下載 OctopusBeak</span>
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
+      </a>
+    </div>
+  </dialog>
 
   <footer class="site-footer">
     <div class="container footer-grid">
