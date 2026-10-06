@@ -4,18 +4,10 @@ import {
   CATHAY_APP_VERIFICATION_FAILURE_REASONS,
   cathayEmailOtpFailureReason,
   cathayOtpReasonNeedsGmailSettings,
-  shouldOfferManualVerification,
   verificationFailureEventReason,
   verificationSolverExhausted,
-  verificationActorForUiGroup,
 } from "./verification-actor-ui.ts";
 import { translations } from "../i18n/i18n.ts";
-
-assert.equal(verificationActorForUiGroup("cathay", undefined), "solver");
-assert.equal(verificationActorForUiGroup("cathay", { cathay: "unknown" } as never), "solver");
-assert.equal(verificationActorForUiGroup("cathay", { cathay: "human" }), "human");
-assert.equal(shouldOfferManualVerification("cathay", undefined), false);
-assert.equal(shouldOfferManualVerification("cathay", { cathay: "human" }), true);
 
 const events = [
   { stage: "preparation", code: "prepared" },
@@ -33,7 +25,11 @@ for (const dictionary of [translations.en.automation, translations["zh-TW"].auto
     assert.ok(dictionary.cathayOtpFailureReasons[reason], `missing translation for ${reason}`);
   }
   assert.ok(dictionary.verificationSolverExhausted);
+  assert.doesNotMatch(dictionary.statusLabels.waiting_for_human, /human|人工/i);
+  assert.doesNotMatch(dictionary.progressAutomaticVerification, /human|人工/i);
 }
+assert.equal(translations.en.automation.statusLabels.waiting_for_human, "verifying");
+assert.equal(translations["zh-TW"].automation.statusLabels.waiting_for_human, "驗證中");
 assert.equal(
   cathayEmailOtpFailureReason([
     { stage: "collection", code: "cathay-email-otp-gmail-needs-authorization" },
@@ -55,14 +51,12 @@ assert.equal(
 );
 
 const dashboard = readFileSync(new URL("./AutomationDashboard.svelte", import.meta.url), "utf8");
-assert.match(dashboard, /iconTasks = automation\.tasks\.filter\([\s\S]*?shouldOfferManualVerification/);
-assert.match(dashboard, /status === "waiting_for_human" && task\.humanSession[\s\S]*?shouldOfferManualVerification/);
-assert.match(dashboard, /function openHumanViewer\(task: AutomationTaskRow\) \{\s*if \(!shouldOfferManualVerification/);
+assert.doesNotMatch(dashboard, /shouldOfferManualVerification|verificationActorsByCredentialGroup|openHumanViewer/);
 assert.match(dashboard, /cathayGmailOtpSettingsAction/);
 assert.match(dashboard, /workflowEventFailureLabel\(event\)/);
 assert.match(dashboard, /<code>\{event\.code\}<\/code>/);
 
 const page = readFileSync(new URL("../../routes/+page.svelte", import.meta.url), "utf8");
-assert.match(page, /verificationActorsByCredentialGroup=\{automationRenderValue\.verificationActorsByCredentialGroup\}/);
+assert.doesNotMatch(page, /verificationActorsByCredentialGroup/);
 
 console.log("Verification actor UI checks passed.");

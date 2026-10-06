@@ -29,9 +29,7 @@ assert.match(cathayWorkflowSource, /export async function signInCathayForApp/);
 assert.match(cathayOtpSource, /dependencies\.otp\.ensureAccess\(\)/);
 assert.match(cathayOtpSource, /dependencies\.otp\.prepareRetrieval\(\)/);
 assert.equal(cathayOtpSource.match(/dependencies\.otp\.retrieve\(/g)?.length, 1);
-assert.match(cathayOtpSource, /requestCathayAppOtpAssistance\(/);
-assert.match(cathayOtpSource, /verificationActor = dependencies\.verificationActor \?\? "solver"/);
-assert.match(cathayOtpSource, /verificationActor === "human"/);
+assert.doesNotMatch(cathayWorkflowSource, /requestHumanAssistance|verificationActor|human-submitted|cathay-login-email-otp/);
 assert.doesNotMatch(cathayOtpSource, /authentication-otp-auto-retrieval-fallback/);
 assert.doesNotMatch(
   cathayWorkflowSource,

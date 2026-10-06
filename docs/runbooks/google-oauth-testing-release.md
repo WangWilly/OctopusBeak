@@ -155,11 +155,12 @@ do not copy a token into CI.
 
 ### Gmail OTP is not retrieved
 
-Confirm the feature was enabled by the user, the Gmail grant is connected, and
-the message satisfies the Cathay sender, subject, timing, and code-shape
-contract. The workflow polls for five seconds at a time for up to two minutes;
-missing, stale, ambiguous, or unauthenticated mail returns to human
-verification. This is separate from build-time OAuth client configuration.
+Confirm the Gmail grant is connected and the message satisfies the Cathay
+sender, subject, timing, and code-shape contract. The workflow polls Gmail
+every five seconds for up to two minutes. Missing, stale, ambiguous, or
+unauthenticated mail ends the run with a specific reason. There is no manual
+fallback. The person fixes the cause and starts a new run. This is separate
+from build-time OAuth client configuration.
 
 ### A value appeared in CI output or Git history
 

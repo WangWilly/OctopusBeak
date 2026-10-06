@@ -84,7 +84,6 @@ function model(taskOverrides: Partial<AutomationTaskRow> = {}): AutomationDeskto
       tasks: [task],
     },
     credentialGroups: [],
-    verificationActorsByCredentialGroup: {},
   };
 }
 

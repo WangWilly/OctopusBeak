@@ -215,7 +215,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
     "token-invalid",
   ] as const) {
     const unavailable = otpPage();
-    let assistanceCalls = 0;
     const events: string[] = [];
     await assert.rejects(
       completeCathayEmailOtpForApp(unavailable.page, {
@@ -226,10 +225,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
         event: async (code) => {
           events.push(code);
         },
-        requestHumanAssistance: async () => {
-          assistanceCalls += 1;
-          return "entered";
-        },
       }),
       (error: unknown) =>
         error instanceof Error &&
@@ -238,7 +233,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
         "reason" in error &&
         error.reason === `gmail-${reason}`,
     );
-    assert.equal(assistanceCalls, 0);
     assert.deepEqual(unavailable.read(), {
       fieldValue: "",
       sendClicks: 0,
@@ -257,9 +251,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
       },
     }),
     signal: new AbortController().signal,
-    requestHumanAssistance: async () => {
-      throw new Error("Solver must not request manual assistance.");
-    },
   });
   assert.deepEqual(automatic.read(), {
     fieldValue: "123456",
@@ -278,7 +269,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
         event: async (code) => {
           completionEvents.push(code);
         },
-        requestHumanAssistance: async () => "entered",
       },
       0,
     ),
@@ -294,50 +284,6 @@ test("Cathay App Gmail OTP defaults to solver and never falls back to manual ass
   ]);
 });
 
-test("Cathay App development human OTP skips Gmail retrieval and submits one assistance result", async () => {
-  const assisted = otpPage();
-  const assistanceEvents: string[] = [];
-  let assistanceStage = "";
-  const calls = { ensure: 0, prepare: 0, retrieve: 0 };
-  const completion = await completeCathayEmailOtpForApp(assisted.page, {
-    verificationActor: "human",
-    otp: otpPort({
-      ensureAccess: async () => {
-        calls.ensure += 1;
-        return { status: "ready" };
-      },
-      prepareRetrieval: async () => {
-        calls.prepare += 1;
-        return { status: "prepared", boundaryId: "fixture-boundary" };
-      },
-      retrieve: async () => {
-        calls.retrieve += 1;
-        return { status: "found", otp: "ABCD-123456" };
-      },
-    }),
-    signal: new AbortController().signal,
-    event: async (code) => {
-      assistanceEvents.push(code);
-    },
-    requestHumanAssistance: async (contract) => {
-      assistanceStage = contract.stageId;
-      assisted.setFieldValue("654321");
-      return "entered";
-    },
-  });
-  assert.deepEqual(assisted.read(), {
-    fieldValue: "654321",
-    sendClicks: 1,
-    confirmClicks: 1,
-  });
-  assert.deepEqual(calls, { ensure: 0, prepare: 0, retrieve: 0 });
-  assert.equal(completion, "human-submitted");
-  assert.equal(assistanceStage, "cathay-login-email-otp");
-  assert.deepEqual(assistanceEvents, [
-    "authentication-human-assistance-requested",
-  ]);
-});
-
 test("Cathay solver stops on ambiguous or timed-out Gmail results without a manual retry", async () => {
   for (const reason of [
     "no-candidate",
@@ -346,7 +292,6 @@ test("Cathay solver stops on ambiguous or timed-out Gmail results without a manu
   ] as const) {
     const fixture = otpPage();
     const events: string[] = [];
-    let assistanceCalls = 0;
     let retrieveCalls = 0;
     await assert.rejects(
       completeCathayEmailOtpForApp(fixture.page, {
@@ -359,10 +304,6 @@ test("Cathay solver stops on ambiguous or timed-out Gmail results without a manu
         signal: new AbortController().signal,
         event: async (code) => {
           events.push(code);
-        },
-        requestHumanAssistance: async () => {
-          assistanceCalls += 1;
-          return "entered";
         },
       }),
       (error: unknown) =>
@@ -378,14 +319,12 @@ test("Cathay solver stops on ambiguous or timed-out Gmail results without a manu
       confirmClicks: 0,
     });
     assert.equal(retrieveCalls, 1);
-    assert.equal(assistanceCalls, 0);
     assert.deepEqual(events, [`cathay-email-otp-gmail-${reason}`]);
   }
 });
 
 test("Cathay solver stops before sending when Gmail retrieval cannot be prepared", async () => {
   const fixture = otpPage();
-  let assistanceCalls = 0;
   await assert.rejects(
     completeCathayEmailOtpForApp(fixture.page, {
       otp: otpPort({
@@ -395,10 +334,6 @@ test("Cathay solver stops before sending when Gmail retrieval cannot be prepared
         }),
       }),
       signal: new AbortController().signal,
-      requestHumanAssistance: async () => {
-        assistanceCalls += 1;
-        return "entered";
-      },
     }),
     (error: unknown) =>
       error instanceof Error &&
@@ -412,14 +347,12 @@ test("Cathay solver stops before sending when Gmail retrieval cannot be prepared
     sendClicks: 0,
     confirmClicks: 0,
   });
-  assert.equal(assistanceCalls, 0);
 });
 
 test("Cathay solver stops with a setup reason when the OTP send control is unsupported", async () => {
   const fixture = otpPage();
   fixture.setSendVisible(false);
   let ensureCalls = 0;
-  let assistanceCalls = 0;
   await assert.rejects(
     completeCathayEmailOtpForApp(fixture.page, {
       otp: otpPort({
@@ -429,10 +362,6 @@ test("Cathay solver stops with a setup reason when the OTP send control is unsup
         },
       }),
       signal: new AbortController().signal,
-      requestHumanAssistance: async () => {
-        assistanceCalls += 1;
-        return "entered";
-      },
     }),
     (error: unknown) =>
       error instanceof Error &&
@@ -442,7 +371,6 @@ test("Cathay solver stops with a setup reason when the OTP send control is unsup
       error.reason === "challenge-unavailable",
   );
   assert.equal(ensureCalls, 0);
-  assert.equal(assistanceCalls, 0);
   assert.deepEqual(fixture.read(), {
     fieldValue: "",
     sendClicks: 0,
@@ -453,7 +381,6 @@ test("Cathay solver stops with a setup reason when the OTP send control is unsup
 test("Cathay solver treats uncertain send and submit as terminal and never repeats them", async () => {
   const sendUncertain = otpPage();
   sendUncertain.setSendError(new Error("synthetic send uncertainty"));
-  let sendAssistanceCalls = 0;
   let sendRetrievalCalls = 0;
   await assert.rejects(
     completeCathayEmailOtpForApp(sendUncertain.page, {
@@ -464,10 +391,6 @@ test("Cathay solver treats uncertain send and submit as terminal and never repea
         },
       }),
       signal: new AbortController().signal,
-      requestHumanAssistance: async () => {
-        sendAssistanceCalls += 1;
-        return "entered";
-      },
     }),
     (error: unknown) =>
       error instanceof Error &&
@@ -482,11 +405,9 @@ test("Cathay solver treats uncertain send and submit as terminal and never repea
     confirmClicks: 0,
   });
   assert.equal(sendRetrievalCalls, 0);
-  assert.equal(sendAssistanceCalls, 0);
 
   const submitUncertain = otpPage();
   submitUncertain.setConfirmError(new Error("synthetic submit uncertainty"));
-  let submitAssistanceCalls = 0;
   let submitRetrievalCalls = 0;
   await assert.rejects(
     completeCathayEmailOtpForApp(submitUncertain.page, {
@@ -497,10 +418,6 @@ test("Cathay solver treats uncertain send and submit as terminal and never repea
         },
       }),
       signal: new AbortController().signal,
-      requestHumanAssistance: async () => {
-        submitAssistanceCalls += 1;
-        return "entered";
-      },
     }),
     (error: unknown) =>
       error instanceof Error &&
@@ -515,7 +432,6 @@ test("Cathay solver treats uncertain send and submit as terminal and never repea
     confirmClicks: 1,
   });
   assert.equal(submitRetrievalCalls, 1);
-  assert.equal(submitAssistanceCalls, 0);
 });
 
 test("Cathay solver abort wins over OTP failure classification", async () => {
@@ -532,7 +448,6 @@ test("Cathay solver abort wins over OTP failure classification", async () => {
       event: async (code) => {
         events.push(code);
       },
-      requestHumanAssistance: async () => "entered",
     }),
     (error: unknown) =>
       error instanceof Error && error.name === "AbortError",
@@ -596,7 +511,6 @@ function collectionDependencies(
       trustDevice: boolean,
       dependencies: CathayAppLoginDependencies,
     ) => Promise<{ usedExistingSession: boolean }>;
-    onLogin: (dependencies: CathayAppLoginDependencies) => void;
     domestic: CathayDomesticFinancialCollection;
     foreign: CathayForeignFinancialCollection;
     collectCurrentBalanceItems: (
@@ -611,10 +525,7 @@ function collectionDependencies(
     otp: otpPort(),
     signIn:
       override.signIn ??
-      (async (_page, _credentials, _trustDevice, dependencies) => {
-        override.onLogin?.(dependencies);
-        return { usedExistingSession: true };
-      }),
+      (async () => ({ usedExistingSession: true })),
     createSession: async () => ({
       jwtToken: "fixture-token",
       customerId: "fixture",
@@ -655,17 +566,11 @@ test("Cathay all workflow collects and commits selected products independently w
   process.chdir(temporaryDirectory);
   try {
     const harness = contextHarness();
-    let verificationActor: CathayAppLoginDependencies["verificationActor"];
     const output = await runCathayAllProviderWorkflow(
       harness.context,
       bothProductsInput,
-      collectionDependencies({
-        onLogin: (dependencies) => {
-          verificationActor = dependencies.verificationActor;
-        },
-      }),
+      collectionDependencies(),
     );
-    assert.equal(verificationActor, "solver");
     assert.deepEqual(output.statementTypes, ["domestic", "foreign"]);
     assert.equal(output.sourceCaptureCount, 2);
     assert.equal(harness.committed.length, 2);

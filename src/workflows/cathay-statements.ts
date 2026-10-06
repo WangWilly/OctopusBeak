@@ -1,21 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import {
   gmailOtpFallbackReason,
   type GmailOtpFallbackReason,
 } from "../lib/automation/gmail-otp.ts";
 import { CathayAppVerificationError } from "../lib/automation/verification-errors.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
-import {
-  emitHumanAssistanceStage,
-  type HumanAssistanceContractPublisher,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
@@ -69,46 +60,6 @@ const dateRangeSchema = z.enum([
   "one_year",
 ]);
 
-type LocatorBox = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-function sameLocatorBox(left: LocatorBox | null, right: LocatorBox | null) {
-  if (!left || !right) return left === right;
-  return ["x", "y", "width", "height"].every(
-    (key) =>
-      Math.abs(left[key as keyof LocatorBox] - right[key as keyof LocatorBox]) <
-      0.5,
-  );
-}
-
-export async function waitForStableLocatorBox(
-  page: Page,
-  locator: Locator,
-  timeoutMs = 5_000,
-): Promise<LocatorBox | null> {
-  const deadline = Date.now() + timeoutMs;
-  let previous: LocatorBox | null = null;
-  let stableSamples = 0;
-
-  while (Date.now() < deadline) {
-    const box = await locator.boundingBox().catch(() => null);
-    if (box && sameLocatorBox(previous, box)) {
-      stableSamples += 1;
-      if (stableSamples >= 8) return box;
-    } else {
-      stableSamples = 0;
-    }
-    previous = box;
-    await page.waitForTimeout(250);
-  }
-
-  return previous;
-}
-
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
 export type CathayDomesticStatementsClient = {
@@ -135,76 +86,6 @@ export class CathayDomesticAccountAbsentError extends StatementComponentAbsentEr
     super("No Cathay domestic-currency account options are available.");
     this.name = "CathayDomesticAccountAbsentError";
   }
-}
-
-export type CathayStatementScopeRepairType = "foreign_currency";
-
-export function cathayStatementScopeRepairRequired(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Cathay (?:response date scope does not match the requested scope|account scope does not match the response)/i.test(
-    message,
-  );
-}
-
-function cathayStatementScopeRepairLabel(
-  _type: CathayStatementScopeRepairType,
-) {
-  return "foreign-currency";
-}
-
-export function cathayStatementScopeRepairStage(
-  page: Page,
-  type: CathayStatementScopeRepairType,
-): WorkflowHumanAssistanceStage {
-  const placeholders = page.getByText("請選擇", { exact: true });
-  const label = cathayStatementScopeRepairLabel(type);
-  return {
-    stageId: `cathay-${type}-statement-scope-repair`,
-    title: `Select the Cathay ${label} account and query period`,
-    targets: [
-      {
-        id: "account-selector",
-        label: "Cathay account selector",
-        semanticId: `cathay.${type}.statement.account-selector`,
-        modes: ["click", "press", "type"],
-        locator: placeholders.nth(0),
-      },
-      {
-        id: "date-selector",
-        label: "Cathay query-period selector",
-        semanticId: `cathay.${type}.statement.date-selector`,
-        modes: ["click", "press", "type"],
-        locator: placeholders.nth(1),
-      },
-    ],
-    contextRegions: [
-      {
-        id: "statement-query",
-        label: "Cathay statement query form",
-        semanticId: `cathay.${type}.statement.query-form`,
-      },
-    ],
-    completion: {
-      mode: "inline",
-      targetIds: ["account-selector", "date-selector"],
-    },
-    focus: {
-      targetId: "account-selector",
-      contextRegionIds: ["statement-query"],
-      initialZoom: 1.15,
-    },
-  };
-}
-
-export async function publishCathayStatementScopeRepairStage(
-  page: Page,
-  type: CathayStatementScopeRepairType,
-  publish: HumanAssistanceContractPublisher,
-) {
-  return emitHumanAssistanceStage(
-    cathayStatementScopeRepairStage(page, type),
-    publish,
-  );
 }
 
 export type CathaySession = {
@@ -887,11 +768,6 @@ async function dismissPostLoginPrompts(
 export type CathayAppLoginDependencies = Readonly<{
   otp: CathayGmailOtpPort;
   signal: AbortSignal;
-  verificationActor?: "solver" | "human";
-  requestHumanAssistance(
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
   event?(code: string): Promise<void>;
 }>;
 
@@ -917,87 +793,11 @@ function cathayGmailFailureReason(
   return reason === "gmail-request-failed" ? reason : `gmail-${reason}`;
 }
 
-function cathayAppEmailOtpStage(
-  page: Page,
-  otpField: Locator,
-): WorkflowHumanAssistanceStage {
-  return {
-    stageId: "cathay-login-email-otp",
-    title: "Enter the Cathay Email OTP",
-    targets: [
-      {
-        id: "otp-input",
-        label: "Email OTP input",
-        semanticId: "cathay.login.email-otp-input",
-        modes: ["click", "type"],
-        locator: otpField,
-      },
-    ],
-    contextRegions: [
-      {
-        id: "otp-challenge",
-        label: "Email OTP instructions",
-        semanticId: "cathay.login.email-otp-challenge",
-      },
-    ],
-    completion: { mode: "inline", targetIds: ["otp-input"] },
-    focus: {
-      targetId: "otp-input",
-      contextRegionIds: ["otp-challenge"],
-      initialZoom: 1.15,
-    },
-  };
-}
-
-async function requestCathayAppOtpAssistance(
-  page: Page,
-  otpField: Locator,
-  dependencies: CathayAppLoginDependencies,
-): Promise<void> {
-  await waitForCathaySignal(
-    otpField.scrollIntoViewIfNeeded(),
-    dependencies.signal,
-  );
-  await waitForCathaySignal(otpField.focus(), dependencies.signal);
-  await waitForCathaySignal(
-    waitForStableLocatorBox(page, otpField),
-    dependencies.signal,
-  );
-  const contract = await waitForCathaySignal(
-    emitHumanAssistanceStage(
-      cathayAppEmailOtpStage(page, otpField),
-      (value) => value,
-    ),
-    dependencies.signal,
-  );
-  await dependencies.event?.("authentication-human-assistance-requested");
-  const completion = await waitForCathaySignal(
-    dependencies.requestHumanAssistance(contract, dependencies.signal),
-    dependencies.signal,
-  );
-  if (completion !== "entered" && completion !== "verified") {
-    throw new Error(`Cathay Email OTP assistance ended with ${completion}.`);
-  }
-  dependencies.signal.throwIfAborted();
-  if (await isSignedIn(page)) return;
-  if (!(await otpField.isVisible().catch(() => false))) {
-    throw new Error("Cathay Email OTP field disappeared before submission.");
-  }
-  if (!(await otpField.inputValue()).trim()) {
-    throw new Error("Cathay Email OTP is empty after human assistance.");
-  }
-  await waitForCathaySignal(
-    page.locator("#btnConfirm").click(),
-    dependencies.signal,
-  );
-}
-
-/** Completes Cathay's Email OTP with the host-selected verification actor. */
+/** Completes Cathay's Email OTP through Gmail OAuth auto-retrieval. */
 export async function completeCathayEmailOtpForApp(
   page: Page,
   dependencies: CathayAppLoginDependencies,
-): Promise<"not-needed" | "human-submitted" | "solver-submitted"> {
-  const verificationActor = dependencies.verificationActor ?? "solver";
+): Promise<"not-needed" | "solver-submitted"> {
   const emailVerificationLink = page
     .locator("a")
     .filter({ hasText: "Email驗證" });
@@ -1025,12 +825,7 @@ export async function completeCathayEmailOtpForApp(
         .isVisible()
       .catch(() => false))
     ) {
-      if (verificationActor === "solver") {
-        return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-      }
-      throw new Error(
-        "Cathay sign-in did not reach Email OTP or signed-in state.",
-      );
+      return await failCathayOtpVerification(dependencies, "challenge-unavailable");
     }
     await waitForCathaySignal(
       emailVerificationLink.first().click(),
@@ -1045,31 +840,15 @@ export async function completeCathayEmailOtpForApp(
       );
     } catch (error) {
       if (dependencies.signal.aborted) throw error;
-      if (verificationActor === "solver") {
-        return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-      }
-      throw error;
+      return await failCathayOtpVerification(dependencies, "challenge-unavailable");
     }
   }
   dependencies.signal.throwIfAborted();
 
   const sendEmailOtp = page.locator("#js-otp-email-send");
   const sendIsVisible = await sendEmailOtp.isVisible().catch(() => false);
-  if (!sendIsVisible && verificationActor === "solver") {
+  if (!sendIsVisible) {
     return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-  }
-  if (!sendIsVisible || verificationActor === "human") {
-    if (sendIsVisible) {
-      try {
-        await waitForCathaySignal(sendEmailOtp.click(), dependencies.signal);
-      } catch (error) {
-        if (dependencies.signal.aborted) throw error;
-        // The one send may have reached Cathay. Continue manual entry without
-        // issuing a second send request.
-      }
-    }
-    await requestCathayAppOtpAssistance(page, otpField, dependencies);
-    return "human-submitted";
   }
 
   let access: Awaited<ReturnType<CathayGmailOtpPort["ensureAccess"]>>;
@@ -1172,14 +951,11 @@ export async function waitForCathayAppSignedInState(
   }
   dependencies.signal.throwIfAborted();
   if (await isSignedIn(page)) return;
-  if ((dependencies.verificationActor ?? "solver") === "solver") {
-    return await failCathayOtpVerification(dependencies, "completion-unconfirmed");
-  }
-  throw new Error("Timed out waiting for Cathay signed-in state.");
+  return await failCathayOtpVerification(dependencies, "completion-unconfirmed");
 }
 
 /** App login keeps the existing Gmail auto-retrieval policy and exactly-once
- * send behavior, with the injected host broker and human assistance ports. */
+ * send behavior, with the injected host broker. */
 export async function signInCathayForApp(
   page: Page,
   credentials: CathayCredentials,

@@ -11,22 +11,21 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { captureSessionScreenshot, sendHumanVerificationInput } from "./automation-viewer.ts";
+import { sendHumanVerificationInput } from "./automation-viewer.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
-import { humanSessionForTask, updateHumanAssistanceCompletionForTask } from "./human-session.ts";
-import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
-import { automationResumeHumanAssistance } from "./desktop-api.ts";
+import {
+  registerAppWorkflowHumanAssistanceRequestHandler,
+  resumeAppWorkflowHumanAssistance,
+} from "./app-workflow-human-assistance.ts";
 import { shutdownAppAutomationWorkflows } from "./runner.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const loginUrl = "https://www.einvoice.nat.gov.tw/accounts/login";
 const homeUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/home";
 const searchUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/btc502w/search";
 const listEndpoint = "https://www.einvoice.nat.gov.tw/btc/cloud/api/btc502w/searchCarrierInvoice";
-const humanVerificationSettings = { LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR: "human" } as const;
 const testCredentialEnvironment = () => ({
   [["LIBRETTO", "CLOUD", "EINVOICE", "PHONE_NUMBER"].join("_")]: "0900000000",
   [["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_")]: "test-only-secret",
@@ -105,7 +104,7 @@ async function createRun(
   return run;
 }
 
-test("App dispatch runs E-Invoice in its browser host and resumes human assistance in place", async () => {
+test("App dispatch runs E-Invoice in its browser host and resumes a solved verification stage in place", async () => {
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
   assert.equal(task.workflowId, "einvoice-personal-invoices");
@@ -115,10 +114,9 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
   const store = new PGliteStore(database);
   const browser = await chromium.launch({ headless: true });
   const contexts = new Map<string, BrowserContext>();
-  configureHostVerificationActorPolicy({
-    isPackaged: false,
-    env: { LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR: "human" },
-  });
+  // The test drives the solver seams itself; the registered route only keeps
+  // the stage from failing closed as unrouted.
+  const unregisterRoute = registerAppWorkflowHumanAssistanceRequestHandler(task.id, () => {});
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
@@ -182,7 +180,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const runPromise = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: humanVerificationSettings,
+      launchVerificationSettings: {},
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
         createAppWorkflowBrowserPort({
@@ -195,14 +193,11 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     }, async () => {});
 
     const waitingRun = await waitForStatus(provider, firstRun.taskRunId, "waiting_for_human");
-    assert.equal(await humanSessionForTask(task.id, provider), firstRun.taskRunId);
     assert.equal(Object.hasOwn(waitingRun, "logPath"), false);
     assert.equal(Object.hasOwn(waitingRun, "logTail"), false);
     const contract = waitingRun.humanAssistanceContract;
     assert.ok(contract);
     assert.equal(contract.stageId, "einvoice-login-captcha");
-    const screenshot = await captureSessionScreenshot(firstRun.taskRunId);
-    assert.ok(screenshot.byteLength > 0, "the existing App viewer can read the hosted page");
     await sendHumanVerificationInput(firstRun.taskRunId, {
       type: "type",
       text: "12345",
@@ -210,19 +205,8 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
       contractVersion: contract.version,
     }, contract);
     assert.equal(await contexts.get(firstRun.taskRunId)?.pages()[0]?.locator("#captcha").inputValue(), "12345");
-    await updateHumanAssistanceCompletionForTask(task.id, "entered", provider);
-    const enabledKey = "LIBRETTO_CLOUD_EINVOICE_ENABLED";
-    const originalEnabled = process.env[enabledKey];
-    process.env[enabledKey] = "true";
-    let resumed: Awaited<ReturnType<typeof automationResumeHumanAssistance>>;
-    try {
-      resumed = await automationResumeHumanAssistance(task.id, provider);
-    } finally {
-      if (originalEnabled === undefined) delete process.env[enabledKey];
-      else process.env[enabledKey] = originalEnabled;
-    }
-    assert.equal(resumed.runId, firstRun.taskRunId);
-    assert.equal(resumed.resumed, task.id);
+    await provider.automation.updateHumanAssistanceCompletion(firstRun.taskRunId, "entered");
+    assert.equal(await resumeAppWorkflowHumanAssistance(firstRun.taskRunId, "entered"), true);
 
     const result = await runPromise;
     assert.equal(result.status, "completed");
@@ -270,7 +254,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const rejectedPromise = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: rejectedRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: humanVerificationSettings,
+      launchVerificationSettings: {},
       workflowPorts: { financialCommit: rejectedCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
         createAppWorkflowBrowserPort({
@@ -289,7 +273,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
       targetId: "captcha-input",
       contractVersion: rejectedWaiting.humanAssistanceContract.version,
     }, rejectedWaiting.humanAssistanceContract);
-    await updateHumanAssistanceCompletionForTask(task.id, "entered", provider);
+    await provider.automation.updateHumanAssistanceCompletion(rejectedRun.taskRunId, "entered");
     await resumeAppWorkflowHumanAssistance(rejectedRun.taskRunId, "entered");
     const rejectedResult = await rejectedPromise;
     assert.equal(rejectedResult.status, "failed");
@@ -302,7 +286,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const cancelled = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: cancelRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: humanVerificationSettings,
+      launchVerificationSettings: {},
       isCancellationRequested: () => cancellationRequested,
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
@@ -326,7 +310,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const interrupted = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: shutdownRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: humanVerificationSettings,
+      launchVerificationSettings: {},
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
         createAppWorkflowBrowserPort({
@@ -343,7 +327,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     await interrupted;
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
   } finally {
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
+    unregisterRoute();
     for (const context of contexts.values()) await context.close().catch(() => {});
     await browser.close();
     await store.close();

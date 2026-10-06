@@ -71,9 +71,9 @@ export type DashboardBlockValueMap = {
     details: Pick<SpendingPageDto, "canonical" | "purchaseReport" | "invoices">;
   };
   automation: {
-    summary: Pick<AutomationDesktopModel, "automation" | "verificationActorsByCredentialGroup" | "runtimeSessionId" | "runtimeRevision">;
-    list: Pick<AutomationCoreSnapshot, "automation" | "verificationActorsByCredentialGroup" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
-    details: Pick<AutomationDesktopModel, "automation" | "verificationActorsByCredentialGroup" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
+    summary: Pick<AutomationDesktopModel, "automation" | "runtimeSessionId" | "runtimeRevision">;
+    list: Pick<AutomationCoreSnapshot, "automation" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
+    details: Pick<AutomationDesktopModel, "automation" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
   };
 };
 

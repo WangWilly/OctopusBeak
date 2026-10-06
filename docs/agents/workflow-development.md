@@ -55,7 +55,7 @@ Provider code uses only the ports supplied by `WorkflowContext`:
 - `browser.withPage` supplies the App or development-owned Playwright page. Do not launch a browser or persist a browser profile inside a provider.
 - `text.decode`, `text.stream`, and `text.assertIntact` handle source bytes. Reject invalid or incomplete source before commit.
 - `event(stage, code, counts)` reports bounded progress. Event codes must be lowercase kebab-case.
-- `humanAssistance.request(contract, signal)` pauses for a person when the provider has declared verification targets. The workflow must resume only after the provider's completion check succeeds.
+- `humanAssistance.request(contract, signal)` declares a verification stage for the solver. Despite its name, no person completes it ([ADR 0039](../adr/0039-solver-only-verification.md)). The stage needs a registered solver route, or the run fails closed. The workflow must resume only after the provider's completion check succeeds.
 - Financial definitions set `requiresFinancialCommit: true` and call `context.financialCommit.execute(...)` only after source validation. Do not open a financial database or write an alternate output.
 
 Add a focused `*.check.ts` test alongside the provider. Exercise success, malformed or incomplete input before commit, cancellation, event reporting, and that the injected commit port receives the expected items.
@@ -79,7 +79,7 @@ npm run workflow:dev -- run-app linebank-statements --allow-live-source
 
 Set credential and input environment variables through a local secret manager or an interactive shell prompt. Do not put real credentials in command arguments, checked-in files, tests, or logs. The command does not echo input values.
 
-Every workflow run requires `--allow-live-source` because provider code may contact a real service. It opens a visible, non-persistent browser context, refuses downloads, and closes the browser when the workflow ends or is cancelled. Human assistance shows only a generic prompt in the terminal: complete the step in the open browser and press Enter, or type `cancel`. The CLI prints typed stage codes and counts; it suppresses provider error details that might contain source data or sign-in information.
+Every workflow run requires `--allow-live-source` because provider code may contact a real service. It opens a visible, non-persistent browser context, refuses downloads, and closes the browser when the workflow ends or is cancelled. Verification stages run through the App's local solver route against the open development page. The command does not prompt in the terminal. A workflow or stage that the App would not route fails closed. The command does not run the App's CAPTCHA Retry Campaign, so a retryable outcome such as solver exhaustion ends the run. The CLI prints typed stage codes and counts; it suppresses provider error details that might contain source data or sign-in information.
 
 The development financial port is always a dry-run. It counts the commit items and returns synthetic success receipts so the workflow can finish its provider-side checks. It never calls the Canonical Financial Commit module or writes to a database. A passing local dry-run verifies collection, decoding, completeness checks, and construction of commit items; it does not prove that Canonical Financial Commit will admit them. Keep commit admission covered by focused tests that inject the existing commit port, and run production collection only from the desktop App.
 
@@ -87,7 +87,7 @@ The development browser has no persistent user-data directory. The CLI creates n
 
 ## Activate for production
 
-For a new provider, first add its definition and credential/start-URL mapping to `src/lib/automation/server/app-workflow-registry.ts`, then add the App task with the matching `workflowId` in `src/lib/automation/server/tasks.ts`. All existing catalog tasks already use the App-owned execution path. Focused checks should cover the real injected Canonical Financial Commit contract, malformed-source rejection, cancellation, human assistance where needed, and the absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
+For a new provider, first add its definition and credential/start-URL mapping to `src/lib/automation/server/app-workflow-registry.ts`, then add the App task with the matching `workflowId` in `src/lib/automation/server/tasks.ts`. All existing catalog tasks already use the App-owned execution path. Focused checks should cover the real injected Canonical Financial Commit contract, malformed-source rejection, cancellation, solver-routed verification where needed, and the absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
 
 ## Test evidence and live service acceptance
 

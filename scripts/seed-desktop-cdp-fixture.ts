@@ -101,8 +101,6 @@ export async function seedDesktopCdpFixture(
   const fixtureSettings = options.includeCathayVerificationFailure
     ? {
       ...desktopCdpFixtureSettings,
-      // A persisted preference must not grant access to a paused browser.
-      LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR: "human",
       LIBRETTO_CLOUD_CATHAY_ENABLED: true,
     }
     : desktopCdpFixtureSettings;

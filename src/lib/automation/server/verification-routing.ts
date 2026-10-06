@@ -10,9 +10,7 @@ import { resolveHumanAssistanceSolverMetadata } from "../human-assistance.ts";
 import {
   DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
   challengeConfidenceThreshold,
-  hostVerificationActorForSourceKey,
   isSolverChallengeKind,
-  type VerificationActor,
 } from "../verification-config.ts";
 import {
   solveVerificationChallenge,
@@ -32,10 +30,12 @@ import {
   captureProviderVerificationImage,
   injectProviderVerificationAnswer,
   isProviderVerificationImageCurrent,
+  probeProviderVerificationPostSubmit,
   providerVerificationHandlesChallengeImage,
 } from "./provider-verification.ts";
+import { appWorkflowPageForSession } from "./app-browser-host.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
+import { taskById } from "./tasks.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
@@ -124,7 +124,6 @@ export function selectVerificationChallengeImage(
 }
 
 export type VerificationRoutingOutcome =
-  | { kind: "human" }
   | { kind: "resumed" }
   | { kind: "failed" }
   | {
@@ -134,8 +133,43 @@ export type VerificationRoutingOutcome =
 
 const defaultLocalSolver = localVerificationSolver();
 
+const TEXT_CAPTCHA_APP_TASK_IDS: ReadonlySet<string> = new Set([
+  "fubon-all-statements",
+  "yuanta-all-statements",
+  "hncb-statements",
+  "post-statements",
+  "einvoice-personal-invoices",
+  "sinopac-statements",
+]);
+
+/** App browser workflows whose verification stages reach the solver route. */
+export function appWorkflowRoutesVerification(taskId: string) {
+  return TEXT_CAPTCHA_APP_TASK_IDS.has(taskId) || taskId === "yuanta-trade-statements";
+}
+
+/**
+ * These providers classify submission results inside the workflow. Join the
+ * completed execution instead of racing a second owner of browser dialogs.
+ */
+export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set([
+  "sinopac-statements", "post-statements", "einvoice-personal-invoices", "yuanta-all-statements",
+]);
+
+export function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
+  return async (viewerKey, contract, resume) =>
+    await probeProviderVerificationPostSubmit(
+      viewerKey,
+      contract,
+      resume,
+      async () => {
+        const page = appWorkflowPageForSession(viewerKey);
+        if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
+        await page.context().close();
+      },
+    );
+}
+
 export async function routeVerificationActor(input: {
-  actor: VerificationActor;
   contract: HumanAssistanceContract | null;
   taskRunId: string;
   confidenceThreshold: number | undefined;
@@ -148,7 +182,6 @@ export async function routeVerificationActor(input: {
   expectedAnswerLength?: number;
   dependencies: VerificationRoutingDependencies;
 }): Promise<VerificationRoutingOutcome> {
-  if (input.actor !== "solver") return { kind: "human" };
   const contract = input.contract;
   const plan = verificationPlanForContract(contract);
   const deps = input.dependencies;
@@ -239,10 +272,8 @@ export async function routeVerificationActor(input: {
   return { kind: "retryable", reason: "solver-exhausted" };
 }
 
-export async function routeWaitingRunVerification(input: {
-  taskId: string;
-  taskRunId: string;
-  provider: AutomationPersistenceProvider;
+/** Browser seams for one contract; omitted seams use the App's provider and viewer defaults. */
+export type VerificationRoutingSeams = {
   resumeAppWorkflow: () => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
@@ -258,56 +289,33 @@ export async function routeWaitingRunVerification(input: {
   onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
-  settings?: AutomationSettingsFile;
-}): Promise<VerificationRoutingOutcome> {
-  const task = taskById(input.taskId);
-  if (!task?.workflowId) {
-    await input.finalizeFailed("Verification routing requires an App browser workflow.");
-    return { kind: "failed" };
-  }
-  const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find(
-        (candidate) => candidate.id === task.credentialGroupId,
-      )
-    : null;
-  const settings = input.settings ?? readAutomationSettings();
-  const actor = hostVerificationActorForSourceKey(group?.verificationActorKey);
-  const run = await input.provider.automation.taskRunById(input.taskRunId);
-  if (
-    !run
-    || run.taskId !== input.taskId
-    || run.status !== "waiting_for_human"
-    || !run.humanAssistanceContract
-  ) {
-    await input.finalizeFailed("App workflow verification stage is unavailable.");
-    return { kind: "failed" };
-  }
-  if (actor !== "solver") return { kind: "human" };
+};
 
-  const contract = run.humanAssistanceContract;
-  const taskRunId = input.taskRunId;
-  const kind = contract?.challengeKind;
-  const confidenceThreshold = isSolverChallengeKind(kind)
-    ? contract?.solverConfidenceThreshold
+export function verificationConfidenceThreshold(
+  contract: HumanAssistanceContract,
+  settings: AutomationSettingsFile,
+): number | undefined {
+  const kind = contract.challengeKind;
+  return isSolverChallengeKind(kind)
+    ? contract.solverConfidenceThreshold
       ?? challengeConfidenceThreshold(settings, kind)
     : undefined;
+}
+
+export function verificationRoutingDependencies(
+  contract: HumanAssistanceContract,
+  input: VerificationRoutingSeams,
+): VerificationRoutingDependencies {
   const providerVerification: VerificationChallengeImageProvider = input.providerVerification ?? {
     handlesChallengeImage: providerVerificationHandlesChallengeImage,
     captureChallengeImage: captureProviderVerificationImage,
     isChallengeImageCurrent: isProviderVerificationImageCurrent,
   };
-  const imageSelection = contract
-    ? selectVerificationChallengeImage(contract, {
-        provider: providerVerification,
-        genericCaptureChallengeImage: input.genericCaptureChallengeImage
-          ?? captureChallengeImageForContract,
-      })
-    : {
-        captureChallengeImage: input.genericCaptureChallengeImage
-          ?? captureChallengeImageForContract,
-        validateChallengeImage: undefined,
-        providerOwned: false,
-      };
+  const imageSelection = selectVerificationChallengeImage(contract, {
+    provider: providerVerification,
+    genericCaptureChallengeImage: input.genericCaptureChallengeImage
+      ?? captureChallengeImageForContract,
+  });
   const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
   const selectedCapture = imageSelection.providerOwned
     ? async (selectedTaskRunId: string, selectedContract: HumanAssistanceContract) => {
@@ -316,7 +324,7 @@ export async function routeWaitingRunVerification(input: {
         return image;
       }
     : capture;
-  const dependencies: VerificationRoutingDependencies = {
+  return {
     solver: input.solver ?? defaultLocalSolver,
     captureChallengeImage: selectedCapture,
     captureChallengeAudio: input.captureChallengeAudio
@@ -334,12 +342,35 @@ export async function routeWaitingRunVerification(input: {
     finalizeFailed: input.finalizeFailed,
     onChallengeCaptured: input.onChallengeCaptured,
   };
-  const outcome = await routeVerificationActor({
-    actor,
+}
+
+export async function routeWaitingRunVerification(input: VerificationRoutingSeams & {
+  taskId: string;
+  taskRunId: string;
+  provider: AutomationPersistenceProvider;
+  settings?: AutomationSettingsFile;
+}): Promise<VerificationRoutingOutcome> {
+  const task = taskById(input.taskId);
+  if (!task?.workflowId) {
+    await input.finalizeFailed("Verification routing requires an App browser workflow.");
+    return { kind: "failed" };
+  }
+  const settings = input.settings ?? readAutomationSettings();
+  const run = await input.provider.automation.taskRunById(input.taskRunId);
+  if (
+    !run
+    || run.taskId !== input.taskId
+    || run.status !== "waiting_for_human"
+    || !run.humanAssistanceContract
+  ) {
+    await input.finalizeFailed("App workflow verification stage is unavailable.");
+    return { kind: "failed" };
+  }
+  const contract = run.humanAssistanceContract;
+  return routeVerificationActor({
     contract,
-    taskRunId,
-    confidenceThreshold,
-    dependencies,
+    taskRunId: input.taskRunId,
+    confidenceThreshold: verificationConfidenceThreshold(contract, settings),
+    dependencies: verificationRoutingDependencies(contract, input),
   });
-  return outcome;
 }

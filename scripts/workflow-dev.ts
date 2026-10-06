@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import type { Readable, Writable } from "node:stream";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, type Browser, type Page } from "playwright";
@@ -27,6 +26,21 @@ import {
   workflowStartUrlForTask,
 } from "../src/lib/automation/server/app-workflow-registry.ts";
 import type { PGliteWorkflowRunItem } from "../src/ledger/pglite/workflow-run.ts";
+import { registerAppWorkflowPage } from "../src/lib/automation/server/app-browser-host.ts";
+import {
+  WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
+  appProviderPostSubmitProbe,
+  appWorkflowRoutesVerification,
+  routeVerificationActor,
+  verificationConfidenceThreshold,
+  verificationRoutingDependencies,
+} from "../src/lib/automation/server/verification-routing.ts";
+import { verificationPlanForContract } from "../src/lib/automation/server/verification-solver.ts";
+import { readAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
+import {
+  createHumanAssistanceContract,
+  type HumanAssistanceCompletionStatus,
+} from "../src/lib/automation/human-assistance.ts";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const AUTOMATION_ROOT = resolve(ROOT, "src", "lib", "automation");
@@ -182,6 +196,8 @@ export function createDevelopmentBrowserPort(
     headless?: boolean;
     profile?: BrowserRuntimeProfileId;
     runtime?: BrowserRuntime;
+    /** Registers the page where the App's solver seams resolve it. */
+    sessionKey?: string;
   }> = {},
 ): WorkflowExecutorPorts["browser"] {
   const runtime = options.runtime ?? browserRuntime;
@@ -194,6 +210,7 @@ export function createDevelopmentBrowserPort(
         args: [...profile.args],
       });
       const closeOnAbort = () => { void browser.close().catch(() => {}); };
+      let unregister = () => {};
       signal.addEventListener("abort", closeOnAbort, { once: true });
       try {
         signal.throwIfAborted();
@@ -203,12 +220,14 @@ export function createDevelopmentBrowserPort(
           userAgent: profile.userAgent,
         });
         const page = await context.newPage();
+        if (options.sessionKey) unregister = registerAppWorkflowPage(options.sessionKey, page);
         if (startUrl) {
           await page.goto(startUrl, { waitUntil: "domcontentloaded" });
           signal.throwIfAborted();
         }
         return await run(page);
       } finally {
+        unregister();
         signal.removeEventListener("abort", closeOnAbort);
         await browser.close().catch(() => {});
       }
@@ -216,41 +235,84 @@ export function createDevelopmentBrowserPort(
   };
 }
 
-export function createTerminalHumanAssistancePort(
+type LocalSolverRoute = Readonly<{
+  route?: typeof routeVerificationActor;
+  dependencies?: typeof verificationRoutingDependencies;
+}>;
+
+/**
+ * Verify through the App's local solver route against the development browser
+ * page registered under `sessionKey`. Like the App, the request settles when
+ * the solver resumes the workflow and fails closed for any stage the App would
+ * not route.
+ */
+export function createLocalSolverHumanAssistancePort(
   signal: AbortSignal,
-  input: Readable = stdin,
-  output: Writable = stdout,
+  options: Readonly<{ workflowId: string; sessionKey: string }> & LocalSolverRoute,
 ): WorkflowExecutorPorts["humanAssistance"] {
+  const route = options.route ?? routeVerificationActor;
+  const dependencies = options.dependencies ?? verificationRoutingDependencies;
+  let version = 0;
   return {
-    async request(contract) {
+    async request(input, requestSignal) {
       signal.throwIfAborted();
-      output.write(`Human assistance requested (${contract.challengeKind ?? "verification"}; ${contract.targets.length} target(s)).\n`);
-      output.write("Complete the step in the open browser and press Enter; type cancel to stop.\n");
-      const readline = createInterface({ input, output });
-      try {
-        const answer = await readline.question("> ", { signal });
-        signal.throwIfAborted();
-        return answer.trim().toLowerCase() === "cancel" ? "failed" : "entered";
-      } catch {
-        if (signal.aborted) return "failed";
-        throw new WorkflowDevCliError("usage");
-      } finally {
-        readline.close();
+      requestSignal.throwIfAborted();
+      version += 1;
+      const contract = createHumanAssistanceContract(input, version);
+      const plan = verificationPlanForContract(contract).kind;
+      if (
+        !appWorkflowRoutesVerification(options.workflowId)
+        || (plan !== "solve" && plan !== "click")
+      ) {
+        throw new Error("App workflow solver route is unavailable for this verification stage.");
       }
+      const completed: Exclude<HumanAssistanceCompletionStatus, "pending"> =
+        contract.completion.mode === "independent" ? "verified" : "entered";
+      return await new Promise((resolve, reject) => {
+        let resumed = false;
+        const onAbort = () => reject(requestSignal.reason);
+        requestSignal.addEventListener("abort", onAbort, { once: true });
+        void route({
+          contract,
+          taskRunId: options.sessionKey,
+          confidenceThreshold: verificationConfidenceThreshold(contract, readAutomationSettingsFile()),
+          dependencies: dependencies(contract, {
+            resumeAppWorkflow: () => {
+              resumed = true;
+              resolve(completed);
+            },
+            finalizeFailed: (message) => { throw new Error(message); },
+            providerProbePostSubmit: WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(options.workflowId)
+              ? async (_session, _contract, resume) => { await resume(); return "none"; }
+              : appProviderPostSubmitProbe(),
+          }),
+        }).then(
+          (outcome) => outcome.kind === "resumed" ? undefined : outcome.kind,
+          () => "failed",
+        ).then((failure) => {
+          requestSignal.removeEventListener("abort", onAbort);
+          if (!failure) return;
+          // The App would start a new CAPTCHA round here; the CLI reports and stops.
+          if (resumed) stdout.write(`verification route ended with ${failure} after resume\n`);
+          else reject(new Error(`Verification route ended with ${failure}.`));
+        });
+      });
     },
   };
 }
 
 function makePorts(
   signal: AbortSignal,
+  workflowId: string,
   startUrl?: string,
   commitPort?: WorkflowFinancialCommitPort,
   browserOptions: Readonly<{ headless?: boolean; profile?: BrowserRuntimeProfileId }> = {},
 ): WorkflowExecutorPorts {
+  const sessionKey = randomUUID();
   return {
-    browser: createDevelopmentBrowserPort(signal, startUrl, undefined, browserOptions),
+    browser: createDevelopmentBrowserPort(signal, startUrl, undefined, { ...browserOptions, sessionKey }),
     text: strictSourceText,
-    humanAssistance: createTerminalHumanAssistancePort(signal),
+    humanAssistance: createLocalSolverHumanAssistancePort(signal, { workflowId, sessionKey }),
     ...(commitPort ? { financialCommit: commitPort } : {}),
     events: { append: async (event) => printEvent(event) },
     now: () => new Date().toISOString(),
@@ -415,6 +477,7 @@ async function main(args = process.argv.slice(2)) {
       : undefined;
     const executor = createWorkflowExecutor([definition], makePorts(
       interrupt.controller.signal,
+      definition.id,
       startUrl,
       commitPort,
       { headless: hasFlag(flags, "--headless"), profile: browserProfile },

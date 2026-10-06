@@ -16,7 +16,6 @@ import { MAX_CAPTCHA_RETRY_ROUNDS } from "./captcha-retry-campaign.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
-import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const sinopacContract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -101,7 +100,6 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         startedAt: new Date().toISOString(),
       });
       const settings: AutomationSettingsFile = {
-        LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
         VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD: "0.9",
       };
       process.chdir(artifactRoot);
@@ -217,10 +215,6 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
 
 test("App SinoPac CAPTCHA assistance aborts its route when the live run is cancelled", async () => {
   const store = new PGliteStore(await PGlite.create());
-  configureHostVerificationActorPolicy({
-    isPackaged: false,
-    env: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human" },
-  });
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
@@ -232,16 +226,17 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
-    const settings: AutomationSettingsFile = {
-      LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human",
-    };
     const controller = new AbortController();
     let cancelled = false;
     const campaign = runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
       provider,
-      launchVerificationSettings: settings,
+      launchVerificationSettings: {},
+      // A route still solving when the App closes.
+      routeWaitingRunVerification: () => new Promise((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+      }),
       initialExecutionOptions: { taskRunId: created.taskRunId },
       isCancellationRequested: () => cancelled,
       async execute(options: AutomationTaskExecutionOptions) {
@@ -251,7 +246,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
         });
         try {
           await assistance.request(sinopacContract, controller.signal);
-          throw new Error("Cancellation did not interrupt human assistance.");
+          throw new Error("Cancellation did not interrupt verification assistance.");
         } catch {
           return {
             status: "cancelled" as const,
@@ -282,7 +277,6 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
   } finally {
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });

@@ -44,7 +44,6 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
   taskRunId: string;
   persistence: AutomationPersistencePort;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
-  requireSolverRoute?: boolean;
   onRequest?: (
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
@@ -84,11 +83,7 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
           throw new Error("App workflow is not active for human assistance.");
         }
         const registeredHandler = requestHandlers.get(current.taskId);
-        if (
-          input.requireSolverRoute
-          && !input.onRequest
-          && !registeredHandler
-        ) {
+        if (!input.onRequest && !registeredHandler) {
           const reason = isSolverChallengeKind(contract.challengeKind)
             ? "solver-route-unavailable"
             : "solver-challenge-unsupported";
