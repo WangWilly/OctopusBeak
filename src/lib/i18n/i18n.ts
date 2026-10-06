@@ -146,6 +146,17 @@ const en = {
     sideSub: (accounts: number, currencies: number) =>
       `${accounts} accounts / ${currencies} currencies`,
     total: "Total assets",
+    empty: {
+      bannerTitle: "No asset accounts yet",
+      bannerBody:
+        "Add sign-in details for a bank, brokerage, or crypto exchange and finish the first sync to see total assets, allocation, and each account's balance here.",
+      totalNote: "No asset data imported yet",
+      side: "No asset accounts yet",
+      chartTitle: "No asset trend yet",
+      chartBody: "After the first sync, asset balances by category will show here over time.",
+      listTitle: "No asset accounts",
+      listBody: "Once a bank, brokerage, or exchange is connected, each account's balance and share are listed here.",
+    },
   },
   liabilities: {
     eyebrow: "Liabilities",
@@ -164,6 +175,20 @@ const en = {
     cardInUse: "In use · estimate",
     utilization: "Card utilization",
     marginExposure: "Investment margin exposure",
+    empty: {
+      bannerTitle: "No debt accounts yet",
+      bannerBody:
+        "Connect a credit card or loan to see amounts due, due dates, and your debt trend here. If you have no credit cards or loans, this page stays empty.",
+      totalLabel: "Total debt",
+      totalNote: "No debt data imported yet",
+      side: "No debt accounts yet",
+      paymentsTitle: "No payments due",
+      paymentsBody: "Once connected, card statements and loan payments are listed by due date",
+      chartTitle: "No debt trend yet",
+      chartBody: "After credit card or loan data is imported, daily debt balances will show here.",
+      listTitle: "No debt accounts",
+      listBody: "After you add credit card or loan sign-in details and sync, the accounts are listed here.",
+    },
   },
   spending: {
     eyebrow: "Spending",
@@ -1234,6 +1259,17 @@ const zh: typeof en = {
     sideSub: (accounts, currencies) =>
       `${accounts} 個帳戶 / ${currencies} 種幣別`,
     total: "資產總額",
+    empty: {
+      bannerTitle: "還沒有任何資產帳戶",
+      bannerBody:
+        "設定銀行、券商或加密貨幣交易所的登入資料並完成第一次同步，這裡就會顯示資產總額、配置與每個帳戶的餘額。",
+      totalNote: "尚未匯入資產資料",
+      side: "尚無資產帳戶",
+      chartTitle: "還沒有資產走勢",
+      chartBody: "完成第一次同步後，這裡會依類別顯示資產餘額的變化。",
+      listTitle: "目前沒有資產帳戶",
+      listBody: "連結銀行、券商或交易所後，每個帳戶的餘額與佔比會列在這裡。",
+    },
   },
   liabilities: {
     eyebrow: "負債",
@@ -1252,6 +1288,20 @@ const zh: typeof en = {
     cardInUse: "目前已用 · 估算",
     utilization: "信用卡使用率",
     marginExposure: "投資融資曝險",
+    empty: {
+      bannerTitle: "還沒有任何負債帳戶",
+      bannerBody:
+        "連結信用卡或貸款後，這裡會列出應繳金額、到期日與負債走勢。如果你沒有信用卡或貸款，這一頁會一直保持空白。",
+      totalLabel: "總負債",
+      totalNote: "尚未匯入負債資料",
+      side: "尚無負債帳戶",
+      paymentsTitle: "尚無應繳款項",
+      paymentsBody: "連結後會依到期日列出信用卡帳單與貸款扣款",
+      chartTitle: "還沒有負債走勢",
+      chartBody: "匯入信用卡或貸款資料後，這裡會顯示每天的負債餘額變化。",
+      listTitle: "目前沒有負債帳戶",
+      listBody: "設定信用卡或貸款的登入資料並完成同步後，帳戶會列在這裡。",
+    },
   },
   spending: {
     eyebrow: "消費",

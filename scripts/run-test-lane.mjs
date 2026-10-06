@@ -18,6 +18,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "scripts/spending-pairing-browser.check.mjs",
   "scripts/spending-review-modals.check.mjs",
   "scripts/spending-empty-state.check.mjs",
+  "scripts/accounts-empty-state.check.mjs",
 ]);
 
 /** These are explicit performance lanes, not ordinary functional tests. */

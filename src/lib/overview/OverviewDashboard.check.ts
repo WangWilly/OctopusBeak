@@ -5,6 +5,10 @@ import { resolveOverview } from "../shared-shell/progressive-dashboard-data.ts";
 import type { OverviewPageDto } from "./types.ts";
 
 const source = readFileSync(new URL("./OverviewDashboard.svelte", import.meta.url), "utf8");
+const bannerSource = readFileSync(
+  new URL("../shared-shell/components/EmptySourceBanner.svelte", import.meta.url),
+  "utf8",
+);
 
 const base: OverviewPageDto = {
   availability: "available",
@@ -47,8 +51,13 @@ test("overview keeps its onboarding spotlight targets", () => {
   assert.match(source, /id: "overview\.summary"/);
   assert.match(
     source,
-    /overview\.availability === "empty"[\s\S]*?href="#\/automation"[\s\S]*?id: "overview\.empty"/,
+    /overview\.availability === "empty"[\s\S]*?<EmptySourceBanner[\s\S]*?onboardingTargetId="overview\.empty"/,
     "the empty state's call to action is the spotlight target",
+  );
+  assert.match(
+    bannerSource,
+    /href="#\/automation"[\s\S]*?registerOnboardingTarget=\{\{ registry: onboardingTargets, id: onboardingTargetId \}\}/,
+    "the banner registers its automation link as the target",
   );
   const coverageProjectionState = source.slice(
     source.indexOf('overview.coverage !== "complete" && overview.availability !== "empty"'),
