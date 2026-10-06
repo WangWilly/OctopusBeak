@@ -94,7 +94,7 @@ export type GmailOtpServiceOptions = {
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   api?: Partial<GmailApi>;
-  oauthAuthorize?: (signal?: AbortSignal) => Promise<{ refreshToken: string; connectedEmail: string }>;
+  oauthAuthorize?: (signal?: AbortSignal) => Promise<OAuthAuthorizationResult>;
 };
 
 type OAuthTokenResponse = {
@@ -978,7 +978,32 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     this.accessTokenExpiresAt = this.now() + Math.max(60, typeof value.expires_in === "number" ? value.expires_in : 3600) * 1000;
   }
 
+  /** Workflow entry point: an expired grant reopens browser authorization before the OTP is sent. */
   async ensureAccess(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
+    const access = await this.access(signal);
+    if (access.status === "ready" || access.reason !== "token-invalid") return access;
+    try {
+      const authorized = await this.authorization(signal);
+      this.saveAuthorization(authorized, signal);
+      if (authorized.accessToken) {
+        this.accessToken = authorized.accessToken;
+        this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
+      } else {
+        await this.refreshAccessToken(authorized.refreshToken, signal);
+      }
+      return { status: "ready" };
+    } catch (error) {
+      if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
+      return {
+        status: "fallback",
+        reason: error instanceof GmailOtpAuthorizationError && error.reason === "authorization-cancelled"
+          ? "authorization-cancelled"
+          : "authorization-failed",
+      };
+    }
+  }
+
+  private async access(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
     if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
     if (!this.credentialCodec) return { status: "fallback", reason: "not-configured" };
     const credentials = this.credentials();
@@ -997,7 +1022,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
       return {
         status: "fallback",
         reason: error instanceof GmailOtpAuthorizationError && error.reason === "token-invalid"
-          ? "needs-authorization"
+          ? "token-invalid"
           : /configuration|configured/i.test(error instanceof Error ? error.message : "")
             ? "not-configured"
             : "authorization-failed",
@@ -1005,9 +1030,16 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     }
   }
 
+  private async retrievalAccess(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
+    const access = await this.access(signal);
+    return access.status === "fallback" && access.reason === "token-invalid"
+      ? { status: "fallback", reason: "needs-authorization" }
+      : access;
+  }
+
   async prepareRetrieval(signal?: AbortSignal): Promise<CathayGmailOtpBoundaryResult> {
     if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
-    const access = await this.ensureAccess(signal);
+    const access = await this.retrievalAccess(signal);
     if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
     if (access.status !== "ready") return access;
     if (!this.accessToken) return { status: "fallback", reason: "token-invalid" };
@@ -1044,7 +1076,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     if (!boundary) return { status: "fallback", reason: "protocol-error" };
     this.retrievalBoundaries.delete(boundaryId);
     throwIfCathayGmailOtpAborted(signal);
-    const access = await this.ensureAccess(signal);
+    const access = await this.retrievalAccess(signal);
     throwIfCathayGmailOtpAborted(signal);
     if (access.status !== "ready") return access;
     if (!this.accessToken) return { status: "fallback", reason: "token-invalid" };
