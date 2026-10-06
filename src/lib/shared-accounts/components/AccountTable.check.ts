@@ -23,8 +23,8 @@ test("credit-card current usage rows expose their estimate basis", () => {
   assert.match(source, /\$t\.accounts\.creditCardEstimateBasis/);
 });
 
-test("unavailable accounts omit allocation and exposure values", () => {
-  assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta num">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
+test("unavailable or unconverted accounts omit allocation and exposure values, and shown shares blur", () => {
+  assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available" && share !== undefined\}\s*<span class="account-meta num" data-sensitive>\{formatShare\(share, \$locale\)\}<\/span>[\s\S]*?<div class="row-bar"/);
 });
 
 test("account actions do not expose a data issue reporting surface", () => {

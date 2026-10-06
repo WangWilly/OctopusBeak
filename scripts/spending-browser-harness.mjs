@@ -75,6 +75,7 @@ const emptyAssets = {
   transactionsByAccount: {},
   dailyHistoryByAccount: {},
   dailyHistory: [],
+  exchangeRates: [],
 };
 
 const emptyLiabilities = {
@@ -237,6 +238,7 @@ function installSpendingDesktopApi(model) {
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
     dailyHistory: [],
+    exchangeRates: [],
   };
   const fixtureLiabilities = { ...fixtureAssets, marginAccounts: [] };
   const fixtureAutomation = {

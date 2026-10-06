@@ -10,6 +10,7 @@ const model = {
   marginAccounts: [],
   transactionsByAccount: {},
   dailyHistoryByAccount: {},
+  exchangeRates: [],
   dailyHistory: [
     {
       date: "2026-06-30",

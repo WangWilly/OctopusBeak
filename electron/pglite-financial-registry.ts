@@ -578,6 +578,23 @@ async function readExchangeRatesOnReader(
   return result.rows.map((row) => ({ ...row }));
 }
 
+function readHeldCurrencyRates(
+  reader: PGliteReader,
+  result: CanonicalOverviewCurrentQueryResult,
+  history: PGliteDailyHistory,
+): Promise<ExchangeRateRecord[]> {
+  const currencies = [...new Set([
+    ...result.projection.positions.map((position) => position.currency),
+    ...result.projection.accounts.flatMap((account) => account.amounts.map((amount) => amount.currency)),
+    ...history.dailyHistory.flatMap((row) => [
+      ...row.netAssets,
+      ...row.assets,
+      ...row.liabilities,
+    ].map((amount) => amount.currency)),
+  ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
+  return currencies.length === 0 ? Promise.resolve([]) : readExchangeRatesOnReader(reader, currencies);
+}
+
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   exchangeRates: ExchangeRatePersistencePort,
@@ -615,15 +632,7 @@ export function createPGliteFinancialRegistry(
           result.projection.accounts,
         );
         const prices = await readPGliteHoldingPrices(transaction, result.projection.knowledgePoint);
-        const currencies = [...new Set([
-          ...result.projection.positions.map((position) => position.currency),
-          ...history.dailyHistory.flatMap((row) => [
-            ...row.netAssets,
-            ...row.assets,
-            ...row.liabilities,
-          ].map((amount) => amount.currency)),
-        ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
-        const rates = currencies.length === 0 ? [] : await readExchangeRatesOnReader(transaction, currencies);
+        const rates = await readHeldCurrencyRates(transaction, result, history);
         return mapOverview(result, rates, history, prices);
       });
     },
@@ -638,7 +647,11 @@ export function createPGliteFinancialRegistry(
           result.projection.knowledgePoint,
           result.projection.accounts,
         );
-        return mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", history);
+        const rates = await readHeldCurrencyRates(transaction, result, history);
+        return {
+          ...mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", history),
+          exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+        };
       });
     },
     async liabilitiesCurrent(expectedSources = []) {
@@ -652,7 +665,11 @@ export function createPGliteFinancialRegistry(
           result.projection.knowledgePoint,
           result.projection.accounts,
         );
-        return mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", history);
+        const rates = await readHeldCurrencyRates(transaction, result, history);
+        return {
+          ...mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", history),
+          exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+        };
       });
     },
     async spendingCurrent(input = {}) {

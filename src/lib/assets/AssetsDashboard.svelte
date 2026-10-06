@@ -1,23 +1,22 @@
 <script lang="ts">
+  import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
+  import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
-  import {
-    historyPointKey,
-    type AccountKind,
-    type AccountRowDto,
-    type CurrencyAmountDto,
-    type SummaryMetricDto,
-  } from "$lib/shared-ledger/types.ts";
-  import { currencyCount, formatAmountLines } from "$lib/shared-money/money.ts";
+  import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
+  import { historyPointKey } from "$lib/shared-ledger/types.ts";
+  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
+  import { currencyCount } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
     buildStackedBalanceChartData,
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
-  import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
@@ -53,17 +52,16 @@
       : undefined;
   }
 
-  $: assetBreakdown = [
-    { kind: "bank" as const, label: $t.accounts.bank },
-    { kind: "fund" as const, label: $t.accounts.fund },
-    { kind: "brokerage" as const, label: $t.accounts.brokerage },
-    { kind: "crypto" as const, label: $t.accounts.crypto },
-    { kind: "foreign" as const, label: $t.accounts.foreign },
-  ] satisfies Array<{ kind: AccountKind; label: string }>;
+  function settledSummaryBlock(states: typeof blocks) {
+    const state = states.summary;
+    return assetsBlockData("summary", state && "data" in state ? state.data : undefined);
+  }
+
+  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledSummaryBlock(blocks)), { today });
   $: assetAccounts = assets.accounts;
-  $: metrics = buildMetrics(assetAccounts, $t);
-  $: assetValue = metrics[0]?.amounts ?? [];
-  $: sideValue = formatAmountLines(assetValue.slice(0, 1));
+  $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
+  $: sideValue = summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
   $: sideSub = $t.assets.sideSub(
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
@@ -80,67 +78,11 @@
     currency: chartCurrency,
     mode: "asset",
   });
-  function buildMetrics(sourceAccounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
-    const accounts = localizeAccounts(sourceAccounts, dictionary);
-    const largest = largestAccount(accounts);
-    const bankAccounts = accounts.filter((account) => account.kind === "bank");
-    const foreignAccounts = accounts.filter((account) => account.kind === "foreign");
-    const metrics: SummaryMetricDto[] = [
-      {
-        label: dictionary.assets.metricAssetValue,
-        amounts: totalAmounts(accounts),
-        breakdown: assetBreakdown
-          .map((item) => {
-            const count = accounts.filter((account) => account.kind === item.kind).length;
-            return count ? dictionary.common.countLabel(item.label, count) : null;
-          })
-          .filter(Boolean) as string[],
-      },
-    ];
 
-    if (largest) {
-      metrics.push({
-        label: dictionary.assets.metricLargestAccount,
-        amounts: largest.amountLines,
-        breakdown: [largest.label],
-      });
-    }
-    if (bankAccounts.length > 0) {
-      metrics.push({
-        label: dictionary.assets.metricLiquidCash,
-        amounts: totalAmounts(bankAccounts),
-        breakdown: bankAccounts.map((account) => account.institution).slice(0, 3),
-      });
-    }
-    if (foreignAccounts.length > 0) {
-      metrics.push({
-        label: dictionary.assets.metricForeignBalance,
-        amounts: totalAmounts(foreignAccounts),
-        breakdown: foreignAccounts.map((account) => account.institution).slice(0, 3),
-      });
-    }
-    return metrics;
-  }
-
-  function totalAmounts(accounts: AccountRowDto[]): CurrencyAmountDto[] {
-    const bucket = new Map<string, number>();
-    for (const account of accounts) {
-      for (const amount of account.amountLines) {
-        bucket.set(amount.currency, (bucket.get(amount.currency) ?? 0) + amount.value);
-      }
-    }
-    return [...bucket.entries()]
-      .filter(([, value]) => Math.abs(value) > 0.000001)
-      .sort(([left], [right]) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right))
-      .map(([currency, value]) => ({ currency, value }));
-  }
-
-  function largestAccount(accounts: AccountRowDto[]) {
-    return [...accounts].sort((left, right) => primaryValue(right) - primaryValue(left))[0] ?? null;
-  }
-
-  function primaryValue(account: AccountRowDto) {
-    return Math.abs(account.amountLines.find((amount) => amount.currency === "TWD")?.value ?? account.amountLines[0]?.value ?? 0);
+  function totalLabel(current: AssetsSummary) {
+    return current.state === "ready" && holdsForeign && current.slices.length > 0
+      ? `${$t.assets.total} · ${$t.overview.allocationRateDate(formatShortDate(current.valuationDate, $locale))}`
+      : $t.assets.total;
   }
 
   function currencyOrder(value: string) {
@@ -165,11 +107,29 @@
 >
   <div class="content">
     <ProjectionStateBanner projection={assets} />
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
-      {@const summaryBlock = assetsBlockData("summary", data)}
-      <section aria-label={$t.assets.metricsAria}>
-        <SummaryStrip metrics={buildMetrics(resolveAssetsSummary(assets, summaryBlock).accounts, $t)} />
-      </section>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+      <PageTotalCard
+        label={totalLabel(summary)}
+        ariaLabel={$t.assets.metricsAria}
+        total={summary.state === "ready" ? summary.total : null}
+        trailing={summary.state === "ready" ? summary.trailing : null}
+        notes={summary.state === "ready" && summary.unconvertedCurrencies.length > 0
+          ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
+          : []}
+      >
+        {#if summary.state === "ready"}
+          {#each summary.slices as slice (slice.category)}
+            <SummaryTile
+              color={ASSET_CATEGORY_COLOR[slice.category]}
+              head={$t.overview.assetCategories[slice.category]}
+              value={formatShare(slice.share, $locale)}
+              sub={formatTwdNumber(slice.value, $locale)}
+              subSensitive
+              share={slice.share}
+            />
+          {/each}
+        {/if}
+      </PageTotalCard>
     </ProgressiveBlock>
 
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
@@ -225,6 +185,7 @@
         positionsByAccount={listDataBlock.positionsByAccount}
         transactionsByAccount={listDataBlock.transactionsByAccount}
         dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
+        shares={summary.state === "ready" ? summary.shares : new Map()}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>
