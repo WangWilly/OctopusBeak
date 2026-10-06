@@ -43,11 +43,6 @@ import type {
   SpendingLoadInput,
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
-import type { VerificationActor } from "$lib/automation/verification-config.ts";
-import type {
-  HumanAssistanceContract,
-  VerificationInteractionMode,
-} from "$lib/automation/human-assistance.ts";
 import type {
   DataReadOptions,
   DataInvalidationEvent,
@@ -134,7 +129,6 @@ export type AutomationCredentialGroupCoreDto = Omit<
 
 export type AutomationCoreSnapshot = AutomationRuntimeBlockVersion & {
   automation: AutomationPageModel;
-  verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>>;
   /** Group metadata only; credential-derived fields are empty until details. */
   credentialGroups: CredentialGroupDto[];
 };
@@ -155,7 +149,6 @@ export type AutomationCredentialSaveResult =
 
 export type AutomationDesktopModel = {
   automation: AutomationPageModel;
-  verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>>;
   credentialGroups: CredentialGroupDto[];
   runtimeSessionId?: string;
   runtimeRevision?: number;
@@ -163,7 +156,6 @@ export type AutomationDesktopModel = {
 
 export type AutomationActionResult =
   | { started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }
-  | { resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }
   | { cancelled: string }
   | { saved: true }
   | { ok: true }
@@ -180,20 +172,6 @@ export type AutomationRunManyResult = {
   errors?: Readonly<Record<string, string>>;
   results: Readonly<Record<string, AutomationRunManyTaskResult>>;
   runtime?: AutomationRuntimeSnapshot;
-};
-
-export type ViewerInspectResult = {
-  editable: boolean;
-  rect: { x: number; y: number; width: number; height: number } | null;
-  targetId?: string | null;
-  contractVersion?: number;
-  modes?: readonly VerificationInteractionMode[];
-};
-
-export type ViewerInputResult = {
-  ok: true;
-  contract: HumanAssistanceContract | null;
-  resumed: boolean;
 };
 
 export type DataViewErrorCode =
@@ -296,15 +274,10 @@ export type OctopusBeakApi = {
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     runMany(taskIds: string[]): Promise<AutomationRunManyResult>;
-    resumeHumanAssistance(taskId: string): Promise<{ resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     cancel(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }>;
     forceTerminate(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
     openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
-    viewerScreenshot(taskId: string): Promise<Uint8Array | null>;
-    viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
-    viewerInput(taskId: string, input: unknown): Promise<ViewerInputResult>;
-    viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
@@ -353,15 +326,10 @@ export const octopusBeakApiChannels = [
   "automation:openSetupGuideLink",
   "automation:run",
   "automation:runMany",
-  "automation:resumeHumanAssistance",
   "automation:cancel",
   "automation:forceTerminate",
   "automation:runHistory",
   "automation:openExternalPrerequisite",
-  "automation:viewerScreenshot",
-  "automation:viewerInspect",
-  "automation:viewerInput",
-  "automation:viewerCompletionCheck",
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",

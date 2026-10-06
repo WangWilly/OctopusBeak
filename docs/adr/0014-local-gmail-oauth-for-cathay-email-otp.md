@@ -1,6 +1,8 @@
 # Local Gmail OAuth for Cathay Email OTP
 
-Status: accepted
+Status: accepted; amended by [ADR 0039](0039-solver-only-verification.md)
+
+ADR 0039 removed manual Email OTP entry and the development-only human actor. Gmail retrieval is the only way the Cathay workflow completes Email OTP. When the Cathay send button is not visible, the workflow fails with the typed reason `challenge-unavailable`. The sentences below about manual Email OTP describe the original decision and no longer apply.
 
 ## Decision
 

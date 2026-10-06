@@ -172,7 +172,6 @@ test("settled spending and automation blocks provide their own content without r
   assert.equal(
     resolveAutomationBlock(fallbackAutomation, {
       automation: listAutomation,
-      verificationActorsByCredentialGroup: {},
       credentialGroups: [],
     }).tasks[0]?.id,
     "list-task",
@@ -180,7 +179,6 @@ test("settled spending and automation blocks provide their own content without r
   assert.equal(
     resolveAutomationBlock(fallbackAutomation, {
       automation: detailsAutomation,
-      verificationActorsByCredentialGroup: {},
       credentialGroups: [],
     }).tasks[0]?.id,
     "details-task",

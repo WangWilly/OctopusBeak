@@ -795,7 +795,7 @@ _Avoid_: Session close (which names only the graceful close operation).
 A reusable unit of automation that can be started manually, in a batch, or by its schedule.
 
 **Automation task run**:
-One execution attempt of an automation task, including its status, bounded operational events, and any human assistance needed to continue it. Completing human assistance continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
+One execution attempt of an automation task, including its status, bounded operational events, and any verification stage it waits on. A solver completing that stage continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
@@ -803,10 +803,10 @@ _Avoid_: Log file, raw stdout, source record, financial fact
 
 **Workflow progress stage**:
 A meaningful, user-recognizable phase of an Automation Task Run, such as signing in, querying statements, downloading, or preparing results. It describes the work currently underway rather than an individual browser interaction and identifies the selected statement type when work is specific to that type.
-_Avoid_: Browser action, human interaction stage
+_Avoid_: Browser action, verification stage
 
 **Workflow run progress**:
-An approximate indication of advancement through a run's Workflow Progress Stages for its selected scope, driven by actual stage advancement rather than elapsed time, that never decreases within the same run, including automatic retries. Only full successful completion represents 100%; partial success, failure, cancellation, or waiting for human assistance retains the last progress, while a new run starts at zero and activity within a stage does not imply further advancement.
+An approximate indication of advancement through a run's Workflow Progress Stages for its selected scope, driven by actual stage advancement rather than elapsed time, that never decreases within the same run, including automatic retries. Only full successful completion represents 100%; partial success, failure, cancellation, or waiting on a verification stage retains the last progress, while a new run starts at zero and activity within a stage does not imply further advancement.
 _Avoid_: Time remaining estimate, financial completeness, elapsed-time percentage
 
 **Workflow executor**:
@@ -824,45 +824,41 @@ The act of deciding an automation task run's terminal outcome, recording its saf
 The stated outcome and safe result summary that guide how an automation task run is finalized.
 
 **Automation session disposition**:
-The decision to retain an automation session for human assistance or relinquish it after a task run.
+The decision to retain an automation session for verification or relinquish it after a task run.
 
 **Automation task run force-quit**:
-An operator-initiated action that ends a task run waiting for human input and records the run as cancelled.
+An operator-initiated action that ends a task run, including one waiting on a verification stage, and records the run as cancelled.
 
 **Verification target**:
-A workflow-declared browser control or verification modal area that a Verification Actor may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. The host permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed verification.
+A workflow-declared browser control or verification modal area that the solver route may act on during an automation session. Each target has a workflow-owned semantic identity and current geometry for coordinate mapping. The host acts only on declared targets, and an undeclared control never counts as completed verification.
 _Avoid_: Generic editable target, nearest input target
 
 **Verification actor**:
-The party that performs a verification target: `solver` through automated verification in the user-facing application, or `human` through Assist only in an explicitly enabled development mode. The two are mutually exclusive within one task run: automatic verification never falls back to human assistance, and manual development verification never invokes a solver.
-_Avoid_: Viewer mode, interaction mode, fallback actor
+The party that performs a verification target. `solver` is the only actor, in packaged and development builds alike (ADR 0039). A stage with no registered solver route fails closed with `solver-route-unavailable` or `solver-challenge-unsupported`; no stage waits for a person. The retired `human` actor, its per-source environment overrides, and Assist no longer exist.
+_Avoid_: Viewer mode, interaction mode, fallback actor, human actor
 
 **Verification completion**:
-The condition that permits an automation task to resume after verification. For a `human` actor, an independent verification flow requires confirmation from the workflow or host, while inline verification submitted together with login information uses a non-empty declared field as the available pre-submit condition; for a `solver` actor, completion is the solver answer satisfying the declared Solve Acceptance Policy. Login success remains the final correctness check for both actors.
+The condition that permits an automation task to resume after verification. Completion is a solver answer that satisfies the declared Solve Acceptance Policy, or a declared click the host performs. An independent verification flow additionally needs confirmation from the workflow or host. Login success remains the final correctness check. A solver route that ends without resuming the stage fails the run.
 _Avoid_: Input has value means verification succeeded
 
-**Verification focus view**:
-A zoomed Assist presentation centered on the declared verification target while preserving the challenge instructions, image, and surrounding context needed to solve it. A person may pan or zoom the presentation to inspect the full challenge context, but viewport manipulation is not a browser operation and only declared targets remain actionable.
-_Avoid_: Full-page Assist, arbitrary zoom
-
 **Verification context region**:
-A workflow-declared visual region that must remain visible in the verification focus view so a person has the instructions, challenge, and surrounding evidence needed to complete a verification target. The region may be visible without being actionable.
+A workflow-declared visual region around a verification target that holds the challenge instructions and evidence. It is declared contract data, never actionable. The contract still validates the region and its focus reference, but nothing presents it to a person since Assist was removed (ADR 0039).
 _Avoid_: Whole-page context, inferred nearest region
 
 **Human assistance contract**:
-A structured, persisted description emitted by a workflow when an automation task waits for human assistance (a `human` Verification Actor). It declares the actionable verification targets, the verification context regions that must remain visible, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth; the workflow emits structured updates and Assist only reads and presents them. A single task run may publish versioned contract updates as the verification flow changes; the contract ends when the workflow succeeds, fails, or is force-quit. Assist consumes this contract rather than inferring interaction rules from screenshots, DOM proximity, or log text.
+A structured, persisted description emitted by a workflow when an automation task reaches a verification stage. Despite its name, it is the solver's verification contract, and no person completes it (ADR 0039). It declares the actionable verification targets, the challenge and context regions, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth. The workflow emits structured updates through the `humanAssistance` port, and the host routes each stage to its registered solver route. While a stage is open the run status is `waiting_for_human`, labeled "verifying" in the UI. A single task run may publish versioned contract updates as the verification flow changes. The contract ends when the workflow succeeds, fails, or is force-quit. The host never infers interaction rules from screenshots, DOM proximity, or log text.
 _Avoid_: Screenshot-derived affordance, log-derived interaction contract
 
-**Human interaction stage**:
-A versioned phase of a human assistance contract with a finite allowlist of actionable targets. A stage may expose multiple explicitly declared controls within one verification modal, but controls outside the stage remain unavailable; completion transitions the task run to the next contract version or out of human assistance.
-_Avoid_: Full viewer stage, unrestricted page interaction
+**Verification stage**:
+A versioned phase of a human assistance contract with a finite allowlist of actionable targets, emitted with `emitHumanAssistanceStage`. A stage may declare multiple controls within one verification modal, but controls outside the stage remain unavailable. Each stage needs a registered solver route. Completion moves the task run to the next contract version or out of verification.
+_Avoid_: Human interaction stage, full viewer stage, unrestricted page interaction
 
 **Verification interaction mode**:
 The operation explicitly permitted for a verification target, such as click, type, or drag. The automation server rejects operations that the current target has not declared, even if the underlying browser control could technically receive them.
 _Avoid_: Generic viewer capability, inferred operation
 
 **Verification retry**:
-The continuation of verification after an incomplete or incorrect result. For a `human` actor the run returns to waiting with refreshed challenge context and a new contract version; for a `solver` actor the first version restarts the provider workflow so the next retry begins a new CAPTCHA Challenge Round rather than repeating OCR against the rejected challenge. Retries are bounded, and an exhausted or locked verification becomes an explicit task failure; provider-specific in-session refresh is deferred beyond the first version.
+The continuation of verification after an incomplete or incorrect result. The first version restarts the provider workflow so the next retry begins a new CAPTCHA Challenge Round rather than repeating OCR against the rejected challenge. Retries are bounded, and an exhausted or locked verification becomes an explicit task failure; provider-specific in-session refresh is deferred beyond the first version.
 _Avoid_: Repeating a rejected challenge, treating an incorrect answer as an ordinary infrastructure failure
 
 **Verification solver**:
@@ -894,11 +890,11 @@ One invocation of a distinct provider-declared OCR strategy against the image be
 _Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
 
 **CAPTCHA challenge round**:
-The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction or a `human` Verification Actor, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
+The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
 _Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
 
 **CAPTCHA retry campaign**:
-The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed without switching from the `solver` Verification Actor to human assistance. Only a new explicit user operation starts a new campaign with a fresh budget.
+The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed. `npm run workflow:dev` runs no campaign, so a retryable outcome ends a development run. Only a new explicit user operation starts a new campaign with a fresh budget.
 _Avoid_: Independent failed history item per round, per-process retry counter, automatically renewed retry budget
 
 **CAPTCHA campaign launch snapshot**:
@@ -910,7 +906,7 @@ The provider-verifiable reason that permits a CAPTCHA Retry Campaign to advance 
 _Avoid_: Any login failure, inferred CAPTCHA rejection, generic workflow error retry
 
 **CAPTCHA round outcome**:
-The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, the provider verifiably rejected the submitted CAPTCHA answer, or the round ended for a non-retryable reason. A provider-rejected result requires provider-specific evidence for an exact rejection signal; an alert's mere presence is insufficient. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing human-assistance contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
+The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, the provider verifiably rejected the submitted CAPTCHA answer, or the round ended for a non-retryable reason. A provider-rejected result requires provider-specific evidence for an exact rejection signal; an alert's mere presence is insufficient. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing verification contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
 _Avoid_: Retry log marker, error-message matching, inferred process failure
 
 **Yuanta Bank login CAPTCHA**:
@@ -934,23 +930,19 @@ The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflo
 _Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
 
 **Cathay login Email OTP**:
-The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Automatic verification ends the attempt with an actionable reason when authorization or an eligible answer is unavailable, rejected, or uncertain; it never switches to human assistance or persists the message or answer. Manual Email OTP entry belongs only to explicitly enabled development verification.
+The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Automatic verification ends the attempt with an actionable reason when authorization or an eligible answer is unavailable, rejected, or uncertain, and never persists the message or answer. When the Cathay send button is not visible, the workflow fails with `challenge-unavailable`. There is no manual Email OTP entry (ADR 0039).
 _Avoid_: Numeric-only Cathay OTP, arbitrary six-digit email code, recipient-address equality
 
 **Verification challenge presence**:
-The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge is handed to the configured Verification Actor.
+The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge goes to its solver route.
 _Avoid_: Assumed challenge, unconditional solve
 
 **Human assistance contract resolution failure**:
-A state in which the current semantic target or verification context region cannot be resolved against the live browser session. Assist remains waiting with Resume disabled, does not fall back to unrestricted page interaction, and exits only after a contract update or an explicit force-quit.
+A state in which the current semantic target or challenge region cannot be resolved against the live browser session. The solver route does not fall back to another element or unrestricted page interaction; the stage fails closed.
 _Avoid_: Nearest-element fallback, silent target substitution
 
-**Human verification target accessibility**:
-The keyboard and pointer operation paths a declared verification target makes available to a `human` actor. Type targets receive focus, click targets expose equivalent keyboard activation where possible, and pointer-only drag targets require an explicit workflow declaration and user guidance.
-_Avoid_: Pointer-only by accident, keyboard bypass of target rules
-
 **Human assistance contract freshness**:
-The requirement that every human interaction carries the current task run's contract version. The automation server rejects operations from a stale stage after navigation, modal changes, or contract updates, and Assist must reload the current contract before presenting another actionable target.
+The requirement that every verification operation carries the current task run's contract version. The automation server rejects operations from a stale stage after navigation, modal changes, or contract updates.
 _Avoid_: Stale-coordinate interaction, client-only stage tracking
 
 **Verification input privacy**:
@@ -958,17 +950,13 @@ The boundary that keeps raw text entered into verification targets out of the hu
 _Avoid_: Logged verification text, replayable input screenshot
 
 **Verification screenshot privacy**:
-The rule that challenge screenshots and verification focus views exist only in the active Assist session's memory. They are cleared when Assist closes or the browser session ends, and are never persisted in task records, logs, analytics, or user-accessible exports. A local Verification Solver reads the challenge image on-device without persisting it; a remote or third-party solver may receive the challenge image only with explicit consent, de-identified from any login page, account, or personal context.
+The rule that challenge screenshots exist only in the automation host's memory for the live solve. They are cleared when the stage ends or the browser session ends, and are never persisted in task records, logs, analytics, or user-accessible exports. A local Verification Solver reads the challenge image on-device without persisting it; a remote or third-party solver may receive the challenge image only with explicit consent, de-identified from any login page, account, or personal context.
 _Avoid_: Diagnostic screenshot archive, persisted challenge image
-
-**Legacy human assistance run**:
-An existing task run waiting for human input without a persisted human assistance contract. Assist does not infer its interaction rules from historical logs or expose an unrestricted viewer; it presents recovery guidance and requires force-quit followed by a new workflow run that can publish a contract.
-_Avoid_: Log-based compatibility mode, unrestricted legacy Assist
 
 **Human assistance contract API**:
 The shared host boundary through which a workflow creates or updates a human assistance contract. It owns persistence, task-run association, versioning, and fail-safe validation; provider workflows supply only their verification-specific targets, context regions, interaction modes, and completion rules.
 _Avoid_: Raw pause log, provider-specific persistence, UI-owned contract state
 
 **Provider verification adapter**:
-A provider-owned resolver and completion adapter that identifies the live verification controls, frames, challenge regions, allowed interaction modes, and provider-specific completion signals for a human assistance contract. The generic viewer does not infer these details from arbitrary page inputs.
+A provider-owned resolver and completion adapter that identifies the live verification controls, frames, challenge regions, allowed interaction modes, and provider-specific completion signals for a human assistance contract. The solver route uses it to capture challenge media and inject answers. The host does not infer these details from arbitrary page inputs.
 _Avoid_: Generic input scanner, nearest-control heuristic

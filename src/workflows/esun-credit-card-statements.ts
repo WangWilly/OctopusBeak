@@ -32,10 +32,6 @@ import {
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
-import {
-  emitHumanAssistanceStage,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -1167,30 +1163,6 @@ const typedInputSchema = z.object({
   endDate: dateSchema.optional(),
 });
 
-function esunManualSignInStage(page: Page): WorkflowHumanAssistanceStage {
-  const pageBody = page.locator("body");
-  return {
-    stageId: "esun-login-verification",
-    title: "Complete E.SUN sign-in or verification",
-    targets: [{
-      id: "sign-in-page",
-      label: "E.SUN sign-in page",
-      semanticId: "esun.login.page",
-      modes: ["click", "type", "press"],
-      locator: pageBody,
-    }],
-    contextRegions: [{
-      id: "sign-in-context",
-      label: "E.SUN sign-in and verification",
-      semanticId: "esun.login.context",
-      locator: pageBody,
-    }],
-    completion: { mode: "independent", targetIds: ["sign-in-page"] },
-    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
-    prompt: "Complete any provider verification in the open E.SUN page, then wait for the card page to appear.",
-  };
-}
-
 async function authenticateEsunPage(
   page: Page,
   credentials: EsunCredentials,
@@ -1218,17 +1190,10 @@ async function authenticateEsunPage(
     }
   }
 
-  const contract = await emitHumanAssistanceStage(esunManualSignInStage(page), (value) => value);
-  await context.event("authentication", "human-assistance-requested");
-  const status = await context.humanAssistance.request(contract, context.signal);
-  context.signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    await context.event("authentication", "human-assistance-failed");
-    throw new Error(`E.SUN human assistance ended with status ${status}.`);
-  }
-  await withAbort(waitForSignedInState(page), context.signal);
-  await context.event("authentication", "human-assistance-completed");
-  return false;
+  // E.SUN's provider verification has no solver; the App classifies this event
+  // as a verification configuration failure.
+  await context.event("authentication", "solver-challenge-unsupported");
+  throw new Error("E.SUN sign-in verification is not supported by the automatic solver.");
 }
 
 async function readEsunResponseJson(

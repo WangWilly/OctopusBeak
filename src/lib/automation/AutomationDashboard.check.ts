@@ -39,25 +39,13 @@ assert.match(source, /class="table-reveal"/);
 assert.doesNotMatch(source, /container\.animate\(/);
 assert.doesNotMatch(source, /class="task-row"[^>]*transition:disclosureSlide/);
 assert.match(source, /transition: transform 180ms ease/);
-assert.match(
-  source,
-  /import \{[\s\S]*mapViewerPointer,[\s\S]*shouldDispatchViewerClickBeforeType,[\s\S]*viewerOverlayAnchorForRect,[\s\S]*\} from "\$lib\/automation\/viewer-coordinate\.ts"/,
-);
-assert.match(
-  source,
-  /const imageRect = image\.getBoundingClientRect\(\);[\s\S]*?return mapViewerPointer\(/,
-);
+assert.doesNotMatch(source, /viewer-coordinate|assist-interaction/);
 assert.doesNotMatch(
   source,
-  /const frameRect = frame\?\.getBoundingClientRect\(\)/,
+  /automation\.(?:resumeHumanAssistance|viewerScreenshot|viewerInspect|viewerInput|viewerCompletionCheck)\(/,
 );
-assert.match(source, /floatingInputAnchor\([\s\S]*targetRect/);
-assert.match(source, /floatingInputAnchor\(point, inspected\.rect\)/);
-assert.match(source, /transform: translate\(-50%, -50%\)/);
-assert.match(
-  source,
-  /shouldDispatchViewerClickBeforeType\(modes\) && !await sendViewerInput\(/,
-);
+assert.doesNotMatch(source, /\$t\.automation\.assist\b|human-viewer-modal|humanTask/);
+assert.doesNotMatch(source, /shouldOfferManualVerification|verificationActorsByCredentialGroup/);
 assert.match(source, /class="inline-run-details-row"/);
 assert.match(
   source,
@@ -102,16 +90,7 @@ assert.doesNotMatch(source, /eventDisplayMode/);
 assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
 assert.doesNotMatch(source, /inline-log-path|task\.logPath|task\.logTail/);
 assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
-assert.match(source, /onclick=\{\(\) => handleActiveTaskClick\(task\)\}/);
-assert.match(
-  source,
-  /function handleActiveTaskClick\(task: AutomationTaskRow\)/,
-);
-assert.match(
-  source,
-  /task\.status === "waiting_for_human" && task\.humanSession/,
-);
-assert.match(source, /openHumanViewer\(task\)/);
+assert.match(source, /onclick=\{\(\) => void revealTaskDetails\(task\)\}/);
 assert.match(source, /async function revealTaskDetails\(task: AutomationTaskRow\)/);
 assert.match(source, /expandedRunDetailsTaskId = task\.id/);
 assert.match(
@@ -144,25 +123,8 @@ assert.match(source, /onpointerleave=\{hideTaskTooltip\}/);
 assert.match(source, /taskStatusLabel\(hoveredTask, \$t\)/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
-const resumeHumanViewerSource = source.slice(
-  source.indexOf("async function resumeHumanViewer"),
-  source.indexOf("function pointerPoint"),
-);
-assert.match(
-  resumeHumanViewerSource,
-  /automation\.resumeHumanAssistance\(task\.id\)/,
-);
-assert.doesNotMatch(resumeHumanViewerSource, /runTask\(task\)/);
 assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
 assert.match(runTaskSource, /automation\.run\(task\.id\)/);
-const viewerPointerUpSource = source.slice(
-  source.indexOf("function handleViewerPointerUp"),
-  source.indexOf("async function submitViewerDrag"),
-);
-assert.match(
-  viewerPointerUpSource,
-  /if \(moved <= 8\) \{[\s\S]*?void handleViewerClick\(point\);/,
-);
 assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
@@ -196,7 +158,7 @@ assert.match(source, /task\.status === "waiting_for_human"/);
 assert.match(source, /class:working=\{workflowProgressIsWorking\(task\)\}/);
 assert.match(
   source,
-  /if \(task\.status === "waiting_for_human"\) \{\s*return task\.isActive\s*&& !shouldOfferManualVerification\(task\.credentialGroupId, verificationActorsByCredentialGroup\);/,
+  /if \(task\.status === "waiting_for_human"\) \{\s*return task\.isActive;/,
 );
 assert.match(source, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.progress-bar\.working::after/);
 assert.match(
@@ -209,11 +171,24 @@ const primaryTaskActionSource = source.slice(
 );
 assert.match(primaryTaskActionSource, /task\.status === "waiting_for_human"[\s\S]*?automation\.forceTerminate\(task\.id\)/);
 assert.match(primaryTaskActionSource, /else await window\.octopusBeak\.automation\.cancel\(task\.id\)/);
-const forceTerminateHumanViewerSource = source.slice(
-  source.indexOf("async function forceTerminateHumanViewer"),
-  source.indexOf("async function resumeHumanViewer"),
+const forceTerminateTaskSource = source.slice(
+  source.indexOf("async function forceTerminateTask"),
+  source.indexOf("async function revealTaskDetails"),
 );
-assert.match(forceTerminateHumanViewerSource, /automation\.forceTerminate\(humanTask\.id\)/);
+assert.match(forceTerminateTaskSource, /confirm\(\$t\.automation\.confirmForceQuit\)/);
+assert.match(forceTerminateTaskSource, /automation\.forceTerminate\(task\.id\)/);
+assert.match(
+  source,
+  /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
+);
+assert.match(
+  source,
+  /function taskStatusLabel[\s\S]*?if \(task\.status === "waiting_for_human"\) \{\s*return dictionary\.automation\.progressAutomaticVerification;/,
+);
+assert.match(
+  source,
+  /const waiting = dictionary\.automation\.progressAutomaticVerification;/,
+);
 assert.doesNotMatch(source, /automation\.forceQuit\(/);
 assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
 assert.match(source, /class="stage-toggle-action"/);
@@ -412,7 +387,7 @@ assert.match(
 
 const saveCredentialsSource = source.slice(
   source.indexOf("async function saveCredentials"),
-  source.indexOf("async function refreshViewerImage"),
+  source.indexOf("function taskIdLabel"),
 );
 assert.match(
   saveCredentialsSource,
@@ -557,9 +532,4 @@ assert.match(source, /cathayGmailOtpStatus\.needsAuthorization/);
 assert.match(source, /cathayGmailOtpConnectionErrorMessage/);
 assert.match(source, /result\.connectionError/);
 
-assert.match(
-  source,
-  /\{#if viewerImageUrl\}[\s\S]*?src=\{viewerImageUrl\}[\s\S]*?\{:else\}/,
-);
-assert.doesNotMatch(source, /src=""/);
-assert.match(source, /viewerError \|\| \$t\.automation\.screenshotUnavailable/);
+assert.doesNotMatch(source, /viewerImageUrl|screenshotUnavailable|floatingInput/);

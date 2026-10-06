@@ -5,7 +5,6 @@ import {
   type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import { hostVerificationActorForSourceKey } from "../verification-config.ts";
 import {
   createProviderVerificationHost,
   type ProviderVerificationHost,
@@ -64,7 +63,7 @@ function targetWithSemanticId(
 
 /**
  * Only these provider-declared stages are sent to automatic verification.
- * Unknown and certificate-selection contracts remain available to the user.
+ * Unknown and certificate-selection contracts fail closed.
  */
 function isSupportedAutomaticStage(contract: HumanAssistanceContractInput) {
   if (contract.stageId === "yuanta-trade-audio-verification") {
@@ -115,7 +114,6 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
       return host.handlesChallengeAudio(contract);
     },
     captureChallengeAudio: guardedAsync(signal, host.captureChallengeAudio),
-    refreshTarget: guardedAsync(signal, host.refreshTarget),
     sendInput: guardedAsync(signal, host.sendInput),
     injectAnswer: guardedAsync(signal, host.injectAnswer),
     probePostSubmit: guardedAsync(signal, async (viewerKey, contract, resume) => (
@@ -126,15 +124,6 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
       )
     )),
     inspectCompletion: guardedAsync(signal, host.inspectCompletion),
-    waitForCompletion: guardedAsync(signal, host.waitForCompletion),
-    shouldCheckCompletion(inputType, semanticId) {
-      signal.throwIfAborted();
-      return host.shouldCheckCompletion(inputType, semanticId);
-    },
-    shouldAutoResume(contract, targetId, verified) {
-      signal.throwIfAborted();
-      return host.shouldAutoResume(contract, targetId, verified);
-    },
   };
 }
 
@@ -164,14 +153,10 @@ export async function routeYuantaTradeAppAssistanceRequest(
   dependencies: YuantaTradeAppAssistanceDependencies,
 ): Promise<VerificationRoutingOutcome | undefined> {
   request.signal.throwIfAborted();
-  const verificationActor = hostVerificationActorForSourceKey(
-    "LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR",
-  );
 
-  // ServiSign certificate selection is a native prerequisite and stays in the
-  // live Assist session only in the explicit development human mode.
+  // ServiSign certificate selection is a native prerequisite the solver
+  // cannot complete.
   if (!isSupportedAutomaticStage(request.contract)) {
-    if (verificationActor === "human") return undefined;
     await dependencies.provider.automation.appendRunEvent({
       runId: request.taskRunId,
       stage: "authentication",
@@ -180,10 +165,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
     });
     throw new Error("Yuanta Trade verification stage is not supported by the automatic solver.");
   }
-  if (
-    request.contract.stageId === "yuanta-trade-challenge"
-    && verificationActor === "solver"
-  ) {
+  if (request.contract.stageId === "yuanta-trade-challenge") {
     await dependencies.provider.automation.appendRunEvent({
       runId: request.taskRunId,
       stage: "authentication",
@@ -334,9 +316,11 @@ export async function routeYuantaTradeAppAssistanceRequest(
     throw new Error("Yuanta Trade verification assistance failed closed.");
   }
   if (outcome.kind === "retryable") return outcome;
-  // A missing audio/image source or a still-visible image challenge is a
-  // handoff to the user's current Assist stage, not permission to resume.
-  if (outcome.kind === "resumed" && !assistanceResumed) return { kind: "human" };
+  // A missing audio/image source or a still-visible image challenge never
+  // grants permission to resume the workflow.
+  if (outcome.kind === "resumed" && !assistanceResumed) {
+    throw new Error("Yuanta Trade verification did not complete the current stage.");
+  }
   return outcome;
 }
 

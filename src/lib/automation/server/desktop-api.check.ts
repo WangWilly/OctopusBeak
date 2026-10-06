@@ -11,13 +11,11 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
-  automationResumeHumanAssistance,
   automationSaveCredentials,
   automationSetupGuideLink,
   loadAutomationDesktopModel,
 } from "./desktop-api.ts";
 import { readAutomationSettings } from "./settings.ts";
-import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 test("desktop automation model and history are read from the provider", async () => {
   const database = await PGlite.create();
@@ -184,48 +182,5 @@ test("Fubon statement subset round-trips through settings and desktop model", as
     process.chdir(previousDirectory);
     await store.close();
     await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("non-typed task runs cannot be resumed as App workflow assistance", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    await provider.automation.createTaskRun({
-      taskId: "exchange-rates",
-      kind: "sync",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-09-26T00:00:00.000Z",
-    });
-    await assert.rejects(
-      automationResumeHumanAssistance("exchange-rates", provider),
-      /does not use an App browser workflow/u,
-    );
-  } finally {
-    await store.close();
-  }
-});
-
-test("packaged manual resume is denied even when its process environment requests human mode", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  configureHostVerificationActorPolicy({
-    isPackaged: true,
-    env: { LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR: "human" },
-  });
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    await assert.rejects(
-      automationResumeHumanAssistance("cathay-all-statements", provider),
-      /Manual verification is disabled/u,
-    );
-  } finally {
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
-    await store.close();
   }
 });

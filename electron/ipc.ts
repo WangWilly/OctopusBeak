@@ -10,7 +10,6 @@ import {
   cathayGmailOtpStatus,
   disconnectCathayGmailOtp,
   enableCathayGmailOtp,
-  automationResumeHumanAssistance,
   automationRun,
   automationRunMany,
   automationForceTerminate,
@@ -19,7 +18,6 @@ import {
   automationSetupGuideLink,
   applyAutomationCredentialState,
   loadAutomationCoreSnapshot,
-  assertManualVerificationAllowedForTask,
   externalPrerequisiteById,
   readAutomationCredentialState,
   setCathayGmailOtpEnabled,
@@ -32,25 +30,6 @@ import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
 } from "../src/lib/automation/server/credential-file.ts";
-import {
-  captureSessionScreenshot,
-  isClosedViewerSessionError,
-  inspectHumanVerificationPoint,
-} from "../src/lib/automation/server/automation-viewer.ts";
-import {
-  inspectProviderVerificationCompletion,
-  refreshProviderVerificationTarget,
-  sendProviderVerificationInput,
-  shouldAutoResumeProviderVerification,
-  shouldCheckProviderVerificationCompletion,
-  waitForProviderVerificationCompletion,
-} from "../src/lib/automation/server/provider-verification.ts";
-import {
-  humanAssistanceContractForTask,
-  humanSessionForTask,
-  updateHumanAssistanceContractForTask,
-  updateHumanAssistanceCompletionForTask,
-} from "../src/lib/automation/server/human-session.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import {
   registerPGliteViewIpc,
@@ -151,20 +130,6 @@ export function registerOctopusBeakIpc({
     }
   };
   const operationalProvider = pgliteOperational.provider;
-  const readHumanSession = (taskId: string): Promise<string> =>
-    humanSessionForTask(taskId, operationalProvider);
-  const readHumanContract = (taskId: string): Promise<Awaited<ReturnType<typeof humanAssistanceContractForTask>>> =>
-    humanAssistanceContractForTask(taskId, operationalProvider);
-  const updateHumanContract = (
-    taskId: string,
-    input: Parameters<typeof updateHumanAssistanceContractForTask>[1],
-  ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceContractForTask>>> =>
-    updateHumanAssistanceContractForTask(taskId, input, operationalProvider);
-  const updateHumanCompletion = (
-    taskId: string,
-    status: Parameters<typeof updateHumanAssistanceCompletionForTask>[1],
-  ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceCompletionForTask>>> =>
-    updateHumanAssistanceCompletionForTask(taskId, status, operationalProvider);
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
     const windows = BrowserWindow.getAllWindows();
     for (const window of windows) {
@@ -476,11 +441,6 @@ export function registerOctopusBeakIpc({
     await ensureAutomationRuntimeReady("automation-run-many");
     return automationRunMany(taskIds, operationalProvider);
   });
-  ipcMain.handle("automation:resumeHumanAssistance", async (_event, taskId: string) => {
-    assertManualVerificationAllowedForTask(taskId);
-    await ensureAutomationRuntimeReady("automation-resume");
-    return automationResumeHumanAssistance(taskId, operationalProvider);
-  });
   ipcMain.handle("automation:cancel", (_event, taskId: string, expectedRunId?: string) =>
     automationCancel(taskId, operationalProvider, expectedRunId),
   );
@@ -496,133 +456,6 @@ export function registerOctopusBeakIpc({
         throw new Error("Unknown or unsafe external prerequisite.");
       await shell.openExternal(prerequisite.downloadUrl);
       return { ok: true as const };
-    },
-  );
-  ipcMain.handle(
-    "automation:viewerScreenshot",
-    async (_event, taskId: string) => {
-      assertManualVerificationAllowedForTask(taskId);
-      const session = await readHumanSession(taskId);
-      try {
-        return new Uint8Array(await captureSessionScreenshot(session));
-      } catch (error) {
-        if (isClosedViewerSessionError(error)) return null;
-        throw error;
-      }
-    },
-  );
-  ipcMain.handle(
-    "automation:viewerInspect",
-    async (_event, taskId: string, point: unknown) => {
-      assertManualVerificationAllowedForTask(taskId);
-      const session = await readHumanSession(taskId);
-      const contract = await readHumanContract(taskId);
-      if (!contract)
-        throw new Error(
-          "Human assistance contract is missing for this run; force quit it.",
-        );
-      const refreshedContractInput =
-        await refreshProviderVerificationTarget(session, contract);
-      const refreshedContract = refreshedContractInput
-        ? await updateHumanContract(taskId, refreshedContractInput)
-        : contract;
-      return inspectHumanVerificationPoint(session, point, refreshedContract);
-    },
-  );
-  ipcMain.handle(
-    "automation:viewerInput",
-    async (_event, taskId: string, input: unknown) => {
-      assertManualVerificationAllowedForTask(taskId);
-      const session = await readHumanSession(taskId);
-      const contract = await readHumanContract(taskId);
-      if (!contract)
-        throw new Error(
-          "Human assistance contract is missing for this run; force quit it.",
-        );
-      const refreshedContractInput =
-        await refreshProviderVerificationTarget(session, contract);
-      const refreshedContract = refreshedContractInput
-        ? await updateHumanContract(taskId, refreshedContractInput)
-        : contract;
-      await sendProviderVerificationInput(session, input, refreshedContract);
-      const refreshedContractInputAfterInput =
-        await refreshProviderVerificationTarget(
-          session,
-          refreshedContract,
-        );
-      const refreshedContractAfterInput = refreshedContractInputAfterInput
-        ? await updateHumanContract(
-            taskId,
-            refreshedContractInputAfterInput,
-          )
-          : refreshedContract;
-      const record =
-        input && typeof input === "object"
-          ? (input as Record<string, unknown>)
-          : {};
-      const clickedTarget =
-        typeof record.targetId === "string"
-          ? refreshedContractAfterInput.targets.find(
-              (target) => target.id === record.targetId,
-            )
-          : undefined;
-      const shouldCheckCompletion = shouldCheckProviderVerificationCompletion(
-        record.type,
-        clickedTarget?.semanticId,
-      );
-      const verified =
-        shouldCheckCompletion &&
-        (await waitForProviderVerificationCompletion(
-          session,
-          refreshedContractAfterInput,
-        ));
-      const isTextInputOnCompletionTarget =
-        record.type === "type" &&
-        refreshedContractAfterInput.completion.mode === "inline" &&
-        typeof record.targetId === "string" &&
-        refreshedContractAfterInput.completion.targetIds.includes(record.targetId);
-      const updatedContract = verified
-        ? await updateHumanCompletion(taskId, "verified")
-        : isTextInputOnCompletionTarget
-          ? await updateHumanCompletion(taskId, "entered")
-          : refreshedContractAfterInput;
-      const resumed =
-        typeof record.targetId === "string" &&
-        shouldAutoResumeProviderVerification(
-          updatedContract,
-          record.targetId,
-          verified,
-        );
-      if (resumed) {
-        await ensureAutomationRuntimeReady("automation-resume");
-        await automationResumeHumanAssistance(taskId, operationalProvider);
-      }
-      return { ok: true as const, contract: updatedContract, resumed };
-    },
-  );
-  ipcMain.handle(
-    "automation:viewerCompletionCheck",
-    async (_event, taskId: string) => {
-      assertManualVerificationAllowedForTask(taskId);
-      const session = await readHumanSession(taskId);
-      const contract = await readHumanContract(taskId);
-      if (!contract)
-        throw new Error(
-          "Human assistance contract is missing for this run; force quit it.",
-        );
-      const refreshedContractInput =
-        await refreshProviderVerificationTarget(session, contract);
-      const refreshedContract = refreshedContractInput
-        ? await updateHumanContract(taskId, refreshedContractInput)
-        : contract;
-      const verified = await inspectProviderVerificationCompletion(
-        session,
-        refreshedContract,
-      );
-      const updatedContract = verified
-        ? await updateHumanCompletion(taskId, "verified")
-        : refreshedContract;
-      return { verified, contract: updatedContract };
     },
   );
   ipcMain.handle("automation:runtimeSnapshot", async () => {
