@@ -190,14 +190,23 @@ export function accountShares(
   rates: ExchangeRateIndex,
   valuationDate: string | null,
 ): ReadonlyMap<string, number> {
+  const values = accountTwdValues(accounts, rates, valuationDate);
+  const total = [...values.values()].reduce((sum, value) => sum + value, 0);
+  return new Map([...values].map(([id, value]) => [id, value / total]));
+}
+
+/** Each available account's positive value in TWD, when every currency it holds has a rate. */
+export function accountTwdValues(
+  accounts: readonly AccountRowDto[],
+  rates: ExchangeRateIndex,
+  valuationDate: string | null,
+): ReadonlyMap<string, number> {
   if (!valuationDate) return new Map();
-  const values = accounts.flatMap((account) => {
+  return new Map(accounts.flatMap((account) => {
     if (account.valueAvailability !== "available") return [];
     const value = convertAccount(account, rates, valuationDate, new Set());
     return value !== null && value > 0 ? [[account.id, value] as const] : [];
-  });
-  const total = values.reduce((sum, [, value]) => sum + value, 0);
-  return new Map(values.map(([id, value]) => [id, value / total]));
+  }));
 }
 
 export function convertAccount(

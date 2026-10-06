@@ -211,6 +211,7 @@
         transactionsByAccount={listDataBlock.transactionsByAccount}
         dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
         shares={summary.state === "ready" ? summary.shares : new Map()}
+        twdValues={summary.state === "ready" ? summary.twdValues : new Map()}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>

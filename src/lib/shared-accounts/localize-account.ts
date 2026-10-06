@@ -1,5 +1,6 @@
 import type { Translation } from "../i18n/i18n.ts";
 import { institutionForNamespace } from "../institutions/institutions.ts";
+import { maskedAccountDigits } from "../overview/overview-format.ts";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
 
 /**
@@ -23,4 +24,10 @@ export function localizeAccount(account: AccountRowDto, dictionary: Translation)
 
 export function localizeAccounts(accounts: readonly AccountRowDto[], dictionary: Translation): AccountRowDto[] {
   return accounts.map((account) => localizeAccount(account, dictionary));
+}
+
+/** `Institution · Product · last four digits`, as account modals title themselves. */
+export function accountModalTitle(account: AccountRowDto, dictionary: Translation): string {
+  const { institution, product } = localizeAccount(account, dictionary);
+  return [institution, product, maskedAccountDigits(account.label)].filter(Boolean).join(" · ");
 }

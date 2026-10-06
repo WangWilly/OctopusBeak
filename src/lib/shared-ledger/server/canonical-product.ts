@@ -184,8 +184,6 @@ function mapPosition(position: CanonicalOverviewPosition): AssetPositionDto {
     valueExact: position.amount ? { ...position.amount.exact } : null,
     ...(position.amount ? { valueAvailability: "available" as const } : { valueAvailability: "awaiting" as const }),
     currency: position.currency,
-    change: "--",
-    metricLabel: position.typeLabel,
   };
 }
 

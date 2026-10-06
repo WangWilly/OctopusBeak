@@ -167,8 +167,6 @@ export type TransactionRowDto = {
   };
 };
 
-export type ReturnCategoryDto = "trade" | "deposit" | "reward";
-
 export type AssetPositionDto = {
   symbol: string;
   name: string;
@@ -181,8 +179,4 @@ export type AssetPositionDto = {
   } | null;
   valueAvailability?: "available" | "awaiting";
   currency: string;
-  change: string;
-  metricLabel?: string;
-  returnCategory?: ReturnCategoryDto;
-  returnCostTwd?: number;
 };
