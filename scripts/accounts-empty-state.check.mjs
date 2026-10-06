@@ -24,9 +24,32 @@ const PAGES = {
   },
 };
 
+const gap = (namespace, stream) => ({
+  accountId: `${namespace}:${stream}`,
+  sourceConnectionKey: namespace,
+  accountNo: null,
+  integrationNamespace: namespace,
+  stream,
+  label: `${namespace} ${stream}`,
+  reason: "source-not-collected",
+});
+
+/** Configured sources that have not collected: no accounts yet, but source gaps. */
+function installAwaitingLedger(gaps) {
+  const awaiting = (page) => ({ ...page, availability: "awaiting", coverage: "awaiting", sourceGaps: gaps });
+  const bridge = window.octopusBeak;
+  for (const route of ["overview", "assets", "liabilities"]) {
+    const load = bridge[route].load;
+    bridge[route].load = async () => awaiting(await load());
+  }
+  const subscribe = bridge.dataViews.subscribe;
+  bridge.dataViews.subscribe = (view, params, onRows) =>
+    subscribe(view, params, (rows) => onRows(view === "financial.spending.current" ? rows : rows.map(awaiting)));
+}
+
 const text = async (locator) => (await locator.innerText()).replace(/\s+/gu, " ").trim();
 
-test("Assets and Liabilities explain an empty ledger and point to Automation", async (t) => {
+for (const [ledger, gaps] of [["empty", null], ["awaiting", [gap("fubon", "deposit"), gap("esun", "credit_card")]]]) test(`Assets and Liabilities explain an ${ledger} ledger and point to Automation`, async (t) => {
   const server = await createSpendingViteServer();
   const browser = await chromium.launch();
   t.after(async () => {
@@ -41,12 +64,14 @@ test("Assets and Liabilities explain an empty ledger and point to Automation", a
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
       await page.addInitScript(spendingDesktopApiInitScript({ canonical: { availability: "empty" } }));
+      if (gaps) await page.addInitScript(`(${installAwaitingLedger.toString()})(${JSON.stringify(gaps)})`);
       await page.addInitScript(() => localStorage.setItem("octopusbeak-locale", "zh-TW"));
       await page.goto(`${server.resolvedUrls.local[0]}#/${route}`);
 
       const banner = page.locator(".empty-source-banner");
       await banner.waitFor();
       assert.match(await text(banner), new RegExp(`^${expected.banner} .+ 前往自動化設定來源$`, "u"));
+      assert.equal(await page.locator(".projection-state").count(), 0, "no source-gap notice before any data");
       assert.equal(await text(page.locator(".page-total .headline")), expected.total);
       const tiles = await page.locator("[data-summary-tile] .head").allInnerTexts();
       assert.deepEqual(tiles.map((tile) => tile.trim()), expected.tiles);
@@ -64,4 +89,21 @@ test("Assets and Liabilities explain an empty ledger and point to Automation", a
       await page.close();
     });
   }
+});
+
+test("Overview hides the source-gap notice while configured sources await their first collection", async (t) => {
+  const server = await createSpendingViteServer();
+  const browser = await chromium.launch();
+  t.after(async () => {
+    await browser.close();
+    await server.close();
+  });
+  const page = await browser.newPage({ viewport: { width: 1425, height: 1200 } });
+  await page.addInitScript(spendingDesktopApiInitScript({ canonical: { availability: "empty" } }));
+  await page.addInitScript(`(${installAwaitingLedger.toString()})(${JSON.stringify([gap("fubon", "deposit")])})`);
+  await page.addInitScript(() => localStorage.setItem("octopusbeak-locale", "zh-TW"));
+  await page.goto(`${server.resolvedUrls.local[0]}#/overview`);
+  await page.locator('[data-overview-state="empty"]').waitFor();
+  assert.equal(await page.locator(".projection-state").count(), 0);
+  assert.doesNotMatch(await text(page.locator("body")), /尚未採集|總額僅供部分參考/u);
 });
