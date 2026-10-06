@@ -28,6 +28,7 @@ import {
   pollCathayGmailOtp,
   resetCathayGmailOtpServiceForTests,
   validateOAuthCallbackUrl,
+  type GmailOtpServiceOptions,
 } from "./gmail-otp-service.ts";
 
 const directHeaders = [
@@ -753,7 +754,14 @@ test("Gmail service keeps its credential codec when another operation resets the
   }
 });
 
-test("automatic Gmail access reports invalid_grant as reconnect-required without OAuth", async () => {
+async function withExpiredGmailGrant(
+  oauthAuthorize: GmailOtpServiceOptions["oauthAuthorize"],
+  run: (input: Readonly<{
+    service: ReturnType<typeof createCathayGmailOtpService>;
+    credentialsPath: string;
+    authorizations: () => number;
+  }>) => Promise<void>,
+) {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-refresh-"));
   const settingsPath = join(dir, "settings.json");
   const credentialsPath = join(dir, "credentials.json");
@@ -766,19 +774,18 @@ test("automatic Gmail access reports invalid_grant as reconnect-required without
       [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "expired",
       [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
     });
-    let refreshes = 0;
+    let authorizations = 0;
     const service = createCathayGmailOtpService({
       settingsPath,
       credentialsPath,
-      fetch: async () => {
-        refreshes += 1;
-        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } });
+      fetch: async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } }),
+      oauthAuthorize: async (signal) => {
+        authorizations += 1;
+        return await oauthAuthorize!(signal);
       },
-      oauthAuthorize: async () => ({ refreshToken: "new-refresh", connectedEmail: "test@gmail.com" }),
+      now: () => 1000,
     });
-    assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "needs-authorization" });
-    assert.equal(refreshes, 1);
-    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "expired");
+    await run({ service, credentialsPath, authorizations: () => authorizations });
   } finally {
     if (oldClientId === undefined) delete process.env.OCTOPUSBEAK_GOOGLE_OAUTH_CLIENT_ID;
     else process.env.OCTOPUSBEAK_GOOGLE_OAUTH_CLIENT_ID = oldClientId;
@@ -786,6 +793,44 @@ test("automatic Gmail access reports invalid_grant as reconnect-required without
     resetCathayGmailOtpServiceForTests();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test("automatic Gmail access reauthorizes in the browser when the grant returns invalid_grant", async () => {
+  await withExpiredGmailGrant(
+    async () => ({
+      refreshToken: "new-refresh",
+      connectedEmail: "test@gmail.com",
+      accessToken: "new-access",
+      accessTokenExpiresAt: 10_000_000,
+    }),
+    async ({ service, credentialsPath, authorizations }) => {
+      assert.deepEqual(await service.ensureAccess(), { status: "ready" });
+      assert.equal(authorizations(), 1);
+      assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "new-refresh");
+      assert.equal(service.status().needsAuthorization, false);
+    },
+  );
+});
+
+test("a failed browser reauthorization keeps the expired grant and reports the failure", async () => {
+  await withExpiredGmailGrant(
+    async () => { throw new Error("Google OAuth authorization timed out."); },
+    async ({ service, credentialsPath, authorizations }) => {
+      assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "authorization-failed" });
+      assert.equal(authorizations(), 1);
+      assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "expired");
+    },
+  );
+});
+
+test("Gmail retrieval never opens browser authorization for an invalid grant", async () => {
+  await withExpiredGmailGrant(
+    async () => ({ refreshToken: "new-refresh", connectedEmail: "test@gmail.com" }),
+    async ({ service, authorizations }) => {
+      assert.deepEqual(await service.prepareRetrieval(), { status: "fallback", reason: "needs-authorization" });
+      assert.equal(authorizations(), 0);
+    },
+  );
 });
 
 test("successful OTP is never written to a log by the host service", async () => {
