@@ -1,226 +1,517 @@
 <script lang="ts">
-  import { locale, t, translateKnownLabel } from "$lib/i18n/i18n.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
-  import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
-  import { formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
-  import { formatUtcDate } from "$lib/time/timezone.ts";
+  import {
+    ArrowDownLeft,
+    ArrowUpRight,
+    CalendarDays,
+    Check,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    Download,
+    ListFilter,
+    List,
+    X,
+  } from "@lucide/svelte";
 
-  type SortKey = "date" | "label" | "type" | "amount" | "note";
-  type SortDirection = "asc" | "desc";
-  type SortColumn = { key: SortKey; label: string; right?: boolean };
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionForNamespace } from "$lib/institutions/institutions.ts";
+  import { maskedAccountDigits } from "$lib/overview/overview-format.ts";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import {
+    filterTransactions,
+    flowCounts,
+    pageOf,
+    transactionDay,
+    transactionsCsv,
+    type DateRange,
+    type FlowFilter,
+    type RangePreset,
+  } from "$lib/shared-accounts/transaction-filters.ts";
+  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
+  import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
+  import { formatAmountLines, formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
+  import DateRangePopover from "./DateRangePopover.svelte";
 
   export let open = false;
   export let account: AccountRowDto | null = null;
   export let rows: TransactionRowDto[] = [];
 
-  let sortKey: SortKey | null = null;
-  let sortDirection: SortDirection = "asc";
-  let sortColumns: SortColumn[] = [];
+  const PAGE_SIZE = 10;
+  const FLOWS: readonly FlowFilter[] = ["all", "in", "out"];
 
-  $: sortedRows = sortRows(rows, sortKey, sortDirection);
-  $: sortColumns = [
-    { key: "date", label: $t.transactions.date },
-    { key: "label", label: $t.transactions.description },
-    { key: "type", label: $t.transactions.type },
-    { key: "amount", label: rows.some((row) => row.investment) ? $t.transactions.cashEffect : $t.transactions.amount, right: true },
-    { key: "note", label: $t.transactions.note, right: true },
-  ] satisfies SortColumn[];
+  let range: DateRange | null = null;
+  let preset: RangePreset = "all";
+  let flow: FlowFilter = "all";
+  let page = 1;
+  let menu: "range" | "type" | null = null;
+  let shownAccountId: string | null = null;
 
-  function closeOnEscape(event: KeyboardEvent) {
-    if (open && event.key === "Escape") open = false;
+  // Each account opens on its full history.
+  $: if (open && account?.id !== shownAccountId) {
+    shownAccountId = account?.id ?? null;
+    range = null;
+    preset = "all";
+    flow = "all";
+    page = 1;
+    menu = null;
+  }
+  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: shownAccount = account ? localizeAccount(account, $t) : null;
+  $: digits = account ? maskedAccountDigits(account.label) : null;
+  $: title = shownAccount
+    ? [shownAccount.institution, shownAccount.product, digits].filter(Boolean).join(" · ")
+    : $t.transactions.title;
+  $: primaryCurrency = account?.amountLines[0]?.currency ?? "TWD";
+  $: inRange = filterTransactions(rows, { range, flow: "all", timeZone: $systemTimezone });
+  $: counts = flowCounts(inRange);
+  $: filtered = flow === "all" ? inRange : filterTransactions(inRange, { range: null, flow, timeZone: $systemTimezone });
+  $: current = pageOf(filtered, page, PAGE_SIZE);
+  $: rangeLabel = range
+    ? `${range.start.replaceAll("-", "/")} – ${range.end.slice(0, 4) === range.start.slice(0, 4) ? range.end.slice(5).replace("-", "/") : range.end.replaceAll("-", "/")}`
+    : $t.transactions.rangePresets.all;
+
+  function close() {
+    open = false;
+    menu = null;
   }
 
-  function sortRows(sourceRows: TransactionRowDto[], key: SortKey | null, direction: SortDirection) {
-    if (!key) return sourceRows;
-    return [...sourceRows].sort((left, right) => compareRows(left, right, key, direction));
+  function handleKeydown(event: KeyboardEvent) {
+    if (!open || event.key !== "Escape") return;
+    if (menu) menu = null;
+    else close();
   }
 
-  function compareRows(left: TransactionRowDto, right: TransactionRowDto, key: SortKey, direction: SortDirection) {
-    const leftValue = sortValue(left, key);
-    const rightValue = sortValue(right, key);
-    const result =
-      typeof leftValue === "number" && typeof rightValue === "number"
-        ? leftValue - rightValue
-        : String(leftValue).localeCompare(String(rightValue));
-    return direction === "asc" ? result : -result;
+  function toggleMenu(next: "range" | "type") {
+    menu = menu === next ? null : next;
   }
 
-  function sortValue(row: TransactionRowDto, key: SortKey) {
-    if (key === "amount") return row.amount;
-    if (key === "note") return row.note ?? "";
-    if (key === "date") return row.occurredAtUtc ?? row.date;
-    return row[key];
+  function applyRange(next: DateRange | null, nextPreset: RangePreset) {
+    range = next;
+    preset = nextPreset;
+    page = 1;
+    menu = null;
   }
 
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) {
-      sortDirection = sortDirection === "asc" ? "desc" : "asc";
-    } else {
-      sortKey = key;
-      sortDirection = key === "amount" ? "desc" : "asc";
-    }
+  function chooseFlow(next: FlowFilter) {
+    flow = next;
+    page = 1;
+    menu = null;
   }
 
-  function formatTransactionAmount(row: TransactionRowDto) {
-    return formatMoney(
-      { currency: row.currency, value: row.amount, exact: row.amountExact },
-      { signed: true },
-    );
+  function countIn(candidate: DateRange | null) {
+    return filterTransactions(rows, { range: candidate, flow: "all", timeZone: $systemTimezone }).length;
+  }
+
+  function shortDate(row: TransactionRowDto) {
+    const day = transactionDay(row, $systemTimezone);
+    return day.slice(0, 4) === today.slice(0, 4) ? day.slice(5).replace("-", "/") : day.replaceAll("-", "/");
+  }
+
+  /** Unsigned amount; the column already says which way the money moved. */
+  function columnAmount(row: TransactionRowDto) {
+    const exact = row.amountExact
+      ? { ...row.amountExact, coefficient: row.amountExact.coefficient.replace(/^-/, "") }
+      : undefined;
+    const text = formatMoney({ currency: row.currency, value: Math.abs(row.amount), exact }, { locale: $locale });
+    return row.currency === primaryCurrency ? text.slice(row.currency.length + 1) : text;
   }
 
   function transactionType(row: TransactionRowDto) {
-    if (!row.investment) return translateKnownLabel($t, row.type);
     return $t.transactions.investmentActions[row.type as keyof typeof $t.transactions.investmentActions] ?? row.type;
+  }
+
+  function exportCsv() {
+    const csv = transactionsCsv(filtered, {
+      date: $t.transactions.date,
+      description: $t.transactions.description,
+      out: $t.transactions.moneyOut,
+      in: $t.transactions.moneyIn,
+      currency: $t.transactions.currency,
+      note: $t.transactions.note,
+    }, $systemTimezone);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    link.download = `${title.replaceAll(/[\\/:*?"<>|]/gu, "-")} ${range ? `${range.start}_${range.end}` : $t.transactions.rangePresets.all}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   }
 </script>
 
-<svelte:window on:keydown={closeOnEscape} />
+<svelte:window on:keydown={handleKeydown} />
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={() => (open = false)}></button>
-    <div class="modal-panel" role="dialog" aria-modal="true" tabindex="-1">
-      <div class="modal-head">
-        <div>
-          <h2>{account ? $t.transactions.accountTitle(account.label) : $t.transactions.title}</h2>
-          <p class="lead">{account ? `${account.institution} / ${translateKnownLabel($t, account.typeLabel)}` : ""}</p>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
+    <div class="modal-panel transactions-panel" role="dialog" aria-modal="true" aria-labelledby="transactions-title" tabindex="-1">
+      <div class="transactions-head">
+        <div class="identity">
+          {#if account && institutionForNamespace(account.institutionKey)}
+            <span class="logo-tile"><InstitutionLogo institution={institutionForNamespace(account.institutionKey)} size={30} /></span>
+          {/if}
+          <div>
+            <p class="eyebrow-label">{$t.transactions.eyebrow}</p>
+            <h2 id="transactions-title">{title}</h2>
+          </div>
         </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} on:click={() => (open = false)}>x</button>
+        {#if account}
+          <div class="balance">
+            <span>{$t.transactions.currentBalance}</span>
+            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
+          </div>
+        {/if}
+        <button class="modal-close" type="button" aria-label={$t.common.close} on:click={close}>
+          <X size={16} strokeWidth={2} aria-hidden="true" />
+        </button>
       </div>
+
+      <div class="transactions-toolbar">
+        <div class="menu-anchor">
+          <button
+            class="filter-chip"
+            class:applied={range !== null}
+            type="button"
+            aria-expanded={menu === "range"}
+            aria-label={`${$t.transactions.dateRange}: ${rangeLabel}`}
+            on:click={() => toggleMenu("range")}
+          >
+            <CalendarDays size={15} strokeWidth={2} aria-hidden="true" />
+            <span class:num={range !== null}>{rangeLabel}</span>
+            <ChevronDown class="chevron" size={14} strokeWidth={2} aria-hidden="true" />
+          </button>
+          {#if menu === "range"}
+            <DateRangePopover
+              {range}
+              {preset}
+              {today}
+              {countIn}
+              onApply={applyRange}
+              onClose={() => (menu = null)}
+            />
+          {/if}
+        </div>
+        <div class="menu-anchor">
+          <button
+            class="filter-chip"
+            class:applied={flow !== "all"}
+            type="button"
+            aria-expanded={menu === "type"}
+            aria-haspopup="menu"
+            on:click={() => toggleMenu("type")}
+          >
+            <ListFilter size={15} strokeWidth={2} aria-hidden="true" />
+            {$t.transactions.flows[flow]}
+            <ChevronDown class="chevron" size={14} strokeWidth={2} aria-hidden="true" />
+          </button>
+          {#if menu === "type"}
+            <div class="type-menu" role="menu" aria-label={$t.transactions.typeMenu}>
+              <p class="menu-title">{$t.transactions.typeMenu}</p>
+              {#each FLOWS as item}
+                <button type="button" role="menuitemradio" aria-checked={flow === item} data-flow={item} on:click={() => chooseFlow(item)}>
+                  <span class="flow-icon" data-flow={item}>
+                    {#if item === "in"}<ArrowDownLeft size={14} strokeWidth={2} aria-hidden="true" />
+                    {:else if item === "out"}<ArrowUpRight size={14} strokeWidth={2} aria-hidden="true" />
+                    {:else}<List size={14} strokeWidth={2} aria-hidden="true" />{/if}
+                  </span>
+                  <span class="flow-label">{$t.transactions.flows[item]}</span>
+                  <span class="flow-count num">{counts[item]}</span>
+                  <span class="flow-check">{#if flow === item}<Check size={15} strokeWidth={2.25} aria-hidden="true" />{/if}</span>
+                </button>
+              {/each}
+              <p class="menu-note">{$t.transactions.typeMenuNote}</p>
+            </div>
+          {/if}
+        </div>
+      </div>
+
       <div class="modal-body">
-        <table class="table">
+        <table class="table transactions-table">
           <thead>
             <tr>
-              {#each sortColumns as column}
-                <th
-                  class:right={column.right}
-                  aria-sort={sortKey === column.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                >
-                  <button
-                    class="sort-button"
-                    class:right={column.right}
-                    class:sorted={sortKey === column.key}
-                    type="button"
-                    on:click={() => toggleSort(column.key)}
-                  >
-                    <span>{column.label}</span>
-                    <span
-                      class:active={sortKey === column.key}
-                      class:asc={sortKey === column.key && sortDirection === "asc"}
-                      class="sort-mark"
-                      aria-hidden="true"
-                    ></span>
-                  </button>
-                </th>
-              {/each}
+              <th>{$t.transactions.date}</th>
+              <th>{$t.transactions.description}</th>
+              <th class="right">{$t.transactions.moneyOut}</th>
+              <th class="right">{$t.transactions.moneyIn}</th>
+              <th>{$t.transactions.note}</th>
             </tr>
           </thead>
           <tbody>
-            {#each sortedRows as row}
+            {#each current.rows as row}
               <tr>
-                <td>{formatUtcDate(row.occurredAtUtc ?? row.date, $systemTimezone, $locale)}</td>
-                <td>
+                <td class="date num">{shortDate(row)}</td>
+                <td class="description">
                   {#if row.investment}
                     <strong>{row.investment.securityName}</strong>
-                    <span class="investment-detail">{$t.transactions.quantity}: {formatExactQuantity(row.investment.quantity, $locale) ?? "--"}</span>
-                    {#if row.label && row.label !== row.investment.securityName}
-                      <span class="investment-detail">{row.label}</span>
-                    {/if}
+                    <span class="detail">{transactionType(row)} · {$t.transactions.quantity} {formatExactQuantity(row.investment.quantity, $locale) ?? "--"}</span>
+                    {#if row.label && row.label !== row.investment.securityName}<span class="detail">{row.label}</span>{/if}
                   {:else}
-                    {row.label}
+                    <strong>{row.label}</strong>
                   {/if}
                 </td>
-                <td>{transactionType(row)}</td>
                 <td
-                  class="right money"
-                  class:amount-positive={row.amount > 0}
-                  class:amount-negative={row.amount < 0}
+                  class="right money amount-out"
                   class:amount-settled={account?.kind === "credit-card" && row.type.toLowerCase() === "billed"}
-                >
-                  {formatTransactionAmount(row)}
-                </td>
-                <td class="right">{row.note || "--"}</td>
+                  data-sensitive
+                >{row.amount < 0 ? columnAmount(row) : ""}</td>
+                <td class="right money amount-in" data-sensitive>{row.amount > 0 ? columnAmount(row) : ""}</td>
+                <td class="note">{row.note || "—"}</td>
               </tr>
             {:else}
-              <tr><td colspan="5">{$t.transactions.noRows}</td></tr>
+              <tr><td class="empty" colspan="5">{rows.length === 0 ? $t.transactions.noRows : $t.transactions.noRowsInRange}</td></tr>
             {/each}
           </tbody>
         </table>
+      </div>
+
+      <div class="transactions-footer">
+        <span>{$t.transactions.pageRange(current.first, current.last, current.total)}</span>
+        <div class="pager">
+          <button class="pager-step" type="button" aria-label={$t.transactions.previousPage} disabled={current.page <= 1} on:click={() => (page = current.page - 1)}>
+            <ChevronLeft size={16} strokeWidth={2} aria-hidden="true" />
+          </button>
+          <span class="num">{current.page} / {current.pageCount}</span>
+          <button class="pager-step" type="button" aria-label={$t.transactions.nextPage} disabled={current.page >= current.pageCount} on:click={() => (page = current.page + 1)}>
+            <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </div>
+        <button class="button primary export" type="button" disabled={filtered.length === 0} on:click={exportCsv}>
+          <Download size={15} strokeWidth={2} aria-hidden="true" />
+          {$t.transactions.exportCsv}
+        </button>
       </div>
     </div>
   </div>
 {/if}
 
 <style>
-  .investment-detail {
+  .transactions-panel { overflow: visible; }
+
+  .transactions-head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--space-6) var(--space-4);
+  }
+
+  .identity {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  .logo-tile {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .eyebrow-label {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .identity h2 {
+    margin: 2px 0 0;
+    font-size: 20px;
+    font-weight: 750;
+  }
+
+  .balance {
+    display: grid;
+    justify-items: end;
+    gap: 2px;
+  }
+
+  .balance span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  .balance strong {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    white-space: nowrap;
+  }
+
+  .transactions-head .modal-close {
+    display: grid;
+    place-items: center;
+  }
+
+  .transactions-toolbar {
+    display: flex;
+    gap: var(--space-2);
+    padding: 0 var(--space-6) var(--space-4);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .menu-anchor { position: relative; }
+
+  .filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 32px;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .filter-chip.applied {
+    border-color: color-mix(in oklch, var(--accent) 30%, var(--border));
+    background: var(--accent-soft);
+  }
+
+  .filter-chip[aria-expanded="true"] { border-color: var(--fg); }
+  .filter-chip[aria-expanded="true"] :global(.chevron) { transform: rotate(180deg); }
+
+  .type-menu {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 8px);
+    left: 0;
+    display: grid;
+    width: 258px;
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: 0 18px 48px rgb(7 31 74 / 16%);
+  }
+
+  .menu-title,
+  .menu-note {
+    margin: 0;
+    padding: var(--space-2);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  .menu-note {
+    margin-top: var(--space-1);
+    border-top: 1px solid var(--border);
+    font-weight: 500;
+  }
+
+  .type-menu button {
+    display: grid;
+    grid-template-columns: 26px 1fr auto 18px;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: 38px;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .type-menu button:hover,
+  .type-menu button[aria-checked="true"] { background: var(--surface-soft); }
+  .type-menu button[data-flow="all"] { margin-bottom: var(--space-1); }
+
+  .flow-icon {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+  }
+
+  .flow-icon[data-flow="in"] { color: var(--success); }
+  .flow-icon[data-flow="out"] { color: var(--danger); }
+  .flow-count { color: var(--muted); font-size: 11px; }
+
+  .transactions-table td { vertical-align: middle; }
+  .transactions-table .date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  .description strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .detail {
     display: block;
     margin-top: 2px;
     color: var(--muted);
-    font-size: 0.85em;
-  }
-  .sort-button {
-    width: 100%;
-    min-height: 52px;
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    font-weight: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
+    font-size: 11px;
   }
 
-  .sort-button.right {
-    justify-content: flex-end;
-  }
-
-  .sort-button:hover,
-  .sort-button:focus-visible,
-  .sort-button.sorted {
-    color: var(--fg);
-    outline: none;
-  }
-
-  .sort-mark {
-    width: 10px;
-    height: 10px;
-    display: inline-grid;
-    place-items: center;
-    color: var(--accent);
-  }
-
-  .sort-mark::before {
-    content: "";
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid currentColor;
-    opacity: 0;
-  }
-
-  .sort-mark.active::before {
-    opacity: 1;
-  }
-
-  .sort-mark.asc::before {
-    transform: rotate(180deg);
-  }
-
-  .amount-positive {
-    color: var(--success);
-  }
-
-  .amount-negative {
-    color: var(--danger);
-  }
+  .amount-out { color: var(--danger); font-weight: 750; }
+  .amount-in { color: var(--success); font-weight: 750; }
 
   .amount-settled {
     text-decoration: line-through;
     text-decoration-thickness: 2px;
+  }
+
+  .note { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); text-align: center; }
+
+  .transactions-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-6);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .transactions-footer > span { margin-right: auto; }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    color: var(--fg);
+  }
+
+  .pager-step {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+
+  .pager-step:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+
+  .export {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 </style>
