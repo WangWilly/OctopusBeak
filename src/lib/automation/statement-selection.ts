@@ -6,7 +6,6 @@ export type StatementSelectionGroup = {
   enabledKey: string;
   statementSelectionKey: string;
   statementTypes: readonly StatementTypeCapability[];
-  verificationActorKey?: string;
 };
 
 type StatementSelectionFields = Pick<
@@ -88,7 +87,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "Fubon",
     enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR",
     statementTypes: types("deposit", "credit_card", "loan"),
   },
   esun: {
@@ -96,7 +94,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "ESun",
     enabledKey: "LIBRETTO_CLOUD_ESUN_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR",
     statementTypes: types("credit_card"),
   },
   yuanta: {
@@ -104,7 +101,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "Yuanta",
     enabledKey: "LIBRETTO_CLOUD_YUANTA_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_YUANTA_VERIFICATION_ACTOR",
     statementTypes: types(
       "deposit",
       "foreign_currency",
@@ -118,7 +114,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "Yuanta Trade",
     enabledKey: "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR",
     statementTypes: types("brokerage"),
   },
   cathay: {
@@ -126,7 +121,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "Cathay",
     enabledKey: "LIBRETTO_CLOUD_CATHAY_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR",
     statementTypes: types("domestic", "foreign_currency"),
   },
   hncb: {
@@ -134,7 +128,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "HNCB",
     enabledKey: "LIBRETTO_CLOUD_HNCB_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_HNCB_VERIFICATION_ACTOR",
     statementTypes: types("deposit"),
   },
   ctbc: {
@@ -142,7 +135,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "CTBC",
     enabledKey: "LIBRETTO_CLOUD_CTBC_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_CTBC_VERIFICATION_ACTOR",
     statementTypes: types("deposit"),
   },
   post: {
@@ -150,7 +142,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "Post Office",
     enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_POST_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_POST_VERIFICATION_ACTOR",
     statementTypes: types("deposit"),
   },
   sinopac: {
@@ -158,7 +149,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "SinoPac",
     enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR",
     statementTypes: types("accounts"),
   },
   linebank: {
@@ -166,7 +156,6 @@ export const BANK_STATEMENT_CAPABILITIES = {
     label: "LINE Bank",
     enabledKey: "LIBRETTO_CLOUD_LINEBANK_ENABLED",
     statementSelectionKey: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES",
-    verificationActorKey: "LIBRETTO_CLOUD_LINEBANK_VERIFICATION_ACTOR",
     statementTypes: types("accounts"),
   },
 } as const satisfies Record<string, StatementSelectionGroup>;

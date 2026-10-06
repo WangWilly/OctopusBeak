@@ -97,6 +97,11 @@ export function appWorkflowPageForSession(session: string): Page | null {
   return hostedPages.get(session)?.page ?? null;
 }
 
+/** Register a page the caller already owns, such as the development CLI's browser. */
+export function registerAppWorkflowPage(session: string, page: Page) {
+  return registerHostedPage(session, page, null);
+}
+
 /** Returns a run-scoped CDP descriptor without persisting or logging it. */
 export function appWorkflowBrowserConnectionForSession(
   session: string,

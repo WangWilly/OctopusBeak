@@ -65,22 +65,9 @@ function trackedDependencies(): { calls: string[]; dependencies: VerificationRou
   };
 }
 
-test("human verification actor leaves the challenge untouched", async () => {
-  const tracked = trackedDependencies();
-  assert.deepEqual(await routeVerificationActor({
-    actor: "human",
-    contract: captchaContract(),
-    taskRunId: "run-human",
-    confidenceThreshold: 0.9,
-    dependencies: tracked.dependencies,
-  }), { kind: "human" });
-  assert.deepEqual(tracked.calls, []);
-});
-
 test("solver route captures, validates, injects, and resumes through the declared seam", async () => {
   const tracked = trackedDependencies();
   assert.deepEqual(await routeVerificationActor({
-    actor: "solver",
     contract: captchaContract(),
     taskRunId: "run-solver",
     confidenceThreshold: 0.9,
@@ -104,7 +91,6 @@ test("audio capture opens exactly one CAPTCHA campaign round", async () => {
     expectedAnswerLength: 6,
   };
   assert.deepEqual(await routeVerificationActor({
-    actor: "solver",
     contract,
     taskRunId: "audio-run",
     confidenceThreshold: 0.9,
@@ -161,8 +147,7 @@ test("App verification uses its task-run ID and ignores legacy session text", as
     taskId: "sinopac-statements",
     taskRunId,
     provider,
-    // A stored human value is deliberately ignored by the host policy.
-    settings: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human" },
+    settings: {},
     solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
     providerVerification: {
       handlesChallengeImage: () => true,

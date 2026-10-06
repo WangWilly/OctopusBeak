@@ -1,4 +1,3 @@
-import type { VerificationActor } from "./verification-config.ts";
 import type { WorkflowRunEvent } from "./workflow-executor.ts";
 import type { CathayAppVerificationFailureReason } from "./verification-errors.ts";
 
@@ -39,23 +38,6 @@ const CATHAY_GMAIL_SETTINGS_REASONS: ReadonlySet<CathayAppVerificationFailureRea
   "gmail-authorization-failed",
   "gmail-token-invalid",
 ]);
-
-/** Missing or malformed host metadata must never reveal manual controls. */
-export function verificationActorForUiGroup(
-  credentialGroupId: string | null | undefined,
-  actorsByCredentialGroup: Readonly<Record<string, VerificationActor>> | null | undefined,
-): VerificationActor {
-  return credentialGroupId && actorsByCredentialGroup?.[credentialGroupId] === "human"
-    ? "human"
-    : "solver";
-}
-
-export function shouldOfferManualVerification(
-  credentialGroupId: string | null | undefined,
-  actorsByCredentialGroup: Readonly<Record<string, VerificationActor>> | null | undefined,
-): boolean {
-  return verificationActorForUiGroup(credentialGroupId, actorsByCredentialGroup) === "human";
-}
 
 /** Read only the finite, bounded reason codes emitted by the Cathay workflow. */
 export function cathayEmailOtpFailureReason(

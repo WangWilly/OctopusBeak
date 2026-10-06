@@ -1,8 +1,4 @@
-import type {
-  HumanAssistanceContract,
-  HumanAssistanceContractInput,
-} from "../human-assistance.ts";
-import { transformHumanAssistanceContract } from "../human-assistance.ts";
+import type { HumanAssistanceContract } from "../human-assistance.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
@@ -20,7 +16,6 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../yuanta-trade-captcha.ts";
 import {
-  refreshTargetRect,
   sendHumanVerificationInput,
   withViewerPage,
   type ViewerDialogAccess,
@@ -40,7 +35,6 @@ import {
 const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
 const YUANTA_TRADE_AUDIO_SEMANTIC_ID = "yuanta-trade.login.audio-challenge";
 const YUANTA_TRADE_AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
-const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
 export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
 const FUBON_CAPTCHA_INPUT_SEMANTIC_ID = "fubon.login.captcha-input";
@@ -62,22 +56,12 @@ type ProviderVerificationAdapter = {
   id: string;
   capabilityOwner?: ProviderVerificationCapabilityOwner;
   owns(contract: HumanAssistanceContract): boolean;
-  refreshTarget(
-    session: string,
-    contract: HumanAssistanceContract,
-  ): Promise<HumanAssistanceContractInput | null>;
   inspectCompletion(
     session: string,
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handleInput?: ViewerTargetInputHandler;
   probePostSubmit?: ProviderVerificationPostSubmitProbe;
-  shouldCheckCompletion(inputType: unknown, semanticId: unknown): boolean;
-  shouldAutoResume(
-    contract: HumanAssistanceContract,
-    targetId: unknown,
-    verified: boolean,
-  ): boolean;
 };
 
 export type ProviderVerificationPostSubmitOutcome =
@@ -119,10 +103,6 @@ export type ProviderVerificationHost = {
     session: string,
     contract: HumanAssistanceContract,
   ): Promise<Buffer | null>;
-  refreshTarget(
-    session: string,
-    contract: HumanAssistanceContract,
-  ): Promise<HumanAssistanceContractInput | null>;
   sendInput(
     session: string,
     rawInput: unknown,
@@ -143,24 +123,11 @@ export type ProviderVerificationHost = {
     session: string,
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
-  waitForCompletion(
-    session: string,
-    contract: HumanAssistanceContract,
-    attempts?: number,
-    intervalMs?: number,
-  ): Promise<boolean>;
-  shouldCheckCompletion(inputType: unknown, semanticId: unknown): boolean;
-  shouldAutoResume(
-    contract: HumanAssistanceContract,
-    targetId: unknown,
-    verified: boolean,
-  ): boolean;
 };
 
 export type ProviderVerificationDependencies = {
   withPage?: ProviderVerificationPageRunner;
   sendInput?: ProviderVerificationInputForwarder;
-  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
@@ -177,37 +144,6 @@ async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
     throw new Error("SinoPac CAPTCHA input is not visible.");
   }
   return { input, rect };
-}
-
-async function refreshCathayEmailOtpTarget(
-  withPage: ProviderVerificationPageRunner,
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  if (!contract.targets.some((target) => target.semanticId === "cathay.login.email-otp-input")) {
-    return null;
-  }
-  const rect = await withPage(session, async (page) => {
-    const otp = page.locator(CATHAY_EMAIL_OTP_SELECTOR).first();
-    if (!await otp.isVisible().catch(() => false)) return null;
-    return await otp.boundingBox().catch(() => null);
-  });
-  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-  return refreshTargetRect(contract, "cathay.login.email-otp-input", rect);
-}
-
-async function refreshSinopacCaptchaTarget(
-  withPage: ProviderVerificationPageRunner,
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  if (!contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID)) {
-    return null;
-  }
-  return withPage(session, async (page) => {
-    const { rect } = await visibleSinopacCaptchaInput(page);
-    return refreshTargetRect(contract, SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, rect);
-  });
 }
 
 const sinopacInputHandler: ViewerTargetInputHandler = async (page, input, target) => {
@@ -646,25 +582,6 @@ function yuantaCompletionSatisfied(
   return false;
 }
 
-function shouldCheckYuantaCompletion(inputType: unknown, semanticId: unknown) {
-  if (inputType !== "click") return false;
-  return semanticId === "yuanta-trade.login.captcha-checkbox"
-    || semanticId === "yuanta-trade.login.challenge-submit";
-}
-
-function shouldAutoResumeYuantaTradeCaptcha(
-  contract: HumanAssistanceContract,
-  targetId: unknown,
-  verified: boolean,
-) {
-  if (!verified || contract.stageId !== "yuanta-trade-captcha-checkbox") return false;
-  if (contract.completion.mode !== "independent") return false;
-  return contract.targets.some((target) => (
-    target.id === targetId
-    && target.semanticId === "yuanta-trade.login.captcha-checkbox"
-  ));
-}
-
 async function inspectYuantaCompletion(
   withPage: ProviderVerificationPageRunner,
   session: string,
@@ -695,72 +612,6 @@ async function inspectYuantaCompletion(
   });
 }
 
-async function inspectLineBankCompletion(
-  withPage: ProviderVerificationPageRunner,
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<boolean> {
-  if (contract.stageId !== "linebank-login-verification"
-    || contract.completion.mode !== "independent") return false;
-  return withPage(session, async (page) => {
-    const rawUrl = page.url?.();
-    if (!rawUrl) return false;
-    let url: URL;
-    try {
-      url = new URL(rawUrl);
-    } catch {
-      return false;
-    }
-    if (url.origin !== "https://accessibility.linebank.com.tw" || url.pathname === "/login") {
-      return false;
-    }
-    const marker = url.pathname === "/transaction"
-      ? page.locator("#account-dropdown:visible")
-      : page.locator('a[href="/transaction"]:visible');
-    return (await marker.count().catch(() => 0)) > 0;
-  });
-}
-
-async function refreshYuantaChallengeSubmitTarget(
-  withPage: ProviderVerificationPageRunner,
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<HumanAssistanceContractInput | null> {
-  const isChallengeStage = contract.targets.some(
-    (target) => target.semanticId === "yuanta-trade.login.challenge-control",
-  );
-  const alreadyDeclared = contract.targets.some((target) => target.id === "challenge-submit");
-  if (!isChallengeStage || alreadyDeclared) return null;
-
-  const submitRect = await withPage(session, async (page) => {
-    const challenge = page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR).first();
-    if (!await challenge.isVisible().catch(() => false)) return null;
-    const submit = challenge.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
-    if (!await submit.isVisible().catch(() => false)) return null;
-    return await submit.boundingBox().catch(() => null);
-  });
-  if (!submitRect || submitRect.width <= 0 || submitRect.height <= 0) return null;
-
-  return transformHumanAssistanceContract(contract, (input) => ({
-    ...input,
-    targets: [
-      ...input.targets,
-      {
-        id: "challenge-submit",
-        label: "Verify challenge",
-        semanticId: "yuanta-trade.login.challenge-submit",
-        modes: ["click"],
-        rect: submitRect,
-      },
-    ],
-    completion: {
-      ...input.completion,
-      targetIds: [...input.completion.targetIds, "challenge-submit"],
-      status: "pending",
-    },
-  }));
-}
-
 function createAdapters(
   withPage: ProviderVerificationPageRunner,
 ): readonly ProviderVerificationAdapter[] {
@@ -788,7 +639,6 @@ function createAdapters(
       id: "post",
       owns: contract => contract.stageId === "ipost-login-captcha"
         && contract.targets.some(target => target.semanticId === POST_CAPTCHA_INPUT_SEMANTIC_ID),
-      refreshTarget: async () => null,
       inspectCompletion: async () => false,
       handleInput: async (page, operation, target) => {
         if (target.semanticId !== POST_CAPTCHA_INPUT_SEMANTIC_ID) return false;
@@ -809,17 +659,6 @@ function createAdapters(
         }
         return false;
       },
-      shouldCheckCompletion: () => false,
-      shouldAutoResume: () => false,
-    },
-    {
-      id: "linebank",
-      owns: (contract) => contract.stageId === "linebank-login-verification"
-        && contract.targets.some((target) => target.semanticId === "linebank.login.page"),
-      refreshTarget: async () => null,
-      inspectCompletion: (session, contract) => inspectLineBankCompletion(withPage, session, contract),
-      shouldCheckCompletion: () => false,
-      shouldAutoResume: () => false,
     },
     {
       id: "fubon",
@@ -832,19 +671,13 @@ function createAdapters(
       owns: (contract) => contract.targets.some(
         (target) => target.semanticId === FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
       ),
-      refreshTarget: async () => null,
       inspectCompletion: async () => false,
       probePostSubmit: createFubonPostSubmitProbe(withPage),
-      shouldCheckCompletion: () => false,
-      shouldAutoResume: () => false,
     },
     {
       id: "cathay",
       owns: (contract) => contract.targets.some((target) => target.semanticId.startsWith("cathay.")),
-      refreshTarget: (session, contract) => refreshCathayEmailOtpTarget(withPage, session, contract),
       inspectCompletion: async () => false,
-      shouldCheckCompletion: () => false,
-      shouldAutoResume: () => false,
     },
     {
       id: "sinopac",
@@ -855,12 +688,9 @@ function createAdapters(
         sourceOwner: sinopacSourceOwner,
       },
       owns: (contract) => contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID),
-      refreshTarget: (session, contract) => refreshSinopacCaptchaTarget(withPage, session, contract),
       inspectCompletion: async () => false,
       handleInput: sinopacInputHandler,
       probePostSubmit: createSinopacPostSubmitProbe(withPage),
-      shouldCheckCompletion: () => false,
-      shouldAutoResume: () => false,
     },
     {
       id: "yuanta",
@@ -874,11 +704,8 @@ function createAdapters(
         target.semanticId.startsWith("yuanta-trade.")
         || target.semanticId.startsWith("yuanta-bank.")
       )),
-      refreshTarget: (session, contract) => refreshYuantaChallengeSubmitTarget(withPage, session, contract),
       inspectCompletion: (session, contract) => inspectYuantaCompletion(withPage, session, contract),
       probePostSubmit: createYuantaPostSubmitProbe(withPage),
-      shouldCheckCompletion: shouldCheckYuantaCompletion,
-      shouldAutoResume: shouldAutoResumeYuantaTradeCaptcha,
     },
   ];
 }
@@ -888,9 +715,6 @@ export function createProviderVerificationHost(
 ): ProviderVerificationHost {
   const withPage = dependencies.withPage ?? withViewerPage;
   const forwardInput = dependencies.sendInput ?? sendHumanVerificationInput;
-  const sleep = dependencies.sleep ?? ((milliseconds: number) => (
-    new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
-  ));
   const adapters = createAdapters(withPage);
   const capabilityRegistry = createProviderVerificationCapabilityRegistry(
     adapters.flatMap((adapter) => adapter.capabilityOwner ? [adapter.capabilityOwner] : []),
@@ -945,17 +769,6 @@ export function createProviderVerificationHost(
       if (!bytes || bytes.length === 0) return null;
       return Buffer.from(bytes);
     });
-  };
-
-  const refreshTarget = async (
-    session: string,
-    contract: HumanAssistanceContract,
-  ): Promise<HumanAssistanceContractInput | null> => {
-    for (const adapter of matchingAdapters(contract)) {
-      const refreshed = await adapter.refreshTarget(session, contract);
-      if (refreshed) return refreshed;
-    }
-    return null;
   };
 
   const sendInput = (
@@ -1014,36 +827,16 @@ export function createProviderVerificationHost(
     return false;
   };
 
-  const waitForCompletion = async (
-    session: string,
-    contract: HumanAssistanceContract,
-    attempts = 12,
-    intervalMs = 100,
-  ) => {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (await inspectCompletion(session, contract)) return true;
-      if (attempt < attempts - 1) await sleep(intervalMs);
-    }
-    return false;
-  };
-
   return {
     captureChallengeImage,
     isChallengeImageCurrent,
     handlesChallengeImage,
     handlesChallengeAudio,
     captureChallengeAudio,
-    refreshTarget,
     sendInput,
     injectAnswer,
     probePostSubmit,
     inspectCompletion,
-    waitForCompletion,
-    shouldCheckCompletion: (inputType, semanticId) =>
-      adapters.some((adapter) => adapter.shouldCheckCompletion(inputType, semanticId)),
-    shouldAutoResume: (contract, targetId, verified) =>
-      matchingAdapters(contract).some((adapter) =>
-        adapter.shouldAutoResume(contract, targetId, verified)),
   };
 }
 
@@ -1052,13 +845,6 @@ const defaultHost = createProviderVerificationHost();
 export const captureProviderVerificationImage = defaultHost.captureChallengeImage;
 export const isProviderVerificationImageCurrent = defaultHost.isChallengeImageCurrent;
 export const providerVerificationHandlesChallengeImage = defaultHost.handlesChallengeImage;
-export const providerVerificationHandlesChallengeAudio = defaultHost.handlesChallengeAudio;
 export const captureProviderVerificationAudio = defaultHost.captureChallengeAudio;
-export const refreshProviderVerificationTarget = defaultHost.refreshTarget;
-export const sendProviderVerificationInput = defaultHost.sendInput;
 export const injectProviderVerificationAnswer = defaultHost.injectAnswer;
 export const probeProviderVerificationPostSubmit = defaultHost.probePostSubmit;
-export const inspectProviderVerificationCompletion = defaultHost.inspectCompletion;
-export const waitForProviderVerificationCompletion = defaultHost.waitForCompletion;
-export const shouldCheckProviderVerificationCompletion = defaultHost.shouldCheckCompletion;
-export const shouldAutoResumeProviderVerification = defaultHost.shouldAutoResume;

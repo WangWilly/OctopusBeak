@@ -1,6 +1,8 @@
 # Automatic CAPTCHA verification (solve + judge)
 
-Status: accepted
+Status: accepted; human actor superseded by [ADR 0039](0039-solver-only-verification.md)
+
+ADR 0039 removed the development-only `human` Verification Actor, its `LIBRETTO_CLOUD_*_VERIFICATION_ACTOR` overrides, and Assist. `solver` is the only actor, in every build. The text below records the original two-actor decision. Its solver rules, the confidence threshold, privacy, and fail-closed behavior remain in force.
 
 The first version solves CAPTCHA verification automatically in addition to the existing human assistance path: a workflow still declares one verification challenge, but a `solver` Verification Actor — a local OCR or speech model run by the automation host — reads challenge media and returns an answer with a confidence score, which the host injects via CDP when it meets the challenge's threshold. The two actors are mutually exclusive within one run: a solver run never falls back to human assistance, and the actor is chosen per supported source. The user-facing App always uses `solver`, ignoring persisted or environment-provided `human` overrides in packaged builds. Only an unpackaged development build may select `human`, using a per-source process environment variable such as `LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR=human`; persisted settings cannot enable manual verification. ADR 0015 governs the bounded ten-round campaign after same-media solve attempts are exhausted. Declared text and audio CAPTCHAs are solved automatically; image-selection requires an explicitly supported local vision engine, and Yuanta Trade uses audio instead of its unsupported image challenge (ADR 0019). A checkbox is an ordinary declared click, not a solver task. "Judging" means detecting whether the challenge actually appears, while final correctness remains the login outcome.
 

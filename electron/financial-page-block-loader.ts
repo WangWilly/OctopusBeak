@@ -159,8 +159,8 @@ function projectRouteBlockData(
     if (block === "summary" || block === "chart") return pick(record, ["canonical", "purchaseReport"]);
     return pick(record, ["canonical", "purchaseReport", "invoices"]);
   }
-  if (block === "summary") return pick(record, ["automation", "verificationActorsByCredentialGroup", "runtimeSessionId", "runtimeRevision"]);
-  return pick(record, ["automation", "verificationActorsByCredentialGroup", "credentialGroups", "runtimeSessionId", "runtimeRevision"]);
+  if (block === "summary") return pick(record, ["automation", "runtimeSessionId", "runtimeRevision"]);
+  return pick(record, ["automation", "credentialGroups", "runtimeSessionId", "runtimeRevision"]);
 }
 
 function pick(record: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {

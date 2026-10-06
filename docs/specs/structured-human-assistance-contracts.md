@@ -1,5 +1,9 @@
 # Structured Human Assistance Contracts for Verification Workflows
 
+Status: Superseded for the human actor by [ADR 0039](../adr/0039-solver-only-verification.md). [ADR 0012](../adr/0012-automatic-captcha-verification.md) earlier reversed this spec's out-of-scope line on automatic solving.
+
+The product no longer has human verification, Assist, or manual Resume. The structured contract survives as the solver's verification contract, under its original code names (`HumanAssistanceContract`, the `humanAssistance` port, and the `waiting_for_human` status). The rules that still hold are the one-stage-at-a-time contract, declared targets and interaction modes, explicit completion policy, stale-version rejection, fail-safe handling of missing contracts, and keeping raw verification input and challenge images out of persistent records. Everything about a person using Assist, including the user stories, focus view, pan and zoom, Resume gating, and legacy waiting runs, is historical. For current behavior, see the [App-owned workflow runtime contract](app-owned-workflow-runtime.md).
+
 ## Problem Statement
 
 The current Assist flow treats human interaction as a generic browser-viewer interaction instead of a workflow-declared verification step.

@@ -111,7 +111,7 @@ await seedDesktopCdpFixture(
   { includeCathayVerificationFailure: true },
 );
 const verificationSettings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
-assert.equal(verificationSettings.LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR, "human");
+assert.equal(Object.hasOwn(verificationSettings, "LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR"), false);
 assert.equal(verificationSettings.LIBRETTO_CLOUD_CATHAY_ENABLED, true);
 const verificationDb = await PGlite.create({ dataDir: join(root, "data", "pglite") });
 const cathayFixture = (await verificationDb.query(`

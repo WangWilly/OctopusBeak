@@ -19,7 +19,10 @@ import {
   runAutomationTaskExecution,
   abortActiveAppWorkflowExecutions,
 } from "./task-run-execution.ts";
-import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
+import {
+  registerAppWorkflowHumanAssistanceRequestHandler,
+  resumeAppWorkflowHumanAssistance,
+} from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
 import {
@@ -29,11 +32,10 @@ import {
 import { finalizeAutomationTaskRun } from "./task-run-finalization.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
-import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
-type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel" | "validation-failure" | "product-invariant";
+type WorkerScenario = "assistance-completion" | "commit-crash" | "commit-cancel" | "validation-failure" | "product-invariant";
 
 const assistanceContract = {
   stageId: "verification",
@@ -100,7 +102,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
         });
         return;
       }
-      if (this.scenario === "human-completion" && frame.eventId === "worker-start-event") {
+      if (this.scenario === "assistance-completion" && frame.eventId === "worker-start-event") {
         setImmediate(() => this.emit("message", {
           protocolVersion: 2,
           kind: "human-assistance-request",
@@ -126,14 +128,14 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           });
           this.emit("exit", 1);
         });
-      } else if (this.scenario !== "human-completion" && frame.eventId === "worker-commit-started") {
+      } else if (this.scenario !== "assistance-completion" && frame.eventId === "worker-commit-started") {
         if (this.scenario === "commit-crash") {
           setImmediate(() => {
             this.emit("error", new Error("untrusted provider detail"));
             this.emit("exit", 1);
           });
         }
-      } else if (this.scenario !== "human-completion" && frame.eventId === "worker-start-event") {
+      } else if (this.scenario !== "assistance-completion" && frame.eventId === "worker-start-event") {
         const start = this.workerData as AppWorkflowWorkerStart;
         setImmediate(() => this.emit("message", {
           protocolVersion: 2,
@@ -150,7 +152,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
       return;
     }
     if (frame.kind === "human-assistance-response") {
-      if (this.scenario === "human-completion") {
+      if (this.scenario === "assistance-completion") {
         const start = this.workerData as AppWorkflowWorkerStart;
         setImmediate(() => {
           this.emit("message", frame.status === "entered"
@@ -397,6 +399,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   const persistedEvents = new Set<string>();
+  let unregisterRoute: (() => void) | undefined;
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
@@ -470,7 +473,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.ok(startData.browserConnection.targetId.length > 0);
       assert.equal(taskRunId, startData.taskRunId);
 
-      if (scenario === "human-completion") {
+      if (scenario === "assistance-completion") {
         const waitingDeadline = Date.now() + 10_000;
         while (Date.now() < waitingDeadline) {
           const run = await provider.automation.taskRunById(taskRunId);
@@ -499,11 +502,10 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
 
-    configureHostVerificationActorPolicy({
-      isPackaged: false,
-      env: { LIBRETTO_CLOUD_CTBC_VERIFICATION_ACTOR: "human" },
-    });
-    const completed = await runScenario("human-completion");
+    // The test resumes the stage itself; the registered route only keeps it
+    // from failing closed as unrouted.
+    unregisterRoute = registerAppWorkflowHumanAssistanceRequestHandler(task.id, () => {});
+    const completed = await runScenario("assistance-completion");
     assert.equal(completed.result.status, "completed");
     assert.equal(completed.run?.status, "completed");
     assert.ok(completed.run?.events.some((event) => event.code === "worker-check-started"));
@@ -520,7 +522,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(cancelled.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.equal(cancelled.run?.signal, null, "cancelling during commit preserves the unknown outcome");
   } finally {
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
+    unregisterRoute?.();
     await store.close();
   }
 });

@@ -501,11 +501,6 @@
     return {
       automation: details?.automation ?? source.automation,
       credentialGroups: details?.credentialGroups ?? list?.credentialGroups ?? [],
-      verificationActorsByCredentialGroup:
-        details?.verificationActorsByCredentialGroup
-        ?? list?.verificationActorsByCredentialGroup
-        ?? summary?.verificationActorsByCredentialGroup
-        ?? {},
     };
   }
 
@@ -1204,7 +1199,6 @@
       bind:this={automationDashboard}
       automation={automationRenderValue.automation}
       credentialGroups={automationRenderValue.credentialGroups}
-      verificationActorsByCredentialGroup={automationRenderValue.verificationActorsByCredentialGroup}
       blocks={activeBlocks}
       runtimeSnapshot={automationRuntimeSnapshot}
       runtimeController={automationRuntimeController}

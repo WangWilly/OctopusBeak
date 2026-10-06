@@ -12,7 +12,6 @@ assert.equal(octopusBeakApiChannels.includes("spending:revokeLink"), true);
 assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:resumeHumanAssistance"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
 assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
 assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:resume"), false);
@@ -29,13 +28,23 @@ assert.match(source, /ipcMain\.handle\("spending:denyCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:revokeLink"/);
 assert.match(source, /ipcMain\.handle\("data:getVersion"/);
 assert.match(source, /ipcMain\.handle\("data:acknowledgeVersion"/);
-assert.match(source, /ipcMain\.handle\("automation:resumeHumanAssistance"/);
 assert.match(source, /ipcMain\.handle\("automation:forceTerminate",[\s\S]*?automationForceTerminate\(taskId, operationalProvider, expectedRunId\)/);
 assert.match(source, /ipcMain\.handle\("automation:cancel",[\s\S]*?automationCancel\(taskId, operationalProvider, expectedRunId\)/);
 assert.doesNotMatch(source, /ipcMain\.handle\("automation:forceQuit"/);
 assert.doesNotMatch(source, /forceQuitHumanSessionForTask/);
 assert.doesNotMatch(source, /terminateAutomationTaskProcesses/);
 assert.doesNotMatch(source, /ipcMain\.handle\("automation:resume"/);
+for (const channel of [
+  "automation:resumeHumanAssistance",
+  "automation:viewerScreenshot",
+  "automation:viewerInspect",
+  "automation:viewerInput",
+  "automation:viewerCompletionCheck",
+]) {
+  assert.equal((octopusBeakApiChannels as readonly string[]).includes(channel), false);
+  assert.doesNotMatch(source, new RegExp(`ipcMain\\.handle\\(\\s*"${channel}"`));
+}
+assert.doesNotMatch(source, /assertManualVerificationAllowedForTask|human-session/);
 assert.match(source, /data:invalidated/);
 assert.match(
   source,
@@ -80,23 +89,6 @@ assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/
 assert.match(source, /ipcMain\.handle\(\s*"automation:disconnectCathayGmailOtp"/);
 assert.match(source, /typeof enabled !== "boolean"/);
 assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
-assert.match(
-  source,
-  /shouldCheckProviderVerificationCompletion\(\s*record\.type,\s*clickedTarget\?\.semanticId/,
-);
-assert.match(
-  source,
-  /await refreshProviderVerificationTarget\(session, contract\)/,
-);
-assert.match(
-  source,
-  /await sendProviderVerificationInput\(session, input, refreshedContract\)/,
-);
-assert.match(
-  source,
-  /await refreshProviderVerificationTarget\(\s*session,\s*refreshedContract,?\s*\)/,
-);
-assert.match(source, /shouldAutoResumeProviderVerification\(/);
 assert.doesNotMatch(source, /refreshCathayEmailOtpTarget|refreshSinopacCaptchaTarget|refreshYuantaTradeChallengeSubmitTarget/);
 assert.doesNotMatch(source, /shouldCheckYuantaTradeCompletion|shouldAutoResumeYuantaTradeCaptcha/);
 

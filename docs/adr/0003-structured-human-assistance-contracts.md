@@ -1,6 +1,8 @@
 # Structured human assistance contracts for verification workflows
 
-Status: accepted
+Status: superseded by [ADR 0039](0039-solver-only-verification.md) for the human actor
+
+ADR 0039 removed human verification, Assist, and manual Resume. The structured contract below survives as the solver's verification contract: one versioned stage, declared targets and interaction modes, a completion rule, stale-version rejection, fail-safe validation, and session-only verification input. The parts about Assist presentation, a person's pan, zoom, and keyboard paths, Resume, and legacy waiting runs are historical.
 
 ## Decision
 

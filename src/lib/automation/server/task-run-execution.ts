@@ -10,7 +10,6 @@ import {
   isTerminalTaskRunStatus,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
-import { automationGroupVerificationActors } from "./settings.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
@@ -105,14 +104,6 @@ export type AutomationTaskExecutionOptions = {
     onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
   }) => WorkflowBrowserPort;
 };
-
-function requiresSolverRoute(
-  execution: AutomationTaskRunExecution,
-  _options: AutomationTaskExecutionOptions,
-) {
-  const groupId = execution.task.credentialGroupId;
-  return automationGroupVerificationActors()[groupId ?? ""] !== "human";
-}
 
 function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEvent["stage"] | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -350,7 +341,6 @@ async function executeInlineAppWorkflow(
           taskRunId: execution.run.taskRunId,
           persistence: execution.persistence,
           onRuntimeUpdate: execution.onRuntimeUpdate,
-          requireSolverRoute: requiresSolverRoute(execution, options),
         }),
       ...(financialCommit ? { financialCommit } : {}),
       events: injectedPorts.events ?? {
@@ -586,7 +576,6 @@ async function executeSupervisedAppWorkflow(
       taskRunId: execution.run.taskRunId,
       persistence: execution.persistence,
       onRuntimeUpdate: execution.onRuntimeUpdate,
-      requireSolverRoute: requiresSolverRoute(execution, options),
     });
     if (!options.verificationRouteOwnedByCampaign) {
       unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(

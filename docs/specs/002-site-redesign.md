@@ -20,7 +20,7 @@ Approved visual target: [octopusbeak-site-redesign-target.png](../assets/octopus
 - Keep site motion restrained. The demo may move; the surrounding page should remain calm.
 - Reserve a muted demo-video area with controls and a poster image derived from
   the final footage.
-- Demo story: scattered accounts → automatic collection → human verification when needed → traceable financial overview.
+- Demo story: scattered accounts → automatic collection → automatic verification when needed → traceable financial overview.
 - On mobile, preserve the full narrative and use a readable poster with tap-to-play behavior.
 - Respect `prefers-reduced-motion`.
 

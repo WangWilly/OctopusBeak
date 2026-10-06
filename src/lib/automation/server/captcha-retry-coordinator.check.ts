@@ -10,7 +10,7 @@ import { readAutomationSettings } from "./settings.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 
-test("non-browser workflow fails closed on a legacy human-pause result without routing or retrying", async () => {
+test("non-browser workflow fails closed on a legacy waiting_for_human result without routing or retrying", async () => {
   const store = new PGliteStore(await PGlite.create());
   try {
     await applyPgliteOperationalBaseline(store);
@@ -34,7 +34,7 @@ test("non-browser workflow fails closed on a legacy human-pause result without r
       isCancellationRequested: () => false,
       routeWaitingRunVerification: async () => {
         verificationRoutes += 1;
-        return { kind: "human" };
+        return { kind: "resumed" };
       },
       async execute() {
         executions += 1;

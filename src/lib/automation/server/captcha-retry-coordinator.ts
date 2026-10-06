@@ -16,6 +16,9 @@ import {
   type AutomationPersistenceProvider,
 } from "./store.ts";
 import {
+  WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
+  appProviderPostSubmitProbe,
+  appWorkflowRoutesVerification,
   routeWaitingRunVerification,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
@@ -23,17 +26,15 @@ import {
   registerAppWorkflowHumanAssistanceRequestHandler,
   resumeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
-import type {
-  ProviderVerificationHost,
-} from "./provider-verification.ts";
-import { probeProviderVerificationPostSubmit } from "./provider-verification.ts";
-import { appWorkflowPageForSession } from "./app-browser-host.ts";
 import {
   type AutomationTaskExecutionOptions,
 } from "./task-run-execution.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
-import { routeYuantaTradeAppAssistanceRequest } from "./yuanta-trade-assistance.ts";
+import {
+  YUANTA_TRADE_APP_TASK_ID,
+  routeYuantaTradeAppAssistanceRequest,
+} from "./yuanta-trade-assistance.ts";
 
 type CaptchaRetryExecutionResult = Awaited<
   ReturnType<typeof runAutomationTaskExecution>
@@ -62,20 +63,6 @@ export type CaptchaRetryCoordinatorDependencies = {
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
 };
-
-function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
-  return async (viewerKey, contract, resume) =>
-    await probeProviderVerificationPostSubmit(
-      viewerKey,
-      contract,
-      resume,
-      async () => {
-        const page = appWorkflowPageForSession(viewerKey);
-        if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
-        await page.context().close();
-      },
-    );
-}
 
 function processResultOf(execution: CaptchaRetryExecutionResult) {
   return "result" in execution ? execution.result : null;
@@ -191,14 +178,6 @@ async function prepareCaptchaRetryRound(
 }
 
 const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
-const TEXT_CAPTCHA_APP_TASK_IDS = new Set([
-  "fubon-all-statements",
-  "yuanta-all-statements",
-  "hncb-statements",
-  "post-statements",
-  "einvoice-personal-invoices",
-  "sinopac-statements",
-]);
 
 /**
  * Coordinate App CAPTCHA campaigns around single workflow executions.
@@ -225,15 +204,9 @@ export async function runCaptchaRetryCampaign(
   }
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const routesYuantaTradeCaptcha = taskId === "yuanta-trade-statements";
-  const routesCaptcha = appWorkflow && (
-    TEXT_CAPTCHA_APP_TASK_IDS.has(taskId) || routesYuantaTradeCaptcha
-  );
-  // These providers classify submission results inside the workflow. Join the
-  // completed execution instead of racing a second owner of browser dialogs.
-  const workflowOwnsCaptchaOutcome = new Set([
-    "sinopac-statements", "post-statements", "einvoice-personal-invoices", "yuanta-all-statements",
-  ]).has(taskId);
+  const routesYuantaTradeCaptcha = taskId === YUANTA_TRADE_APP_TASK_ID;
+  const routesCaptcha = appWorkflow && appWorkflowRoutesVerification(taskId);
+  const workflowOwnsCaptchaOutcome = WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(taskId);
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
   const executeAppCaptchaAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
@@ -277,7 +250,7 @@ export async function runCaptchaRetryCampaign(
                     settings: launchVerificationSettings,
                     route,
                     routeOptions: { onChallengeCaptured },
-                  }) ?? { kind: "human" as const }
+                  })
                 : await route({
                 taskId,
                 taskRunId: request.taskRunId,
@@ -314,6 +287,7 @@ export async function runCaptchaRetryCampaign(
                 onChallengeCaptured,
                 settings: launchVerificationSettings,
               });
+              if (!routeOutcome) return;
               routing = routeOutcome;
               if (
                 routing.kind === "retryable"

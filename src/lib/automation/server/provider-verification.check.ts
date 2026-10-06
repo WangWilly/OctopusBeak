@@ -12,8 +12,6 @@ import {
 import {
   createProviderVerificationHost,
   FUBON_CAPTCHA_IMAGE_SELECTOR,
-  shouldAutoResumeProviderVerification,
-  shouldCheckProviderVerificationCompletion,
   type ProviderVerificationPageRunner,
 } from "./provider-verification.ts";
 import {
@@ -112,32 +110,6 @@ function fakePage(locators: Record<string, FakeLocator>) {
 function pageRunner(page: never): ProviderVerificationPageRunner {
   return async (_session, action) => action(page);
 }
-
-test("LINE Bank verification completes only with a visible authenticated marker", async () => {
-  const verification = contract("linebank.login.page", {
-    stageId: "linebank-login-verification",
-    completion: {
-      mode: "independent",
-      targetIds: ["verification-target"],
-      status: "pending",
-    },
-  });
-  let signedIn = false;
-  const host = createProviderVerificationHost({
-    withPage: pageRunner({
-      url: () => signedIn
-        ? "https://accessibility.linebank.com.tw/"
-        : "https://accessibility.linebank.com.tw/login",
-      locator: (selector: string) => {
-        assert.equal(selector, 'a[href="/transaction"]:visible');
-        return fakeLocator({ count: signedIn ? 1 : 0, visible: signedIn });
-      },
-    } as never),
-  });
-  assert.equal(await host.inspectCompletion("session", verification), false);
-  signedIn = true;
-  assert.equal(await host.inspectCompletion("session", verification), true);
-});
 
 function yuantaBankCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
   return contract("yuanta-bank.login.captcha-input", {
@@ -297,168 +269,6 @@ async function withFakeInputElement<T>(action: () => Promise<T>) {
   }
 }
 
-function metadata() {
-  return {
-    challengeKind: "text-captcha" as const,
-    challengeImageRegion: {
-      id: "challenge-image",
-      label: "Challenge image",
-      semanticId: "verification.challenge-image",
-      rect: { x: 100, y: 200, width: 120, height: 48 },
-    },
-    charset: "digits" as const,
-    imagePreprocessing: ["remove-interference-lines"] as const,
-    ocrPageSegmentationMode: "single-word" as const,
-    ocrAttemptPlan: [
-      { ocrPageSegmentationMode: "single-word" },
-      { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
-    ] as const,
-    solverConfidenceThreshold: 0.8,
-    expectedAnswerLength: 5,
-    prompt: "Enter the digits shown.",
-  };
-}
-
-test("the host routes completion checks to the provider adapter", () => {
-  assert.equal(
-    shouldCheckProviderVerificationCompletion(
-      "click",
-      "yuanta-trade.login.captcha-checkbox",
-    ),
-    true,
-  );
-  assert.equal(
-    shouldCheckProviderVerificationCompletion(
-      "click",
-      "yuanta-trade.login.challenge-submit",
-    ),
-    true,
-  );
-  assert.equal(
-    shouldCheckProviderVerificationCompletion(
-      "type",
-      "yuanta-trade.login.challenge-submit",
-    ),
-    false,
-  );
-  assert.equal(
-    shouldCheckProviderVerificationCompletion(
-      "click",
-      "cathay.login.email-otp-input",
-    ),
-    false,
-  );
-  assert.equal(
-    shouldCheckProviderVerificationCompletion(
-      "click",
-      "sinopac.login.captcha-input",
-    ),
-    false,
-  );
-});
-
-test("only the independent provider stage can auto-resume after verification", () => {
-  assert.equal(
-    shouldAutoResumeProviderVerification(
-      contract("yuanta-trade.login.captcha-checkbox", {
-        stageId: "yuanta-trade-captcha-checkbox",
-        completion: {
-          mode: "independent",
-          targetIds: ["verification-target"],
-          status: "pending",
-        },
-      }),
-      "verification-target",
-      true,
-    ),
-    true,
-  );
-  assert.equal(
-    shouldAutoResumeProviderVerification(
-      contract("yuanta-trade.login.captcha-checkbox", {
-        stageId: "yuanta-trade-captcha-checkbox",
-        completion: {
-          mode: "independent",
-          targetIds: ["verification-target"],
-          status: "pending",
-        },
-      }),
-      "verification-target",
-      false,
-    ),
-    false,
-  );
-  assert.equal(
-    shouldAutoResumeProviderVerification(
-      contract("yuanta-trade.login.captcha-checkbox", {
-        stageId: "other-stage",
-      }),
-      "verification-target",
-      true,
-    ),
-    false,
-  );
-  assert.equal(
-    shouldAutoResumeProviderVerification(
-      contract("cathay.login.email-otp-input"),
-      "verification-target",
-      true,
-    ),
-    false,
-  );
-});
-
-test("Cathay refresh resolves the live OTP geometry and preserves the contract metadata", async () => {
-  const refreshedRect = { x: 30, y: 40, width: 120, height: 32 };
-  const otp = fakeLocator({ rect: refreshedRect });
-  const host = createProviderVerificationHost({
-    withPage: pageRunner(fakePage({ "#OtpMailPassword": otp })),
-  });
-  const input = await host.refreshTarget(
-    "session-cathay",
-    contract("cathay.login.email-otp-input", metadata()),
-  );
-  assert.equal(input?.targets[0]?.rect?.y, 40);
-  assert.deepEqual(input?.challengeImageRegion, metadata().challengeImageRegion);
-  assert.equal(input?.challengeKind, "text-captcha");
-  assert.equal(input?.charset, "digits");
-  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
-  assert.equal(input?.ocrPageSegmentationMode, "single-word");
-  assert.deepEqual(input?.ocrAttemptPlan, metadata().ocrAttemptPlan);
-  assert.equal(input?.solverConfidenceThreshold, 0.8);
-  assert.equal(input?.expectedAnswerLength, 5);
-  assert.equal(input?.prompt, "Enter the digits shown.");
-});
-
-test("SinoPac refresh resolves the live CAPTCHA geometry", async () => {
-  const selectors: string[] = [];
-  const inputLocator = fakeLocator({
-    rect: { x: 50, y: 60, width: 122, height: 35 },
-  });
-  const host = createProviderVerificationHost({
-    withPage: async (_session, action) => action({
-      locator(selector: string) {
-        selectors.push(selector);
-        return inputLocator;
-      },
-    } as never),
-  });
-  const input = await host.refreshTarget(
-    "session-sinopac",
-    contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, metadata()),
-  );
-  assert.equal(input?.targets[0]?.rect?.y, 60);
-  assert.deepEqual(selectors, [SINOPAC_CAPTCHA_INPUT_SELECTOR]);
-  assert.deepEqual(input?.challengeImageRegion, metadata().challengeImageRegion);
-  assert.equal(input?.charset, "digits");
-  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
-  assert.equal(input?.ocrPageSegmentationMode, "single-word");
-  assert.deepEqual(input?.ocrAttemptPlan, metadata().ocrAttemptPlan);
-  assert.equal(input?.solverConfidenceThreshold, 0.8);
-  assert.equal(input?.expectedAnswerLength, 5);
-  assert.equal(input?.prompt, "Enter the digits shown.");
-});
-
 test("SinoPac adapter owns selector-backed click and fill operations", async () => {
   const clicks: string[] = [];
   const fills: string[] = [];
@@ -554,7 +364,6 @@ test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", a
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac",
@@ -591,7 +400,6 @@ test("Fubon host probe treats the exact in-page 0290 CAPTCHA response as provide
         } as never;
       },
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-fubon-0290",
@@ -626,7 +434,6 @@ test("Fubon host probe follows a replaced login frame to the 0290 response", asy
         return frame(replacementVisible) as never;
       },
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-fubon-replaced-frame",
@@ -663,7 +470,6 @@ test("Fubon host probe does not retry other login responses", async () => {
           },
         } as never),
       } as never),
-      sleep: async () => {},
     });
     await assert.rejects(host.probePostSubmit(
       "session-fubon-other-error",
@@ -689,7 +495,6 @@ test("Fubon host probe refuses a 0290 response already visible before submission
         },
       } as never),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-fubon-stale-0290",
@@ -708,7 +513,6 @@ test("SinoPac host probe keeps a proven rejection when resume fails after the di
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac",
@@ -734,7 +538,6 @@ test("SinoPac host probe recognizes only the exact provider CAPTCHA wording", as
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac",
@@ -759,7 +562,6 @@ test("SinoPac host probe accepts the bank FAQ wording without a terminal full st
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac-faq-wording",
@@ -790,7 +592,6 @@ test("SinoPac host probe fails closed for near-match and account-lock wording", 
         onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
         offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
       } as never),
-      sleep: async () => {},
     });
     const outcome = await host.probePostSubmit(
       "session-sinopac-unknown-dialog",
@@ -821,7 +622,6 @@ test("SinoPac host fails closed before resume when dialog hooks are unavailable"
   let cleanupCalls = 0;
   const host = createProviderVerificationHost({
     withPage: async (_session, action) => action({} as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac-missing-hooks",
@@ -842,7 +642,6 @@ test("SinoPac host fails closed before resume when cleanup capability is unavail
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac-missing-cleanup",
@@ -865,7 +664,6 @@ test("SinoPac host joins cleanup before returning a CAPTCHA rejection", async ()
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcomePromise = host.probePostSubmit(
     "session-sinopac-stalled-resume",
@@ -905,7 +703,6 @@ test("SinoPac host fails closed when dialog dismissal exceeds its bound", async 
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcomePromise = host.probePostSubmit(
     "session-sinopac-delayed-dismiss",
@@ -936,7 +733,6 @@ test("SinoPac host fails closed when dialog dismissal rejects", async () => {
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcomePromise = host.probePostSubmit(
     "session-sinopac-failed-dismiss",
@@ -966,7 +762,6 @@ test("SinoPac host probe fails closed for a non-CAPTCHA dialog", async () => {
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac",
@@ -995,7 +790,6 @@ test("SinoPac host probe returns normal completion when the resumed workflow suc
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-sinopac-success",
@@ -1016,7 +810,6 @@ test("Yuanta host probe routes the observed CAPTCHA rejection to the retry campa
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcome = await host.probePostSubmit(
     "session-yuanta",
@@ -1048,7 +841,6 @@ test("Yuanta host probe fails closed for an unrecognized or non-CAPTCHA dialog",
         onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
         offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
       } as never),
-      sleep: async () => {},
     });
     const outcomePromise = host.probePostSubmit(
       "session-yuanta-unknown",
@@ -1079,7 +871,6 @@ test("Yuanta host probe joins cleanup before returning the observed rejection", 
       onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
       offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
     } as never),
-    sleep: async () => {},
   });
   const outcomePromise = host.probePostSubmit(
     "session-yuanta-stalled-resume",
@@ -1438,65 +1229,4 @@ test("Yuanta completion inspection evaluates the checkbox and challenge probe", 
     });
     assert.equal(await host.inspectCompletion("session-yuanta", verificationContract), true);
   });
-});
-
-test("Yuanta refresh adds the dynamic submit target and preserves all metadata", async () => {
-  const refreshedRect = { x: 280, y: 290, width: 90, height: 34 };
-  const host = createProviderVerificationHost({
-    withPage: pageRunner(yuantaPage({
-      challengeVisible: true,
-      submitVisible: true,
-      submitRect: refreshedRect,
-    })),
-  });
-  const verificationContract = contract("yuanta-trade.login.challenge-control", {
-    stageId: "yuanta-trade-challenge",
-    completion: {
-      mode: "independent",
-      targetIds: ["verification-target"],
-      status: "pending",
-    },
-    ...metadata(),
-  });
-  const input = await host.refreshTarget("session-yuanta", verificationContract);
-  const submit = input?.targets.find((target) => target.id === "challenge-submit");
-  assert.deepEqual(submit?.rect, refreshedRect);
-  assert.deepEqual(input?.completion.targetIds, ["verification-target", "challenge-submit"]);
-  assert.equal(input?.completion.status, "pending");
-  assert.equal(input?.challengeKind, "text-captcha");
-  assert.deepEqual(input?.challengeImageRegion, verificationContract.challengeImageRegion);
-  assert.equal(input?.charset, "digits");
-  assert.deepEqual(input?.imagePreprocessing, ["remove-interference-lines"]);
-  assert.equal(input?.ocrPageSegmentationMode, "single-word");
-  assert.equal(input?.solverConfidenceThreshold, 0.8);
-  assert.equal(input?.expectedAnswerLength, 5);
-  assert.equal(input?.prompt, "Enter the digits shown.");
-});
-
-test("Yuanta completion polling uses the injected wait seam", async () => {
-  let inspections = 0;
-  const host = createProviderVerificationHost({
-    withPage: async (_session, action) => {
-      inspections += 1;
-      return action(yuantaPage({
-        checkboxChecked: false,
-        challengeVisible: inspections === 1,
-      }));
-    },
-    sleep: async () => {},
-  });
-  const verificationContract = contract("yuanta-trade.login.challenge-control", {
-    completion: {
-      mode: "independent",
-      targetIds: ["verification-target"],
-      status: "pending",
-    },
-  });
-  await withFakeInputElement(async () => {
-    assert.equal(
-      await host.waitForCompletion("session-yuanta", verificationContract, 3, 0),
-      true,
-    );
-  });
-  assert.equal(inspections, 2);
 });

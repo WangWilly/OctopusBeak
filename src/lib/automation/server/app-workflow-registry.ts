@@ -34,7 +34,6 @@ import {
   BANK_STATEMENT_CAPABILITIES,
   selectStatementTypes,
 } from "../statement-selection.ts";
-import { hostVerificationActorForSourceKey } from "../verification-config.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureDefinition,
@@ -336,9 +335,6 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           cathay_password: environment.LIBRETTO_CLOUD_CATHAY_PASSWORD ?? "",
         },
         statementTypes: statementTypeIdsFromEnvironment("cathay", environment),
-        verificationActor: hostVerificationActorForSourceKey(
-          "LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR",
-        ),
       };
     },
   },

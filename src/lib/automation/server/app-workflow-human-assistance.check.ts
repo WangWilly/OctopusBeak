@@ -124,7 +124,6 @@ test("solver challenges fail when the App has no registered route", async () => 
     const assistance = createAppWorkflowHumanAssistancePort({
       taskRunId: created.taskRunId,
       persistence: provider.automation,
-      requireSolverRoute: true,
     });
     await assert.rejects(
       Promise.race([

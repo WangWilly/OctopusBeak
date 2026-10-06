@@ -23,7 +23,6 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
-  import type { VerificationActor } from "$lib/automation/verification-config.ts";
   import type {
     AutomationActionKind,
     AutomationActionToken,
@@ -38,11 +37,6 @@ import {
   canSubmitCredentials,
   onboardingTaskDisclosure,
 } from "$lib/onboarding/state.ts";
-  import {
-    canResumeAssist,
-    settleAssistDrag,
-    settleAssistTextSubmission,
-  } from "$lib/automation/assist-interaction.ts";
   import {
     buildCredentialSetupPlan,
     firstInvalidCredentialGroup,
@@ -70,15 +64,9 @@ import {
   import {
     cathayEmailOtpFailureReason,
     cathayOtpReasonNeedsGmailSettings,
-    shouldOfferManualVerification,
     verificationFailureEventReason,
     verificationSolverExhausted,
   } from "$lib/automation/verification-actor-ui.ts";
-  import {
-    mapViewerPointer,
-    shouldDispatchViewerClickBeforeType,
-    viewerOverlayAnchorForRect,
-  } from "$lib/automation/viewer-coordinate.ts";
 import type { OnboardingWorkflowToken } from "$lib/onboarding/controller.ts";
 import type {
   OnboardingNodeId,
@@ -129,7 +117,6 @@ import type {
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onboardingTrackedTaskId: string | null = null;
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
-  export let verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>> = {};
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
@@ -172,26 +159,13 @@ import type {
   let historyRows: AutomationTaskHistoryRow[] = [];
   let historySearch = "";
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
-  let humanTask: AutomationTaskRow | null = null;
-  let assistInteracted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
   let pendingTaskIds = new Set<string>();
   let localPendingActions: AutomationActionToken[] = [];
   let preparingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-  let viewerTimer: ReturnType<typeof setInterval> | null = null;
-  let viewerRequestId = 0;
-  let viewerImageUrl = "";
-  let viewerError = "";
-  let completionChecking = false;
   let actionError = "";
   let statementSelectionError = "";
-  let dragStart: { x: number; y: number; pointerId: number } | null = null;
-  let floatingInput: { left: number; top: number; value: string; targetId: string; contractVersion: number } | null = null;
-  let floatingInputEl: HTMLInputElement | null = null;
-  let viewerScale = 1;
-  let viewerImageSize = { width: 0, height: 0 };
-  let viewerExpanded = false;
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
   let credentialChanges: CredentialChanges = NO_CREDENTIAL_CHANGES;
@@ -219,8 +193,6 @@ import type {
   $: activeTasks = automation.tasks.filter((task) => task.isActive);
   $: iconTasks = automation.tasks.filter((task) =>
     task.isActive
-    || (task.status === "waiting_for_human"
-      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup))
     || task.status === "failed"
   );
   $: credentialReadyCount = syncTasks.filter((task) =>
@@ -251,10 +223,6 @@ import type {
     automation.tasks,
   );
   $: revealOnboardingTask(onboardingDisclosure);
-  $: if (humanTask && !shouldOfferManualVerification(
-    humanTask.credentialGroupId,
-    verificationActorsByCredentialGroup,
-  )) closeHumanViewer();
   $: visibleCredentialGroups = credentialGroups.filter((group) => {
     const term = credentialSearch.trim().toLowerCase();
     if (!term) return true;
@@ -324,8 +292,6 @@ import type {
     for (const timeout of preparingTimeouts.values()) clearTimeout(timeout);
     preparingTimeouts.clear();
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
-    if (viewerTimer) clearInterval(viewerTimer);
-    if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
   });
 
   function stopPolling() {
@@ -744,12 +710,6 @@ import type {
 
   function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape") return;
-    if (floatingInput) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      floatingInput = null;
-      return;
-    }
     closeCredentialsOnEscape(event);
   }
 
@@ -1084,15 +1044,6 @@ import type {
     }, 1_400);
   }
 
-  function handleActiveTaskClick(task: AutomationTaskRow) {
-    if (task.status === "waiting_for_human" && task.humanSession
-      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) {
-      openHumanViewer(task);
-      return;
-    }
-    void revealTaskDetails(task);
-  }
-
   function scrollActiveTasks(event: WheelEvent) {
     const list = event.currentTarget as HTMLElement;
     if (list.scrollWidth <= list.clientWidth) return;
@@ -1247,336 +1198,6 @@ import type {
     }
   }
 
-  async function refreshViewerImage() {
-    const taskId = humanTask?.id;
-    if (!taskId) return;
-    const requestId = ++viewerRequestId;
-    try {
-      const bytes = await window.octopusBeak.automation.viewerScreenshot(taskId);
-      if (humanTask?.id !== taskId || requestId !== viewerRequestId) return;
-      if (!bytes) {
-        if (!viewerImageUrl) viewerError = $t.automation.screenshotUnavailable;
-        return;
-      }
-      if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
-      viewerImageUrl = URL.createObjectURL(new Blob([bytes.slice()], { type: "image/jpeg" }));
-      viewerError = "";
-    } catch (error) {
-      if (humanTask?.id === taskId && requestId === viewerRequestId && !viewerImageUrl) {
-        viewerError = $t.automation.screenshotUnavailable;
-      }
-    }
-  }
-
-  function openHumanViewer(task: AutomationTaskRow) {
-    if (!shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) return;
-    humanTask = task;
-    assistInteracted = false;
-    viewerScale = Math.max(1, Math.min(2.5, task.humanAssistanceContract?.focus.initialZoom ?? 1));
-    viewerError = "";
-    dragStart = null;
-    void refreshViewerImage();
-    if (viewerTimer) clearInterval(viewerTimer);
-    viewerTimer = setInterval(() => {
-      void refreshViewerImage();
-    }, 750);
-  }
-
-  function closeHumanViewer() {
-    viewerRequestId += 1;
-    if (viewerTimer) clearInterval(viewerTimer);
-    viewerTimer = null;
-    humanTask = null;
-    assistInteracted = false;
-    if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
-    viewerImageUrl = "";
-    viewerError = "";
-    completionChecking = false;
-    dragStart = null;
-    floatingInput = null;
-    viewerScale = 1;
-    viewerImageSize = { width: 0, height: 0 };
-    viewerExpanded = false;
-  }
-
-  function viewerFocusStyle(imageSize = viewerImageSize) {
-    const contract = humanTask?.humanAssistanceContract;
-    const target = contract?.targets.find(
-      (candidate) => candidate.id === contract.focus.targetId,
-    );
-    const contextRects = contract?.contextRegions
-      .filter((region) => contract.focus.contextRegionIds.includes(region.id))
-      .flatMap((region) => region.rect ? [region.rect] : []) ?? [];
-    const rects = [target?.rect, ...contextRects].filter((rect): rect is NonNullable<typeof rect> => Boolean(rect));
-    const bounds = rects.length > 0
-      ? {
-        x: Math.min(...rects.map((rect) => rect.x)),
-        y: Math.min(...rects.map((rect) => rect.y)),
-        right: Math.max(...rects.map((rect) => rect.x + rect.width)),
-        bottom: Math.max(...rects.map((rect) => rect.y + rect.height)),
-      }
-      : null;
-    const originX = bounds && imageSize.width
-      ? ((bounds.x + (bounds.right - bounds.x) / 2) / imageSize.width) * 100
-      : 50;
-    const originY = bounds && imageSize.height
-      ? ((bounds.y + (bounds.bottom - bounds.y) / 2) / imageSize.height) * 100
-      : 50;
-    return `--viewer-scale: ${viewerScale}; --viewer-origin-x: ${originX}%; --viewer-origin-y: ${originY}%;`;
-  }
-
-  async function sendViewerInput(input: unknown) {
-    if (!humanTask) return false;
-    try {
-      const result = await window.octopusBeak.automation.viewerInput(humanTask.id, input);
-      if (result.contract) {
-        humanTask = { ...humanTask, humanAssistanceContract: result.contract };
-      }
-      viewerError = "";
-      if (result.resumed) {
-        closeHumanViewer();
-        await reload();
-        return true;
-      }
-      await refreshViewerImage();
-      return true;
-    } catch (error) {
-      viewerError = error instanceof Error ? error.message : String(error);
-      return false;
-    }
-  }
-
-  async function checkHumanViewerCompletion() {
-    if (!humanTask || humanTask.humanAssistanceContract?.completion.mode !== "independent") return;
-    completionChecking = true;
-    try {
-      const result = await window.octopusBeak.automation.viewerCompletionCheck(humanTask.id);
-      if (result.contract) {
-        humanTask = { ...humanTask, humanAssistanceContract: result.contract };
-      }
-      viewerError = result.verified ? "" : $t.automation.verificationIncomplete;
-      if (result.verified) await reload();
-    } catch (error) {
-      viewerError = error instanceof Error ? error.message : String(error);
-    } finally {
-      completionChecking = false;
-    }
-  }
-
-  async function inspectViewerPoint(point: { x: number; y: number }) {
-    if (!humanTask) return null;
-    try {
-      const result = await window.octopusBeak.automation.viewerInspect(humanTask.id, point);
-      viewerError = "";
-      return result;
-    } catch (error) {
-      viewerError = error instanceof Error ? error.message : String(error);
-      return null;
-    }
-  }
-
-  async function forceTerminateHumanViewer() {
-    if (!humanTask) return;
-    if (!confirm($t.automation.confirmForceQuit)) return;
-    try {
-      await window.octopusBeak.automation.forceTerminate(humanTask.id);
-      closeHumanViewer();
-      await reload();
-    } catch (error) {
-      viewerError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  async function resumeHumanViewer() {
-    if (!humanTask || !canResumeAssist(
-      assistInteracted,
-      Boolean(floatingInput),
-      humanTask.humanAssistanceContract?.completion,
-    )) return;
-    const task = humanTask;
-    closeHumanViewer();
-    try {
-      actionError = "";
-      await window.octopusBeak.automation.resumeHumanAssistance(task.id);
-      await reload();
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  function viewerImageFromEvent(event: { currentTarget: EventTarget | null }) {
-    if (event.currentTarget instanceof HTMLImageElement) return event.currentTarget;
-    return event.currentTarget instanceof HTMLElement
-      ? event.currentTarget.querySelector<HTMLImageElement>(".viewer-image")
-      : null;
-  }
-
-  function viewerImageLayoutOffset(image: HTMLImageElement, focus: HTMLElement) {
-    let left = 0;
-    let top = 0;
-    let current: HTMLElement | null = image;
-    while (current && current !== focus) {
-      left += current.offsetLeft;
-      top += current.offsetTop;
-      current = current.offsetParent instanceof HTMLElement ? current.offsetParent : null;
-    }
-    return current === focus ? { left, top } : { left: 0, top: 0 };
-  }
-
-  function pointerPoint(event: Pick<PointerEvent, "clientX" | "clientY"> & { currentTarget: EventTarget | null }) {
-    const image = viewerImageFromEvent(event);
-    if (!image) return null;
-    const focus = image.closest(".viewer-focus") as HTMLElement | null;
-    const imageRect = image.getBoundingClientRect();
-    const layoutWidth = image.clientWidth;
-    const layoutHeight = image.clientHeight;
-    if (!image.naturalWidth || !image.naturalHeight || !layoutWidth || !layoutHeight) return null;
-    const layoutOffset = focus ? viewerImageLayoutOffset(image, focus) : { left: 0, top: 0 };
-    return mapViewerPointer({
-      clientX: event.clientX,
-      clientY: event.clientY,
-      imageRect,
-      naturalWidth: image.naturalWidth,
-      naturalHeight: image.naturalHeight,
-      layoutWidth,
-      layoutHeight,
-      layoutLeft: layoutOffset.left,
-      layoutTop: layoutOffset.top,
-      frameWidth: focus?.clientWidth ?? layoutWidth,
-      frameHeight: focus?.clientHeight ?? layoutHeight,
-    });
-  }
-
-  function floatingInputAnchor(
-    point: NonNullable<ReturnType<typeof pointerPoint>>,
-    targetRect: { x: number; y: number; width: number; height: number },
-  ) {
-    return viewerOverlayAnchorForRect({
-      targetRect,
-      naturalWidth: point.naturalWidth,
-      naturalHeight: point.naturalHeight,
-      layoutWidth: point.layoutWidth,
-      layoutHeight: point.layoutHeight,
-      layoutLeft: point.layoutLeft,
-      layoutTop: point.layoutTop,
-      frameWidth: point.frameWidth,
-      frameHeight: point.frameHeight,
-      overlayWidth: 288,
-      overlayHeight: 44,
-    });
-  }
-
-  function handleViewerPointerDown(event: PointerEvent) {
-    const point = pointerPoint(event);
-    if (!point) return;
-    dragStart = { ...point, pointerId: event.pointerId };
-    (event.currentTarget as HTMLImageElement).setPointerCapture(event.pointerId);
-  }
-
-  function handleViewerPointerUp(event: PointerEvent) {
-    if (!dragStart || dragStart.pointerId !== event.pointerId) return;
-    const target = event.currentTarget as HTMLElement;
-    const point = pointerPoint(event);
-    const start = dragStart;
-    dragStart = null;
-    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-    if (!point) return;
-
-    const moved = Math.hypot(point.x - start.x, point.y - start.y);
-    if (moved <= 8) {
-      void handleViewerClick(point);
-      return;
-    }
-    floatingInput = null;
-    void submitViewerDrag(start, point);
-  }
-
-  async function submitViewerDrag(start: { x: number; y: number }, point: { x: number; y: number }) {
-    const inspected = await inspectViewerPoint(start);
-    if (!inspected?.targetId || inspected.contractVersion === undefined || !inspected.modes?.includes("drag")) return;
-    const succeeded = await sendViewerInput({
-      type: "drag",
-      x: start.x,
-      y: start.y,
-      toX: point.x,
-      toY: point.y,
-      targetId: inspected.targetId,
-      contractVersion: inspected.contractVersion,
-    });
-    if (settleAssistDrag(succeeded)) assistInteracted = true;
-  }
-
-  function handleViewerPointerCancel(event: PointerEvent) {
-    if (dragStart?.pointerId !== event.pointerId) return;
-    const target = event.currentTarget as HTMLElement;
-    dragStart = null;
-    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-  }
-
-  async function handleViewerClick(point: NonNullable<ReturnType<typeof pointerPoint>>) {
-    floatingInput = null;
-    const inspected = await inspectViewerPoint({ x: point.x, y: point.y });
-    if (!inspected?.targetId || inspected.contractVersion === undefined) return;
-    const modes = inspected.modes ?? [];
-    if (shouldDispatchViewerClickBeforeType(modes) && !await sendViewerInput({
-      type: "click",
-      x: point.x,
-      y: point.y,
-      targetId: inspected.targetId,
-      contractVersion: inspected.contractVersion,
-    })) return;
-    if (!modes.includes("type")) {
-      assistInteracted = true;
-      return;
-    }
-    if (!inspected.rect) return;
-    const anchor = floatingInputAnchor(point, inspected.rect);
-    if (!anchor) return;
-    floatingInput = {
-      ...anchor,
-      value: "",
-      targetId: inspected.targetId,
-      contractVersion: inspected.contractVersion,
-    };
-    await tick();
-    floatingInputEl?.focus();
-  }
-
-  function handleViewerKeydown(event: KeyboardEvent) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    const image = viewerImageFromEvent(event);
-    if (!image) return;
-    const rect = image.getBoundingClientRect();
-    const point = pointerPoint({
-      currentTarget: image,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2,
-    } as unknown as PointerEvent);
-    if (point) void handleViewerClick(point);
-  }
-
-  function updateFloatingInput(event: Event) {
-    if (!floatingInput) return;
-    floatingInput = { ...floatingInput, value: (event.currentTarget as HTMLInputElement).value };
-  }
-
-  async function submitFloatingInput(event: SubmitEvent) {
-    event.preventDefault();
-    if (!floatingInput?.value) return;
-    const input = floatingInput;
-    const succeeded = await sendViewerInput({
-      type: "type",
-      text: input.value,
-      targetId: input.targetId,
-      contractVersion: input.contractVersion,
-    });
-    if (floatingInput !== input) return;
-    const result = settleAssistTextSubmission(input, succeeded);
-    floatingInput = result.floatingInput;
-    if (result.assistInteracted) assistInteracted = true;
-  }
-
   function taskIdLabel(taskId: string, dictionary: Translation) {
     return (dictionary.automation.taskLabels as Record<string, string>)[taskId] ?? taskId;
   }
@@ -1586,8 +1207,7 @@ import type {
   }
 
   function taskStatusLabel(task: AutomationTaskRow, dictionary: Translation) {
-    if (task.status === "waiting_for_human"
-      && !shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)) {
+    if (task.status === "waiting_for_human") {
       return dictionary.automation.progressAutomaticVerification;
     }
     return dictionary.automation.statusLabels[task.status];
@@ -1643,8 +1263,7 @@ import type {
 
   function workflowProgressIsWorking(task: AutomationTaskRow) {
     if (task.status === "waiting_for_human") {
-      return task.isActive
-        && !shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup);
+      return task.isActive;
     }
     return task.isActive && ["preparing", "running", "retrying", "cancelling"].includes(task.status);
   }
@@ -1681,9 +1300,7 @@ import type {
 
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
     if (task.status === "waiting_for_human") {
-      const waiting = shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)
-        ? dictionary.automation.progressWaiting
-        : dictionary.automation.progressAutomaticVerification;
+      const waiting = dictionary.automation.progressAutomaticVerification;
       return task.progressPercent === null
         ? waiting
         : dictionary.automation.progressWaitingWithPercent(waiting, task.progressPercent);
@@ -1794,7 +1411,7 @@ import type {
                   onpointerleave={hideTaskTooltip}
                   onfocus={(event) => showTaskTooltip(task, event)}
                   onblur={hideTaskTooltip}
-                  onclick={() => handleActiveTaskClick(task)}
+                  onclick={() => void revealTaskDetails(task)}
                 >
                   {#if task.status === "waiting_for_human"}
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
@@ -1949,7 +1566,7 @@ import type {
           </thead>
           <tbody>
             {#each stage.tasks as task (task.id)}
-              <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || (task.status === "waiting_for_human" && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup))} id={`${task.id}-task-row`}>
+              <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
                     <span class="task-logo"><InstitutionLogo institution={institutionForTask(task.id)} /></span>
@@ -2038,16 +1655,6 @@ import type {
                         onclick={() => void forceTerminateTask(task)}
                       >
                         {$t.automation.forceQuit}
-                      </button>
-                    {/if}
-                    {#if task.status === "waiting_for_human" && task.humanSession
-                      && shouldOfferManualVerification(task.credentialGroupId, verificationActorsByCredentialGroup)}
-                      <button
-                        class="button secondary task-control"
-                        type="button"
-                        onclick={() => openHumanViewer(task)}
-                      >
-                        {$t.automation.assist}
                       </button>
                     {/if}
                     <button
@@ -2779,124 +2386,6 @@ import type {
   </div>
 {/if}
 
-{#if humanTask}
-  <div class="modal" class:viewer-modal-expanded={viewerExpanded} role="dialog" aria-modal="true" aria-labelledby="human-viewer-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeAssist} onclick={closeHumanViewer}></button>
-    <div
-      class="modal-panel human-viewer-modal"
-      class:expanded={viewerExpanded}
-    >
-      <div class="modal-head viewer-head">
-        <div class="viewer-title">
-          <h2 id="human-viewer-title">{$t.automation.assistTitle(taskLabel(humanTask, $t))}</h2>
-          <p>{humanTask.humanSession ?? $t.automation.noSession}</p>
-          {#if humanTask.humanAssistanceContract}
-            <span class="viewer-contract-stage">
-              {humanTask.humanAssistanceContract.title} · v{humanTask.humanAssistanceContract.version}
-            </span>
-          {/if}
-        </div>
-        <div class="viewer-actions">
-          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceTerminateHumanViewer}>
-            {$t.automation.forceQuit}
-          </button>
-          {#if humanTask.humanAssistanceContract?.completion.mode === "independent"
-            && humanTask.humanAssistanceContract.completion.status !== "verified"}
-            <button
-              class="button secondary fixed-action"
-              type="button"
-              disabled={completionChecking}
-              onclick={checkHumanViewerCompletion}
-            >
-              {$t.automation.checkVerification}
-            </button>
-          {/if}
-          <button
-            class="button primary fixed-action"
-            type="button"
-            disabled={!canResumeAssist(assistInteracted, Boolean(floatingInput), humanTask.humanAssistanceContract?.completion)}
-            onclick={resumeHumanViewer}
-          >
-            {$t.automation.resume}
-          </button>
-          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeHumanViewer}>x</button>
-        </div>
-      </div>
-      <div class="modal-body viewer-body">
-        <div class="viewer-frame">
-          <div class="viewer-focus" style={viewerFocusStyle(viewerImageSize)}>
-            <button
-              class="viewer-image-button"
-              type="button"
-              aria-label={$t.automation.pausedBrowser}
-              onkeydown={handleViewerKeydown}
-              onpointerdown={handleViewerPointerDown}
-              onpointerup={handleViewerPointerUp}
-              onpointercancel={handleViewerPointerCancel}
-            >
-              {#if viewerImageUrl}
-                <img
-                  class="viewer-image"
-                  src={viewerImageUrl}
-                  alt={$t.automation.pausedBrowser}
-                  draggable="false"
-                  tabindex="-1"
-                  onload={(event) => {
-                    const image = event.currentTarget as HTMLImageElement;
-                    viewerImageSize = { width: image.naturalWidth, height: image.naturalHeight };
-                    viewerError = "";
-                  }}
-                  onerror={() => {
-                    URL.revokeObjectURL(viewerImageUrl);
-                    viewerImageUrl = "";
-                    viewerImageSize = { width: 0, height: 0 };
-                    viewerError = $t.automation.screenshotUnavailable;
-                  }}
-                />
-              {:else}
-                <div class="viewer-screenshot-placeholder" role="status" aria-live="polite">
-                  {viewerError || $t.automation.screenshotUnavailable}
-                </div>
-              {/if}
-            </button>
-          <button
-            class="viewer-expand-action"
-            type="button"
-            aria-label={viewerExpanded ? $t.automation.exitFullscreen : $t.automation.fullscreen}
-            aria-pressed={viewerExpanded}
-            onclick={() => (viewerExpanded = !viewerExpanded)}
-          >
-            <span aria-hidden="true"></span>
-          </button>
-          {#if floatingInput}
-            <form
-              class="viewer-floating-input"
-              style={`left: ${floatingInput.left}px; top: ${floatingInput.top}px;`}
-              onsubmit={submitFloatingInput}
-            >
-              <input
-                bind:this={floatingInputEl}
-                type="text"
-                maxlength="128"
-                aria-label={$t.automation.textToTypeAria}
-                placeholder={$t.automation.typeText}
-                autocomplete="off"
-                value={floatingInput.value}
-                oninput={updateFloatingInput}
-              />
-              <button class="viewer-floating-submit" type="submit" aria-label={$t.automation.sendText}>
-                <span aria-hidden="true"></span>
-              </button>
-            </form>
-          {/if}
-          </div>
-        </div>
-        {#if viewerError}<p class="viewer-error">{viewerError}</p>{/if}
-      </div>
-    </div>
-  </div>
-{/if}
-
 <style>
   :global(html) {
     overflow-y: scroll;
@@ -3485,11 +2974,6 @@ import type {
     justify-content: flex-end;
     gap: 4px;
     flex-wrap: wrap;
-  }
-
-  .fixed-action {
-    width: 112px;
-    min-width: 112px;
   }
 
   .task-control {
@@ -4734,371 +4218,10 @@ import type {
     outline-offset: 3px;
   }
 
-  .human-viewer-modal {
-    width: min(1080px, calc(100vw - 48px));
-    display: flex;
-    flex-direction: column;
-    border-radius: 20px;
-  }
-
-  .human-viewer-modal.expanded {
-    width: calc(100vw - 48px);
-    height: calc(100vh - 144px);
-    max-height: calc(100vh - 144px);
-  }
-
-  .viewer-modal-expanded {
-    padding-block: calc(var(--space-6) * 3);
-  }
-
-  .viewer-head {
-    align-items: center;
-    padding: var(--space-4);
-    border-bottom: 0;
-    background: linear-gradient(180deg, var(--surface), color-mix(in oklch, var(--surface-soft) 44%, var(--surface)));
-  }
-
-  .viewer-title {
-    min-width: 0;
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  .viewer-title h2 {
-    font-size: 19px;
-    line-height: 1.15;
-  }
-
-  .viewer-title p {
-    width: fit-content;
-    max-width: 100%;
-    margin: 0;
-    padding: 4px 9px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .viewer-contract-stage {
-    width: fit-content;
-    max-width: 100%;
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .viewer-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-2);
-  }
-
-  .human-viewer-modal .fixed-action {
-    width: auto;
-    min-width: 96px;
-    min-height: 36px;
-    padding: 0 var(--space-4);
-    border-radius: 10px;
-  }
-
-  .human-viewer-modal .modal-close {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    font-size: 18px;
-  }
-
-  .viewer-body {
-    min-height: 0;
-    display: grid;
-    gap: var(--space-3);
-    padding: 0 var(--space-4) var(--space-4);
-    background: color-mix(in oklch, var(--surface-soft) 44%, var(--surface));
-  }
-
-  .human-viewer-modal.expanded .viewer-body {
-    flex: 1;
-    grid-template-rows: minmax(0, 1fr) auto;
-    padding: 0;
-  }
-
-  .viewer-frame {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
-    width: 100%;
-    overflow: hidden;
-    display: grid;
-    justify-self: center;
-    place-items: center;
-    max-width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: oklch(18% 0.025 250);
-    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04);
-  }
-
-  .viewer-focus {
-    position: relative;
-    width: 100%;
-    display: grid;
-    place-items: center;
-    transform: scale(var(--viewer-scale, 1));
-    transform-origin: var(--viewer-origin-x, 50%) var(--viewer-origin-y, 50%);
-    transition: transform 180ms ease;
-  }
-
-  .human-viewer-modal.expanded .viewer-frame {
-    width: 100%;
-    height: 100%;
-    border: 0;
-    border-radius: 0;
-  }
-
-  .human-viewer-modal.expanded .viewer-focus {
-    height: 100%;
-  }
-
-  .viewer-image-button {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    cursor: crosshair;
-  }
-
-  .viewer-image-button:focus-visible {
-    outline: 3px solid var(--accent);
-    outline-offset: -3px;
-  }
-
-  .viewer-image {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    max-height: min(72vh, 720px);
-    object-fit: contain;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    touch-action: none;
-    user-select: none;
-  }
-
-  .viewer-screenshot-placeholder {
-    display: grid;
-    width: 100%;
-    min-height: 180px;
-    place-items: center;
-    padding: var(--space-6);
-    color: color-mix(in oklch, white 76%, transparent);
-    text-align: center;
-  }
-
-  .viewer-image:focus,
-  .viewer-image:focus-visible {
-    outline: 3px solid var(--accent);
-    outline-offset: -3px;
-  }
-
-  .verification-viewer-tooltip {
-    position: absolute;
-    z-index: 3;
-    left: 50%;
-    bottom: var(--space-4);
-    max-width: min(360px, calc(100% - 32px));
-    padding: 10px 14px;
-    border: 1px solid rgb(255 255 255 / 0.32);
-    border-radius: 999px;
-    color: white;
-    background: rgb(15 23 42 / 0.9);
-    box-shadow: var(--shadow);
-    pointer-events: none;
-    transform: translateX(-50%);
-  }
-
-  .human-viewer-modal.expanded .viewer-image {
-    max-height: 100%;
-  }
-
-  .viewer-expand-action {
-    position: absolute;
-    top: var(--space-3);
-    right: var(--space-3);
-    width: 44px;
-    height: 44px;
-    border: 1px solid color-mix(in oklch, var(--fg) 16%, transparent);
-    border-radius: 12px;
-    background: color-mix(in oklch, var(--surface) 92%, transparent);
-    box-shadow: var(--shadow);
-    cursor: pointer;
-  }
-
-  .viewer-expand-action span,
-  .viewer-expand-action span::before,
-  .viewer-floating-submit span,
-  .viewer-floating-submit span::before {
-    position: absolute;
-    display: block;
-    content: "";
-  }
-
-  .viewer-expand-action span {
-    inset: 12px;
-    border: 2px solid var(--fg);
-    border-radius: 3px;
-  }
-
-  .viewer-expand-action[aria-pressed="true"] span {
-    inset: 14px;
-  }
-
-  .viewer-expand-action:focus-visible,
-  .viewer-floating-submit:focus-visible,
-  .viewer-floating-input input:focus {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--surface-soft);
-  }
-
-  .viewer-floating-input {
-    position: absolute;
-    z-index: 2;
-    width: min(288px, calc(100% - 24px));
-    min-height: 44px;
-    padding: 5px;
-    display: flex;
-    gap: var(--space-2);
-    align-items: center;
-    overflow: hidden;
-    border: 1px solid rgb(255 255 255 / 0.28);
-    border-radius: calc(var(--radius) + 6px);
-    background: rgb(255 255 255 / 0.16);
-    box-shadow: var(--shadow);
-    transform: translate(-50%, -50%);
-    backdrop-filter: blur(3px);
-    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, backdrop-filter 0.18s ease;
-  }
-
-  .viewer-floating-input::before {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 74%;
-    height: 160%;
-    display: block;
-    content: "";
-    pointer-events: none;
-    background: linear-gradient(90deg, transparent, rgb(99 102 241 / 0.2), rgb(14 165 233 / 0.16), transparent);
-    opacity: 0.9;
-    transform: translate(-50%, -50%);
-    animation: floating-gradient 2.6s ease-in-out infinite alternate;
-  }
-
-  .viewer-floating-input:hover {
-    border-color: rgb(255 255 255 / 0.78);
-    background: rgb(255 255 255 / 0.88);
-    box-shadow: 0 16px 40px rgb(15 23 42 / 0.18);
-    backdrop-filter: blur(18px) saturate(1.35);
-  }
-
-  .viewer-floating-input:hover::before {
-    opacity: 0.42;
-  }
-
-  @keyframes floating-gradient {
-    from {
-      transform: translate(-68%, -50%);
-    }
-
-    to {
-      transform: translate(-32%, -50%);
-    }
-  }
-
-  .viewer-floating-input input {
-    position: relative;
-    z-index: 1;
-    min-width: 0;
-    min-height: 38px;
-    flex: 1;
-    padding: 0 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: rgb(255 255 255 / 0.36);
-    color: var(--fg);
-    backdrop-filter: none;
-    transition: background 0.18s ease;
-  }
-
-  .viewer-floating-input:hover input {
-    background: rgb(255 255 255 / 0.96);
-    backdrop-filter: blur(8px);
-  }
-
-  .viewer-floating-submit {
-    position: relative;
-    z-index: 1;
-    flex: 0 0 38px;
-    width: 38px;
-    height: 38px;
-    border: 1px solid rgb(15 23 42 / 0.14);
-    border-radius: 12px;
-    background: rgb(255 255 255 / 0.7);
-    color: var(--fg);
-    box-shadow: 0 8px 18px rgb(15 23 42 / 0.12), inset 0 1px 0 rgb(255 255 255 / 0.72);
-    cursor: pointer;
-    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
-  }
-
-  .viewer-floating-submit:hover {
-    border-color: rgb(15 23 42 / 0.22);
-    background: var(--fg);
-    color: var(--surface);
-    transform: translateY(-1px);
-  }
-
-  .viewer-floating-submit span {
-    left: 50%;
-    top: 50%;
-    width: 2px;
-    height: 16px;
-    border-radius: 999px;
-    background: currentColor;
-    transform: translate(-50%, -50%);
-  }
-
-  .viewer-floating-submit span::before {
-    left: 50%;
-    top: 0;
-    width: 9px;
-    height: 9px;
-    border-top: 2px solid currentColor;
-    border-left: 2px solid currentColor;
-    transform: translate(-50%, -1px) rotate(45deg);
-  }
-
   .viewer-error {
     margin: 0;
     color: var(--danger);
     font-size: 13px;
-  }
-
-  .force-quit-action {
-    color: var(--danger);
-    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
   }
 
   @media (max-width: 1100px) {
@@ -5217,15 +4340,6 @@ import type {
 
     .sync-sheet {
       width: min(455px, 100vw);
-    }
-
-    .human-viewer-modal .modal-head {
-      flex-direction: column;
-    }
-
-    .viewer-actions {
-      width: 100%;
-      justify-content: flex-start;
     }
   }
 </style>

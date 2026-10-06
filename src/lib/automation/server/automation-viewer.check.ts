@@ -1,42 +1,20 @@
 import assert from "node:assert/strict";
 import {
-  isClosedViewerSessionError,
   viewerScreenshotErrorKind,
-  captureSessionScreenshot,
   isNestedFrameElement,
-  humanVerificationTargetAtPoint,
   focusHumanVerificationTarget,
   focusPointForViewerRect,
-  inspectableFromElement,
-  isInspectableTextTarget,
   normalizeHumanVerificationInput,
   normalizeViewerInput,
-  normalizeViewerPoint,
-  refreshTargetRect,
-  selectAllShortcut,
-  VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
   clickVerificationSelectionsOnPage,
 } from "./automation-viewer.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 
-assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
-  type: "jpeg",
-  quality: 72,
-  animations: "disabled",
-  scale: "css",
-});
-
 const unavailableAppViewerError = new Error("No active App browser page is available for this workflow run.");
-assert.equal(isClosedViewerSessionError(unavailableAppViewerError), true);
-assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
 assert.equal(viewerScreenshotErrorKind(unavailableAppViewerError), "unavailable");
 assert.equal(viewerScreenshotErrorKind(new Error("browserType.connectOverCDP: socket hang up")), "transient");
 assert.equal(viewerScreenshotErrorKind(new Error("Unexpected screenshot failure")), "failed");
-await assert.rejects(
-  () => captureSessionScreenshot("unknown-app-run"),
-  /No active App browser page is available for this workflow run\./,
-);
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
@@ -65,58 +43,6 @@ assert.deepEqual(
   normalizeViewerInput({ type: "press", key: "ArrowRight" }),
   { type: "press", key: "ArrowRight" },
 );
-
-assert.equal(selectAllShortcut("darwin"), "Meta+A");
-assert.equal(selectAllShortcut("linux"), "Control+A");
-assert.equal(selectAllShortcut("win32"), "Control+A");
-
-assert.deepEqual(normalizeViewerPoint({ x: 4.4, y: 9.6 }), { x: 4, y: 10 });
-assert.throws(() => normalizeViewerPoint({ x: 1 }));
-
-assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: false, readOnly: false }), true);
-assert.equal(isInspectableTextTarget({ tagName: "TEXTAREA", type: "", editable: false, disabled: false, readOnly: false }), true);
-assert.equal(isInspectableTextTarget({ tagName: "DIV", type: "", editable: true, disabled: false, readOnly: false }), true);
-assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "checkbox", editable: false, disabled: false, readOnly: false }), false);
-assert.equal(isInspectableTextTarget({ tagName: "INPUT", type: "text", editable: false, disabled: true, readOnly: false }), false);
-
-const inspectableElementCalls: string[] = [];
-const inspectableElement = {
-  async evaluate() {
-    inspectableElementCalls.push("evaluate");
-    return {
-      tagName: "INPUT",
-      type: "text",
-      editable: false,
-      disabled: false,
-      readOnly: false,
-      visible: true,
-      rect: { x: 700, y: 386, width: 96, height: 28 },
-    };
-  },
-};
-assert.deepEqual(
-  await inspectableFromElement(inspectableElement as never),
-  {
-    tagName: "INPUT",
-    type: "text",
-    editable: false,
-    disabled: false,
-    readOnly: false,
-    rect: { x: 700, y: 386, width: 96, height: 28 },
-  },
-);
-assert.deepEqual(
-  await inspectableFromElement(inspectableElement as never, { x: 10, y: 20 }),
-  {
-    tagName: "INPUT",
-    type: "text",
-    editable: false,
-    disabled: false,
-    readOnly: false,
-    rect: { x: 710, y: 406, width: 96, height: 28 },
-  },
-);
-assert.deepEqual(inspectableElementCalls, ["evaluate", "evaluate"]);
 
 assert.throws(() => normalizeViewerInput({ type: "click", x: -1, y: 0 }));
 assert.throws(() => normalizeViewerInput({ type: "drag", x: 0, y: 0, toX: 1 }));
@@ -148,62 +74,6 @@ assert.deepEqual(
   focusPointForViewerRect(humanContract.targets[0]!.rect!),
   { x: 748, y: 434 },
 );
-assert.deepEqual(
-  refreshTargetRect(humanContract, "captcha.input", { x: 700, y: 439, width: 96, height: 96 }),
-  {
-    stageId: "captcha",
-    title: "Complete CAPTCHA",
-    targets: [{ ...humanContract.targets[0]!, rect: { x: 700, y: 439, width: 96, height: 96 } }],
-    contextRegions: [],
-    completion: humanContract.completion,
-    focus: humanContract.focus,
-  },
-);
-assert.equal(
-  refreshTargetRect(humanContract, "captcha.input", humanContract.targets[0]!.rect!),
-  null,
-);
-const metadataContract: HumanAssistanceContract = {
-  ...humanContract,
-  challengeKind: "text-captcha",
-  challengeImageRegion: {
-    id: "challenge-image",
-    label: "Challenge image",
-    semanticId: "captcha.challenge-image",
-    rect: { x: 800, y: 300, width: 120, height: 48 },
-  },
-  charset: "digits",
-  imagePreprocessing: ["remove-interference-lines"],
-  ocrPageSegmentationMode: "single-word",
-  ocrAttemptPlan: [
-    { ocrPageSegmentationMode: "single-word" },
-    { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
-  ],
-  solveAcceptancePolicy: { mode: "agreement-only" },
-  solverConfidenceThreshold: 0.8,
-  expectedAnswerLength: 5,
-  prompt: "Enter the digits shown.",
-};
-const refreshedMetadataContract = refreshTargetRect(
-  metadataContract,
-  "captcha.input",
-  { x: 700, y: 440, width: 96, height: 96 },
-);
-assert.equal(refreshedMetadataContract?.challengeKind, "text-captcha");
-assert.deepEqual(refreshedMetadataContract?.challengeImageRegion, metadataContract.challengeImageRegion);
-assert.equal(refreshedMetadataContract?.charset, "digits");
-assert.deepEqual(refreshedMetadataContract?.imagePreprocessing, [
-  "remove-interference-lines",
-]);
-assert.equal(refreshedMetadataContract?.ocrPageSegmentationMode, "single-word");
-assert.deepEqual(refreshedMetadataContract?.ocrAttemptPlan, metadataContract.ocrAttemptPlan);
-assert.deepEqual(refreshedMetadataContract?.solveAcceptancePolicy, {
-  mode: "agreement-only",
-});
-assert.equal(refreshedMetadataContract?.solverConfidenceThreshold, 0.8);
-assert.equal(refreshedMetadataContract?.expectedAnswerLength, 5);
-assert.equal(refreshedMetadataContract?.prompt, "Enter the digits shown.");
-
 const focusCalls: Array<[number, number]> = [];
 await focusHumanVerificationTarget({
   evaluate: async () => false,
@@ -229,11 +99,6 @@ await assert.rejects(
   }),
   /does not permit pointer focus/,
 );
-assert.equal(
-  humanVerificationTargetAtPoint(humanContract, { x: 724, y: 400 })?.id,
-  "captcha-input",
-);
-assert.equal(humanVerificationTargetAtPoint(humanContract, { x: 810, y: 400 }), null);
 assert.deepEqual(
   normalizeHumanVerificationInput({
     type: "click",

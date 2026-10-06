@@ -82,7 +82,7 @@ function createPage(options: {
   monthCount?: number;
   cursor?: number;
   initialSignedIn?: boolean;
-} = {}): Page & { finishSignIn(): void } {
+} = {}): Page {
   const now = new Date(2026, 8, 25);
   const newestPeriod = monthAtOffset(now, 1);
   const oldestPeriod = monthAtOffset(now, 2);
@@ -98,7 +98,7 @@ function createPage(options: {
     jsonResponse(issuerSummary(periods[0]!), summaryEndpoint),
   ];
   const inputValues = new Map<string, string>();
-  let signedIn = options.initialSignedIn ?? true;
+  const signedIn = options.initialSignedIn ?? true;
   const makeLocator = (selector: string) => ({
     waitFor: async () => undefined,
     click: async () => undefined,
@@ -149,10 +149,10 @@ function createPage(options: {
     goto: async () => undefined,
     on: () => undefined,
   };
-  return Object.assign(page, { finishSignIn() { signedIn = true; } }) as unknown as Page & { finishSignIn(): void };
+  return page as unknown as Page;
 }
 
-function createContext(page: Page, completeAssistance?: () => void) {
+function createContext(page: Page) {
   const events: Array<{ stage: string; code: string; counts?: unknown }> = [];
   const committed: unknown[][] = [];
   let withPageCount = 0;
@@ -169,10 +169,8 @@ function createContext(page: Page, completeAssistance?: () => void) {
     },
     text: strictSourceText,
     humanAssistance: {
-      async request(contract) {
+      async request() {
         assistanceCount += 1;
-        assert.equal(contract.stageId, "esun-login-verification");
-        completeAssistance?.();
         return "verified";
       },
     },
@@ -293,22 +291,26 @@ test("E.SUN typed workflow honors cancellation before opening a page or committi
   assert.equal(harness.committed.length, 0);
 });
 
-test("E.SUN typed workflow routes a sign-in challenge through injected human assistance", async () => {
+test("E.SUN typed workflow fails closed on a sign-in challenge without requesting assistance", async () => {
   const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = "synthetic-esun-managed-secret";
   try {
     const page = createPage({ initialSignedIn: false });
-    const harness = createContext(page, () => page.finishSignIn());
-    await esunCreditCardStatementsWorkflow.run(harness.context, {
-      managedIdentitySecret: "synthetic-esun-managed-secret",
-      credentials: {
-        esun_user_id: "synthetic-user",
-        esun_account: "synthetic-account",
-        esun_password: "synthetic-password",
-      },
-    });
-    assert.equal(harness.assistanceCount, 1);
-    assert.equal(harness.committed.length, 1);
+    const harness = createContext(page);
+    await assert.rejects(
+      esunCreditCardStatementsWorkflow.run(harness.context, {
+        managedIdentitySecret: "synthetic-esun-managed-secret",
+        credentials: {
+          esun_user_id: "synthetic-user",
+          esun_account: "synthetic-account",
+          esun_password: "synthetic-password",
+        },
+      }),
+      /not supported by the automatic solver/u,
+    );
+    assert.equal(harness.assistanceCount, 0);
+    assert.equal(harness.committed.length, 0);
+    assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "solver-challenge-unsupported"));
   } finally {
     if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
     else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;

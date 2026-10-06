@@ -13,17 +13,13 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import {
-  createAppWorkflowHumanAssistancePort,
-  resumeAppWorkflowHumanAssistance,
-} from "./app-workflow-human-assistance.ts";
+import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
   routeYuantaTradeAppAssistanceRequest,
   registerYuantaTradeAppAssistanceHandler,
 } from "./yuanta-trade-assistance.ts";
-import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 const TASK_ID = "yuanta-trade-statements";
 
@@ -164,7 +160,6 @@ function verificationHost(input: {
       input.onAudio?.(session);
       return Buffer.from("fixture audio");
     },
-    async refreshTarget() { return null; },
     async sendInput(session, rawInput) {
       const targetId = typeof rawInput === "object" && rawInput !== null && "targetId" in rawInput
         ? String(rawInput.targetId)
@@ -181,9 +176,6 @@ function verificationHost(input: {
     async inspectCompletion(_session, contract) {
       return contract.stageId === "yuanta-trade-captcha-checkbox";
     },
-    async waitForCompletion() { return false; },
-    shouldCheckCompletion() { return false; },
-    shouldAutoResume() { return false; },
   };
 }
 
@@ -203,7 +195,6 @@ async function createRun() {
 }
 
 const solverSettings: AutomationSettingsFile = {
-  LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "solver",
   VERIFICATION_AUDIO_CAPTCHA_CONFIDENCE_THRESHOLD: "0.7",
   VERIFICATION_IMAGE_SELECTION_CONFIDENCE_THRESHOLD: "0.7",
 };
@@ -280,7 +271,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
   }
 });
 
-test("Yuanta Trade solver exhaustion rejects the active stage without switching to human", async () => {
+test("Yuanta Trade solver exhaustion rejects the active stage", async () => {
   const { store, provider, run } = await createRun();
   const controller = new AbortController();
   let solverCalls = 0;
@@ -308,7 +299,7 @@ test("Yuanta Trade solver exhaustion rejects the active stage without switching 
       Promise.race([
         assistance.request(audioContract(), controller.signal),
         new Promise<never>((_resolve, reject) => setTimeout(
-          () => reject(new Error("Yuanta Trade solver silently waited for human")),
+          () => reject(new Error("Yuanta Trade solver silently kept waiting")),
           1_000,
         )),
       ]),
@@ -344,83 +335,34 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
   }
 });
 
-test("Yuanta Trade image challenge stays in Assist after an explicit human setting", async () => {
+test("Yuanta Trade fails closed when the solver route does not resume the stage", async () => {
   const { store, provider, run } = await createRun();
-  configureHostVerificationActorPolicy({
-    isPackaged: false,
-    env: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
-  });
-  const unregister = registerYuantaTradeAppAssistanceHandler({
-    provider,
-    settings: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
-    verificationHost: verificationHost(),
-  });
-  try {
-    const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
-    });
-    const request = assistance.request(imageContract(), new AbortController().signal);
-    const deadline = Date.now() + 3_000;
-    let waiting = await provider.automation.taskRunById(run.taskRunId);
-    while (waiting?.status !== "waiting_for_human" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      waiting = await provider.automation.taskRunById(run.taskRunId);
-    }
-    assert.equal(waiting?.status, "waiting_for_human");
-    await provider.automation.updateHumanAssistanceCompletion(run.taskRunId, "entered");
-    assert.equal(await resumeAppWorkflowHumanAssistance(run.taskRunId, "entered"), true);
-    await request;
-  } finally {
-    unregister();
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
-    await store.close();
-  }
-});
-
-test("Yuanta Trade certificate selection stays with the user for native ServiSign", async () => {
-  const { store, provider, run } = await createRun();
-  configureHostVerificationActorPolicy({
-    isPackaged: false,
-    env: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
-  });
-  let routed = false;
   const unregister = registerYuantaTradeAppAssistanceHandler({
     provider,
     settings: solverSettings,
     verificationHost: verificationHost(),
-    routeOptions: { solver: { async solve() { routed = true; return { answer: "123456", confidence: 1 }; } } },
+    routeOptions: {
+      solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
+      providerCaptureChallengeAudio: async () => null,
+    },
   });
-
   try {
     const assistance = createAppWorkflowHumanAssistancePort({
       taskRunId: run.taskRunId,
       persistence: provider.automation,
     });
-    const request = assistance.request(certificateContract(), new AbortController().signal);
-    const deadline = Date.now() + 3_000;
-    let waiting = await provider.automation.taskRunById(run.taskRunId);
-    while (waiting?.status !== "waiting_for_human" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      waiting = await provider.automation.taskRunById(run.taskRunId);
-    }
-    assert.equal(waiting?.status, "waiting_for_human");
-    assert.equal(waiting?.humanAssistanceContract?.stageId, certificateContract().stageId);
-    assert.equal(routed, false);
-
-    await provider.automation.updateHumanAssistanceCompletion(run.taskRunId, "entered");
-    assert.equal(await resumeAppWorkflowHumanAssistance(run.taskRunId, "entered"), true);
-    await request;
+    await assert.rejects(
+      assistance.request(audioContract(), new AbortController().signal),
+      /did not complete the current stage/u,
+    );
   } finally {
     unregister();
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });
 
 test("Yuanta Trade unsupported native verification fails closed in solver mode", async () => {
   const { store, provider, run } = await createRun();
-  configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
   try {
     await assert.rejects(
       routeYuantaTradeAppAssistanceRequest({
@@ -435,7 +377,6 @@ test("Yuanta Trade unsupported native verification fails closed in solver mode",
     assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
     assert.equal(saved?.status, "running");
   } finally {
-    configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
     await store.close();
   }
 });

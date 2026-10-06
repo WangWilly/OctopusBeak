@@ -8,7 +8,6 @@ import {
   fillFubonLoginCredentials,
   fubonCaptchaAssistanceStage,
   hasFubonDuplicateLoginTerminal,
-  inspectFubonOtpFromCurrentFrame,
   prepareFubonLoginDocument,
   readFubonLoginGeneration,
   runFubonCaptchaAcquisition,
@@ -93,7 +92,6 @@ type FakeDom = {
   captcha: FakeInput | undefined;
   captchaImageTimestamp: number | undefined;
   fields: FakeInput[];
-  otp: FakeInput | undefined;
   clickInvocations: number;
   successfulClicks: number;
   throwOnClick: boolean;
@@ -139,7 +137,6 @@ function fakeDom(overrides: Partial<FakeDom> = {}): FakeDom {
       input("account", "account-1"),
       input("password", "password-1"),
     ],
-    otp: undefined,
     clickInvocations: 0,
     successfulClicks: 0,
     throwOnClick: false,
@@ -152,7 +149,6 @@ function fakeFrame(id: string, dom: FakeDom): FakeFrame {
   const documentObject = {
     querySelector(selector: string) {
       if (selector === "#m1_userCaptcha") return dom.captcha ?? null;
-      if (selector === "#m1_inputOTP") return dom.otp ?? null;
       if (selector === "#btnLogin2") {
         return {
           isConnected: true,
@@ -231,7 +227,7 @@ function fakeFrame(id: string, dom: FakeDom): FakeFrame {
     dom,
     locator(selector: string) {
       if (selector === "html") return { evaluate };
-      if (selector === "#m1_userCaptcha" || selector === "#m1_inputOTP") {
+      if (selector === "#m1_userCaptcha") {
         return {
           async focus() {},
           async isVisible() {
@@ -679,23 +675,6 @@ test("acquisition stops after one uncertain submit", async () => {
   assert.equal(submits, 1);
 });
 
-test("OTP inspection reacquires when the observed generation changes", async () => {
-  const page = fakePage();
-  const before = await readFubonLoginGeneration(page);
-  assert.ok(before);
-  const next = fakeDom({
-    generation: "otp-generation-2",
-    otp: input("123456", "otp-2"),
-  });
-  (page as unknown as { replace: (nextDom: FakeDom) => void }).replace(next);
-  const result = await inspectFubonOtpFromCurrentFrame(page, {
-    before,
-    timeoutMs: 40,
-  });
-  assert.equal(result.status, "reacquire-human-assistance");
-  assert.equal(result.reason, "current-frame-changed");
-});
-
 for (const fileName of [
   "fubon-statements.ts",
   "fubon-credit-card-statements.ts",
@@ -712,6 +691,11 @@ for (const fileName of [
     assert.doesNotMatch(source, /visiblePasswordFields/);
   });
 }
+
+test("Fubon login publishes no OTP stage", async () => {
+  const source = await readFile(new URL("./fubon-auth.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /fubon-login-otp|m1_inputOTP/);
+});
 
 test("the App provider owns shared Fubon login and assistance", async () => {
   const source = await readFile(

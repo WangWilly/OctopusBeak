@@ -12,7 +12,6 @@ import {
   abortActiveAppWorkflowExecutions,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
-import { configureHostVerificationActorPolicy } from "../src/lib/automation/verification-config.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
@@ -97,13 +96,6 @@ function handleAutomationRuntimeFatal(details: {
 }
 
 app.setName("OctopusBeak");
-// Capture only the process environment inherited at launch. `buildDesktopEnv`
-// later merges development files into process.env, but those persisted values
-// must never select a manual verification actor.
-configureHostVerificationActorPolicy({
-  isPackaged: app.isPackaged,
-  env: Object.freeze({ ...process.env }),
-});
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   projectRoot(),

@@ -91,7 +91,7 @@ function statementSummary(period: string) {
   };
 }
 
-function fakePage(now: Date) {
+function fakePage(now: Date, options: { signInWithCredentials?: boolean } = {}) {
   const summaries = [monthAtOffset(now, 1), monthAtOffset(now, 2)]
     .map(({ year, month }) => `${year}/${month}`);
   const timeline = response(timelineResponse(now), TIMELINE_URL);
@@ -102,7 +102,10 @@ function fakePage(now: Date) {
   const makeLocator = (selector: string) => ({
     waitFor: async () => undefined,
     click: async () => undefined,
-    fill: async (value: string) => { inputValues.set(selector, value); },
+    fill: async (value: string) => {
+      inputValues.set(selector, value);
+      if (selector === 'input[name="pxssword"]' && options.signInWithCredentials !== false) signedIn = true;
+    },
     inputValue: async () => inputValues.get(selector) ?? "",
     isVisible: async () => true,
     allTextContents: async () => selector === ".info-scrollable li" ? summaries : [],
@@ -155,7 +158,6 @@ function fakePage(now: Date) {
   };
   return {
     page: page as unknown as Page,
-    finishSignIn() { signedIn = true; },
     credential(selector: string) { return inputValues.get(selector) ?? ""; },
   };
 }
@@ -172,7 +174,7 @@ async function createRun(provider: ReturnType<typeof createPgliteOperationalProv
   return created.taskRunId;
 }
 
-test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, events, and commit", async () => {
+test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit", async () => {
   const task = taskById("esun-credit-card-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "esun-credit-card-statements");
@@ -226,14 +228,6 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
       workflowPorts: {
         financialCommit,
         now: () => now.toISOString(),
-        humanAssistance: {
-          async request(contract) {
-            assert.equal(contract.stageId, "esun-login-verification");
-            assert.equal(contract.targets[0]?.id, "sign-in-page");
-            hostPage.finishSignIn();
-            return "verified";
-          },
-        },
       },
       workflowBrowserPortFactory: ({ startUrl }) => {
         observedStartUrl = startUrl;
@@ -253,7 +247,6 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
     assert.equal(run?.status, "completed");
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "source-decoding-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source or output files");
@@ -273,13 +266,6 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
       workflowPorts: {
         financialCommit,
         now: () => now.toISOString(),
-        humanAssistance: {
-          async request(contract) {
-            assert.equal(contract.stageId, "esun-login-verification");
-            cancelPage.finishSignIn();
-            return "verified";
-          },
-        },
         events: {
           async append(event) {
             await provider.automation.appendRunEvent(event);
@@ -296,6 +282,43 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
     assert.equal((await provider.automation.taskRunById(cancelRunId))?.status, "cancelled");
     assert.equal(committed.length, 1, "cancelled E.SUN run does not reach financial commit");
     assert.deepEqual(await readdir(root), []);
+  } finally {
+    if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+    else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("E.SUN provider verification fails closed with a configuration outcome", async () => {
+  const root = await mkdtemp(join(tmpdir(), "esun-app-verification-"));
+  const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+  delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+  const task = taskById("esun-credit-card-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await PGlite.create());
+  const now = new Date("2026-09-25T12:00:00.000Z");
+  const hostPage = fakePage(now, { signInWithCredentials: false });
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const taskRunId = await createRun(provider);
+    let commits = 0;
+    const result = await runAutomationTaskExecution(task, provider.automation, {
+      taskRunId,
+      launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      workflowPorts: {
+        financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
+        now: () => now.toISOString(),
+      },
+      workflowBrowserPortFactory: () => ({ async withPage(run) { return run(hostPage.page); } }),
+    }, async () => {});
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(result.status, "failed");
+    assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
+    assert.ok(run?.events.some((event) => event.code === "solver-challenge-unsupported"));
+    assert.equal(run?.humanAssistanceContract, null, "no verification stage is published");
+    assert.equal(commits, 0);
   } finally {
     if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
     else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;

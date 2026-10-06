@@ -194,14 +194,3 @@ export function isTerminalTaskRunStatus(
 ): status is TerminalTaskRunStatus {
   return TERMINAL_TASK_RUN_STATUSES.includes(status as TerminalTaskRunStatus);
 }
-
-/**
- * A resumed workflow must re-publish any assistance stage it still needs.
- * An entered/verified contract belongs to the preceding pause and must not
- * describe a later pause if the workflow reaches another human boundary.
- */
-export function resumeHumanAssistanceContract(
-  contract: HumanAssistanceContract | null | undefined,
-): HumanAssistanceContract | null {
-  return contract?.completion.status === "pending" ? contract : null;
-}

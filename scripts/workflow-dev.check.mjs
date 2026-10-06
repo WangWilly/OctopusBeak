@@ -3,14 +3,14 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   createDevelopmentBrowserPort,
-  createTerminalHumanAssistancePort,
+  createLocalSolverHumanAssistancePort,
 } from "./workflow-dev.ts";
 import { createBrowserRuntime } from "../src/lib/automation/server/browser-runtime.ts";
+import { appWorkflowPageForSession } from "../src/lib/automation/server/app-browser-host.ts";
 import { APP_WORKFLOW_DEFINITIONS } from "../src/lib/automation/server/app-workflow-registry.ts";
 
 const cli = fileURLToPath(new URL("./workflow-dev.ts", import.meta.url));
@@ -106,32 +106,85 @@ test("fixture command exercises injected browser, strict text, stage events and 
   }
 });
 
-test("terminal human assistance waits for the developer without printing the contract title", async () => {
-  const input = new PassThrough();
-  const output = new PassThrough();
-  let prompt = "";
-  output.on("data", (chunk) => { prompt += chunk.toString("utf8"); });
-  const port = createTerminalHumanAssistancePort(new AbortController().signal, input, output);
-  const request = port.request({
-    title: "private synthetic title",
-    challengeKind: "text-captcha",
-    targets: [{ id: "code", label: "private synthetic target", modes: ["type"] }],
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  input.write("\n");
-  assert.equal(await request, "entered");
-  assert.match(prompt, /text-captcha; 1 target/u);
-  assert.doesNotMatch(prompt, /private synthetic/u);
+const rect = { x: 10, y: 20, width: 80, height: 24 };
+const textCaptchaStage = Object.freeze({
+  stageId: "synthetic-login-captcha",
+  title: "Synthetic CAPTCHA",
+  targets: [{ id: "code", label: "Code", semanticId: "synthetic.login.captcha-input", modes: ["type"], rect }],
+  contextRegions: [],
+  completion: { mode: "inline", targetIds: ["code"] },
+  focus: { targetId: "code", contextRegionIds: [] },
+  challengeKind: "text-captcha",
+  challengeImageRegion: { id: "image", label: "Image", semanticId: "synthetic.login.captcha-image", rect },
 });
 
-test("terminal human assistance stops when the development run is cancelled", async () => {
-  const input = new PassThrough();
-  const output = new PassThrough();
-  const controller = new AbortController();
-  const port = createTerminalHumanAssistancePort(controller.signal, input, output);
-  const request = port.request({ challengeKind: "checkbox", targets: [{}] });
-  controller.abort();
-  assert.equal(await request, "failed");
+function recordingRoute(outcome, { resume = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async route(input) {
+      calls.push(input);
+      if (resume) await input.dependencies.resumeAppWorkflow();
+      return outcome;
+    },
+  };
+}
+
+test("development verification runs the App solver route on the registered session", async () => {
+  const { calls, route } = recordingRoute({ kind: "resumed" });
+  const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
+    workflowId: "sinopac-statements",
+    sessionKey: "dev-session",
+    route,
+  });
+  assert.equal(await port.request(textCaptchaStage, new AbortController().signal), "entered");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].taskRunId, "dev-session");
+  assert.equal(calls[0].contract.version, 1);
+  assert.equal(calls[0].contract.stageId, "synthetic-login-captcha");
+  let probeResumed = false;
+  assert.equal(
+    await calls[0].dependencies.probePostSubmit("dev-session", calls[0].contract, async () => { probeResumed = true; }),
+    "none",
+  );
+  assert.equal(probeResumed, true, "workflow-owned CAPTCHA outcomes resume without a provider dialog probe");
+});
+
+test("development verification fails closed where the App has no solver route", async () => {
+  const { calls, route } = recordingRoute({ kind: "resumed" });
+  const unrouted = createLocalSolverHumanAssistancePort(new AbortController().signal, {
+    workflowId: "esun-credit-card-statements",
+    sessionKey: "dev-session",
+    route,
+  });
+  await assert.rejects(
+    unrouted.request(textCaptchaStage, new AbortController().signal),
+    /solver route is unavailable/u,
+  );
+  const routed = createLocalSolverHumanAssistancePort(new AbortController().signal, {
+    workflowId: "yuanta-trade-statements",
+    sessionKey: "dev-session",
+    route,
+  });
+  const { challengeKind: _kind, challengeImageRegion: _region, ...nonSolverStage } = textCaptchaStage;
+  await assert.rejects(
+    routed.request({ ...nonSolverStage, stageId: "synthetic-certificate" }, new AbortController().signal),
+    /solver route is unavailable/u,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("development verification rejects a route that ends before resuming the workflow", async () => {
+  const { route } = recordingRoute({ kind: "retryable", reason: "solver-exhausted" }, { resume: false });
+  const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
+    workflowId: "fubon-all-statements",
+    sessionKey: "dev-session",
+    route,
+  });
+  await assert.rejects(
+    port.request(textCaptchaStage, new AbortController().signal),
+    /ended with retryable/u,
+  );
 });
 
 test("development browser uses an ephemeral context and closes it after the workflow", async () => {
@@ -166,6 +219,27 @@ test("development browser uses an ephemeral context and closes it after the work
     ["goto", "http://127.0.0.1:4173"],
     ["close"],
   ]);
+});
+
+test("development browser exposes its page to the solver seams only while the workflow runs", async () => {
+  const page = { goto: async () => {} };
+  const browser = {
+    newContext: async () => ({ newPage: async () => page }),
+    close: async () => {},
+  };
+  const runtime = createBrowserRuntime({
+    getChromiumVersion: async () => "151.0.7922.34",
+    platform: "darwin",
+  });
+  const port = createDevelopmentBrowserPort(
+    new AbortController().signal,
+    undefined,
+    async () => browser,
+    { runtime, sessionKey: "dev-session" },
+  );
+  const registered = await port.withPage(async () => appWorkflowPageForSession("dev-session"));
+  assert.equal(registered, page);
+  assert.equal(appWorkflowPageForSession("dev-session"), null);
 });
 
 test("development headless mode applies the same named runtime profile to launch and context", async () => {

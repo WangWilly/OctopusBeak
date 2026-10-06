@@ -40,7 +40,7 @@ The Spending page combines E-Invoices and account expenses, grouped by month and
 
 ### Collect data from the desktop app
 
-The Automation page keeps sources, sign-in details, run history, and human assistance in one place. Enable each source separately and choose which statement types to collect.
+The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect.
 
 ![OctopusBeak sign-in settings in English](docs/assets/readme-automation-settings-en.png)
 
@@ -48,7 +48,7 @@ The Automation page keeps sources, sign-in details, run history, and human assis
 
 1. Open OctopusBeak and use Welcome to choose a language and whether to start setup.
 2. Choose one source, enter its sign-in details, and select statement types.
-3. Start collection. Complete any CAPTCHA or OTP requested by the provider.
+3. Start collection. The App solves provider CAPTCHAs on your device, and retrieves the Cathay Email OTP from the Gmail account you authorized.
 4. The app validates source completeness and writes accepted data directly to the local database.
 5. Return to Overview to review the result.
 
@@ -77,7 +77,7 @@ SinoPac foreign-currency data is retained as traceable account records, and rows
 
 Financial records, automation settings, and run summaries are stored in the local database. The app processes source content in memory without saving source downloads, generated CSV/JSON, or raw logs; structured run events are kept for 30 days. Sign-in details stay on your Mac and are encrypted with Electron `safeStorage`. If secure encryption is unavailable, OctopusBeak stops at startup instead of writing plaintext passwords.
 
-CAPTCHAs, OTPs, session cookies, and other authentication material are not sent to a model. When a provider asks for manual verification, you complete it in the window.
+CAPTCHAs, OTPs, session cookies, and other authentication material are not sent to a model. CAPTCHAs are solved by an on-device recognizer. A verification the App cannot complete fails that run and shows the reason.
 
 ## Developer information
 

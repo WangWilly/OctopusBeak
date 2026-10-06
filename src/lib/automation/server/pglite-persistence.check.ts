@@ -24,12 +24,6 @@ import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-r
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
-import {
-  humanAssistanceContractForTask,
-  humanSessionForTask,
-  updateHumanAssistanceCompletionForTask,
-  updateHumanAssistanceContractForTask,
-} from "./human-session.ts";
 
 class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
@@ -137,8 +131,7 @@ try {
     startedAt: "2026-09-22T00:00:00.000Z",
   });
 
-  assert.equal(await humanSessionForTask("ctbc-statements", provider), run.taskRunId);
-  assert.equal(await humanAssistanceContractForTask("ctbc-statements", provider), null);
+  assert.equal((await provider.automation.taskRunById(run.taskRunId))?.humanAssistanceContract, null);
   const contractInput = {
     stageId: "otp",
     title: "Enter OTP",
@@ -147,18 +140,17 @@ try {
     completion: { mode: "inline" as const, targetIds: ["otp"] },
     focus: { targetId: "otp", contextRegionIds: [] },
   };
-  const contract = await updateHumanAssistanceContractForTask(
-    "ctbc-statements",
+  const contract = await provider.automation.updateHumanAssistanceContract(
+    run.taskRunId,
     contractInput,
-    provider,
   );
   assert.equal(contract.version, 1);
   assert.equal(
-    (await humanAssistanceContractForTask("ctbc-statements", provider))?.stageId,
+    (await provider.automation.taskRunById(run.taskRunId))?.humanAssistanceContract?.stageId,
     "otp",
   );
   assert.equal(
-    (await updateHumanAssistanceCompletionForTask("ctbc-statements", "entered", provider))
+    (await provider.automation.updateHumanAssistanceCompletion(run.taskRunId, "entered"))
       .completion.status,
     "entered",
   );
@@ -166,23 +158,6 @@ try {
   const hydrated = await hydrateAutomationRuntimeState(provider);
   assert.equal(hydrated.tasks.find((task) => task.taskId === "ctbc-statements")?.runId, run.taskRunId);
   assert.equal((await automationRunHistory(provider))[0]?.taskRunId, run.taskRunId);
-
-  await provider.automation.createTaskRun({
-    taskId: "exchange-rates",
-    kind: "sync",
-    status: "waiting_for_human",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: "2026-09-22T00:00:00.000Z",
-  });
-  await assert.rejects(
-    () => humanSessionForTask("exchange-rates", provider),
-    /requires an App browser workflow/u,
-  );
-  await assert.rejects(
-    () => humanAssistanceContractForTask("exchange-rates", provider),
-    /requires an App browser workflow/u,
-  );
 
   const cancelling = await persistCancellationTransitionForRunWithPersistence(
     provider,

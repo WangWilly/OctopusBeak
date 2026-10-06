@@ -12,7 +12,6 @@ const providerWorkflows = [
   "fubon-statements.ts",
   "fubon-credit-card-statements.ts",
   "fubon-loan-statements.ts",
-  "cathay-statements.ts",
   "sinopac-statements.ts",
   "hncb-statements.ts",
   "einvoice-personal-invoices.ts",
@@ -50,7 +49,7 @@ const explicitlyExcludedCaptchaWorkflows = [
   {
     provider: "Cathay United Bank",
     source: "../workflows/cathay-statements.ts",
-    reason: "Email OTP remains human-assisted",
+    reason: "Email OTP is retrieved through Gmail OAuth",
   },
 ] as const;
 
@@ -78,7 +77,7 @@ function rechecksInlineVerificationInput(source: string): boolean {
   return false;
 }
 
-test("all modelable human-assisted workflows publish a contract-backed stage", async () => {
+test("provider workflows with verification publish a contract-backed stage", async () => {
   const sources = await Promise.all(
     providerWorkflows.map(
       async (file) =>
@@ -195,6 +194,7 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
   const cathay = excludedSources.find(({ provider }) => provider === "Cathay United Bank");
   assert.ok(cathay);
   assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
+  assert.doesNotMatch(cathay.content, /emitHumanAssistanceStage/);
 });
 
 test("provider verification focus keeps the challenge readable", async () => {
