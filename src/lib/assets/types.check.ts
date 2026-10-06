@@ -10,6 +10,7 @@ const model = {
   positionsByAccount: {},
   transactionsByAccount: {},
   dailyHistoryByAccount: {},
+  exchangeRates: [],
   dailyHistory: [
     {
       date: "2026-06-30",

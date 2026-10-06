@@ -1,5 +1,4 @@
 import type {
-  AccountKind,
   AccountRowDto,
   CurrencyAmountDto,
   DailyHistoryRowDto,
@@ -9,7 +8,21 @@ import {
   indexExchangeRates,
   rateOnOrBefore,
   type ExchangeRateIndex,
-} from "./exchange-rate-display.ts";
+} from "../shared-money/exchange-rates.ts";
+import {
+  accountLedger,
+  addDays,
+  carriedNet,
+  readAssetAllocation,
+  readLiabilityAllocation,
+  TRAILING_DAYS,
+  trailingChange,
+  valuationDateFor,
+  type AccountLedger,
+  type AssetAllocation,
+  type Change,
+  type LiabilityAllocation,
+} from "../shared-ledger/twd-valuation.ts";
 import type { OverviewHoldingPriceDto, OverviewPageDto } from "./types.ts";
 
 export type OverviewModelInput = Pick<
@@ -32,8 +45,6 @@ export type Ticker =
   | { state: "domestic-only" };
 
 export type NetWorthPoint = { date: string; value: number };
-
-type Change = { change: number; pct: number | null };
 
 export type NetWorthChip =
   | ({ kind: "latest"; date: string; previousDate: string; isToday: boolean } & Change)
@@ -78,23 +89,6 @@ export type TodayChange =
     cryptoShare: number | null;
   };
 
-export type AssetCategory = "brokerage" | "crypto" | "bank" | "fund" | "foreign" | "other";
-
-export type AssetAllocation = {
-  total: number;
-  valuationDate: string | null;
-  slices: { category: AssetCategory; value: number; share: number }[];
-  unconvertedCurrencies: string[];
-};
-
-export type LiabilityAllocation = {
-  total: number;
-  /** Liabilities / assets, both in TWD; null without both sides. */
-  ratio: number | null;
-  slices: { account: AccountRowDto; value: number; share: number }[];
-  unconvertedCurrencies: string[];
-};
-
 export type OverviewModel = {
   ticker: Ticker;
   netWorth: NetWorth;
@@ -113,23 +107,12 @@ const DAILY_BAR_DAYS = 14;
 const FIAT_ORDER = ["USD", "JPY"];
 const MIN_CONTRIBUTION = 0.5;
 
-const ASSET_CATEGORY: Record<AccountKind, AssetCategory> = {
-  bank: "bank",
-  foreign: "foreign",
-  fund: "fund",
-  brokerage: "brokerage",
-  crypto: "crypto",
-  "credit-card": "other",
-  loan: "other",
-  other: "other",
-};
-
 export function readOverview(dto: OverviewModelInput, options: { today: string }): OverviewModel {
   const rates = indexExchangeRates(dto.exchangeRates);
   const history = [...dto.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
   const series = netWorthSeries(history, rates);
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
-  const valuationDate = history.at(-1)?.date ?? (dto.accounts.length > 0 ? options.today : null);
+  const valuationDate = valuationDateFor(history, dto.accounts, options.today);
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
   const liabilityAllocation = readLiabilityAllocation(dto.accounts, rates, valuationDate, assetAllocation.total);
   return {
@@ -154,20 +137,6 @@ export function seriesInRange(series: readonly NetWorthPoint[], range: SeriesRan
   if (!latest || range === "all") return [...series];
   const start = addDays(latest.date, range === "30d" ? -30 : -90);
   return series.filter((point) => point.date >= start);
-}
-
-export function dateInTimeZone(now: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
-export function addDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number) as [number, number, number];
-  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 function readTicker(
@@ -240,52 +209,6 @@ function currentNetWorth(
   return total;
 }
 
-type AccountLedger = Readonly<{
-  /** The account's carried-forward TWD value at `date`, or null before its first record. */
-  valueAt(accountId: string, date: string): number | null;
-  /**
-   * Net worth change from `from` to `to` over the accounts recorded on both
-   * dates. An account first recorded inside the span is not a change in
-   * wealth, only new coverage, so it is counted in `newAccounts` instead.
-   */
-  change(from: string, to: string): Change & { newAccounts: string[] };
-}>;
-
-function accountLedger(
-  byAccount: OverviewModelInput["dailyHistoryByAccount"],
-  rates: ExchangeRateIndex,
-): AccountLedger {
-  const rowsByAccount = new Map(Object.entries(byAccount).map(([accountId, rows]) => [
-    accountId,
-    [...rows].sort((left, right) => left.date.localeCompare(right.date)),
-  ]));
-  const valueAt = (accountId: string, date: string): number | null => {
-    const rows = rowsByAccount.get(accountId) ?? [];
-    if (!rows[0] || rows[0].date > date) return null;
-    return convertToTwd(carriedNet(rows, date), date, rates)?.value ?? null;
-  };
-  return {
-    valueAt,
-    change(from, to) {
-      let change = 0;
-      let base = 0;
-      const newAccounts: string[] = [];
-      for (const accountId of rowsByAccount.keys()) {
-        const before = valueAt(accountId, from);
-        const after = valueAt(accountId, to);
-        if (after === null) continue;
-        if (before === null) {
-          newAccounts.push(accountId);
-          continue;
-        }
-        change += after - before;
-        base += before;
-      }
-      return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts };
-    },
-  };
-}
-
 function changeOf(ledger: AccountLedger, from: string, to: string): Change {
   const { change, pct } = ledger.change(from, to);
   return { change, pct };
@@ -303,10 +226,9 @@ function netWorthChips(series: readonly NetWorthPoint[], ledger: AccountLedger, 
     ...changeOf(ledger, previous.date, latest.date),
   }];
   const first = series[0]!;
-  const trailingStart = addDays(latest.date, -30);
-  const trailingBase = series.findLast((point) => point.date <= trailingStart);
-  if (trailingBase && trailingBase !== first)
-    chips.push({ kind: "trailing-30", ...changeOf(ledger, trailingBase.date, latest.date) });
+  const trailing = trailingChange(series.map((point) => point.date), ledger, TRAILING_DAYS);
+  if (trailing && trailing.from !== first.date)
+    chips.push({ kind: "trailing-30", change: trailing.change, pct: trailing.pct });
   chips.push({ kind: "since-start", since: first.date, ...changeOf(ledger, first.date, latest.date) });
   return chips;
 }
@@ -367,16 +289,6 @@ function readTodayChange(
   };
 }
 
-/** Per-account rows exist only on dates the account changed; the latest row on or before `date` still holds. */
-function carriedNet(rows: readonly DailyHistoryRowDto[], date: string): CurrencyAmountDto[] {
-  let carried: DailyHistoryRowDto | undefined;
-  for (const row of rows) {
-    if (row.date > date) break;
-    carried = row;
-  }
-  return carried?.netAssets ?? [];
-}
-
 /**
  * A reason is shown only when it is a provable fact about the two dates: the
  * implied price of an account's single holding, or the rate of an account's
@@ -408,68 +320,6 @@ function changeReason(
   if (!before || !after) return null;
   const pct = ratioChange(after.twdPerUnit, before.twdPerUnit);
   return pct === null || pct === 0 ? null : { kind: "fx", currency, pct };
-}
-
-function readAssetAllocation(
-  accounts: readonly AccountRowDto[],
-  rates: ExchangeRateIndex,
-  valuationDate: string | null,
-): AssetAllocation {
-  const byCategory = new Map<AssetCategory, number>();
-  const unconverted = new Set<string>();
-  for (const account of accounts) {
-    if (account.group === "liability" || !valuationDate) continue;
-    const value = convertAccount(account, rates, valuationDate, unconverted);
-    if (value === null) continue;
-    const category = ASSET_CATEGORY[account.kind];
-    byCategory.set(category, (byCategory.get(category) ?? 0) + value);
-  }
-  const positive = [...byCategory].filter(([, value]) => value > 0);
-  const total = positive.reduce((sum, [, value]) => sum + value, 0);
-  return {
-    total,
-    valuationDate,
-    slices: positive
-      .map(([category, value]) => ({ category, value, share: value / total }))
-      .sort((left, right) => right.value - left.value),
-    unconvertedCurrencies: [...unconverted].sort(),
-  };
-}
-
-function readLiabilityAllocation(
-  accounts: readonly AccountRowDto[],
-  rates: ExchangeRateIndex,
-  valuationDate: string | null,
-  assetTotal: number,
-): LiabilityAllocation {
-  const unconverted = new Set<string>();
-  const owed = accounts.flatMap((account) => {
-    if (account.group !== "liability" || !valuationDate) return [];
-    const value = convertAccount(account, rates, valuationDate, unconverted);
-    return value !== null && value > 0 ? [{ account, value }] : [];
-  });
-  const total = owed.reduce((sum, row) => sum + row.value, 0);
-  return {
-    total,
-    ratio: total > 0 && assetTotal > 0 ? total / assetTotal : null,
-    slices: owed
-      .map((row) => ({ ...row, share: row.value / total }))
-      .sort((left, right) => right.value - left.value),
-    unconvertedCurrencies: [...unconverted].sort(),
-  };
-}
-
-function convertAccount(
-  account: AccountRowDto,
-  rates: ExchangeRateIndex,
-  date: string,
-  unconverted: Set<string>,
-): number | null {
-  const converted = convertToTwd(account.amountLines, date, rates);
-  if (converted) return converted.value;
-  for (const amount of account.amountLines)
-    if (!rateOnOrBefore(rates, amount.currency, date)) unconverted.add(amount.currency);
-  return null;
 }
 
 function convertedHistoryRows(

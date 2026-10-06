@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExchangeRateDto } from "../shared-ledger/types.ts";
-import { convertToTwd, indexExchangeRates, rateOnOrBefore } from "./exchange-rate-display.ts";
+import { convertToTwd, indexExchangeRates, rateOnOrBefore } from "./exchange-rates.ts";
 
 const rates: ExchangeRateDto[] = [
   { rateDate: "2026-07-13", currency: "USD", twdPerUnit: 33 },

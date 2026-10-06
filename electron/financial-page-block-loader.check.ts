@@ -65,6 +65,26 @@ test("different generations never share a raw snapshot", async () => {
   assert.deepEqual(generations, [3, 4]);
 });
 
+test("assets and liabilities summaries carry what a converted total and its 30-day change need", async () => {
+  const page = {
+    accounts: [{ id: "a" }],
+    dailyHistory: [{ date: "2026-10-05" }],
+    dailyHistoryByAccount: { a: [] },
+    exchangeRates: [{ rateDate: "2026-10-05", currency: "USD", twdPerUnit: 31 }],
+    positionsByAccount: { a: [] },
+    marginAccounts: [],
+  };
+  const loader = createFinancialPageBlockLoader(() => page);
+  for (const target of ["assets", "liabilities"] as const) {
+    assert.deepEqual((await loader.load(target, "summary")).data, {
+      accounts: page.accounts,
+      dailyHistory: page.dailyHistory,
+      dailyHistoryByAccount: page.dailyHistoryByAccount,
+      exchangeRates: page.exchangeRates,
+    }, `${target} summary drops list-only fields and keeps rates`);
+  }
+});
+
 test("automation blocks receive only sanitized credential state and never encrypted data", async () => {
   const contexts: unknown[] = [];
   const loader = createFinancialPageBlockLoader((_target, _options, context) => {

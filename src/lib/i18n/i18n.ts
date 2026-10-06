@@ -28,7 +28,6 @@ const en = {
     days30: "30 days",
     balance: "Balance",
     valuesVisible: "Values Visible",
-    countLabel: (label: string, count: number) => `${label} ${count}`,
     page: (current: number, total: number) => `Page ${current} / ${total}`,
     pagerCount: (start: number, end: number, total: number) =>
       `${start}-${end} of ${total}`,
@@ -146,10 +145,7 @@ const en = {
     assetBalanceCurrency: "Asset balance currency",
     sideSub: (accounts: number, currencies: number) =>
       `${accounts} accounts / ${currencies} currencies`,
-    metricAssetValue: "Asset value",
-    metricLargestAccount: "Largest account",
-    metricLiquidCash: "Liquid cash",
-    metricForeignBalance: "Foreign balance",
+    total: "Total assets",
   },
   liabilities: {
     eyebrow: "Liabilities",
@@ -163,10 +159,10 @@ const en = {
     debtExposure: "Debt exposure",
     sideSub: (accounts: number, currencies: number) =>
       `${accounts} debt accounts / ${currencies} currencies`,
-    metricTotalDebt: "Total debt",
-    metricLargestFacility: "Largest facility",
-    metricCardBalance: "Card balance",
-    metricForeignDebt: "Foreign debt",
+    total: (accounts: number) => `Total debt · ${accounts} debt account${accounts === 1 ? "" : "s"}`,
+    dueIn: (days: number) => (days === 0 ? "due today" : days === 1 ? "in 1 day" : `in ${days} days`),
+    cardInUse: "In use · estimate",
+    utilization: "Card utilization",
     marginExposure: "Investment margin exposure",
   },
   spending: {
@@ -434,6 +430,7 @@ const en = {
     balance: "Balance",
     allocation: "Allocation",
     exposure: "Exposure",
+    trailingPending: "Under 30 days of history",
     actions: "Actions",
     tx: "TX",
     history: "History",
@@ -1089,7 +1086,6 @@ const zh: typeof en = {
     days30: "30 天",
     balance: "餘額",
     valuesVisible: "顯示數值",
-    countLabel: (label, count) => `${count} 個${label}`,
     page: (current, total) => `第 ${current} / ${total} 頁`,
     pagerCount: (start, end, total) => `${start}-${end}，共 ${total} 筆`,
     all: "全部",
@@ -1203,10 +1199,7 @@ const zh: typeof en = {
     assetBalanceCurrency: "資產餘額幣別",
     sideSub: (accounts, currencies) =>
       `${accounts} 個帳戶 / ${currencies} 種幣別`,
-    metricAssetValue: "資產價值",
-    metricLargestAccount: "最大帳戶",
-    metricLiquidCash: "流動現金",
-    metricForeignBalance: "外幣餘額",
+    total: "資產總額",
   },
   liabilities: {
     eyebrow: "負債",
@@ -1220,10 +1213,10 @@ const zh: typeof en = {
     debtExposure: "負債曝險",
     sideSub: (accounts, currencies) =>
       `${accounts} 個負債帳戶 / ${currencies} 種幣別`,
-    metricTotalDebt: "總負債",
-    metricLargestFacility: "最大額度",
-    metricCardBalance: "卡片餘額",
-    metricForeignDebt: "外幣負債",
+    total: (accounts) => `總負債 · ${accounts} 個負債帳戶`,
+    dueIn: (days) => (days === 0 ? "今天到期" : `${days} 天後`),
+    cardInUse: "目前已用 · 估算",
+    utilization: "信用卡使用率",
     marginExposure: "投資融資曝險",
   },
   spending: {
@@ -1486,6 +1479,7 @@ const zh: typeof en = {
     balance: "餘額",
     allocation: "配置",
     exposure: "曝險",
+    trailingPending: "紀錄未滿 30 天",
     actions: "操作",
     tx: "交易",
     history: "歷史",

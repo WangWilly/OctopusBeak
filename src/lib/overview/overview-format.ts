@@ -1,5 +1,5 @@
 import type { Locale } from "../i18n/i18n.ts";
-import type { AssetCategory } from "./overview-model.ts";
+import type { AssetCategory } from "../shared-ledger/twd-valuation.ts";
 import type { AccountKind } from "../shared-ledger/types.ts";
 
 const MINUS = "−";

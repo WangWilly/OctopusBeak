@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
     AccountKind,
     AccountRowDto,
@@ -8,6 +8,7 @@
     DailyHistoryRowDto,
     TransactionRowDto,
   } from "$lib/shared-ledger/types.ts";
+  import { formatShare } from "$lib/overview/overview-format.ts";
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import { institutionForNamespace } from "$lib/institutions/institutions.ts";
@@ -32,6 +33,8 @@
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
   export let focusAccountId: string | null = null;
+  /** Each account's share of the converted page total; an absent account shows none. */
+  export let shares: ReadonlyMap<string, number> = new Map();
 
   export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
@@ -92,8 +95,7 @@
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
-  $: total = accounts.reduce((sum, account) => sum + amountValue(account.amountLines), 0);
-  $: sorted = sortAccounts(filtered, sortKey, sortDirection, total);
+  $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares);
   $: if (sorted.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
   }
@@ -134,14 +136,9 @@
     row?.focus({ preventScroll: true });
   }
 
-  function percentage(account: AccountRowDto) {
-    if (total <= 0) return 0;
-    return Math.min(100, Math.round((amountValue(account.amountLines) / total) * 100));
-  }
-
-  function sortAccounts(rows: AccountRowDto[], key: SortKey | null, direction: SortDirection, totalValue: number) {
+  function sortAccounts(rows: AccountRowDto[], key: SortKey | null, direction: SortDirection, shareOf: ReadonlyMap<string, number>) {
     if (!key) return rows;
-    return [...rows].sort((left, right) => compareAccounts(left, right, key, direction, totalValue));
+    return [...rows].sort((left, right) => compareAccounts(left, right, key, direction, shareOf));
   }
 
   function compareAccounts(
@@ -149,10 +146,10 @@
     right: AccountRowDto,
     key: SortKey,
     direction: SortDirection,
-    totalValue: number,
+    shareOf: ReadonlyMap<string, number>,
   ) {
-    const leftValue = sortValue(left, key, totalValue);
-    const rightValue = sortValue(right, key, totalValue);
+    const leftValue = sortValue(left, key, shareOf);
+    const rightValue = sortValue(right, key, shareOf);
     const result =
       typeof leftValue === "number" && typeof rightValue === "number"
         ? leftValue - rightValue
@@ -160,11 +157,11 @@
     return direction === "asc" ? result : -result;
   }
 
-  function sortValue(account: AccountRowDto, key: SortKey, totalValue: number) {
+  function sortValue(account: AccountRowDto, key: SortKey, shareOf: ReadonlyMap<string, number>) {
     if (key === "label") return `${account.label} ${account.product}`;
     if (key === "institution") return account.institution;
     if (key === "type") return account.typeLabel;
-    if (key === "allocation") return totalValue > 0 ? amountValue(account.amountLines) / totalValue : 0;
+    if (key === "allocation") return shareOf.get(account.id) ?? -1;
     return amountValue(account.amountLines);
   }
 
@@ -282,7 +279,7 @@
           </thead>
           <tbody>
             {#each sorted as account}
-              {@const percent = percentage(account)}
+              {@const share = shares.get(account.id)}
               {@const availableBalanceBasis = account.amountLines.some((amount) =>
                 amount.traces?.some((trace) => trace.balanceKind === "available"),
               )}
@@ -327,10 +324,10 @@
                   {/if}
                 </td>
                 <td class="right">
-                  {#if account.valueAvailability === "available"}
-                    <span class="account-meta num">{percent}%</span>
+                  {#if account.valueAvailability === "available" && share !== undefined}
+                    <span class="account-meta num" data-sensitive>{formatShare(share, $locale)}</span>
                     <div class="row-bar" aria-hidden="true">
-                      <span style={`width:${percent}%`}></span>
+                      <span data-sensitive style={`width:${share * 100}%`}></span>
                     </div>
                   {/if}
                 </td>

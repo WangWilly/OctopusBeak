@@ -22,6 +22,14 @@ export const OVERVIEW_LIST_FIELDS = [
   "dailyHistory", "dailyHistoryByAccount", "accounts", "exchangeRates", "holdingPrices",
 ] as const satisfies readonly (keyof OverviewPageDto)[];
 
+/** The converted page total, its 30-day change, and the summary tiles. */
+export const ASSETS_SUMMARY_FIELDS = [
+  "accounts", "dailyHistory", "dailyHistoryByAccount", "exchangeRates",
+] as const satisfies readonly (keyof AssetsPageDto)[];
+export const LIABILITIES_SUMMARY_FIELDS = [
+  "accounts", "dailyHistory", "dailyHistoryByAccount", "exchangeRates",
+] as const satisfies readonly (keyof LiabilitiesPageDto)[];
+
 type OverviewSummaryField = (typeof OVERVIEW_SUMMARY_FIELDS)[number];
 type OverviewChartField = (typeof OVERVIEW_CHART_FIELDS)[number];
 type OverviewListField = (typeof OVERVIEW_LIST_FIELDS)[number];
@@ -46,12 +54,12 @@ export type DashboardBlockValueMap = {
     list: Pick<OverviewPageDto, OverviewListField>;
   };
   assets: {
-    summary: Pick<AssetsPageDto, "accounts">;
+    summary: Pick<AssetsPageDto, (typeof ASSETS_SUMMARY_FIELDS)[number]>;
     chart: Pick<AssetsPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount">;
     list: Pick<AssetsPageDto, "accounts" | "positionsByAccount" | "transactionsByAccount" | "dailyHistoryByAccount">;
   };
   liabilities: {
-    summary: Pick<LiabilitiesPageDto, "accounts">;
+    summary: Pick<LiabilitiesPageDto, (typeof LIABILITIES_SUMMARY_FIELDS)[number]>;
     chart: Pick<LiabilitiesPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount">;
     list: Pick<LiabilitiesPageDto, "accounts" | "transactionsByAccount" | "dailyHistoryByAccount">;
     details: Pick<LiabilitiesPageDto, "marginAccounts" | "transactionsByAccount">;
