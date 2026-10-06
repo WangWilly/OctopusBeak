@@ -10,15 +10,12 @@
     Download,
     ListFilter,
     List,
-    X,
   } from "@lucide/svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import { institutionForNamespace } from "$lib/institutions/institutions.ts";
-  import { maskedAccountDigits } from "$lib/overview/overview-format.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
-  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
+  import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
   import {
     filterTransactions,
     flowCounts,
@@ -32,6 +29,7 @@
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
+  import AccountModalHeader from "./AccountModalHeader.svelte";
   import DateRangePopover from "./DateRangePopover.svelte";
 
   export let open = false;
@@ -58,11 +56,7 @@
     menu = null;
   }
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: shownAccount = account ? localizeAccount(account, $t) : null;
-  $: digits = account ? maskedAccountDigits(account.label) : null;
-  $: title = shownAccount
-    ? [shownAccount.institution, shownAccount.product, digits].filter(Boolean).join(" · ")
-    : $t.transactions.title;
+  $: exportName = account ? accountModalTitle(account, $t) : $t.transactions.title;
   $: primaryCurrency = account?.amountLines[0]?.currency ?? "TWD";
   $: inRange = filterTransactions(rows, { range, flow: "all", timeZone: $systemTimezone });
   $: counts = flowCounts(inRange);
@@ -131,11 +125,7 @@
       currency: $t.transactions.currency,
       note: $t.transactions.note,
     }, $systemTimezone);
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    link.download = `${title.replaceAll(/[\\/:*?"<>|]/gu, "-")} ${range ? `${range.start}_${range.end}` : $t.transactions.rangePresets.all}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+    downloadCsv(`${exportName} ${range ? `${range.start}_${range.end}` : $t.transactions.rangePresets.all}`, csv);
   }
 </script>
 
@@ -145,26 +135,14 @@
   <div class="modal open">
     <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
     <div class="modal-panel transactions-panel" role="dialog" aria-modal="true" aria-labelledby="transactions-title" tabindex="-1">
-      <div class="transactions-head">
-        <div class="identity">
-          {#if account && institutionForNamespace(account.institutionKey)}
-            <span class="logo-tile"><InstitutionLogo institution={institutionForNamespace(account.institutionKey)} size={30} /></span>
-          {/if}
-          <div>
-            <p class="eyebrow-label">{$t.transactions.eyebrow}</p>
-            <h2 id="transactions-title">{title}</h2>
-          </div>
-        </div>
+      <AccountModalHeader {account} eyebrow={$t.transactions.eyebrow} titleId="transactions-title" onClose={close}>
         {#if account}
           <div class="balance">
             <span>{$t.transactions.currentBalance}</span>
             <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
           </div>
         {/if}
-        <button class="modal-close" type="button" aria-label={$t.common.close} on:click={close}>
-          <X size={16} strokeWidth={2} aria-hidden="true" />
-        </button>
-      </div>
+      </AccountModalHeader>
 
       <div class="transactions-toolbar">
         <div class="menu-anchor">
@@ -287,45 +265,6 @@
 <style>
   .transactions-panel { overflow: visible; }
 
-  .transactions-head {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-4);
-    padding: var(--space-6) var(--space-6) var(--space-4);
-  }
-
-  .identity {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: var(--space-4);
-    min-width: 0;
-  }
-
-  .logo-tile {
-    display: grid;
-    flex: none;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-  }
-
-  .eyebrow-label {
-    margin: 0;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .identity h2 {
-    margin: 2px 0 0;
-    font-size: 20px;
-    font-weight: 750;
-  }
-
   .balance {
     display: grid;
     justify-items: end;
@@ -342,11 +281,6 @@
     font-family: var(--font-mono);
     font-size: 18px;
     white-space: nowrap;
-  }
-
-  .transactions-head .modal-close {
-    display: grid;
-    place-items: center;
   }
 
   .transactions-toolbar {

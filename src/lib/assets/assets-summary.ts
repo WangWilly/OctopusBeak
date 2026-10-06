@@ -2,6 +2,7 @@ import { convertToTwd, indexExchangeRates } from "../shared-money/exchange-rates
 import {
   accountLedger,
   accountShares,
+  accountTwdValues,
   readAssetAllocation,
   TRAILING_DAYS,
   trailingChange,
@@ -29,6 +30,8 @@ export type AssetsSummary =
     unconvertedCurrencies: string[];
     /** Each account's share of the converted total, for the table. */
     shares: ReadonlyMap<string, number>;
+    /** Each account's converted value, for its positions. */
+    twdValues: ReadonlyMap<string, number>;
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
@@ -53,5 +56,6 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     slices: allocation.slices,
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
+    twdValues: accountTwdValues(input.accounts, rates, valuationDate),
   };
 }

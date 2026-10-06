@@ -42,6 +42,8 @@
   export let focusAccountId: string | null = null;
   /** Each account's share of the converted page total; an absent account shows none. */
   export let shares: ReadonlyMap<string, number> = new Map();
+  /** Converted account values, for the positions modal. */
+  export let twdValues: ReadonlyMap<string, number> = new Map();
 
   export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
@@ -364,7 +366,13 @@
 </section>
 
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
-<AssetModal bind:open={positionsOpen} account={selectedAccount} rows={selectedPositions} />
+<AssetModal
+  bind:open={positionsOpen}
+  account={selectedAccount}
+  rows={selectedPositions}
+  transactions={selectedTransactions}
+  twdValue={selectedAccount ? twdValues.get(selectedAccount.id) ?? null : null}
+/>
 <AccountHistoryModal bind:open={historyOpen} account={selectedAccount} rows={selectedDailyHistory} />
 <CreditCardStatementsModal bind:open={statementsOpen} account={selectedAccount} />
 

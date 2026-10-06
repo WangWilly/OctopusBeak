@@ -51,6 +51,7 @@ test("the total converts every account at the valuation date's rate and splits b
     ["bank", 1000, 0.25],
   ]);
   assert.equal(summary.shares.get("usd"), 0.75, "a foreign-currency account gets its converted share, not 0%");
+  assert.equal(summary.twdValues.get("usd"), 3000, "positions read the account's value in TWD");
 });
 
 test("an account without a rate is left out of the total and named", () => {
