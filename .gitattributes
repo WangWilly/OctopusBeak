@@ -1,3 +1,4 @@
 *.mp4 filter=lfs diff=lfs merge=lfs -text
 src/lib/welcome/assets/** filter=lfs diff=lfs merge=lfs -text
 src/lib/automation/server/models/** filter=lfs diff=lfs merge=lfs -text
+video/**/*.png filter=lfs diff=lfs merge=lfs -text

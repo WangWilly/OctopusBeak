@@ -1,0 +1,423 @@
+<template id="04-merge-template">
+  <div data-hf-id="hf-dzqz" id="root" data-composition-id="04-merge" data-start="0" data-duration="5" data-width="1920" data-height="1080">
+    <style>
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 400;
+        src: local("PingFang TC"), local("PingFangTC-Regular"), local("PingFang TC Regular");
+      }
+      @font-face {
+        font-family: "PingFang TC";
+        font-weight: 600;
+        src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"), local("PingFangTC-Medium");
+      }
+      @font-face {
+        font-family: "SF Mono";
+        font-weight: 700;
+        src: local("SFMono-Bold"), local("SF Mono Bold"), local("SFMono-Semibold"), local("Menlo-Bold"), local("Menlo Bold");
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+        color: #0e1217;
+      }
+      #root * { box-sizing: border-box; }
+
+      /* ── layer 0: paper ground (= frame 03) ── */
+      #m04-ground {
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(ellipse 70% 70% at 88% 88%, #edf4f1 0%, rgba(237,244,241,0.6) 35%, rgba(237,244,241,0) 70%),
+          #f9fafc;
+      }
+      #m04-ground svg { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+      .m04-waves-ink { color: #0e1217; }
+
+      /* ── layer 1: blurred app plate (= frame 03 end: opacity 0.35) ── */
+      #m04-plate-layer { position: absolute; inset: 0; }
+      #m04-plate {
+        position: absolute; left: -96px; top: -54px;
+        width: 2112px; height: 1188px;
+        object-fit: cover;
+        filter: blur(24px);
+        opacity: 0.35;
+      }
+
+      /* ── layer 2: card world ── */
+      #m04-stage { position: absolute; inset: 0; }
+      #m04-world { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+
+      #m04-title {
+        position: absolute; left: 180px; top: 145px; height: 80px;
+        display: flex; align-items: center; gap: 36px;
+        white-space: nowrap;
+      }
+      #m04-title .m04-t { font-size: 60px; font-weight: 600; line-height: 80px; color: #0e1217; }
+      #m04-title .m04-s { font-size: 34px; font-weight: 400; line-height: 80px; color: #5e646a; }
+
+      #m04-card-fill {
+        position: absolute; left: 180px; top: 240px; width: 1560px; height: 640px;
+        border-radius: 28px;
+        background: #ffffff;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+      }
+      #m04-card-edge {
+        position: absolute; left: 180px; top: 240px; width: 1560px; height: 640px;
+        overflow: visible;
+      }
+      #m04-card-edge path { fill: none; stroke: #dbdee2; stroke-width: 1; }
+
+      .m04-merchant { position: absolute; left: 260px; white-space: nowrap; }
+      #m04-m-name { top: 435px; font-size: 56px; font-weight: 600; line-height: 70px; color: #0e1217; }
+      #m04-m-sub { top: 513px; font-size: 36px; font-weight: 400; line-height: 44px; color: #5e646a; }
+      #m04-m-pill {
+        top: 583px; height: 64px; padding: 0 22px;
+        border-radius: 32px;
+        background: #e5f2ea; color: #2f7a55;
+        font-size: 40px; font-weight: 600; line-height: 64px;
+        transform-origin: 0% 50%;
+      }
+
+      #m04-divider {
+        position: absolute; left: 680px; top: 380px; width: 1px; height: 320px;
+        background: #dbdee2;
+      }
+
+      .m04-row {
+        position: absolute; left: 720px; width: 1000px; height: 120px;
+        border-radius: 20px;
+        background: #ffffff;
+        border: 1px solid rgba(219, 222, 226, 0);
+        transform-origin: 50% 50%;
+      }
+      #m04-row-inv { top: 410px; }
+      #m04-row-card { top: 550px; }
+      .m04-ico {
+        position: absolute; left: 24px; top: 32px; width: 56px; height: 56px;
+        border-radius: 14px; background: #f1f4f6;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .m04-ico svg { width: 32px; height: 32px; fill: none; stroke: #5e646a; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .m04-txt { position: absolute; left: 92px; top: 14px; white-space: nowrap; }
+      .m04-txt .m04-h { font-size: 44px; font-weight: 600; letter-spacing: -0.01em; line-height: 52px; color: #0e1217; }
+      .m04-txt .m04-m { font-size: 30px; font-weight: 400; line-height: 40px; color: #5e646a; }
+      .m04-amt {
+        position: absolute; right: 80px; top: 0; height: 120px;
+        font-family: "SF Mono", monospace; font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        font-size: 60px; line-height: 120px; color: #0e1217;
+        white-space: nowrap;
+      }
+
+      #m04-link { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: visible; pointer-events: none; }
+      #m04-link-line { stroke: #18a9a4; stroke-width: 4; stroke-linecap: round; fill: none; }
+      #m04-eq {
+        position: absolute; left: 1578px; top: 518px; width: 44px; height: 44px;
+        border-radius: 50%;
+        background: #ffffff; border: 3px solid #18a9a4;
+        color: #0f7c78; font-family: "SF Mono", monospace; font-weight: 700;
+        font-size: 30px; line-height: 38px; text-align: center;
+        transform-origin: 50% 50%;
+      }
+
+      #m04-chips {
+        position: absolute; left: 720px; top: 709px; width: 700px; height: 72px;
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .m04-chip {
+        position: relative; height: 72px; padding: 0 12px;
+        border-radius: 16px;
+        background: #dff3f1; color: #0f7c78;
+        display: flex; align-items: center; gap: 6px;
+        font-size: 44px; font-weight: 600; line-height: 72px; white-space: nowrap;
+      }
+      .m04-chip svg { width: 30px; height: 30px; flex: none; }
+      .m04-chip path { fill: none; stroke: #18a9a4; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+
+      #m04-btn {
+        position: absolute; left: 1480px; top: 754px; width: 240px; height: 92px;
+        border-radius: 20px; background: #0e1217; color: #ffffff;
+        display: flex; align-items: center; justify-content: center; gap: 12px;
+        font-size: 40px; font-weight: 600; line-height: 92px;
+        transform-origin: 50% 50%; z-index: 2;
+      }
+      #m04-btn svg { width: 34px; height: 34px; fill: none; stroke: #ffffff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+      .m04-ripple {
+        position: absolute; left: 1550px; top: 750px; width: 100px; height: 100px; border-radius: 50%;
+        border: 3px solid #18a9a4; opacity: 0; pointer-events: none; z-index: 1;
+      }
+
+      /* merged row (incoming) — centered y=520 */
+      #m04-merged {
+        position: absolute; left: 720px; top: 445px; width: 1000px; height: 150px;
+        border-radius: 20px; background: #edf4f1; border: 1px solid #18a9a4;
+        transform-origin: 50% 50%; z-index: 3;
+      }
+      #m04-merged .m04-gname {
+        position: absolute; left: 32px; top: 18px; font-size: 52px; font-weight: 600;
+        letter-spacing: -0.01em; line-height: 64px; white-space: nowrap;
+      }
+      #m04-merged .m04-tags { position: absolute; left: 32px; top: 94px; display: flex; gap: 12px; }
+      .m04-tag {
+        height: 38px; padding: 0 14px; border-radius: 10px; background: #ffffff;
+        border: 1px solid #c7e6e3; color: #2c6485; font-size: 24px; font-weight: 600;
+        display: flex; align-items: center; white-space: nowrap;
+      }
+      #m04-merged .m04-gamt {
+        position: absolute; right: 80px; top: 0; height: 150px;
+        font-family: "SF Mono", monospace; font-weight: 700; font-variant-numeric: tabular-nums;
+        font-size: 72px; line-height: 150px; color: #0e1217; white-space: nowrap;
+      }
+
+      /* count line — centered y=650 */
+      #m04-count { position: absolute; left: 752px; top: 620px; height: 60px; display: flex; align-items: center; }
+      #m04-count-wrap {
+        display: inline-flex; align-items: center; min-width: 330px; white-space: pre;
+        font-size: 48px; line-height: 60px; font-weight: 600; color: #18a9a4;
+      }
+      #m04-caret { display: inline-block; width: 4px; height: 46px; margin-left: 6px; background: #18a9a4; opacity: 0; }
+      #m04-badge {
+        position: absolute; left: 1100px; top: 622px; height: 56px; padding: 0 20px; border-radius: 14px;
+        background: #dff3f1; border: 1px solid #18a9a4; color: #0f7c78;
+        display: flex; align-items: center; gap: 10px; font-size: 32px; font-weight: 600;
+        transform-origin: 0% 50%; white-space: nowrap;
+      }
+      #m04-badge svg { width: 28px; height: 28px; fill: none; stroke: #0f7c78; stroke-width: 2.2; stroke-linecap: round; }
+
+      /* seal — 300px at (520,560) */
+      #m04-seal {
+        position: absolute; left: 370px; top: 410px; width: 300px; height: 300px;
+        transform-origin: 50% 50%; z-index: 5; color: #18a9a4;
+      }
+      #m04-seal svg { position: absolute; left: 0; top: 0; width: 300px; height: 300px; overflow: visible; }
+      #m04-seal-disc {
+        position: absolute; left: 60px; top: 60px; width: 180px; height: 180px; border-radius: 50%;
+        background: rgba(255, 255, 255, 0.95); border: 2px solid #18a9a4;
+      }
+      #m04-seal-text {
+        position: absolute; left: 0; top: 120px; width: 300px; height: 60px; text-align: center;
+        font-size: 48px; line-height: 60px; font-weight: 600; color: #0f7c78; letter-spacing: 0.04em;
+        transform-origin: 50% 50%;
+      }
+      .m04-ink {
+        position: absolute; left: 370px; top: 410px; width: 300px; height: 300px; border-radius: 50%;
+        border: 3px solid #18a9a4; opacity: 0; z-index: 4; pointer-events: none;
+      }
+
+      #m04-cursor {
+        position: absolute; left: 1608px; top: 806px; width: 52px; height: 64px; z-index: 10;
+        transform-origin: 0% 0%; pointer-events: none;
+      }
+    </style>
+
+    <!-- layer 0: paper ground -->
+    <div data-hf-id="hf-eaxu" id="m04-ground" class="clip" data-start="0" data-duration="5" data-track-index="0">
+      <svg data-hf-id="hf-m4cd" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs data-hf-id="hf-mh0t">
+          <g data-hf-id="hf-5a7f" id="m04-w" fill="none" stroke="currentColor"><path data-hf-id="hf-cqf8" id="m04-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-48yj" href="#m04-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-88q0" href="#m04-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-z8t1" href="#m04-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-yydd" href="#m04-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-5re0" href="#m04-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-8a6r" href="#m04-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-j1k2" href="#m04-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-jfeh" href="#m04-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-ithe" href="#m04-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-j41v" href="#m04-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-hr2g" href="#m04-wl" transform="translate(300 75)" /><use data-hf-id="hf-1lcv" href="#m04-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-6pqy" href="#m04-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-bghq" href="#m04-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-6usv" href="#m04-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-ttak" href="#m04-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-hia1" href="#m04-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-ulxu" href="#m04-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-3lm1" href="#m04-wl" transform="translate(0 150)" /><use data-hf-id="hf-74x3" href="#m04-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-20ac" href="#m04-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-4tg7" href="#m04-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-mrb6" href="#m04-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-ave9" href="#m04-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-3hmr" href="#m04-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-n9sg" href="#m04-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-irsp" href="#m04-wl" transform="translate(300 225)" /><use data-hf-id="hf-tjh6" href="#m04-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-ab9b" href="#m04-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-6u8e" href="#m04-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-52xh" href="#m04-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-da7c" href="#m04-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-1ein" href="#m04-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-rciy" href="#m04-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-b9ri" href="#m04-wl" transform="translate(0 300)" /><use data-hf-id="hf-rrhg" href="#m04-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-dxup" href="#m04-wl" transform="translate(75 318.8)" /></g>
+          <pattern data-hf-id="hf-ucmk" id="m04-waves-ink" class="m04-waves-ink" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-ec39" href="#m04-w" /></pattern>
+        </defs>
+        <rect data-hf-id="hf-exhk" width="1920" height="1080" fill="url(#m04-waves-ink)" opacity="0.08" />
+      </svg>
+    </div>
+
+    <!-- layer 1: blurred app plate -->
+    <div data-hf-id="hf-t06i" id="m04-plate-layer" class="clip" data-start="0" data-duration="5" data-track-index="1">
+      <img data-hf-id="hf-29sp" id="m04-plate" src="assets/spending-c-detail-pending.png" alt="">
+    </div>
+
+    <!-- layer 2: the card world -->
+    <div data-hf-id="hf-i19d" id="m04-stage" class="clip" data-start="0" data-duration="5" data-track-index="2">
+      <div data-hf-id="hf-e16h" id="m04-world">
+        <div data-hf-id="hf-c6iz" id="m04-title">
+          <span data-hf-id="hf-7xh3" class="m04-t">帳目合併</span>
+          <span data-hf-id="hf-2vri" class="m04-s">同一筆消費的發票與刷卡，只算一次。</span>
+        </div>
+
+        <div data-hf-id="hf-gxtl" id="m04-card-fill"></div>
+        <svg data-hf-id="hf-f28f" id="m04-card-edge" viewBox="0 0 1560 640" xmlns="http://www.w3.org/2000/svg">
+          <path data-hf-id="hf-4rsw" d="M28 0.5 H1532 A27.5 27.5 0 0 1 1559.5 28 V612 A27.5 27.5 0 0 1 1532 639.5 H28 A27.5 27.5 0 0 1 0.5 612 V28 A27.5 27.5 0 0 1 28 0.5 Z" />
+        </svg>
+
+        <div data-hf-id="hf-lscf" id="m04-merchant">
+          <div data-hf-id="hf-x10c" id="m04-m-name" class="m04-merchant">全聯福利中心</div>
+          <div data-hf-id="hf-0wpt" id="m04-m-sub" class="m04-merchant">日常 · 10/3</div>
+          <div data-hf-id="hf-ypj5" id="m04-m-pill" class="m04-merchant">高度相符</div>
+        </div>
+
+        <div data-hf-id="hf-4zfu" id="m04-divider"></div>
+
+        <div data-hf-id="hf-5goc" id="m04-row-inv" class="m04-row">
+          <div data-hf-id="hf-m6ox" class="m04-ico">
+            <svg data-hf-id="hf-ulu9" viewBox="0 0 24 24"><path data-hf-id="hf-zf00" d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path data-hf-id="hf-xgmo" d="M14.5 8.5c-.4-.7-1.4-1-2.5-1-1.4 0-2.3.7-2.3 1.6 0 2.1 4.8 1.2 4.8 3.4 0 1-1 1.7-2.5 1.7-1.2 0-2.1-.4-2.6-1.1M12 6.3v1.2M12 14.2v1.3" /></svg>
+          </div>
+          <div data-hf-id="hf-inqy" class="m04-txt">
+            <div data-hf-id="hf-5989" class="m04-h">電子發票 AB-38201745</div>
+            <div data-hf-id="hf-4iiv" class="m04-m">10/3 18:21 · 全聯實業</div>
+          </div>
+          <div data-hf-id="hf-e464" class="m04-amt">TWD 1,444</div>
+        </div>
+
+        <div data-hf-id="hf-vmm1" id="m04-row-card" class="m04-row">
+          <div data-hf-id="hf-pw1h" class="m04-ico">
+            <svg data-hf-id="hf-1tol" viewBox="0 0 24 24"><rect data-hf-id="hf-z1ue" x="3" y="5.5" width="18" height="13" rx="2.5" /><path data-hf-id="hf-tark" d="M3 10h18M7 14.5h4" /></svg>
+          </div>
+          <div data-hf-id="hf-apum" class="m04-txt">
+            <div data-hf-id="hf-l5lc" class="m04-h">玉山信用卡 末碼 5512</div>
+            <div data-hf-id="hf-12cq" class="m04-m">10/3 消費 · 10/4 入帳</div>
+          </div>
+          <div data-hf-id="hf-xxg4" class="m04-amt">TWD 1,444</div>
+        </div>
+
+        <svg data-hf-id="hf-rn5a" id="m04-link" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg">
+          <path data-hf-id="hf-a38i" id="m04-link-line" pathLength="1" d="M1600 495 V585" />
+        </svg>
+        <div data-hf-id="hf-wavg" id="m04-eq">=</div>
+
+        <div data-hf-id="hf-165g" id="m04-chips">
+          <div data-hf-id="hf-xsae" class="m04-chip"><svg data-hf-id="hf-30lo" viewBox="0 0 24 24"><path data-hf-id="hf-gjri" d="M4.5 12.5l5 5 10-11" /></svg>金額相同</div>
+          <div data-hf-id="hf-t0cn" class="m04-chip"><svg data-hf-id="hf-2man" viewBox="0 0 24 24"><path data-hf-id="hf-ng9e" d="M4.5 12.5l5 5 10-11" /></svg>同一天</div>
+          <div data-hf-id="hf-07iu" class="m04-chip"><svg data-hf-id="hf-3t7q" viewBox="0 0 24 24"><path data-hf-id="hf-nukf" d="M4.5 12.5l5 5 10-11" /></svg>商家相符</div>
+        </div>
+
+        <div data-hf-id="hf-ioeg" id="m04-ripple-1" class="m04-ripple"></div>
+        <div data-hf-id="hf-rcab" id="m04-ripple-2" class="m04-ripple"></div>
+
+        <div data-hf-id="hf-gay6" id="m04-btn">
+          <svg data-hf-id="hf-3ewp" viewBox="0 0 24 24"><path data-hf-id="hf-2odt" d="M5 3.5v6.5c0 4 3 6.5 7 6.5h7M15.5 13l3.5 3.5-3.5 3.5M19 3.5v6" /></svg>合併
+        </div>
+
+        <!-- merged row (incoming) -->
+        <div data-hf-id="hf-xpm3" id="m04-merged">
+          <div data-hf-id="hf-ut8d" class="m04-gname">全聯福利中心</div>
+          <div data-hf-id="hf-m57l" class="m04-tags">
+            <div data-hf-id="hf-2iix" class="m04-tag">電子發票</div>
+            <div data-hf-id="hf-7q75" class="m04-tag">玉山信用卡 5512</div>
+          </div>
+          <div data-hf-id="hf-g927" class="m04-gamt">TWD 1,444</div>
+        </div>
+
+        <div data-hf-id="hf-l7zo" id="m04-count">
+          <span data-hf-id="hf-3w2y" id="m04-count-wrap"><span data-hf-id="hf-od97" id="m04-count-text"></span><span data-hf-id="hf-riq1" id="m04-caret"></span></span>
+        </div>
+        <div data-hf-id="hf-xdx9" id="m04-badge">
+          <svg data-hf-id="hf-4lts" viewBox="0 0 24 24"><path data-hf-id="hf-eu6t" d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>已合併
+        </div>
+
+        <div data-hf-id="hf-oic8" id="m04-ink-1" class="m04-ink"></div>
+        <div data-hf-id="hf-x683" id="m04-ink-2" class="m04-ink"></div>
+
+        <!-- guilloche rosette seal (paths from assets/banknote-defs.svg #rosette) -->
+        <div data-hf-id="hf-k1zc" id="m04-seal">
+          <svg data-hf-id="hf-y30r" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="0.7">
+            <g data-hf-id="hf-u91o" id="m04-seal-outer"><g data-hf-id="hf-7kpw" id="m04-ro"><path data-hf-id="hf-v62y" id="m04-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-hlm3" href="#m04-ro0" transform="rotate(9)" /><use data-hf-id="hf-1snj" href="#m04-ro0" transform="rotate(18)" /><use data-hf-id="hf-ubfd" href="#m04-ro0" transform="rotate(27)" /><use data-hf-id="hf-937b" href="#m04-ro0" transform="rotate(36)" /><use data-hf-id="hf-zh51" href="#m04-ro0" transform="rotate(45)" /><use data-hf-id="hf-8vt3" href="#m04-ro0" transform="rotate(54)" /><use data-hf-id="hf-ukq9" href="#m04-ro0" transform="rotate(63)" /><use data-hf-id="hf-zq3z" href="#m04-ro0" transform="rotate(72)" /><use data-hf-id="hf-e8xh" href="#m04-ro0" transform="rotate(81)" /><use data-hf-id="hf-573z" href="#m04-ro0" transform="rotate(90)" /><use data-hf-id="hf-exd4" href="#m04-ro0" transform="rotate(99)" /><use data-hf-id="hf-nr7f" href="#m04-ro0" transform="rotate(108)" /><use data-hf-id="hf-4qyb" href="#m04-ro0" transform="rotate(117)" /><use data-hf-id="hf-q67f" href="#m04-ro0" transform="rotate(126)" /><use data-hf-id="hf-vl97" href="#m04-ro0" transform="rotate(135)" /><use data-hf-id="hf-xgr7" href="#m04-ro0" transform="rotate(144)" /><use data-hf-id="hf-xnsr" href="#m04-ro0" transform="rotate(153)" /><use data-hf-id="hf-zjar" href="#m04-ro0" transform="rotate(162)" /><use data-hf-id="hf-z9yb" href="#m04-ro0" transform="rotate(171)" /><use data-hf-id="hf-nbmz" href="#m04-ro0" transform="rotate(180)" /><use data-hf-id="hf-bz38" href="#m04-ro0" transform="rotate(189)" /><use data-hf-id="hf-r9vu" href="#m04-ro0" transform="rotate(198)" /><use data-hf-id="hf-emqn" href="#m04-ro0" transform="rotate(207)" /><use data-hf-id="hf-zlz9" href="#m04-ro0" transform="rotate(216)" /><use data-hf-id="hf-d2mf" href="#m04-ro0" transform="rotate(225)" /><use data-hf-id="hf-ewg9" href="#m04-ro0" transform="rotate(234)" /><use data-hf-id="hf-lpw7" href="#m04-ro0" transform="rotate(243)" /><use data-hf-id="hf-edrp" href="#m04-ro0" transform="rotate(252)" /><use data-hf-id="hf-5by7" href="#m04-ro0" transform="rotate(261)" /><use data-hf-id="hf-f5r5" href="#m04-ro0" transform="rotate(270)" /><use data-hf-id="hf-ky0a" href="#m04-ro0" transform="rotate(279)" /><use data-hf-id="hf-nqpa" href="#m04-ro0" transform="rotate(288)" /><use data-hf-id="hf-tqdq" href="#m04-ro0" transform="rotate(297)" /><use data-hf-id="hf-72g7" href="#m04-ro0" transform="rotate(306)" /><use data-hf-id="hf-xyfr" href="#m04-ro0" transform="rotate(315)" /><use data-hf-id="hf-o44z" href="#m04-ro0" transform="rotate(324)" /><use data-hf-id="hf-93tn" href="#m04-ro0" transform="rotate(333)" /><use data-hf-id="hf-ptcv" href="#m04-ro0" transform="rotate(342)" /><use data-hf-id="hf-ibrj" href="#m04-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-w7lo" href="#m04-ro" transform="rotate(1.1)" /><use data-hf-id="hf-788n" href="#m04-ro" transform="rotate(2.3)" /><use data-hf-id="hf-f0f5" href="#m04-ro" transform="rotate(3.4)" /><use data-hf-id="hf-knk7" href="#m04-ro" transform="rotate(4.5)" /><use data-hf-id="hf-3kfp" href="#m04-ro" transform="rotate(5.6)" /><use data-hf-id="hf-8uji" href="#m04-ro" transform="rotate(6.8)" /><use data-hf-id="hf-jc3m" href="#m04-ro" transform="rotate(7.9)" /></g>
+            <g data-hf-id="hf-awre" id="m04-seal-band"><g data-hf-id="hf-elkx" id="m04-rb"><path data-hf-id="hf-78ni" id="m04-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-gtzd" href="#m04-rb0" transform="rotate(15)" /><use data-hf-id="hf-7v7g" href="#m04-rb0" transform="rotate(30)" /><use data-hf-id="hf-xdz4" href="#m04-rb0" transform="rotate(45)" /><use data-hf-id="hf-f0s9" href="#m04-rb0" transform="rotate(60)" /><use data-hf-id="hf-ajqb" href="#m04-rb0" transform="rotate(75)" /><use data-hf-id="hf-swf2" href="#m04-rb0" transform="rotate(90)" /><use data-hf-id="hf-avef" href="#m04-rb0" transform="rotate(105)" /><use data-hf-id="hf-dgu6" href="#m04-rb0" transform="rotate(120)" /><use data-hf-id="hf-596s" href="#m04-rb0" transform="rotate(135)" /><use data-hf-id="hf-s5w1" href="#m04-rb0" transform="rotate(150)" /><use data-hf-id="hf-zob9" href="#m04-rb0" transform="rotate(165)" /><use data-hf-id="hf-m3h8" href="#m04-rb0" transform="rotate(180)" /><use data-hf-id="hf-etlu" href="#m04-rb0" transform="rotate(195)" /><use data-hf-id="hf-dsrg" href="#m04-rb0" transform="rotate(210)" /><use data-hf-id="hf-bzkc" href="#m04-rb0" transform="rotate(225)" /><use data-hf-id="hf-n5y1" href="#m04-rb0" transform="rotate(240)" /><use data-hf-id="hf-qver" href="#m04-rb0" transform="rotate(255)" /><use data-hf-id="hf-bqjm" href="#m04-rb0" transform="rotate(270)" /><use data-hf-id="hf-qj4q" href="#m04-rb0" transform="rotate(285)" /><use data-hf-id="hf-fl3q" href="#m04-rb0" transform="rotate(300)" /><use data-hf-id="hf-tbcs" href="#m04-rb0" transform="rotate(315)" /><use data-hf-id="hf-dx2l" href="#m04-rb0" transform="rotate(330)" /><use data-hf-id="hf-j4q5" href="#m04-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-7b79" href="#m04-rb" transform="rotate(1.9)" /><use data-hf-id="hf-1qb8" href="#m04-rb" transform="rotate(3.8)" /><use data-hf-id="hf-zyd8" href="#m04-rb" transform="rotate(5.6)" /><use data-hf-id="hf-nygr" href="#m04-rb" transform="rotate(7.5)" /><use data-hf-id="hf-ig96" href="#m04-rb" transform="rotate(9.4)" /><use data-hf-id="hf-2xoi" href="#m04-rb" transform="rotate(11.3)" /><use data-hf-id="hf-yy1e" href="#m04-rb" transform="rotate(13.1)" /></g>
+            <g data-hf-id="hf-avv3" id="m04-seal-mid"><g data-hf-id="hf-v27f" id="m04-rh"><path data-hf-id="hf-py5j" id="m04-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-ks97" href="#m04-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-4aq1" href="#m04-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-nq7c" href="#m04-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-xv90" href="#m04-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-6jdp" href="#m04-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-6nl3" href="#m04-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-9wlv" href="#m04-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-34rk" href="#m04-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-ff6z" href="#m04-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-nnzs" href="#m04-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-7cgv" href="#m04-rh" transform="rotate(5.5)" /><use data-hf-id="hf-0fi1" href="#m04-rh" transform="rotate(10.9)" /><use data-hf-id="hf-j50w" href="#m04-rh" transform="rotate(16.4)" /><use data-hf-id="hf-3kx2" href="#m04-rh" transform="rotate(21.8)" /><use data-hf-id="hf-6wj5" href="#m04-rh" transform="rotate(27.3)" /></g>
+            <g data-hf-id="hf-5ri5" id="m04-seal-inner"><g data-hf-id="hf-dtx4" id="m04-rc"><path data-hf-id="hf-b8tx" id="m04-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-gznl" href="#m04-rc0" transform="rotate(30)" /><use data-hf-id="hf-ucas" href="#m04-rc0" transform="rotate(60)" /><use data-hf-id="hf-jjrv" href="#m04-rc0" transform="rotate(90)" /><use data-hf-id="hf-8ds5" href="#m04-rc0" transform="rotate(120)" /><use data-hf-id="hf-60ne" href="#m04-rc0" transform="rotate(150)" /><use data-hf-id="hf-nddr" href="#m04-rc0" transform="rotate(180)" /><use data-hf-id="hf-wqkb" href="#m04-rc0" transform="rotate(210)" /><use data-hf-id="hf-8n5i" href="#m04-rc0" transform="rotate(240)" /><use data-hf-id="hf-6z4d" href="#m04-rc0" transform="rotate(270)" /><use data-hf-id="hf-g7zt" href="#m04-rc0" transform="rotate(300)" /><use data-hf-id="hf-tfsy" href="#m04-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-lsih" href="#m04-rc" transform="rotate(3.8)" /><use data-hf-id="hf-y816" href="#m04-rc" transform="rotate(7.5)" /><use data-hf-id="hf-5j1h" href="#m04-rc" transform="rotate(11.3)" /><use data-hf-id="hf-o2t2" href="#m04-rc" transform="rotate(15)" /><use data-hf-id="hf-peiv" href="#m04-rc" transform="rotate(18.8)" /><use data-hf-id="hf-vk6p" href="#m04-rc" transform="rotate(22.5)" /><use data-hf-id="hf-i6m7" href="#m04-rc" transform="rotate(26.3)" /><g data-hf-id="hf-r43e" id="m04-ri"><path data-hf-id="hf-8w7m" id="m04-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-ukxo" href="#m04-ri0" transform="rotate(40)" /><use data-hf-id="hf-ncog" href="#m04-ri0" transform="rotate(80)" /><use data-hf-id="hf-4fn7" href="#m04-ri0" transform="rotate(120)" /><use data-hf-id="hf-g2l3" href="#m04-ri0" transform="rotate(160)" /><use data-hf-id="hf-6x4o" href="#m04-ri0" transform="rotate(200)" /><use data-hf-id="hf-ik2k" href="#m04-ri0" transform="rotate(240)" /><use data-hf-id="hf-947k" href="#m04-ri0" transform="rotate(280)" /><use data-hf-id="hf-oqj1" href="#m04-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-str1" href="#m04-ri" transform="rotate(6.7)" /><use data-hf-id="hf-otip" href="#m04-ri" transform="rotate(13.3)" /><use data-hf-id="hf-g06w" href="#m04-ri" transform="rotate(20)" /><use data-hf-id="hf-8oad" href="#m04-ri" transform="rotate(26.7)" /><use data-hf-id="hf-fjo3" href="#m04-ri" transform="rotate(33.3)" /></g>
+          </svg>
+          <div data-hf-id="hf-i20i" id="m04-seal-disc"></div>
+          <div data-hf-id="hf-x7vh" id="m04-seal-text">已合併</div>
+        </div>
+      </div>
+
+      <div data-hf-id="hf-fg71" id="m04-cursor">
+        <svg data-hf-id="hf-63gk" width="52" height="64" viewBox="0 0 26 32">
+          <path data-hf-id="hf-cwqz" d="M1.5 1.5v24.5l6.2-5.6 4.1 9.4 4.4-1.9-4.1-9.3 8.4-.4z" fill="#0e1217" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round" />
+        </svg>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        const tl = gsap.timeline({ paused: true });
+
+        // ── Scene 1 (0.0–1.0): cursor glides in and presses 合併 ──
+        tl.fromTo("#m04-cursor", { x: 330, y: 300 }, { x: 0, y: 0, duration: 0.6, ease: "power3.out" }, 0);
+        tl.to("#m04-cursor", { scale: 0.85, duration: 0.1, ease: "power1.in" }, 0.72);
+        tl.to("#m04-btn", { scale: 0.93, backgroundColor: "#000000", duration: 0.1, ease: "power1.in" }, 0.72);
+        tl.to("#m04-cursor", { scale: 1, duration: 0.4, ease: "back.out(1.6)" }, 0.82);
+        tl.to("#m04-btn", { scale: 1, backgroundColor: "#0e1217", duration: 0.4, ease: "back.out(1.6)" }, 0.82);
+        tl.fromTo(
+          [".m04-ripple"],
+          { scale: 0.4, opacity: 0.9 },
+          { scale: 4, opacity: 0, duration: 0.65, ease: "power2.out", stagger: 0.09, immediateRender: false },
+          0.74,
+        );
+
+        // ── Scene 2 (1.0–2.2): two rows fold into one ──
+        tl.to(["#m04-chips", "#m04-btn", "#m04-cursor"], { y: "+=24", opacity: 0, duration: 0.35, ease: "power2.in", stagger: 0.04 }, 1.0);
+        tl.fromTo("#m04-link-line", { strokeDasharray: 1, strokeDashoffset: 0 }, { strokeDashoffset: -1, duration: 0.35, ease: "power2.in" }, 1.0);
+        tl.fromTo("#m04-eq", { scale: 1, opacity: 1 }, { scale: 0, opacity: 0, duration: 0.3, ease: "power2.in" }, 1.0);
+        // rows converge on y=520 (invoice 470→520, card 610→520)
+        tl.to("#m04-row-inv", { y: 50, duration: 0.5, ease: "power3.inOut" }, 1.05);
+        tl.to("#m04-row-card", { y: -90, duration: 0.5, ease: "power3.inOut" }, 1.05);
+        // scale-swap: outgoing pair shrinks + fades, merged row pops in on the same center
+        tl.to([".m04-row"], { scale: 0.75, opacity: 0, duration: 0.35, ease: "power2.in" }, 1.5);
+        tl.fromTo("#m04-merged", { scale: 0.75, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.55, ease: "back.out(1.6)" }, 1.72);
+        tl.to("#m04-merchant", { opacity: 0.22, duration: 0.4, ease: "power2.out" }, 1.9);
+
+        // ── Scene 3 (2.2–3.4): THE HIT — rosette seal stamps down ──
+        tl.fromTo("#m04-seal", { scale: 2, rotation: -25, opacity: 0 }, { scale: 1, rotation: 0, opacity: 0.9, duration: 0.5, ease: "expo.out" }, 2.25);
+        tl.fromTo("#m04-seal-text", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(1.6)" }, 2.5);
+        const HIT = 2.42;
+        tl.to("#m04-world", { x: 7, y: 3, duration: 0.05, ease: "power1.out" }, HIT);
+        tl.to("#m04-world", { x: -5, y: -2, duration: 0.06, ease: "power1.inOut" }, HIT + 0.05);
+        tl.to("#m04-world", { x: 3, y: 1, duration: 0.06, ease: "power1.inOut" }, HIT + 0.11);
+        tl.to("#m04-world", { x: -1.5, y: 0, duration: 0.06, ease: "power1.inOut" }, HIT + 0.17);
+        tl.to("#m04-world", { x: 0, y: 0, duration: 0.08, ease: "power1.out" }, HIT + 0.23);
+        tl.fromTo(
+          [".m04-ink"],
+          { scale: 0.9, opacity: 0.8 },
+          { scale: 1.9, opacity: 0, duration: 0.8, ease: "power2.out", stagger: 0.1, immediateRender: false },
+          HIT,
+        );
+
+        // ── Scene 4 (3.4–5.0): count types in, badge pops, hold ──
+        const SEQ = [
+          { t: 0, text: "" },
+          { t: 3.45, text: "本" },
+          { t: 3.56, text: "本月" },
+          { t: 3.68, text: "本月計" },
+          { t: 3.8, text: "本月計為" },
+          { t: 4.02, text: "本月計為 1" },
+          { t: 4.14, text: "本月計為 1 筆" },
+        ];
+        const textEl = document.getElementById("m04-count-text");
+        const caretEl = document.getElementById("m04-caret");
+        const textAt = (time) => {
+          for (let i = SEQ.length - 1; i >= 0; i--) if (time >= SEQ[i].t) return SEQ[i].text;
+          return "";
+        };
+        const drv = { t: 0 };
+        tl.to(drv, {
+          t: 5,
+          duration: 5,
+          ease: "none",
+          onUpdate: () => {
+            textEl.textContent = textAt(drv.t);
+            let on = 0;
+            if (drv.t >= 3.4 && drv.t < 4.2) on = 1;
+            else if (drv.t >= 4.2) on = Math.sin(((drv.t - 4.2) * Math.PI * 2) / 0.7 + Math.PI / 2) > 0 ? 1 : 0;
+            caretEl.style.opacity = String(on);
+          },
+        }, 0);
+        tl.fromTo("#m04-badge", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.4)" }, 4.22);
+        // seal rings turn a few degrees (finite, no loop)
+        tl.fromTo("#m04-seal-mid", { rotation: 0 }, { rotation: 6, svgOrigin: "0 0", duration: 1.6, ease: "power1.inOut" }, 3.4);
+        tl.fromTo("#m04-seal-inner", { rotation: 0 }, { rotation: -8, svgOrigin: "0 0", duration: 1.6, ease: "power1.inOut" }, 3.4);
+        tl.fromTo("#m04-seal-band", { rotation: 0 }, { rotation: 3, svgOrigin: "0 0", duration: 1.6, ease: "power1.inOut" }, 3.4);
+
+        tl.set({}, {}, 5);
+
+        window.__timelines = window.__timelines || {};
+        window.__timelines["04-merge"] = tl;
+      })();
+    </script>
+  </div>
+</template>

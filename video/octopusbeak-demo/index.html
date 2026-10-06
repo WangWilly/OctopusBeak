@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js" integrity="sha384-sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2" crossorigin="anonymous"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #f9fafc;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div
+        id="el-01-hook"
+        class="scene"
+        data-composition-id="01-hook"
+        data-composition-src="compositions/frames/01-hook.html"
+        data-start="0"
+        data-duration="4.5"
+        data-track-index="0"
+      ></div>
+
+      <div
+        id="el-02-value"
+        class="scene"
+        data-composition-id="02-value"
+        data-composition-src="compositions/frames/02-value.html"
+        data-start="4.5"
+        data-duration="4"
+        data-track-index="1"
+      ></div>
+
+      <div
+        id="el-03-match"
+        class="scene"
+        data-composition-id="03-match"
+        data-composition-src="compositions/frames/03-match.html"
+        data-start="8.5"
+        data-duration="6.5"
+        data-track-index="0"
+      ></div>
+
+      <div
+        id="el-04-merge"
+        class="scene"
+        data-composition-id="04-merge"
+        data-composition-src="compositions/frames/04-merge.html"
+        data-start="15"
+        data-duration="5"
+        data-track-index="1"
+      ></div>
+
+      <div
+        id="el-05-rollup"
+        class="scene"
+        data-composition-id="05-rollup"
+        data-composition-src="compositions/frames/05-rollup.html"
+        data-start="20"
+        data-duration="6.6"
+        data-track-index="0"
+      ></div>
+
+      <div
+        id="el-06-brand"
+        class="scene"
+        data-composition-id="06-brand"
+        data-composition-src="compositions/frames/06-brand.html"
+        data-start="26"
+        data-duration="4"
+        data-track-index="1"
+      ></div>
+
+      <!-- BGM -->
+      <audio
+        id="el-bgm"
+        src="assets/bgm/track-30s.mp3"
+        data-start="0"
+        data-duration="30"
+        data-track-index="11"
+        data-volume="0.9"
+      ></audio>
+
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+      // ── frame transitions (injected by transitions.mjs) ──
+      (function () { var tl = window.__timelines["main"];
+        tl.to("#el-05-rollup", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.6, ease: "power2.inOut" }, 26);
+        tl.fromTo("#el-06-brand", { filter: "blur(10px)", scale: 0.97, opacity: 0 }, { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.6, ease: "power2.inOut" }, 26);
+        tl.to({}, { duration: 30 }, 0); // full-span anchor — main.duration() == composition total (Studio master duration)
+      })();
+    </script>
+  </body>
+</html>

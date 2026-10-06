@@ -1,0 +1,485 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+@font-face {
+        font-family: "PingFang TC";
+        font-weight: 400;
+        src: local("PingFang TC"), local("PingFangTC-Regular"), local("PingFang TC Regular");
+      }
+@font-face {
+        font-family: "PingFang TC";
+        font-weight: 600;
+        src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"), local("PingFangTC-Medium");
+      }
+@font-face {
+        font-family: "SF Mono";
+        font-weight: 700;
+        src: local("SFMono-Bold"), local("SF Mono Bold"), local("SFMono-Semibold"), local("Menlo-Bold"), local("Menlo Bold");
+      }
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: "PingFang TC", sans-serif;
+      color: #0e1217;
+    }
+    #root * {
+      box-sizing: border-box;
+    }
+
+    /* ── camera world ── */
+    [id="05-rollup-stage"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    [id="05-rollup-world"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      transform-origin: 0 0;
+    }
+
+    /* overview window: world (180,372), 1500 wide, cropped to y=900 */
+    [id="05-rollup-overview"] {
+      position: absolute;
+      left: 180px;
+      top: 372px;
+      width: 1500px;
+      height: 528px;
+      overflow: hidden;
+      border-radius: 24px;
+      border: 1px solid #dbdee2;
+      background: #ffffff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+    }
+    [id="05-rollup-overview"] img {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1500px;
+      height: auto;
+      display: block;
+    }
+    [id="05-rollup-nw-glow"] {
+      position: absolute;
+      left: 508px;
+      top: 594px;
+      width: 446px;
+      height: 58px;
+      border-radius: 12px;
+      border: 3px solid #18a9a4;
+      background: rgba(24, 169, 164, 0.1);
+      box-shadow: 0 0 28px rgba(24, 169, 164, 0.55);
+    }
+
+    /* spending window: world (1420,380), 400 wide, cropped to y=899 */
+    [id="05-rollup-spending"] {
+      position: absolute;
+      left: 1420px;
+      top: 380px;
+      width: 400px;
+      height: 519px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid #dbdee2;
+      background: #ffffff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+    }
+    [id="05-rollup-spending"] img {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 400px;
+      height: auto;
+      display: block;
+    }
+
+    /* threads + counter (world space) */
+    [id="05-rollup-threads"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: visible;
+    }
+    [id="05-rollup-threads"] path {
+      fill: none;
+      stroke: #18a9a4;
+      stroke-width: 3.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    [id="05-rollup-pill"] {
+      position: absolute;
+      left: 1505px;
+      top: 401px;
+      width: 320px;
+      height: 76px;
+      border-radius: 12px;
+      border: 2px solid #18a9a4;
+      background: #ffffff;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+      display: flex;
+      align-items: center;
+      padding-left: 16px;
+      transform-origin: 0 50%;
+    }
+    [id="05-rollup-pill"] span {
+      font-family: "SF Mono", ui-monospace, monospace;
+      font-weight: 700;
+      font-size: 48px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      color: #0e1217;
+      letter-spacing: -0.02em;
+    }
+
+    /* frame-4 card world, authored in its own t=0 screen coords */
+    [id="05-rollup-cardlayer"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      transform-origin: 0 0;
+    }
+      [id="05-rollup-ground"] {
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(ellipse 70% 70% at 88% 88%, #edf4f1 0%, rgba(237,244,241,0.6) 35%, rgba(237,244,241,0) 70%),
+          #f9fafc;
+      }
+      [id="05-rollup-ground"] svg { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+      [class~="05-rollup-waves-ink"] { color: #0e1217; }
+      [id="05-rollup-plate-layer"] { position: absolute; inset: 0; }
+      [id="05-rollup-plate"] {
+        position: absolute; left: -96px; top: -54px;
+        width: 2112px; height: 1188px;
+        object-fit: cover;
+        filter: blur(24px);
+        opacity: 0.35;
+      }
+      [id="05-rollup-title"] {
+        position: absolute; left: 180px; top: 145px; height: 80px;
+        display: flex; align-items: center; gap: 36px;
+        white-space: nowrap;
+      }
+      [id="05-rollup-title"] [class~="05-rollup-t"] { font-size: 60px; font-weight: 600; line-height: 80px; color: #0e1217; }
+      [id="05-rollup-title"] [class~="05-rollup-s"] { font-size: 34px; font-weight: 400; line-height: 80px; color: #5e646a; }
+      [id="05-rollup-card-fill"] {
+        position: absolute; left: 180px; top: 240px; width: 1560px; height: 640px;
+        border-radius: 28px;
+        background: #ffffff;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+      }
+      [id="05-rollup-card-edge"] {
+        position: absolute; left: 180px; top: 240px; width: 1560px; height: 640px;
+        overflow: visible;
+      }
+      [id="05-rollup-card-edge"] path { fill: none; stroke: #dbdee2; stroke-width: 1; }
+      [class~="05-rollup-merchant"] { position: absolute; left: 260px; white-space: nowrap; }
+      [id="05-rollup-m-name"] { top: 435px; font-size: 56px; font-weight: 600; line-height: 70px; color: #0e1217; }
+      [id="05-rollup-m-sub"] { top: 513px; font-size: 36px; font-weight: 400; line-height: 44px; color: #5e646a; }
+      [id="05-rollup-m-pill"] {
+        top: 583px; height: 64px; padding: 0 22px;
+        border-radius: 32px;
+        background: #e5f2ea; color: #2f7a55;
+        font-size: 40px; font-weight: 600; line-height: 64px;
+        transform-origin: 0% 50%;
+      }
+      [id="05-rollup-divider"] {
+        position: absolute; left: 680px; top: 380px; width: 1px; height: 320px;
+        background: #dbdee2;
+      }
+      [id="05-rollup-merged"] {
+        position: absolute; left: 720px; top: 445px; width: 1000px; height: 150px;
+        border-radius: 20px; background: #edf4f1; border: 1px solid #18a9a4;
+        transform-origin: 50% 50%; z-index: 3;
+      }
+      [id="05-rollup-merged"] [class~="05-rollup-gname"] {
+        position: absolute; left: 32px; top: 18px; font-size: 52px; font-weight: 600;
+        letter-spacing: -0.01em; line-height: 64px; white-space: nowrap;
+      }
+      [id="05-rollup-merged"] [class~="05-rollup-tags"] { position: absolute; left: 32px; top: 94px; display: flex; gap: 12px; }
+      [class~="05-rollup-tag"] {
+        height: 38px; padding: 0 14px; border-radius: 10px; background: #ffffff;
+        border: 1px solid #c7e6e3; color: #2c6485; font-size: 24px; font-weight: 600;
+        display: flex; align-items: center; white-space: nowrap;
+      }
+      [id="05-rollup-merged"] [class~="05-rollup-gamt"] {
+        position: absolute; right: 80px; top: 0; height: 150px;
+        font-family: "SF Mono", monospace; font-weight: 700; font-variant-numeric: tabular-nums;
+        font-size: 72px; line-height: 150px; color: #0e1217; white-space: nowrap;
+      }
+      [id="05-rollup-count"] { position: absolute; left: 752px; top: 620px; height: 60px; display: flex; align-items: center; }
+      [id="05-rollup-count-wrap"] {
+        display: inline-flex; align-items: center; min-width: 330px; white-space: pre;
+        font-size: 48px; line-height: 60px; font-weight: 600; color: #18a9a4;
+      }
+      [id="05-rollup-caret"] { display: inline-block; width: 4px; height: 46px; margin-left: 6px; background: #18a9a4; opacity: 0; }
+      [id="05-rollup-badge"] {
+        position: absolute; left: 1364px; top: 622px; height: 56px; padding: 0 20px; border-radius: 14px;
+        background: #dff3f1; border: 1px solid #18a9a4; color: #0f7c78;
+        display: flex; align-items: center; gap: 10px; font-size: 32px; font-weight: 600;
+        transform-origin: 0% 50%; white-space: nowrap;
+      }
+      [id="05-rollup-badge"] svg { width: 28px; height: 28px; fill: none; stroke: #0f7c78; stroke-width: 2.2; stroke-linecap: round; }
+      [id="05-rollup-seal"] {
+        position: absolute; left: 370px; top: 410px; width: 300px; height: 300px;
+        transform-origin: 50% 50%; z-index: 5; color: #18a9a4;
+      }
+      [id="05-rollup-seal"] svg { position: absolute; left: 0; top: 0; width: 300px; height: 300px; overflow: visible; }
+      [id="05-rollup-seal-disc"] {
+        position: absolute; left: 60px; top: 60px; width: 180px; height: 180px; border-radius: 50%;
+        background: rgba(255, 255, 255, 0.95); border: 2px solid #18a9a4;
+      }
+      [id="05-rollup-seal-text"] {
+        position: absolute; left: 0; top: 120px; width: 300px; height: 60px; text-align: center;
+        font-size: 38px; line-height: 60px; font-weight: 600; color: #0f7c78; letter-spacing: 0.02em;
+        transform-origin: 50% 50%;
+      }
+      /* 05: card fill + edge re-parented into the morph container (same screen rect) */
+      [id="05-rollup-card"] { position: absolute; left: 180px; top: 240px; width: 1560px; height: 640px; transform-origin: 50% 50%; }
+      [id="05-rollup-card"] > [id="05-rollup-card-fill"], [id="05-rollup-card"] > [id="05-rollup-card-edge"] { left: 0; top: 0; }
+      [id="05-rollup-card-old"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+
+      [id="05-rollup-cardlayer"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+    /* ── headline (screen space, camera locked by then) ── */
+    [id="05-rollup-headline"] {
+      position: absolute;
+      left: 180px;
+      top: 66px;
+      font-size: 112px;
+      line-height: 1.15;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    [id="05-rollup-headline"] .ln {
+      display: block;
+    }
+    [id="05-rollup-headline"] .w {
+      display: inline-block;
+    }
+    [id="05-rollup-hl2"] {
+      color: #2c6485;
+    }
+  </style>
+
+  <div data-hf-id="hf-mnvp" id="root" data-composition-id="05-rollup" data-start="0" data-duration="6.6" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-nhie" id="05-rollup-ground" class="clip" data-start="0" data-duration="6.6" data-track-index="0">
+      <svg data-hf-id="hf-m4cd" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs data-hf-id="hf-mh0t">
+          <g data-hf-id="hf-fuza" id="05-rollup-w" fill="none" stroke="currentColor"><path data-hf-id="hf-zmc1" id="05-rollup-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)" /><use data-hf-id="hf-edey" href="#05-rollup-wl" transform="translate(487.5 -28.1)" /><use data-hf-id="hf-mwu1" href="#05-rollup-wl" transform="translate(525 -18.7)" /><use data-hf-id="hf-wgfa" href="#05-rollup-wl" transform="translate(562.5 -9.4)" /><use data-hf-id="hf-etm6" href="#05-rollup-wl" transform="translate(37.5 9.4)" /><use data-hf-id="hf-9jat" href="#05-rollup-wl" transform="translate(75 18.8)" /><use data-hf-id="hf-ot1w" href="#05-rollup-wl" transform="translate(112.5 28.1)" /><use data-hf-id="hf-ynr1" href="#05-rollup-wl" transform="translate(150 37.5)" /><use data-hf-id="hf-p2h6" href="#05-rollup-wl" transform="translate(187.5 46.9)" /><use data-hf-id="hf-is2t" href="#05-rollup-wl" transform="translate(225 56.3)" /><use data-hf-id="hf-dzjw" href="#05-rollup-wl" transform="translate(262.5 65.6)" /><use data-hf-id="hf-arkb" href="#05-rollup-wl" transform="translate(300 75)" /><use data-hf-id="hf-0ras" href="#05-rollup-wl" transform="translate(337.5 84.4)" /><use data-hf-id="hf-i0kp" href="#05-rollup-wl" transform="translate(375 93.8)" /><use data-hf-id="hf-3aa3" href="#05-rollup-wl" transform="translate(412.5 103.1)" /><use data-hf-id="hf-15p2" href="#05-rollup-wl" transform="translate(450 112.5)" /><use data-hf-id="hf-ratl" href="#05-rollup-wl" transform="translate(487.5 121.9)" /><use data-hf-id="hf-hie4" href="#05-rollup-wl" transform="translate(525 131.3)" /><use data-hf-id="hf-rf0j" href="#05-rollup-wl" transform="translate(562.5 140.6)" /><use data-hf-id="hf-uczs" href="#05-rollup-wl" transform="translate(0 150)" /><use data-hf-id="hf-g9gg" href="#05-rollup-wl" transform="translate(37.5 159.4)" /><use data-hf-id="hf-d7nb" href="#05-rollup-wl" transform="translate(75 168.8)" /><use data-hf-id="hf-zg26" href="#05-rollup-wl" transform="translate(112.5 178.1)" /><use data-hf-id="hf-omsb" href="#05-rollup-wl" transform="translate(150 187.5)" /><use data-hf-id="hf-tr3s" href="#05-rollup-wl" transform="translate(187.5 196.9)" /><use data-hf-id="hf-uaoe" href="#05-rollup-wl" transform="translate(225 206.3)" /><use data-hf-id="hf-kz51" href="#05-rollup-wl" transform="translate(262.5 215.6)" /><use data-hf-id="hf-pgkk" href="#05-rollup-wl" transform="translate(300 225)" /><use data-hf-id="hf-t2s7" href="#05-rollup-wl" transform="translate(337.5 234.4)" /><use data-hf-id="hf-xyhm" href="#05-rollup-wl" transform="translate(375 243.8)" /><use data-hf-id="hf-mwir" href="#05-rollup-wl" transform="translate(412.5 253.1)" /><use data-hf-id="hf-eyhw" href="#05-rollup-wl" transform="translate(450 262.5)" /><use data-hf-id="hf-788d" href="#05-rollup-wl" transform="translate(487.5 271.9)" /><use data-hf-id="hf-0k7u" href="#05-rollup-wl" transform="translate(525 281.3)" /><use data-hf-id="hf-vorv" href="#05-rollup-wl" transform="translate(562.5 290.6)" /><use data-hf-id="hf-sm8r" href="#05-rollup-wl" transform="translate(0 300)" /><use data-hf-id="hf-mggv" href="#05-rollup-wl" transform="translate(37.5 309.4)" /><use data-hf-id="hf-leni" href="#05-rollup-wl" transform="translate(75 318.8)" /></g>
+          <pattern data-hf-id="hf-g280" id="05-rollup-waves-ink" class="05-rollup-waves-ink" patternUnits="userSpaceOnUse" width="600" height="300"><use data-hf-id="hf-5qfo" href="#05-rollup-w" /></pattern>
+        </defs>
+        <rect data-hf-id="hf-xoar" width="1920" height="1080" fill="url(#05-rollup-waves-ink)" opacity="0.08" />
+      </svg>
+    </div>
+
+    <div data-hf-id="hf-xydy" id="05-rollup-plate-layer" class="clip" data-start="0" data-duration="6.6" data-track-index="1">
+      <img data-hf-id="hf-6p7y" id="05-rollup-plate" src="assets/spending-c-detail-pending.png" alt="">
+    </div>
+
+    <div data-hf-id="hf-l6oh" id="05-rollup-stage" class="clip" data-start="0" data-duration="6.6" data-track-index="2">
+      <div data-hf-id="hf-uvbg" id="05-rollup-world">
+        <div data-hf-id="hf-qz6x" id="05-rollup-overview">
+          <img data-hf-id="hf-p8fc" src="assets/overview.webp" alt="Overview">
+        </div>
+        <div data-hf-id="hf-8p0h" id="05-rollup-nw-glow"></div>
+        <div data-hf-id="hf-02a0" id="05-rollup-spending">
+          <img data-hf-id="hf-g721" src="assets/spending-a-default.png" alt="Spending">
+        </div>
+
+        <div data-hf-id="hf-bi4p" id="05-rollup-cardlayer">
+          <div data-hf-id="hf-1neq" id="05-rollup-title">
+          <span data-hf-id="hf-hmqi" class="05-rollup-t">Merge review</span>
+          <span data-hf-id="hf-2yuh" class="05-rollup-s">An invoice and its payment, counted once.</span>
+        </div>
+          <div data-hf-id="hf-rcre" id="05-rollup-card">
+            <div data-hf-id="hf-hyp0" id="05-rollup-card-fill"></div>
+            <svg data-hf-id="hf-2yd2" id="05-rollup-card-edge" viewBox="0 0 1560 640" xmlns="http://www.w3.org/2000/svg">
+          <path data-hf-id="hf-4rsw" d="M28 0.5 H1532 A27.5 27.5 0 0 1 1559.5 28 V612 A27.5 27.5 0 0 1 1532 639.5 H28 A27.5 27.5 0 0 1 0.5 612 V28 A27.5 27.5 0 0 1 28 0.5 Z" />
+        </svg>
+          </div>
+          <div data-hf-id="hf-q0g6" id="05-rollup-card-old">
+            <div data-hf-id="hf-ltcn" id="05-rollup-merchant" style="opacity: 0.22">
+          <div data-hf-id="hf-qels" id="05-rollup-m-name" class="05-rollup-merchant">PX Mart</div>
+          <div data-hf-id="hf-diyt" id="05-rollup-m-sub" class="05-rollup-merchant">Daily · 10/3</div>
+          <div data-hf-id="hf-595h" id="05-rollup-m-pill" class="05-rollup-merchant">Strong match</div>
+        </div>
+            <div data-hf-id="hf-wuff" id="05-rollup-divider"></div>
+            <!-- merged row (incoming) -->
+        <div data-hf-id="hf-j9ds" id="05-rollup-merged">
+          <div data-hf-id="hf-v9yo" class="05-rollup-gname">PX Mart</div>
+          <div data-hf-id="hf-59v6" class="05-rollup-tags">
+            <div data-hf-id="hf-phx8" class="05-rollup-tag">E-invoice</div>
+            <div data-hf-id="hf-2aps" class="05-rollup-tag">E.SUN card 5512</div>
+          </div>
+          <div data-hf-id="hf-kalq" class="05-rollup-gamt">TWD 1,444</div>
+        </div>
+            <div data-hf-id="hf-ddjx" id="05-rollup-count">
+          <span data-hf-id="hf-ud7d" id="05-rollup-count-wrap"><span data-hf-id="hf-y387" id="05-rollup-count-text">Counted once this month</span><span data-hf-id="hf-rxey" id="05-rollup-caret" style="opacity: 1"></span></span>
+        </div>
+            <div data-hf-id="hf-hlgy" id="05-rollup-badge">
+          <svg data-hf-id="hf-ulu9" viewBox="0 0 24 24"><path data-hf-id="hf-eu6t" d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>Merged
+        </div>
+          </div>
+          <!-- guilloche rosette seal (paths from assets/banknote-defs.svg #rosette) -->
+        <div data-hf-id="hf-p0rh" id="05-rollup-seal" style="opacity: 0.9">
+          <svg data-hf-id="hf-y30r" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="0.7">
+            <g data-hf-id="hf-tfez" id="05-rollup-seal-outer"><g data-hf-id="hf-qh63" id="05-rollup-ro"><path data-hf-id="hf-b4ud" id="05-rollup-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-7ft6" href="#05-rollup-ro0" transform="rotate(9)" /><use data-hf-id="hf-onm8" href="#05-rollup-ro0" transform="rotate(18)" /><use data-hf-id="hf-p6mq" href="#05-rollup-ro0" transform="rotate(27)" /><use data-hf-id="hf-24wc" href="#05-rollup-ro0" transform="rotate(36)" /><use data-hf-id="hf-6szm" href="#05-rollup-ro0" transform="rotate(45)" /><use data-hf-id="hf-2nkw" href="#05-rollup-ro0" transform="rotate(54)" /><use data-hf-id="hf-4qg2" href="#05-rollup-ro0" transform="rotate(63)" /><use data-hf-id="hf-4378" href="#05-rollup-ro0" transform="rotate(72)" /><use data-hf-id="hf-s176" href="#05-rollup-ro0" transform="rotate(81)" /><use data-hf-id="hf-i7e8" href="#05-rollup-ro0" transform="rotate(90)" /><use data-hf-id="hf-g4nr" href="#05-rollup-ro0" transform="rotate(99)" /><use data-hf-id="hf-3iz6" href="#05-rollup-ro0" transform="rotate(108)" /><use data-hf-id="hf-o156" href="#05-rollup-ro0" transform="rotate(117)" /><use data-hf-id="hf-mxoe" href="#05-rollup-ro0" transform="rotate(126)" /><use data-hf-id="hf-uf9q" href="#05-rollup-ro0" transform="rotate(135)" /><use data-hf-id="hf-j2si" href="#05-rollup-ro0" transform="rotate(144)" /><use data-hf-id="hf-632y" href="#05-rollup-ro0" transform="rotate(153)" /><use data-hf-id="hf-warq" href="#05-rollup-ro0" transform="rotate(162)" /><use data-hf-id="hf-y3yu" href="#05-rollup-ro0" transform="rotate(171)" /><use data-hf-id="hf-vkn6" href="#05-rollup-ro0" transform="rotate(180)" /><use data-hf-id="hf-v8ax" href="#05-rollup-ro0" transform="rotate(189)" /><use data-hf-id="hf-dwyb" href="#05-rollup-ro0" transform="rotate(198)" /><use data-hf-id="hf-ogb2" href="#05-rollup-ro0" transform="rotate(207)" /><use data-hf-id="hf-plpk" href="#05-rollup-ro0" transform="rotate(216)" /><use data-hf-id="hf-5h6a" href="#05-rollup-ro0" transform="rotate(225)" /><use data-hf-id="hf-2vm8" href="#05-rollup-ro0" transform="rotate(234)" /><use data-hf-id="hf-8whq" href="#05-rollup-ro0" transform="rotate(243)" /><use data-hf-id="hf-g8m8" href="#05-rollup-ro0" transform="rotate(252)" /><use data-hf-id="hf-fukq" href="#05-rollup-ro0" transform="rotate(261)" /><use data-hf-id="hf-9yrs" href="#05-rollup-ro0" transform="rotate(270)" /><use data-hf-id="hf-2g4f" href="#05-rollup-ro0" transform="rotate(279)" /><use data-hf-id="hf-igof" href="#05-rollup-ro0" transform="rotate(288)" /><use data-hf-id="hf-3333" href="#05-rollup-ro0" transform="rotate(297)" /><use data-hf-id="hf-i58m" href="#05-rollup-ro0" transform="rotate(306)" /><use data-hf-id="hf-jyfq" href="#05-rollup-ro0" transform="rotate(315)" /><use data-hf-id="hf-e0ym" href="#05-rollup-ro0" transform="rotate(324)" /><use data-hf-id="hf-eab2" href="#05-rollup-ro0" transform="rotate(333)" /><use data-hf-id="hf-703y" href="#05-rollup-ro0" transform="rotate(342)" /><use data-hf-id="hf-8tb2" href="#05-rollup-ro0" transform="rotate(351)" /></g><use data-hf-id="hf-ystn" href="#05-rollup-ro" transform="rotate(1.1)" /><use data-hf-id="hf-5g40" href="#05-rollup-ro" transform="rotate(2.3)" /><use data-hf-id="hf-50ua" href="#05-rollup-ro" transform="rotate(3.4)" /><use data-hf-id="hf-m0mw" href="#05-rollup-ro" transform="rotate(4.5)" /><use data-hf-id="hf-b7u6" href="#05-rollup-ro" transform="rotate(5.6)" /><use data-hf-id="hf-jqnh" href="#05-rollup-ro" transform="rotate(6.8)" /><use data-hf-id="hf-8re1" href="#05-rollup-ro" transform="rotate(7.9)" /></g>
+            <g data-hf-id="hf-qra7" id="05-rollup-seal-band" transform="rotate(3)"><g data-hf-id="hf-z51y" id="05-rollup-rb"><path data-hf-id="hf-8xe1" id="05-rollup-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-jzza" href="#05-rollup-rb0" transform="rotate(15)" /><use data-hf-id="hf-e14r" href="#05-rollup-rb0" transform="rotate(30)" /><use data-hf-id="hf-51nz" href="#05-rollup-rb0" transform="rotate(45)" /><use data-hf-id="hf-s5bq" href="#05-rollup-rb0" transform="rotate(60)" /><use data-hf-id="hf-zjfg" href="#05-rollup-rb0" transform="rotate(75)" /><use data-hf-id="hf-p1ep" href="#05-rollup-rb0" transform="rotate(90)" /><use data-hf-id="hf-9pou" href="#05-rollup-rb0" transform="rotate(105)" /><use data-hf-id="hf-lqxv" href="#05-rollup-rb0" transform="rotate(120)" /><use data-hf-id="hf-vir9" href="#05-rollup-rb0" transform="rotate(135)" /><use data-hf-id="hf-3kl0" href="#05-rollup-rb0" transform="rotate(150)" /><use data-hf-id="hf-w2zo" href="#05-rollup-rb0" transform="rotate(165)" /><use data-hf-id="hf-xn95" href="#05-rollup-rb0" transform="rotate(180)" /><use data-hf-id="hf-qylf" href="#05-rollup-rb0" transform="rotate(195)" /><use data-hf-id="hf-6pah" href="#05-rollup-rb0" transform="rotate(210)" /><use data-hf-id="hf-njvx" href="#05-rollup-rb0" transform="rotate(225)" /><use data-hf-id="hf-30i4" href="#05-rollup-rb0" transform="rotate(240)" /><use data-hf-id="hf-q28i" href="#05-rollup-rb0" transform="rotate(255)" /><use data-hf-id="hf-rx4v" href="#05-rollup-rb0" transform="rotate(270)" /><use data-hf-id="hf-gnt7" href="#05-rollup-rb0" transform="rotate(285)" /><use data-hf-id="hf-4wy7" href="#05-rollup-rb0" transform="rotate(300)" /><use data-hf-id="hf-4r3d" href="#05-rollup-rb0" transform="rotate(315)" /><use data-hf-id="hf-i7x8" href="#05-rollup-rb0" transform="rotate(330)" /><use data-hf-id="hf-i4tc" href="#05-rollup-rb0" transform="rotate(345)" /></g><use data-hf-id="hf-cve2" href="#05-rollup-rb" transform="rotate(1.9)" /><use data-hf-id="hf-1n47" href="#05-rollup-rb" transform="rotate(3.8)" /><use data-hf-id="hf-6m13" href="#05-rollup-rb" transform="rotate(5.6)" /><use data-hf-id="hf-bl08" href="#05-rollup-rb" transform="rotate(7.5)" /><use data-hf-id="hf-jx85" href="#05-rollup-rb" transform="rotate(9.4)" /><use data-hf-id="hf-mrz3" href="#05-rollup-rb" transform="rotate(11.3)" /><use data-hf-id="hf-q8z3" href="#05-rollup-rb" transform="rotate(13.1)" /></g>
+            <g data-hf-id="hf-nlc7" id="05-rollup-seal-mid" transform="rotate(6)"><g data-hf-id="hf-2zok" id="05-rollup-rh"><path data-hf-id="hf-h2s4" id="05-rollup-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-nb58" href="#05-rollup-rh0" transform="rotate(32.7)" /><use data-hf-id="hf-wnwm" href="#05-rollup-rh0" transform="rotate(65.5)" /><use data-hf-id="hf-wmsr" href="#05-rollup-rh0" transform="rotate(98.2)" /><use data-hf-id="hf-s4n5" href="#05-rollup-rh0" transform="rotate(130.9)" /><use data-hf-id="hf-ooc0" href="#05-rollup-rh0" transform="rotate(163.6)" /><use data-hf-id="hf-lmmi" href="#05-rollup-rh0" transform="rotate(196.4)" /><use data-hf-id="hf-hzjm" href="#05-rollup-rh0" transform="rotate(229.1)" /><use data-hf-id="hf-j6el" href="#05-rollup-rh0" transform="rotate(261.8)" /><use data-hf-id="hf-wypy" href="#05-rollup-rh0" transform="rotate(294.5)" /><use data-hf-id="hf-7199" href="#05-rollup-rh0" transform="rotate(327.3)" /></g><use data-hf-id="hf-8awo" href="#05-rollup-rh" transform="rotate(5.5)" /><use data-hf-id="hf-akkg" href="#05-rollup-rh" transform="rotate(10.9)" /><use data-hf-id="hf-11dt" href="#05-rollup-rh" transform="rotate(16.4)" /><use data-hf-id="hf-vjrb" href="#05-rollup-rh" transform="rotate(21.8)" /><use data-hf-id="hf-2e1w" href="#05-rollup-rh" transform="rotate(27.3)" /></g>
+            <g data-hf-id="hf-zeai" id="05-rollup-seal-inner" transform="rotate(-8)"><g data-hf-id="hf-5arr" id="05-rollup-rc"><path data-hf-id="hf-50ni" id="05-rollup-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-lbim" href="#05-rollup-rc0" transform="rotate(30)" /><use data-hf-id="hf-zljn" href="#05-rollup-rc0" transform="rotate(60)" /><use data-hf-id="hf-rqjw" href="#05-rollup-rc0" transform="rotate(90)" /><use data-hf-id="hf-17es" href="#05-rollup-rc0" transform="rotate(120)" /><use data-hf-id="hf-aj3n" href="#05-rollup-rc0" transform="rotate(150)" /><use data-hf-id="hf-v0nq" href="#05-rollup-rc0" transform="rotate(180)" /><use data-hf-id="hf-29kq" href="#05-rollup-rc0" transform="rotate(210)" /><use data-hf-id="hf-0n7r" href="#05-rollup-rc0" transform="rotate(240)" /><use data-hf-id="hf-a06s" href="#05-rollup-rc0" transform="rotate(270)" /><use data-hf-id="hf-7bqk" href="#05-rollup-rc0" transform="rotate(300)" /><use data-hf-id="hf-u0rj" href="#05-rollup-rc0" transform="rotate(330)" /></g><use data-hf-id="hf-bdiy" href="#05-rollup-rc" transform="rotate(3.8)" /><use data-hf-id="hf-fnyp" href="#05-rollup-rc" transform="rotate(7.5)" /><use data-hf-id="hf-fjtw" href="#05-rollup-rc" transform="rotate(11.3)" /><use data-hf-id="hf-t56n" href="#05-rollup-rc" transform="rotate(15)" /><use data-hf-id="hf-dwqa" href="#05-rollup-rc" transform="rotate(18.8)" /><use data-hf-id="hf-46x8" href="#05-rollup-rc" transform="rotate(22.5)" /><use data-hf-id="hf-aqba" href="#05-rollup-rc" transform="rotate(26.3)" /><g data-hf-id="hf-3rcd" id="05-rollup-ri"><path data-hf-id="hf-z7m9" id="05-rollup-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke" /><use data-hf-id="hf-t397" href="#05-rollup-ri0" transform="rotate(40)" /><use data-hf-id="hf-3dh3" href="#05-rollup-ri0" transform="rotate(80)" /><use data-hf-id="hf-94a6" href="#05-rollup-ri0" transform="rotate(120)" /><use data-hf-id="hf-0nm2" href="#05-rollup-ri0" transform="rotate(160)" /><use data-hf-id="hf-6eb1" href="#05-rollup-ri0" transform="rotate(200)" /><use data-hf-id="hf-qpe1" href="#05-rollup-ri0" transform="rotate(240)" /><use data-hf-id="hf-0zlx" href="#05-rollup-ri0" transform="rotate(280)" /><use data-hf-id="hf-3pdo" href="#05-rollup-ri0" transform="rotate(320)" /></g><use data-hf-id="hf-q2h6" href="#05-rollup-ri" transform="rotate(6.7)" /><use data-hf-id="hf-ltg0" href="#05-rollup-ri" transform="rotate(13.3)" /><use data-hf-id="hf-zy6h" href="#05-rollup-ri" transform="rotate(20)" /><use data-hf-id="hf-gynk" href="#05-rollup-ri" transform="rotate(26.7)" /><use data-hf-id="hf-bt6y" href="#05-rollup-ri" transform="rotate(33.3)" /></g>
+          </svg>
+          <div data-hf-id="hf-joj7" id="05-rollup-seal-disc"></div>
+          <div data-hf-id="hf-2dwa" id="05-rollup-seal-text">Merged</div>
+        </div>
+        </div>
+
+        <svg data-hf-id="hf-boex" id="05-rollup-threads" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path data-hf-id="hf-al28" id="05-rollup-thread1" d="M1503 871.5 H1503 Q1497 871.5 1497 864 V447 Q1497 439 1505 439" />
+          <path data-hf-id="hf-6g0u" id="05-rollup-thread2" d="M1505 439 C1330 439 1150 623 956 623" />
+        </svg>
+        <div data-hf-id="hf-kf1d" id="05-rollup-pill"><span data-hf-id="hf-48e4" id="05-rollup-tally">TWD 11,941</span></div>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-so8s" id="05-rollup-headline" class="clip" data-start="0" data-duration="6.6" data-track-index="3">
+      <span data-hf-id="hf-smev" class="ln"><span data-hf-id="hf-85x6" class="w">Every</span> <span data-hf-id="hf-g69n" class="w">number,</span></span>
+      <span data-hf-id="hf-f562" class="ln" id="05-rollup-hl2"><span data-hf-id="hf-todb" class="w">traced</span> <span data-hf-id="hf-8k2b" class="w">to its</span> <span data-hf-id="hf-mob5" class="w">source.</span></span>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (n) {
+        return document.getElementById("05-rollup-" + n);
+      };
+      var world = $("world");
+      var cardLayer = $("cardlayer");
+      var card = $("card");
+
+      // ── card-world geometry (all derived, never hand-tuned) ──
+      // Spending plate is a 1425×2159 page; it sits in the world at (1420,380), 400 wide.
+      var SP = { x: 1420, y: 380, k: 400 / 1425 };
+      // 全聯福利中心 list row in page px (measured from the 2× plate): x 297–1384, y 1708–1794.
+      var ROW = { x: 297, y: 1708, w: 1087, h: 86 };
+      var rowW = ROW.w * SP.k;
+      var rowH = ROW.h * SP.k;
+      var rowCx = SP.x + (ROW.x + ROW.w / 2) * SP.k;
+      var rowCy = SP.y + (ROW.y + ROW.h / 2) * SP.k;
+      // Frame-4 handoff: card 1560×640 centred at (960,560) on screen.
+      var CARD = { cx: 960, cy: 560, w: 1560, h: 640 };
+      var S0 = CARD.w / rowW; // camera scale at t=0 so the row reads exactly as the card
+
+      // ── camera: world screen = S·w + (x, y) (origin 0 0) ──
+      // Scale: S(t) = S0^(1 − p), p = power1.out(ramped t / 4.6) — log-scale interpolation, one
+      // decelerating pull to a dead stop. Focus Fc (world point at screen centre) glides from
+      // the row, to the spending page's centre (row + 本月消費 in view), then to the overview
+      // layout — all as custom eases on tweens of the one world wrapper (no callbacks, seek-safe).
+      // Frame 4 ends at rest, so warp time with a short velocity ramp (A = 0.15 of the shot)
+      // before the power1.out deceleration; the pull-back starts from zero speed, no jolt at the cut.
+      var pOut = gsap.parseEase("power1.out");
+      var A = 0.15;
+      var p1 = function (t) {
+        var u = t < A ? (t * t) / (2 * A) : t - A / 2;
+        return pOut(u / (1 - A / 2));
+      };
+      var smooth = function (u) {
+        u = Math.min(1, Math.max(0, u));
+        return u * u * (3 - 2 * u);
+      };
+      var F0 = { x: rowCx, y: rowCy - (CARD.cy - 540) / S0 }; // row centre lands on (960,560)
+      var FW = { x: SP.x + 200, y: SP.y + 260 }; // spending window centre
+      var F1 = { x: 960, y: 540 };
+      var P_MID = 0.75;
+      var camS = function (t) {
+        return Math.pow(S0, 1 - p1(t));
+      };
+      var camF = function (t, k) {
+        var p = p1(t);
+        if (p <= P_MID) return F0[k] + (FW[k] - F0[k]) * smooth(p / P_MID);
+        return FW[k] + (F1[k] - FW[k]) * smooth((p - P_MID) / (1 - P_MID));
+      };
+      var X0 = 960 - S0 * F0.x;
+      var Y0 = 540 - S0 * F0.y;
+      var easeS = function (t) {
+        return (camS(t) - S0) / (1 - S0);
+      };
+      var easeX = function (t) {
+        return (960 - camS(t) * camF(t, "x") - X0) / (0 - X0);
+      };
+      var easeY = function (t) {
+        return (540 - camS(t) * camF(t, "y") - Y0) / (0 - Y0);
+      };
+
+      // Card layer is authored in t=0 screen px; map it into world space: w = (L − (X0,Y0)) / S0.
+      cardLayer.style.transform = "translate(" + -X0 / S0 + "px," + -Y0 / S0 + "px) scale(" + 1 / S0 + ")";
+
+      // svg-path-draw setup
+      ["thread1", "thread2"].forEach(function (n) {
+        var p = $(n);
+        var len = p.getTotalLength() * 1.02;
+        p.style.strokeDasharray = len + "";
+        p.style.strokeDashoffset = len + "";
+      });
+
+      var tl = gsap.timeline({ paused: true });
+
+      // ── the ONE continuous decelerating pull-back: 0 → 4.6s, then locked ──
+      tl.fromTo(world, { scale: S0, transformOrigin: "0 0", force3D: false }, { scale: 1, duration: 4.6, ease: easeS, force3D: false }, 0);
+      tl.fromTo(world, { x: X0 }, { x: 0, duration: 4.6, ease: easeX, force3D: false }, 0);
+      tl.fromTo(world, { y: Y0 }, { y: 0, duration: 4.6, ease: easeY, force3D: false }, 0);
+
+      // ── Scene 1 (0–1.4): title strip + seal fade; card flattens into the list row ──
+      tl.fromTo([$("title"), $("seal")], { opacity: function (i) { return i ? 0.9 : 1; } }, { opacity: 0, duration: 0.5, ease: "power1.in" }, 0.05);
+      tl.fromTo($("card-old"), { opacity: 1 }, { opacity: 0, duration: 0.45, ease: "power1.in" }, 0.1);
+      tl.fromTo(card, { scaleY: 1 }, { scaleY: (rowH * S0) / CARD.h, duration: 1.1, ease: "power2.inOut", force3D: false }, 0.1);
+      tl.fromTo(
+        $("card-fill"),
+        { borderRadius: 28, backgroundColor: "rgba(255,255,255,1)", boxShadow: "0 18px 40px rgba(15,23,42,0.12)" },
+        { borderRadius: 0, backgroundColor: "rgba(24,169,164,0.22)", boxShadow: "0 0px 0px rgba(15,23,42,0)", duration: 1.1, ease: "power2.inOut" },
+        0.1,
+      );
+      tl.fromTo($("card-edge"), { opacity: 1 }, { opacity: 0, duration: 0.5, ease: "power1.in" }, 0.1);
+      tl.fromTo($("spending"), { opacity: 0 }, { opacity: 1, duration: 0.7, ease: "power1.out" }, 0.25);
+      tl.fromTo($("plate-layer"), { opacity: 1 }, { opacity: 0, duration: 0.9, ease: "power1.inOut" }, 0.1);
+
+      // ── Scene 2 (1.4–3.0): up the page to 本月消費; counter + thread row → total ──
+      tl.fromTo($("thread1"), { strokeDashoffset: $("thread1").style.strokeDashoffset }, { strokeDashoffset: 0, duration: 0.9, ease: "power2.out" }, 1.6);
+      var count = $("tally");
+      var fmt = function (v) {
+        return "TWD " + Math.round(v).toLocaleString("en-US");
+      };
+      tl.fromTo($("pill"), { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power1.out" }, 1.9);
+      tl.fromTo(count, { innerText: 11941 }, { innerText: 13385, duration: 1.2, ease: "power3.out", modifiers: { innerText: fmt } }, 1.9);
+      tl.fromTo($("pill"), { scale: 0.6 }, { scale: 1, duration: 1.2, ease: "power3.out", force3D: false }, 1.9);
+
+      // ── Scene 3 (3.0–4.6): overview resolves; thread total → 淨資產; figure glows once ──
+      tl.fromTo($("overview"), { opacity: 0, filter: "blur(14px)" }, { opacity: 1, filter: "blur(0px)", duration: 1.0, ease: "power2.out" }, 2.8);
+      tl.fromTo($("thread2"), { strokeDashoffset: $("thread2").style.strokeDashoffset }, { strokeDashoffset: 0, duration: 0.8, ease: "power2.out" }, 3.4);
+      tl.fromTo($("nw-glow"), { opacity: 0, scale: 0.94 }, { opacity: 1, scale: 1, duration: 0.25, ease: "power2.out", force3D: false }, 4.1);
+      tl.to($("nw-glow"), { opacity: 0.45, duration: 0.6, ease: "power1.out" }, 4.35);
+
+      // ── Scene 4 (4.6–6.0): camera locked; headline per-word stagger, then hold ──
+      tl.fromTo(
+        document.querySelectorAll('[id="05-rollup-headline"] .w'),
+        { opacity: 0, y: 46, filter: "blur(8px)" },
+        { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.55, ease: "power3.out", stagger: 0.12 },
+        4.6,
+      );
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["05-rollup"] = tl;
+    })();
+  </script>
+</template>
