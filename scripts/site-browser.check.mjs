@@ -9,6 +9,8 @@ import { chromium } from "playwright";
 const SITE_ROOT = resolve(fileURLToPath(new URL("../site", import.meta.url)));
 const SITE_URL = "https://wangwilly.github.io/OctopusBeak/";
 const RELEASE_URL = "https://github.com/WangWilly/OctopusBeak/releases/latest";
+// Every release uploads an unversioned DMG (release-electron.yml), so this always resolves to the newest one.
+const DOWNLOAD_URL = `${RELEASE_URL}/download/OctopusBeak-arm64.dmg`;
 const CJK = /[㐀-鿿＀-￯]/u;
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -140,7 +142,7 @@ test("?lang=en opens directly in English", async () => {
   await page.close();
 });
 
-test("in-page links land on real sections and downloads point at the latest release", async () => {
+test("in-page links land on real sections and downloads fetch the latest DMG", async () => {
   const { page } = await openSite();
   const hashes = await page.$$eval('a[href^="#"]', (links) => links.map((link) => link.getAttribute("href")));
   assert.ok(hashes.length >= 4);
@@ -151,7 +153,8 @@ test("in-page links land on real sections and downloads point at the latest rele
     .filter((link) => /下載|Download/u.test(link.textContent))
     .map((link) => ({ href: link.href, rel: link.rel })));
   assert.ok(downloads.length >= 2, "expected download calls to action");
-  for (const download of downloads) assert.equal(download.href, RELEASE_URL);
+  for (const download of downloads) assert.equal(download.href, DOWNLOAD_URL);
+  assert.equal(await page.locator(`.site-footer a[href="${RELEASE_URL}"]`).count(), 1, "footer links the release page for the ZIP and checksums");
   await page.close();
 });
 

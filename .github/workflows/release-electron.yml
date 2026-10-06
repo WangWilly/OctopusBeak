@@ -357,6 +357,17 @@ jobs:
           fi
 
           printf '%s\n' "${assets[@]}"
+
+          # The website links to releases/latest/download/OctopusBeak-arm64.dmg, so every release carries
+          # an unversioned copy of its DMG beside the versioned one.
+          shopt -s nullglob
+          dmgs=(out/make/*.dmg)
+          if (( ${#dmgs[@]} != 1 )); then
+            echo "Expected exactly one DMG in out/make, found ${#dmgs[@]}." >&2
+            exit 1
+          fi
+          cp "${dmgs[0]}" out/make/OctopusBeak-arm64.dmg
+
           (
             cd out/make
             find . -type f \( -name '*.dmg' -o -name '*.zip' \) -print | sort | while IFS= read -r asset; do

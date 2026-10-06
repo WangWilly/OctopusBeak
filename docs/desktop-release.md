@@ -4,6 +4,8 @@ OctopusBeak desktop releases use Electron Forge.
 
 Current automated release target: macOS arm64. The workflow produces a DMG and ZIP, signs and notarizes the app, verifies the bundle, uploads both installers with a SHA-256 checksum file, and publishes the GitHub Release only after the build succeeds. Windows x64 and Linux x64 are future targets and are not enabled yet.
 
+Each release also carries `OctopusBeak-arm64.dmg`, an unversioned copy of its DMG listed in `SHA256SUMS.txt`. The website's download buttons link to `releases/latest/download/OctopusBeak-arm64.dmg`, which GitHub redirects to that file in the newest published release, so a release without it breaks every download button on the site.
+
 ## Automated GitHub Release
 
 Use the `Release Electron` workflow from the `main` branch. The `new-release` operation runs the release preflight, then accepts a `patch`, `minor`, or `major` version increment. The workflow uses npm's default version commit and `vX.Y.Z` tag, pushes both to `main`, builds the signed macOS arm64 artifacts, creates a Draft GitHub Release with generated notes, uploads the installers and `SHA256SUMS.txt`, and publishes the Draft only after all checks pass.
