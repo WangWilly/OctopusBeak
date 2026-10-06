@@ -176,6 +176,15 @@ test("gates the narrative slides and supports bounded navigation", () => {
   assert.equal(reduceFirstRunWelcome(sixth, { type: "previous" }).currentSlide, 5);
 });
 
+test("skipping the product tour lands on the bank automation choice", () => {
+  for (const slide of [3, 4, 5] as const) {
+    assert.equal(reduceFirstRunWelcome(activeAt(slide), { type: "skip-introduction" }).currentSlide, 6);
+  }
+  for (const slide of [1, 2, 6] as const) {
+    assert.deepEqual(reduceFirstRunWelcome(activeAt(slide), { type: "skip-introduction" }), activeAt(slide));
+  }
+});
+
 test("completes Welcome only after an explicit bank automation choice", () => {
   const slideSix = activeAt(6);
   const start = reduceFirstRunWelcome(slideSix, {

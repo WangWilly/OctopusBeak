@@ -8,12 +8,12 @@ import {
 } from "./rasterize-text.ts";
 
 test("text particle budget responds to device pixel ratio without exceeding its cap", () => {
-  assert.equal(resolveTextParticleBudget(260, 1), 220);
-  assert.equal(resolveTextParticleBudget(600, 1), 432);
-  assert.equal(resolveTextParticleBudget(600, 1.25), 520);
-  assert.equal(resolveTextParticleBudget(600, 2), 520);
-  assert.equal(resolveTextParticleBudget(2_000, 4), 520);
-  assert.equal(resolveTextParticleBudget(600, 0), 432);
+  assert.equal(resolveTextParticleBudget(260, 1), 2400);
+  assert.equal(resolveTextParticleBudget(600, 1), 3600);
+  assert.equal(resolveTextParticleBudget(600, 1.25), 4500);
+  assert.equal(resolveTextParticleBudget(600, 2), 6000);
+  assert.equal(resolveTextParticleBudget(2_000, 4), 6000);
+  assert.equal(resolveTextParticleBudget(600, 0), 3600);
 });
 
 test("particle starts are deterministic and remain outside the raster", () => {
@@ -41,8 +41,8 @@ test("text raster sampling is deterministic and bounded", () => {
   const second = sampleAlphaRaster({ width: 120, height: 120, data: alpha }, { maxPoints: 17, seed: 42 });
 
   assert.deepEqual(first, second);
-  assert.equal(first.length, 17);
-  assert.ok(first.every(({ x, y }) => x % 8 === 0 && y % 8 === 0));
+  assert.equal(first.points.length, 17);
+  assert.ok(first.points.every(({ x, y }) => x % first.spacing === 0 && y % first.spacing === 0));
 });
 
 test("text raster sampling ignores transparent and nearly transparent pixels", () => {
@@ -51,8 +51,8 @@ test("text raster sampling ignores transparent and nearly transparent pixels", (
   data[14 * 4 + 3] = 32;
 
   assert.deepEqual(
-    sampleAlphaRaster({ width: 24, height: 1, data }, { maxPoints: 520 }),
-    [{ x: 8, y: 0 }],
+    sampleAlphaRaster({ width: 24, height: 1, data }, { maxPoints: 520 }).points,
+    [{ x: 12, y: 0 }],
   );
 });
 
@@ -63,29 +63,38 @@ test("a one-particle cap still returns a valid deterministic target", () => {
   data[11] = 255;
 
   assert.deepEqual(
-    sampleAlphaRaster({ width: 3, height: 1, data }, { maxPoints: 1, seed: 7 }),
+    sampleAlphaRaster({ width: 3, height: 1, data }, { maxPoints: 1, seed: 7 }).points,
     [{ x: 0, y: 0 }],
   );
 });
 
-test("text raster targets stay on the deterministic 8px particle grid", () => {
+test("an over-budget raster widens the lattice instead of punching holes in strokes", () => {
   const alpha = new Uint8ClampedArray(72 * 36 * 4);
   for (let y = 0; y < 36; y += 1) {
     for (let x = 0; x < 72; x += 1) alpha[(y * 72 + x) * 4 + 3] = 255;
   }
 
-  const targets = sampleAlphaRaster(
+  const lattice = sampleAlphaRaster(
     { width: 72, height: 36, data: alpha },
     { maxPoints: 40, seed: 42 },
   );
 
-  assert.ok(targets.length > 0);
-  assert.ok(targets.every(({ x, y }) => x % 8 === 0 && y % 8 === 0));
+  assert.equal(lattice.spacing, 9);
+  const cells = new Set(lattice.points.map(({ x, y }) => `${x}:${y}`));
+  for (let y = 0; y < 36; y += lattice.spacing) {
+    for (let x = 0; x < 72; x += lattice.spacing) assert.ok(cells.has(`${x}:${y}`), `missing ${x}:${y}`);
+  }
+  assert.equal(cells.size, lattice.points.length);
+});
+
+test("a raster within budget keeps the finest 3px lattice", () => {
+  const alpha = new Uint8ClampedArray(16 * 8 * 4).fill(255);
+
   assert.deepEqual(
-    targets,
-    sampleAlphaRaster(
-      { width: 72, height: 36, data: alpha },
-      { maxPoints: 40, seed: 42 },
-    ),
+    sampleAlphaRaster({ width: 16, height: 8, data: alpha }, { maxPoints: 1600 }),
+    {
+      spacing: 3,
+      points: [0, 3, 6].flatMap((y) => [0, 3, 6, 9, 12, 15].map((x) => ({ x, y }))),
+    },
   );
 });

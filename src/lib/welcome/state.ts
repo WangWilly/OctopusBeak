@@ -12,6 +12,7 @@ export type FirstRunWelcomeAction =
   | { type: "activate-introduction" }
   | { type: "next" }
   | { type: "previous" }
+  | { type: "skip-introduction" }
   | { type: "choose-bank-automation"; choice: "start" | "later" };
 
 type StorageReader = Pick<Storage, "getItem">;
@@ -110,6 +111,10 @@ export function reduceFirstRunWelcome(
     return state.currentSlide < 3 || state.currentSlide >= 6
       ? state
       : { ...state, currentSlide: (state.currentSlide + 1) as FirstRunWelcomeState["currentSlide"] };
+  }
+
+  if (action.type === "skip-introduction") {
+    return state.currentSlide >= 3 && state.currentSlide < 6 ? { ...state, currentSlide: 6 } : state;
   }
 
   if (action.type === "choose-bank-automation") {
