@@ -20,6 +20,8 @@ import {
   normalizeRows,
   normalizeTradeRows,
   parseReportPage,
+  runYuantaTradeProviderWorkflow,
+  type YuantaTradeReportPage,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
@@ -32,6 +34,8 @@ import {
 } from "./yuanta-trade-statements.ts";
 import { readFile } from "node:fs/promises";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 
 const workflowSource = await readFile(
   new URL("./yuanta-trade-statements.ts", import.meta.url),
@@ -754,4 +758,51 @@ test("normalizes the explicit provider event labels from live Yuanta trade rows"
   assert.equal(explicitAction("公司活動-移出"), "corporate_action_out");
   assert.equal(explicitAction("配息"), "dividend");
   assert.throws(() => explicitAction("未知事件"), /supported provider event/);
+});
+
+test("records how many reports were collected when one report source fails", async () => {
+  const requestedReportTypes: string[] = [];
+  const events: WorkflowRunEvent[] = [];
+  const page = { on() {} } as unknown as Page;
+  const context: WorkflowContext = {
+    runId: "yuanta-trade-report-failure-fixture",
+    signal: new AbortController().signal,
+    now: () => "2026-10-06T00:16:19.000Z",
+    browser: { withPage: (run) => run(page) },
+    text: strictSourceText,
+    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
+    event: async (stage, code, counts) => {
+      events.push({ runId: "yuanta-trade-report-failure-fixture", stage, code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
+    },
+  };
+  const failingReport = 16;
+
+  await assert.rejects(
+    runYuantaTradeProviderWorkflow(context, {
+      credentials: {
+        yuanta_trade_user_id: "fixture",
+        yuanta_trade_password: "fixture",
+        yuanta_trade_ca_path: "fixture",
+        yuanta_trade_ca_password: "fixture",
+      },
+    }, {
+      authenticate: async () => false,
+      captureReport: async (_page, reportType) => {
+        requestedReportTypes.push(reportType);
+        if (requestedReportTypes.length === failingReport) throw new Error("fixture: report source rejected");
+        return { reportType, url: `https://fixture/NexusWebTrade/AssetReport/${reportType}`, grids: [], summaryRows: [] } as unknown as YuantaTradeReportPage;
+      },
+    }),
+    /fixture: report source rejected/,
+  );
+
+  assert.equal(requestedReportTypes.length, failingReport);
+  assert.equal(requestedReportTypes[failingReport - 1], "OverseaTrade");
+  const failure = events.find((event) => event.code === "source-collection-failed");
+  assert.ok(failure, "collection failure event was recorded");
+  assert.equal(failure.stage, "collection");
+  assert.equal(failure.completed, failingReport - 1);
+  assert.equal(failure.total, 20);
+  assert.equal(events.filter((event) => event.code === "report-collected").length, failingReport - 1);
 });

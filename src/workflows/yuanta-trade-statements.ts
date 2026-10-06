@@ -1785,7 +1785,10 @@ export async function runYuantaTradeProviderWorkflow(
         });
       }
     } catch (error) {
-      await context.event("collection", "source-collection-failed");
+      await context.event("collection", "source-collection-failed", {
+        completed: holdings.length + trades.length,
+        total: requests.length,
+      });
       if (error instanceof SourceTextIntegrityError)
         await context.event("decoding", "source-decoding-failed");
       throw error;
