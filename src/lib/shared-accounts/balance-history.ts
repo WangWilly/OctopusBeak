@@ -5,6 +5,7 @@ import type {
   TransactionRowDto,
 } from "../shared-ledger/types.ts";
 import { historyPointKey } from "../shared-ledger/types.ts";
+import { latestStatementRevisions } from "./statement-list.ts";
 import { addDays, transactionDay, type DateRange } from "./transaction-filters.ts";
 
 /**
@@ -149,13 +150,9 @@ function ledgerHistory(input: HistoryInput): BalanceHistory {
 
 /** The newest revision of each statement in `currency`, oldest statement first. */
 function latestStatements(account: AccountRowDto, currency: string): CreditCardStatementDto[] {
-  const latest = new Map<string, CreditCardStatementDto>();
-  for (const statement of account.creditCard?.statements ?? []) {
-    if (statement.statementBalance.currency !== currency) continue;
-    const current = latest.get(statement.statementId);
-    if (!current || statement.revisionNumber > current.revisionNumber) latest.set(statement.statementId, statement);
-  }
-  return [...latest.values()].sort((left, right) => left.cycleEnd.localeCompare(right.cycleEnd));
+  return latestStatementRevisions(account.creditCard?.statements ?? [])
+    .filter((statement) => statement.statementBalance.currency === currency)
+    .reverse();
 }
 
 function cardHistory(input: HistoryInput): BalanceHistory {
