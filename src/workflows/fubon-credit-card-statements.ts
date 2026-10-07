@@ -1769,10 +1769,15 @@ function fubonForeignEvidencePresence(row: CsvRow): {
   rawSourceFieldsPresent: FubonForeignEvidenceDiagnosticPattern["rawSourceFieldsPresent"];
 } {
   const currencyPresent = cleanText(row.foreign_currency).length > 0;
-  const amountPresent = cleanText(row.foreign_amount).length > 0;
   const currencyIsBookedCurrency = isFubonBookedCurrencyMarker(
     row.foreign_currency,
   );
+  // A TWD-booked purchase abroad shows the merchant's country code in the
+  // foreign-amount column.
+  const foreignAmountText = cleanText(row.foreign_amount);
+  const amountPresent =
+    foreignAmountText.length > 0 &&
+    !(currencyIsBookedCurrency && /^[A-Z]{3}$/u.test(foreignAmountText));
   const twdAmountPresent = cleanText(row.twd_amount).length > 0;
   const unbilled = cleanText(row.statement_period) === "unbilled";
   return {
