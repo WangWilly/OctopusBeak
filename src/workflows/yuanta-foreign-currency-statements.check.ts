@@ -1816,3 +1816,46 @@ function yuantaForeignWindowCapture(
     await store.close();
   }
 }
+
+{
+  const threeMonthCapture = (
+    rows: ReturnType<typeof yuantaForeignRow>[],
+    observedAt: string,
+    occurrenceId: string,
+  ) => admitForeignCurrencyDepositCapture(buildYuantaForeignCurrencyCaptureInput(
+    rows,
+    { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+    "fx-1",
+    observedAt,
+    occurrenceId,
+    undefined,
+    "synthetic-yuanta-login",
+  ));
+  const oldest = yuantaForeignRow("USD", "20260706", "13:27:12", "10.00", "110.00");
+  const later = yuantaForeignRow("USD", "20260901", "10:00:00", "5.00", "115.00");
+  const first = threeMonthCapture([oldest, later], "2026-10-06T02:00:00.000Z", "yuanta-foreign-three-months-1");
+  assert.deepEqual(
+    [first.scope.startDate, first.scope.endDate],
+    ["2026-07-06", "2026-10-06"],
+    "the claimed scope matches the bank's three-calendar-month window",
+  );
+  const lateUtc = threeMonthCapture([later], "2026-10-06T17:00:00.000Z", "yuanta-foreign-three-months-late");
+  assert.deepEqual(
+    [lateUtc.scope.startDate, lateUtc.scope.endDate],
+    ["2026-07-07", "2026-10-07"],
+    "the window is anchored to the Taipei date",
+  );
+
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalDepositCapture(store, first);
+    await commitPGliteCanonicalDepositCapture(
+      store,
+      threeMonthCapture([later], "2026-10-07T02:00:00.000Z", "yuanta-foreign-three-months-2"),
+    );
+  } finally {
+    await store.close();
+  }
+}
