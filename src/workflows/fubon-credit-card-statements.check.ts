@@ -687,6 +687,46 @@ for (const [index, marker] of ["TWD", "twd", "NTD", "新臺幣", "新台幣", "�
   assert.equal(markerCapture[0]?.transactions[0]?.foreignAmount, null);
 }
 
+{
+  const locationCapture = buildFubonCanonicalCreditCardCaptures({
+    ...canonicalBuildOptions,
+    captureId: "capture-local-currency-location-code",
+    statementRows: [
+      {
+        ...canonicalStatementRows[0]!,
+        foreign_currency: "TWD",
+        foreign_amount: "GBR",
+      },
+    ],
+    unbilledRows: [],
+    gridStates: canonicalGridStates.map((state, index) => ({
+      ...state,
+      sourceDeclaredRowCount: index === 0 ? 1 : 0,
+    })),
+  });
+  assert.equal(locationCapture[0]?.transactions[0]?.foreignCurrency, null, "a TWD row priced abroad carries the country code, not a foreign amount");
+  assert.equal(locationCapture[0]?.transactions[0]?.foreignAmount, null);
+  assert.throws(
+    () => buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-foreign-currency-location-code",
+      statementRows: [
+        {
+          ...canonicalStatementRows[0]!,
+          foreign_currency: "USD",
+          foreign_amount: "GBR",
+        },
+      ],
+      unbilledRows: [],
+      gridStates: canonicalGridStates.map((state, index) => ({
+        ...state,
+        sourceDeclaredRowCount: index === 0 ? 1 : 0,
+      })),
+    }),
+    "a foreign-currency row still needs a numeric foreign amount",
+  );
+}
+
 const localMarkerWithAmountError = (() => {
   try {
     buildFubonCanonicalCreditCardCaptures({
