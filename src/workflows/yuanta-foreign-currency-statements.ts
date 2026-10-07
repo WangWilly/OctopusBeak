@@ -2752,6 +2752,9 @@ export function buildYuantaForeignCurrencyCaptureInput(
       "Yuanta foreign empty capture requires provider-explicit-no-data terminal evidence.",
     );
   const range = sourceDateRange(input);
+  // Lexemes are unique per capture. The first row of a minute keeps the bare
+  // lexeme so already committed rows keep their content hash.
+  const distinctRowsPerLexeme = new Map<string, string[]>();
   return {
     source: "yuanta",
     accountNo,
@@ -2780,20 +2783,25 @@ export function buildYuantaForeignCurrencyCaptureInput(
       const balanceAfter = exactCell(values[8] ?? "", "balance");
       const direction = debit !== null ? ("outflow" as const) : ("inflow" as const);
       const signedAmount = `${direction === "outflow" ? "-" : "+"}${amount}`;
+      const minuteLexeme = `${localDate}T${localTime || "date"}`;
       const sourceKey = [
         accountNo,
         rowCurrency,
-        `${localDate}T${localTime || "date"}`,
+        minuteLexeme,
         signedAmount,
         balanceAfter,
       ].join(":");
+      const minuteRows = distinctRowsPerLexeme.get(minuteLexeme) ?? [];
+      if (!minuteRows.includes(sourceKey)) minuteRows.push(sourceKey);
+      distinctRowsPerLexeme.set(minuteLexeme, minuteRows);
+      const siblingIndex = minuteRows.indexOf(sourceKey) + 1;
       const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
       const normalizedReportedRate = reportedRateText
         ? normalizeExactDecimal(reportedRateText, "reported rate")
         : "";
       return {
         sourceKey,
-        sequence: `${localDate}T${localTime || "date"}`,
+        sequence: siblingIndex === 1 ? minuteLexeme : `${minuteLexeme}#${siblingIndex}`,
         amount,
         direction,
         currencyEvidence: {
