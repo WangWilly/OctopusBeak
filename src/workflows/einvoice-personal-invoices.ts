@@ -691,6 +691,19 @@ async function requestEinvoiceCaptchaAssistance(
 
 export { requestEinvoiceCaptchaAssistance };
 
+export async function waitForEinvoiceLoginReady(
+  page: Page,
+  timeoutMs: number,
+): Promise<"form" | "session"> {
+  return await Promise.any([
+    retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
+      .waitFor({ state: "visible", timeout: timeoutMs })).then(() => "form" as const),
+    page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
+      timeout: timeoutMs,
+    }).then(() => "session" as const),
+  ]);
+}
+
 async function signInEinvoice(
   page: Page,
   credentials: EinvoiceCredentials,
@@ -712,13 +725,7 @@ async function signInEinvoice(
     throw new SourceAccessChallengeError();
   }
   try {
-    const ready = await Promise.any([
-      retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
-        .waitFor({ state: "visible", timeout: 30_000 })).then(() => "form" as const),
-      page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
-        timeout: 30_000,
-      }).then(() => "session" as const),
-    ]);
+    const ready = await waitForEinvoiceLoginReady(page, 30_000);
     if (ready === "session" || await isSignedIn(page)) return;
     await retryEinvoiceLoginNavigation(() => page
       .locator("#mobile_phone")
