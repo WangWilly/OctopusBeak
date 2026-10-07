@@ -16,6 +16,7 @@ import { createWorkflowExecutor } from "../workflow-executor.ts";
 import type {
   WorkflowBrowserPort,
   WorkflowExecutorPorts,
+  WorkflowProgressStatementType,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
 import {
@@ -182,6 +183,7 @@ async function recordWorkflowFailure(
     source: "workflow-worker" | "workflow-host";
     errorCode: string;
     stage?: WorkflowRunEvent["stage"];
+    statementType?: WorkflowProgressStatementType;
     error?: unknown;
     safeError?: unknown;
   }>,
@@ -351,6 +353,13 @@ async function executeInlineAppWorkflow(
       now: injectedPorts.now ?? (() => new Date().toISOString()),
       onEventFailure: injectedPorts.onEventFailure
         ?? (() => console.error("workflow-event-persistence-failed")),
+      productFailure: (failure) => recordWorkflowFailure(execution, options, {
+        source: "workflow-host",
+        errorCode: failure.errorCode,
+        stage: failure.stage,
+        statementType: failure.statementType,
+        error: failure.error,
+      }),
     };
     const executor = createWorkflowExecutor([definition], ports);
     if (!options.verificationRouteOwnedByCampaign) {
