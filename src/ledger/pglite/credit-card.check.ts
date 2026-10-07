@@ -485,6 +485,19 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
       ),
       /cannot reduce their billed member count/u,
     );
+    // A rolled window still queries the statement bucket that holds the
+    // billed members, so omitting them is a loss, not an aged-out bucket.
+    await assert.rejects(
+      commitPGliteCanonicalCreditCardCapture(
+        store,
+        fubonLifecycleCapture("fubon-rolled-window-loses-billed-members", [], "2026-09-23", {
+          bucketKeys: ["statement:2026/09", "statement:2026/10", "unbilled"],
+          scopeStartDate: "2026-09-20",
+          scopeEndDate: "2026-09-30",
+        }),
+      ),
+      /cannot reduce their billed member count/u,
+    );
 
     const counts = await store.query<{ transactions: number; revisions: number; lifecycle: number }>(`
       SELECT
@@ -525,7 +538,7 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed", "billed"],
         "2026-09-22",
         {
-          bucketKeys: ["statement:2026/08", "statement:2026/09", "unbilled"],
+          bucketKeys: ["statement:2026/08", "unbilled"],
           billedBucketKey: "statement:2026/08",
           fingerprint: emptyGroupFingerprint,
         },
@@ -538,7 +551,7 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         [],
         "2026-09-23",
         {
-          bucketKeys: ["statement:2026/09", "statement:2026/10", "unbilled"],
+          bucketKeys: ["statement:2026/10", "unbilled"],
           scopeStartDate: "2026-09-20",
           scopeEndDate: "2026-09-30",
           fingerprint: emptyGroupFingerprint,
@@ -554,7 +567,7 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed", "billed"],
         "2026-09-22",
         {
-          bucketKeys: ["statement:2026/07", "statement:2026/09", "unbilled"],
+          bucketKeys: ["statement:2026/07", "unbilled"],
           billedBucketKey: "statement:2026/07",
           fingerprint: token("aged-out-partial-group"),
         },
@@ -567,8 +580,8 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed"],
         "2026-09-23",
         {
-          bucketKeys: ["statement:2026/09", "statement:2026/10", "unbilled"],
-          billedBucketKey: "statement:2026/09",
+          bucketKeys: ["statement:2026/10", "unbilled"],
+          billedBucketKey: "statement:2026/10",
           scopeStartDate: "2026-09-20",
           scopeEndDate: "2026-09-30",
           fingerprint: token("aged-out-partial-group"),
