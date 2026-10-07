@@ -17,8 +17,10 @@ import {
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import {
+  appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
+  WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
 } from "./workflow-failure-diagnostics.ts";
 import {
   AppWorkflowWorkerProtocolError,
@@ -393,6 +395,17 @@ export async function runAppWorkflowWorker(
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,
+      productFailure: async (failure) => {
+        await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+          workflowId: start.workflowId,
+          taskRunId: start.taskRunId,
+          source: "workflow-worker",
+          errorCode: failure.errorCode,
+          stage: failure.stage,
+          statementType: failure.statementType,
+          error: failure.error,
+        }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+      },
     };
 
     const output = await createWorkflowExecutor([definition], ports).run(

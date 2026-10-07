@@ -409,6 +409,7 @@ export async function runYuantaAllStatementsWorkflow(
           });
         },
         event: (stage, code, counts) => context.event(stage, code, counts),
+        productFailure: context.productFailure,
       });
       await context.event("validation", "source-validation-completed", {
         completed: summary.sourceCaptureCount,
