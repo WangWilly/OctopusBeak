@@ -2014,7 +2014,7 @@ function parseCreditCardNo(cardHtml: string): string {
   return "";
 }
 
-function parseCreditCardBillsHtml(
+export function parseCreditCardBillsHtml(
   html: string,
   period: string | null,
   requireMonthOptions = true,

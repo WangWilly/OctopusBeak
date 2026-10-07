@@ -87,6 +87,7 @@ const {
   isCreditCardProductAbsentText,
   loadYuantaCreditCardSummaryPage,
   diagnoseYuantaCreditCardSummaryHtml,
+  parseCreditCardBillsHtml,
   parseYuantaCreditCardSettledStatementSummaries,
   parseYuantaCreditCardSettledStatementHistoryPage,
   parseYuantaCurrentCreditCardUsedCreditSummaryHtml,
@@ -1998,3 +1999,52 @@ assert.equal(
   }),
   undefined,
 );
+
+const rewardsCardBlockHtml = `
+  <div class="cardBx Mb_m">
+    <div class="cardHead"><h4>SYNTHETIC PRIMARY CARD 主卡</h4></div>
+    <ul class="cardInfoD">
+      <li><h5>卡號</h5><p>4111-11**-****-1234</p></li>
+    </ul>
+    <table class="rwdTable">
+      <tr><th>消費日期</th><th>入帳日期</th><th>消費明細</th><th>國家/幣別</th><th>外幣折算日</th><th>外幣金額</th><th>新臺幣金額</th></tr>
+      <tr><td>2026-06-02</td><td>2026-06-03</td><td>BILLED 115/06</td><td>台灣/TWD</td><td></td><td></td><td>100.00</td></tr>
+      <tr><td>2026-06-10</td><td>2026-06-10</td><td>鑽金紅利回饋</td><td>台灣/TWD</td><td></td><td></td><td>-12.00</td></tr>
+    </table>
+  </div>
+`;
+const rewardsPeriodRows = parseCreditCardBillsHtml(
+  rewardsCardBlockHtml,
+  "115/06",
+  false,
+).rows;
+assert.deepEqual(
+  rewardsPeriodRows.map((row) => [row.description, row.creditCardNo]),
+  [
+    ["BILLED 115/06", "4111-11**-****-1234"],
+    ["鑽金紅利回饋", "4111-11**-****-1234"],
+  ],
+  "a 鑽金紅利回饋 row belongs to the card block it appears under",
+);
+const rewardsCaptures = buildYuantaCanonicalCreditCardCaptures({
+  ...captureInput,
+  capture: { ...fullCaptureMetadata, captureId: "yuanta-rewards-row-capture" },
+  billedRows: [...billedRows.slice(0, 5), ...rewardsPeriodRows],
+});
+assert.equal(
+  rewardsCaptures.length,
+  1,
+  "a 鑽金紅利回饋 row must not block the credit-card capture",
+);
+const rewardsTransaction = rewardsCaptures[0]!.transactions.find(
+  (transaction) => transaction.description === "鑽金紅利回饋",
+);
+assert.ok(rewardsTransaction);
+assert.equal(rewardsTransaction.billingStatus, "billed");
+assert.equal(
+  rewardsTransaction.instrumentKey,
+  rewardsCaptures[0]!.transactions.find(
+    (transaction) => transaction.description === "BILLED 115/06",
+  )?.instrumentKey,
+);
+assert.equal(rewardsCaptures[0]!.transactions.length, 8);
