@@ -153,6 +153,7 @@ export function appWorkflowRoutesVerification(taskId: string) {
  */
 export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set([
   "sinopac-statements", "post-statements", "einvoice-personal-invoices", "yuanta-all-statements",
+  "fubon-all-statements",
 ]);
 
 export function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
