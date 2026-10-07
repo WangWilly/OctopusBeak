@@ -1898,10 +1898,6 @@ function columnsFromValues(
   return columns;
 }
 
-function shouldLeaveCardInfoBlank(description: string): boolean {
-  return description.includes("鑽金紅利回饋");
-}
-
 function statementRowsFromTableRows(
   rows: string[][],
   context: {
@@ -1932,14 +1928,12 @@ function statementRowsFromTableRows(
     if (isRepeatedHeaderRow(values, headers)) continue;
 
     const columns = columnsFromValues(headers, values);
-    const description = columns["消費明細"] ?? "";
-    const blankCardInfo = shouldLeaveCardInfoBlank(description);
     statementRows.push({
-      creditCardNo: blankCardInfo ? "" : context.creditCardNo,
-      creditCardName: blankCardInfo ? "" : context.creditCardName,
+      creditCardNo: context.creditCardNo,
+      creditCardName: context.creditCardName,
       consumeDate: columns["消費日期"] ?? "",
       postedDate: columns["入帳日期"] ?? "",
-      description,
+      description: columns["消費明細"] ?? "",
       countryCurrency: columns["國家/幣別"] ?? "",
       foreignExchangeDate: columns["外幣折算日"] ?? "",
       foreignAmount: columns["外幣金額"] ?? "",
