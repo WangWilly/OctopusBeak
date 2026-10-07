@@ -749,3 +749,51 @@ test("Fubon repeated deposit capture resolves repayment evidence through its sta
     assert.equal(rows.rows[0]?.account_id, null);
   } finally { await store.close(); }
 });
+
+test("repeated deposit capture resolves repayment evidence that names no account through its capture scope", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = loanRequestWithRepaymentDeposit("unscoped-replay-first", "replay");
+    await commitPGliteCanonicalLoanCapture(store, first);
+    const deposit = first.capture.counterpartTransactions[0]!;
+    const repeatedDeposit = { ...deposit, captureId: "unscoped-replay-deposit-second" };
+    await commitPGliteCanonicalLoanCapture(store, {
+      capture: { ...first.capture, captureId: "unscoped-replay-second", counterpartTransactions: [repeatedDeposit] },
+    });
+    const queryRange = { startDate: "2026/09/21", endDate: "2026/09/21" };
+    const sourceAccount = { value: "synthetic-deposit", label: "SYNTHETIC", branchName: "000" };
+    const source: FubonDepositStatementEvidence = {
+      evidenceVersion: "capture-evidence-v2", source: "fubon",
+      observedAt: first.capture.observedAt, account: sourceAccount, queryRange,
+      pages: [{ pageOrdinal: 0, responseSequence: 1, terminal: true,
+        nextPage: null, pageFieldName: null, queryRange, selectedAccount: sourceAccount,
+        rows: [{ rowOrdinal: 0, cells: [
+          "2026/09/21", "12:00:00", "放款繳款", "1000", "", "100", "01234567890123測試分行",
+        ] }], zeroObservation: "non-empty-page" }],
+      zeroObservation: "non-empty-range",
+      providerRouteEvidence: { endpointPath: "/synthetic", contract: "synthetic", currency: "TWD" },
+      provenance: { source: "fubon-ebank-domestic-deposit-form-postback", responseBodyRetained: false, semantics: "unresolved" },
+    };
+    const evidence = buildFubonLoanPaymentAccountEvidence(source, {
+      captureId: repeatedDeposit.captureId,
+      identity: { sourceConnectionKey: deposit.sourceConnectionKey,
+        identityEpochKey: deposit.identityEpochKey, accountNo: token("display-only-account"),
+        sourceAccountKey: deposit.accountKey },
+      records: [{ occurrenceKey: deposit.sourceRecordKey, sequenceLexeme: "0:0" }],
+    });
+    // Yuanta deposit evidence carries no account key; the capture already names its account.
+    const unscopedEvidence = evidence.map(({ accountKey: _accountKey, ...rest }) => rest);
+    assert.ok(unscopedEvidence.length > 0 && unscopedEvidence.every((item) => !("accountKey" in item)));
+    await resolvePGliteCanonicalLoanRepaymentRelations(store, {
+      sourceConnectionKey: deposit.sourceConnectionKey,
+      observedAt: first.capture.observedAt, counterpartyEvidence: unscopedEvidence,
+    });
+    const rows = await store.query<{ transaction_id: unknown; account_id: unknown }>(
+      "SELECT transaction_id, account_id FROM transaction_counterparty_account_evidence");
+    assert.equal(rows.rows.length, 1);
+    assert.ok(rows.rows[0]?.transaction_id);
+    assert.equal(rows.rows[0]?.account_id, null);
+  } finally { await store.close(); }
+});
