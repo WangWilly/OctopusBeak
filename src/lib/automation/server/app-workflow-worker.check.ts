@@ -2,9 +2,12 @@ import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
 import { CathayAppVerificationError } from "../verification-errors.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
+import { collectSelectedProducts } from "../product-collection.ts";
 import type { WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import type { PGliteWorkflowRunItem, PGliteWorkflowRunResult } from "../../../ledger/pglite/workflow-run.ts";
@@ -410,6 +413,89 @@ test("worker runs a definition through typed ports and the bounded host request 
   } finally {
     channel.port1.close();
     channel.port2.close();
+  }
+});
+
+test("a product failure inside a partial run appends one correlated diagnostic record", async () => {
+  const channel = new MessageChannel();
+  let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
+  const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
+  channel.port2.on("message", (value: unknown) => {
+    const frame = parseAppWorkflowWorkerOutboundFrame(value);
+    if (frame.kind === "event") {
+      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
+      resolveTerminal(frame);
+    }
+  });
+  const definition: WorkflowDefinition = {
+    id: "fixture-protocol",
+    requiresFinancialCommit: true,
+    async run(context) {
+      return await collectSelectedProducts({
+        productIds: ["deposit", "credit_card"],
+        selectedIds: ["deposit", "credit_card"],
+        signal: context.signal,
+        collect: async (typeId, staged) => {
+          if (typeId === "credit_card") throw new TypeError("provider row 123-456-789 unreadable");
+          staged.push(runItem());
+          return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+        },
+        commit: (_typeId, staged) => context.financialCommit!.execute(staged),
+        event: (stage, code, counts) => context.event(stage, code, counts),
+        productFailure: context.productFailure,
+      });
+    },
+  };
+  const directory = await mkdtemp(join(tmpdir(), "octopus-worker-product-diagnostics-"));
+  const diagnosticPath = join(directory, "workflow-failures.jsonl");
+  const previousEnv = {
+    OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE,
+    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
+  };
+  process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE = diagnosticPath;
+  process.env.OCTOPUSBEAK_APP_ROOT = process.cwd();
+  try {
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: start,
+      resolveDefinition: () => definition,
+      browser: { async withPage() { throw new Error("unused"); } },
+      financialCommit: {
+        async execute() {
+          return {
+            ...successfulCommit(),
+            items: [{
+              provider: "fixture", product: "fixture", itemKey: "fixture-item",
+              status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
+            }],
+          };
+        },
+      },
+    });
+    const terminal = await terminalReceived;
+    assert.equal(terminal.kind, "completed");
+    const lines = (await readFile(diagnosticPath, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1, "one product failure appends exactly one record");
+    const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+    assert.equal(record.workflowId, "fixture-protocol");
+    assert.equal(record.taskRunId, "run-fixture-1");
+    assert.equal(record.source, "workflow-worker");
+    assert.equal(record.errorCode, "source-collection-failed");
+    assert.equal(record.stage, "collection");
+    assert.equal(record.statementType, "credit_card");
+    const chain = (record.error as { chain: Array<{ type: string; frames: Array<{ file: string }> }> }).chain;
+    assert.equal(chain[0]?.type, "TypeError");
+    assert.equal(chain[0]?.frames[0]?.file, "src/lib/automation/server/app-workflow-worker.check.ts");
+    assert.doesNotMatch(lines[0]!, /123-456-789|unreadable|sensitive-fixture/u);
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    channel.port1.close();
+    channel.port2.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

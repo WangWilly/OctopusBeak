@@ -5,6 +5,7 @@ import type {
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-client.ts";
+import type { WorkflowProductFailure } from "./workflow-executor.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
@@ -93,6 +94,7 @@ const signal = () => new AbortController();
 {
   const controller = signal();
   const committedProducts: string[] = [];
+  const productFailures: WorkflowProductFailure[] = [];
   const summary = await collectSelectedProducts({
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
@@ -106,8 +108,14 @@ const signal = () => new AbortController();
       committedProducts.push(typeId);
       return result("completed", staged.map(committed));
     },
+    productFailure: async (failure) => { productFailures.push(failure); },
   });
   assert.deepEqual(committedProducts, ["deposit", "loan"]);
+  assert.deepEqual(
+    productFailures.map(({ stage, statementType, errorCode, error }) => [stage, statementType, errorCode, (error as Error).message]),
+    [["collection", "credit_card", "source-collection-failed", "product decoder failed after staging"]],
+    "a collector error reaches the diagnostics port once, with the stage it failed in and the error itself",
+  );
   assert.deepEqual(summary.products.map(({ typeId, status, itemCount, committedCount }) => [typeId, status, itemCount, committedCount]), [
     ["deposit", "success", 1, 1],
     ["credit_card", "failed", 0, 0],
@@ -120,6 +128,7 @@ const signal = () => new AbortController();
 {
   const controller = signal();
   const dispositions: Array<"no_data" | "not_held" | undefined> = ["no_data", "not_held", undefined];
+  const absentFailures: string[] = [];
   const summary = await collectSelectedProducts({
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
@@ -129,7 +138,9 @@ const signal = () => new AbortController();
       throw new StatementComponentAbsentError("no source record", disposition);
     },
     commit: async () => { throw new Error("empty outcomes must not commit"); },
+    productFailure: async (failure) => { absentFailures.push(failure.statementType); },
   });
+  assert.deepEqual(absentFailures, ["loan"], "explicit absence evidence is not a failure diagnostic");
   assert.deepEqual(summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
     ["deposit", "no_data", undefined],
     ["credit_card", "not_held", undefined],

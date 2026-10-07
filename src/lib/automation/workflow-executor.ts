@@ -8,6 +8,7 @@ import type {
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "./source-text.ts";
+import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
 import {
   COLLECTION_PRODUCT_TYPE_IDS,
@@ -38,6 +39,14 @@ export type WorkflowEventCounts = Readonly<{
   completed?: number;
   total?: number;
 } & WorkflowProgressMetadata>;
+
+/** One product's non-fatal failure, with its error, for the opt-in diagnostics journal. */
+export type WorkflowProductFailure = Readonly<{
+  stage: WorkflowStage;
+  statementType: WorkflowProgressStatementType;
+  errorCode: TypedWorkflowErrorCode;
+  error: unknown;
+}>;
 
 export type WorkflowRunEvent = Readonly<{
   runId: string;
@@ -88,6 +97,7 @@ export type WorkflowContext = Readonly<{
     code: string,
     counts?: WorkflowEventCounts,
   ): Promise<void>;
+  productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
 export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
@@ -106,6 +116,7 @@ export type WorkflowExecutorPorts = Readonly<{
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
+  productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
 const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
@@ -163,6 +174,13 @@ export function createWorkflowExecutor(
           }
         }
       };
+      const productFailure: WorkflowContext["productFailure"] = async (failure) => {
+        try {
+          await ports.productFailure?.(failure);
+        } catch {
+          // A diagnostic sink cannot change the workflow outcome.
+        }
+      };
       const context: WorkflowContext = {
         runId,
         signal,
@@ -177,6 +195,7 @@ export function createWorkflowExecutor(
           ? { maicoinPersistence: ports.maicoinPersistence }
           : {}),
         event,
+        productFailure,
       };
       signal.throwIfAborted();
       // Before any provider action, fail closed if the operational store is unavailable.

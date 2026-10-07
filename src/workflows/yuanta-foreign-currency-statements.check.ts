@@ -3,7 +3,11 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { PGlite } from "@electric-sql/pglite";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
 import { collectSelectedProducts } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -1618,6 +1622,7 @@ try {
 
   // Exercise the real FX collector through the parent coordinator: a single
   // account can have several currency balances, each requiring its own receipt.
+  const yuantaForeignMultiCurrencyAccount = ["00123456", "789012"].join("");
   const committedProducts: string[] = [];
   const multiCurrency = await collectSelectedProducts({
     productIds: ["foreign_currency", "credit_card"],
@@ -1636,19 +1641,19 @@ try {
           collectOnly: true,
           deferredCommitItems: staged,
           openPage: async () => ({} as never),
-          readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
+          readAccounts: async () => [{ value: yuantaForeignMultiCurrencyAccount, label: "外幣綜合存款" }],
           selectAccount: async () => undefined,
           readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
           queryAccountCurrency: async () => undefined,
           downloadRows: async () => ({ rows: [{
-            accountLabel: "外幣綜合存款", accountValue: "00123456789012",
+            accountLabel: "外幣綜合存款", accountValue: yuantaForeignMultiCurrencyAccount,
             queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
             values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
             sortTime: null,
           }] }),
           readCurrentBalances: async () => ["USD", "JPY"].map((currency) => ({
             source: "yuanta", kind: "foreign", stream: "foreign-currency-deposit",
-            accountNumber: "00123456789012", sourceAccountKey: "00123456789012", currency,
+            accountNumber: yuantaForeignMultiCurrencyAccount, sourceAccountKey: yuantaForeignMultiCurrencyAccount, currency,
             available: { coefficient: "90", scale: 2, sourceLexeme: "0.90" },
             ledger: { coefficient: "100", scale: 2, sourceLexeme: "1.00" },
             effectiveAt: "2026-08-24T04:00:00.000Z",
@@ -1734,4 +1739,123 @@ try {
 } finally {
   process.chdir(typedForeignOriginalCwd);
   await rm(typedForeignTemp, { recursive: true, force: true });
+}
+
+// Yuanta's FX export can book several rows at the same minute (an FX
+// conversion debits one currency and credits another) and some rows carry
+// no time cell at all. The store enforces one sequence lexeme per account
+// capture, so those rows must still produce distinct lexemes while rows that
+// already committed keep theirs.
+function yuantaForeignRow(currency: string, date: string, time: string, credit: string, balance: string) {
+  return {
+    accountLabel: "外幣綜合存款",
+    accountValue: "fx-1",
+    queryCurrencyLabel: currency,
+    queryCurrencyValue: currency,
+    values: ["1", date, date, time, currency, "外幣存入", "", credit, balance, "交易資訊", "31.50"],
+    sortTime: null,
+  };
+}
+
+function yuantaForeignWindowCapture(
+  rows: ReturnType<typeof yuantaForeignRow>[],
+  range: { startDate: string; endDate: string },
+  occurrenceId: string,
+) {
+  return admitForeignCurrencyDepositCapture(buildYuantaForeignCurrencyCaptureInput(
+    rows,
+    { dateRange: "one_month", customDateRange: range, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+    "fx-1",
+    `${range.endDate.replaceAll("/", "-")}T12:00:00+08:00`,
+    occurrenceId,
+    undefined,
+    "synthetic-yuanta-login",
+  ));
+}
+
+{
+  const distinctMinutes = yuantaForeignWindowCapture(
+    [yuantaForeignRow("USD", "20261001", "09:10", "10.00", "110.00"), yuantaForeignRow("JPY", "20261003", "14:00", "1000", "5000")],
+    { startDate: "2026/09/07", endDate: "2026/10/06" },
+    "yuanta-foreign-window-distinct",
+  );
+  assert.deepEqual(
+    distinctMinutes.records.map((record) => record.sequenceLexeme),
+    ["2026-10-01T09:10", "2026-10-03T14:00"],
+    "rows at distinct minutes keep the lexeme already committed for them",
+  );
+
+  const sameMinute = [
+    yuantaForeignRow("USD", "20261006", "15:02", "100.00", "900.00"),
+    yuantaForeignRow("JPY", "20261006", "15:02", "15000", "65000"),
+    yuantaForeignRow("USD", "20261006", "", "1.00", "901.00"),
+    yuantaForeignRow("USD", "20261006", "", "2.00", "903.00"),
+  ];
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalDepositCapture(
+      store,
+      yuantaForeignWindowCapture(sameMinute, { startDate: "2026/09/07", endDate: "2026/10/06" }, "yuanta-foreign-window-1"),
+    );
+    await commitPGliteCanonicalDepositCapture(store, yuantaForeignWindowCapture(
+      [...sameMinute, yuantaForeignRow("USD", "20261007", "09:30", "50.00", "953.00")],
+      { startDate: "2026/09/08", endDate: "2026/10/07" },
+      "yuanta-foreign-window-2",
+    ));
+    const stored = await database.query<{ sequence_lexeme: string; captures: number }>(
+      "SELECT sequence_lexeme, COUNT(*)::int AS captures FROM source_record_scopes GROUP BY sequence_lexeme ORDER BY sequence_lexeme",
+    );
+    assert.deepEqual(
+      stored.rows.map((row) => [row.sequence_lexeme, row.captures]),
+      [["2026-10-06T15:02", 2], ["2026-10-06T15:02#2", 2], ["2026-10-06Tdate", 2], ["2026-10-06Tdate#2", 2], ["2026-10-07T09:30", 1]],
+      "the sliding window re-admits the same rows under their first lexemes and adds the new row",
+    );
+  } finally {
+    await store.close();
+  }
+}
+
+{
+  const threeMonthCapture = (
+    rows: ReturnType<typeof yuantaForeignRow>[],
+    observedAt: string,
+    occurrenceId: string,
+  ) => admitForeignCurrencyDepositCapture(buildYuantaForeignCurrencyCaptureInput(
+    rows,
+    { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+    "fx-1",
+    observedAt,
+    occurrenceId,
+    undefined,
+    "synthetic-yuanta-login",
+  ));
+  const oldest = yuantaForeignRow("USD", "20260706", "13:27:12", "10.00", "110.00");
+  const later = yuantaForeignRow("USD", "20260901", "10:00:00", "5.00", "115.00");
+  const first = threeMonthCapture([oldest, later], "2026-10-06T02:00:00.000Z", "yuanta-foreign-three-months-1");
+  assert.deepEqual(
+    [first.scope.startDate, first.scope.endDate],
+    ["2026-07-06", "2026-10-06"],
+    "the claimed scope matches the bank's three-calendar-month window",
+  );
+  const lateUtc = threeMonthCapture([later], "2026-10-06T17:00:00.000Z", "yuanta-foreign-three-months-late");
+  assert.deepEqual(
+    [lateUtc.scope.startDate, lateUtc.scope.endDate],
+    ["2026-07-07", "2026-10-07"],
+    "the window is anchored to the Taipei date",
+  );
+
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalDepositCapture(store, first);
+    await commitPGliteCanonicalDepositCapture(
+      store,
+      threeMonthCapture([later], "2026-10-07T02:00:00.000Z", "yuanta-foreign-three-months-2"),
+    );
+  } finally {
+    await store.close();
+  }
 }

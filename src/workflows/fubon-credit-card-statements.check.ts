@@ -6,6 +6,11 @@ import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
+import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 
 registerHooks({
@@ -682,6 +687,46 @@ for (const [index, marker] of ["TWD", "twd", "NTD", "新臺幣", "新台幣", "�
   assert.equal(markerCapture[0]?.transactions[0]?.foreignAmount, null);
 }
 
+{
+  const locationCapture = buildFubonCanonicalCreditCardCaptures({
+    ...canonicalBuildOptions,
+    captureId: "capture-local-currency-location-code",
+    statementRows: [
+      {
+        ...canonicalStatementRows[0]!,
+        foreign_currency: "TWD",
+        foreign_amount: "GBR",
+      },
+    ],
+    unbilledRows: [],
+    gridStates: canonicalGridStates.map((state, index) => ({
+      ...state,
+      sourceDeclaredRowCount: index === 0 ? 1 : 0,
+    })),
+  });
+  assert.equal(locationCapture[0]?.transactions[0]?.foreignCurrency, null, "a TWD row priced abroad carries the country code, not a foreign amount");
+  assert.equal(locationCapture[0]?.transactions[0]?.foreignAmount, null);
+  assert.throws(
+    () => buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-foreign-currency-location-code",
+      statementRows: [
+        {
+          ...canonicalStatementRows[0]!,
+          foreign_currency: "USD",
+          foreign_amount: "GBR",
+        },
+      ],
+      unbilledRows: [],
+      gridStates: canonicalGridStates.map((state, index) => ({
+        ...state,
+        sourceDeclaredRowCount: index === 0 ? 1 : 0,
+      })),
+    }),
+    "a foreign-currency row still needs a numeric foreign amount",
+  );
+}
+
 const localMarkerWithAmountError = (() => {
   try {
     buildFubonCanonicalCreditCardCaptures({
@@ -1082,53 +1127,17 @@ const sameLast4GridStates = canonicalGridStates.map((state, index) => ({
   ...state,
   sourceDeclaredRowCount: index === 0 ? 2 : 0,
 }));
-const sameLast4Capture = buildFubonCanonicalCreditCardCaptures({
-  ...canonicalBuildOptions,
-  captureId: "capture-same-last4-masked-cards",
-  statementRows: sameLast4MaskedRows,
-  unbilledRows: [],
-  gridStates: sameLast4GridStates,
-});
-assert.equal(sameLast4Capture.length, 1);
-assert.equal(sameLast4Capture[0]?.instruments.length, 2);
-assert.deepEqual(
-  sameLast4Capture[0]?.instruments.map((instrument) => instrument.cardMask),
-  ["****1234", "****1234"],
-  "distinct masked source labels may share a safe display mask",
-);
-assert.equal(
-  new Set(sameLast4Capture[0]!.instruments.map((instrument) => instrument.instrumentKey)).size,
-  2,
-  "masked source labels with one last-four value must retain distinct opaque instruments",
-);
-assert.equal(
-  new Set(sameLast4Capture[0]!.transactions.map((transaction) => transaction.instrumentKey)).size,
-  2,
-);
-assert.equal(JSON.stringify(sameLast4Capture).includes("123456******1234"), false);
-const ambiguousMaskedRows = [
-  ...sameLast4MaskedRows,
-  {
-    ...sameLast4MaskedRows[0]!,
-    card_number: "1234",
-    card_label: "正卡",
-    description: "SYNTHETIC AMBIGUOUS",
-  },
-];
 assert.throws(
   () =>
     buildFubonCanonicalCreditCardCaptures({
       ...canonicalBuildOptions,
-      captureId: "capture-ambiguous-last4-masked-cards",
-      statementRows: ambiguousMaskedRows,
+      captureId: "capture-same-last4-masked-cards",
+      statementRows: sameLast4MaskedRows,
       unbilledRows: [],
-      gridStates: sameLast4GridStates.map((state, index) => ({
-        ...state,
-        sourceDeclaredRowCount: index === 0 ? 3 : 0,
-      })),
+      gridStates: sameLast4GridStates,
     }),
-  /cannot distinguish/i,
-  "a row without source instrument evidence must not be assigned among multiple masked instruments",
+  /distinct cards.*last-four|ambiguous/i,
+  "distinct masked source labels sharing one last four must fail closed; last four is the instrument identity",
 );
 
 const mixedFullPanAndMaskedRows = [
@@ -1152,8 +1161,8 @@ assert.throws(
       unbilledRows: [],
       gridStates: sameLast4GridStates,
     }),
-  /cannot distinguish|fingerprint/i,
-  "full PAN and a distinct masked label sharing a last-four key must fail closed without a fingerprint key",
+  /distinct cards.*last-four|ambiguous/i,
+  "a full PAN and a distinct masked label sharing a last-four key must fail closed",
 );
 const matchingFullPanAndMaskedRows = [
   mixedFullPanAndMaskedRows[0]!,
@@ -1462,17 +1471,6 @@ assert.throws(
   () =>
     buildFubonCanonicalCreditCardCaptures({
       ...canonicalBuildOptions,
-      statementRows: panStatementRows,
-      unbilledRows: panUnbilledRows,
-      summaries: panSummaries,
-      input: panInput,
-    }),
-  /fingerprint key is unavailable/i,
-);
-assert.throws(
-  () =>
-    buildFubonCanonicalCreditCardCaptures({
-      ...canonicalBuildOptions,
       statementRows: canonicalStatementRows.map((row, index) =>
         index === 0 ? { ...row, card_label: "正卡 附卡 1234" } : row,
       ),
@@ -1631,6 +1629,332 @@ assert.throws(
   /projection|ambiguous|candidate/i,
   "distinct PANs sharing one safe first-six+last-four projection must fail closed",
 );
+
+const providerNoRecordGridStates = [
+  ...canonicalGridStates.slice(0, 6),
+  { providerNoRecord: true as const },
+];
+const providerNoRecordCapture = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-provider-no-record",
+  unbilledRows: [],
+  gridStates: providerNoRecordGridStates,
+});
+assert.equal(providerNoRecordCapture.length, 1);
+const providerNoRecordGrid = providerNoRecordCapture[0]!.scope.completeness.grids[6]!;
+assert.equal(providerNoRecordGrid.kind, "unbilled");
+assert.equal(providerNoRecordGrid.terminalEvidence, "provider-no-record");
+assert.equal(providerNoRecordGrid.capturedRowCount, 0);
+assert.equal(providerNoRecordGrid.terminal, true);
+assert.deepEqual(
+  Object.keys(providerNoRecordGrid).filter((key) => /page|declared/iu.test(key)),
+  [],
+  "the no-record page served no paging fields, so none may be recorded",
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-provider-no-record-with-rows",
+      gridStates: providerNoRecordGridStates,
+    }),
+  /grid-terminal-shape/u,
+  "a no-record page cannot vouch for captured unbilled rows",
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-provider-no-record-period-grid",
+      gridStates: canonicalGridStates.map((state, index) =>
+        index === 1 ? { providerNoRecord: true as const } : state,
+      ),
+    }),
+  /grid-terminal-shape/u,
+  "statement period grids keep their paging evidence rules",
+);
+test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
+  const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+  const result = await runFubonCreditCardStatements(
+    {} as Page,
+    canonicalInput,
+    {
+      deferredCommitItems,
+      signal: new AbortController().signal,
+      observedAt: () => "2026-08-25T00:00:00.000Z",
+      sourceText: strictSourceText,
+      readSourceSnapshot: async () => ({
+        statementRows: canonicalStatementRows,
+        statementPeriods: summaries.map((summary) => summary.period),
+        summaries,
+        gridStates: providerNoRecordGridStates,
+        unavailablePeriodOffsets: [],
+        unbilledRows: [],
+      }),
+    },
+  );
+  assert.deepEqual(result, {
+    sourceCount: 7,
+    rowCount: 2,
+    itemCount: 1,
+    financialAdmissionCount: 1,
+  });
+  const item = deferredCommitItems[0]!;
+  assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
+  const unbilledPage = item.command.request.capture.pages[6]!;
+  assert.equal(unbilledPage.proofKind, "provider-no-record-terminal-grid");
+  assert.equal(unbilledPage.rowCount, 0);
+  assert.equal(unbilledPage.terminal, true);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const committed = await commitPGliteCanonicalCreditCardCapture(store, item.command.request);
+    assert.equal(committed.transactionCount, 2);
+    assert.equal(committed.statementCount, 5);
+  } finally {
+    await store.close();
+  }
+});
+
+const panVisibilityFingerprintKey = {
+  secret: "synthetic-fubon-pan-key",
+  keyVersion: "test-v1",
+};
+const luhnPanEnding1234 = ["4111", "1100", "0001", "1234"].join("");
+const luhnPanEnding5678 = ["4111", "1100", "0005", "5678"].join("");
+const otherIssuerPanEnding1234 = ["4012", "8800", "0009", "1234"].join("");
+const panLabeledUnbilledRows = [
+  {
+    statement_period: "unbilled",
+    card_number: luhnPanEnding1234,
+    card_label: luhnPanEnding1234,
+    consume_date: "115/07/03",
+    posting_date: "115/07/04",
+    description: "SYNTHETIC UNBILLED 1234",
+    twd_amount: "-5.00",
+  },
+  {
+    statement_period: "unbilled",
+    card_number: luhnPanEnding5678,
+    card_label: luhnPanEnding5678,
+    consume_date: "115/07/05",
+    posting_date: "115/07/06",
+    description: "SYNTHETIC UNBILLED 5678",
+    twd_amount: "7.00",
+  },
+];
+const last4LabeledUnbilledRows = panLabeledUnbilledRows.map((row) => ({
+  ...row,
+  card_number: row.card_number.slice(-4),
+  card_label: `末4碼 ${row.card_number.slice(-4)}`,
+}));
+const panLabeledGridStates = [
+  ...canonicalGridStates.slice(0, 6),
+  { ...canonicalGridStates[6]!, sourceDeclaredRowCount: panLabeledUnbilledRows.length },
+];
+const billedIdentity = (capture: ReturnType<typeof buildFubonCanonicalCreditCardCaptures>[number]) => ({
+  instrumentKeysByMask: capture.instruments
+    .map((instrument) => [instrument.cardMask, instrument.instrumentKey] as const)
+    .sort(),
+  billedTransactionKeys: capture.transactions
+    .filter((transaction) => transaction.billingStatus === "billed")
+    .map((transaction) => [transaction.description, transaction.sourceKey, transaction.sourceRecordKey] as const)
+    .sort(),
+});
+const panVisibleCapture = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-pan-visible",
+  unbilledRows: panLabeledUnbilledRows,
+  gridStates: panLabeledGridStates,
+  panFingerprintKey: panVisibilityFingerprintKey,
+});
+const panHiddenCapture = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-pan-hidden",
+  unbilledRows: [],
+  gridStates: providerNoRecordGridStates,
+  panFingerprintKey: panVisibilityFingerprintKey,
+});
+assert.equal(panVisibleCapture[0]!.instruments.length, 2);
+assert.equal(panHiddenCapture[0]!.instruments.length, 2);
+assert.deepEqual(
+  billedIdentity(panHiddenCapture[0]!),
+  billedIdentity(panVisibleCapture[0]!),
+  "card instrument and billed transaction identity must not depend on whether the unbilled page exposed full card numbers",
+);
+assert.equal(JSON.stringify(panVisibleCapture).includes(luhnPanEnding1234), false);
+
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-distinct-pans-one-last-four",
+      statementRows: [
+        { ...canonicalStatementRows[0]!, card_number: luhnPanEnding1234, card_label: "正卡 " + luhnPanEnding1234 },
+        { ...canonicalStatementRows[1]!, card_number: otherIssuerPanEnding1234, card_label: "正卡 " + otherIssuerPanEnding1234 },
+      ],
+      unbilledRows: [],
+      gridStates: canonicalGridStates.map((state, index) =>
+        index === 6 ? { ...state, sourceDeclaredRowCount: 0 } : state,
+      ),
+      panFingerprintKey: panVisibilityFingerprintKey,
+    }),
+  /last.four|ambiguous|distinct/iu,
+  "two distinct full card numbers sharing a last four must fail closed instead of becoming two instruments",
+);
+
+test("losing PAN visibility between captures does not re-admit billed transactions as new ones", async () => {
+  const collect = async (snapshot: {
+    unbilledRows: typeof panLabeledUnbilledRows;
+    observedAt: string;
+  }) => {
+    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    await runFubonCreditCardStatements(
+      {} as Page,
+      canonicalInput,
+      {
+        deferredCommitItems,
+        signal: new AbortController().signal,
+        observedAt: () => snapshot.observedAt,
+        sourceText: strictSourceText,
+        panFingerprintKey: panVisibilityFingerprintKey,
+        readSourceSnapshot: async () => ({
+          statementRows: canonicalStatementRows,
+          statementPeriods: summaries.map((summary) => summary.period),
+          summaries,
+          gridStates: panLabeledGridStates,
+          unavailablePeriodOffsets: [],
+          unbilledRows: snapshot.unbilledRows,
+        }),
+      },
+    );
+    const item = deferredCommitItems[0]!;
+    assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
+    return item.command.request;
+  };
+  const panVisibleRequest = await collect({
+    unbilledRows: panLabeledUnbilledRows,
+    observedAt: "2026-10-06T00:00:00.000Z",
+  });
+  const panHiddenRequest = await collect({
+    unbilledRows: last4LabeledUnbilledRows,
+    observedAt: "2026-10-07T00:00:00.000Z",
+  });
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalCreditCardCapture(store, panVisibleRequest);
+    await commitPGliteCanonicalCreditCardCapture(store, panHiddenRequest);
+    const counted = await database.query<{ transactions: string; instruments: string }>(`
+      SELECT
+        (SELECT COUNT(DISTINCT transaction_id) FROM canonical_credit_card_transaction_details)::text AS transactions,
+        (SELECT COUNT(*) FROM canonical_credit_card_instruments)::text AS instruments`);
+    assert.deepEqual(counted.rows[0], { transactions: "4", instruments: "2" });
+  } finally {
+    await store.close();
+  }
+});
+
+test("unbilled purchases seen with PAN labels hand off to a new billed period without duplicates", async () => {
+  const collect = async (snapshot: {
+    statementRows: typeof canonicalStatementRows;
+    unbilledRows: typeof panLabeledUnbilledRows;
+    summaries: typeof summaries;
+    gridStates: typeof providerNoRecordGridStates;
+    observedAt: string;
+  }) => {
+    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    await runFubonCreditCardStatements(
+      {} as Page,
+      canonicalInput,
+      {
+        deferredCommitItems,
+        signal: new AbortController().signal,
+        observedAt: () => snapshot.observedAt,
+        sourceText: strictSourceText,
+        panFingerprintKey: panVisibilityFingerprintKey,
+        readSourceSnapshot: async () => ({
+          statementRows: snapshot.statementRows,
+          statementPeriods: snapshot.summaries.map((summary) => summary.period),
+          summaries: snapshot.summaries,
+          gridStates: snapshot.gridStates,
+          unavailablePeriodOffsets: [],
+          unbilledRows: snapshot.unbilledRows,
+        }),
+      },
+    );
+    const item = deferredCommitItems[0]!;
+    assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
+    return item.command.request;
+  };
+  const newestSummaries = [
+    {
+      period: "period-0",
+      issueDate: "2026-08-28",
+      dueDate: "2026-09-15",
+      balance: "2.00",
+      minimumPayment: "1.00",
+    },
+    ...summaries.slice(0, 5),
+  ];
+  const nowBilledRows = panLabeledUnbilledRows.map((row) => ({
+    ...row,
+    statement_period: "period-0",
+    card_number: row.card_number.slice(-4),
+    card_label: `正卡 ${row.card_number.slice(-4)}`,
+  }));
+  const unbilledSeenRequest = await collect({
+    statementRows: canonicalStatementRows,
+    unbilledRows: panLabeledUnbilledRows,
+    summaries,
+    gridStates: panLabeledGridStates,
+    observedAt: "2026-10-06T00:00:00.000Z",
+  });
+  const nowBilledRequest = await collect({
+    statementRows: [...nowBilledRows, ...canonicalStatementRows],
+    unbilledRows: [],
+    summaries: newestSummaries,
+    gridStates: [
+      { ...canonicalGridStates[0]!, sourceDeclaredRowCount: nowBilledRows.length },
+      ...canonicalGridStates.slice(0, 5),
+      { providerNoRecord: true as const },
+    ],
+    observedAt: "2026-10-07T00:00:00.000Z",
+  });
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalCreditCardCapture(store, unbilledSeenRequest);
+    await commitPGliteCanonicalCreditCardCapture(store, nowBilledRequest);
+    const lifecycle = await database.query<{ transaction_id: string; billing_status: string; description: string }>(`
+      SELECT encode(lifecycle.transaction_id, 'hex') AS transaction_id,
+             lifecycle.billing_status,
+             detail.description
+      FROM canonical_credit_card_transaction_lifecycle lifecycle
+      JOIN source_captures capture ON capture.capture_id = lifecycle.capture_id
+      JOIN canonical_commits commit_row ON commit_row.commit_id = capture.commit_id
+      JOIN transaction_revisions detail ON detail.revision_id = lifecycle.revision_id
+      ORDER BY commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`);
+    const latestByTransaction = new Map<string, { billing_status: string; description: string }>();
+    for (const row of lifecycle.rows)
+      if (!latestByTransaction.has(row.transaction_id)) latestByTransaction.set(row.transaction_id, row);
+    assert.deepEqual(
+      [...latestByTransaction.values()].map((row) => [row.description, row.billing_status]).sort(),
+      [
+        ["SYNTHETIC A", "billed"],
+        ["SYNTHETIC B", "billed"],
+        ["SYNTHETIC UNBILLED 1234", "billed"],
+        ["SYNTHETIC UNBILLED 5678", "billed"],
+      ],
+      "each unbilled purchase must become exactly one billed current transaction",
+    );
+  } finally {
+    await store.close();
+  }
+});
 
 assert.doesNotMatch(source, /executePGliteWorkflowRun|requirePGliteChildRpcClientFromEnv/u);
 assert.match(source, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);

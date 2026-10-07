@@ -427,6 +427,7 @@ export async function runCathayAllProviderWorkflow(
         session = checkedSession;
       },
       event: (stage, code, counts) => context.event(stage, code, counts),
+      productFailure: context.productFailure,
       collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
         if (typeId === "domestic") {
           await reportActivity("query");

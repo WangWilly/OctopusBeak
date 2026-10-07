@@ -16,7 +16,11 @@ import {
   type DefaultTreeAdapterTypes,
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { readYuantaBig5CsvFromAnchor } from "./yuanta-statements.ts";
+import {
+  deriveYuantaDomesticDepositQueryRange,
+  readYuantaBig5CsvFromAnchor,
+  yuantaObservedAt,
+} from "./yuanta-statements.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -2678,7 +2682,7 @@ export async function runYuantaForeignCurrencyStatements(
   };
 }
 
-function sourceDateRange(input: WorkflowInput): {
+function sourceDateRange(input: WorkflowInput, observedAt: string): {
   startDate: string;
   endDate: string;
 } {
@@ -2687,11 +2691,11 @@ function sourceDateRange(input: WorkflowInput): {
       startDate: input.customDateRange.startDate.replaceAll("/", "-"),
       endDate: input.customDateRange.endDate.replaceAll("/", "-"),
     };
-  const end = new Date();
-  const days = input.dateRange === "one_week" ? 7 : input.dateRange === "one_month" ? 31 : 93;
-  const start = new Date(end.getTime() - days * 86_400_000);
-  const iso = (value: Date) => value.toISOString().slice(0, 10);
-  return { startDate: iso(start), endDate: iso(end) };
+  const { startDate, endDate } = deriveYuantaDomesticDepositQueryRange(
+    input.dateRange,
+    yuantaObservedAt(new Date(observedAt)),
+  );
+  return { startDate, endDate };
 }
 
 function normalizeExactDecimal(value: string, label: string): string {
@@ -2751,7 +2755,10 @@ export function buildYuantaForeignCurrencyCaptureInput(
     throw new Error(
       "Yuanta foreign empty capture requires provider-explicit-no-data terminal evidence.",
     );
-  const range = sourceDateRange(input);
+  const range = sourceDateRange(input, observedAt);
+  // Lexemes are unique per capture. The first row of a minute keeps the bare
+  // lexeme so already committed rows keep their content hash.
+  const distinctRowsPerLexeme = new Map<string, string[]>();
   return {
     source: "yuanta",
     accountNo,
@@ -2780,20 +2787,25 @@ export function buildYuantaForeignCurrencyCaptureInput(
       const balanceAfter = exactCell(values[8] ?? "", "balance");
       const direction = debit !== null ? ("outflow" as const) : ("inflow" as const);
       const signedAmount = `${direction === "outflow" ? "-" : "+"}${amount}`;
+      const minuteLexeme = `${localDate}T${localTime || "date"}`;
       const sourceKey = [
         accountNo,
         rowCurrency,
-        `${localDate}T${localTime || "date"}`,
+        minuteLexeme,
         signedAmount,
         balanceAfter,
       ].join(":");
+      const minuteRows = distinctRowsPerLexeme.get(minuteLexeme) ?? [];
+      if (!minuteRows.includes(sourceKey)) minuteRows.push(sourceKey);
+      distinctRowsPerLexeme.set(minuteLexeme, minuteRows);
+      const siblingIndex = minuteRows.indexOf(sourceKey) + 1;
       const reportedRateText = stripSpreadsheetTextPrefix(values[10] ?? "");
       const normalizedReportedRate = reportedRateText
         ? normalizeExactDecimal(reportedRateText, "reported rate")
         : "";
       return {
         sourceKey,
-        sequence: `${localDate}T${localTime || "date"}`,
+        sequence: siblingIndex === 1 ? minuteLexeme : `${minuteLexeme}#${siblingIndex}`,
         amount,
         direction,
         currencyEvidence: {

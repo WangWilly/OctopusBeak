@@ -2,7 +2,11 @@ import { appendFile, chmod, mkdir } from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
-import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import {
+  WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS,
+  type WorkflowProgressStatementType,
+  type WorkflowRunEvent,
+} from "../workflow-executor.ts";
 
 const SAFE_WORKFLOW_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_TASK_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
@@ -24,6 +28,7 @@ const FAILURE_CODES = new Set<string>([
   "worker-start-failed", "worker-crash", "unexpected-exit", "protocol-invalid",
 ]);
 const SOURCES = new Set(["workflow-worker", "workflow-host", "financial-rpc", "operational-rpc"]);
+const STATEMENT_TYPES = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
 const MAX_CHAIN = 4;
 const MAX_FRAMES_PER_ERROR = 8;
 const MAX_RECORD_BYTES = 16_384;
@@ -75,6 +80,7 @@ export type WorkflowFailureDiagnostic = Readonly<{
   source: "workflow-worker" | "workflow-host" | "financial-rpc" | "operational-rpc";
   errorCode: string;
   stage?: WorkflowRunEvent["stage"];
+  statementType?: WorkflowProgressStatementType;
   operation?: string;
   error: SafeWorkflowFailureError;
 }>;
@@ -85,6 +91,7 @@ export type WorkflowFailureDiagnosticInput = Readonly<{
   source: WorkflowFailureDiagnostic["source"];
   errorCode: string;
   stage?: WorkflowRunEvent["stage"];
+  statementType?: WorkflowProgressStatementType;
   operation?: string;
   error?: unknown;
   safeError?: unknown;
@@ -276,7 +283,8 @@ function buildRecord(input: WorkflowFailureDiagnosticInput, options: { repoRoot:
     || !SAFE_TASK_RUN_ID.test(input.taskRunId)
     || !SOURCES.has(input.source)
     || !FAILURE_CODES.has(input.errorCode)
-    || (input.stage !== undefined && !STAGES.has(input.stage))) return null;
+    || (input.stage !== undefined && !STAGES.has(input.stage))
+    || (input.statementType !== undefined && !STATEMENT_TYPES.has(input.statementType))) return null;
   const operation = input.operation && /^(?:financial|maicoin|exchangeRates|automation)(?:\.[A-Za-z]+)+$/u.test(input.operation)
     ? input.operation
     : undefined;
@@ -292,6 +300,7 @@ function buildRecord(input: WorkflowFailureDiagnosticInput, options: { repoRoot:
     source: input.source,
     errorCode: input.errorCode,
     ...(input.stage ? { stage: input.stage } : {}),
+    ...(input.statementType ? { statementType: input.statementType } : {}),
     ...(operation ? { operation } : {}),
     error: safeError,
   };
