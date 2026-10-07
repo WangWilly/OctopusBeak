@@ -1127,53 +1127,17 @@ const sameLast4GridStates = canonicalGridStates.map((state, index) => ({
   ...state,
   sourceDeclaredRowCount: index === 0 ? 2 : 0,
 }));
-const sameLast4Capture = buildFubonCanonicalCreditCardCaptures({
-  ...canonicalBuildOptions,
-  captureId: "capture-same-last4-masked-cards",
-  statementRows: sameLast4MaskedRows,
-  unbilledRows: [],
-  gridStates: sameLast4GridStates,
-});
-assert.equal(sameLast4Capture.length, 1);
-assert.equal(sameLast4Capture[0]?.instruments.length, 2);
-assert.deepEqual(
-  sameLast4Capture[0]?.instruments.map((instrument) => instrument.cardMask),
-  ["****1234", "****1234"],
-  "distinct masked source labels may share a safe display mask",
-);
-assert.equal(
-  new Set(sameLast4Capture[0]!.instruments.map((instrument) => instrument.instrumentKey)).size,
-  2,
-  "masked source labels with one last-four value must retain distinct opaque instruments",
-);
-assert.equal(
-  new Set(sameLast4Capture[0]!.transactions.map((transaction) => transaction.instrumentKey)).size,
-  2,
-);
-assert.equal(JSON.stringify(sameLast4Capture).includes("123456******1234"), false);
-const ambiguousMaskedRows = [
-  ...sameLast4MaskedRows,
-  {
-    ...sameLast4MaskedRows[0]!,
-    card_number: "1234",
-    card_label: "正卡",
-    description: "SYNTHETIC AMBIGUOUS",
-  },
-];
 assert.throws(
   () =>
     buildFubonCanonicalCreditCardCaptures({
       ...canonicalBuildOptions,
-      captureId: "capture-ambiguous-last4-masked-cards",
-      statementRows: ambiguousMaskedRows,
+      captureId: "capture-same-last4-masked-cards",
+      statementRows: sameLast4MaskedRows,
       unbilledRows: [],
-      gridStates: sameLast4GridStates.map((state, index) => ({
-        ...state,
-        sourceDeclaredRowCount: index === 0 ? 3 : 0,
-      })),
+      gridStates: sameLast4GridStates,
     }),
-  /cannot distinguish/i,
-  "a row without source instrument evidence must not be assigned among multiple masked instruments",
+  /distinct cards.*last-four|ambiguous/i,
+  "distinct masked source labels sharing one last four must fail closed; last four is the instrument identity",
 );
 
 const mixedFullPanAndMaskedRows = [
@@ -1197,8 +1161,8 @@ assert.throws(
       unbilledRows: [],
       gridStates: sameLast4GridStates,
     }),
-  /cannot distinguish|fingerprint/i,
-  "full PAN and a distinct masked label sharing a last-four key must fail closed without a fingerprint key",
+  /distinct cards.*last-four|ambiguous/i,
+  "a full PAN and a distinct masked label sharing a last-four key must fail closed",
 );
 const matchingFullPanAndMaskedRows = [
   mixedFullPanAndMaskedRows[0]!,
@@ -1502,17 +1466,6 @@ assert.notEqual(
   replacementPanCaptures[0]?.instruments[0]?.instrumentKey,
   panCaptures[0]?.instruments[0]?.instrumentKey,
   "a replacement full PAN may establish a distinct subordinate instrument",
-);
-assert.throws(
-  () =>
-    buildFubonCanonicalCreditCardCaptures({
-      ...canonicalBuildOptions,
-      statementRows: panStatementRows,
-      unbilledRows: panUnbilledRows,
-      summaries: panSummaries,
-      input: panInput,
-    }),
-  /fingerprint key is unavailable/i,
 );
 assert.throws(
   () =>
