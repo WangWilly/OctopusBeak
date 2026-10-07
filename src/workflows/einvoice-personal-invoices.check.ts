@@ -19,6 +19,7 @@ import {
   type InvoiceCaptureRecord,
   validatePaginationEnvelope,
   waitForEinvoiceLoginOutcome,
+  waitForEinvoiceLoginReady,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
 
@@ -123,6 +124,22 @@ try {
   assert.equal(captchaContract.challengeImageRegion?.rect?.width, 150);
   assert.equal(captchaContract.challengeImageRegion?.rect?.height, 40);
   await captchaPage.close();
+
+  const stalledLoginPage = await browser.newPage();
+  await stalledLoginPage.setContent("<div>載入中</div>");
+  let stalledLoginError: unknown;
+  try {
+    await waitForEinvoiceLoginReady(stalledLoginPage, 50);
+  } catch (error) {
+    stalledLoginError = error;
+  }
+  assert.equal(
+    classifyTypedWorkflowFailure(stalledLoginError, [
+      { runId: "stalled-login-fixture", stage: "authentication", code: "authentication-started", occurredAt: "2026-09-26T00:00:00.000Z" },
+    ]),
+    "authentication-timeout",
+  );
+  await stalledLoginPage.close();
 
   const outcomePage = await browser.newPage();
   await outcomePage.setContent('<div role="alert">圖形驗證碼錯誤，請重新輸入</div>');
