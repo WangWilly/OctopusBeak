@@ -1,0 +1,285 @@
+{
+  "bgm": {
+    "path": "assets/bgm/track.mp3",
+    "volume": 0.9,
+    "query": "playful confident minimal electronic, plucky marimba and light claps, clear pulse around 112 bpm, builds to a satisfying resolve, clean ending",
+    "duration_s": 30
+  },
+  "bgm_pending": false,
+  "voices": [],
+  "sfx": [
+    {
+      "frame": 1,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 0.42,
+      "duration_s": 0.31,
+      "volume": 0.4
+    },
+    {
+      "frame": 1,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 1.92,
+      "duration_s": 0.31,
+      "volume": 0.4
+    },
+    {
+      "frame": 1,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 3.42,
+      "duration_s": 0.31,
+      "volume": 0.4
+    },
+    {
+      "frame": 1,
+      "file": "assets/sfx/stamp.mp3",
+      "offset_s": 3.45,
+      "duration_s": 1.0,
+      "volume": 0.25
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/whoosh.mp3",
+      "offset_s": 0.0,
+      "duration_s": 1.2,
+      "volume": 0.3
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 0.62,
+      "duration_s": 0.31,
+      "volume": 0.25
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 0.74,
+      "duration_s": 0.31,
+      "volume": 0.25
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 0.86,
+      "duration_s": 0.31,
+      "volume": 0.25
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 1.7,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.12,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.54,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.96,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 3.38,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 2,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 3.8,
+      "duration_s": 0.26,
+      "volume": 0.45
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/swoosh.mp3",
+      "offset_s": 0.0,
+      "duration_s": 1.2,
+      "volume": 0.35
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/stamp.mp3",
+      "offset_s": 1.98,
+      "duration_s": 1.2,
+      "volume": 0.5
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 2.5,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 2.95,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 3.4,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 3.85,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 4.3,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 3,
+      "file": "assets/sfx/ticker.mp3",
+      "offset_s": 4.75,
+      "duration_s": 0.45,
+      "volume": 0.3
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/pen-draw.mp3",
+      "offset_s": 0.05,
+      "duration_s": 0.6,
+      "volume": 0.45
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/rising-whoosh.mp3",
+      "offset_s": 0.62,
+      "duration_s": 1.7,
+      "volume": 0.3
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/cash-register-ding.mp3",
+      "offset_s": 2.3,
+      "duration_s": 1.2,
+      "volume": 0.4
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.5,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.62,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.74,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.86,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 2.98,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 3.1,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 3.22,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 4,
+      "file": "assets/sfx/tap.mp3",
+      "offset_s": 3.34,
+      "duration_s": 0.2,
+      "volume": 0.2
+    },
+    {
+      "frame": 5,
+      "file": "assets/sfx/swoosh.mp3",
+      "offset_s": 0.0,
+      "duration_s": 1.2,
+      "volume": 0.3
+    },
+    {
+      "frame": 5,
+      "file": "assets/sfx/paper-flick.mp3",
+      "offset_s": 0.8,
+      "duration_s": 1.0,
+      "volume": 0.35
+    },
+    {
+      "frame": 5,
+      "file": "assets/sfx/pen-draw.mp3",
+      "offset_s": 1.45,
+      "duration_s": 0.6,
+      "volume": 0.35
+    },
+    {
+      "frame": 5,
+      "file": "assets/sfx/whoosh.mp3",
+      "offset_s": 3.9,
+      "duration_s": 1.2,
+      "volume": 0.3
+    },
+    {
+      "frame": 6,
+      "file": "assets/sfx/pop.mp3",
+      "offset_s": 0.0,
+      "duration_s": 0.31,
+      "volume": 0.35
+    },
+    {
+      "frame": 6,
+      "file": "assets/sfx/chime.mp3",
+      "offset_s": 1.6,
+      "duration_s": 0.72,
+      "volume": 0.35
+    }
+  ]
+}

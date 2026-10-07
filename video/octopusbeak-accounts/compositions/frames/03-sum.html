@@ -1,0 +1,241 @@
+<template>
+  <style>
+    @font-face { font-family: "PingFang TC"; src: local("PingFangTC-Regular"); font-weight: 400; }
+    @font-face { font-family: "PingFang TC"; src: local("PingFangTC-Medium"); font-weight: 500; }
+    @font-face { font-family: "PingFang TC"; src: local("PingFangTC-Semibold"); font-weight: 600; }
+    @font-face { font-family: "PingFang TC"; src: local("PingFangTC-Semibold"); font-weight: 700; }
+    @font-face { font-family: "SF Mono"; src: local("SFMono-Regular"); font-weight: 400; }
+    @font-face { font-family: "SF Mono"; src: local("SFMono-Bold"); font-weight: 700; }
+    @font-face { font-family: "Menlo"; src: local("Menlo-Regular"); font-weight: 400; }
+    @font-face { font-family: "Menlo"; src: local("Menlo-Bold"); font-weight: 700; }
+
+    #root {
+      position: relative;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      font-family: "PingFang TC", sans-serif;
+    }
+    .f03sum-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .f03sum-layer { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; overflow: hidden; }
+
+    /* night ground */
+    .f03sum-night { background: linear-gradient(to bottom right, #071f4a 0%, #0d4672 50%, #12808f 100%); }
+    .f03sum-full { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+    .f03sum-rosette { position: absolute; left: -10px; top: 410px; width: 1100px; height: 1100px; transform-origin: 50% 50%; }
+    .f03sum-night .f03sum-waves { opacity: 0.5; }
+    .f03sum-night .f03sum-rosette { color: #edf4f1; opacity: 0.2; }
+
+    /* paper ground (wipes up from the bottom edge) */
+    .f03sum-wipe { background: transparent; }
+    .f03sum-mask { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; overflow: hidden; }
+    .f03sum-paper {
+      position: absolute; left: 0; top: 0; width: 1080px; height: 1920px;
+      background:
+        radial-gradient(ellipse 1000px 1100px at 100% 100%, #edf4f1 0%, #edf4f1 30%, rgba(237, 244, 241, 0) 100%),
+        #f9fafc;
+    }
+    .f03sum-paper .f03sum-waves { opacity: 0.05; }
+    .f03sum-paper .f03sum-rosette { color: #2c6485; opacity: 0.06; }
+    .f03sum-band { position: absolute; left: 0; top: -150px; width: 1080px; height: 150px; }
+    .f03sum-band svg { position: absolute; left: 0; top: 0; }
+    .f03sum-band .f03sum-edge { position: absolute; left: 0; bottom: 0; width: 1080px; height: 4px; background: #18a9a4; }
+
+    /* ledger column */
+    .f03sum-world { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+    .f03sum-title {
+      position: absolute; left: 110px; top: 311px; /* baseline y=400 */
+      font-size: 104px; line-height: 104px; font-weight: 700; color: #0e1217; white-space: nowrap;
+    }
+    .f03sum-tile {
+      position: absolute; left: 110px; width: 96px; height: 96px;
+      background: #ffffff; border-radius: 24px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+      transform-origin: 50% 50%;
+    }
+    .f03sum-logo { position: absolute; left: 12px; top: 12px; width: 72px; height: 72px; object-fit: contain; transform-origin: 50% 50%; }
+    .f03sum-label {
+      position: absolute; left: 230px; height: 50px;
+      font-size: 50px; line-height: 50px; font-weight: 600; color: #0e1217; white-space: nowrap;
+    }
+    .f03sum-amt {
+      position: absolute; right: 110px; height: 76px; overflow: hidden;
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      font-size: 60px; line-height: 76px; font-weight: 700;
+      font-variant-numeric: tabular-nums; color: #18a9a4; white-space: nowrap;
+      display: flex; justify-content: flex-end; align-items: flex-start;
+    }
+    .f03sum-digits { display: flex; align-items: flex-start; height: 76px; }
+    .f03sum-col { display: block; width: 1ch; height: 76px; text-align: center; }
+    .f03sum-step { display: block; }
+    .f03sum-stk { display: flex; flex-direction: column; }
+    .f03sum-it { display: block; height: 76px; line-height: 76px; }
+    .f03sum-q { position: absolute; right: 0; top: 0; width: 1ch; height: 76px; text-align: center; }
+    .f03sum-qi { display: block; height: 76px; transform-origin: 50% 55%; }
+    .f03sum-plus {
+      position: absolute; left: 64px; top: 962px; width: 36px; height: 76px; /* right edge x=100, row y=1000 */
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      font-size: 60px; line-height: 76px; font-weight: 700; color: #5e646a; text-align: center;
+    }
+    .f03sum-check { position: absolute; left: 990px; overflow: visible; }
+    .f03sum-check path { fill: none; stroke: #18a9a4; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1 1; }
+    .f03sum-icon {
+      position: absolute; left: 840px; top: 300px; width: 120px; height: 120px; /* center (900,360) */
+      border-radius: 28px; overflow: hidden;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+      transform-origin: 50% 50%;
+    }
+    .f03sum-icon img { display: block; width: 120px; height: 120px; }
+  </style>
+
+  <div id="root" data-composition-id="03-sum" data-start="0" data-duration="6" data-width="1080" data-height="1920">
+    <svg class="f03sum-defs" width="0" height="0" aria-hidden="true"><defs>
+<symbol id="f03sum-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="f03sum-ro"><path id="f03sum-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#f03sum-ro0" transform="rotate(9)"/><use href="#f03sum-ro0" transform="rotate(18)"/><use href="#f03sum-ro0" transform="rotate(27)"/><use href="#f03sum-ro0" transform="rotate(36)"/><use href="#f03sum-ro0" transform="rotate(45)"/><use href="#f03sum-ro0" transform="rotate(54)"/><use href="#f03sum-ro0" transform="rotate(63)"/><use href="#f03sum-ro0" transform="rotate(72)"/><use href="#f03sum-ro0" transform="rotate(81)"/><use href="#f03sum-ro0" transform="rotate(90)"/><use href="#f03sum-ro0" transform="rotate(99)"/><use href="#f03sum-ro0" transform="rotate(108)"/><use href="#f03sum-ro0" transform="rotate(117)"/><use href="#f03sum-ro0" transform="rotate(126)"/><use href="#f03sum-ro0" transform="rotate(135)"/><use href="#f03sum-ro0" transform="rotate(144)"/><use href="#f03sum-ro0" transform="rotate(153)"/><use href="#f03sum-ro0" transform="rotate(162)"/><use href="#f03sum-ro0" transform="rotate(171)"/><use href="#f03sum-ro0" transform="rotate(180)"/><use href="#f03sum-ro0" transform="rotate(189)"/><use href="#f03sum-ro0" transform="rotate(198)"/><use href="#f03sum-ro0" transform="rotate(207)"/><use href="#f03sum-ro0" transform="rotate(216)"/><use href="#f03sum-ro0" transform="rotate(225)"/><use href="#f03sum-ro0" transform="rotate(234)"/><use href="#f03sum-ro0" transform="rotate(243)"/><use href="#f03sum-ro0" transform="rotate(252)"/><use href="#f03sum-ro0" transform="rotate(261)"/><use href="#f03sum-ro0" transform="rotate(270)"/><use href="#f03sum-ro0" transform="rotate(279)"/><use href="#f03sum-ro0" transform="rotate(288)"/><use href="#f03sum-ro0" transform="rotate(297)"/><use href="#f03sum-ro0" transform="rotate(306)"/><use href="#f03sum-ro0" transform="rotate(315)"/><use href="#f03sum-ro0" transform="rotate(324)"/><use href="#f03sum-ro0" transform="rotate(333)"/><use href="#f03sum-ro0" transform="rotate(342)"/><use href="#f03sum-ro0" transform="rotate(351)"/></g><use href="#f03sum-ro" transform="rotate(1.1)"/><use href="#f03sum-ro" transform="rotate(2.3)"/><use href="#f03sum-ro" transform="rotate(3.4)"/><use href="#f03sum-ro" transform="rotate(4.5)"/><use href="#f03sum-ro" transform="rotate(5.6)"/><use href="#f03sum-ro" transform="rotate(6.8)"/><use href="#f03sum-ro" transform="rotate(7.9)"/><g id="f03sum-rb"><path id="f03sum-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#f03sum-rb0" transform="rotate(15)"/><use href="#f03sum-rb0" transform="rotate(30)"/><use href="#f03sum-rb0" transform="rotate(45)"/><use href="#f03sum-rb0" transform="rotate(60)"/><use href="#f03sum-rb0" transform="rotate(75)"/><use href="#f03sum-rb0" transform="rotate(90)"/><use href="#f03sum-rb0" transform="rotate(105)"/><use href="#f03sum-rb0" transform="rotate(120)"/><use href="#f03sum-rb0" transform="rotate(135)"/><use href="#f03sum-rb0" transform="rotate(150)"/><use href="#f03sum-rb0" transform="rotate(165)"/><use href="#f03sum-rb0" transform="rotate(180)"/><use href="#f03sum-rb0" transform="rotate(195)"/><use href="#f03sum-rb0" transform="rotate(210)"/><use href="#f03sum-rb0" transform="rotate(225)"/><use href="#f03sum-rb0" transform="rotate(240)"/><use href="#f03sum-rb0" transform="rotate(255)"/><use href="#f03sum-rb0" transform="rotate(270)"/><use href="#f03sum-rb0" transform="rotate(285)"/><use href="#f03sum-rb0" transform="rotate(300)"/><use href="#f03sum-rb0" transform="rotate(315)"/><use href="#f03sum-rb0" transform="rotate(330)"/><use href="#f03sum-rb0" transform="rotate(345)"/></g><use href="#f03sum-rb" transform="rotate(1.9)"/><use href="#f03sum-rb" transform="rotate(3.8)"/><use href="#f03sum-rb" transform="rotate(5.6)"/><use href="#f03sum-rb" transform="rotate(7.5)"/><use href="#f03sum-rb" transform="rotate(9.4)"/><use href="#f03sum-rb" transform="rotate(11.3)"/><use href="#f03sum-rb" transform="rotate(13.1)"/><g id="f03sum-rh"><path id="f03sum-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#f03sum-rh0" transform="rotate(32.7)"/><use href="#f03sum-rh0" transform="rotate(65.5)"/><use href="#f03sum-rh0" transform="rotate(98.2)"/><use href="#f03sum-rh0" transform="rotate(130.9)"/><use href="#f03sum-rh0" transform="rotate(163.6)"/><use href="#f03sum-rh0" transform="rotate(196.4)"/><use href="#f03sum-rh0" transform="rotate(229.1)"/><use href="#f03sum-rh0" transform="rotate(261.8)"/><use href="#f03sum-rh0" transform="rotate(294.5)"/><use href="#f03sum-rh0" transform="rotate(327.3)"/></g><use href="#f03sum-rh" transform="rotate(5.5)"/><use href="#f03sum-rh" transform="rotate(10.9)"/><use href="#f03sum-rh" transform="rotate(16.4)"/><use href="#f03sum-rh" transform="rotate(21.8)"/><use href="#f03sum-rh" transform="rotate(27.3)"/><g id="f03sum-rc"><path id="f03sum-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#f03sum-rc0" transform="rotate(30)"/><use href="#f03sum-rc0" transform="rotate(60)"/><use href="#f03sum-rc0" transform="rotate(90)"/><use href="#f03sum-rc0" transform="rotate(120)"/><use href="#f03sum-rc0" transform="rotate(150)"/><use href="#f03sum-rc0" transform="rotate(180)"/><use href="#f03sum-rc0" transform="rotate(210)"/><use href="#f03sum-rc0" transform="rotate(240)"/><use href="#f03sum-rc0" transform="rotate(270)"/><use href="#f03sum-rc0" transform="rotate(300)"/><use href="#f03sum-rc0" transform="rotate(330)"/></g><use href="#f03sum-rc" transform="rotate(3.8)"/><use href="#f03sum-rc" transform="rotate(7.5)"/><use href="#f03sum-rc" transform="rotate(11.3)"/><use href="#f03sum-rc" transform="rotate(15)"/><use href="#f03sum-rc" transform="rotate(18.8)"/><use href="#f03sum-rc" transform="rotate(22.5)"/><use href="#f03sum-rc" transform="rotate(26.3)"/><g id="f03sum-ri"><path id="f03sum-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#f03sum-ri0" transform="rotate(40)"/><use href="#f03sum-ri0" transform="rotate(80)"/><use href="#f03sum-ri0" transform="rotate(120)"/><use href="#f03sum-ri0" transform="rotate(160)"/><use href="#f03sum-ri0" transform="rotate(200)"/><use href="#f03sum-ri0" transform="rotate(240)"/><use href="#f03sum-ri0" transform="rotate(280)"/><use href="#f03sum-ri0" transform="rotate(320)"/></g><use href="#f03sum-ri" transform="rotate(6.7)"/><use href="#f03sum-ri" transform="rotate(13.3)"/><use href="#f03sum-ri" transform="rotate(20)"/><use href="#f03sum-ri" transform="rotate(26.7)"/><use href="#f03sum-ri" transform="rotate(33.3)"/></symbol>
+<g id="f03sum-w" fill="none" stroke="currentColor"><path id="f03sum-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#f03sum-wl" transform="translate(487.5 -28.1)"/><use href="#f03sum-wl" transform="translate(525 -18.7)"/><use href="#f03sum-wl" transform="translate(562.5 -9.4)"/><use href="#f03sum-wl" transform="translate(37.5 9.4)"/><use href="#f03sum-wl" transform="translate(75 18.8)"/><use href="#f03sum-wl" transform="translate(112.5 28.1)"/><use href="#f03sum-wl" transform="translate(150 37.5)"/><use href="#f03sum-wl" transform="translate(187.5 46.9)"/><use href="#f03sum-wl" transform="translate(225 56.3)"/><use href="#f03sum-wl" transform="translate(262.5 65.6)"/><use href="#f03sum-wl" transform="translate(300 75)"/><use href="#f03sum-wl" transform="translate(337.5 84.4)"/><use href="#f03sum-wl" transform="translate(375 93.8)"/><use href="#f03sum-wl" transform="translate(412.5 103.1)"/><use href="#f03sum-wl" transform="translate(450 112.5)"/><use href="#f03sum-wl" transform="translate(487.5 121.9)"/><use href="#f03sum-wl" transform="translate(525 131.3)"/><use href="#f03sum-wl" transform="translate(562.5 140.6)"/><use href="#f03sum-wl" transform="translate(0 150)"/><use href="#f03sum-wl" transform="translate(37.5 159.4)"/><use href="#f03sum-wl" transform="translate(75 168.8)"/><use href="#f03sum-wl" transform="translate(112.5 178.1)"/><use href="#f03sum-wl" transform="translate(150 187.5)"/><use href="#f03sum-wl" transform="translate(187.5 196.9)"/><use href="#f03sum-wl" transform="translate(225 206.3)"/><use href="#f03sum-wl" transform="translate(262.5 215.6)"/><use href="#f03sum-wl" transform="translate(300 225)"/><use href="#f03sum-wl" transform="translate(337.5 234.4)"/><use href="#f03sum-wl" transform="translate(375 243.8)"/><use href="#f03sum-wl" transform="translate(412.5 253.1)"/><use href="#f03sum-wl" transform="translate(450 262.5)"/><use href="#f03sum-wl" transform="translate(487.5 271.9)"/><use href="#f03sum-wl" transform="translate(525 281.3)"/><use href="#f03sum-wl" transform="translate(562.5 290.6)"/><use href="#f03sum-wl" transform="translate(0 300)"/><use href="#f03sum-wl" transform="translate(37.5 309.4)"/><use href="#f03sum-wl" transform="translate(75 318.8)"/></g>
+<pattern id="f03sum-waves-teal" patternUnits="userSpaceOnUse" width="600" height="300" style="color:#18a9a4"><use href="#f03sum-w"/></pattern>
+<pattern id="f03sum-waves-ink" patternUnits="userSpaceOnUse" width="600" height="300" style="color:#0e1217"><use href="#f03sum-w"/></pattern>
+</defs></svg>
+
+    <div id="f03sum-night" class="clip f03sum-layer f03sum-night" data-start="0" data-duration="6" data-track-index="0">
+      <svg class="f03sum-full f03sum-waves" width="1080" height="1920"><rect width="1080" height="1920" fill="url(#f03sum-waves-teal)" /></svg>
+      <svg id="f03sum-ros-night" class="f03sum-rosette" width="1100" height="1100"><use href="#f03sum-rosette" width="1100" height="1100" /></svg>
+    </div>
+
+    <div id="f03sum-paperclip" class="clip f03sum-layer f03sum-wipe" data-start="0" data-duration="6" data-track-index="1">
+      <div id="f03sum-mask" class="f03sum-mask">
+        <div id="f03sum-paper" class="f03sum-paper">
+          <svg class="f03sum-full f03sum-waves" width="1080" height="1920"><rect width="1080" height="1920" fill="url(#f03sum-waves-ink)" /></svg>
+          <svg id="f03sum-ros-paper" class="f03sum-rosette" width="1100" height="1100"><use href="#f03sum-rosette" width="1100" height="1100" /></svg>
+        </div>
+      </div>
+      <div id="f03sum-band" class="f03sum-band">
+        <svg width="1080" height="150"><rect width="1080" height="150" fill="url(#f03sum-waves-teal)" /></svg>
+        <div class="f03sum-edge"></div>
+      </div>
+    </div>
+
+    <div id="f03sum-world" class="clip f03sum-world" data-start="0" data-duration="6" data-track-index="2">
+      <div class="f03sum-title" id="f03sum-title">你有多少錢？</div>
+      <div class="f03sum-plus" id="f03sum-plus">+</div>
+      <div class="f03sum-tile" id="f03sum-tile-0" style="top:512px" data-gx="260" data-gy="980" data-ry="560"><img class="f03sum-logo" src="assets/logos/fubon.webp" alt="富邦" /></div>
+      <div class="f03sum-label" id="f03sum-label-0" style="top:535px" data-n="2">銀行</div>
+      <div class="f03sum-amt" id="f03sum-amt-0" style="top:522px"><span class="f03sum-q" id="f03sum-q-0"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">3</span><span class="f03sum-it">4</span><span class="f03sum-it">5</span><span class="f03sum-it">6</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">3</span><span class="f03sum-it">4</span><span class="f03sum-it">5</span><span class="f03sum-it">6</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-0" style="top:540px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-tile" id="f03sum-tile-1" style="top:622px" data-gx="540" data-gy="980" data-ry="670"><img class="f03sum-logo" src="assets/logos/yuanta-securities.webp" alt="元大證券" /></div>
+      <div class="f03sum-label" id="f03sum-label-1" style="top:645px" data-n="2">證券</div>
+      <div class="f03sum-amt" id="f03sum-amt-1" style="top:632px"><span class="f03sum-q" id="f03sum-q-1"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">5</span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span><span class="f03sum-it">4</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">3</span><span class="f03sum-it">4</span><span class="f03sum-it">5</span><span class="f03sum-it">6</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-1" style="top:650px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-tile" id="f03sum-tile-2" style="top:732px" data-gx="820" data-gy="980" data-ry="780"><img class="f03sum-logo" src="assets/logos/maicoin.webp" alt="MaiCoin" /></div>
+      <div class="f03sum-label" id="f03sum-label-2" style="top:755px" data-n="4">加密資產</div>
+      <div class="f03sum-amt" id="f03sum-amt-2" style="top:742px"><span class="f03sum-q" id="f03sum-q-2"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">5</span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">4</span><span class="f03sum-it">5</span><span class="f03sum-it">6</span><span class="f03sum-it">7</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-2" style="top:760px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-tile" id="f03sum-tile-3" style="top:842px" data-gx="260" data-gy="1240" data-ry="890"><img class="f03sum-logo" src="assets/logos/yuanta-bank.webp" alt="元大銀行" /></div>
+      <div class="f03sum-label" id="f03sum-label-3" style="top:865px" data-n="2">基金</div>
+      <div class="f03sum-amt" id="f03sum-amt-3" style="top:852px"><span class="f03sum-q" id="f03sum-q-3"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">2</span><span class="f03sum-it">3</span><span class="f03sum-it">4</span><span class="f03sum-it">5</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">3</span><span class="f03sum-it">4</span><span class="f03sum-it">5</span><span class="f03sum-it">6</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-3" style="top:870px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-tile" id="f03sum-tile-4" style="top:952px" data-gx="540" data-gy="1240" data-ry="1000"><img class="f03sum-logo" src="assets/logos/cathay.webp" alt="國泰世華" /></div>
+      <div class="f03sum-label" id="f03sum-label-4" style="top:975px" data-n="2">外幣</div>
+      <div class="f03sum-amt" id="f03sum-amt-4" style="top:962px"><span class="f03sum-q" id="f03sum-q-4"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">7</span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">5</span><span class="f03sum-it">6</span><span class="f03sum-it">7</span><span class="f03sum-it">8</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-4" style="top:980px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-tile" id="f03sum-tile-5" style="top:1062px" data-gx="820" data-gy="1240" data-ry="1110"><img class="f03sum-logo" src="assets/logos/esun.webp" alt="玉山" /></div>
+      <div class="f03sum-label" id="f03sum-label-5" style="top:1085px" data-n="2">負債</div>
+      <div class="f03sum-amt f03sum-neg" id="f03sum-amt-5" style="top:1072px"><span class="f03sum-q" id="f03sum-q-5"><span class="f03sum-qi">?</span></span><span class="f03sum-digits"><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">−</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">8</span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">,</span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span><span class="f03sum-it">3</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span><span class="f03sum-col"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-step"><span class="f03sum-stk"><span class="f03sum-it"></span><span class="f03sum-it">9</span><span class="f03sum-it">0</span><span class="f03sum-it">1</span><span class="f03sum-it">2</span></span></span></span></span></span></span></span></div>
+      <svg class="f03sum-check" id="f03sum-check-5" style="top:1090px" width="40" height="40" viewBox="0 0 40 40"><path d="M9 21 L17 29 L32 12" pathLength="1" /></svg>
+      <div class="f03sum-icon" id="f03sum-icon"><img src="assets/app-icon-180.png" alt="OctopusBeak" /></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var tl = gsap.timeline({ paused: true });
+      var ITEM_H = 76;
+      var FILM_START = 11;
+      var DUR = 6;
+
+      // Rosettes on both grounds: angle = 0.6 deg/s of film time.
+      tl.fromTo([$("f03sum-ros-night"), $("f03sum-ros-paper")],
+        { rotation: 0.6 * FILM_START },
+        { rotation: 0.6 * (FILM_START + DUR), duration: DUR, ease: "none" }, 0);
+
+      // Scene 1 (0.0-1.0): paper wipes up from the bottom edge, a band of teal wave lines riding the edge.
+      tl.fromTo($("f03sum-mask"), { y: 1920 }, { y: 0, duration: 1.0, ease: "power2.inOut" }, 0);
+      tl.fromTo($("f03sum-paper"), { y: -1920 }, { y: 0, duration: 1.0, ease: "power2.inOut" }, 0);
+      tl.fromTo($("f03sum-band"), { y: 1920 }, { y: 0, duration: 1.0, ease: "power2.inOut" }, 0);
+
+      // Scene 1: each 200px grid tile flies to its row slot and shrinks to the 96px row tile.
+      var START_SCALE = 200 / 96;
+      for (var i = 0; i < 6; i++) {
+        var tile = $("f03sum-tile-" + i);
+        var gx = +tile.getAttribute("data-gx"), gy = +tile.getAttribute("data-gy"), ry = +tile.getAttribute("data-ry");
+        var at = i * 0.05;
+        tl.fromTo(tile,
+          { x: gx - 158, y: gy - ry, scale: START_SCALE, borderRadius: 46 / START_SCALE,
+            boxShadow: "0px " + (18 / START_SCALE) + "px " + (36 / START_SCALE) + "px rgba(0, 0, 0, 0.30)" },
+          { x: 0, y: 0, scale: 1, borderRadius: 24,
+            boxShadow: "0px 10px 24px rgba(15, 23, 42, 0.14)", duration: 0.75, ease: "power3.out" }, at);
+        tl.fromTo(tile.querySelector(".f03sum-logo"),
+          { scale: 120 / (72 * START_SCALE) }, { scale: 1, duration: 0.75, ease: "power3.out" }, at);
+      }
+
+      // Scene 2 (0.8-1.8): title rises in; labels print left->right; teal "?" pop in.
+      tl.fromTo($("f03sum-title"), { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" }, 0.8);
+      for (var j = 0; j < 6; j++) {
+        var lab = $("f03sum-label-" + j);
+        var n = +lab.getAttribute("data-n");
+        tl.fromTo(lab,
+          { clipPath: "inset(-20% 100% -20% -4%)" },
+          { clipPath: "inset(-20% -4% -20% -4%)", duration: 0.08 * n + 0.08, ease: "steps(" + n + ")" },
+          1.0 + j * 0.08);
+        tl.fromTo($("f03sum-q-" + j).querySelector(".f03sum-qi"),
+          { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "power3.out" }, 1.15 + j * 0.06);
+      }
+      tl.fromTo($("f03sum-plus"), { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "power3.out" }, 1.45);
+
+      // Scene 3 (1.9-2.4): the OctopusBeak icon drops from above and stamps at (900,360); 3px page shake.
+      tl.fromTo($("f03sum-icon"),
+        { y: -560, scale: 1.3, rotation: -16, opacity: 0 },
+        { y: 0, scale: 1, rotation: -6, opacity: 1, duration: 0.45, ease: "expo.out" }, 1.9);
+      var world = $("f03sum-world");
+      tl.fromTo(world, { x: 0, y: 0 }, { x: 3, y: 3, duration: 0.04, ease: "none" }, 1.98)
+        .to(world, { x: -3, y: -2, duration: 0.05, ease: "none" }, 2.02)
+        .to(world, { x: 2, y: 1, duration: 0.05, ease: "none" }, 2.07)
+        .to(world, { x: -1, y: 0, duration: 0.05, ease: "none" }, 2.12)
+        .to(world, { x: 0, y: 0, duration: 0.06, ease: "power2.out" }, 2.17);
+
+      // Scene 4 (2.5-5.4): row by row, each "?" rolls up into the real amount as a stepped odometer.
+      var STEP_SPACING = 0.08, STEP_DUR = 0.16;
+      for (var r = 0; r < 6; r++) {
+        var land = 2.5 + r * 0.45;
+        var amt = $("f03sum-amt-" + r);
+        var neg = amt.classList.contains("f03sum-neg");
+        tl.fromTo($("f03sum-q-" + r), { y: 0 }, { y: -ITEM_H, duration: 0.24, ease: "power3.out" }, land);
+        tl.fromTo(amt, { color: "#18a9a4" }, { color: neg ? "#8a3b2e" : "#0e1217", duration: 0.4, ease: "power2.out" }, land);
+        var cols = amt.querySelectorAll(".f03sum-col");
+        // Stepped odometer: each column nests one wrapper per step; every wrapper rolls one item
+        // height (power3.out) and the nested translations add up, so overlapping steps sum into
+        // a click-click-click roll that stays exact under any seek.
+        cols.forEach(function (col, c) {
+          var steps = col.querySelectorAll(".f03sum-step");
+          var colAt = land + c * 0.012 + (steps.length === 1 ? 3 * STEP_SPACING : 0);
+          steps.forEach(function (stepEl, s) {
+            tl.fromTo(stepEl, { y: 0 }, { y: -ITEM_H, duration: STEP_DUR, ease: "power3.out" }, colAt + s * STEP_SPACING);
+          });
+        });
+        // thin teal check flicks at the row's right edge as it lands
+        var chk = $("f03sum-check-" + r);
+        var path = chk.querySelector("path");
+        tl.fromTo(chk, { opacity: 0 }, { opacity: 1, duration: 0.05, ease: "none" }, land + 0.3);
+        tl.fromTo(path, { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.18, ease: "power3.out" }, land + 0.3);
+        tl.to(chk, { opacity: 0, duration: 0.25, ease: "power2.in" }, land + 0.62);
+      }
+
+      // Scene 5 (5.4-6.0): hold; only the rosettes keep turning.
+      tl.set({}, {}, DUR);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["03-sum"] = tl;
+    })();
+  </script>
+</template>

@@ -1,0 +1,12 @@
+{"id":"bgm_001","type":"bgm","path":"assets/bgm/track.mp3","source":"search","description":"playful confident minimal electronic, plucky marimba and light claps, clear pulse around 112 bpm, builds to a satisfying resolve, clean ending","duration":30,"provenance":{"provider":"heygen","prompt":"playful confident minimal electronic, plucky marimba and light claps, clear pulse around 112 bpm, builds to a satisfying resolve, clean ending"}}
+{"id":"sfx_001","type":"sfx","path":"assets/sfx/pop.mp3","source":"search","description":"pop","duration":0.3,"provenance":{"provider":"heygen","prompt":"pop"}}
+{"id":"sfx_002","type":"sfx","path":"assets/sfx/whoosh.mp3","source":"search","description":"whoosh","duration":1.6,"provenance":{"provider":"heygen","prompt":"whoosh"}}
+{"id":"sfx_003","type":"sfx","path":"assets/sfx/tap.mp3","source":"search","description":"tap","duration":0.3,"provenance":{"provider":"heygen","prompt":"tap"}}
+{"id":"sfx_004","type":"sfx","path":"assets/sfx/swoosh.mp3","source":"search","description":"swoosh","duration":1.4,"provenance":{"provider":"heygen","prompt":"swoosh"}}
+{"id":"sfx_005","type":"sfx","path":"assets/sfx/stamp.mp3","source":"search","description":"stamp","duration":1.8,"provenance":{"provider":"heygen","prompt":"stamp"}}
+{"id":"sfx_006","type":"sfx","path":"assets/sfx/ticker.mp3","source":"search","description":"ticker","duration":1.3,"provenance":{"provider":"heygen","prompt":"ticker"}}
+{"id":"sfx_007","type":"sfx","path":"assets/sfx/pen-draw.mp3","source":"search","description":"pen draw","duration":0.9,"provenance":{"provider":"heygen","prompt":"pen draw"}}
+{"id":"sfx_008","type":"sfx","path":"assets/sfx/rising-whoosh.mp3","source":"search","description":"rising whoosh","duration":4.4,"provenance":{"provider":"heygen","prompt":"rising whoosh"}}
+{"id":"sfx_009","type":"sfx","path":"assets/sfx/cash-register-ding.mp3","source":"search","description":"cash register ding","duration":1.2,"provenance":{"provider":"heygen","prompt":"cash register ding"}}
+{"id":"sfx_010","type":"sfx","path":"assets/sfx/paper-flick.mp3","source":"search","description":"paper flick","duration":1,"provenance":{"provider":"heygen","prompt":"paper flick"}}
+{"id":"sfx_011","type":"sfx","path":"assets/sfx/chime.mp3","source":"search","description":"chime","duration":0.7,"provenance":{"provider":"heygen","prompt":"chime"}}

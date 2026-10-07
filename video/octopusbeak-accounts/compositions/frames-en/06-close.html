@@ -1,0 +1,291 @@
+<template>
+  <div id="root" data-composition-id="06-close" data-start="0" data-duration="3.5" data-width="1080" data-height="1920">
+    <style>
+      @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"), local("PingFang TC Medium"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+      @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("SF Mono Regular"), local("Menlo-Regular"); }
+      @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("SF Mono Bold"), local("Menlo-Bold"); }
+
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+      }
+      [id="06-close-defs"] {
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+      }
+
+      /* ── Night ground (full-duration clip) ── */
+      [id="06-close-ground"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: linear-gradient(to bottom right, #071f4a 0%, #0d4672 52%, #12808f 100%);
+      }
+      [id="06-close-waves"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        opacity: 0.5;
+      }
+      /* 1100px rosette centred at (540, 960) */
+      [id="06-close-rosette-box"] {
+        position: absolute;
+        left: -10px;
+        top: 410px;
+        width: 1100px;
+        height: 1100px;
+        color: #edf4f1;
+        opacity: 0.2;
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-rosette-box"] svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+
+      /* ── World (the one camera; static in this frame) ── */
+      [id="06-close-world"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+      }
+
+      /* ── Lockup ── */
+      [id="06-close-icon"] {
+        position: absolute;
+        left: 110px;
+        top: 340px;
+        width: 160px;
+        height: 160px;
+        border-radius: 36px;
+        overflow: hidden;
+        background: #ffffff;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.3);
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-icon"] img {
+        display: block;
+        width: 160px;
+        height: 160px;
+      }
+      [id="06-close-word"] {
+        position: absolute;
+        left: 300px;
+        top: 364px;
+        height: 112px;
+        line-height: 112px;
+        font-size: 112px;
+        font-weight: 700;
+        color: #ffffff;
+        white-space: nowrap;
+        letter-spacing: -0.01em;
+      }
+
+      /* ── Sun Yat-sen (teal-tinted engraving) ── */
+      [id="06-close-sun-stage"] {
+        position: absolute;
+        left: 0;
+        top: 600px;
+        width: 1080px;
+        height: 940px;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 150px), transparent 100%);
+        mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 150px), transparent 100%);
+      }
+      [id="06-close-glow"] {
+        position: absolute;
+        left: 380px;
+        top: 110px;
+        width: 900px;
+        height: 900px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 50% 50%, rgba(95, 212, 201, 0.95) 0%, rgba(24, 169, 164, 0.55) 34%, rgba(18, 128, 143, 0) 70%);
+        transform-origin: 50% 50%;
+      }
+      [id="06-close-sun"] {
+        position: absolute;
+        left: 520px;
+        top: 340px;
+        width: 601px;
+        height: 600px;
+      }
+      [id="06-close-sun"] img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        filter: grayscale(1) sepia(1) hue-rotate(130deg) saturate(1.6) brightness(0.95);
+      }
+
+      /* ── Headline ── */
+      .\30 6-close-line {
+        position: absolute;
+        left: 100px;
+        height: 120px;
+        line-height: 120px;
+        font-size: 96px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      [id="06-close-line1"] { top: 626px; }
+      [id="06-close-line2"] { top: 742px; }
+      .\30 6-close-frag {
+        display: inline-block;
+        background: linear-gradient(180deg, #ffffff 15%, #c4f5ee 78%, #5fd4c9 118%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+      }
+      [id="06-close-lock"] {
+        display: inline-block;
+        width: 56px;
+        height: 56px;
+        margin-right: 20px;
+        vertical-align: -2px;
+        color: #c4f5ee;
+      }
+      [id="06-close-lock"] svg {
+        display: block;
+        width: 56px;
+        height: 56px;
+      }
+
+      /* ── CTA ── */
+      [id="06-close-pill"] {
+        position: absolute;
+        left: 100px;
+        top: 912px;
+        height: 96px;
+        line-height: 96px;
+        padding: 0 42px;
+        border-radius: 999px;
+        background: #c9efe9;
+        color: #0e1217;
+        font-size: 44px;
+        font-weight: 600;
+        white-space: nowrap;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.3);
+      }
+      [id="06-close-url"] {
+        position: absolute;
+        left: 100px;
+        top: 1030px;
+        height: 40px;
+        line-height: 40px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-weight: 400;
+        font-size: 30px;
+        color: #c4f5ee;
+        white-space: nowrap;
+      }
+    </style>
+
+    <svg id="06-close-defs" xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
+      <defs>
+        <symbol id="06-close-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="06-close-ro"><path id="06-close-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#06-close-ro0" transform="rotate(9)"/><use href="#06-close-ro0" transform="rotate(18)"/><use href="#06-close-ro0" transform="rotate(27)"/><use href="#06-close-ro0" transform="rotate(36)"/><use href="#06-close-ro0" transform="rotate(45)"/><use href="#06-close-ro0" transform="rotate(54)"/><use href="#06-close-ro0" transform="rotate(63)"/><use href="#06-close-ro0" transform="rotate(72)"/><use href="#06-close-ro0" transform="rotate(81)"/><use href="#06-close-ro0" transform="rotate(90)"/><use href="#06-close-ro0" transform="rotate(99)"/><use href="#06-close-ro0" transform="rotate(108)"/><use href="#06-close-ro0" transform="rotate(117)"/><use href="#06-close-ro0" transform="rotate(126)"/><use href="#06-close-ro0" transform="rotate(135)"/><use href="#06-close-ro0" transform="rotate(144)"/><use href="#06-close-ro0" transform="rotate(153)"/><use href="#06-close-ro0" transform="rotate(162)"/><use href="#06-close-ro0" transform="rotate(171)"/><use href="#06-close-ro0" transform="rotate(180)"/><use href="#06-close-ro0" transform="rotate(189)"/><use href="#06-close-ro0" transform="rotate(198)"/><use href="#06-close-ro0" transform="rotate(207)"/><use href="#06-close-ro0" transform="rotate(216)"/><use href="#06-close-ro0" transform="rotate(225)"/><use href="#06-close-ro0" transform="rotate(234)"/><use href="#06-close-ro0" transform="rotate(243)"/><use href="#06-close-ro0" transform="rotate(252)"/><use href="#06-close-ro0" transform="rotate(261)"/><use href="#06-close-ro0" transform="rotate(270)"/><use href="#06-close-ro0" transform="rotate(279)"/><use href="#06-close-ro0" transform="rotate(288)"/><use href="#06-close-ro0" transform="rotate(297)"/><use href="#06-close-ro0" transform="rotate(306)"/><use href="#06-close-ro0" transform="rotate(315)"/><use href="#06-close-ro0" transform="rotate(324)"/><use href="#06-close-ro0" transform="rotate(333)"/><use href="#06-close-ro0" transform="rotate(342)"/><use href="#06-close-ro0" transform="rotate(351)"/></g><use href="#06-close-ro" transform="rotate(1.1)"/><use href="#06-close-ro" transform="rotate(2.3)"/><use href="#06-close-ro" transform="rotate(3.4)"/><use href="#06-close-ro" transform="rotate(4.5)"/><use href="#06-close-ro" transform="rotate(5.6)"/><use href="#06-close-ro" transform="rotate(6.8)"/><use href="#06-close-ro" transform="rotate(7.9)"/><g id="06-close-rb"><path id="06-close-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#06-close-rb0" transform="rotate(15)"/><use href="#06-close-rb0" transform="rotate(30)"/><use href="#06-close-rb0" transform="rotate(45)"/><use href="#06-close-rb0" transform="rotate(60)"/><use href="#06-close-rb0" transform="rotate(75)"/><use href="#06-close-rb0" transform="rotate(90)"/><use href="#06-close-rb0" transform="rotate(105)"/><use href="#06-close-rb0" transform="rotate(120)"/><use href="#06-close-rb0" transform="rotate(135)"/><use href="#06-close-rb0" transform="rotate(150)"/><use href="#06-close-rb0" transform="rotate(165)"/><use href="#06-close-rb0" transform="rotate(180)"/><use href="#06-close-rb0" transform="rotate(195)"/><use href="#06-close-rb0" transform="rotate(210)"/><use href="#06-close-rb0" transform="rotate(225)"/><use href="#06-close-rb0" transform="rotate(240)"/><use href="#06-close-rb0" transform="rotate(255)"/><use href="#06-close-rb0" transform="rotate(270)"/><use href="#06-close-rb0" transform="rotate(285)"/><use href="#06-close-rb0" transform="rotate(300)"/><use href="#06-close-rb0" transform="rotate(315)"/><use href="#06-close-rb0" transform="rotate(330)"/><use href="#06-close-rb0" transform="rotate(345)"/></g><use href="#06-close-rb" transform="rotate(1.9)"/><use href="#06-close-rb" transform="rotate(3.8)"/><use href="#06-close-rb" transform="rotate(5.6)"/><use href="#06-close-rb" transform="rotate(7.5)"/><use href="#06-close-rb" transform="rotate(9.4)"/><use href="#06-close-rb" transform="rotate(11.3)"/><use href="#06-close-rb" transform="rotate(13.1)"/><g id="06-close-rh"><path id="06-close-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#06-close-rh0" transform="rotate(32.7)"/><use href="#06-close-rh0" transform="rotate(65.5)"/><use href="#06-close-rh0" transform="rotate(98.2)"/><use href="#06-close-rh0" transform="rotate(130.9)"/><use href="#06-close-rh0" transform="rotate(163.6)"/><use href="#06-close-rh0" transform="rotate(196.4)"/><use href="#06-close-rh0" transform="rotate(229.1)"/><use href="#06-close-rh0" transform="rotate(261.8)"/><use href="#06-close-rh0" transform="rotate(294.5)"/><use href="#06-close-rh0" transform="rotate(327.3)"/></g><use href="#06-close-rh" transform="rotate(5.5)"/><use href="#06-close-rh" transform="rotate(10.9)"/><use href="#06-close-rh" transform="rotate(16.4)"/><use href="#06-close-rh" transform="rotate(21.8)"/><use href="#06-close-rh" transform="rotate(27.3)"/><g id="06-close-rc"><path id="06-close-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#06-close-rc0" transform="rotate(30)"/><use href="#06-close-rc0" transform="rotate(60)"/><use href="#06-close-rc0" transform="rotate(90)"/><use href="#06-close-rc0" transform="rotate(120)"/><use href="#06-close-rc0" transform="rotate(150)"/><use href="#06-close-rc0" transform="rotate(180)"/><use href="#06-close-rc0" transform="rotate(210)"/><use href="#06-close-rc0" transform="rotate(240)"/><use href="#06-close-rc0" transform="rotate(270)"/><use href="#06-close-rc0" transform="rotate(300)"/><use href="#06-close-rc0" transform="rotate(330)"/></g><use href="#06-close-rc" transform="rotate(3.8)"/><use href="#06-close-rc" transform="rotate(7.5)"/><use href="#06-close-rc" transform="rotate(11.3)"/><use href="#06-close-rc" transform="rotate(15)"/><use href="#06-close-rc" transform="rotate(18.8)"/><use href="#06-close-rc" transform="rotate(22.5)"/><use href="#06-close-rc" transform="rotate(26.3)"/><g id="06-close-ri"><path id="06-close-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#06-close-ri0" transform="rotate(40)"/><use href="#06-close-ri0" transform="rotate(80)"/><use href="#06-close-ri0" transform="rotate(120)"/><use href="#06-close-ri0" transform="rotate(160)"/><use href="#06-close-ri0" transform="rotate(200)"/><use href="#06-close-ri0" transform="rotate(240)"/><use href="#06-close-ri0" transform="rotate(280)"/><use href="#06-close-ri0" transform="rotate(320)"/></g><use href="#06-close-ri" transform="rotate(6.7)"/><use href="#06-close-ri" transform="rotate(13.3)"/><use href="#06-close-ri" transform="rotate(20)"/><use href="#06-close-ri" transform="rotate(26.7)"/><use href="#06-close-ri" transform="rotate(33.3)"/></symbol>
+        <g id="06-close-w" fill="none" stroke="currentColor"><path id="06-close-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#06-close-wl" transform="translate(487.5 -28.1)"/><use href="#06-close-wl" transform="translate(525 -18.7)"/><use href="#06-close-wl" transform="translate(562.5 -9.4)"/><use href="#06-close-wl" transform="translate(37.5 9.4)"/><use href="#06-close-wl" transform="translate(75 18.8)"/><use href="#06-close-wl" transform="translate(112.5 28.1)"/><use href="#06-close-wl" transform="translate(150 37.5)"/><use href="#06-close-wl" transform="translate(187.5 46.9)"/><use href="#06-close-wl" transform="translate(225 56.3)"/><use href="#06-close-wl" transform="translate(262.5 65.6)"/><use href="#06-close-wl" transform="translate(300 75)"/><use href="#06-close-wl" transform="translate(337.5 84.4)"/><use href="#06-close-wl" transform="translate(375 93.8)"/><use href="#06-close-wl" transform="translate(412.5 103.1)"/><use href="#06-close-wl" transform="translate(450 112.5)"/><use href="#06-close-wl" transform="translate(487.5 121.9)"/><use href="#06-close-wl" transform="translate(525 131.3)"/><use href="#06-close-wl" transform="translate(562.5 140.6)"/><use href="#06-close-wl" transform="translate(0 150)"/><use href="#06-close-wl" transform="translate(37.5 159.4)"/><use href="#06-close-wl" transform="translate(75 168.8)"/><use href="#06-close-wl" transform="translate(112.5 178.1)"/><use href="#06-close-wl" transform="translate(150 187.5)"/><use href="#06-close-wl" transform="translate(187.5 196.9)"/><use href="#06-close-wl" transform="translate(225 206.3)"/><use href="#06-close-wl" transform="translate(262.5 215.6)"/><use href="#06-close-wl" transform="translate(300 225)"/><use href="#06-close-wl" transform="translate(337.5 234.4)"/><use href="#06-close-wl" transform="translate(375 243.8)"/><use href="#06-close-wl" transform="translate(412.5 253.1)"/><use href="#06-close-wl" transform="translate(450 262.5)"/><use href="#06-close-wl" transform="translate(487.5 271.9)"/><use href="#06-close-wl" transform="translate(525 281.3)"/><use href="#06-close-wl" transform="translate(562.5 290.6)"/><use href="#06-close-wl" transform="translate(0 300)"/><use href="#06-close-wl" transform="translate(37.5 309.4)"/><use href="#06-close-wl" transform="translate(75 318.8)"/></g>
+        <pattern id="06-close-waves-teal" patternUnits="userSpaceOnUse" width="600" height="300" style="color: #18a9a4"><use href="#06-close-w" /></pattern>
+      </defs>
+    </svg>
+
+    <div id="06-close-ground" class="clip" data-start="0" data-duration="3.5" data-track-index="0">
+      <svg id="06-close-waves" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" aria-hidden="true">
+        <rect width="1080" height="1920" fill="url(#06-close-waves-teal)" />
+      </svg>
+      <div id="06-close-rosette-box">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="-460 -460 920 920" aria-hidden="true"><use href="#06-close-rosette" width="920" height="920" x="-460" y="-460" /></svg>
+      </div>
+    </div>
+
+    <div id="06-close-world" class="clip" data-start="0" data-duration="3.5" data-track-index="1">
+      <div id="06-close-sun-stage">
+        <div id="06-close-glow"></div>
+        <div id="06-close-sun"><img src="assets/sun-phone-facing.webp" alt="" /></div>
+      </div>
+
+      <div id="06-close-icon"><img src="assets/app-icon-180.png" alt="OctopusBeak" /></div>
+      <div id="06-close-word">OctopusBeak</div>
+
+      <div id="06-close-line1" class="06-close-line"><span id="06-close-lock"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true"><path d="M19 29V20a13 13 0 0 1 26 0v9" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" /><rect x="9" y="28" width="46" height="33" rx="8" fill="currentColor" /><circle cx="32" cy="42" r="4.5" fill="#0d4672" /><rect x="30" y="44" width="4" height="9" rx="2" fill="#0d4672" /></svg></span><span id="06-close-f1" class="06-close-frag">Data&#160;</span><span id="06-close-f2" class="06-close-frag">stays</span></div>
+      <div id="06-close-line2" class="06-close-line"><span id="06-close-f3" class="06-close-frag">on your&#160;</span><span id="06-close-f4" class="06-close-frag">Mac</span></div>
+
+      <div id="06-close-pill">Download macOS Beta</div>
+      <div id="06-close-url">wangwilly.github.io/OctopusBeak</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        window.__timelines = window.__timelines || {};
+        const root = document.querySelector('[data-composition-id="06-close"]');
+        const $ = (id) => root.querySelector('[id="06-close-' + id + '"]');
+        const tl = gsap.timeline({ paused: true });
+
+        const DUR = 3.5;
+        const FRAME_START = 26.5;
+        const DEG_PER_S = 0.6;
+
+        // Ground: rosette angle is film-continuous — 0.6°/s × (frameStart + t).
+        tl.fromTo(
+          $("rosette-box"),
+          { rotation: DEG_PER_S * FRAME_START },
+          { rotation: DEG_PER_S * (FRAME_START + DUR), duration: DUR, ease: "none" },
+          0,
+        );
+
+        // Scene 1 (0.0–0.8): app icon spring-pops in; the wordmark sets through a stepped clip.
+        tl.fromTo($("icon"), { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.55, ease: "power3.out" }, 0);
+        tl.fromTo(
+          $("word"),
+          { clipPath: "inset(-20% 100% -20% 0%)" },
+          { clipPath: "inset(-20% 0% -20% 0%)", duration: 0.55, ease: "steps(11)" },
+          0.22,
+        );
+
+        // Scene 2 (0.3–1.3): Sun rises from below into the bottom-right; a mint glow blooms behind him.
+        tl.fromTo($("sun"), { y: 640 }, { y: 0, duration: 1.0, ease: "power3.out" }, 0.3);
+        tl.fromTo($("glow"), { opacity: 0, scale: 0.85 }, { opacity: 0.3, scale: 1, duration: 0.8, ease: "power3.out" }, 0.5);
+
+        // Scene 3 (0.8–1.8): lock, then the headline words stagger in.
+        const words = [$("lock"), $("f1"), $("f2"), $("f3"), $("f4")];
+        const starts = [0.8, 0.92, 1.06, 1.26, 1.4];
+        words.forEach((el, i) => {
+          tl.fromTo(el, { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, starts[i]);
+        });
+
+        // Scene 4 (1.6–2.3): download pill rises in; URL wipes on left→right.
+        tl.fromTo($("pill"), { opacity: 0, y: 36 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 1.6);
+        tl.fromTo(
+          $("url"),
+          { clipPath: "inset(0% 100% 0% 0%)" },
+          { clipPath: "inset(0% 0% 0% 0%)", duration: 0.5, ease: "power3.out" },
+          1.8,
+        );
+
+        // Scene 5 (2.3–3.1): hold — only the rosette keeps turning.
+
+        // Scene 6 (3.1–3.5): loop seam — everything but the ground fades to 0.
+        tl.fromTo($("world"), { opacity: 1 }, { opacity: 0, duration: 0.4, ease: "power1.in", immediateRender: false }, 3.1);
+
+        window.__timelines["06-close"] = tl;
+      })();
+    </script>
+  </div>
+</template>
