@@ -8,7 +8,10 @@ import type {
 import {
   assertPGliteCanonicalCommitNotCancelled,
   commitPGliteCanonicalFinancialCaptureInTransaction,
+  findPGliteSourceSubjectId,
+  listPGliteExpectedOccurrences,
   type PGliteCanonicalCommitOptions,
+  type PGliteCanonicalOccurrenceSupersessionInput,
 } from "./canonical-source-store.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
@@ -16,7 +19,6 @@ import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "./workflow-commands.ts";
-import { canonicalOccurrenceGroupBucketInventory } from "../canonical/occurrence-groups.ts";
 
 export {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
@@ -300,6 +302,7 @@ type FubonBillingProgressRow = Readonly<{
   group_fingerprint: string | null;
   group_partition_date: string | null;
   group_ordinal: number | string | null;
+  group_bucket_key: string | null;
   bucket_inventory_json: string | null;
 }>;
 
@@ -327,17 +330,14 @@ async function assertFubonBillingProgression(
     request.account.sourceAccountKey]);
   if (!account?.account_id) return;
 
-  const currentInventoryByScope = new Map<string, string>();
+  const currentBucketsByScope = new Map<string, ReadonlySet<string>>();
   const coverageEntries = request.capture.occurrenceGroupCoverage;
   if (!Array.isArray(coverageEntries) || coverageEntries.length === 0)
     fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
   for (const coverage of coverageEntries) {
     if (!Array.isArray(coverage.bucketKeys))
       fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
-    currentInventoryByScope.set(
-      coverage.scopeKey,
-      canonicalOccurrenceGroupBucketInventory(coverage.bucketKeys),
-    );
+    currentBucketsByScope.set(coverage.scopeKey, new Set(coverage.bucketKeys));
   }
 
   const priorRows = await query<FubonBillingProgressRow>(transaction, `
@@ -346,6 +346,7 @@ async function assertFubonBillingProgression(
       source_record.occurrence_group_fingerprint AS group_fingerprint,
       source_record.occurrence_group_partition_date::text AS group_partition_date,
       source_record.occurrence_group_ordinal AS group_ordinal,
+      source_record.occurrence_group_bucket_key AS group_bucket_key,
       group_coverage.bucket_inventory_json
     FROM canonical_credit_card_transaction_lifecycle lifecycle
     JOIN source_records source_record
@@ -369,7 +370,7 @@ async function assertFubonBillingProgression(
   }
 
   const priorBilledCounts = new Map<string, number>();
-  const priorBilledCountsByInventory = new Map<string, number>();
+  const priorBilledCountsInQueriedBuckets = new Map<string, number>();
   for (const row of latestByTransaction.values()) {
     if (
       row.group_scope_key === null ||
@@ -385,11 +386,10 @@ async function assertFubonBillingProgression(
     ]);
     if (row.billing_status === "billed") {
       priorBilledCounts.set(key, (priorBilledCounts.get(key) ?? 0) + 1);
-      const inventoryGroupKey = JSON.stringify([row.bucket_inventory_json, key]);
-      priorBilledCountsByInventory.set(
-        inventoryGroupKey,
-        (priorBilledCountsByInventory.get(inventoryGroupKey) ?? 0) + 1,
-      );
+      // A billed member is expected again only when the bucket that last
+      // held it was queried by this capture (ADR 0040).
+      if (row.group_bucket_key !== null && currentBucketsByScope.get(row.group_scope_key)?.has(row.group_bucket_key))
+        priorBilledCountsInQueriedBuckets.set(key, (priorBilledCountsInQueriedBuckets.get(key) ?? 0) + 1);
     }
   }
 
@@ -413,25 +413,97 @@ async function assertFubonBillingProgression(
       currentUnbilledCounts.set(key, (currentUnbilledCounts.get(key) ?? 0) + 1);
   }
 
-  for (const [key, billedCount] of priorBilledCounts) {
+  for (const key of priorBilledCounts.keys()) {
     const [scopeKey] = JSON.parse(key) as [string, string, string];
-    const currentInventory = currentInventoryByScope.get(scopeKey);
-    if (currentInventory === undefined)
+    if (!currentBucketsByScope.has(scopeKey))
       fail("invalid-contract", "Fubon capture is missing an occurrence-group query inventory.");
     if ((currentUnbilledCounts.get(key) ?? 0) > 0)
       fail(
         "revision-conflict",
         "Fubon complete occurrence groups cannot reduce their billed member count.",
       );
-    const priorComparableBilledCount = priorBilledCountsByInventory.get(
-      JSON.stringify([currentInventory, key]),
-    ) ?? 0;
-    if ((currentBilledCounts.get(key) ?? 0) < priorComparableBilledCount)
+    if ((currentBilledCounts.get(key) ?? 0) < (priorBilledCountsInQueriedBuckets.get(key) ?? 0))
       fail(
         "revision-conflict",
         "Fubon complete occurrence groups cannot reduce their billed member count.",
       );
   }
+}
+
+type VanishedUnbilledMember = Readonly<{ transactionId: string; direction: string }>;
+type AppearedBilledMember = Readonly<{ occurrenceKey: string; direction: string }>;
+
+/**
+ * Pair each unbilled transaction that vanished from a complete capture with
+ * the billed transaction that replaced it. The issuer may rewrite merchant
+ * text or finalize an amount at posting, which changes the occurrence key,
+ * so the pairing rests on instrument, consume date, statement membership and
+ * direction. Only an exactly one-to-one pairing is evidence; any other
+ * multiplicity stays unpaired and the continuity guard rejects the loss.
+ */
+async function resolveUnbilledToBilledSupersessions(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalCreditCardCaptureRequest,
+): Promise<readonly PGliteCanonicalOccurrenceSupersessionInput[]> {
+  const { capture } = request;
+  if (request.transactions.length === 0) return [];
+  if (capture.scope.kind !== "bounded-range" || capture.scope.completeness !== "complete-range") return [];
+  const sourceSubjectId = await findPGliteSourceSubjectId(transaction, capture);
+  if (!sourceSubjectId) return [];
+  const currentKeys = new Set(capture.records.map((record) => record.occurrenceKey));
+  const vanished: Array<{ scopeKey: string; transactionId: string; partitionDate: string }> = [];
+  for (const entry of capture.occurrenceGroupCoverage ?? []) {
+    const expected = await listPGliteExpectedOccurrences(transaction, sourceSubjectId, capture.recordKind, entry);
+    for (const occurrence of expected) {
+      if (occurrence.transactionId === null || currentKeys.has(occurrence.occurrenceKey)) continue;
+      vanished.push({ scopeKey: entry.scopeKey, transactionId: occurrence.transactionId, partitionDate: occurrence.partitionDate });
+    }
+  }
+  if (vanished.length === 0) return [];
+
+  const priorRows = await query<{ transaction_id: unknown; billing_status: string; instrument_key: string; direction: string }>(transaction, `
+    SELECT DISTINCT ON (lifecycle.transaction_id)
+      lifecycle.transaction_id, lifecycle.billing_status, instrument.instrument_key, revision.direction
+    FROM canonical_credit_card_transaction_lifecycle lifecycle
+    JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = lifecycle.instrument_id
+    JOIN transaction_revisions revision ON revision.revision_id = lifecycle.revision_id
+    JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
+    JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+    WHERE lifecycle.transaction_id IN (${vanished.map(() => "?").join(",")})
+    ORDER BY lifecycle.transaction_id, commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
+  vanished.map((member) => bytes(member.transactionId)));
+  const priorByTransaction = new Map(priorRows.map((row) => [idText(row.transaction_id), row]));
+  const pairKey = (scopeKey: string, instrumentKey: string, partitionDate: string): string =>
+    JSON.stringify([scopeKey, instrumentKey, partitionDate]);
+  const vanishedUnbilled = new Map<string, VanishedUnbilledMember[]>();
+  for (const member of vanished) {
+    const prior = priorByTransaction.get(member.transactionId);
+    if (!prior || prior.billing_status !== "unbilled") continue;
+    const key = pairKey(member.scopeKey, prior.instrument_key, member.partitionDate);
+    vanishedUnbilled.set(key, [...(vanishedUnbilled.get(key) ?? []), { transactionId: member.transactionId, direction: prior.direction }]);
+  }
+  if (vanishedUnbilled.size === 0) return [];
+
+  const seenBefore = new Set((await query<{ occurrence_key: string }>(transaction, `
+    SELECT occurrence_key FROM source_records
+    WHERE source_subject_id = ? AND occurrence_key IN (${[...currentKeys].map(() => "?").join(",")})`,
+  [sourceSubjectId, ...currentKeys])).map((row) => row.occurrence_key));
+  const statementMembers = new Set(request.statements.flatMap((statement) => statement.transactionSourceOccurrenceKeys));
+  const recordsByOccurrence = new Map(capture.records.map((record) => [record.occurrenceKey, record]));
+  const appearedBilled = new Map<string, AppearedBilledMember[]>();
+  for (const fact of request.transactions) {
+    const group = recordsByOccurrence.get(fact.sourceOccurrenceKey)?.occurrenceGroup;
+    if (!group || fact.billingStatus !== "billed" || seenBefore.has(fact.sourceOccurrenceKey) || !statementMembers.has(fact.sourceOccurrenceKey)) continue;
+    const key = pairKey(group.scopeKey, fact.instrumentKey, group.partitionDate);
+    appearedBilled.set(key, [...(appearedBilled.get(key) ?? []), { occurrenceKey: fact.sourceOccurrenceKey, direction: fact.direction }]);
+  }
+  const supersessions: PGliteCanonicalOccurrenceSupersessionInput[] = [];
+  for (const [key, withdrawn] of vanishedUnbilled) {
+    const successors = appearedBilled.get(key) ?? [];
+    if (withdrawn.length !== 1 || successors.length !== 1 || withdrawn[0]!.direction !== successors[0]!.direction) continue;
+    supersessions.push({ withdrawnTransactionId: withdrawn[0]!.transactionId, successorOccurrenceKey: successors[0]!.occurrenceKey });
+  }
+  return supersessions;
 }
 
 async function query<T>(transaction: PGliteTransaction, sql: string, params: readonly unknown[] = []): Promise<readonly T[]> {
@@ -658,6 +730,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
   return store.transaction(async (transaction) => {
     const snapshot = input;
     await assertFubonBillingProgression(transaction, snapshot);
+    const supersessions = await resolveUnbilledToBilledSupersessions(transaction, snapshot);
     const generic = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: snapshot.capture,
       account: snapshot.account,
@@ -665,6 +738,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
       balanceObservations: snapshot.balance ? [snapshot.balance.observation] : [],
       requireExistingAccount: snapshot.requireExistingAccount ?? false,
       withdrawalPolicy: "never-infer",
+      occurrenceSupersessions: supersessions,
     }, { ...options, skipProjection: true });
     const admittedCapture = await first<{ capture_id: unknown; commit_id: unknown; account_id: unknown }>(transaction, `SELECT capture.capture_id, capture.commit_id, scope.account_id
       FROM source_captures capture
@@ -674,6 +748,18 @@ export async function commitPGliteCanonicalCreditCardCapture(
     const sourceRecords = await query<{ occurrence_key: string; source_record_id: unknown }>(transaction, "SELECT occurrence_key, source_record_id FROM source_records WHERE capture_id = ?", [admittedCapture.capture_id]);
     const sourceRecordByOccurrence = new Map(sourceRecords.map((row) => [row.occurrence_key, bytes(row.source_record_id)]));
     const extension = await persistExtensions(transaction, snapshot, snapshot.capture.integrationNamespace, bytes(admittedCapture.account_id), bytes(admittedCapture.capture_id), generic.transactions, sourceRecordByOccurrence);
+    for (const supersession of supersessions) {
+      const successor = generic.transactions.find((result) => result.sourceOccurrenceKey === supersession.successorOccurrenceKey);
+      const evidence = sourceRecordByOccurrence.get(supersession.successorOccurrenceKey);
+      if (!successor || !evidence) fail("missing-reference", "Credit-card supersession successor was not admitted.");
+      await query(transaction, `INSERT INTO canonical_credit_card_relations(
+        relation_id, integration_namespace, account_id, relation_kind, from_transaction_id,
+        to_transaction_id, capture_id, evidence_source_record_id
+      ) VALUES (?, ?, ?, 'unbilled_to_billed', ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
+        uuidBytes(), snapshot.capture.integrationNamespace, bytes(admittedCapture.account_id),
+        bytes(supersession.withdrawnTransactionId), bytes(successor.transactionId), bytes(admittedCapture.capture_id), evidence,
+      ]);
+    }
     await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
       commitId: bytes(admittedCapture.commit_id),
       cutoffSequence: generic.commitSequence,

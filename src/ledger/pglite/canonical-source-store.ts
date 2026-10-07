@@ -54,6 +54,27 @@ export type PGliteCanonicalFinancialCommitRequest = Readonly<{
   sourceSyncCursor?: string | null;
   /** Optional deterministic worker-provided commit timestamp. */
   recordedAtUtcUs?: number;
+  /**
+   * Prior transactions whose source support this capture withdraws because
+   * an occurrence admitted by this same capture proves the fact continued
+   * under a new occurrence key. The caller supplies the pairing evidence;
+   * the store treats the withdrawn member as corrected, not lost.
+   */
+  occurrenceSupersessions?: readonly PGliteCanonicalOccurrenceSupersessionInput[];
+}>;
+
+export type PGliteCanonicalOccurrenceSupersessionInput = Readonly<{
+  withdrawnTransactionId: string;
+  successorOccurrenceKey: string;
+}>;
+
+/** One prior occurrence whose latest known query bucket the current capture queried again. */
+export type PGliteExpectedOccurrence = Readonly<{
+  occurrenceKey: string;
+  transactionId: string | null;
+  partitionDate: string;
+  fingerprint: string;
+  bucketKey: string;
 }>;
 
 /** A provider run may group several captures into one atomic command. */
@@ -556,6 +577,7 @@ async function assertOccurrenceGroupContinuity(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
   sourceSubjectId: Uint8Array,
+  supersessions: readonly PGliteCanonicalOccurrenceSupersessionInput[] | undefined,
 ): Promise<void> {
   const coverage = evidence.occurrenceGroupCoverage;
   // A point-in-time holding/balance snapshot does not claim transaction
@@ -593,84 +615,181 @@ async function assertOccurrenceGroupContinuity(
     currentCounts.set(key, (currentCounts.get(key) ?? 0) + 1);
   }
 
+  const superseded = new Set(
+    (supersessions ?? []).map((entry) => entry.withdrawnTransactionId),
+  );
   for (const entry of coverage) {
-    const bucketInventoryJson = entry.bucketKeys === undefined
-      ? null
-      : canonicalOccurrenceGroupBucketInventory(entry.bucketKeys);
-    const priorGroups = bucketInventoryJson === null
-      ? await txQuery<{
-      partition_date: string;
-      fingerprint: string;
-      occurrence_count: number | string;
-    }>(
-      transaction,
-      `SELECT group_count.partition_date::text AS partition_date,
-              group_count.fingerprint,
-              MAX(group_count.occurrence_count) AS occurrence_count
-         FROM source_occurrence_group_counts group_count
-         JOIN source_occurrence_group_coverages group_coverage
-           ON group_coverage.coverage_id = group_count.coverage_id
-        WHERE group_coverage.source_subject_id = ?
-          AND group_coverage.record_kind = ?
-          AND group_coverage.scope_key = ?
-          AND group_coverage.contract_version = ?
-          AND group_count.partition_date BETWEEN ?::date AND ?::date
-        GROUP BY group_count.partition_date, group_count.fingerprint`,
-      [
+    const priorGroups = new Map<string, number>();
+    if (entry.bucketKeys === undefined) {
+      const rows = await txQuery<{
+        partition_date: string;
+        fingerprint: string;
+        occurrence_count: number | string;
+      }>(
+        transaction,
+        `SELECT group_count.partition_date::text AS partition_date,
+                group_count.fingerprint,
+                MAX(group_count.occurrence_count) AS occurrence_count
+           FROM source_occurrence_group_counts group_count
+           JOIN source_occurrence_group_coverages group_coverage
+             ON group_coverage.coverage_id = group_count.coverage_id
+          WHERE group_coverage.source_subject_id = ?
+            AND group_coverage.record_kind = ?
+            AND group_coverage.scope_key = ?
+            AND group_coverage.contract_version = ?
+            AND group_count.partition_date BETWEEN ?::date AND ?::date
+          GROUP BY group_count.partition_date, group_count.fingerprint`,
+        [
+          sourceSubjectId,
+          evidence.recordKind,
+          entry.scopeKey,
+          entry.contractVersion,
+          entry.startDate,
+          entry.endDate,
+        ],
+      );
+      for (const row of rows.rows)
+        priorGroups.set(
+          occurrenceGroupCountKey(entry.scopeKey, row.partition_date, row.fingerprint),
+          integerValue(row.occurrence_count, "Occurrence group count"),
+        );
+    } else {
+      const expected = await listPGliteExpectedOccurrences(
+        transaction,
         sourceSubjectId,
         evidence.recordKind,
-        entry.scopeKey,
-        entry.contractVersion,
-        entry.startDate,
-        entry.endDate,
-      ],
-    )
-      : await txQuery<{
-          partition_date: string;
-          fingerprint: string;
-          occurrence_count: number | string;
-        }>(
-          transaction,
-          `SELECT prior_group.partition_date,
-                  prior_group.fingerprint,
-                  MAX(prior_group.occurrence_count) AS occurrence_count
-             FROM (
-               SELECT group_coverage.capture_id,
-                      group_count.partition_date::text AS partition_date,
-                      group_count.fingerprint,
-                      SUM(group_count.occurrence_count) AS occurrence_count
-                 FROM source_occurrence_group_counts group_count
-                 JOIN source_occurrence_group_coverages group_coverage
-                   ON group_coverage.coverage_id = group_count.coverage_id
-                WHERE group_coverage.source_subject_id = ?
-                  AND group_coverage.record_kind = ?
-                  AND group_coverage.scope_key = ?
-                  AND group_coverage.contract_version = ?
-                  AND group_coverage.bucket_inventory_json = ?
-                GROUP BY group_coverage.capture_id,
-                         group_count.partition_date,
-                         group_count.fingerprint
-             ) prior_group
-            GROUP BY prior_group.partition_date, prior_group.fingerprint`,
-          [
-            sourceSubjectId,
-            evidence.recordKind,
-            entry.scopeKey,
-            entry.contractVersion,
-            bucketInventoryJson,
-          ],
-        );
-    for (const prior of priorGroups.rows) {
-      const current = currentCounts.get(
-        occurrenceGroupCountKey(entry.scopeKey, prior.partition_date, prior.fingerprint),
-      ) ?? 0;
-      if (current < integerValue(prior.occurrence_count, "Occurrence group count"))
+        entry,
+      );
+      for (const occurrence of expected) {
+        if (occurrence.transactionId !== null && superseded.has(occurrence.transactionId)) continue;
+        const key = occurrenceGroupCountKey(entry.scopeKey, occurrence.partitionDate, occurrence.fingerprint);
+        priorGroups.set(key, (priorGroups.get(key) ?? 0) + 1);
+      }
+    }
+    for (const [key, priorCount] of priorGroups) {
+      if ((currentCounts.get(key) ?? 0) < priorCount)
         throw new PGliteCanonicalSourceAdmissionError(
           "occurrence-conflict",
           "A complete occurrence group cannot lose members without correction evidence.",
         );
     }
   }
+}
+
+/**
+ * Prior occurrences whose absence from this capture would be evidence. Each
+ * occurrence is located by the query bucket of its most recent inventoried
+ * capture; it is expected again only when the current capture queried that
+ * bucket. A member already withdrawn from source support is not expected.
+ */
+export async function listPGliteExpectedOccurrences(
+  transaction: PGliteTransaction,
+  sourceSubjectId: Uint8Array,
+  recordKind: string,
+  coverage: Readonly<{
+    scopeKey: string;
+    contractVersion: string;
+    bucketKeys?: readonly string[];
+  }>,
+): Promise<readonly PGliteExpectedOccurrence[]> {
+  const bucketKeys = coverage.bucketKeys ?? [];
+  if (bucketKeys.length === 0) return [];
+  const rows = await txQuery<{
+    occurrence_key: string;
+    transaction_id: unknown;
+    partition_date: string;
+    fingerprint: string;
+    bucket_key: string;
+  }>(
+    transaction,
+    `SELECT latest.occurrence_key, latest.transaction_id, latest.partition_date,
+            latest.fingerprint, latest.bucket_key
+       FROM (
+         SELECT DISTINCT ON (source_record.occurrence_key)
+                source_record.occurrence_key,
+                assertion.transaction_id,
+                source_record.occurrence_group_partition_date::text AS partition_date,
+                source_record.occurrence_group_fingerprint AS fingerprint,
+                source_record.occurrence_group_bucket_key AS bucket_key
+           FROM source_records source_record
+           JOIN source_occurrence_group_coverages group_coverage
+             ON group_coverage.capture_id = source_record.capture_id
+            AND group_coverage.scope_key = source_record.occurrence_group_scope_key
+           JOIN canonical_commits commit_row
+             ON commit_row.commit_id = source_record.commit_id
+           LEFT JOIN assertion_provenance provenance
+             ON provenance.source_record_id = source_record.source_record_id
+           LEFT JOIN assertions assertion
+             ON assertion.assertion_id = provenance.assertion_id
+            AND assertion.origin = 'source'
+            AND assertion.field_name = 'transaction_revision'
+          WHERE source_record.source_subject_id = ?
+            AND source_record.record_kind = ?
+            AND source_record.occurrence_group_scope_key = ?
+            AND group_coverage.contract_version = ?
+            AND group_coverage.bucket_inventory_json IS NOT NULL
+          ORDER BY source_record.occurrence_key,
+                   commit_row.commit_sequence DESC,
+                   (assertion.transaction_id IS NULL)
+       ) latest
+      WHERE latest.bucket_key IN (${bucketKeys.map(() => "?").join(",")})
+        AND NOT EXISTS (
+          SELECT 1
+            FROM assertions withdrawn_assertion
+           WHERE withdrawn_assertion.transaction_id = latest.transaction_id
+             AND withdrawn_assertion.origin = 'source'
+             AND withdrawn_assertion.field_name = 'transaction_revision'
+             AND (
+               SELECT transition.event_kind
+                 FROM assertion_transitions transition
+                 JOIN canonical_commits transition_commit
+                   ON transition_commit.commit_id = transition.commit_id
+                WHERE transition.assertion_id = withdrawn_assertion.assertion_id
+                ORDER BY transition_commit.commit_sequence DESC,
+                         encode(transition.event_id, 'hex') DESC
+                LIMIT 1
+             ) = 'withdrawn'
+        )`,
+    [sourceSubjectId, recordKind, coverage.scopeKey, coverage.contractVersion, ...bucketKeys],
+  );
+  return rows.rows.map((row) => ({
+    occurrenceKey: row.occurrence_key,
+    transactionId: row.transaction_id == null ? null : idString(row.transaction_id, "Occurrence transaction identity"),
+    partitionDate: row.partition_date,
+    fingerprint: row.fingerprint,
+    bucketKey: row.bucket_key,
+  }));
+}
+
+/** The admitted source subject for this evidence, or undefined before its first capture. */
+export async function findPGliteSourceSubjectId(
+  transaction: PGliteTransaction,
+  evidence: PGliteCanonicalSourceEvidence,
+): Promise<Uint8Array | undefined> {
+  const row = await first<{ source_subject_id: unknown }>(
+    transaction,
+    `SELECT subject.source_subject_id
+       FROM source_subjects subject
+       JOIN source_connections connection
+         ON connection.source_connection_id = subject.source_connection_id
+       JOIN identity_epochs epoch
+         ON epoch.identity_epoch_id = subject.identity_epoch_id
+      WHERE connection.integration_namespace = ?
+        AND connection.source_connection_key = ?
+        AND epoch.epoch_key = ?
+        AND subject.stream = ?
+        AND subject.record_kind = ?
+        AND subject.subject_digest = ?`,
+    [
+      evidence.integrationNamespace,
+      evidence.sourceConnectionKey,
+      evidence.identityEpoch,
+      evidence.stream,
+      evidence.recordKind,
+      evidence.subjectDigest,
+    ],
+  );
+  return row?.source_subject_id ? bytesValue(row.source_subject_id, "Source subject identity") : undefined;
 }
 
 async function persistOccurrenceGroupCoverage(
@@ -770,6 +889,7 @@ async function persistSourceCapture(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
   options: PGliteCanonicalCommitOptions,
+  supersessions?: readonly PGliteCanonicalOccurrenceSupersessionInput[],
 ): Promise<SourceCaptureWrite> {
   throwIfCancelled(options.signal);
   const overwritten = await first<Row>(
@@ -811,7 +931,7 @@ async function persistSourceCapture(
   const identity = await ensureSourceIdentity(transaction, evidence, commitId);
   await assertSourceRouteBinding(transaction, evidence, identity.sourceConnectionId);
   await assertOccurrenceContinuity(transaction, evidence, identity.sourceSubjectId);
-  await assertOccurrenceGroupContinuity(transaction, evidence, identity.sourceSubjectId);
+  await assertOccurrenceGroupContinuity(transaction, evidence, identity.sourceSubjectId, supersessions);
   await txQuery(
     transaction,
     `INSERT INTO source_authority_routes(
@@ -1288,6 +1408,87 @@ async function withdrawOmittedSourceAssertions(
   }
 }
 
+/**
+ * Withdraw the source assertion of each superseded transaction. The successor
+ * must be a fact admitted by this same commit so the withdrawal and the
+ * continuation it rests on share one atomic boundary.
+ */
+async function withdrawSupersededSourceAssertions(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+  capture: SourceCaptureWrite,
+  accountId: Uint8Array,
+  admitted: readonly PGliteCanonicalFinancialTransactionResult[],
+): Promise<void> {
+  for (const supersession of request.occurrenceSupersessions ?? []) {
+    const successor = admitted.find(
+      (result) => result.sourceOccurrenceKey === supersession.successorOccurrenceKey,
+    );
+    if (!successor)
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        `Supersession successor was not admitted: ${supersession.successorOccurrenceKey}.`,
+      );
+    const withdrawnTransactionId = bytesValue(
+      supersession.withdrawnTransactionId.replaceAll("-", ""),
+      "Superseded transaction identity",
+    );
+    if (successor.transactionId === idString(withdrawnTransactionId))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "A transaction cannot supersede itself.",
+      );
+    const assertion = await first<{ assertion_id: unknown; latest_event: string | null }>(
+      transaction,
+      `SELECT assertion.assertion_id,
+              (
+                SELECT transition.event_kind
+                  FROM assertion_transitions transition
+                  JOIN canonical_commits transition_commit
+                    ON transition_commit.commit_id = transition.commit_id
+                 WHERE transition.assertion_id = assertion.assertion_id
+                 ORDER BY transition_commit.commit_sequence DESC,
+                          encode(transition.event_id, 'hex') DESC
+                 LIMIT 1
+              ) AS latest_event
+         FROM assertions assertion
+         JOIN transaction_revisions revision
+           ON revision.revision_id = assertion.revision_id
+         JOIN financial_transactions financial
+           ON financial.transaction_id = assertion.transaction_id
+        WHERE assertion.transaction_id = ?
+          AND financial.account_id = ?
+          AND assertion.origin = 'source'
+          AND assertion.field_name = 'transaction_revision'
+        ORDER BY revision.revision_number DESC
+        LIMIT 1`,
+      [withdrawnTransactionId, accountId],
+    );
+    if (!assertion)
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "Superseded transaction has no source assertion on this account.",
+      );
+    if (assertion.latest_event === "withdrawn") continue;
+    await txQuery(
+      transaction,
+      `INSERT INTO assertion_transitions(
+         event_id, assertion_id, transaction_id, field_name, capture_id,
+         scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
+         commit_id, event_kind
+       ) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, NULL, ?, 'withdrawn')`,
+      [
+        uuidBytes(),
+        assertion.assertion_id,
+        withdrawnTransactionId,
+        capture.captureId,
+        capture.scopeId,
+        capture.commitId,
+      ],
+    );
+  }
+}
+
 async function persistSourceSyncState(
   transaction: PGliteTransaction,
   request: PGliteCanonicalFinancialCommitRequest,
@@ -1680,6 +1881,22 @@ function validateFinancialRequest(
       "invalid-financial-fact",
       "Financial commit timestamp must be a non-negative safe integer.",
     );
+  const factOccurrences = new Set(request.transactions.map((fact) => fact.sourceOccurrenceKey));
+  const withdrawnTransactionIds = new Set<string>();
+  for (const supersession of request.occurrenceSupersessions ?? []) {
+    if (typeof supersession.withdrawnTransactionId !== "string" ||
+      withdrawnTransactionIds.has(supersession.withdrawnTransactionId))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "Each superseded transaction must be named once.",
+      );
+    withdrawnTransactionIds.add(supersession.withdrawnTransactionId);
+    if (!factOccurrences.has(supersession.successorOccurrenceKey))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "Supersession successor must be a financial fact of this capture.",
+      );
+  }
   // A transaction's booked denomination is source evidence; the account
   // currency is a reporting/default value and cannot override it (ADR 0006).
   for (const fact of request.transactions)
@@ -1708,11 +1925,17 @@ async function commitFinancialRequestInTransaction(
     ...options,
     recordedAtUtcUs: request.recordedAtUtcUs,
   };
-  const capture = await persistSourceCapture(transaction, request.capture, transactionOptions);
+  const capture = await persistSourceCapture(
+    transaction,
+    request.capture,
+    transactionOptions,
+    request.occurrenceSupersessions,
+  );
   const accountId = await ensureFinancialAccount(transaction, request, capture);
   await attachFinancialAccountToScope(transaction, capture, accountId);
   await persistAccountIdentifier(transaction, request, capture, accountId);
   const transactions = await commitFinancialFacts(transaction, request, capture, accountId, transactionOptions);
+  await withdrawSupersededSourceAssertions(transaction, request, capture, accountId, transactions);
   await persistBalanceObservations(transaction, request, capture, accountId, transactionOptions);
   await withdrawOmittedSourceAssertions(
     transaction,
