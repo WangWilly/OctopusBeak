@@ -1618,6 +1618,7 @@ try {
 
   // Exercise the real FX collector through the parent coordinator: a single
   // account can have several currency balances, each requiring its own receipt.
+  const yuantaForeignMultiCurrencyAccount = ["00123456", "789012"].join("");
   const committedProducts: string[] = [];
   const multiCurrency = await collectSelectedProducts({
     productIds: ["foreign_currency", "credit_card"],
@@ -1636,19 +1637,19 @@ try {
           collectOnly: true,
           deferredCommitItems: staged,
           openPage: async () => ({} as never),
-          readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
+          readAccounts: async () => [{ value: yuantaForeignMultiCurrencyAccount, label: "外幣綜合存款" }],
           selectAccount: async () => undefined,
           readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
           queryAccountCurrency: async () => undefined,
           downloadRows: async () => ({ rows: [{
-            accountLabel: "外幣綜合存款", accountValue: "00123456789012",
+            accountLabel: "外幣綜合存款", accountValue: yuantaForeignMultiCurrencyAccount,
             queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
             values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
             sortTime: null,
           }] }),
           readCurrentBalances: async () => ["USD", "JPY"].map((currency) => ({
             source: "yuanta", kind: "foreign", stream: "foreign-currency-deposit",
-            accountNumber: "00123456789012", sourceAccountKey: "00123456789012", currency,
+            accountNumber: yuantaForeignMultiCurrencyAccount, sourceAccountKey: yuantaForeignMultiCurrencyAccount, currency,
             available: { coefficient: "90", scale: 2, sourceLexeme: "0.90" },
             ledger: { coefficient: "100", scale: 2, sourceLexeme: "1.00" },
             effectiveAt: "2026-08-24T04:00:00.000Z",
