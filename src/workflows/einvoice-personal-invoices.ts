@@ -695,13 +695,18 @@ export async function waitForEinvoiceLoginReady(
   page: Page,
   timeoutMs: number,
 ): Promise<"form" | "session"> {
-  return await Promise.any([
-    retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
-      .waitFor({ state: "visible", timeout: timeoutMs })).then(() => "form" as const),
-    page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
-      timeout: timeoutMs,
-    }).then(() => "session" as const),
-  ]);
+  try {
+    return await Promise.any([
+      retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
+        .waitFor({ state: "visible", timeout: timeoutMs })).then(() => "form" as const),
+      page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
+        timeout: timeoutMs,
+      }).then(() => "session" as const),
+    ]);
+  } catch (error) {
+    // Surface the login-form wait itself so a stalled page stays a timeout.
+    throw error instanceof AggregateError ? error.errors[0] : error;
+  }
 }
 
 async function signInEinvoice(
