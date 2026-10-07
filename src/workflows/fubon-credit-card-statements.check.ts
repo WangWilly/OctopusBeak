@@ -6,6 +6,11 @@ import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
+import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 
 registerHooks({
@@ -1631,6 +1636,54 @@ assert.throws(
   /projection|ambiguous|candidate/i,
   "distinct PANs sharing one safe first-six+last-four projection must fail closed",
 );
+
+const providerNoRecordGridStates = [
+  ...canonicalGridStates.slice(0, 6),
+  { providerNoRecord: true as const },
+];
+test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
+  const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+  const result = await runFubonCreditCardStatements(
+    {} as Page,
+    canonicalInput,
+    {
+      deferredCommitItems,
+      signal: new AbortController().signal,
+      observedAt: () => "2026-08-25T00:00:00.000Z",
+      sourceText: strictSourceText,
+      readSourceSnapshot: async () => ({
+        statementRows: canonicalStatementRows,
+        statementPeriods: summaries.map((summary) => summary.period),
+        summaries,
+        gridStates: providerNoRecordGridStates,
+        unavailablePeriodOffsets: [],
+        unbilledRows: [],
+      }),
+    },
+  );
+  assert.deepEqual(result, {
+    sourceCount: 7,
+    rowCount: 2,
+    itemCount: 1,
+    financialAdmissionCount: 1,
+  });
+  const item = deferredCommitItems[0]!;
+  assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
+  const unbilledPage = item.command.request.capture.pages[6]!;
+  assert.equal(unbilledPage.proofKind, "provider-no-record-terminal-grid");
+  assert.equal(unbilledPage.rowCount, 0);
+  assert.equal(unbilledPage.terminal, true);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const committed = await commitPGliteCanonicalCreditCardCapture(store, item.command.request);
+    assert.equal(committed.transactionCount, 2);
+    assert.equal(committed.statementCount, 5);
+  } finally {
+    await store.close();
+  }
+});
 
 assert.doesNotMatch(source, /executePGliteWorkflowRun|requirePGliteChildRpcClientFromEnv/u);
 assert.match(source, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
