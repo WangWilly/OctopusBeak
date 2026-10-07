@@ -11,6 +11,8 @@ import { chromium } from "playwright";
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const PAGE = pathToFileURL(join(ROOT, "site/index.html")).href;
 const OUT = join(ROOT, "site/assets/ob-social-card.jpg");
+// The pre-October page advertised a PNG card; previews cached from it still fetch this path.
+const LEGACY_PNG = join(ROOT, "site/assets/ob-social-card.png");
 const WIDTH = 1200;
 const HEIGHT = 630;
 
@@ -31,7 +33,8 @@ try {
   await page.screenshot({ path: png });
   execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", png, "-vf", `scale=${WIDTH}:${HEIGHT}:flags=lanczos`, "-pix_fmt", "rgb24", join(scratch, "card.ppm")]);
   execFileSync("cjpeg", ["-quality", "85", "-optimize", "-progressive", "-outfile", OUT, join(scratch, "card.ppm")]);
-  console.log(`social card ${WIDTH}x${HEIGHT}, ${Math.round(statSync(OUT).size / 1024)} KB -> ${OUT}`);
+  execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", OUT, "-compression_level", "9", LEGACY_PNG]);
+  console.log(`social card ${WIDTH}x${HEIGHT}, ${Math.round(statSync(OUT).size / 1024)} KB -> ${OUT} (+ ${LEGACY_PNG})`);
 } finally {
   await browser.close();
   rmSync(scratch, { recursive: true, force: true });
