@@ -17,6 +17,7 @@ import {
   commitPGliteCanonicalCreditCardCapture,
   type PGliteCanonicalCreditCardCaptureRequest,
 } from "./credit-card.ts";
+import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
 import { PGliteStore } from "./transaction.ts";
 
 // GitHub issue #186: a purchase whose merchant text or amount changes when it
@@ -26,21 +27,24 @@ import { PGliteStore } from "./transaction.ts";
 // production ones.
 
 const managedSecret = "synthetic-esun-managed-secret";
-const identity = deriveEsunCanonicalHumanAttestation(
+const derivedIdentity = deriveEsunCanonicalHumanAttestation(
   { esun_user_id: "user-id-186", esun_account: "account-186", esun_password: "secret" },
   managedSecret,
 );
-assert(identity);
+assert(derivedIdentity);
+const identity = derivedIdentity;
 
 const card = "4111-****-****-1234";
+const otherCard = "4111-****-****-5678";
 const purchaseRow = (
   consumeDate: string,
   description: string,
   twdAmount: string,
   billing: Readonly<{ status: "billed"; period: string } | { status: "unbilled" }>,
+  cardNumber = card,
 ): StatementRow => ({
   issuerStatementPeriod: billing.status === "billed" ? billing.period : undefined,
-  cardNumber: card,
+  cardNumber,
   consumeDate,
   description,
   foreignCurrency: "",
@@ -131,6 +135,7 @@ function command(
 
 const augustWindow = { startDate: "2025/08/26", endDate: "2026/08/26", endMonth: "2026/08" };
 const septemberWindow = { startDate: "2025/09/26", endDate: "2026/09/26", endMonth: "2026/09" };
+const octoberWindow = { startDate: "2025/10/26", endDate: "2026/10/26", endMonth: "2026/10" };
 
 type Ledger = Readonly<{
   current: number;
@@ -162,6 +167,64 @@ const threeBilledPurchases: Ledger = {
   billingStatuses: ["billed", "billed", "billed"],
   descriptions: ["SYNTHETIC TRANSIT TPE", "Synthetic Books", "Synthetic Coffee"],
 };
+const twoBilledOneUnbilled: Ledger = {
+  current: 3,
+  billingStatuses: ["billed", "billed", "unbilled"],
+  descriptions: ["Synthetic Books", "Synthetic Coffee", "Synthetic Transit"],
+};
+
+type SupersessionEvidence = Readonly<{
+  relations: readonly Readonly<{ kind: string; from: string; to: string }>[];
+  withdrawn: readonly string[];
+}>;
+
+/** The proof the ledger keeps for an unbilled purchase replaced by its billed posting. */
+async function supersessionEvidence(store: PGliteStore): Promise<SupersessionEvidence> {
+  const relations = await store.query<{ kind: string; from: string; to: string }>(`
+    SELECT relation.relation_kind AS kind,
+      from_revision.description AS "from",
+      to_revision.description AS "to"
+    FROM canonical_credit_card_relations relation
+    JOIN transaction_revisions from_revision ON from_revision.transaction_id = relation.from_transaction_id
+    JOIN transaction_revisions to_revision ON to_revision.transaction_id = relation.to_transaction_id
+    ORDER BY from_revision.description`);
+  const withdrawn = await store.query<{ description: string }>(`
+    SELECT revision.description
+    FROM assertion_transitions transition
+    JOIN assertions assertion ON assertion.assertion_id = transition.assertion_id
+    JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
+    WHERE transition.event_kind = 'withdrawn'
+    ORDER BY revision.description`);
+  return {
+    relations: relations.rows,
+    withdrawn: withdrawn.rows.map((row) => row.description),
+  };
+}
+
+const transitSuperseded: SupersessionEvidence = {
+  relations: [{ kind: "unbilled_to_billed", from: "Synthetic Transit", to: "SYNTHETIC TRANSIT TPE" }],
+  withdrawn: ["Synthetic Transit"],
+};
+
+/** The capture must be rejected as an occurrence conflict and leave every ledger table as it was. */
+async function assertRejectedWithoutChange(
+  store: PGliteStore,
+  request: PGliteCanonicalCreditCardCaptureRequest,
+): Promise<void> {
+  const before = await ledger(store);
+  const evidenceBefore = await supersessionEvidence(store);
+  const captures = async () =>
+    Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count);
+  const capturesBefore = await captures();
+  await assert.rejects(
+    commitPGliteCanonicalCreditCardCapture(store, request),
+    (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError &&
+      error.reason === "occurrence-conflict",
+  );
+  assert.deepEqual(await ledger(store), before);
+  assert.deepEqual(await supersessionEvidence(store), evidenceBefore);
+  assert.equal(await captures(), capturesBefore);
+}
 
 async function freshStore(): Promise<{ database: PGlite; store: PGliteStore }> {
   const database = await PGlite.create();
@@ -179,11 +242,8 @@ test("issue 186 scenario A: same window, a posted purchase with changed content 
       [augustTransitUnbilled],
       [settledJuly],
     ));
-    assert.deepEqual(await ledger(store), {
-      current: 3,
-      billingStatuses: ["billed", "billed", "unbilled"],
-      descriptions: ["Synthetic Books", "Synthetic Coffee", "Synthetic Transit"],
-    });
+    assert.deepEqual(await ledger(store), twoBilledOneUnbilled);
+    assert.deepEqual(await supersessionEvidence(store), { relations: [], withdrawn: [] });
 
     await commitPGliteCanonicalCreditCardCapture(store, command(
       "esun-186-a-billed",
@@ -193,6 +253,19 @@ test("issue 186 scenario A: same window, a posted purchase with changed content 
       [settledJuly, settledAugust],
     ));
     assert.deepEqual(await ledger(store), threeBilledPurchases);
+    assert.deepEqual(await supersessionEvidence(store), transitSuperseded);
+
+    // A later identical capture must not treat the withdrawn purchase as a
+    // lost member again, and must not withdraw or relate anything twice.
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-a-billed-replay",
+      augustWindow,
+      [julyCoffee, julyBooks, augustTransitBilled],
+      [],
+      [settledJuly, settledAugust],
+    ));
+    assert.deepEqual(await ledger(store), threeBilledPurchases);
+    assert.deepEqual(await supersessionEvidence(store), transitSuperseded);
   } finally {
     await store.close();
   }
@@ -217,6 +290,118 @@ test("issue 186 scenario B: window rolled forward, a posted purchase with change
       [settledJuly, settledAugust],
     ));
     assert.deepEqual(await ledger(store), threeBilledPurchases);
+    assert.deepEqual(await supersessionEvidence(store), transitSuperseded);
+
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-b-billed-rolled-again",
+      octoberWindow,
+      [julyCoffee, julyBooks, augustTransitBilled],
+      [],
+      [settledJuly, settledAugust],
+    ));
+    assert.deepEqual(await ledger(store), threeBilledPurchases);
+    assert.deepEqual(await supersessionEvidence(store), transitSuperseded);
+  } finally {
+    await store.close();
+  }
+});
+
+test("issue 186 negative: two changed unbilled rows on one card and date are ambiguous and store nothing", async () => {
+  const { store } = await freshStore();
+  const augustTaxiUnbilled = purchaseRow("2026/08/15", "Synthetic Taxi", "80", { status: "unbilled" });
+  const augustTaxiBilled = purchaseRow("2026/08/15", "SYNTHETIC TAXI TPE", "81", { status: "billed", period: "2026-08" });
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-ambiguous-unbilled",
+      augustWindow,
+      [julyCoffee],
+      [augustTransitUnbilled, augustTaxiUnbilled],
+      [settledJuly],
+    ));
+    assert.deepEqual(await ledger(store), {
+      current: 3,
+      billingStatuses: ["billed", "unbilled", "unbilled"],
+      descriptions: ["Synthetic Coffee", "Synthetic Taxi", "Synthetic Transit"],
+    });
+    await assertRejectedWithoutChange(store, command(
+      "esun-186-ambiguous-billed",
+      septemberWindow,
+      [julyCoffee, augustTransitBilled, augustTaxiBilled],
+      [],
+      [settledJuly, settledAugust],
+    ));
+  } finally {
+    await store.close();
+  }
+});
+
+test("issue 186 negative: a changed row posted on a different card does not replace the unbilled purchase", async () => {
+  const { store } = await freshStore();
+  const otherCardTransitBilled = purchaseRow("2026/08/15", "SYNTHETIC TRANSIT TPE", "46", { status: "billed", period: "2026-08" }, otherCard);
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-other-card-unbilled",
+      augustWindow,
+      [julyCoffee, julyBooks],
+      [augustTransitUnbilled],
+      [settledJuly],
+    ));
+    assert.deepEqual(await ledger(store), twoBilledOneUnbilled);
+    await assertRejectedWithoutChange(store, command(
+      "esun-186-other-card-billed",
+      septemberWindow,
+      [julyCoffee, julyBooks, otherCardTransitBilled],
+      [],
+      [settledJuly, settledAugust],
+    ));
+  } finally {
+    await store.close();
+  }
+});
+
+test("issue 186 negative: a changed billed row outside every statement does not replace the unbilled purchase", async () => {
+  const { store } = await freshStore();
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-no-statement-unbilled",
+      augustWindow,
+      [julyCoffee, julyBooks],
+      [augustTransitUnbilled],
+      [settledJuly],
+    ));
+    assert.deepEqual(await ledger(store), twoBilledOneUnbilled);
+    // The August period is not settled, so the posted row belongs to no statement.
+    await assertRejectedWithoutChange(store, command(
+      "esun-186-no-statement-billed",
+      septemberWindow,
+      [julyCoffee, julyBooks, augustTransitBilled],
+      [],
+      [settledJuly],
+    ));
+  } finally {
+    await store.close();
+  }
+});
+
+test("issue 186 negative: a posted row with the opposite direction does not replace the unbilled purchase", async () => {
+  const { store } = await freshStore();
+  const augustTransitRefundBilled = purchaseRow("2026/08/15", "SYNTHETIC TRANSIT TPE", "-46", { status: "billed", period: "2026-08" });
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, command(
+      "esun-186-sign-flip-unbilled",
+      augustWindow,
+      [julyCoffee, julyBooks],
+      [augustTransitUnbilled],
+      [settledJuly],
+    ));
+    assert.deepEqual(await ledger(store), twoBilledOneUnbilled);
+    await assertRejectedWithoutChange(store, command(
+      "esun-186-sign-flip-billed",
+      septemberWindow,
+      [julyCoffee, julyBooks, augustTransitRefundBilled],
+      [],
+      [settledJuly, { ...settledAugust, balance: "0", minimumPayment: "0" }],
+    ));
   } finally {
     await store.close();
   }
