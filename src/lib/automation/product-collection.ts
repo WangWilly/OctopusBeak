@@ -9,6 +9,7 @@ import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
 import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type {
   WorkflowEventCounts,
+  WorkflowProductFailure,
   WorkflowProgressActivity,
   WorkflowStage,
 } from "./workflow-executor.ts";
@@ -204,6 +205,8 @@ export type CollectSelectedProductsOptions<
   /** Called once for each non-empty, fully collected product staging group. */
   commit: (typeId: TId, stagedItems: readonly TItem[]) => Promise<PGliteWorkflowRunResult<unknown>>;
   event?: ProductCollectionStageEvent;
+  /** Receives a product's non-fatal failure with its error; the run itself continues. */
+  productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
   /** Provider-specific typed session/terminal-state errors can join the shared fatal set. */
   classifyFatal?: (error: unknown) => TypedWorkflowErrorCode | undefined;
 }>;
@@ -362,11 +365,15 @@ export async function collectSelectedProducts<
     let sourceCountForProduct = 0;
     let rowsForProduct = 0;
     let productItemCount = 0;
+    let lastStage: WorkflowStage = "collection";
     const emitProductEvent = (
       stage: WorkflowStage,
       code: string,
       counts?: WorkflowEventCounts,
-    ) => options.event?.(stage, code, { ...counts, statementType: typeId });
+    ) => {
+      lastStage = stage;
+      return options.event?.(stage, code, { ...counts, statementType: typeId });
+    };
 
     try {
       await options.assertSession?.();
@@ -539,6 +546,7 @@ export async function collectSelectedProducts<
       } else {
         const errorCode = productFailureCode(error);
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
+        await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
         await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);
       }
 
