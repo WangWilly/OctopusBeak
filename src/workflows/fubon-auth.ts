@@ -1,3 +1,4 @@
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import type { Dialog, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceCompletionStatus,
@@ -16,6 +17,7 @@ const FUBON_LOGIN_FRAME_NAME = "txnFrame";
 const DEFAULT_OUTCOME_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const LOGIN_FORM_REJECTION_GRACE_MS = 10_000;
+const CAPTCHA_REJECTION_TEXT = /^0290\s*驗證碼輸入錯誤$/u;
 const MARKER_PROBE_TIMEOUT_MS = 100;
 const DEFAULT_LOGIN_FILL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS = 50;
@@ -1712,6 +1714,16 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/** Fubon renders a rejected CAPTCHA inline in the login frame, not as a dialog. */
+async function fubonCaptchaRejectionVisible(page: Page): Promise<boolean> {
+  try {
+    const frame = page.frame({ name: FUBON_LOGIN_FRAME_NAME });
+    return Boolean(await frame?.getByText(CAPTCHA_REJECTION_TEXT).first().isVisible());
+  } catch {
+    return false;
+  }
+}
+
 export async function waitForFubonPostLoginOutcome(
   page: Page,
   options: FubonPostLoginOutcomeOptions = {},
@@ -1773,6 +1785,11 @@ export async function waitForFubonPostLoginOutcome(
     }
     if (dialogMessage !== undefined) {
       throwDialogRejection(dialogMessage, snapshot);
+    }
+
+    if (await fubonCaptchaRejectionVisible(page)) {
+      if (!options.silent) emitOutcome("rejected", "captcha-rejected");
+      throw new CaptchaProviderRejectedError();
     }
 
     const rejectionReason = rejectionForSnapshot(snapshot);
