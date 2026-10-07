@@ -1,0 +1,61 @@
+{
+  "lines": [
+    {
+      "id": "01",
+      "sfx": [
+        "pop",
+        "pop",
+        "pop"
+      ]
+    },
+    {
+      "id": "02",
+      "sfx": [
+        "whoosh",
+        "tap",
+        "tap",
+        "tap",
+        "tap",
+        "tap",
+        "tap"
+      ]
+    },
+    {
+      "id": "03",
+      "sfx": [
+        "swoosh",
+        "stamp",
+        "ticker",
+        "ticker",
+        "ticker",
+        "ticker",
+        "ticker",
+        "ticker"
+      ]
+    },
+    {
+      "id": "04",
+      "sfx": [
+        "pen draw",
+        "rising whoosh",
+        "cash register ding"
+      ]
+    },
+    {
+      "id": "05",
+      "sfx": [
+        "swoosh",
+        "paper flick"
+      ]
+    },
+    {
+      "id": "06",
+      "sfx": [
+        "chime"
+      ]
+    }
+  ],
+  "bgm": {
+    "mode": "none"
+  }
+}

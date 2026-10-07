@@ -1,0 +1,270 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC Regular"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"), local("PingFang TC Medium"); }
+    @font-face { font-family: "PingFang TC"; font-weight: 600 900; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+    @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("SF Mono Regular"); }
+    @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("SF Mono Bold"); }
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      font-family: "PingFang TC", sans-serif;
+    }
+    .f05-proof-layer { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; }
+    .f05-proof-paper {
+      background:
+        radial-gradient(ellipse 85% 55% at 100% 100%, #edf4f1 0%, rgba(237, 244, 241, 0.6) 45%, rgba(237, 244, 241, 0) 80%),
+        #f9fafc;
+    }
+    .f05-proof-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .f05-proof-full { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+    .f05-proof-rosette { position: absolute; left: -10px; top: 410px; width: 1100px; height: 1100px; }
+    .f05-proof-world { position: absolute; inset: 0; transform-origin: 540px 960px; }
+    .f05-proof-cjk { font-family: "PingFang TC", sans-serif; }
+    .f05-proof-world * { box-sizing: border-box; }
+    .f05-proof-title {
+      position: absolute; left: 110px; top: 298px; /* baseline 400 */
+      font-size: 96px; font-weight: 700; line-height: 135px; white-space: nowrap; color: #0e1217;
+    }
+    .f05-proof-teal { color: #18a9a4; }
+    .f05-proof-row { position: absolute; left: 0; width: 1080px; height: 96px; }
+    .f05-proof-tile {
+      position: absolute; left: 110px; top: 0; width: 96px; height: 96px;
+      border-radius: 24px; background: #ffffff;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+    }
+    .f05-proof-tile img { position: absolute; left: 12px; top: 12px; width: 72px; height: 72px; object-fit: contain; display: block; }
+    .f05-proof-label {
+      position: absolute; left: 230px; top: 0; height: 96px;
+      font-size: 50px; font-weight: 600; line-height: 96px; white-space: nowrap; color: #0e1217;
+    }
+    .f05-proof-amount {
+      position: absolute; right: 110px; top: 0; height: 96px;
+      font-family: "SF Mono", ui-monospace, Menlo, monospace; font-weight: 700;
+      font-size: 60px; line-height: 96px; white-space: nowrap;
+      font-variant-numeric: tabular-nums; color: #0e1217;
+    }
+    .f05-proof-neg { color: #8a3b2e; }
+    .f05-proof-plus {
+      position: absolute; right: 980px; top: 0; height: 96px; /* right edge x=100 */
+      font-size: 60px; font-weight: 600; line-height: 96px; color: #5e646a;
+    }
+    .f05-proof-rule { position: absolute; left: 110px; top: 1182px; width: 860px; height: 6px; background: #0e1217; }
+    .f05-proof-hl {
+      position: absolute; left: 288px; top: 1226px; width: 706px; height: 96px;
+      border-radius: 14px; background: rgba(24, 169, 164, 0.14);
+    }
+    .f05-proof-total-label {
+      position: absolute; left: 110px; top: 1235px; /* baseline 1290 */
+      font-size: 52px; font-weight: 700; line-height: 73px; white-space: nowrap; color: #0e1217;
+    }
+    .f05-proof-total {
+      position: absolute; right: 110px; top: 1222px; /* baseline 1300 */
+      font-family: "SF Mono", ui-monospace, Menlo, monospace; font-weight: 700;
+      font-size: 84px; line-height: 98px; white-space: nowrap;
+      font-variant-numeric: tabular-nums; color: #0e1217;
+    }
+    .f05-proof-total-num { display: inline-block; width: 9ch; text-align: right; }
+    .f05-proof-icon {
+      position: absolute; left: 840px; top: 300px; width: 120px; height: 120px;
+      border-radius: 28px; overflow: hidden;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+      transform: rotate(-6deg);
+    }
+    .f05-proof-icon img { width: 120px; height: 120px; display: block; }
+    .f05-proof-clipping {
+      position: absolute;
+      padding: 10px;
+      background: #ffffff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.08);
+    }
+    .f05-proof-crop { position: relative; overflow: hidden; }
+    .f05-proof-crop img { position: absolute; display: block; max-width: none; }
+    .f05-proof-marker { position: absolute; left: 0; top: 0; width: 960px; height: 446px; overflow: visible; }
+    .f05-proof-marker path { fill: none; stroke: #18a9a4; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+    .f05-proof-night { background: linear-gradient(to bottom right, #071f4a 0%, #0d4672 52%, #12808f 100%); }
+    .f05-proof-band {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1080px;
+      height: 170px;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(7, 31, 74, 0.9) 0%, rgba(13, 70, 114, 0.45) 45%, rgba(18, 128, 143, 0) 100%);
+    }
+    .f05-proof-band svg { position: absolute; left: 0; top: 0; width: 1080px; height: 170px; }
+  </style>
+
+  <div id="root" data-composition-id="05-proof" data-start="0" data-duration="4.5" data-width="1080" data-height="1920">
+    <svg class="f05-proof-defs" aria-hidden="true"><defs>
+<symbol id="f05-proof-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="f05-proof-ro"><path id="f05-proof-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#f05-proof-ro0" transform="rotate(9)"/><use href="#f05-proof-ro0" transform="rotate(18)"/><use href="#f05-proof-ro0" transform="rotate(27)"/><use href="#f05-proof-ro0" transform="rotate(36)"/><use href="#f05-proof-ro0" transform="rotate(45)"/><use href="#f05-proof-ro0" transform="rotate(54)"/><use href="#f05-proof-ro0" transform="rotate(63)"/><use href="#f05-proof-ro0" transform="rotate(72)"/><use href="#f05-proof-ro0" transform="rotate(81)"/><use href="#f05-proof-ro0" transform="rotate(90)"/><use href="#f05-proof-ro0" transform="rotate(99)"/><use href="#f05-proof-ro0" transform="rotate(108)"/><use href="#f05-proof-ro0" transform="rotate(117)"/><use href="#f05-proof-ro0" transform="rotate(126)"/><use href="#f05-proof-ro0" transform="rotate(135)"/><use href="#f05-proof-ro0" transform="rotate(144)"/><use href="#f05-proof-ro0" transform="rotate(153)"/><use href="#f05-proof-ro0" transform="rotate(162)"/><use href="#f05-proof-ro0" transform="rotate(171)"/><use href="#f05-proof-ro0" transform="rotate(180)"/><use href="#f05-proof-ro0" transform="rotate(189)"/><use href="#f05-proof-ro0" transform="rotate(198)"/><use href="#f05-proof-ro0" transform="rotate(207)"/><use href="#f05-proof-ro0" transform="rotate(216)"/><use href="#f05-proof-ro0" transform="rotate(225)"/><use href="#f05-proof-ro0" transform="rotate(234)"/><use href="#f05-proof-ro0" transform="rotate(243)"/><use href="#f05-proof-ro0" transform="rotate(252)"/><use href="#f05-proof-ro0" transform="rotate(261)"/><use href="#f05-proof-ro0" transform="rotate(270)"/><use href="#f05-proof-ro0" transform="rotate(279)"/><use href="#f05-proof-ro0" transform="rotate(288)"/><use href="#f05-proof-ro0" transform="rotate(297)"/><use href="#f05-proof-ro0" transform="rotate(306)"/><use href="#f05-proof-ro0" transform="rotate(315)"/><use href="#f05-proof-ro0" transform="rotate(324)"/><use href="#f05-proof-ro0" transform="rotate(333)"/><use href="#f05-proof-ro0" transform="rotate(342)"/><use href="#f05-proof-ro0" transform="rotate(351)"/></g><use href="#f05-proof-ro" transform="rotate(1.1)"/><use href="#f05-proof-ro" transform="rotate(2.3)"/><use href="#f05-proof-ro" transform="rotate(3.4)"/><use href="#f05-proof-ro" transform="rotate(4.5)"/><use href="#f05-proof-ro" transform="rotate(5.6)"/><use href="#f05-proof-ro" transform="rotate(6.8)"/><use href="#f05-proof-ro" transform="rotate(7.9)"/><g id="f05-proof-rb"><path id="f05-proof-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#f05-proof-rb0" transform="rotate(15)"/><use href="#f05-proof-rb0" transform="rotate(30)"/><use href="#f05-proof-rb0" transform="rotate(45)"/><use href="#f05-proof-rb0" transform="rotate(60)"/><use href="#f05-proof-rb0" transform="rotate(75)"/><use href="#f05-proof-rb0" transform="rotate(90)"/><use href="#f05-proof-rb0" transform="rotate(105)"/><use href="#f05-proof-rb0" transform="rotate(120)"/><use href="#f05-proof-rb0" transform="rotate(135)"/><use href="#f05-proof-rb0" transform="rotate(150)"/><use href="#f05-proof-rb0" transform="rotate(165)"/><use href="#f05-proof-rb0" transform="rotate(180)"/><use href="#f05-proof-rb0" transform="rotate(195)"/><use href="#f05-proof-rb0" transform="rotate(210)"/><use href="#f05-proof-rb0" transform="rotate(225)"/><use href="#f05-proof-rb0" transform="rotate(240)"/><use href="#f05-proof-rb0" transform="rotate(255)"/><use href="#f05-proof-rb0" transform="rotate(270)"/><use href="#f05-proof-rb0" transform="rotate(285)"/><use href="#f05-proof-rb0" transform="rotate(300)"/><use href="#f05-proof-rb0" transform="rotate(315)"/><use href="#f05-proof-rb0" transform="rotate(330)"/><use href="#f05-proof-rb0" transform="rotate(345)"/></g><use href="#f05-proof-rb" transform="rotate(1.9)"/><use href="#f05-proof-rb" transform="rotate(3.8)"/><use href="#f05-proof-rb" transform="rotate(5.6)"/><use href="#f05-proof-rb" transform="rotate(7.5)"/><use href="#f05-proof-rb" transform="rotate(9.4)"/><use href="#f05-proof-rb" transform="rotate(11.3)"/><use href="#f05-proof-rb" transform="rotate(13.1)"/><g id="f05-proof-rh"><path id="f05-proof-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#f05-proof-rh0" transform="rotate(32.7)"/><use href="#f05-proof-rh0" transform="rotate(65.5)"/><use href="#f05-proof-rh0" transform="rotate(98.2)"/><use href="#f05-proof-rh0" transform="rotate(130.9)"/><use href="#f05-proof-rh0" transform="rotate(163.6)"/><use href="#f05-proof-rh0" transform="rotate(196.4)"/><use href="#f05-proof-rh0" transform="rotate(229.1)"/><use href="#f05-proof-rh0" transform="rotate(261.8)"/><use href="#f05-proof-rh0" transform="rotate(294.5)"/><use href="#f05-proof-rh0" transform="rotate(327.3)"/></g><use href="#f05-proof-rh" transform="rotate(5.5)"/><use href="#f05-proof-rh" transform="rotate(10.9)"/><use href="#f05-proof-rh" transform="rotate(16.4)"/><use href="#f05-proof-rh" transform="rotate(21.8)"/><use href="#f05-proof-rh" transform="rotate(27.3)"/><g id="f05-proof-rc"><path id="f05-proof-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#f05-proof-rc0" transform="rotate(30)"/><use href="#f05-proof-rc0" transform="rotate(60)"/><use href="#f05-proof-rc0" transform="rotate(90)"/><use href="#f05-proof-rc0" transform="rotate(120)"/><use href="#f05-proof-rc0" transform="rotate(150)"/><use href="#f05-proof-rc0" transform="rotate(180)"/><use href="#f05-proof-rc0" transform="rotate(210)"/><use href="#f05-proof-rc0" transform="rotate(240)"/><use href="#f05-proof-rc0" transform="rotate(270)"/><use href="#f05-proof-rc0" transform="rotate(300)"/><use href="#f05-proof-rc0" transform="rotate(330)"/></g><use href="#f05-proof-rc" transform="rotate(3.8)"/><use href="#f05-proof-rc" transform="rotate(7.5)"/><use href="#f05-proof-rc" transform="rotate(11.3)"/><use href="#f05-proof-rc" transform="rotate(15)"/><use href="#f05-proof-rc" transform="rotate(18.8)"/><use href="#f05-proof-rc" transform="rotate(22.5)"/><use href="#f05-proof-rc" transform="rotate(26.3)"/><g id="f05-proof-ri"><path id="f05-proof-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#f05-proof-ri0" transform="rotate(40)"/><use href="#f05-proof-ri0" transform="rotate(80)"/><use href="#f05-proof-ri0" transform="rotate(120)"/><use href="#f05-proof-ri0" transform="rotate(160)"/><use href="#f05-proof-ri0" transform="rotate(200)"/><use href="#f05-proof-ri0" transform="rotate(240)"/><use href="#f05-proof-ri0" transform="rotate(280)"/><use href="#f05-proof-ri0" transform="rotate(320)"/></g><use href="#f05-proof-ri" transform="rotate(6.7)"/><use href="#f05-proof-ri" transform="rotate(13.3)"/><use href="#f05-proof-ri" transform="rotate(20)"/><use href="#f05-proof-ri" transform="rotate(26.7)"/><use href="#f05-proof-ri" transform="rotate(33.3)"/></symbol>
+<g id="f05-proof-w" fill="none" stroke="currentColor"><path id="f05-proof-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#f05-proof-wl" transform="translate(487.5 -28.1)"/><use href="#f05-proof-wl" transform="translate(525 -18.7)"/><use href="#f05-proof-wl" transform="translate(562.5 -9.4)"/><use href="#f05-proof-wl" transform="translate(37.5 9.4)"/><use href="#f05-proof-wl" transform="translate(75 18.8)"/><use href="#f05-proof-wl" transform="translate(112.5 28.1)"/><use href="#f05-proof-wl" transform="translate(150 37.5)"/><use href="#f05-proof-wl" transform="translate(187.5 46.9)"/><use href="#f05-proof-wl" transform="translate(225 56.3)"/><use href="#f05-proof-wl" transform="translate(262.5 65.6)"/><use href="#f05-proof-wl" transform="translate(300 75)"/><use href="#f05-proof-wl" transform="translate(337.5 84.4)"/><use href="#f05-proof-wl" transform="translate(375 93.8)"/><use href="#f05-proof-wl" transform="translate(412.5 103.1)"/><use href="#f05-proof-wl" transform="translate(450 112.5)"/><use href="#f05-proof-wl" transform="translate(487.5 121.9)"/><use href="#f05-proof-wl" transform="translate(525 131.3)"/><use href="#f05-proof-wl" transform="translate(562.5 140.6)"/><use href="#f05-proof-wl" transform="translate(0 150)"/><use href="#f05-proof-wl" transform="translate(37.5 159.4)"/><use href="#f05-proof-wl" transform="translate(75 168.8)"/><use href="#f05-proof-wl" transform="translate(112.5 178.1)"/><use href="#f05-proof-wl" transform="translate(150 187.5)"/><use href="#f05-proof-wl" transform="translate(187.5 196.9)"/><use href="#f05-proof-wl" transform="translate(225 206.3)"/><use href="#f05-proof-wl" transform="translate(262.5 215.6)"/><use href="#f05-proof-wl" transform="translate(300 225)"/><use href="#f05-proof-wl" transform="translate(337.5 234.4)"/><use href="#f05-proof-wl" transform="translate(375 243.8)"/><use href="#f05-proof-wl" transform="translate(412.5 253.1)"/><use href="#f05-proof-wl" transform="translate(450 262.5)"/><use href="#f05-proof-wl" transform="translate(487.5 271.9)"/><use href="#f05-proof-wl" transform="translate(525 281.3)"/><use href="#f05-proof-wl" transform="translate(562.5 290.6)"/><use href="#f05-proof-wl" transform="translate(0 300)"/><use href="#f05-proof-wl" transform="translate(37.5 309.4)"/><use href="#f05-proof-wl" transform="translate(75 318.8)"/></g>
+<pattern id="f05-proof-waves-ink" color="#0e1217" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#f05-proof-w"/></pattern>
+<pattern id="f05-proof-waves-teal" color="#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#f05-proof-w"/></pattern>
+    </defs></svg>
+
+    <!-- Paper ground (handoff_in) -->
+    <div class="f05-proof-layer f05-proof-paper clip" data-start="0" data-duration="4.5" data-track-index="0">
+      <svg class="f05-proof-full" viewBox="0 0 1080 1920" style="opacity: 0.05" aria-hidden="true">
+        <rect width="1080" height="1920" fill="url(#f05-proof-waves-ink)" />
+      </svg>
+      <svg class="f05-proof-rosette" id="f05-proof-rosette-paper" viewBox="-460 -460 920 920" style="color: #2c6485; opacity: 0.06" aria-hidden="true">
+        <use href="#f05-proof-rosette" x="-460" y="-460" width="920" height="920" />
+      </svg>
+    </div>
+
+    <!-- The ledger column, exactly Frame 4's end state; the camera pulls it away -->
+    <div class="f05-proof-world clip" id="f05-proof-world" data-start="0" data-duration="4.5" data-track-index="1">
+      <div class="f05-proof-title">Just <span class="f05-proof-teal">1</span> app.</div>
+      <div class="f05-proof-row" style="top: 512px">
+        <div class="f05-proof-tile"><img src="assets/logos/fubon.webp" alt="" /></div>
+        <div class="f05-proof-label">Bank</div>
+        <div class="f05-proof-amount">699,160</div>
+      </div>
+      <div class="f05-proof-row" style="top: 622px">
+        <div class="f05-proof-tile"><img src="assets/logos/yuanta-securities.webp" alt="" /></div>
+        <div class="f05-proof-label">Stocks</div>
+        <div class="f05-proof-amount">1,284,600</div>
+      </div>
+      <div class="f05-proof-row" style="top: 732px">
+        <div class="f05-proof-tile"><img src="assets/logos/maicoin.webp" alt="" /></div>
+        <div class="f05-proof-label">Crypto</div>
+        <div class="f05-proof-amount">809,297</div>
+      </div>
+      <div class="f05-proof-row" style="top: 842px">
+        <div class="f05-proof-tile"><img src="assets/logos/yuanta-bank.webp" alt="" /></div>
+        <div class="f05-proof-label">Funds</div>
+        <div class="f05-proof-amount">356,200</div>
+      </div>
+      <div class="f05-proof-row" style="top: 952px">
+        <div class="f05-proof-plus">+</div>
+        <div class="f05-proof-tile"><img src="assets/logos/cathay.webp" alt="" /></div>
+        <div class="f05-proof-label">FX</div>
+        <div class="f05-proof-amount">330,281</div>
+      </div>
+      <div class="f05-proof-row" style="top: 1062px">
+        <div class="f05-proof-tile"><img src="assets/logos/esun.webp" alt="" /></div>
+        <div class="f05-proof-label">Debt</div>
+        <div class="f05-proof-amount f05-proof-neg">−1,331,322</div>
+      </div>
+      <div class="f05-proof-rule"></div>
+      <div class="f05-proof-hl"></div>
+      <div class="f05-proof-total-label">Total</div>
+      <div class="f05-proof-total">TWD <span class="f05-proof-total-num">2,148,216</span></div>
+      <div class="f05-proof-icon"><img src="assets/app-icon-180.png" alt="OctopusBeak" /></div>
+    </div>
+
+    <!-- Proof: real screenshots as clippings + caption -->
+    <div class="f05-proof-layer clip" data-start="0" data-duration="4.5" data-track-index="2">
+      <svg class="f05-proof-full" viewBox="0 0 1080 1920" aria-hidden="true">
+        <text class="f05-proof-cjk" id="f05-proof-cap1" x="90" y="330" font-size="64" font-weight="700" fill="#0e1217">OctopusBeak gathers it all</text>
+        <text class="f05-proof-cjk" id="f05-proof-cap2" x="90" y="420" font-size="56" font-weight="600" fill="#2c6485">and adds it up on your Mac</text>
+      </svg>
+
+      <div class="f05-proof-clipping" id="f05-proof-assets" style="left: 70px; top: 969px">
+        <div class="f05-proof-crop" style="width: 900px; height: 162.5px">
+          <img src="assets/assets.webp" alt="資產總額 TWD 3,479,538" style="width: 1328.4px; height: 829.5px; left: -37.5px; top: -27.3px" />
+        </div>
+      </div>
+      <div class="f05-proof-clipping" id="f05-proof-liab" style="left: 90px; top: 1159px">
+        <div class="f05-proof-crop" style="width: 900px; height: 162.5px">
+          <img src="assets/liabilities.webp" alt="總負債 TWD 1,331,322" style="width: 1328.4px; height: 829.5px; left: -37.5px; top: -27.3px" />
+        </div>
+      </div>
+      <div class="f05-proof-clipping" id="f05-proof-overview" style="left: 60px; top: 560px">
+        <div class="f05-proof-crop" style="width: 940px; height: 426.2px">
+          <img src="assets/overview.webp" alt="淨資產 TWD 2,148,216" style="width: 1212.2px; height: 757.1px; left: -246.7px; top: -131px" />
+        </div>
+        <svg class="f05-proof-marker" viewBox="0 0 960 446" aria-hidden="true">
+          <path id="f05-proof-marker" d="M23.7 79.5 L30.6 76.0 L39.0 72.6 L49.0 69.2 L60.5 65.8 L73.3 62.7 L87.2 59.6 L102.3 56.8 L118.4 54.2 L135.3 51.8 L152.9 49.6 L171.1 47.7 L189.6 46.1 L208.3 44.9 L227.1 43.9 L245.8 43.3 L264.3 43.0 L282.3 43.1 L299.7 43.5 L316.3 44.3 L332.1 45.3 L346.9 46.8 L360.5 48.5 L372.8 50.5 L383.8 52.8 L393.2 55.4 L401.1 58.3 L407.4 61.3 L412.0 64.6 L414.8 68.0 L415.9 71.6 L415.2 75.3 L412.7 79.0 L408.5 82.8 L402.6 86.6 L395.0 90.4 L385.8 94.1 L375.0 97.8 L362.9 101.3 L349.4 104.7 L334.7 107.8 L318.9 110.8 L302.1 113.5 L284.6 116.0 L266.3 118.2 L247.6 120.0 L228.6 121.6 L209.4 122.8 L190.2 123.6 L171.1 124.1 L152.4 124.2 L134.1 123.9 L116.6 123.3 L99.8 122.3 L84.0 120.9 L69.3 119.2 L55.8 117.2 L43.6 114.8 L32.9 112.1 L23.7 109.2 L16.2 106.0 L10.4 102.6 L6.3 99.0 L4.0 95.2 L3.5 91.3 L4.8 87.3 L7.9 83.2 L12.8 79.1 L19.5 75.0 L27.8 70.9 L37.7 67.0 L49.2 63.1 L62.1 59.4" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- Night wipes back from the top (handoff_out: night ground only) -->
+    <div class="f05-proof-layer clip" data-start="0" data-duration="4.5" data-track-index="3">
+      <div class="f05-proof-layer" id="f05-proof-nightwrap">
+        <div class="f05-proof-layer f05-proof-night" id="f05-proof-nightin">
+          <svg class="f05-proof-full" viewBox="0 0 1080 1920" style="opacity: 0.5" aria-hidden="true">
+            <rect width="1080" height="1920" fill="url(#f05-proof-waves-teal)" />
+          </svg>
+          <svg class="f05-proof-rosette" id="f05-proof-rosette-night" viewBox="-460 -460 920 920" style="color: #edf4f1; opacity: 0.2" aria-hidden="true">
+            <use href="#f05-proof-rosette" x="-460" y="-460" width="920" height="920" />
+          </svg>
+        </div>
+      </div>
+      <div class="f05-proof-band" id="f05-proof-band">
+        <svg viewBox="0 0 1080 170" aria-hidden="true">
+          <rect width="1080" height="170" fill="url(#f05-proof-waves-teal)" />
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const ID = "05-proof";
+      const DUR = 4.5;
+      const FILM_START = 22;
+      const q = (s) => document.querySelector('[data-composition-id="' + ID + '"] ' + s);
+      const tl = gsap.timeline({ paused: true });
+
+      // Grounds: both rosettes turn 0.6 deg per second of film time.
+      ["#f05-proof-rosette-paper", "#f05-proof-rosette-night"].forEach(function (sel) {
+        tl.fromTo(q(sel),
+          { rotation: 0.6 * FILM_START, transformOrigin: "50% 50%" },
+          { rotation: 0.6 * (FILM_START + DUR), duration: DUR, ease: "none" }, 0);
+      });
+
+      // Scene 1 (0.0-0.8): the one outward camera move pulls the column up and away.
+      tl.fromTo(q("#f05-proof-world"),
+        { y: 0, scale: 1, opacity: 1 },
+        { y: -620, scale: 0.86, opacity: 0, duration: 0.8, ease: "power2.inOut" }, 0);
+      // The overview net-worth card rises into the same spot.
+      tl.fromTo(q("#f05-proof-overview"),
+        { y: 720, rotation: 3, opacity: 0 },
+        { y: 0, rotation: -1, opacity: 1, duration: 0.8, ease: "power3.out" }, 0.1);
+
+      // Scene 2 (0.8-2.2): supporting clippings slide in under it; marker circles the total.
+      tl.fromTo(q("#f05-proof-assets"),
+        { x: -1040, rotation: -4, opacity: 0 },
+        { x: 0, rotation: 1.5, opacity: 1, duration: 0.6, ease: "power3.out" }, 0.8);
+      tl.fromTo(q("#f05-proof-liab"),
+        { x: 1040, rotation: 4, opacity: 0 },
+        { x: 0, rotation: -1.5, opacity: 1, duration: 0.6, ease: "power3.out" }, 1.05);
+      const marker = q("#f05-proof-marker");
+      const len = marker.getTotalLength() * 1.02;
+      tl.fromTo(marker,
+        { strokeDasharray: len, strokeDashoffset: len },
+        { strokeDasharray: len, strokeDashoffset: 0, duration: 0.65, ease: "power2.out" }, 1.45);
+
+      // Scene 3 (1.0-2.6): the caption sets at the top.
+      tl.fromTo(q("#f05-proof-cap1"),
+        { y: 40, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.55, ease: "power3.out" }, 1.0);
+      tl.fromTo(q("#f05-proof-cap2"),
+        { y: 40, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.55, ease: "power3.out" }, 1.5);
+
+      // Scene 4 (2.6-3.9): hold; only the rosette turns.
+
+      // Scene 5 (3.9-4.5): night wipes down from the top, a band of teal wave lines on its edge.
+      const E0 = -170;
+      const WIPE = 0.6;
+      tl.fromTo(q("#f05-proof-nightwrap"),
+        { y: E0 - 1920 }, { y: 0, duration: WIPE, ease: "power2.inOut" }, DUR - WIPE);
+      tl.fromTo(q("#f05-proof-nightin"),
+        { y: 1920 - E0 }, { y: 0, duration: WIPE, ease: "power2.inOut" }, DUR - WIPE);
+      tl.fromTo(q("#f05-proof-band"),
+        { y: E0 }, { y: 1920, duration: WIPE, ease: "power2.inOut" }, DUR - WIPE);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines[ID] = tl;
+    })();
+  </script>
+</template>

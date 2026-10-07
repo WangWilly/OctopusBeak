@@ -1,0 +1,255 @@
+<template>
+  <div id="root" data-composition-id="02-question" data-start="0" data-duration="5" data-width="1080" data-height="1920">
+    <style>
+      @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"); }
+      @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("SF Mono"), local("Menlo-Regular"); }
+      @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("SF Mono Bold"), local("Menlo-Bold"); }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        font-family: "PingFang TC", sans-serif;
+      }
+      .\30 2-question-layer { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; overflow: hidden; }
+      .\30 2-question-ground { background: linear-gradient(to bottom right, #071f4a 0%, #0d4672 55%, #12808f 100%); }
+      .\30 2-question-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+      .\30 2-question-waves { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; opacity: 0.5; }
+      /* 1100px rosette centred at (540, 960) */
+      .\30 2-question-rosette { position: absolute; left: -10px; top: 410px; width: 1100px; height: 1100px; color: #edf4f1; opacity: 0.2; }
+      .\30 2-question-rosette svg { display: block; width: 100%; height: 100%; }
+      .\30 2-question-world { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+      .\30 2-question-grad {
+        color: #ffffff;
+        background: linear-gradient(180deg, #ffffff 15%, #c4f5ee 78%, #5fd4c9 118%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      /* line-height 1: PingFang baseline sits 0.86em below the box top */
+      .\30 2-question-oldline { position: absolute; left: 100px; font-size: 104px; line-height: 1; font-weight: 700; white-space: nowrap; }
+      .\30 2-question-label { position: absolute; top: 1196px; width: 220px; text-align: center; font-size: 40px; line-height: 1; font-weight: 600; color: #ffffff; }
+      .\30 2-question-qwrap { position: absolute; left: 0; top: 0; width: 1080px; height: 800px; }
+      .\30 2-question-qline { position: absolute; left: 100px; font-size: 96px; line-height: 1; font-weight: 700; white-space: nowrap; }
+      .\30 2-question-word { display: inline-block; opacity: 0; }
+      .\30 2-question-tile {
+        position: absolute;
+        width: 200px;
+        height: 200px;
+        border-radius: 46px;
+        background: #ffffff;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.3);
+        transform-origin: 50% 50%;
+      }
+      .\30 2-question-tile img { position: absolute; left: 40px; top: 40px; width: 120px; height: 120px; object-fit: contain; transform-origin: 50% 50%; }
+      .\30 2-question-ripple {
+        position: absolute;
+        width: 200px;
+        height: 200px;
+        border-radius: 50%;
+        border: 6px solid #5fd4c9;
+        background: rgba(24, 169, 164, 0.28);
+        opacity: 0;
+      }
+      .\30 2-question-card {
+        position: absolute;
+        width: 300px;
+        height: 150px;
+        border-radius: 24px;
+        background: #ffffff;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.32);
+        transform-origin: 50% 100%;
+      }
+      .\30 2-question-dots { position: absolute; left: 0; top: 34px; width: 300px; display: flex; justify-content: center; gap: 14px; }
+      .\30 2-question-dot { display: block; width: 20px; height: 20px; border-radius: 50%; background: #0e1217; }
+      .\30 2-question-bar { position: absolute; left: 40px; top: 86px; width: 220px; height: 36px; border-radius: 18px; background: #18a9a4; }
+      .\30 2-question-counter { position: absolute; left: 100px; top: 1389px; white-space: nowrap; line-height: 1; }
+      .\30 2-question-clabel { font-size: 44px; font-weight: 600; color: #ffffff; vertical-align: baseline; }
+      .\30 2-question-num {
+        display: inline-block;
+        min-width: 120px;
+        margin-left: 24px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        font-size: 96px;
+        color: #ffffff;
+        vertical-align: baseline;
+        transform-origin: 20% 80%;
+        position: relative;
+      }
+      .\30 2-question-nd { position: absolute; left: 0; top: 0; }
+      .\30 2-question-nd:first-child { position: relative; }
+    </style>
+
+    <svg class="02-question-defs" aria-hidden="true" width="0" height="0">
+      <defs>
+<symbol id="02-question-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="02-question-ro"><path id="02-question-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#02-question-ro0" transform="rotate(9)"/><use href="#02-question-ro0" transform="rotate(18)"/><use href="#02-question-ro0" transform="rotate(27)"/><use href="#02-question-ro0" transform="rotate(36)"/><use href="#02-question-ro0" transform="rotate(45)"/><use href="#02-question-ro0" transform="rotate(54)"/><use href="#02-question-ro0" transform="rotate(63)"/><use href="#02-question-ro0" transform="rotate(72)"/><use href="#02-question-ro0" transform="rotate(81)"/><use href="#02-question-ro0" transform="rotate(90)"/><use href="#02-question-ro0" transform="rotate(99)"/><use href="#02-question-ro0" transform="rotate(108)"/><use href="#02-question-ro0" transform="rotate(117)"/><use href="#02-question-ro0" transform="rotate(126)"/><use href="#02-question-ro0" transform="rotate(135)"/><use href="#02-question-ro0" transform="rotate(144)"/><use href="#02-question-ro0" transform="rotate(153)"/><use href="#02-question-ro0" transform="rotate(162)"/><use href="#02-question-ro0" transform="rotate(171)"/><use href="#02-question-ro0" transform="rotate(180)"/><use href="#02-question-ro0" transform="rotate(189)"/><use href="#02-question-ro0" transform="rotate(198)"/><use href="#02-question-ro0" transform="rotate(207)"/><use href="#02-question-ro0" transform="rotate(216)"/><use href="#02-question-ro0" transform="rotate(225)"/><use href="#02-question-ro0" transform="rotate(234)"/><use href="#02-question-ro0" transform="rotate(243)"/><use href="#02-question-ro0" transform="rotate(252)"/><use href="#02-question-ro0" transform="rotate(261)"/><use href="#02-question-ro0" transform="rotate(270)"/><use href="#02-question-ro0" transform="rotate(279)"/><use href="#02-question-ro0" transform="rotate(288)"/><use href="#02-question-ro0" transform="rotate(297)"/><use href="#02-question-ro0" transform="rotate(306)"/><use href="#02-question-ro0" transform="rotate(315)"/><use href="#02-question-ro0" transform="rotate(324)"/><use href="#02-question-ro0" transform="rotate(333)"/><use href="#02-question-ro0" transform="rotate(342)"/><use href="#02-question-ro0" transform="rotate(351)"/></g><use href="#02-question-ro" transform="rotate(1.1)"/><use href="#02-question-ro" transform="rotate(2.3)"/><use href="#02-question-ro" transform="rotate(3.4)"/><use href="#02-question-ro" transform="rotate(4.5)"/><use href="#02-question-ro" transform="rotate(5.6)"/><use href="#02-question-ro" transform="rotate(6.8)"/><use href="#02-question-ro" transform="rotate(7.9)"/><g id="02-question-rb"><path id="02-question-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#02-question-rb0" transform="rotate(15)"/><use href="#02-question-rb0" transform="rotate(30)"/><use href="#02-question-rb0" transform="rotate(45)"/><use href="#02-question-rb0" transform="rotate(60)"/><use href="#02-question-rb0" transform="rotate(75)"/><use href="#02-question-rb0" transform="rotate(90)"/><use href="#02-question-rb0" transform="rotate(105)"/><use href="#02-question-rb0" transform="rotate(120)"/><use href="#02-question-rb0" transform="rotate(135)"/><use href="#02-question-rb0" transform="rotate(150)"/><use href="#02-question-rb0" transform="rotate(165)"/><use href="#02-question-rb0" transform="rotate(180)"/><use href="#02-question-rb0" transform="rotate(195)"/><use href="#02-question-rb0" transform="rotate(210)"/><use href="#02-question-rb0" transform="rotate(225)"/><use href="#02-question-rb0" transform="rotate(240)"/><use href="#02-question-rb0" transform="rotate(255)"/><use href="#02-question-rb0" transform="rotate(270)"/><use href="#02-question-rb0" transform="rotate(285)"/><use href="#02-question-rb0" transform="rotate(300)"/><use href="#02-question-rb0" transform="rotate(315)"/><use href="#02-question-rb0" transform="rotate(330)"/><use href="#02-question-rb0" transform="rotate(345)"/></g><use href="#02-question-rb" transform="rotate(1.9)"/><use href="#02-question-rb" transform="rotate(3.8)"/><use href="#02-question-rb" transform="rotate(5.6)"/><use href="#02-question-rb" transform="rotate(7.5)"/><use href="#02-question-rb" transform="rotate(9.4)"/><use href="#02-question-rb" transform="rotate(11.3)"/><use href="#02-question-rb" transform="rotate(13.1)"/><g id="02-question-rh"><path id="02-question-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#02-question-rh0" transform="rotate(32.7)"/><use href="#02-question-rh0" transform="rotate(65.5)"/><use href="#02-question-rh0" transform="rotate(98.2)"/><use href="#02-question-rh0" transform="rotate(130.9)"/><use href="#02-question-rh0" transform="rotate(163.6)"/><use href="#02-question-rh0" transform="rotate(196.4)"/><use href="#02-question-rh0" transform="rotate(229.1)"/><use href="#02-question-rh0" transform="rotate(261.8)"/><use href="#02-question-rh0" transform="rotate(294.5)"/><use href="#02-question-rh0" transform="rotate(327.3)"/></g><use href="#02-question-rh" transform="rotate(5.5)"/><use href="#02-question-rh" transform="rotate(10.9)"/><use href="#02-question-rh" transform="rotate(16.4)"/><use href="#02-question-rh" transform="rotate(21.8)"/><use href="#02-question-rh" transform="rotate(27.3)"/><g id="02-question-rc"><path id="02-question-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#02-question-rc0" transform="rotate(30)"/><use href="#02-question-rc0" transform="rotate(60)"/><use href="#02-question-rc0" transform="rotate(90)"/><use href="#02-question-rc0" transform="rotate(120)"/><use href="#02-question-rc0" transform="rotate(150)"/><use href="#02-question-rc0" transform="rotate(180)"/><use href="#02-question-rc0" transform="rotate(210)"/><use href="#02-question-rc0" transform="rotate(240)"/><use href="#02-question-rc0" transform="rotate(270)"/><use href="#02-question-rc0" transform="rotate(300)"/><use href="#02-question-rc0" transform="rotate(330)"/></g><use href="#02-question-rc" transform="rotate(3.8)"/><use href="#02-question-rc" transform="rotate(7.5)"/><use href="#02-question-rc" transform="rotate(11.3)"/><use href="#02-question-rc" transform="rotate(15)"/><use href="#02-question-rc" transform="rotate(18.8)"/><use href="#02-question-rc" transform="rotate(22.5)"/><use href="#02-question-rc" transform="rotate(26.3)"/><g id="02-question-ri"><path id="02-question-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#02-question-ri0" transform="rotate(40)"/><use href="#02-question-ri0" transform="rotate(80)"/><use href="#02-question-ri0" transform="rotate(120)"/><use href="#02-question-ri0" transform="rotate(160)"/><use href="#02-question-ri0" transform="rotate(200)"/><use href="#02-question-ri0" transform="rotate(240)"/><use href="#02-question-ri0" transform="rotate(280)"/><use href="#02-question-ri0" transform="rotate(320)"/></g><use href="#02-question-ri" transform="rotate(6.7)"/><use href="#02-question-ri" transform="rotate(13.3)"/><use href="#02-question-ri" transform="rotate(20)"/><use href="#02-question-ri" transform="rotate(26.7)"/><use href="#02-question-ri" transform="rotate(33.3)"/></symbol>
+<g id="02-question-w" fill="none" stroke="currentColor"><path id="02-question-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#02-question-wl" transform="translate(487.5 -28.1)"/><use href="#02-question-wl" transform="translate(525 -18.7)"/><use href="#02-question-wl" transform="translate(562.5 -9.4)"/><use href="#02-question-wl" transform="translate(37.5 9.4)"/><use href="#02-question-wl" transform="translate(75 18.8)"/><use href="#02-question-wl" transform="translate(112.5 28.1)"/><use href="#02-question-wl" transform="translate(150 37.5)"/><use href="#02-question-wl" transform="translate(187.5 46.9)"/><use href="#02-question-wl" transform="translate(225 56.3)"/><use href="#02-question-wl" transform="translate(262.5 65.6)"/><use href="#02-question-wl" transform="translate(300 75)"/><use href="#02-question-wl" transform="translate(337.5 84.4)"/><use href="#02-question-wl" transform="translate(375 93.8)"/><use href="#02-question-wl" transform="translate(412.5 103.1)"/><use href="#02-question-wl" transform="translate(450 112.5)"/><use href="#02-question-wl" transform="translate(487.5 121.9)"/><use href="#02-question-wl" transform="translate(525 131.3)"/><use href="#02-question-wl" transform="translate(562.5 140.6)"/><use href="#02-question-wl" transform="translate(0 150)"/><use href="#02-question-wl" transform="translate(37.5 159.4)"/><use href="#02-question-wl" transform="translate(75 168.8)"/><use href="#02-question-wl" transform="translate(112.5 178.1)"/><use href="#02-question-wl" transform="translate(150 187.5)"/><use href="#02-question-wl" transform="translate(187.5 196.9)"/><use href="#02-question-wl" transform="translate(225 206.3)"/><use href="#02-question-wl" transform="translate(262.5 215.6)"/><use href="#02-question-wl" transform="translate(300 225)"/><use href="#02-question-wl" transform="translate(337.5 234.4)"/><use href="#02-question-wl" transform="translate(375 243.8)"/><use href="#02-question-wl" transform="translate(412.5 253.1)"/><use href="#02-question-wl" transform="translate(450 262.5)"/><use href="#02-question-wl" transform="translate(487.5 271.9)"/><use href="#02-question-wl" transform="translate(525 281.3)"/><use href="#02-question-wl" transform="translate(562.5 290.6)"/><use href="#02-question-wl" transform="translate(0 300)"/><use href="#02-question-wl" transform="translate(37.5 309.4)"/><use href="#02-question-wl" transform="translate(75 318.8)"/></g>
+<pattern id="02-question-waves-teal" style="color:#18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#02-question-w"/></pattern>
+      </defs>
+    </svg>
+
+    <!-- Track 0: night ground -->
+    <div id="02-question-bg" class="clip 02-question-layer 02-question-ground" data-start="0" data-duration="5" data-track-index="0">
+      <svg class="02-question-waves" viewBox="0 0 1080 1920" aria-hidden="true">
+        <rect x="0" y="0" width="1080" height="1920" fill="url(#02-question-waves-teal)" />
+      </svg>
+      <div id="02-question-rosette" class="02-question-rosette">
+        <svg viewBox="0 0 920 920" aria-hidden="true">
+          <use href="#02-question-rosette" x="0" y="0" width="920" height="920" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- Track 1: question, tile grid, login cards, counter — one static camera wrapper -->
+    <div id="02-question-content" class="clip 02-question-layer" data-start="0" data-duration="5" data-track-index="1">
+      <div id="02-question-world" class="02-question-world">
+        <div class="02-question-oldline 02-question-grad" data-layout-allow-overlap="" style="top:331px">薪轉一間、</div>
+        <div class="02-question-oldline 02-question-grad" data-layout-allow-overlap="" style="top:471px">繳卡費一間、</div>
+        <div class="02-question-oldline 02-question-grad" data-layout-allow-overlap="" style="top:611px">買股票又一間。</div>
+        <div class="02-question-label" data-layout-allow-overlap="" style="left:150px">薪轉</div>
+        <div class="02-question-label" data-layout-allow-overlap="" style="left:430px">卡費</div>
+        <div class="02-question-label" data-layout-allow-overlap="" style="left:710px">股票</div>
+        <div id="02-question-qwrap" class="02-question-qwrap">
+          <div class="02-question-qline" style="top:338px"><span id="02-question-w0" class="02-question-word 02-question-grad">你要確認</span><span id="02-question-w1" class="02-question-word 02-question-grad">自己</span></div>
+          <div class="02-question-qline" style="top:454px"><span id="02-question-w2" class="02-question-word 02-question-grad">有多少錢</span><span id="02-question-w3" class="02-question-word 02-question-grad">，</span></div>
+          <div class="02-question-qline" style="top:570px"><span id="02-question-w4" class="02-question-word 02-question-grad">得打開</span><span id="02-question-w5" class="02-question-word 02-question-grad">幾個</span><span id="02-question-w6" class="02-question-word 02-question-grad" style="margin-left:24px">App</span><span id="02-question-w7" class="02-question-word 02-question-grad" style="margin-left:14px">？</span></div>
+        </div>
+        <div id="02-question-tile-fubon" class="02-question-tile" data-layout-allow-overlap="" style="left:160px;top:880px"><img id="02-question-logo-fubon" src="assets/logos/fubon.webp" alt="富邦"></div>
+        <div id="02-question-tile-yuanta-securities" class="02-question-tile" data-layout-allow-overlap="" style="left:440px;top:880px"><img id="02-question-logo-yuanta-securities" src="assets/logos/yuanta-securities.webp" alt="元大證券"></div>
+        <div id="02-question-tile-maicoin" class="02-question-tile" data-layout-allow-overlap="" style="left:720px;top:880px"><img id="02-question-logo-maicoin" src="assets/logos/maicoin.webp" alt="MaiCoin"></div>
+        <div id="02-question-tile-yuanta-bank" class="02-question-tile" data-layout-allow-overlap="" style="left:160px;top:1140px"><img id="02-question-logo-yuanta-bank" src="assets/logos/yuanta-bank.webp" alt="元大銀行"></div>
+        <div id="02-question-tile-cathay" class="02-question-tile" data-layout-allow-overlap="" style="left:440px;top:1140px"><img id="02-question-logo-cathay" src="assets/logos/cathay.webp" alt="國泰世華"></div>
+        <div id="02-question-tile-esun" class="02-question-tile" data-layout-allow-overlap="" style="left:720px;top:1140px"><img id="02-question-logo-esun" src="assets/logos/esun.webp" alt="玉山"></div>
+        <div id="02-question-ripple-0" class="02-question-ripple" data-layout-allow-overlap="" style="left:160px;top:880px"></div>
+        <div id="02-question-ripple-1" class="02-question-ripple" data-layout-allow-overlap="" style="left:440px;top:880px"></div>
+        <div id="02-question-ripple-2" class="02-question-ripple" data-layout-allow-overlap="" style="left:720px;top:880px"></div>
+        <div id="02-question-ripple-3" class="02-question-ripple" data-layout-allow-overlap="" style="left:160px;top:1140px"></div>
+        <div id="02-question-ripple-4" class="02-question-ripple" data-layout-allow-overlap="" style="left:440px;top:1140px"></div>
+        <div id="02-question-ripple-5" class="02-question-ripple" data-layout-allow-overlap="" style="left:720px;top:1140px"></div>
+        <div id="02-question-card-0" class="02-question-card" data-layout-allow-overlap="" style="left:110px;top:760px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-card-1" class="02-question-card" data-layout-allow-overlap="" style="left:390px;top:760px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-card-2" class="02-question-card" data-layout-allow-overlap="" style="left:670px;top:760px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-card-3" class="02-question-card" data-layout-allow-overlap="" style="left:110px;top:1020px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-card-4" class="02-question-card" data-layout-allow-overlap="" style="left:390px;top:1020px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-card-5" class="02-question-card" data-layout-allow-overlap="" style="left:670px;top:1020px"><div class="02-question-dots"><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span><span class="02-question-dot"></span></div><div class="02-question-bar"></div></div>
+        <div id="02-question-cwrap" class="02-question-counter" data-layout-allow-overlap="">
+          <div id="02-question-counter"><span class="02-question-clabel">已打開</span><span id="02-question-num" class="02-question-num"><span id="02-question-n0" class="02-question-nd">1</span><span id="02-question-n1" class="02-question-nd">2</span><span id="02-question-n2" class="02-question-nd">3</span><span id="02-question-n3" class="02-question-nd">4</span><span id="02-question-n4" class="02-question-nd" style="color:#ffb4a2">5</span><span id="02-question-n5" class="02-question-nd" style="color:#ffb4a2">6</span></span></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <script>
+      (function () {
+        var $ = function (id) {
+          return document.getElementById("02-question-" + id);
+        };
+        var tl = gsap.timeline({ paused: true });
+        var FRAME_START = 6; // film time of this frame (F2)
+        var DUR = 5;
+
+        // Ground: rosette turns 0.6 deg/s of film time.
+        tl.fromTo(
+          $("rosette"),
+          { rotation: 0.6 * FRAME_START, transformOrigin: "50% 50%" },
+          { rotation: 0.6 * (FRAME_START + DUR), duration: DUR, ease: "none" },
+          0,
+        );
+
+        // Scene 1 (0.0-0.6): frame 1's lines and labels lift 60px and fade; its three tiles glide to grid slots, 220 -> 200.
+        var root = document.querySelector('[data-composition-id="02-question"]');
+        var olds = root.querySelectorAll(".\\30 2-question-oldline, .\\30 2-question-label");
+        olds.forEach(function (el, i) {
+          tl.to(el, { y: -60, opacity: 0, duration: 0.5, ease: "power3.out" }, 0.03 * i);
+        });
+        var CARRY = [
+          { k: "fubon", dx: 0, dy: 80 }, // (260,1060) -> (260,980)
+          { k: "yuanta-securities", dx: 280, dy: 80 }, // (820,1060) -> (540,980)
+          { k: "esun", dx: -280, dy: -180 }, // (540,1060) -> (820,1240)
+        ];
+        CARRY.forEach(function (c) {
+          tl.fromTo($("tile-" + c.k), { x: c.dx, y: c.dy, scale: 1.1 }, { x: 0, y: 0, scale: 1, duration: 0.6, ease: "power3.out" }, 0);
+          // counter-scale keeps the logo at 120px while the tile shrinks
+          tl.fromTo($("logo-" + c.k), { scale: 1 / 1.1 }, { scale: 1, duration: 0.6, ease: "power3.out" }, 0);
+        });
+
+        // Scene 2 (0.4-1.6): the question, waterfall-entry (binary opacity, whip up from below, overlapping).
+        var F = 1 / 60;
+        var WORDS = [{id:"w0",y:80,d:0.18},{id:"w1",y:48,d:0.15},{id:"w2",y:80,d:0.18},{id:"w3",y:36,d:0.11},{id:"w4",y:80,d:0.18},{id:"w5",y:48,d:0.15},{id:"w6",y:48,d:0.15},{id:"w7",y:40,d:0.12}];
+        var wt = 0.42;
+        WORDS.forEach(function (w, i) {
+          var el = $(w.id);
+          tl.set(el, { opacity: 0, y: w.y }, 0);
+          tl.set(el, { opacity: 1 }, wt);
+          tl.to(el, { y: 0, duration: w.d, ease: "power4.out" }, wt);
+          wt += w.d - F;
+        });
+        // ... meanwhile MaiCoin, 元大銀行, 國泰世華 pop into their slots (spring-pop, smooth settle).
+        ["maicoin", "yuanta-bank", "cathay"].forEach(function (k, i) {
+          tl.fromTo(
+            $("tile-" + k),
+            { scale: 0, opacity: 0, y: 24 },
+            { scale: 1, opacity: 1, y: 0, duration: 0.5, ease: "power3.out" },
+            0.62 + 0.12 * i,
+          );
+        });
+
+        // Scene 3 (1.6-4.2): tap each tile in grid order every 0.42s; a login card flips up, holds, folds back.
+        var ORDER = ["fubon", "yuanta-securities", "maicoin", "yuanta-bank", "cathay", "esun"];
+        var TAPS = ORDER.map(function (_, i) {
+          return 1.7 + 0.42 * i;
+        });
+        ORDER.forEach(function (k, i) {
+          var T = TAPS[i];
+          var tile = $("tile-" + k);
+          var rip = $("ripple-" + i);
+          var card = $("card-" + i);
+          tl.set(rip, { opacity: 0, scale: 0.4 }, 0);
+          tl.fromTo(rip, { opacity: 0.9, scale: 0.4 }, { opacity: 0, scale: 1.55, duration: 0.5, ease: "power2.out", immediateRender: false }, T);
+          tl.to(tile, { scale: 0.92, duration: 0.08, ease: "power2.out" }, T);
+          tl.to(tile, { scale: 1, duration: 0.3, ease: "power3.out" }, T + 0.08);
+          tl.fromTo(
+            card,
+            { rotationX: 90, opacity: 0, transformPerspective: 900 },
+            { rotationX: 0, opacity: 1, duration: 0.2, ease: "power3.out" },
+            T + 0.06,
+          );
+          card.querySelectorAll(".\\30 2-question-dot").forEach(function (d, j) {
+            tl.set(d, { opacity: 0 }, 0);
+            tl.set(d, { opacity: 1 }, T + 0.1 + 0.03 * j);
+          });
+          tl.to(card, { rotationX: 90, opacity: 0, duration: 0.16, ease: "power2.in" }, T + 0.56);
+        });
+
+        // Counter 「已打開」 1 -> 6 in lockstep with the taps (discrete-text-sequence); warm alarm from 5.
+        // Each state holds from its tap until the next: stacked numerals swapped by instant sets (seek-safe, no callbacks).
+        var num = $("num");
+        TAPS.forEach(function (T, i) {
+          tl.set($("n" + i), { opacity: i === 0 ? 1 : 0 }, 0);
+          if (i === 0) return;
+          tl.set($("n" + (i - 1)), { opacity: 0 }, T);
+          tl.set($("n" + i), { opacity: 1 }, T);
+        });
+        tl.fromTo($("counter"), { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 1.62);
+        TAPS.forEach(function (T, i) {
+          if (i === 0) return;
+          tl.fromTo(num, { scale: 1.18 }, { scale: 1, duration: 0.3, ease: "power3.out", immediateRender: false }, T);
+        });
+
+        // Scene 4 (4.2-5.0): question and counter fade; the six tiles hold at the grid for the handoff.
+        tl.to($("qwrap"), { opacity: 0, y: -40, duration: 0.5, ease: "power2.inOut" }, 4.2);
+        tl.to($("cwrap"), { opacity: 0, y: -24, duration: 0.45, ease: "power2.inOut" }, 4.25);
+
+        tl.set({}, {}, DUR);
+
+        window.__timelines = window.__timelines || {};
+        window.__timelines["02-question"] = tl;
+      })();
+    </script>
+  </div>
+</template>

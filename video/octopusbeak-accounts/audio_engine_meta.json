@@ -1,0 +1,131 @@
+{
+  "tts_provider": null,
+  "voice_id": null,
+  "bgm": {
+    "path": "assets/bgm/track.mp3",
+    "volume": 0.9,
+    "query": "playful confident minimal electronic, plucky marimba and light claps, clear pulse around 112 bpm, builds to a satisfying resolve, clean ending",
+    "mode": "retrieve",
+    "duration_s": 30
+  },
+  "bgm_pending": false,
+  "bgm_provider": "heygen",
+  "bgm_pid": null,
+  "bgm_log": null,
+  "bgm_mode": "retrieve",
+  "bgm_target_duration_s": null,
+  "bgm_seed_duration_s": null,
+  "bgm_loop_count": null,
+  "voices": [],
+  "sfx": [
+    {
+      "id": "01",
+      "name": "pop",
+      "file": "assets/sfx/pop.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.312,
+      "volume": 0.35
+    },
+    {
+      "id": "02",
+      "name": "whoosh",
+      "file": "assets/sfx/whoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.58,
+      "volume": 0.35
+    },
+    {
+      "id": "02",
+      "name": "tap",
+      "file": "assets/sfx/tap.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.264,
+      "volume": 0.35
+    },
+    {
+      "id": "03",
+      "name": "swoosh",
+      "file": "assets/sfx/swoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.423,
+      "volume": 0.35
+    },
+    {
+      "id": "03",
+      "name": "stamp",
+      "file": "assets/sfx/stamp.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.79,
+      "volume": 0.35
+    },
+    {
+      "id": "03",
+      "name": "ticker",
+      "file": "assets/sfx/ticker.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.326,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "pen draw",
+      "file": "assets/sfx/pen-draw.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.936,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "rising whoosh",
+      "file": "assets/sfx/rising-whoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 4.364,
+      "volume": 0.35
+    },
+    {
+      "id": "04",
+      "name": "cash register ding",
+      "file": "assets/sfx/cash-register-ding.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.238,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "swoosh",
+      "file": "assets/sfx/swoosh.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.423,
+      "volume": 0.35
+    },
+    {
+      "id": "05",
+      "name": "paper flick",
+      "file": "assets/sfx/paper-flick.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 1.008,
+      "volume": 0.35
+    },
+    {
+      "id": "06",
+      "name": "chime",
+      "file": "assets/sfx/chime.mp3",
+      "source": "heygen",
+      "offset_s": 0,
+      "duration_s": 0.72,
+      "volume": 0.35
+    }
+  ],
+  "total_duration_s": 0
+}
