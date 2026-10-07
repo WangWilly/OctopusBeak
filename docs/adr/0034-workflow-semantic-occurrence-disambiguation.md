@@ -1,5 +1,7 @@
 # Workflow semantic occurrence disambiguation
 
+Accepted amendment: [ADR 0040](./0040-per-bucket-occurrence-continuity-and-unbilled-to-billed-supersession.md) replaces the identical-inventory comparability rule below with per-occurrence, per-queried-bucket continuity, and adds evidence-gated withdrawal of an unbilled credit-card purchase by its billed successor.
+
 Status: accepted
 
 Extend semantic fingerprint group ordinals, already used by Fubon loan and
