@@ -1641,6 +1641,45 @@ const providerNoRecordGridStates = [
   ...canonicalGridStates.slice(0, 6),
   { providerNoRecord: true as const },
 ];
+const providerNoRecordCapture = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-provider-no-record",
+  unbilledRows: [],
+  gridStates: providerNoRecordGridStates,
+});
+assert.equal(providerNoRecordCapture.length, 1);
+const providerNoRecordGrid = providerNoRecordCapture[0]!.scope.completeness.grids[6]!;
+assert.equal(providerNoRecordGrid.kind, "unbilled");
+assert.equal(providerNoRecordGrid.terminalEvidence, "provider-no-record");
+assert.equal(providerNoRecordGrid.capturedRowCount, 0);
+assert.equal(providerNoRecordGrid.terminal, true);
+assert.deepEqual(
+  Object.keys(providerNoRecordGrid).filter((key) => /page|declared/iu.test(key)),
+  [],
+  "the no-record page served no paging fields, so none may be recorded",
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-provider-no-record-with-rows",
+      gridStates: providerNoRecordGridStates,
+    }),
+  /grid-terminal-shape/u,
+  "a no-record page cannot vouch for captured unbilled rows",
+);
+assert.throws(
+  () =>
+    buildFubonCanonicalCreditCardCaptures({
+      ...canonicalBuildOptions,
+      captureId: "capture-provider-no-record-period-grid",
+      gridStates: canonicalGridStates.map((state, index) =>
+        index === 1 ? { providerNoRecord: true as const } : state,
+      ),
+    }),
+  /grid-terminal-shape/u,
+  "statement period grids keep their paging evidence rules",
+);
 test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
   const deferredCommitItems: PGliteWorkflowRunItem[] = [];
   const result = await runFubonCreditCardStatements(

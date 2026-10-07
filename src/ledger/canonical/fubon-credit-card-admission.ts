@@ -81,28 +81,44 @@ export type FubonCreditCardTransactionInput = {
 type FubonCreditCardGridBase = {
   kind: "billed" | "unbilled";
   period: string;
-  currentPage: number;
-  pageSize: number;
-  maximumPageSize: number;
   capturedRowCount: number;
   terminal: boolean;
   dueDateEvidence?: "explicit-date" | "provider-text-status";
 };
 
+type FubonCreditCardPagedGridBase = FubonCreditCardGridBase & {
+  currentPage: number;
+  pageSize: number;
+  maximumPageSize: number;
+};
+
 /**
- * A terminal grid is either backed by a provider-declared total, or by a
- * short first page whose returned row count is strictly below the requested
- * maximum. The short-page variant deliberately carries no source-declared
- * count: observed rows are not promoted into provider evidence.
+ * A terminal grid is backed by a provider-declared total, by a short first
+ * page whose returned row count is strictly below the requested maximum, or,
+ * for the unbilled grid only, by the bank's explicit no-record page served
+ * in place of the table. The short-page variant deliberately carries no
+ * source-declared count: observed rows are not promoted into provider
+ * evidence. The no-record variant carries no paging fields at all, because
+ * the bank served none, and admits only an empty grid.
  */
 export type FubonCreditCardGrid =
-  | (FubonCreditCardGridBase & {
+  | (FubonCreditCardPagedGridBase & {
       terminalEvidence: "source-declared-total";
       sourceDeclaredRowCount: number;
       sourceDeclaredScopeRowCount: number;
     })
-  | (FubonCreditCardGridBase & {
+  | (FubonCreditCardPagedGridBase & {
       terminalEvidence: "short-page";
+      sourceDeclaredRowCount?: never;
+      sourceDeclaredScopeRowCount?: never;
+    })
+  | (FubonCreditCardGridBase & {
+      kind: "unbilled";
+      capturedRowCount: 0;
+      terminalEvidence: "provider-no-record";
+      currentPage?: never;
+      pageSize?: never;
+      maximumPageSize?: never;
       sourceDeclaredRowCount?: never;
       sourceDeclaredScopeRowCount?: never;
     });
@@ -267,6 +283,11 @@ export type FubonCreditCardIdentityMetadata = {
   readonly panFingerprintKeyVersion?: string;
 };
 const VALIDATED_CAPTURES = new WeakSet<object>();
+const FUBON_GRID_PROOF_KIND: Record<FubonCreditCardGrid["terminalEvidence"], string> = {
+  "source-declared-total": "source-declared-terminal-grid",
+  "short-page": "short-page-terminal-grid",
+  "provider-no-record": "provider-no-record-terminal-grid",
+};
 
 function fail(message: string): never {
   throw new FubonCreditCardAdmissionError(message);
@@ -539,6 +560,17 @@ export function buildFubonCreditCardStatementEvidenceKey(
 }
 
 function hasValidFubonGridTerminalEvidence(grid: FubonCreditCardGrid): boolean {
+  if (grid.terminalEvidence === "provider-no-record")
+    return (
+      grid.kind === "unbilled" &&
+      grid.terminal === true &&
+      grid.capturedRowCount === 0 &&
+      !Object.hasOwn(grid, "currentPage") &&
+      !Object.hasOwn(grid, "pageSize") &&
+      !Object.hasOwn(grid, "maximumPageSize") &&
+      !Object.hasOwn(grid, "sourceDeclaredRowCount") &&
+      !Object.hasOwn(grid, "sourceDeclaredScopeRowCount")
+    );
   if (
     !Number.isSafeInteger(grid.currentPage) ||
     grid.currentPage !== 1 ||
@@ -1281,10 +1313,7 @@ export function fubonCanonicalSpineCapture(
         pageOrdinal,
         grid,
       ]),
-      proofKind:
-        grid.terminalEvidence === "short-page"
-          ? "short-page-terminal-grid"
-          : "source-declared-terminal-grid",
+      proofKind: FUBON_GRID_PROOF_KIND[grid.terminalEvidence],
       contractFingerprint: fingerprint,
       preflightFingerprint: fingerprint,
       metadataJson: JSON.stringify(grid),
