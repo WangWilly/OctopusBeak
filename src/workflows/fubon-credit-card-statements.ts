@@ -58,11 +58,27 @@ export type FubonStatementPeriodProbe = {
 
 type CsvRow = Record<string, string>;
 const fullPanByRow = new WeakMap<object, string>();
-type GridState = {
-  currentPage?: string;
-  currentPageSize?: string;
-  sourceDeclaredRowCount?: number;
-};
+/**
+ * A grid is either the bank's paged table, or the system-message page the
+ * bank serves instead of the unbilled table when a card has no unbilled
+ * transactions. The no-record page carries no paging fields, so none are
+ * recorded for it.
+ */
+type GridState =
+  | {
+      currentPage?: string;
+      currentPageSize?: string;
+      sourceDeclaredRowCount?: number;
+      providerNoRecord?: never;
+    }
+  | {
+      providerNoRecord: true;
+      currentPage?: never;
+      currentPageSize?: never;
+      sourceDeclaredRowCount?: never;
+    };
+type FubonGridKind = FubonCreditCardGrid["kind"];
+type FubonGridTerminalEvidence = FubonCreditCardGrid["terminalEvidence"];
 
 type FubonPreflightGridValue = number | "missing" | "empty" | "non-numeric";
 type FubonPreflightRowCount = number | "missing" | "invalid";
@@ -755,20 +771,26 @@ export async function* iterateFubonStatementPeriodProbes(
   }
 }
 
-async function openUnbilledDetailsPage(page: Page): Promise<BrowserScope> {
+async function openUnbilledDetailsPage(
+  page: Page,
+): Promise<{ scope: BrowserScope; providerNoRecord: boolean }> {
   await openCreditCardFunctionPage(
     page,
     "task_CCCQU004.menu_CCC0203",
     "未出帳單消費明細",
   );
   const scope = await findUnbilledDetailsScope(page);
-  if (await hasFubonCreditCardNoRecord(scope)) return scope;
+  if (
+    !(await hasAttachedLocator(unbilledDetailsTable(scope))) &&
+    (await hasFubonCreditCardNoRecord(scope))
+  )
+    return { scope, providerNoRecord: true };
 
   await unbilledDetailsTable(scope).waitFor({
     state: "attached",
     timeout: 60_000,
   });
-  return scope;
+  return { scope, providerNoRecord: false };
 }
 
 async function hasFubonCreditCardNoRecord(
@@ -1937,6 +1959,7 @@ function safePreflightRowCount(value: number | undefined): FubonPreflightRowCoun
 function preflightGridDiagnostic(state: GridState, index: number) {
   return {
     index,
+    providerNoRecord: state.providerNoRecord === true,
     currentPage: safePreflightGridValue(state.currentPage),
     currentPageSize: safePreflightGridValue(state.currentPageSize),
     sourceDeclaredRowCountPresent: state.sourceDeclaredRowCount !== undefined,
@@ -1944,10 +1967,19 @@ function preflightGridDiagnostic(state: GridState, index: number) {
   };
 }
 
+function fubonGridKind(index: number): FubonGridKind {
+  return index === periodTabs.length ? "unbilled" : "billed";
+}
+
 function fubonGridTerminalEvidence(
+  kind: FubonGridKind,
   state: GridState,
   capturedRowCount: number,
-): "source-declared-total" | "short-page" | undefined {
+): FubonGridTerminalEvidence | undefined {
+  if (state.providerNoRecord)
+    return kind === "unbilled" && capturedRowCount === 0
+      ? "provider-no-record"
+      : undefined;
   if (
     state.currentPage !== "1" ||
     state.currentPageSize !== String(FUBON_MAX_PAGE_SIZE)
@@ -1959,15 +1991,23 @@ function fubonGridTerminalEvidence(
 }
 
 function buildFubonCanonicalGrid(
-  kind: "billed" | "unbilled",
+  kind: FubonGridKind,
   period: string,
   state: GridState,
   capturedRowCount: number,
   dueDateEvidence?: "explicit-date" | "provider-text-status",
 ): FubonCreditCardGrid {
-  const terminalEvidence = fubonGridTerminalEvidence(state, capturedRowCount);
+  const terminalEvidence = fubonGridTerminalEvidence(kind, state, capturedRowCount);
   if (!terminalEvidence)
     throw new Error(`Fubon ${kind} grid lacks terminal pagination evidence.`);
+  if (terminalEvidence === "provider-no-record")
+    return {
+      kind: "unbilled",
+      period,
+      capturedRowCount: 0,
+      terminal: true,
+      terminalEvidence,
+    };
   const base = {
     kind,
     period,
@@ -2040,7 +2080,11 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     options.unbilledRows.length,
   ];
   const gridTerminalEvidence = options.gridStates.map((state, index) =>
-    fubonGridTerminalEvidence(state, capturedGridRowCountsForInput[index] ?? 0),
+    fubonGridTerminalEvidence(
+      fubonGridKind(index),
+      state,
+      capturedGridRowCountsForInput[index] ?? 0,
+    ),
   );
   const gridTerminalFailures = options.gridStates
     .map((_state, index) => (gridTerminalEvidence[index] === undefined ? index : undefined))
@@ -2447,12 +2491,16 @@ export async function runFubonCreditCardStatements(
     }
 
     await overrides.reportActivity?.("query");
-    const unbilledScope = await openUnbilledDetailsPage(page);
+    const unbilled = await openUnbilledDetailsPage(page);
     const unbilledRows = await readUnbilledRows(
-      unbilledScope,
+      unbilled.scope,
       input.unbilledCardNumbers,
     );
-    gridStates.push(await gridState(unbilledScope));
+    gridStates.push(
+      unbilled.providerNoRecord
+        ? { providerNoRecord: true }
+        : await gridState(unbilled.scope),
+    );
     sourceSnapshot = {
       ...(currentUsedCredit ? { currentUsedCredit } : {}),
       statementRows,
@@ -2486,6 +2534,13 @@ export async function runFubonCreditCardStatements(
         .filter(Boolean),
     ),
   ];
+  const capturedGridRowCounts = [
+    ...statementPeriods.map(
+      (period) =>
+        sortedStatementRows.filter((row) => row.statement_period === period).length,
+    ),
+    sortedUnbilledRows.length,
+  ];
   const isFullCapture =
     input.periodOffsets.length === periodTabs.length &&
     statementPeriods.length === periodTabs.length &&
@@ -2495,9 +2550,12 @@ export async function runFubonCreditCardStatements(
     input.statementCardLabels.length === 0 &&
     input.unbilledCardNumbers.length === 0 &&
     gridStates.every(
-      (state) =>
-        state.currentPage === "1" &&
-        state.currentPageSize === String(FUBON_MAX_PAGE_SIZE),
+      (state, index) =>
+        fubonGridTerminalEvidence(
+          fubonGridKind(index),
+          state,
+          capturedGridRowCounts[index] ?? 0,
+        ) !== undefined,
     ) &&
     [...sortedStatementRows, ...sortedUnbilledRows].every(
       (row) => cardKeyForRow(row).length === 4,
