@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
@@ -25,7 +25,6 @@ import type {
   FubonCreditCardValidatedCapture,
 } from "../ledger/canonical/fubon-credit-card.ts";
 import {
-  fubonCreditCardPanFingerprint,
   normalizeFubonCreditCardPan,
   type FubonCreditCardPanFingerprintKey,
 } from "../ledger/canonical/fubon-credit-card-pan.ts";
@@ -1454,10 +1453,10 @@ function fullPanForRow(row: CsvRow): string | undefined {
 /**
  * Return only the stable, bank-displayed portion of a masked card label.
  *
- * The last four digits are not sufficient to identify an instrument: two
- * cards can legitimately end in the same four digits.  A masked source label
- * (for example, 123456******1234) is safe evidence for keeping those cards
- * separate, while the raw label itself is never retained in the capture.
+ * A masked source label (for example, 123456******1234) is consistency
+ * evidence for the last-four instrument identity: a second card with the
+ * same last four digits shows up as a different prefix and admission fails
+ * closed.  The raw label itself is never retained in the capture.
  */
 function maskedCardSourceKey(row: CsvRow): string | undefined {
   for (const value of [row.card_number ?? "", row.card_label ?? ""]) {
@@ -1476,157 +1475,51 @@ type FubonInstrumentRowGroups = {
   rowGroupKeys: Map<CsvRow, string>;
 };
 
-function fubonSafeInstrumentProjection(
-  fullPan: string | undefined,
-  masked: string | undefined,
-): string | undefined {
-  if (fullPan) return `${fullPan.slice(0, 6)}*${fullPan.slice(-4)}`;
-  return masked;
-}
-
 /**
- * Group rows by source-evidenced instrument identity rather than last four
- * digits alone.  Rows with no stronger evidence may join a sole strong group
- * for their last four digits; when multiple strong groups exist, assigning a
- * weak row would be guesswork and admission fails closed.
+ * Group rows by the card's last four digits, the one identity input every
+ * Fubon surface shows.  Full card numbers and masked labels appear only on
+ * some pages, so they cannot take part in identity; they are checked for
+ * consistency instead, and distinct card evidence behind one last four fails
+ * closed rather than merging or splitting the instrument.
  */
-function groupFubonRowsByInstrument(
-  rows: readonly CsvRow[],
-  panFingerprintKey?: FubonCreditCardPanFingerprintKey,
-): FubonInstrumentRowGroups {
-  const descriptors = rows.map((row) => {
+function groupFubonRowsByInstrument(rows: readonly CsvRow[]): FubonInstrumentRowGroups {
+  const fullPansByLast4 = new Map<string, Set<string>>();
+  const projectionsByLast4 = new Map<string, Set<string>>();
+  const groups = new Map<string, CsvRow[]>();
+  const rowGroupKeys = new Map<CsvRow, string>();
+  for (const row of rows) {
     const last4 = cardKeyForRow(row);
     const fullPan = fullPanForRow(row);
     const masked = maskedCardSourceKey(row);
-    return {
-      row,
-      last4,
-      fullPan,
-      masked,
-      safeProjection: fubonSafeInstrumentProjection(fullPan, masked),
-      strongKey: undefined as string | undefined,
-    };
-  });
-
-  if (descriptors.some((descriptor) => descriptor.fullPan && !panFingerprintKey))
-    throw new Error("Fubon PAN fingerprint key is unavailable.");
-
-  // A trusted key lets us compare a masked prefix+last4 to an observed PAN
-  // without retaining either source value. Only a unique match is safe; a
-  // zero or multiple candidates is deliberately rejected.
-  const keyedFullPansByLast4 = new Map<string, Map<string, string>>();
-  const unkeyedPansByLast4 = new Map<string, Set<string>>();
-  const fullPansBySafeProjection = new Map<string, Set<string>>();
-  for (const descriptor of descriptors) {
-    if (descriptor.fullPan && descriptor.fullPan.slice(-4) !== descriptor.last4)
+    if (fullPan && fullPan.slice(-4) !== last4)
       throw new Error("Fubon full card number conflicts with its source last-four key.");
-    if (descriptor.fullPan && descriptor.safeProjection) {
-      const pans =
-        fullPansBySafeProjection.get(descriptor.safeProjection) ?? new Set<string>();
-      pans.add(descriptor.fullPan);
-      fullPansBySafeProjection.set(descriptor.safeProjection, pans);
-    }
-    if (descriptor.fullPan && panFingerprintKey) {
-      const fingerprint = fubonCreditCardPanFingerprint(
-        descriptor.fullPan,
-        panFingerprintKey,
-      ).fingerprint;
-      descriptor.strongKey = `pan:${fingerprint}`;
-      const candidates = keyedFullPansByLast4.get(descriptor.last4) ?? new Map<string, string>();
-      candidates.set(descriptor.fullPan, descriptor.strongKey);
-      keyedFullPansByLast4.set(descriptor.last4, candidates);
-    } else if (descriptor.fullPan) {
-      const pans = unkeyedPansByLast4.get(descriptor.last4) ?? new Set<string>();
-      pans.add(descriptor.fullPan);
-      unkeyedPansByLast4.set(descriptor.last4, pans);
-    }
-  }
-
-  if ([...fullPansBySafeProjection.values()].some((pans) => pans.size > 1))
-    throw new Error(
-      "Fubon distinct full card numbers collapse to one safe instrument projection; candidate identity is ambiguous.",
-    );
-
-  for (const descriptor of descriptors) {
-    if (!descriptor.masked) continue;
-    if (descriptor.masked.slice(-4) !== descriptor.last4)
+    if (masked && masked.slice(-4) !== last4)
       throw new Error("Fubon masked card label conflicts with its source last-four key.");
-    const fullPanCandidates = keyedFullPansByLast4.get(descriptor.last4);
-    if (panFingerprintKey && fullPanCandidates && fullPanCandidates.size > 0) {
-      const matchingCandidates = [...fullPanCandidates.entries()].filter(
-        ([fullPan]) =>
-          `${fullPan.slice(0, 6)}*${fullPan.slice(-4)}` === descriptor.masked,
-      );
-      if (matchingCandidates.length !== 1)
-        throw new Error(
-          "Fubon masked card label cannot be reconciled to one observed full card number.",
-        );
-      descriptor.strongKey = matchingCandidates[0]![1];
-    } else {
-      descriptor.strongKey = `mask:${descriptor.masked}`;
+    if (fullPan) {
+      const pans = fullPansByLast4.get(last4) ?? new Set<string>();
+      pans.add(fullPan);
+      fullPansByLast4.set(last4, pans);
     }
-  }
-
-  const strongKeysByLast4 = new Map<string, Set<string>>();
-  for (const descriptor of descriptors) {
-    if (!descriptor.strongKey) continue;
-    const keys = strongKeysByLast4.get(descriptor.last4) ?? new Set<string>();
-    keys.add(descriptor.strongKey);
-    strongKeysByLast4.set(descriptor.last4, keys);
-  }
-  for (const [last4, pans] of unkeyedPansByLast4) {
-    const maskedKeys = [...(strongKeysByLast4.get(last4) ?? [])].filter(
-      (key) => key.startsWith("mask:"),
-    );
-    if (pans.size > 0 && maskedKeys.length > 0)
-      throw new Error(
-        "Fubon source evidence cannot distinguish a full card number from a distinct masked card label sharing a last four key without a fingerprint key.",
-      );
-  }
-  if ([...unkeyedPansByLast4.values()].some((pans) => pans.size > 1))
-    throw new Error(
-      "Fubon source evidence cannot distinguish multiple full card numbers sharing a last four key without a fingerprint key.",
-    );
-
-  const safeProjectionByStrongKey = new Map<string, string>();
-  for (const descriptor of descriptors) {
-    if (!descriptor.strongKey || !descriptor.safeProjection) continue;
-    const priorProjection = safeProjectionByStrongKey.get(descriptor.strongKey);
-    if (priorProjection && priorProjection !== descriptor.safeProjection)
-      throw new Error(
-        "Fubon source evidence maps one instrument key to conflicting safe projections.",
-      );
-    safeProjectionByStrongKey.set(descriptor.strongKey, descriptor.safeProjection);
-  }
-
-  const groups = new Map<string, CsvRow[]>();
-  const rowGroupKeys = new Map<CsvRow, string>();
-  for (const descriptor of descriptors) {
-    const strongKeys = strongKeysByLast4.get(descriptor.last4);
-    let groupKey: string | undefined;
-    if (descriptor.safeProjection) {
-      // Full PAN and masked source labels deliberately converge on the same
-      // safe projection. The projection is the only representation-independent
-      // identity input; trusted PAN fingerprints remain validation evidence.
-      groupKey = `projection:${descriptor.safeProjection}`;
-    } else {
-      if (strongKeys && strongKeys.size > 1)
-        throw new Error(
-          "Fubon source evidence cannot distinguish an instrument sharing a last four key.",
-        );
-      const strongKey = strongKeys?.values().next().value as string | undefined;
-      const safeProjection = strongKey
-        ? safeProjectionByStrongKey.get(strongKey)
-        : undefined;
-      groupKey = safeProjection
-        ? `projection:${safeProjection}`
-        : strongKey ?? `last4:${descriptor.last4}`;
+    const projection = fullPan ? `${fullPan.slice(0, 6)}*${last4}` : masked;
+    if (projection) {
+      const projections = projectionsByLast4.get(last4) ?? new Set<string>();
+      projections.add(projection);
+      projectionsByLast4.set(last4, projections);
     }
+    const groupKey = `last4:${last4}`;
     const group = groups.get(groupKey) ?? [];
-    group.push(descriptor.row);
+    group.push(row);
     groups.set(groupKey, group);
-    rowGroupKeys.set(descriptor.row, groupKey);
+    rowGroupKeys.set(row, groupKey);
   }
+  if ([...fullPansByLast4.values()].some((pans) => pans.size > 1))
+    throw new Error(
+      "Fubon distinct full card numbers share one last-four key; instrument identity is ambiguous.",
+    );
+  if ([...projectionsByLast4.values()].some((projections) => projections.size > 1))
+    throw new Error(
+      "Fubon card evidence shows distinct cards behind one last-four key; instrument identity is ambiguous.",
+    );
   return { groups, rowGroupKeys };
 }
 
@@ -1639,37 +1532,6 @@ function fubonCanonicalDigest(label: string, value: unknown): string {
 function opaqueFubonOccurrenceToken(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(JSON.stringify(value))
-    .digest("base64url")}`;
-}
-
-function fubonInstrumentProjectionKey(
-  accountNaturalKey: string,
-  safeProjection: string,
-  panFingerprintKey?: FubonCreditCardPanFingerprintKey,
-): `sha256:${string}` {
-  const tuple = [
-    "fubon-credit-card-instrument-projection-v2",
-    "fubon",
-    accountNaturalKey,
-    safeProjection,
-  ];
-  if (!panFingerprintKey)
-    return fubonCanonicalDigest(
-      "fubon-credit-card-instrument-projection-v2",
-      tuple.slice(1),
-    ) as `sha256:${string}`;
-  const secret = panFingerprintKey.secret;
-  if (
-    (typeof secret !== "string" && !(secret instanceof Uint8Array)) ||
-    (typeof secret === "string" && secret.trim().length === 0) ||
-    (secret instanceof Uint8Array && secret.byteLength === 0)
-  )
-    throw new Error("Fubon PAN fingerprint key is unavailable.");
-  const keyVersion = panFingerprintKey.keyVersion?.trim() || "v1";
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(keyVersion))
-    throw new Error("Fubon PAN fingerprint key version is invalid.");
-  return `sha256:${createHmac("sha256", secret)
-    .update(JSON.stringify([...tuple, keyVersion]))
     .digest("base64url")}`;
 }
 
@@ -2195,10 +2057,7 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
       "Fubon grid totals drifted from the complete all-account row partition.",
     );
 
-  const rowsByInstrument = groupFubonRowsByInstrument(
-    allRows,
-    options.panFingerprintKey,
-  );
+  const rowsByInstrument = groupFubonRowsByInstrument(allRows);
   if ([...rowsByInstrument.groups.values()].some((rows) =>
     rows.some((row) => !/^\d{4}$/u.test(cardKeyForRow(row))),
   ))
@@ -2220,26 +2079,15 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     settledStatements.map((statement) => statement.period),
   );
 
-  const instrumentKeys = new Map<string, string>();
-  for (const [groupKey, rows] of rowsByInstrument.groups) {
-    const cardKey = cardKeyForRow(rows[0]!);
-    const safeProjection = groupKey.startsWith("projection:")
-      ? groupKey.slice("projection:".length)
-      : undefined;
-    instrumentKeys.set(
+  const instrumentKeys = new Map(
+    [...rowsByInstrument.groups.keys()].map((groupKey) => [
       groupKey,
-      safeProjection
-        ? fubonInstrumentProjectionKey(
-            resolvedIdentity.accountNaturalKey,
-            safeProjection,
-            options.panFingerprintKey,
-          )
-        : fubonCanonicalDigest("fubon-card-instrument-v2", [
-            resolvedIdentity.accountNaturalKey,
-            groupKey,
-          ]),
-    );
-  }
+      fubonCanonicalDigest("fubon-card-instrument-v2", [
+        resolvedIdentity.accountNaturalKey,
+        groupKey,
+      ]),
+    ]),
+  );
   // Source identity keeps its established per-statement ordinal. The shared
   // admission layer separately assigns economic-group evidence across these
   // complete billed and unbilled grids.
