@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import {
   captureFubonLoginDialogs,
   FubonDuplicateLoginTerminalError,
@@ -841,6 +842,60 @@ test("still rejects an unchanged login form when no bank outcome appears", async
     ),
   );
   assert.ok(probes > 1);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "login-form-visible" }]);
+});
+
+test("an in-page 0290 CAPTCHA response is a provider CAPTCHA rejection", async () => {
+  let bannerVisible = false;
+  let probes = 0;
+  const page = {
+    frame: ({ name }: { name: string }) => name === "txnFrame"
+      ? {
+        getByText: (pattern: RegExp) => {
+          const rejection = {
+            first: () => rejection,
+            isVisible: async () => bannerVisible && pattern.test("0290 驗證碼輸入錯誤"),
+          };
+          return rejection;
+        },
+      }
+      : undefined,
+  } as unknown as Page;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(page, {
+      timeoutMs: 50,
+      pollIntervalMs: 1,
+      probe: async () => {
+        probes += 1;
+        if (probes === 2) bannerVisible = true;
+        return snapshot({ loggedIn: false, loginFormVisible: true });
+      },
+    }),
+  );
+  assert.ok(result.error instanceof CaptchaProviderRejectedError);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "captcha-rejected" }]);
+});
+
+test("a 0290 credential response is not a CAPTCHA rejection", async () => {
+  const page = {
+    frame: () => ({
+      getByText: (pattern: RegExp) => {
+        const rejection = {
+          first: () => rejection,
+          isVisible: async () => pattern.test("0290 帳號或密碼錯誤"),
+        };
+        return rejection;
+      },
+    }),
+  } as unknown as Page;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(page, {
+      timeoutMs: 8,
+      pollIntervalMs: 1,
+      probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
+    }),
+  );
+  assert.equal(result.error instanceof CaptchaProviderRejectedError, false);
   assert.deepEqual(result.events, [{ status: "rejected", reason: "login-form-visible" }]);
 });
 
