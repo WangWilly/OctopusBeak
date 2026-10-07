@@ -864,7 +864,7 @@ async function admitLoanCounterpartyEvidence(
 ): Promise<void> {
   const capture = await first<Row>(transaction,
     `SELECT capture.capture_id, capture.commit_id, capture.source_connection_id,
-            capture.identity_epoch_id, connection.source_connection_key,
+            capture.identity_epoch_id, capture.source_account_key, connection.source_connection_key,
             connection.integration_namespace, epoch.epoch_key
        FROM source_captures capture
        JOIN source_connections connection ON connection.source_connection_id = capture.source_connection_id
@@ -893,11 +893,16 @@ async function admitLoanCounterpartyEvidence(
       WHERE source_record_id = ? ORDER BY revision_number DESC LIMIT 1`,
     [sourceRecordId]);
   let transactionId = revision ? bytes(revision.transaction_id, "Evidence transaction") : null;
-  if (!transactionId && scopedAccountId) {
+  if (!transactionId) {
+    // A repeated capture's unchanged record has no revision of its own; its
+    // transaction is found by the capture's own account and source sequence.
     const replay = await first<Row>(transaction,
-      `SELECT transaction_id FROM financial_transactions
-        WHERE account_id = ? AND source_sequence = ? LIMIT 1`,
-      [scopedAccountId, admitted.sourceRecordKey]);
+      `SELECT replayed.transaction_id FROM financial_transactions replayed
+         JOIN financial_accounts account ON account.account_id = replayed.account_id
+        WHERE account.source_connection_id = ? AND account.identity_epoch_id = ?
+          AND account.source_account_key = ? AND replayed.source_sequence = ? LIMIT 1`,
+      [capture.source_connection_id, capture.identity_epoch_id,
+        input.accountKey ?? capture.source_account_key ?? "", admitted.sourceRecordKey]);
     if (replay) transactionId = bytes(replay.transaction_id, "Replayed evidence transaction");
   }
   const accountScopedMandate = admitted.evidenceKind === "repayment-mandate" && Boolean(input.accountKey);
