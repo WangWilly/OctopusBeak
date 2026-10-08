@@ -6,6 +6,7 @@ import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejectio
 import {
   captureFubonLoginDialogs,
   FubonDuplicateLoginTerminalError,
+  FubonLoginRefusedError,
   fillFubonLoginCredentials,
   fubonCaptchaAssistanceStage,
   hasFubonDuplicateLoginTerminal,
@@ -874,6 +875,53 @@ test("an in-page 0290 CAPTCHA response is a provider CAPTCHA rejection", async (
   );
   assert.ok(result.error instanceof CaptchaProviderRejectedError);
   assert.deepEqual(result.events, [{ status: "rejected", reason: "captcha-rejected" }]);
+});
+
+test("a server refusal of filled credentials is a retryable login refusal", async () => {
+  const page = {
+    frame: () => ({
+      getByText: (pattern: RegExp) => {
+        const message = {
+          first: () => message,
+          isVisible: async () => pattern.test("請輸入身分證字號\n請輸入使用者代碼\n請輸入使用者密碼"),
+        };
+        return message;
+      },
+    }),
+  } as unknown as Page;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(page, {
+      timeoutMs: 50,
+      pollIntervalMs: 1,
+      probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
+    }),
+  );
+  assert.ok(result.error instanceof FubonLoginRefusedError);
+  assert.ok(result.error instanceof CaptchaProviderRejectedError);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "login-refused" }]);
+});
+
+test("a single missing-field message is not a server login refusal", async () => {
+  const page = {
+    frame: () => ({
+      getByText: (pattern: RegExp) => {
+        const message = {
+          first: () => message,
+          isVisible: async () => pattern.test("請輸入使用者密碼"),
+        };
+        return message;
+      },
+    }),
+  } as unknown as Page;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(page, {
+      timeoutMs: 8,
+      pollIntervalMs: 1,
+      probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
+    }),
+  );
+  assert.equal(result.error instanceof CaptchaProviderRejectedError, false);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "login-form-visible" }]);
 });
 
 test("a 0290 credential response is not a CAPTCHA rejection", async () => {
