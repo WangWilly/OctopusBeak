@@ -76,3 +76,34 @@ test("before quit requests the real quit only after the event returns", async ()
   await nextTurn();
   assert.equal(quitCalls, 1);
 });
+
+test("a termination signal quits the App even when a library swallows it", async () => {
+  const { spawn } = await import("node:child_process");
+  const moduleUrl = new URL("./automation-shutdown.ts", import.meta.url).href;
+  const child = spawn(process.execPath, [
+    "--no-warnings",
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    `
+      const { quitOnTerminationSignals } = await import(${JSON.stringify(moduleUrl)});
+      process.on("SIGTERM", () => {});
+      quitOnTerminationSignals(process, () => process.exit(0));
+      setInterval(() => {}, 1000);
+      process.stdout.write("ready\\n");
+    `,
+  ], { stdio: ["ignore", "pipe", "inherit"] });
+  const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+  const started = await Promise.race([
+    new Promise<"ready">((ready) => child.stdout.once("data", () => ready("ready"))),
+    exit.then(() => "exited-before-ready" as const),
+  ]);
+  assert.equal(started, "ready");
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    exit,
+    new Promise<"alive">((resolve) => setTimeout(() => resolve("alive"), 3_000)),
+  ]);
+  if (exited === "alive") child.kill("SIGKILL");
+  assert.equal(exited, 0);
+});
