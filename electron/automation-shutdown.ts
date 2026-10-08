@@ -15,6 +15,8 @@ export function createBeforeQuitHandler(options: {
     // app must never wait for a browser daemon or a stuck child process.
     void options.cleanup().catch(() => {});
     quittingAllowed = true;
-    options.quit();
+    // Electron resets its quitting state when this prevented quit returns, so
+    // a nested quit is lost whenever the window closes after this handler.
+    setImmediate(options.quit);
   };
 }
