@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
 test("before quit starts cleanup without blocking the close", async () => {
   let prevented = 0;
   let quitCalls = 0;
@@ -14,6 +16,7 @@ test("before quit starts cleanup without blocking the close", async () => {
 
   handler({ preventDefault() { prevented += 1; } });
   handler({ preventDefault() { prevented += 1; } });
+  await nextTurn();
   assert.equal(prevented, 1);
   assert.equal(quitCalls, 1);
   release();
@@ -32,6 +35,7 @@ test("before quit does not install a cleanup deadline", async () => {
   });
 
   handler({ preventDefault() {} });
+  await nextTurn();
   assert.equal(quitCalls, 1);
 });
 
@@ -49,10 +53,26 @@ test("before quit consumes cleanup rejection and retries quit once", async () =>
 
   handler({ preventDefault() { prevented += 1; } });
   handler({ preventDefault() { prevented += 1; } });
+  await nextTurn();
   assert.equal(cleanupCalls, 1);
   assert.equal(prevented, 1);
   assert.equal(quitCalls, 1);
 
   handler({ preventDefault() { prevented += 1; } });
   assert.equal(prevented, 1);
+});
+
+test("before quit requests the real quit only after the event returns", async () => {
+  // Electron overwrites its quitting state when the prevented quit returns, so
+  // a quit requested inside before-quit is lost once window close is slow.
+  let quitCalls = 0;
+  const handler = createBeforeQuitHandler({
+    cleanup: async () => {},
+    quit: () => { quitCalls += 1; },
+  });
+
+  handler({ preventDefault() {} });
+  assert.equal(quitCalls, 0);
+  await nextTurn();
+  assert.equal(quitCalls, 1);
 });
