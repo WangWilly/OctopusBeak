@@ -100,10 +100,12 @@ test("a termination signal quits the App even when a library swallows it", async
   ]);
   assert.equal(started, "ready");
   child.kill("SIGTERM");
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   const exited = await Promise.race([
     exit,
-    new Promise<"alive">((resolve) => setTimeout(() => resolve("alive"), 3_000)),
+    new Promise<"alive">((resolve) => { deadline = setTimeout(() => resolve("alive"), 3_000); }),
   ]);
+  clearTimeout(deadline);
   if (exited === "alive") child.kill("SIGKILL");
   assert.equal(exited, 0);
 });
