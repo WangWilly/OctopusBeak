@@ -18,6 +18,7 @@ const DEFAULT_OUTCOME_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const LOGIN_FORM_REJECTION_GRACE_MS = 10_000;
 const CAPTCHA_REJECTION_TEXT = /^0290\s*驗證碼輸入錯誤$/u;
+const LOGIN_REFUSED_TEXT = /^請輸入身分證字號\s*請輸入使用者代碼\s*請輸入使用者密碼$/u;
 const MARKER_PROBE_TIMEOUT_MS = 100;
 const DEFAULT_LOGIN_FILL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS = 50;
@@ -190,6 +191,18 @@ export class FubonLoginRejectedError extends Error {
     this.name = "FubonLoginRejectedError";
     this.reason = reason;
     this.errorCode = errorCode;
+  }
+}
+
+/**
+ * The bank answered a submit carrying filled credentials as if all three were
+ * empty. It happens when a login follows the previous session within seconds,
+ * and a later attempt succeeds, so it takes the bounded CAPTCHA retry path.
+ */
+export class FubonLoginRefusedError extends CaptchaProviderRejectedError {
+  constructor() {
+    super();
+    this.name = "FubonLoginRefusedError";
   }
 }
 
@@ -1714,11 +1727,11 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-/** Fubon renders a rejected CAPTCHA inline in the login frame, not as a dialog. */
-async function fubonCaptchaRejectionVisible(page: Page): Promise<boolean> {
+/** Fubon renders login responses inline in the login frame, not as dialogs. */
+async function fubonLoginResponseVisible(page: Page, text: RegExp): Promise<boolean> {
   try {
     const frame = page.frame({ name: FUBON_LOGIN_FRAME_NAME });
-    return Boolean(await frame?.getByText(CAPTCHA_REJECTION_TEXT).first().isVisible());
+    return Boolean(await frame?.getByText(text).first().isVisible());
   } catch {
     return false;
   }
@@ -1787,9 +1800,13 @@ export async function waitForFubonPostLoginOutcome(
       throwDialogRejection(dialogMessage, snapshot);
     }
 
-    if (await fubonCaptchaRejectionVisible(page)) {
+    if (await fubonLoginResponseVisible(page, CAPTCHA_REJECTION_TEXT)) {
       if (!options.silent) emitOutcome("rejected", "captcha-rejected");
       throw new CaptchaProviderRejectedError();
+    }
+    if (await fubonLoginResponseVisible(page, LOGIN_REFUSED_TEXT)) {
+      if (!options.silent) emitOutcome("rejected", "login-refused");
+      throw new FubonLoginRefusedError();
     }
 
     const rejectionReason = rejectionForSnapshot(snapshot);
