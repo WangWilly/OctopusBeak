@@ -312,6 +312,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         launchVerificationSettings: {},
         initialExecutionOptions: { taskRunId: created.taskRunId },
         isCancellationRequested: () => false,
+        captchaRetryCooldownMs: () => undefined,
         routeWaitingRunVerification: async (input) => {
           routeCalls += 1;
           await input.onChallengeCaptured?.();
@@ -385,6 +386,7 @@ test("exhausted App solver retries finalize with a typed verification failure an
       launchVerificationSettings: {},
       initialExecutionOptions: { taskRunId: created.taskRunId },
       isCancellationRequested: () => false,
+      captchaRetryCooldownMs: () => undefined,
       routeWaitingRunVerification: async (input) => {
         await input.onChallengeCaptured?.();
         return { kind: "retryable", reason: "solver-exhausted" };
