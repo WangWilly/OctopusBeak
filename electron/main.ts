@@ -15,7 +15,7 @@ import { readAutomationSettings } from "../src/lib/automation/server/settings.ts
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { createBeforeQuitHandler } from "./automation-shutdown.ts";
+import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
@@ -123,6 +123,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
   quit: () => app.quit(),
 });
 app.on("before-quit", handleBeforeQuit);
+quitOnTerminationSignals(process, () => app.quit());
 
 function projectRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, "app");
