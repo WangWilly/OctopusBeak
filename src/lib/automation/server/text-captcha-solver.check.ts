@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  createTesseractWorker,
   meanSymbolConfidence,
   normalizeCaptchaText,
   TESSERACT_CACHE_PATH,
@@ -300,4 +303,51 @@ test("Tesseract language models are cached outside the repository", () => {
     relativeCachePath === ".." || relativeCachePath.startsWith(`..${sep}`),
     `expected the Tesseract cache to stay outside the repository, got ${TESSERACT_CACHE_PATH}`,
   );
+});
+
+async function modelServer(respond: boolean): Promise<{ langPath: string; server: Server }> {
+  const server = createServer((_request, response) => {
+    if (!respond) return;
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+  const address = server.address() as { port: number };
+  return { langPath: `http://127.0.0.1:${address.port}`, server };
+}
+
+test("an unavailable OCR model fails worker startup instead of hanging", async () => {
+  const { langPath, server } = await modelServer(true);
+  try {
+    await assert.rejects(
+      createTesseractWorker({
+        cachePath: mkdtempSync(join(tmpdir(), "ocr-model-missing-")),
+        langPath,
+        readyTimeoutMs: 20_000,
+      }),
+      /404/,
+    );
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("an OCR model download that never answers fails at the ready deadline", async () => {
+  const { langPath, server } = await modelServer(false);
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      createTesseractWorker({
+        cachePath: mkdtempSync(join(tmpdir(), "ocr-model-stalled-")),
+        langPath,
+        readyTimeoutMs: 1_000,
+      }),
+      /did not become ready/,
+    );
+    assert.ok(Date.now() - started < 10_000);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });
