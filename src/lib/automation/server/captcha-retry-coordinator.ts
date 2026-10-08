@@ -62,6 +62,8 @@ export type CaptchaRetryCoordinatorDependencies = {
   isCancellationRequested: () => boolean;
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
+  /** Injection point so coordinator tests do not wait out real cooldowns. */
+  captchaRetryCooldownMs?: typeof captchaRetryCooldownMs;
 };
 
 function processResultOf(execution: CaptchaRetryExecutionResult) {
@@ -515,7 +517,7 @@ export async function runCaptchaRetryCampaign(
         );
         return { status: "failed" as const };
       }
-      const cooldownMs = captchaRetryCooldownMs(taskId);
+      const cooldownMs = (dependencies.captchaRetryCooldownMs ?? captchaRetryCooldownMs)(taskId);
       const cooledDown = cooldownMs === undefined
         ? !isCancellationRequested()
         : await waitForCaptchaRetryCooldown(cooldownMs, isCancellationRequested);
