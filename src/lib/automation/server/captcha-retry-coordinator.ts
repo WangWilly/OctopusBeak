@@ -179,6 +179,30 @@ async function prepareCaptchaRetryRound(
 
 const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
 
+// Fubon refuses a login that follows the previous session within seconds.
+const CAPTCHA_RETRY_COOLDOWN_MS: Readonly<Record<string, number>> = {
+  "fubon-all-statements": 20_000,
+};
+const CAPTCHA_RETRY_COOLDOWN_POLL_MS = 250;
+
+export function captchaRetryCooldownMs(taskId: string): number | undefined {
+  return CAPTCHA_RETRY_COOLDOWN_MS[taskId];
+}
+
+/** Resolves false as soon as cancellation is requested during the wait. */
+export async function waitForCaptchaRetryCooldown(
+  durationMs: number,
+  isCancellationRequested: () => boolean,
+): Promise<boolean> {
+  const deadline = Date.now() + durationMs;
+  while (Date.now() < deadline) {
+    if (isCancellationRequested()) return false;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(CAPTCHA_RETRY_COOLDOWN_POLL_MS, deadline - Date.now())));
+  }
+  return !isCancellationRequested();
+}
+
 /**
  * Coordinate App CAPTCHA campaigns around single workflow executions.
  * The two nonbrowser workflows execute once and never enter verification routing.
@@ -491,7 +515,11 @@ export async function runCaptchaRetryCampaign(
         );
         return { status: "failed" as const };
       }
-      if (isCancellationRequested()) {
+      const cooldownMs = captchaRetryCooldownMs(taskId);
+      const cooledDown = cooldownMs === undefined
+        ? !isCancellationRequested()
+        : await waitForCaptchaRetryCooldown(cooldownMs, isCancellationRequested);
+      if (!cooledDown) {
         campaign = markCaptchaCampaignCancelled(campaign);
         await finalizeCaptchaRetryExecution(
           provider,
