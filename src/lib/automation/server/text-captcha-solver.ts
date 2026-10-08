@@ -161,18 +161,55 @@ export function tesseractPageSegmentationMode(
   return TESSERACT_PAGE_SEGMENTATION_MODES[mode];
 }
 
+const TESSERACT_WORKER_READY_TIMEOUT_MS = 60_000;
+
+/**
+ * Tesseract.js swallows a failed language-model load inside `createWorker`, so
+ * its promise never settles when the model download fails or stalls. Load the
+ * model through `reinitialize`, whose job rejects, and stop the worker on any
+ * failure so a later round can start a fresh one.
+ */
+export async function createTesseractWorker(options: Readonly<{
+  cachePath: string;
+  langPath?: string;
+  readyTimeoutMs: number;
+}>): Promise<Awaited<ReturnType<typeof createWorker>>> {
+  await mkdir(options.cachePath, { recursive: true });
+  const worker = await createWorker([], OEM.LSTM_ONLY, {
+    logger: () => {},
+    cachePath: options.cachePath,
+    ...(options.langPath ? { langPath: options.langPath } : {}),
+    errorHandler: () => {},
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      worker.reinitialize("eng", OEM.LSTM_ONLY),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Tesseract worker did not become ready before the deadline.")),
+          options.readyTimeoutMs,
+        );
+      }),
+    ]);
+    return worker;
+  } catch (error) {
+    await worker.terminate().catch(() => undefined);
+    throw error instanceof Error ? error : new Error(`Tesseract worker failed: ${String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function tesseractWorker() {
   if (workerPromise) return workerPromise;
-  workerPromise = mkdir(TESSERACT_CACHE_PATH, { recursive: true })
-    .then(() => createWorker("eng", OEM.LSTM_ONLY, {
-      logger: () => {},
-      cachePath: TESSERACT_CACHE_PATH,
-    }))
-    .then((worker) => worker)
-    .catch((error) => {
-      workerPromise = null;
-      throw error;
-    });
+  workerPromise = createTesseractWorker({
+    cachePath: TESSERACT_CACHE_PATH,
+    readyTimeoutMs: TESSERACT_WORKER_READY_TIMEOUT_MS,
+  }).catch((error) => {
+    workerPromise = null;
+    throw error;
+  });
   return workerPromise;
 }
 
