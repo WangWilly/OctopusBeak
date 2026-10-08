@@ -22,9 +22,10 @@ export function createBeforeQuitHandler(options: {
 }
 
 /**
- * Playwright adds SIGTERM/SIGHUP listeners while it owns a browser in this
- * process. They close the browser but never exit, and any listener disables
- * Node's default exit, so the App must turn these signals into a quit.
+ * Playwright adds SIGINT, SIGTERM and SIGHUP listeners while it owns a browser
+ * in this process. Its SIGTERM and SIGHUP listeners close the browser but never
+ * exit, and any listener disables Node's default exit, so the App turns all
+ * three signals into a quit.
  */
 export function quitOnTerminationSignals(
   target: Pick<NodeJS.Process, "on">,
