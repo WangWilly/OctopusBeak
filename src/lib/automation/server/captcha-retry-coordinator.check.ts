@@ -7,7 +7,11 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { readAutomationSettings } from "./settings.ts";
-import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import {
+  captchaRetryCooldownMs,
+  runCaptchaRetryCampaign,
+  waitForCaptchaRetryCooldown,
+} from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 
 test("non-browser workflow fails closed on a legacy waiting_for_human result without routing or retrying", async () => {
@@ -160,4 +164,19 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", as
   } finally {
     await store.close();
   }
+});
+
+test("Fubon waits out its login cooldown before the next CAPTCHA round", async () => {
+  assert.ok((captchaRetryCooldownMs("fubon-all-statements") ?? 0) >= 20_000);
+  assert.equal(captchaRetryCooldownMs("sinopac-statements"), undefined);
+  const started = Date.now();
+  assert.equal(await waitForCaptchaRetryCooldown(60, () => false), true);
+  assert.ok(Date.now() - started >= 55);
+});
+
+test("cancellation ends the CAPTCHA retry cooldown early", async () => {
+  let checks = 0;
+  const started = Date.now();
+  assert.equal(await waitForCaptchaRetryCooldown(10_000, () => ++checks > 1), false);
+  assert.ok(Date.now() - started < 2_000);
 });
