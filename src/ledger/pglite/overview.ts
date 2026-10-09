@@ -2,6 +2,7 @@ import type { PGliteStore } from "./transaction.ts";
 import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.ts";
 import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
 import { accountProduct, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
+import { readPGliteDirectSourceCoverage } from "./direct-source-precedence.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -14,6 +15,7 @@ import type {
   CanonicalOverviewProjection,
   CanonicalOverviewSourceGap,
   CanonicalOverviewTransaction,
+  CoveredBy,
 } from "../canonical/canonical-overview-query.ts";
 
 export const PGLITE_CANONICAL_OVERVIEW_QUERY = "canonical.overview.query" as const;
@@ -519,12 +521,14 @@ function mapProjection(
   statements: readonly StatementRow[],
   knowledgePoint: number,
   expectedSources: readonly CanonicalOverviewExpectedSource[],
+  coverage: ReadonlyMap<string, CoveredBy>,
 ): CanonicalOverviewProjection {
   if (accounts.length === 0) {
     const sourceGaps = expectedSources.map((source) => expectedSourceGap(source, "source-not-collected"));
     return {
       availability: sourceGaps.length > 0 ? "awaiting" : "empty",
       accounts: [],
+      coveredAccounts: [],
       positions: [],
       transactions: mapTransactions(transactions, investmentTransactions),
       sourceGaps,
@@ -632,12 +636,20 @@ function mapProjection(
     ...holdings.map((holding) => holding.observed_at),
     ...margins.map((margin) => margin.observed_at),
   ];
+  const counted = (accountId: string) => !coverage.has(accountId);
+  const countedAccounts = resultAccounts.filter((account) => counted(account.id));
   return {
-    availability: resultAccounts.some((account) => account.availability === "available") ? "available" : "awaiting",
-    accounts: resultAccounts,
-    positions,
-    transactions: transactionDtos,
-    sourceGaps,
+    availability: countedAccounts.some((account) => account.availability === "available") ? "available" : "awaiting",
+    accounts: countedAccounts,
+    coveredAccounts: resultAccounts.flatMap((account) => {
+      const coveredBy = coverage.get(account.id);
+      return coveredBy === undefined
+        ? []
+        : [{ ...account, coveredBy, transactions: transactionDtos.filter((transaction) => transaction.accountId === account.id) }];
+    }),
+    positions: positions.filter((position) => counted(position.accountId)),
+    transactions: transactionDtos.filter((transaction) => counted(transaction.accountId)),
+    sourceGaps: sourceGaps.filter((gap) => counted(gap.accountId)),
     importedAt: observedValues.filter((value): value is string => value !== null).sort().at(-1) ?? null,
     knowledgePoint,
   };
@@ -940,7 +952,7 @@ async function readProjection(
       ORDER BY candidate.account_id, candidate.due_date DESC, candidate.statement_key`,
     [knowledgeAt, financialAt ?? null],
   );
-  const [accounts, balances, transactions, holdings, margins, investmentTransactions, statements] = await Promise.all([
+  const [accounts, balances, transactions, holdings, margins, investmentTransactions, statements, coverage] = await Promise.all([
     accountsQuery,
     balancesQuery,
     transactionsQuery,
@@ -948,6 +960,7 @@ async function readProjection(
     marginsQuery,
     investmentTransactionsQuery,
     statementsQuery,
+    readPGliteDirectSourceCoverage(store, knowledgeAt),
   ]);
   return mapProjection(
     accounts.rows,
@@ -959,6 +972,7 @@ async function readProjection(
     statements.rows,
     knowledgeAt,
     expectedSources,
+    coverage,
   );
 }
 
@@ -979,6 +993,7 @@ export function createPGliteCanonicalOverviewQuery(
           projection: {
             availability: "unavailable",
             accounts: [],
+            coveredAccounts: [],
             positions: [],
             transactions: [],
             sourceGaps: expectedSources.map((source) => expectedSourceGap(source, "canonical-read-unavailable")),
@@ -1032,6 +1047,7 @@ function selectOverviewGroup(
   return {
     ...projection,
     accounts,
+    coveredAccounts: projection.coveredAccounts.filter(predicate),
     positions: projection.positions.filter((position) => accountIds.has(position.accountId)),
     transactions: projection.transactions.filter((transaction) => accountIds.has(transaction.accountId)),
     sourceGaps: projection.sourceGaps.filter((gap) =>
