@@ -44,6 +44,8 @@ module.exports = {
       /^\/downloads($|\/)/,
       /^\/playground($|\/)/,
       /^\/out($|\/)/,
+      /^\/reports($|\/)/,
+      /^\/scripts\/tdcc-probe(?:\.mjs$|$|\/)/,
     ],
     ...(shouldSign
       ? {
