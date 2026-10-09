@@ -368,7 +368,8 @@ export class TdccClient {
 
   /**
    * Every TR002 page body for one broker account, walking backward from the
-   * newest trade. The cursor is the last row's postDate and txnSerNo; D0002 ends it.
+   * newest trade. Like the App, the cursor is the last row's txnDate, postDate and
+   * txnSerNo joined into txnSerNo with postDate left empty; D0002 ends it.
    */
   async tradeDetails(account: TdccBrokerAccountRef): Promise<unknown[]> {
     const pages: unknown[] = [];
@@ -391,7 +392,7 @@ export class TdccClient {
       if (rows.length === 0) return pages;
       pages.push(body);
       const last = rows.at(-1) as unknown[];
-      cursor = { postDate: String(last[0] ?? ""), txnSerNo: String(last[1] ?? "") };
+      cursor = { postDate: "", txnSerNo: [last[9], last[0], last[1]].map((slot) => String(slot ?? "")).join("") };
       if (seenCursors.has(`${cursor.postDate}\u0000${cursor.txnSerNo}`)) {
         throw new TdccError("tradeDetails", { reason: "pagination", detail: "repeated-cursor" });
       }

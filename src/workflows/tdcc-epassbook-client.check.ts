@@ -216,17 +216,20 @@ test("bank transactions stop at the page cap", async () => {
   assert.equal(sent.length, TDCC_MAX_PAGES);
 });
 
-test("trade details page backward by the last row's postDate and txnSerNo until D0002", async () => {
+const tradeRow = (postDate: string, txnSerNo: string, txnDate: string) =>
+  [postDate, txnSerNo, "2330", "", "", "", "", "", "", txnDate];
+
+test("trade details page backward by the last row's txnDate, postDate and txnSerNo until D0002", async () => {
   const { sent, client: tdcc } = client([
-    { body: { items: [["20260301", "S9", "2330"], ["20260220", "S7", "2330"]] } },
-    { body: { items: [["20260110", "S3", "0050"]] } },
+    { body: { items: [tradeRow("20260301", "S9", "20260227"), tradeRow("20260220", "S7", "20260218")] } },
+    { body: { items: [tradeRow("20260110", "S3", "20260108")] } },
     { header: { returnCode: "D0002", returnMsg: "no more" }, body: {} },
   ]);
   const pages = await tdcc.tradeDetails({ brokerNo: "9A00", brokerAccount: "1234567" });
   assert.equal(pages.length, 2);
   assert.deepEqual(
     sent.map(({ body }) => [body.requestBody.postDate, body.requestBody.txnSerNo, body.requestBody.updateType]),
-    [["", "", "B"], ["20260220", "S7", "B"], ["20260110", "S3", "B"]],
+    [["", "", "B"], ["", "2026021820260220S7", "B"], ["", "2026010820260110S3", "B"]],
   );
 });
 
