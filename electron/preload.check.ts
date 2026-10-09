@@ -27,7 +27,12 @@ for (const [method, channel] of [
   ["enableCathayGmailOtp", "automation:enableCathayGmailOtp"],
   ["setCathayGmailOtpEnabled", "automation:setCathayGmailOtpEnabled"],
   ["disconnectCathayGmailOtp", "automation:disconnectCathayGmailOtp"],
+  ["tdccDeviceRegistrationStatus", "automation:tdccDeviceRegistrationStatus"],
+  ["startTdccDeviceRegistration", "automation:startTdccDeviceRegistration"],
+  ["submitTdccRegistrationCode", "automation:submitTdccRegistrationCode"],
+  ["cancelTdccDeviceRegistration", "automation:cancelTdccDeviceRegistration"],
 ]) {
+  assert.equal((octopusBeakApiChannels as readonly string[]).includes(channel), true, `${channel} is an allowed channel`);
   assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
 }
 assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
