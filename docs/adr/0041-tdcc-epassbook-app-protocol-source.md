@@ -14,6 +14,8 @@ TDCC is an Intermediary source. Each reported broker securities account or bank 
 
 TDCC asks for a one-time code when a device it does not trust signs in. That code is entered during Source device registration, which is a sign-in settings action wherever TDCC Sign-in details are entered, in Settings and in onboarding Credential setup. It follows TDCC's sequence: Email OTP first, then SMS OTP when TDCC reports the mobile number as unverified. Registration is setup in the same category as Gmail OTP mailbox authorization, so it does not breach [ADR 0039](0039-solver-only-verification.md). The workflow never waits for a person. A run that finds the device untrusted fails with an actionable reason that points to registration.
 
+The Phase 0 probe showed that TDCC trusts one device per person at a time. A sign-in from this App signs the e-Passbook phone App out, and signing in to the phone App again asks for a one-time code. A phone App sign-in in turn withdraws trust from this App's device, so the next run fails and the person registers again. Registration is therefore repeated, not once. A run reuses the saved session token where it can, because only a fresh sign-in signs the phone App out. In the probe a session stayed valid for at least 6.5 minutes and had expired by 30 minutes, but a phone App sign-in fell inside that window, so the expiry time is not yet known.
+
 The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it. Gmail retrieval of TDCC codes is out of scope.
 
 ## Rollout
@@ -25,10 +27,13 @@ Phase 0 is a development-only probe command. It reuses the production TDCC clien
 - **Automate the TDCC web e-Passbook.** Rejected. It would match the other sources, where the page owns crypto and signing, but direct App calls are faster, need no browser, and are proven by all-set-tw across all five TDCC products.
 - **Ship it as an off-by-default experiment.** Rejected. It ships as a normal supported source.
 - **Enter the OTP mid-run, amending ADR 0039.** Rejected. It would restore the human path that ADR 0039 removed.
-- **Read TDCC codes from Gmail.** Deferred. Registration happens once, and Gmail would bring along ADR 0014's Google verification status.
+- **Read TDCC codes from Gmail.** Deferred. It would re-register automatically after each phone App use, but it brings along ADR 0014's Google verification status and still signs the phone App out. It is the first option to revisit if repeated registration proves too costly.
+- **Automate the TDCC web e-Passbook to avoid the single trusted device.** Not investigated. Whether a web sign-in coexists with the phone App is unknown.
 - **Make the protocol constants remotely configurable.** Rejected. That would only cover version bumps, and a change in the crypto rules still needs a release.
 
 ## Consequences
+
+- Using TDCC here and in the phone App conflict. Each side's sign-in costs the other side a one-time code. The UI must say so when the person enables TDCC.
 
 - A TDCC App update can break sync until an Octopus Beak release ships. The failure is a specific outcome, not a generic connection error.
 - Impersonating the App may conflict with TDCC terms or trip its risk controls. This was accepted on purpose.

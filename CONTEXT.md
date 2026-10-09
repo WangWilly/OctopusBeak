@@ -676,7 +676,7 @@ The person's explicit Google consent that allows the application to retrieve Cat
 _Avoid_: Email password, unrestricted mailbox ownership, generic email login
 
 **Source device registration**:
-The one-time sign-in setting action in which the person makes a supported source trust this installation's device identity, typing any one-time code the source sends during that action. It is setup, not a workflow stage, so it does not breach ADR 0039; a later run that finds the device untrusted fails with an actionable reason instead of waiting for a person. The registered device identity is an authentication secret, retained across password changes and reset only when the sign-in identifier changes.
+The sign-in setting action in which the person makes a supported source trust this installation's device identity, typing any one-time code the source sends during that action. It is setup, not a workflow stage, so it does not breach ADR 0039; a later run that finds the device untrusted fails with an actionable reason instead of waiting for a person. It is repeated whenever the source withdraws trust, such as when TDCC moves its single trusted device to the person's phone. The registered device identity is an authentication secret, retained across password changes and reset only when the sign-in identifier changes.
 _Avoid_: Workflow OTP prompt, manual verification stage, human assistance
 
 **Authentication certificate file**:
