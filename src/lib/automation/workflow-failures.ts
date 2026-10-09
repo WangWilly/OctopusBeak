@@ -44,8 +44,8 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
     en: "TDCC e-Passbook no longer trusts this device. Register the device again in sign-in settings, then run the sync.",
   },
   "provider-protocol-outdated": {
-    zh: "集保 e 存摺的 App 介面已變更，需要更新 Octopus Beak 才能繼續同步。",
-    en: "The TDCC e-Passbook App interface changed. Update Octopus Beak to sync again.",
+    zh: "集保 e 存摺的 App 介面已變更，需要更新 OctopusBeak 才能繼續同步。",
+    en: "The TDCC e-Passbook App interface changed. Update OctopusBeak to sync again.",
   },
   "source-collection-failed": {
     zh: "來源資料收集失敗，未完成這次來源的資料驗證。",
