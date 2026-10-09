@@ -22,6 +22,8 @@ export const COLLECTION_PRODUCT_TYPE_IDS = [
   "foreign_currency",
   "fund",
   "domestic",
+  "securities",
+  "settlement",
 ] as const;
 
 export type CollectionProductTypeId = typeof COLLECTION_PRODUCT_TYPE_IDS[number];

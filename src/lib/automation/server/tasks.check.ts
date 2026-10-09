@@ -7,6 +7,7 @@ import {
   enabledAutomationTasks,
   taskById,
 } from "./tasks.ts";
+import { TDCC_PASSWORD_KEY, TDCC_USER_ID_KEY } from "./config-files.ts";
 
 assert.deepEqual(
   AUTOMATION_TASKS.filter((task) =>
@@ -31,6 +32,15 @@ const maicoinTask = taskById("sync-maicoin");
 assert.ok(maicoinTask);
 assert.equal(maicoinTask.kind, "sync");
 assert.equal(maicoinTask.credentialGroupId, "maicoin");
+const tdccTask = taskById("sync-tdcc");
+assert.ok(tdccTask);
+assert.equal(tdccTask.kind, "sync");
+assert.equal(tdccTask.credentialGroupId, "tdcc");
+assert.deepEqual(
+  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "tdcc")?.statementTypes,
+  [{ id: "securities" }, { id: "fund" }, { id: "settlement" }],
+);
+assert.deepEqual(tdccTask.credentialKeys, [TDCC_USER_ID_KEY, TDCC_PASSWORD_KEY], "TDCC sign-in fields write the host-only keys the session port reads");
 const yuantaAllStatements = taskById("yuanta-all-statements");
 assert.ok(yuantaAllStatements);
 assert.equal(yuantaAllStatements.id, "yuanta-all-statements");
