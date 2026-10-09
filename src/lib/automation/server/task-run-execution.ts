@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { automationConfigEnv, type AutomationSettingsFile } from "./config-files.ts";
+import {
+  AUTOMATION_CREDENTIALS_PATH,
+  automationConfigEnv,
+  getAutomationCredentialCodec,
+  type AutomationSettingsFile,
+} from "./config-files.ts";
+import { createTdccSecretStore } from "./tdcc-secret-store.ts";
+import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
 import {
   finalizeAutomationTaskRun,
   type AutomationTaskExecutionResult,
@@ -51,6 +58,7 @@ import {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowBrowserProfileForTask,
+  workflowRuntimeForTask,
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
@@ -89,6 +97,8 @@ export type AutomationTaskExecutionOptions = {
   workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
   createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
+  /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
+  createTdccSessionHost?: () => TdccSessionHost;
   /** Test seam for the supervised App workflow worker. Production uses Worker. */
   appWorkflowWorkerFactory?: RunSupervisedAppWorkflowOptions["workerFactory"];
   /** Test seam for proving that the worker receives the active host descriptor. */
@@ -345,6 +355,7 @@ async function executeInlineAppWorkflow(
           onRuntimeUpdate: execution.onRuntimeUpdate,
         }),
       ...(financialCommit ? { financialCommit } : {}),
+      ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
       events: injectedPorts.events ?? {
         async append(event) {
           await progressReporter.appendEvent(event);
@@ -508,6 +519,13 @@ function sanitizedWorkerResult(
   };
 }
 
+function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHost {
+  if (options.createTdccSessionHost) return options.createTdccSessionHost();
+  const codec = getAutomationCredentialCodec();
+  if (!codec) throw new Error("Encrypted credential storage is unavailable.");
+  return createTdccSessionHost(createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec));
+}
+
 async function executeSupervisedAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
@@ -556,31 +574,29 @@ async function executeSupervisedAppWorkflow(
 
     const input = workflowInputForTask(workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
-    const nonbrowser = workflowId === "exchange-rates" || workflowId === "sync-maicoin";
-    const pgliteRpc = (definition.requiresFinancialCommit || workflowId === "exchange-rates")
+    const runtime = workflowRuntimeForTask(workflowId);
+    const pgliteRpc = (definition.requiresFinancialCommit || runtime.kind === "nonbrowser")
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
-    const startUrl = workflowStartUrlForTask(workflowId);
-    const browserProfile = workflowBrowserProfileForTask(workflowId);
-    const browser = nonbrowser ? undefined : options.workflowBrowserPortFactory?.({
+    const browser = runtime.kind === "nonbrowser" ? undefined : options.workflowBrowserPortFactory?.({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
-      startUrl,
-      browserProfile,
+      startUrl: runtime.startUrl,
+      browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
-    }) ?? (nonbrowser ? undefined : createAppWorkflowBrowserPort({
+    }) ?? createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
-      startUrl,
-      browserProfile,
+      startUrl: runtime.startUrl,
+      browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
       nativeDialogOwner: "worker",
-    }));
+    });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: execution.run.taskRunId,
       persistence: execution.persistence,
@@ -621,6 +637,7 @@ async function executeSupervisedAppWorkflow(
         } : {}),
         requestHumanAssistance: (contract, signal) =>
           humanAssistance.request(contract, signal),
+        ...(definition.requiresTdcc ? { tdccSession: tdccSessionHost(options) } : {}),
         ...(options.createCathayGmailOtpPort
           ? {
               createCathayGmailOtpPort: (signal) =>
@@ -819,7 +836,7 @@ export async function runAutomationTaskExecution(
   if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
   }
-  const nonbrowserLaunchEnv = task.id === "sync-maicoin" || task.id === "exchange-rates"
+  const nonbrowserLaunchEnv = workflowRuntimeForTask(task.workflowId).kind === "nonbrowser"
     ? options.launchEnv ?? automationProcessEnv()
     : undefined;
   if (nonbrowserLaunchEnv

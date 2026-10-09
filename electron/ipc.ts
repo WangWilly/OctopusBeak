@@ -27,6 +27,12 @@ import {
   AutomationRuntimeInvariantError,
 } from "../src/lib/automation/runtime-invariants.ts";
 import {
+  cancelTdccDeviceRegistration,
+  startTdccDeviceRegistration,
+  submitTdccRegistrationCode,
+  tdccDeviceRegistrationStatus,
+} from "../src/lib/automation/server/tdcc-registration-service.ts";
+import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
 } from "../src/lib/automation/server/credential-file.ts";
@@ -73,6 +79,9 @@ import type {
   SpendingStrongConfirmRequest,
 } from "../src/lib/spending/model.ts";
 import { projectFinancialBlock } from "./financial-page-block-loader.ts";
+
+const TDCC_REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const TDCC_ONE_TIME_CODE = /^[0-9]{4,8}$/u;
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -393,6 +402,33 @@ export function registerOctopusBeakIpc({
   );
   ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
     disconnectCathayGmailOtp(),
+  );
+  ipcMain.handle("automation:tdccDeviceRegistrationStatus", () =>
+    tdccDeviceRegistrationStatus(),
+  );
+  ipcMain.handle("automation:startTdccDeviceRegistration", () =>
+    startTdccDeviceRegistration(),
+  );
+  ipcMain.handle(
+    "automation:submitTdccRegistrationCode",
+    (_event, registrationId: unknown, code: unknown) => {
+      if (typeof registrationId !== "string" || !TDCC_REGISTRATION_ID.test(registrationId)) {
+        throw new TypeError("TDCC registration ID is invalid.");
+      }
+      if (typeof code !== "string" || !TDCC_ONE_TIME_CODE.test(code)) {
+        throw new TypeError("TDCC one-time code must be 4 to 8 digits.");
+      }
+      return submitTdccRegistrationCode(registrationId, code);
+    },
+  );
+  ipcMain.handle(
+    "automation:cancelTdccDeviceRegistration",
+    (_event, registrationId: unknown) => {
+      if (typeof registrationId !== "string" || !TDCC_REGISTRATION_ID.test(registrationId)) {
+        throw new TypeError("TDCC registration ID is invalid.");
+      }
+      cancelTdccDeviceRegistration(registrationId);
+    },
   );
   ipcMain.handle(
     "automation:selectCertificateFile",

@@ -16,7 +16,24 @@ TDCC asks for a one-time code when a device it does not trust signs in. That cod
 
 The Phase 0 probe showed that TDCC trusts one device per person at a time. A sign-in from this App signs the e-Passbook phone App out, and signing in to the phone App again asks for a one-time code. A phone App sign-in in turn withdraws trust from this App's device, so the next run fails and the person registers again. Registration is therefore repeated, not once. A run reuses the saved session token where it can, because only a fresh sign-in signs the phone App out. In the probe a session stayed valid for at least 6.5 minutes and had expired by 30 minutes, but a phone App sign-in fell inside that window, so the expiry time is not yet known.
 
-The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it. Gmail retrieval of TDCC codes is out of scope.
+The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it: the stored device records the identifier it was registered for, and a device registered for another identifier counts as unregistered. Gmail retrieval of TDCC codes is out of scope.
+
+In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device.
+
+## Session port
+
+The sign-in details, the device identity, and the session token stay out of the workflow input and the child environment, like the Gmail refresh token. A TDCC run reaches them through a host-owned session port, `TdccSessionPort` in `src/workflows/tdcc-session.ts`. The worker sends its requests as frames, and Electron main answers them from `credentials.json` through `createTdccSessionHost`.
+
+- `open()` returns the Source connection keys, the registered device, and the last saved session. It never returns the password. When no device is registered for the saved sign-in identifier, it returns `device-registration-required`.
+- `signInDetails()` returns the sign-in identifier and password. A run asks for them only when TDCC no longer accepts the saved session.
+- `saveSession()` is a one-way frame that the client sends on every token rotation. The host writes the newest rotation without acknowledging it, and it writes any pending rotation before the run settles, even after a failure, a cancellation, or a worker crash. The host saves a session only while the device the run leased is still the registered one, so a run that overlaps a new registration cannot overwrite the newer session.
+
+Two other shapes were considered:
+
+- **Host-owned client.** Electron main would hold the `TdccClient` and make every TDCC call, and the worker would ask for response bodies by endpoint. No secret would ever reach the worker. But every endpoint and every TDCC failure reason would need its own frame, the paging loops would move into main, and an account's TR002 history could exceed one frame. Main would also perform the network calls of a run.
+- **Secrets in the workflow input.** The host would put the device, session, and password into the worker's start data and read the rotated token from the run result. It is the smallest change, but it puts every TDCC secret into the input of every run, and a run that fails or is cancelled returns no result, so the rotated token is lost.
+
+The lease shape keeps the password out of a run that reuses its session and saves every rotation as it happens. It costs two request frames and one one-way frame.
 
 ## Rollout
 

@@ -53,6 +53,7 @@ import type {
   PGliteCanonicalInvestmentCommitRequest,
   PGliteCanonicalInvestmentCommitResult,
 } from "../src/ledger/pglite/investment.ts";
+import type { TdccAdmittedFundAccount } from "../src/ledger/canonical/tdcc-investment-admission.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -92,6 +93,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.loanSettlementGroups.current",
   "financial.investmentRelations.current",
   "financial.exchangeRates.read",
+  "financial.tdccFundAccounts.list",
   "financial.exchangeRates.upsert",
 ] as const;
 
@@ -181,6 +183,7 @@ export type PGliteFinancialRegistry = Readonly<{
   currentLoanSettlementGroups(options?: { sourceConnectionKey?: string; integrationNamespace?: string }): Promise<readonly Readonly<Record<string, unknown>>[]>;
   currentInvestmentRelations(sourceConnectionKey?: string): Promise<readonly Readonly<Record<string, unknown>>[]>;
   readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
+  listTdccFundAccounts(connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>): Promise<readonly TdccAdmittedFundAccount[]>;
   upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
 }>;
 
@@ -347,6 +350,7 @@ export function createPGliteFinancialRpcClient(
     currentInvestmentRelations: (input) => call("financial.investmentRelations.current", input ? [input] : []) as Promise<readonly Readonly<Record<string, unknown>>[]>,
     readExchangeRates: (currencies) => call("financial.exchangeRates.read", currencies === undefined ? [] : [currencies]) as Promise<ExchangeRateRecord[]>,
     upsertExchangeRates: (rows) => call("financial.exchangeRates.upsert", [rows]).then(() => undefined),
+    listTdccFundAccounts: (connection) => call("financial.tdccFundAccounts.list", [connection]) as Promise<readonly TdccAdmittedFundAccount[]>,
   };
   const close = (error = new PGliteFinancialError("worker-closed")): void => {
     if (closed) return;

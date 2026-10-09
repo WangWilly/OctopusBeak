@@ -37,8 +37,8 @@ export const CATHAY_GMAIL_HOST_KEYS = [
 ] as const;
 
 // TDCC sign-in details and its registered device identity and session token
-// (ADR 0041). Until TDCC runs as a workflow only the host and its
-// development probe use them, so they never reach a child workflow environment.
+// (ADR 0041). A TDCC run reaches them only through its host-owned session
+// port, so they never reach a child workflow environment.
 export const TDCC_USER_ID_KEY = "LIBRETTO_CLOUD_TDCC_USER_ID";
 export const TDCC_PASSWORD_KEY = "LIBRETTO_CLOUD_TDCC_PASSWORD";
 export const TDCC_DEVICE_IDENTITY_KEY = "LIBRETTO_CLOUD_TDCC_DEVICE_IDENTITY";

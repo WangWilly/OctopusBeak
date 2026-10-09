@@ -58,14 +58,13 @@ test("fixture tasks and definitions are added only in loopback fixture mode and 
   const normalDefinitions = appWorkflowCatalogForEnvironment({});
   const fixtureDefinitions = appWorkflowCatalogForEnvironment(environment);
   assert.equal(normalDefinitions.some(({ definition }) => fixtureTaskIdSet.has(definition.id)), false);
-  assert.deepEqual(fixtureDefinitions.filter(({ definition }) => fixtureTaskIdSet.has(definition.id)).map(({ definition, startUrl, browserProfile }) => ({
+  assert.deepEqual(fixtureDefinitions.filter(({ definition }) => fixtureTaskIdSet.has(definition.id)).map(({ definition, runtime }) => ({
     id: definition.id,
     requiresFinancialCommit: definition.requiresFinancialCommit,
-    startUrl,
-    browserProfile,
+    runtime,
   })), [
-    { id: fixtureTaskIds[0], requiresFinancialCommit: false, startUrl: environment.OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_URL, browserProfile: undefined },
-    { id: fixtureTaskIds[1], requiresFinancialCommit: false, startUrl: environment.OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_URL, browserProfile: undefined },
+    { id: fixtureTaskIds[0], requiresFinancialCommit: false, runtime: { kind: "browser", startUrl: environment.OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_URL } },
+    { id: fixtureTaskIds[1], requiresFinancialCommit: false, runtime: { kind: "browser", startUrl: environment.OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE_URL } },
   ]);
 });
 

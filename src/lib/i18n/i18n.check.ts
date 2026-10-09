@@ -165,6 +165,7 @@ assert.deepEqual(translations.en.automation.taskLabels, {
   "einvoice-personal-invoices": "E-Invoice",
   "exchange-rates": "Exchange rates",
   "sync-maicoin": "MaiCoin",
+  "sync-tdcc": "TDCC e-Passbook",
 });
 assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
   "fubon-all-statements": "台北富邦銀行（Taipei Fubon Bank）",
@@ -180,6 +181,7 @@ assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
   "einvoice-personal-invoices": "電子發票（E-Invoice）",
   "exchange-rates": "匯率同步",
   "sync-maicoin": "MaiCoin",
+  "sync-tdcc": "集保 e 存摺",
 });
 assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
 assert.equal(

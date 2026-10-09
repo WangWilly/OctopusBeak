@@ -48,12 +48,11 @@ const activeTaskRunCompletions = new Map<string, Promise<void>>();
 const cancellationRequestedTaskIds = new Set<string>();
 const forceTerminationRequestedTaskIds = new Set<string>();
 const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
 
 function assertAppExecutorTask(
   task: NonNullable<ReturnType<typeof taskById>>,
 ) {
-  if (!task.workflowId && !NON_BROWSER_APP_TASK_IDS.has(task.id)) {
+  if (!task.workflowId) {
     throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
   }
 }

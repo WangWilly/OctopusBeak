@@ -5,7 +5,7 @@ import { applyOctopusBeakAppIdentity } from "../electron/app-identity.ts";
 import { safeStorageCredentialCodec } from "../electron/credential-codec.ts";
 import { TdccError } from "../src/workflows/tdcc-epassbook-client.ts";
 import { TDCC_PROBE_USAGE, runTdccProbe } from "./tdcc-probe/probe.ts";
-import { createTdccSecretStore } from "./tdcc-probe/stored-secrets.ts";
+import { createTdccSecretStore } from "../src/lib/automation/server/tdcc-secret-store.ts";
 import { createProbeTerminal } from "./tdcc-probe/terminal.ts";
 
 const REPORTS_DIRECTORY = fileURLToPath(new URL("../reports/tdcc-probe/", import.meta.url));

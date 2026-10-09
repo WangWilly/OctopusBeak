@@ -10,6 +10,8 @@ import type {
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
+import type { TdccConnection, TdccSessionPort } from "../../workflows/tdcc-session.ts";
 import {
   COLLECTION_PRODUCT_TYPE_IDS,
   interruptedProductCollectionFromOutput,
@@ -83,6 +85,12 @@ export interface WorkflowFinancialCommitPort {
   ): Promise<PGliteWorkflowRunResult<unknown>>;
 }
 
+/** TDCC's host-owned session and the fund accounts the store has admitted for its connection. */
+export type WorkflowTdccPort = Readonly<{
+  session: TdccSessionPort;
+  admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
+}>;
+
 export type WorkflowContext = Readonly<{
   runId: string;
   signal: AbortSignal;
@@ -92,6 +100,7 @@ export type WorkflowContext = Readonly<{
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
+  tdcc?: WorkflowTdccPort;
   event(
     stage: WorkflowStage,
     code: string,
@@ -104,6 +113,7 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
   id: string;
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
+  requiresTdcc?: boolean;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -113,6 +123,7 @@ export type WorkflowExecutorPorts = Readonly<{
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
+  tdcc?: WorkflowTdccPort;
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
@@ -147,6 +158,9 @@ export function createWorkflowExecutor(
       }
       if (definition.requiresMaicoinPersistence && !ports.maicoinPersistence) {
         throw new Error("MaiCoin operational persistence port is unavailable.");
+      }
+      if (definition.requiresTdcc && !ports.tdcc) {
+        throw new Error("TDCC session port is unavailable.");
       }
       const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
@@ -194,6 +208,7 @@ export function createWorkflowExecutor(
         ...(definition.requiresMaicoinPersistence
           ? { maicoinPersistence: ports.maicoinPersistence }
           : {}),
+        ...(definition.requiresTdcc ? { tdcc: ports.tdcc } : {}),
         event,
         productFailure,
       };
