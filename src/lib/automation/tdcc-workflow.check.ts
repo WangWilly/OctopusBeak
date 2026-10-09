@@ -251,6 +251,7 @@ test("a run reuses the saved session, commits every selected product, and report
     assert.deepEqual(summarizeTypedWorkflowOutput(result)?.counts, {
       committedCount: 5,
       excludedNonIsoCurrencyCount: 1,
+      excludedNonNumericAccountCount: 0,
       excludedTimeDepositCount: 1,
       excludedUnknownInstitutionCount: 3,
       hiddenAccountCount: 1,

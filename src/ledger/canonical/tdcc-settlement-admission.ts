@@ -56,7 +56,7 @@ export type TdccSettlementAccount = Readonly<{
 /** A reported account or holding that this contract does not admit. Nothing is dropped without one. */
 export type TdccSettlementExclusion =
   | Readonly<{
-    reason: "hidden-account" | "unknown-institution-code" | "non-iso-currency";
+    reason: "hidden-account" | "unknown-institution-code" | "non-iso-currency" | "non-numeric-account-number";
     bankId: string;
     currency: string;
     accountNoSuffix: string;
@@ -145,7 +145,11 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
         exclusions.push({ reason: "hidden-account", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
       }
-      if (!/^\d{6,24}$/u.test(accountNo)) reject(`${label} accountNo must be 6 to 24 digits.`);
+      // Some banks report a letter token instead of the depository account number.
+      if (!/^\d{6,24}$/u.test(accountNo)) {
+        exclusions.push({ reason: "non-numeric-account-number", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
+        continue;
+      }
       if (!institutionKey) {
         exclusions.push({ reason: "unknown-institution-code", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;

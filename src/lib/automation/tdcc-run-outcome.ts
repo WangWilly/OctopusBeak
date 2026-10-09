@@ -6,6 +6,7 @@ type OutcomeCounts = NonNullable<TypedWorkflowOutcome["summary"]>["counts"];
 const EXCLUSION_COUNT_NAMES: ReadonlySet<string> = new Set([
   "excludedUnknownInstitutionCount",
   "excludedNonIsoCurrencyCount",
+  "excludedNonNumericAccountCount",
   "excludedTimeDepositCount",
   "hiddenAccountCount",
 ]);
@@ -21,6 +22,7 @@ export function tdccExclusionLines(counts: OutcomeCounts, dictionary: Translatio
   const lines: ReadonlyArray<readonly [number | undefined, (count: number) => string]> = [
     [counts.excludedUnknownInstitutionCount, copy.unknownInstitution],
     [counts.excludedNonIsoCurrencyCount, copy.nonIsoCurrency],
+    [counts.excludedNonNumericAccountCount, copy.nonNumericAccount],
     [counts.excludedTimeDepositCount, copy.timeDeposits],
     [counts.hiddenAccountCount, copy.hiddenAccounts],
   ];
