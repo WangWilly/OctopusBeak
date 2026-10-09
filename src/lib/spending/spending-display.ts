@@ -1,5 +1,5 @@
 import type { Translation } from "../i18n/i18n.ts";
-import { institutionForNamespace } from "../institutions/institutions.ts";
+import { isInstitutionKey } from "../institutions/institutions.ts";
 import { isPersonalCategoryCode, type PersonalCategoryCode } from "../../ledger/canonical/personal-category-codes.ts";
 import { spendingCategoryGroup } from "./category-groups.ts";
 import type { SpendingCandidateReasons } from "./model.ts";
@@ -91,8 +91,7 @@ function lastFour(source: SpendingPaymentSourceView | null): string | null {
 }
 
 function institutionName(t: Translation, source: SpendingPaymentSourceView | null): string | null {
-  const key = institutionForNamespace(source?.institution);
-  return key ? t.institutions[key] : null;
+  return isInstitutionKey(source?.institution) ? t.institutions[source.institution] : null;
 }
 
 /** 玉山銀行信用卡 末碼 5512, 台北富邦銀行帳戶扣款, or the stream when the institution is unknown. */

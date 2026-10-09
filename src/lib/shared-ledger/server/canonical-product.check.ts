@@ -14,6 +14,7 @@ test("canonical product rows retain exact signed transaction and position values
         sourceConnectionKey: "source-connection-1",
         sourceAccountKey: "sha256:synthetic-account-key",
         integrationNamespace: "synthetic",
+        institutionKey: "yuanta-securities",
         accountNo: "account-1",
         stream: "investment",
         accountType: "investment",

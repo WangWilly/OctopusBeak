@@ -1,5 +1,5 @@
 import { derived, writable } from "svelte/store";
-import { institutionNames } from "../institutions/institutions.ts";
+import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
 import type { TdccRegistrationChannel, TdccRegistrationFailure } from "../automation/types.ts";
 
 export const locales = ["en", "zh-TW"] as const;
@@ -471,6 +471,7 @@ const en = {
     coveredHeading: "Counted through another source",
     coveredHeadingNote: "These accounts are left out of every total, because the source named on each one already counts them.",
     coveredBy: (source: string) => `Counted by ${source}`,
+    viaSource: { tdcc: "via TDCC e-Passbook" } satisfies Record<IntermediarySourceLogoKey, string>,
     noLiabilityMatches: "No matching liabilities.",
     availableBalanceBasis: "Based on LINE Bank available balance",
     creditCardEstimateBasis: "Estimated credit-card used credit (including unbilled consumption)",
@@ -1676,6 +1677,7 @@ const zh: typeof en = {
     coveredHeading: "已由其他來源計入",
     coveredHeadingNote: "這些帳戶不計入任何總額，因為各自標示的來源已經計入。",
     coveredBy: (source) => `已由 ${source} 計入`,
+    viaSource: { tdcc: "經由集保 e 存摺" },
     noLiabilityMatches: "沒有符合條件的負債。",
     availableBalanceBasis: "依 LINE Bank 可用餘額計算",
     creditCardEstimateBasis: "信用卡已使用額度估算（含未請款消費）",
