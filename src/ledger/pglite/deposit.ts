@@ -26,6 +26,10 @@ import {
 } from "../canonical/canonical-source-evidence.ts";
 import { canonicalSourceRouteRegistration, canonicalSourceRuleCombination } from "../canonical/canonical-source-route-registry.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "../canonical/foreign-currency-deposit-authorities.ts";
+import {
+  TDCC_SETTLEMENT_DEPOSIT_PROFILE,
+  TDCC_SETTLEMENT_DEPOSIT_ROUTE,
+} from "../canonical/tdcc-settlement-contract.ts";
 import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "./workflow-commands.ts";
 
 /** Named worker command for a typed domestic or foreign-currency deposit run. */
@@ -299,6 +303,7 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
     contractVersion: "human-attested-v1",
     requireProviderGuaranteedFalse: true,
   },
+  [TDCC_SETTLEMENT_DEPOSIT_ROUTE]: TDCC_SETTLEMENT_DEPOSIT_PROFILE,
 };
 
 function financialRouteProfile(routeKey: string): DepositRouteProfile | undefined {
@@ -571,6 +576,7 @@ function toFinancialAccount(
     accountNo: accountNumber?.value ?? null,
     accountType: "depository",
     currency: capture.identity.currency,
+    ...(capture.identity.institutionKey === undefined ? {} : { institutionKey: capture.identity.institutionKey }),
   };
 }
 

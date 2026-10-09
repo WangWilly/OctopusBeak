@@ -101,9 +101,10 @@ export async function runTdccProbe(options: TdccProbeOptions): Promise<string> {
   }
 
   let endpoints: Record<string, EndpointReport>;
+  let nonIsoSettlementAccounts: NonIsoSettlementAccount[];
   let tradeCursorExperiment: TradeCursorTrial[];
   try {
-    endpoints = await probeEndpoints(client, terminal);
+    ({ endpoints, nonIsoSettlementAccounts } = await probeEndpoints(client, terminal));
     tradeCursorExperiment = await probeTradeCursors(client, terminal);
   } finally {
     store.write({ session: { ...client.exportSession(), issuedAt } });
@@ -118,6 +119,7 @@ export async function runTdccProbe(options: TdccProbeOptions): Promise<string> {
     freshLogin,
     phoneAppSignedOut,
     endpoints,
+    nonIsoSettlementAccounts,
     tradeCursorExperiment,
   };
   mkdirSync(options.reportsDirectory, { recursive: true });
@@ -274,6 +276,7 @@ async function probeTradeCursors(client: TdccClient, terminal: ProbeTerminal): P
 async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
   let positions: unknown = null;
   let bankBalances: unknown = null;
+  const transactionPages = new Map<string, unknown[]>();
   const endpoints: Record<string, EndpointReport> = {
     positions: await collect(terminal, "positions (TR001)", [async () => [positions = await client.positions()]]),
     fundPositions: await collect(terminal, "fundPositions (TR051V1)", [async () => [await client.fundPositions()]]),
@@ -282,7 +285,11 @@ async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
   endpoints.bankTransactions = await collect(
     terminal,
     "bankTransactions (TSP007)",
-    settlementAccounts(bankBalances).map((account) => () => client.bankTransactions(account)),
+    settlementAccounts(bankBalances).map((account) => async () => {
+      const pages = await client.bankTransactions(account);
+      transactionPages.set(settlementAccountKey(account), pages);
+      return pages;
+    }),
   );
   endpoints.tradeDetails = await collect(
     terminal,
@@ -293,7 +300,7 @@ async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
   endpoints.assetTrend = client.exportSession().richUrl
     ? await collect(terminal, "assetTrend (TR087)", [async () => [await client.assetTrend("1Y")]])
     : { calls: 0, pages: 0, failures: [], inventory: null, skipped: "sign-in returned no richUrl" };
-  return endpoints;
+  return { endpoints, nonIsoSettlementAccounts: nonIsoSettlementAccounts(bankBalances, transactionPages) };
 }
 
 const records = (value: unknown): Record<string, unknown>[] =>
@@ -303,17 +310,68 @@ const records = (value: unknown): Record<string, unknown>[] =>
 
 const text = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
 
-/** Visible TSP006 settlement accounts, as the reference client selects them. */
-export function settlementAccounts(body: unknown): TdccBankAccountRef[] {
+/** Visible TSP006 settlement account rows, each with the reference the client queries TSP007 by. */
+function visibleSettlementRows(body: unknown) {
   const root = records([body])[0];
   return records(root?.tspAccountInfos).flatMap((info) =>
     records(info.tspAccount)
       .filter((account) => account.isShow !== false && text(info.bankId) && text(account.accountNo))
       .map((account) => ({
-        bankId: text(info.bankId),
-        accountNo: text(account.accountNo),
-        currency: text(account.currency) || "TWD",
+        row: account,
+        ref: {
+          bankId: text(info.bankId),
+          accountNo: text(account.accountNo),
+          currency: text(account.currency) || "TWD",
+        } satisfies TdccBankAccountRef,
       })));
+}
+
+/** Visible TSP006 settlement accounts, as the reference client selects them. */
+export function settlementAccounts(body: unknown): TdccBankAccountRef[] {
+  return visibleSettlementRows(body).map(({ ref }) => ref);
+}
+
+const settlementAccountKey = (account: TdccBankAccountRef) =>
+  [account.bankId, account.accountNo, account.currency].join("\u0000");
+
+/** Whether a decimal is non-zero, without its value. */
+type NonZero = boolean | "unparseable";
+
+export type NonIsoSettlementAccount = Readonly<{
+  currency: string;
+  balanceNonZero: NonZero;
+  availableBalanceNonZero: NonZero;
+  hasTransactions: boolean | "call-failed";
+}>;
+
+const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
+
+function nonZero(value: unknown): NonZero {
+  const lexeme = text(value);
+  if (!/^[+-]?\d+(?:\.\d+)?$/u.test(lexeme)) return "unparseable";
+  return /[1-9]/u.test(lexeme);
+}
+
+/**
+ * ADR 0042 leaves a settlement account in a non-ISO currency such as `NAN`
+ * unadmitted. The probe records only whether such an account holds anything.
+ */
+export function nonIsoSettlementAccounts(
+  bankBalances: unknown,
+  transactionPages: ReadonlyMap<string, readonly unknown[]>,
+): NonIsoSettlementAccount[] {
+  return visibleSettlementRows(bankBalances).flatMap(({ row, ref }) => {
+    if (ISO_CURRENCIES.has(ref.currency)) return [];
+    const pages = transactionPages.get(settlementAccountKey(ref));
+    return [{
+      currency: ref.currency,
+      balanceNonZero: nonZero(row.balanceAmt),
+      availableBalanceNonZero: nonZero(row.availableBalance),
+      hasTransactions: pages
+        ? records(pages).some((page) => Array.isArray(page.transactionDetails) && page.transactionDetails.length > 0)
+        : "call-failed",
+    }];
+  });
 }
 
 export function brokerAccounts(body: unknown): TdccBrokerAccountRef[] {

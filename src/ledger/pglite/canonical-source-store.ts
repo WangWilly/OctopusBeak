@@ -15,6 +15,7 @@ import {
   canonicalSourceRecordJson,
   classifyPGliteCanonicalAdmissionError,
   PGliteCanonicalSourceAdmissionError,
+  resolvePGliteAccountInstitution,
   validateCanonicalSourceAccountNumber,
   validatePGliteCanonicalBalanceObservation,
   validatePGliteCanonicalFinancialAccount,
@@ -1124,9 +1125,10 @@ async function ensureFinancialAccount(
   capture: SourceCaptureWrite,
 ): Promise<Uint8Array> {
   const { account } = request;
+  const institutionKey = resolvePGliteAccountInstitution(account, request.capture);
   const existing = await first<Row>(
     transaction,
-    `SELECT account_id, account_no, account_type, currency
+    `SELECT account_id, account_no, account_type, currency, institution_key
        FROM financial_accounts
       WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ?
         AND source_account_key = ?`,
@@ -1138,6 +1140,11 @@ async function ensureFinancialAccount(
       throw new PGliteCanonicalSourceAdmissionError(
         "invalid-financial-fact",
         "Financial account identity has conflicting classification.",
+      );
+    if (String(existing.institution_key) !== institutionKey)
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "Financial account identity has a conflicting Institution.",
       );
     if (account.accountNo != null && existing.account_no != null && String(existing.account_no) !== account.accountNo)
       throw new PGliteCanonicalSourceAdmissionError(
@@ -1162,8 +1169,8 @@ async function ensureFinancialAccount(
     transaction,
     `INSERT INTO financial_accounts(
        account_id, source_connection_id, identity_epoch_id, stream,
-       source_account_key, account_no, account_type, currency, created_commit_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       source_account_key, account_no, account_type, currency, institution_key, created_commit_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       accountId,
       capture.sourceConnectionId,
@@ -1173,6 +1180,7 @@ async function ensureFinancialAccount(
       account.accountNo ?? null,
       account.accountType,
       account.currency,
+      institutionKey,
       capture.commitId,
     ],
   );

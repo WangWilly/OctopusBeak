@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { TDCC_BASE_URL } from "../../src/workflows/tdcc-epassbook-client.ts";
 import { readAutomationCredentialsFile } from "../../src/lib/automation/server/config-files.ts";
-import { runTdccProbe } from "./probe.ts";
+import { nonIsoSettlementAccounts, runTdccProbe } from "./probe.ts";
 import { createTdccSecretStore } from "./stored-secrets.ts";
 
 // Built at runtime so the repository privacy hook does not see ID-shaped literals.
@@ -20,6 +20,8 @@ const SECRET = {
   personName: "王小明",
   memo: "轉帳陳大文",
   balance: "1288001",
+  nanAccount: ["0071", "2345", "11111"].join(""),
+  nanAvailable: "37460.25",
   tokenAfterLogin: "tok-after-login-7f",
   richSid: "sid-5e4d3c",
 };
@@ -76,11 +78,15 @@ function fakeTdcc({ trustDevice, sessionValid = true }) {
             tspAccount: [
               { accountNo: SECRET.bankAccount, currency: "TWD", balanceAmt: SECRET.balance, isShow: true },
               { accountNo: "999", currency: "TWD", balanceAmt: "1", isShow: false },
+              { accountNo: SECRET.nanAccount, currency: "NAN", balanceAmt: "0.00", availableBalance: SECRET.nanAvailable, isShow: true },
+              { accountNo: "998", currency: "NAN", balanceAmt: "1", availableBalance: "0", isShow: false },
             ],
           }],
         });
       case "tsp/TSP007":
-        return reply({ transactionDetails: [{ memo: SECRET.memo, transferInAmount: SECRET.balance }], totalCount: 1 });
+        return JSON.parse(init.body).requestBody.currency === "NAN"
+          ? reply({ transactionDetails: [], totalCount: 0 })
+          : reply({ transactionDetails: [{ memo: SECRET.memo, transferInAmount: SECRET.balance }], totalCount: 1 });
       case "TR002":
         return JSON.parse(init.body).requestBody.txnSerNo
           ? reply({}, { returnCode: "D0002", returnMsg: "end" })
@@ -169,7 +175,12 @@ test("first run registers the device, probes every endpoint, and writes no raw s
     assert.ok(report.endpoints[name].inventory, `${name} has an inventory`);
     assert.deepEqual(report.endpoints[name].failures, [], `${name} has no failures`);
   }
-  assert.equal(report.endpoints.bankTransactions.calls, 1, "hidden settlement accounts are skipped");
+  assert.equal(report.endpoints.bankTransactions.calls, 2, "hidden settlement accounts are skipped");
+  assert.deepEqual(
+    report.nonIsoSettlementAccounts,
+    [{ currency: "NAN", balanceNonZero: false, availableBalanceNonZero: true, hasTransactions: false }],
+    "only visible non-ISO accounts are reported, as booleans",
+  );
   assert.equal(report.endpoints.tradeDetails.pages, 1);
 
   const written = readFileSync(reportPath, "utf8") + readFileSync(join(space.reportsDirectory, "session-log.jsonl"), "utf8");
@@ -263,4 +274,22 @@ test("a changed sign-in identifier resets the device identity, a password change
   assert.notEqual(second?.deviceId, first?.deviceId);
   assert.equal(second?.userId, "SOMEONEELSE");
   assert.equal(JSON.parse(readFileSync(reportPath, "utf8")).device.reset, true);
+});
+
+test("a non-ISO settlement account reports transactions, a failed call, and an unparseable balance", () => {
+  const balances = {
+    tspAccountInfos: [{
+      bankId: "812",
+      tspAccount: [
+        { accountNo: "123456789", currency: "NAN", balanceAmt: "12.0", availableBalance: "-", isShow: true },
+        { accountNo: "223456789", currency: "NAN", balanceAmt: "0", availableBalance: "0", isShow: true },
+        { accountNo: "323456789", currency: "USD", balanceAmt: "5", availableBalance: "5", isShow: true },
+      ],
+    }],
+  };
+  const pages = new Map([[["812", "123456789", "NAN"].join("\u0000"), [{ transactionDetails: [{}] }]]]);
+  assert.deepEqual(nonIsoSettlementAccounts(balances, pages), [
+    { currency: "NAN", balanceNonZero: true, availableBalanceNonZero: "unparseable", hasTransactions: true },
+    { currency: "NAN", balanceNonZero: false, availableBalanceNonZero: false, hasTransactions: "call-failed" },
+  ]);
 });

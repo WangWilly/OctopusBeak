@@ -100,8 +100,8 @@ export async function createPGlitePairingPerformanceFixture(options: Readonly<{
       INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
         VALUES (decode(repeat('05', 16), 'hex'), 'benchmark-bank', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), '${BANK_ROUTE}', 'credit-card', 'benchmark-bank', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', '${BANK_ROUTE}', decode(repeat('01', 16), 'hex')),
                (decode(repeat('06', 16), 'hex'), 'benchmark-invoice', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), '${E_INVOICE_CONTRACT_VERSION}', 'personal-invoices', 'personal-invoice', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', '${E_INVOICE_COMPLETENESS_RULE_VERSION}', decode(repeat('01', 16), 'hex'));
-      INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id)
-        VALUES (decode(repeat('07', 16), 'hex'), decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'credit-card', 'benchmark-account', '****0000', 'credit', 'TWD', decode(repeat('01', 16), 'hex'));
+      INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id)
+        VALUES (decode(repeat('07', 16), 'hex'), decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'credit-card', 'benchmark-account', '****0000', 'credit', 'TWD', 'fubon', decode(repeat('01', 16), 'hex'));
       INSERT INTO canonical_credit_card_instruments(instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle)
         VALUES (decode(repeat('09', 16), 'hex'), 'fubon', decode(repeat('07', 16), 'hex'), 'benchmark-card', '****0000', 'primary', 'active');
     `);
