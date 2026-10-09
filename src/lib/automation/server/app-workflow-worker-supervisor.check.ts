@@ -460,3 +460,75 @@ test("cancellation aborts the host wait for OTP retrieval and consumes the bound
   assert.equal(task.worker.sent.some((frame) => frame.kind === "cathay-gmail-otp-response" && frame.operation === "retrieve"), false);
   assert.equal(task.worker.sent.filter((frame) => frame.kind === "cancel").length, 1);
 });
+
+function fakeTdccSessionHost() {
+  const saved: unknown[] = [];
+  const calls: string[] = [];
+  const host = {
+    open() {
+      calls.push("open");
+      return {
+        status: "ready" as const,
+        connection: { sourceConnectionKey: `sha256:${"a".repeat(43)}` as const, identityEpochKey: `sha256:${"b".repeat(43)}` as const },
+        device: { deviceId: "0123456789abcdef", devType: "Android:14", devModel: "SM-G991B" },
+        session: { tokenId: "saved-token", richUrl: null, issuedAt: "2026-10-01T00:00:00.000Z" },
+      };
+    },
+    signInDetails() {
+      calls.push("sign-in-details");
+      return { status: "ready" as const, details: { userId: "fixture-user", password: "fixture-password" } };
+    },
+    saveSession(session: unknown) { saved.push(session); },
+  };
+  return { host, saved, calls };
+}
+
+const tdccRequestId = "6f1c2a8e-0b7d-4c3e-9a1f-2d4b6c8e0a1b";
+const rotated = (tokenId: string) => ({
+  protocolVersion: 2,
+  kind: "tdcc-session-rotated",
+  session: { tokenId, richUrl: null, issuedAt: "2026-10-09T00:00:00.000Z" },
+});
+
+test("TDCC session requests are answered only by the host port of a TDCC run", async () => {
+  const tdcc = fakeTdccSessionHost();
+  const task = harness({ tdccSession: tdcc.host });
+  task.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
+  const openResponse = task.worker.sent.at(-1) as unknown as { lease: { status: string } };
+  assert.equal(openResponse.lease.status, "ready");
+  assert.equal(JSON.stringify(openResponse).includes("fixture-password"), false, "opening a session never sends the password");
+  task.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: "7f1c2a8e-0b7d-4c3e-9a1f-2d4b6c8e0a1b", operation: "sign-in-details" });
+  assert.deepEqual((task.worker.sent.at(-1) as unknown as { lease: unknown }).lease, {
+    status: "ready",
+    details: { userId: "fixture-user", password: "fixture-password" },
+  });
+  assert.deepEqual(tdcc.calls, ["open", "sign-in-details"]);
+  task.worker.send({ protocolVersion: 2, kind: "completed", taskRunId: base.runId, summary: null });
+  task.worker.exit(0);
+  assert.equal((await task.run).status, "completed");
+
+  const other = harness();
+  other.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
+  const outcome = await other.run;
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.errorCode, "protocol-invalid");
+});
+
+test("the newest rotated TDCC session is saved even when the worker fails or exits right after", async () => {
+  const failedRun = fakeTdccSessionHost();
+  const failing = harness({ tdccSession: failedRun.host });
+  failing.worker.send(rotated("token-1"));
+  failing.worker.send(rotated("token-2"));
+  failing.worker.send({ protocolVersion: 2, kind: "failed", taskRunId: base.runId, errorCode: "source-collection-failed" });
+  failing.worker.exit(1);
+  assert.equal((await failing.run).status, "failed");
+  assert.deepEqual(failedRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-2"]);
+
+  const crashedRun = fakeTdccSessionHost();
+  const crashing = harness({ tdccSession: crashedRun.host });
+  crashing.worker.online();
+  crashing.worker.send(rotated("token-3"));
+  crashing.worker.exit(1);
+  assert.equal((await crashing.run).status, "failed");
+  assert.deepEqual(crashedRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-3"]);
+});

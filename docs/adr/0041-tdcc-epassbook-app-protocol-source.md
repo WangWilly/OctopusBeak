@@ -18,6 +18,21 @@ The Phase 0 probe showed that TDCC trusts one device per person at a time. A sig
 
 The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it. Gmail retrieval of TDCC codes is out of scope.
 
+## Session port
+
+The sign-in details, the device identity, and the session token stay out of the workflow input and the child environment, like the Gmail refresh token. A TDCC run reaches them through a host-owned session port, `TdccSessionPort` in `src/workflows/tdcc-session.ts`. The worker sends its requests as frames, and Electron main answers them from `credentials.json` through `createTdccSessionHost`.
+
+- `open()` returns the Source connection keys, the registered device, and the last saved session. It never returns the password. When no device is registered for the saved sign-in identifier, it returns `device-registration-required`.
+- `signInDetails()` returns the sign-in identifier and password. A run asks for them only when TDCC no longer accepts the saved session.
+- `saveSession()` is a one-way frame that the client sends on every token rotation. The host writes the newest rotation without acknowledging it, and it writes any pending rotation before the run settles, even after a failure, a cancellation, or a worker crash. The host saves a session only while the device the run leased is still the registered one, so a run that overlaps a new registration cannot overwrite the newer session.
+
+Two other shapes were considered:
+
+- **Host-owned client.** Electron main would hold the `TdccClient` and make every TDCC call, and the worker would ask for response bodies by endpoint. No secret would ever reach the worker. But every endpoint and every TDCC failure reason would need its own frame, the paging loops would move into main, and an account's TR002 history could exceed one frame. Main would also perform the network calls of a run.
+- **Secrets in the workflow input.** The host would put the device, session, and password into the worker's start data and read the rotated token from the run result. It is the smallest change, but it puts every TDCC secret into the input of every run, and a run that fails or is cancelled returns no result, so the rotated token is lost.
+
+The lease shape keeps the password out of a run that reuses its session and saves every rotation as it happens. It costs two request frames and one one-way frame.
+
 ## Rollout
 
 Phase 0 is a development-only probe command. It reuses the production TDCC client and records a redacted field inventory of every endpoint (positions, funds, settlement balances and transactions, trades, asset trend) to a git-ignored local directory. It writes nothing to the canonical store and is not packaged. The probe reaches device trust through the registration action from the terminal, not through a workflow stage. Phase 1 admits each product only after the inventory settles its Source Contract and overlap handling. The first sync then collects all history TDCC offers and continues incrementally from its cursor.

@@ -6,7 +6,9 @@ import type {
   WorkflowExecutorPorts,
   WorkflowFinancialCommitPort,
   WorkflowRunEvent,
+  WorkflowTdccPort,
 } from "../workflow-executor.ts";
+import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
 import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
@@ -34,6 +36,8 @@ import {
   type CathayGmailOtpOperation,
   type CathayGmailOtpRequestFrame,
   type CathayGmailOtpResponseFrame,
+  type TdccSessionOperation,
+  type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
 import {
   workflowDefinitionForTask,
@@ -118,6 +122,10 @@ export async function runAppWorkflowWorker(
     resolve(frame: AppWorkflowWorkerInboundFrame): void;
     reject(error: Error): void;
   }>>();
+  const pendingTdccSession = new Map<string, Readonly<{
+    operation: TdccSessionOperation;
+    resolve(frame: TdccSessionResponseFrame): void;
+  }>>();
   const events: WorkflowRunEvent[] = [];
   let protocolFailure = false;
   let terminal = false;
@@ -130,6 +138,7 @@ export async function runAppWorkflowWorker(
     pendingEvents.clear();
     pendingAssistance.clear();
     pendingCathayOtp.clear();
+    pendingTdccSession.clear();
   };
   const onAbort = () => failPending();
   controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -157,6 +166,17 @@ export async function runAppWorkflowWorker(
       }
       pendingEvents.delete(frame.eventId);
       resolve(frame);
+      return;
+    }
+    if (frame.kind === "tdcc-session-response") {
+      const pending = pendingTdccSession.get(frame.requestId);
+      if (!pending || pending.operation !== frame.operation) {
+        protocolFailure = true;
+        if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
+        return;
+      }
+      pendingTdccSession.delete(frame.requestId);
+      pending.resolve(frame);
       return;
     }
     if (frame.kind === "cathay-gmail-otp-response") {
@@ -289,6 +309,53 @@ export async function runAppWorkflowWorker(
     },
   };
 
+  const requestTdccSession = (operation: TdccSessionOperation): Promise<TdccSessionResponseFrame> =>
+    new Promise((resolve, reject) => {
+      if (controller.signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const requestId = randomUUID();
+      const onAbortRequest = () => {
+        pendingTdccSession.delete(requestId);
+        reject(abortError());
+      };
+      controller.signal.addEventListener("abort", onAbortRequest, { once: true });
+      pendingTdccSession.set(requestId, {
+        operation,
+        resolve: (value) => {
+          controller.signal.removeEventListener("abort", onAbortRequest);
+          resolve(value);
+        },
+      });
+      try {
+        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-request", requestId, operation });
+      } catch {
+        controller.signal.removeEventListener("abort", onAbortRequest);
+        pendingTdccSession.delete(requestId);
+        reject(new AppWorkflowWorkerProtocolError());
+      }
+    });
+
+  const tdccSessionPort: TdccSessionPort = {
+    async open() {
+      const response = await requestTdccSession("open");
+      if (response.operation !== "open") throw new AppWorkflowWorkerProtocolError();
+      return response.lease;
+    },
+    async signInDetails() {
+      const response = await requestTdccSession("sign-in-details");
+      if (response.operation !== "sign-in-details") throw new AppWorkflowWorkerProtocolError();
+      return response.lease;
+    },
+    saveSession(session) {
+      // Sent even after cancellation: the rotated token is what the next run signs in with.
+      try {
+        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-rotated", session });
+      } catch { /* an unsendable session leaves the previous one; the next run signs in again */ }
+    },
+  };
+
   let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
   let progressQueue = Promise.resolve();
   let acknowledgedEventQueue = Promise.resolve();
@@ -352,7 +419,13 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    if (definition.requiresMaicoinPersistence && !childRpc) throw new Error("worker-start-failed");
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc) && !childRpc) throw new Error("worker-start-failed");
+    const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
+      ? {
+        session: tdccSessionPort,
+        admittedFundAccounts: (connection) => childRpc!.financial.listTdccFundAccounts(connection),
+      }
+      : undefined;
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
       async append(event) {
@@ -393,6 +466,7 @@ export async function runAppWorkflowWorker(
       humanAssistance,
       ...(financialCommit ? { financialCommit } : {}),
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
+      ...(tdcc ? { tdcc } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,

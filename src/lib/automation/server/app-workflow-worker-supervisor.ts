@@ -20,7 +20,11 @@ import {
   type AppWorkflowWorkerStart,
   type CathayGmailOtpRequestFrame,
   type CathayGmailOtpResponseFrame,
+  type TdccSessionRequestFrame,
+  type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
+import type { TdccSessionHost } from "./tdcc-session-host.ts";
+import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
 
 export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-start-failed" | "protocol-invalid";
 
@@ -75,6 +79,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
   ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
+  /** The host side of a TDCC run's session port; absent for every other workflow. */
+  tdccSession?: TdccSessionHost;
   /** Test seam; production creates one host OTP adapter per Cathay run. */
   createCathayGmailOtpPort?: (signal: AbortSignal) => CathayGmailOtpPort;
   /** Defaults to the sibling bundle emitted by the Electron build. */
@@ -98,6 +104,17 @@ const DEFAULT_TERMINAL_GRACE_MS = 1_000;
 const MAX_CATHAY_OTP_OPERATIONS_PER_RUN = 128;
 const CATHAY_OTP_BOUNDARY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CATHAY_OTP_PATTERN = /^[A-Z]{4}-[0-9]{6}$/u;
+const MAX_TDCC_SESSION_REQUESTS_PER_RUN = 8;
+
+function tdccSessionResponse(
+  host: TdccSessionHost,
+  request: TdccSessionRequestFrame,
+): TdccSessionResponseFrame {
+  const frame = { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-response", requestId: request.requestId } as const;
+  return request.operation === "open"
+    ? { ...frame, operation: "open", lease: host.open() }
+    : { ...frame, operation: "sign-in-details", lease: host.signInDetails() };
+}
 
 function failed(
   errorCode: AppWorkflowWorkerFailureCode,
@@ -267,6 +284,21 @@ export async function runSupervisedAppWorkflow(
   let assistanceInFlight = false;
   let cathayOtpInFlight = false;
   let cathayOtpRequestCount = 0;
+  let tdccSessionRequestCount = 0;
+  let tdccSession = options.tdccSession;
+  let rotatedTdccSession: TdccIssuedSession | null = null;
+  let rotatedTdccSessionFlush: ReturnType<typeof setImmediate> | undefined;
+  // Rotations arrive once per TDCC request, so only the newest one is written.
+  const flushRotatedTdccSession = () => {
+    if (rotatedTdccSessionFlush) clearImmediate(rotatedTdccSessionFlush);
+    rotatedTdccSessionFlush = undefined;
+    const session = rotatedTdccSession;
+    rotatedTdccSession = null;
+    if (!session || !tdccSession) return;
+    try {
+      tdccSession.saveSession(session);
+    } catch { /* a failed write leaves the previous session, which the next run replaces by signing in */ }
+  };
   let eventCount = 0;
   const eventIds = new Set<string>();
   const assistanceIds = new Set<string>();
@@ -287,6 +319,8 @@ export async function runSupervisedAppWorkflow(
     };
     const cleanup = () => {
       clearTimers();
+      flushRotatedTdccSession();
+      tdccSession = undefined;
       options.signal.removeEventListener("abort", onAbort);
       worker.off("message", onMessage);
       worker.off("error", onError);
@@ -473,6 +507,15 @@ export async function runSupervisedAppWorkflow(
         protocolFailure();
         return;
       }
+      if (frame.kind === "tdcc-session-rotated") {
+        if (!tdccSession) {
+          if (!pendingOutcome) protocolFailure();
+          return;
+        }
+        rotatedTdccSession = frame.session;
+        rotatedTdccSessionFlush ??= setImmediate(flushRotatedTdccSession);
+        return;
+      }
       if (pendingOutcome) {
         if (pendingOutcome.status === "cancelled"
           && (frame.kind === "failed" || frame.kind === "cancelled")
@@ -559,6 +602,23 @@ export async function runSupervisedAppWorkflow(
         cathayOtpRequestIds.add(frame.requestId);
         cathayOtpInFlight = true;
         void finishCathayOtp(frame);
+        return;
+      }
+
+      if (frame.kind === "tdcc-session-request") {
+        if (!tdccSession || tdccSessionRequestCount >= MAX_TDCC_SESSION_REQUESTS_PER_RUN) {
+          protocolFailure();
+          return;
+        }
+        tdccSessionRequestCount += 1;
+        let response: TdccSessionResponseFrame;
+        try {
+          response = tdccSessionResponse(tdccSession, frame);
+        } catch {
+          protocolFailure();
+          return;
+        }
+        send(response);
         return;
       }
 
