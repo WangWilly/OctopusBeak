@@ -8,7 +8,7 @@ export type PGliteDailyHistoryReader = Readonly<{
 
 type DailyHistoryEventRow = Readonly<{
   event_date: string;
-  event_type: "balance" | "holding";
+  event_type: "balance" | "holding" | "holding-snapshot";
   account_id: string;
   account_type: "depository" | "credit" | "loan" | "investment" | "other";
   integration_namespace: string;
@@ -147,20 +147,19 @@ type HoldingCollection = Readonly<{ accountId: string; observedAt: string; secur
  * newer collection of the same account no longer reports was sold. That
  * collection takes effect on its earliest effective date. Funds report each
  * holding on its own NAV date, which is why a collection is keyed by
- * observed_at rather than by effective date.
+ * observed_at rather than by effective date. A capture that declares an
+ * empty snapshot is a collection that holds nothing.
  */
 function holdingCollectionsByStart(rows: readonly DailyHistoryEventRow[]): Map<string, HoldingCollection[]> {
   const collections = new Map<string, { accountId: string; observedAt: string; start: string; securities: Set<string> }>();
   for (const row of rows) {
-    if (row.event_type !== "holding" || row.security_id === null || row.observed_at === null) continue;
+    if (row.event_type === "balance" || row.observed_at === null) continue;
     const key = `${row.account_id}\u0000${row.observed_at}`;
-    const collection = collections.get(key);
-    if (!collection) {
-      collections.set(key, { accountId: row.account_id, observedAt: row.observed_at, start: row.event_date, securities: new Set([row.security_id]) });
-    } else {
-      collection.securities.add(row.security_id);
-      if (row.event_date < collection.start) collection.start = row.event_date;
-    }
+    const collection = collections.get(key)
+      ?? { accountId: row.account_id, observedAt: row.observed_at, start: row.event_date, securities: new Set<string>() };
+    collections.set(key, collection);
+    if (row.security_id !== null) collection.securities.add(row.security_id);
+    if (row.event_date < collection.start) collection.start = row.event_date;
   }
   const byStart = new Map<string, HoldingCollection[]>();
   for (const { start, ...collection } of collections.values()) {
@@ -253,6 +252,25 @@ export async function readPGliteDailyHistoryWithAccounts(
      SELECT event_date, event_type, account_id, account_type,
             integration_namespace, balance_kind, currency, coefficient, scale, security_id, observed_at
        FROM holding_candidates WHERE selection_rank = 1
+     UNION ALL
+     SELECT snapshot.effective_on AS event_date,
+            'holding-snapshot'::text AS event_type,
+            encode(account.account_id, 'hex') AS account_id,
+            account.account_type,
+            connection.integration_namespace,
+            NULL::text AS balance_kind,
+            NULL::text AS currency,
+            NULL::text AS coefficient,
+            NULL::bigint AS scale,
+            NULL::text AS security_id,
+            snapshot.observed_at
+       FROM investment_holding_snapshots snapshot
+       JOIN financial_accounts account ON account.account_id = snapshot.account_id
+       JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+       JOIN canonical_commits account_commit ON account_commit.commit_id = account.created_commit_id
+       JOIN canonical_commits commit_row ON commit_row.commit_id = snapshot.commit_id
+      WHERE account_commit.commit_sequence <= $1
+        AND commit_row.commit_sequence <= $1
       ORDER BY event_date, event_type, account_id, balance_kind, security_id, currency`,
     [knowledgePoint],
   );
