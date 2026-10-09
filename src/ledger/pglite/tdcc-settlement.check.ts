@@ -135,6 +135,17 @@ test("TSP006 reports hidden accounts, and reads no balance of an account it does
   assert.ok(snapshot.exclusions.some((exclusion) => exclusion.reason === "non-iso-currency" && exclusion.accountNoSuffix === "8888"));
 });
 
+test("TSP006 reports an account whose number is not digits, and still admits the others", () => {
+  const body = tsp006();
+  // Shaped like the account a catalog bank reported as a 16-character mostly-letter token.
+  body.tspAccountInfos[0]!.tspAccount.push(account("ABCDE1FxG23H4567", "TWD", "100", "100"));
+  const snapshot = readTdccSettlementSnapshot(body);
+  assert.deepEqual(snapshot.accounts.map(({ sourceAccountKey }) => sourceAccountKey), [TWD_KEY, USD_KEY]);
+  assert.deepEqual(snapshot.exclusions.filter(({ reason }) => reason === "non-numeric-account-number"), [
+    { reason: "non-numeric-account-number", bankId: "812", currency: "TWD", accountNoSuffix: "4567" },
+  ]);
+});
+
 test("TSP006 without a required field or with an ROC updateTime is rejected", () => {
   const missing = tsp006();
   delete (missing.tspAccountInfos[0]!.tspAccount[0] as Partial<ReturnType<typeof account>>).availableBalance;

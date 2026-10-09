@@ -137,12 +137,13 @@ export function tdccProductFailureCode(error: unknown): TypedWorkflowErrorCode |
 export type TdccExclusionCounts = {
   excludedUnknownInstitutionCount: number;
   excludedNonIsoCurrencyCount: number;
+  excludedNonNumericAccountCount: number;
   excludedTimeDepositCount: number;
   hiddenAccountCount: number;
 };
 
 export function emptyTdccExclusionCounts(): TdccExclusionCounts {
-  return { excludedUnknownInstitutionCount: 0, excludedNonIsoCurrencyCount: 0, excludedTimeDepositCount: 0, hiddenAccountCount: 0 };
+  return { excludedUnknownInstitutionCount: 0, excludedNonIsoCurrencyCount: 0, excludedNonNumericAccountCount: 0, excludedTimeDepositCount: 0, hiddenAccountCount: 0 };
 }
 
 function countExclusions(counts: TdccExclusionCounts, exclusions: readonly (TdccSettlementExclusion | TdccInvestmentExclusion)[]) {
@@ -150,6 +151,7 @@ function countExclusions(counts: TdccExclusionCounts, exclusions: readonly (Tdcc
     switch (exclusion.reason) {
       case "unknown-institution-code": counts.excludedUnknownInstitutionCount += 1; break;
       case "non-iso-currency": counts.excludedNonIsoCurrencyCount += 1; break;
+      case "non-numeric-account-number": counts.excludedNonNumericAccountCount += 1; break;
       case "time-deposits-not-admitted": counts.excludedTimeDepositCount += exclusion.count; break;
       case "hidden-account": counts.hiddenAccountCount += 1; break;
     }

@@ -852,6 +852,8 @@ const en = {
         `${count} ${count === 1 ? "account is" : "accounts are"} at a bank or broker code OctopusBeak does not know yet.`,
       nonIsoCurrency: (count: number) =>
         `${count} settlement ${count === 1 ? "account has" : "accounts have"} a currency TDCC does not name with a standard code.`,
+      nonNumericAccount: (count: number) =>
+        `${count} settlement ${count === 1 ? "account is" : "accounts are"} reported without a numeric account number and not imported yet.`,
       timeDeposits: (count: number) =>
         `${count} time ${count === 1 ? "deposit is" : "deposits are"} not imported yet.`,
       hiddenAccounts: (count: number) =>
@@ -2042,6 +2044,7 @@ const zh: typeof en = {
       title: "未從集保匯入",
       unknownInstitution: (count) => `${count} 個帳戶的銀行或券商代碼尚未收錄。`,
       nonIsoCurrency: (count) => `${count} 個交割帳戶的幣別沒有標準幣別代碼。`,
+      nonNumericAccount: (count) => `${count} 個交割帳戶的帳號不是純數字，目前不匯入。`,
       timeDeposits: (count) => `${count} 筆定期存款目前不匯入。`,
       hiddenAccounts: (count) => `${count} 個帳戶在集保e手掌握 App 中設為隱藏。`,
     },

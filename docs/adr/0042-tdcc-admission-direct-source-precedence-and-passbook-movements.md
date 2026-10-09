@@ -44,7 +44,7 @@ Each settlement account is one Financial Account per bank code, account number, 
 - `txnDateTime`, `startDate`, `endDate`, and `updateTime` are read as Gregorian Asia/Taipei times, as the all-set-tw reference reads them. The 14-digit and 8-digit shapes would also fit an ROC `0YYY` year, so a year outside 1900 to 2099 rejects the capture instead of being misread.
 - TSP007 has no reliable occurrence identifier. The reference client saw TDCC fill in `stan` after a row first appeared, so `stan` and `hcode` stay out of identity and content. Identical rows keep their multiplicity through occurrence groups ([ADR 0034](0034-workflow-semantic-occurrence-disambiguation.md)). Only the `hcode` values seen live, empty and `0`, are admitted.
 - TSP006 gives one current-balance capture per account: `balanceAmt` is the ledger balance and `availableBalance` is the available balance, both effective at the response's `updateTime`.
-- An account with an unknown bank code or a non-ISO currency, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read.
+- An account with an unknown bank code, a non-ISO currency, or an account number that is not 6 to 24 digits, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read.
 
 ### Passbook movements
 
