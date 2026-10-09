@@ -232,6 +232,8 @@ const TRADE_CODE_SLOTS = [4, 5, 6, 7, 8, 10, 11, 14, 15, 20].map((slot) => `$[].
 
 type TradeCursorTrial = Readonly<{
   firstPageRows: number;
+  /** txnDate of the oldest row on page one, to compare with the earliest trade the phone App shows. */
+  oldestTxnDate: string;
   secondPage: ReadonlyArray<{ cursor: string; end: boolean; rows: number } | { cursor: string; failure: ProbeFailure }>;
 }>;
 
@@ -259,11 +261,12 @@ async function probeTradeCursors(client: TdccClient, terminal: ProbeTerminal): P
       }
     }
     terminal.print(
-      `tradeCursorExperiment: first page ${first.rows.length} row(s); page two ${secondPage
+      `tradeCursorExperiment: first page ${first.rows.length} row(s), oldest ${String(last[9] ?? "")}; page two ${secondPage
         .map((trial) => `${trial.cursor}=${"rows" in trial ? trial.rows : "failed"}`)
         .join(", ")}`,
     );
-    trials.push({ firstPageRows: first.rows.length, secondPage });
+    const oldestTxnDate = String(last[9] ?? "");
+    trials.push({ firstPageRows: first.rows.length, oldestTxnDate, secondPage });
   }
   return trials;
 }
