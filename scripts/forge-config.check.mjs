@@ -38,6 +38,20 @@ test("Forge keeps only the exact Desktop OAuth file under packaged app/data", ()
   );
 });
 
+test("Forge leaves the development TDCC probe and local reports out of the installer", () => {
+  for (const path of [
+    "/scripts/tdcc-probe.mjs",
+    "/scripts/tdcc-probe",
+    "/scripts/tdcc-probe/probe.ts",
+    "/reports",
+    "/reports/tdcc-probe/session-log.jsonl",
+  ]) {
+    assert.equal(isIgnored(path), true, `${path} must not enter the installer`);
+  }
+  assert.equal(isIgnored("/scripts/desktop-browser-payload.cjs"), false);
+  assert.equal(isIgnored("/src/workflows/tdcc-epassbook-client.ts"), false);
+});
+
 test("Forge keeps only Chromium headless-shell and FFmpeg payload directories", () => {
   const localBrowserRoot = "/node_modules/playwright-core/.local-browsers";
   for (const relativePath of [
