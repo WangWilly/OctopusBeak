@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
   PGLITE_EINVOICE_CONTRACT_VERSION,
@@ -99,10 +99,9 @@ async function counts(store: PGliteStore): Promise<Record<string, number>> {
 }
 
 test("PGlite E-Invoice preserves recurrent revisions, item order, revocation, and Spending reads", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const issued = await commitPGliteCanonicalEInvoiceCapture(store, capture("pglite-einvoice-issued", [invoice()]));
     assert.equal(issued.invoiceCount, 1);
     assert.equal(issued.insertedInvoiceCount, 1);
@@ -155,10 +154,9 @@ test("PGlite E-Invoice preserves recurrent revisions, item order, revocation, an
 });
 
 test("PGlite E-Invoice rejects changed revision evidence atomically", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("pglite-einvoice-conflict-seed", [invoice()]));
     const original = invoice();
     const conflicting: CanonicalEInvoiceInput = { ...original, seller: { ...original.seller, name: "不同商店" } };

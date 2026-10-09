@@ -7,7 +7,7 @@ import { MessageChannel } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 import { createPGliteFinancialRegistry } from "../../../../electron/pglite-financial-registry.ts";
-import { applyPgliteBaseline } from "../../../ledger/pglite/baseline.ts";
+import { createBaselinePGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maicoin-operational.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -26,9 +26,8 @@ function maxResponse(body: unknown, date = "Wed, 02 Sep 2026 04:05:06 GMT") {
 test("MaiCoin worker uses injected financial commit and operational RPC without writing run artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-app-execution-"));
   const previousDirectory = process.cwd();
-  const database = await PGlite.create(join(root, "pglite"));
+  const database = await createBaselinePGlite({ dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteBaseline(database);
   await applyPgliteOperationalBaseline(store);
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
