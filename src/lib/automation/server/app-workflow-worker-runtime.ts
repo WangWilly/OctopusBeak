@@ -37,6 +37,7 @@ import {
 } from "./app-workflow-worker-protocol.ts";
 import {
   workflowDefinitionForTask,
+  workflowRuntimeForTask,
   type AppWorkflowRegistryDependencies,
 } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
@@ -304,7 +305,7 @@ export async function runAppWorkflowWorker(
     return result;
   };
   try {
-    if (start.pgliteRpc && (start.workflowId === "exchange-rates" || start.workflowId === "sync-maicoin")) {
+    if (start.pgliteRpc && workflowRuntimeForTask(start.workflowId).kind === "nonbrowser") {
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
         token: start.pgliteRpc.token,
