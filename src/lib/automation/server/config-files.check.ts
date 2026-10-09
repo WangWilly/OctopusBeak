@@ -10,6 +10,7 @@ import {
   AUTOMATION_SETTINGS_PATH,
   CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
+  TDCC_HOST_KEYS,
   automationConfigEnv,
   credentialStatusFromValues,
   ensureAutomationManagedSecrets,
@@ -134,6 +135,19 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
     [fubonPasswordKey]: "pw",
   });
+
+  const tdccSecrets = Object.fromEntries(TDCC_HOST_KEYS.map((key) => [key, `${key}-value`]));
+  const tdccCredentialsPath = join(dir, "tdcc-credentials.json");
+  writeAutomationCredentialsFile(tdccCredentialsPath, { ...tdccSecrets, [fubonPasswordKey]: "pw" }, null);
+  assert.deepEqual(
+    readAutomationCredentialsFile(tdccCredentialsPath, null),
+    { ...tdccSecrets, [fubonPasswordKey]: "pw" },
+    "TDCC secrets survive a credentials rewrite",
+  );
+  const workflowEnv = automationConfigEnv({ baseEnv: {}, settings: {}, credentials: tdccSecrets });
+  for (const key of TDCC_HOST_KEYS) {
+    assert.equal(workflowEnv[key], undefined, `${key} stays out of child workflow environments`);
+  }
 
   assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");

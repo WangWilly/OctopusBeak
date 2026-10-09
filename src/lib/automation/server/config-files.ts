@@ -36,6 +36,22 @@ export const CATHAY_GMAIL_HOST_KEYS = [
   CATHAY_GMAIL_CONNECTED_EMAIL_KEY,
 ] as const;
 
+// TDCC sign-in details and its registered device identity and session token
+// (TDCC App protocol ADR). Until TDCC runs as a workflow only the host and its
+// development probe use them, so they never reach a child workflow environment.
+export const TDCC_USER_ID_KEY = "LIBRETTO_CLOUD_TDCC_USER_ID";
+export const TDCC_PASSWORD_KEY = "LIBRETTO_CLOUD_TDCC_PASSWORD";
+export const TDCC_DEVICE_IDENTITY_KEY = "LIBRETTO_CLOUD_TDCC_DEVICE_IDENTITY";
+export const TDCC_SESSION_KEY = "LIBRETTO_CLOUD_TDCC_SESSION";
+export const TDCC_HOST_KEYS = [
+  TDCC_USER_ID_KEY,
+  TDCC_PASSWORD_KEY,
+  TDCC_DEVICE_IDENTITY_KEY,
+  TDCC_SESSION_KEY,
+] as const;
+
+const HOST_ONLY_SECRET_KEYS = new Set<string>([...CATHAY_GMAIL_HOST_KEYS, ...TDCC_HOST_KEYS]);
+
 export type AutomationCredentialCodec = {
   encrypt(text: string): string;
   decrypt(payload: string): string;
@@ -71,7 +87,7 @@ const automationSettingKeys = new Set<string>([
 ]);
 const automationSecretKeys = new Set<string>([
   ...AUTOMATION_SECRET_KEYS,
-  ...CATHAY_GMAIL_HOST_KEYS,
+  ...HOST_ONLY_SECRET_KEYS,
 ]);
 const automationManagedSecretKeys = new Set<string>(
   AUTOMATION_MANAGED_SECRET_KEYS,
@@ -398,13 +414,9 @@ export function automationConfigEnv({
   const env = {
     ...baseEnv,
     ...settingsToEnv(settings),
-    ...Object.fromEntries(
-      Object.entries(credentials).filter(
-        ([key]) => !CATHAY_GMAIL_HOST_KEYS.includes(key as typeof CATHAY_GMAIL_HOST_KEYS[number]),
-      ),
-    ),
+    ...credentials,
   };
-  for (const key of CATHAY_GMAIL_HOST_KEYS) delete env[key];
+  for (const key of HOST_ONLY_SECRET_KEYS) delete env[key];
   if (env.NODE_ENV === "production") env.NODE_ENV = "development";
   return env;
 }
