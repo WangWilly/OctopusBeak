@@ -152,7 +152,7 @@ An `investment` financial account with evidence-supported subtype `crypto_exchan
 _Avoid_: Crypto holding observation, token, UI wallet label
 
 **Holding observation**:
-A source-reported quantity, cost, or valuation of a Security held in an investment financial account, recorded as a distinct evidence checkpoint only when its integration contract can establish when the measurement was financially effective. The current holding is a projection from the latest valid observation, while transaction history remains a separate event record.
+A source-reported quantity, cost, or valuation of a Security held in an investment financial account, recorded as a distinct evidence checkpoint only when its integration contract can establish when the measurement was financially effective. The current holding is a projection from the latest valid observation, while transaction history remains a separate event record. A capture that declares a complete holding snapshot ends every earlier holding of its account that the snapshot omits, even when the snapshot is empty.
 _Avoid_: Investment transaction, mutable current holding, liability balance
 
 **Passbook movement**:

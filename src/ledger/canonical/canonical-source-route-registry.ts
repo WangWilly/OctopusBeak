@@ -33,6 +33,7 @@ import {
   TDCC_SETTLEMENT_DEPOSIT_CONTRACT,
   TDCC_SETTLEMENT_DEPOSIT_ROUTE,
 } from "./tdcc-settlement-contract.ts";
+import { TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "./tdcc-investment-contract.ts";
 import {
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   manifestFingerprint as yuantaHumanAttestationFingerprint,
@@ -500,6 +501,13 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     contractVersions: ["maicoin/investment/canonical-v1"],
     ruleCombinations: [sameRuleTuple("maicoin/investment/canonical-v1", "maicoin/investment/canonical-v1")],
     nonIsoFinancialDenominations: ["USDT"],
+  },
+  {
+    routeKey: TDCC_INVESTMENT_ROUTE,
+    integrationNamespace: TDCC_NAMESPACE,
+    stream: "investment",
+    contractVersions: [TDCC_INVESTMENT_CONTRACT],
+    ruleCombinations: [sameRuleTuple(TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_CONTRACT)],
   },
   {
     routeKey: "yuanta-fund/investment/margin-credit-canonical-v1",
