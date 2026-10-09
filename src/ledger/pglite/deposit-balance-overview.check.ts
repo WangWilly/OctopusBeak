@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
@@ -352,10 +352,9 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
 }
 
 test("PGlite deposit and balance commands feed current and historical overview atomically", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const deposit = await commitPGliteCanonicalDepositCapture(
       store,
       depositRequest("deposit-1", { includeStatementEvidence: true, includeConversionEvidence: true }),
@@ -544,10 +543,9 @@ test("PGlite deposit and balance commands feed current and historical overview a
 });
 
 test("PGlite deposit command preserves foreign-currency account scope and exact row currency", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const foreignCapture = createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1);
     const committed = await commitPGliteCanonicalDepositCapture(store, foreignCapture, { clock: () => 300 });
     assert.equal(committed.transactions[0]?.amount.coefficient, "1025");
@@ -564,10 +562,9 @@ test("PGlite deposit command preserves foreign-currency account scope and exact 
 });
 
 test("PGlite deposit identity is independent of collection sequence across captures", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = depositRequest("stable-first");
     const later = depositRequest("stable-later");
     const laterRecord = {
@@ -627,10 +624,9 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
   assert.equal(financial.status, "admitted");
   assert.ok(financial.capture);
 
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const committed = await commitPGliteCanonicalDepositCapture(store, financial.capture, { clock: () => 350 });
     assert.equal(committed.transactions.length, 1);
     assert.deepEqual(
@@ -646,10 +642,9 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
 });
 
 test("complete deposit ranges withdraw omitted prior source assertions without deleting evidence", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalDepositCapture(store, depositRequest("withdrawal-seed"), { clock: () => 400 });
     const omittedSeed = depositRequest("withdrawal-empty");
     const omitted: PGliteCanonicalDepositCommitRequest = {
@@ -678,10 +673,9 @@ test("complete deposit ranges withdraw omitted prior source assertions without d
 });
 
 test("overview preserves investment holdings, transactions, margin lineage, and group selectors", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await seedInvestmentOverviewFixture(store);
     const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
     const account = projection.accounts[0];
@@ -773,10 +767,9 @@ async function seedSecondHoldingCollection(
 }
 
 test("a security missing from a newer complete holding collection is sold in both current and history", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await seedInvestmentOverviewFixture(store);
     await seedSecondHoldingCollection(store, [{ security: "acme", effectiveOn: "2026-09-23", quantity: "5", valuation: "13000" }]);
     const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
@@ -795,10 +788,9 @@ test("a security missing from a newer complete holding collection is sold in bot
 });
 
 test("holdings of one collection on different valuation dates are all still held", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await seedInvestmentOverviewFixture(store);
     await seedSecondHoldingCollection(store, [
       { security: "beta", effectiveOn: "2026-09-23", quantity: "10", valuation: "3300" },

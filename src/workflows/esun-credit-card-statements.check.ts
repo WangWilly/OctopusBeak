@@ -30,7 +30,7 @@ import {
   esunNeutralCreditCardCapture,
 } from "../ledger/canonical/esun-credit-card-admission.ts";
 import { creditCardBalanceCommandRequest, creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { createBaselinePGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardBalanceCapture, commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 
@@ -511,10 +511,9 @@ const timelineCommand = creditCardCommandRequestFromCanonicalCapture(
 );
 assert.equal(timelineCommand.capture.routeKey, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE);
 test("E.SUN v4 timeline capture commits to a fresh PGlite database", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const result = await commitPGliteCanonicalCreditCardCapture(store, timelineCommand);
     assert.equal(result.transactionCount, 2);
     assert.equal(result.statementCount, 1);
@@ -547,7 +546,7 @@ test("E.SUN v4 timeline capture commits to a fresh PGlite database", async () =>
 });
 
 test("E.SUN duplicate slots survive a complete billing move and reject same-capture overlap", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   const duplicateBilled: StatementRow = {
     ...billedRow,
@@ -583,7 +582,6 @@ test("E.SUN duplicate slots survive a complete billing move and reject same-capt
     );
   };
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalCreditCardCapture(
       store,
       buildDuplicateCommand("esun-duplicates-unbilled", [], [duplicateUnbilled, duplicateUnbilled]),

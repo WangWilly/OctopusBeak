@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
@@ -182,10 +181,9 @@ function investmentRequest(
 }
 
 test("independent margin accounts persist as balances without transaction slots and preserve funding relations", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const funding = await commitPGliteCanonicalFinancialCapture(store, fundingDepositRequest("margin-test-funding"));
     const first = await commitPGliteCanonicalInvestmentCapture(
       store,

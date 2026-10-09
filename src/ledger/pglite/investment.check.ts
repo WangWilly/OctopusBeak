@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
   type PGliteCanonicalInvestmentCommitRequest,
@@ -168,10 +168,9 @@ function investmentRequestWithOccurrences(
 }
 
 test("zero-cash brokerage events retain security, action, and quantity for the transaction modal", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const request = investmentRequest("investment-zero-cash-detail");
     const source = request.capture.transactions[0]!;
     await commitPGliteCanonicalInvestmentCapture(store, {
@@ -202,10 +201,9 @@ test("zero-cash brokerage events retain security, action, and quantity for the t
 });
 
 test("brokerage transactions retain source cash across financial and product queries", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const request = investmentRequest("investment-usd-cash-detail");
     const source = request.capture.transactions[0]!;
     await commitPGliteCanonicalInvestmentCapture(store, {
@@ -315,10 +313,9 @@ function fundingDepositRequest(
 }
 
 test("source-linked investment funding resolves exactly one retained bank fact", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const funding = await commitPGliteCanonicalFinancialCapture(store, fundingDepositRequest("funding-1"));
     const base = investmentRequest("investment-linked-1");
     const transaction = base.capture.transactions[0]!;
@@ -372,7 +369,7 @@ test("source-linked investment funding resolves exactly one retained bank fact",
 });
 
 test("investment funding relation reopens after ambiguity clears and cancellation rolls back", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   const originalDateNow = Date.now;
   const withEventTime = async <T>(milliseconds: number, run: () => Promise<T>): Promise<T> => {
@@ -384,7 +381,6 @@ test("investment funding relation reopens after ambiguity clears and cancellatio
     }
   };
   try {
-    await applyPgliteBaseline(database);
     const firstFunding = await commitPGliteCanonicalFinancialCapture(
       store,
       fundingDepositRequest("funding-reopen-first", {
@@ -500,10 +496,9 @@ test("investment funding relation reopens after ambiguity clears and cancellatio
 });
 
 test("PGlite investment command preserves holdings, valuation, cost, and grouped transactions", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-1"), { clock: () => 100 });
     assert.equal(first.holdingCount, 1);
     assert.equal(first.investmentTransactionCount, 1);
@@ -527,10 +522,9 @@ test("PGlite investment command preserves holdings, valuation, cost, and grouped
 });
 
 test("PGlite investment commit preserves duplicate slots through insertion and growth, then rejects shrink to zero atomically", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = await commitPGliteCanonicalInvestmentCapture(
       store,
       investmentRequestWithOccurrences("investment-group-2", 2),
@@ -581,10 +575,9 @@ test("PGlite investment commit preserves duplicate slots through insertion and g
 });
 
 test("PGlite investment command rolls back changed source evidence", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-1"), { clock: () => 100 });
     await assert.rejects(
       commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-conflict", "13000"), { clock: () => 100 }),
@@ -598,10 +591,9 @@ test("PGlite investment command rolls back changed source evidence", async () =>
 });
 
 test("PGlite investment command records independent margin loan as a balance-only source", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const base = investmentRequest("investment-independent-margin-1");
     const request: PGliteCanonicalInvestmentCommitRequest = {
       ...base,
@@ -636,10 +628,9 @@ test("PGlite investment command records independent margin loan as a balance-onl
 });
 
 test("PGlite investment command records independent margin credit without transaction facts", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const base = investmentRequest("investment-independent-credit-1");
     const request: PGliteCanonicalInvestmentCommitRequest = {
       ...base,
