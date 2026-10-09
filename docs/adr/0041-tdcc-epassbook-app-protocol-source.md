@@ -18,7 +18,7 @@ The Phase 0 probe showed that TDCC trusts one device per person at a time. A sig
 
 The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it: the stored device records the identifier it was registered for, and a device registered for another identifier counts as unregistered. Gmail retrieval of TDCC codes is out of scope.
 
-In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device.
+In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device. A registration and a sync-tdcc run each sign in with the same device, so the host never runs them at once: one device lock (`tdcc-device-lock.ts`) refuses a registration while a run holds the device and refuses a run while a registration holds it.
 
 ## Session port
 
