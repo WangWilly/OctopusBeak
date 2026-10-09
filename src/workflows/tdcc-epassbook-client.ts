@@ -183,6 +183,8 @@ export type TdccClientOptions = Readonly<{
   fetch?: FetchLike;
   signal?: AbortSignal;
   now?: () => Date;
+  /** Called with the new session whenever TDCC rotates the token or hands out a new richUrl. */
+  onSessionChange?: (session: TdccSession) => void;
 }>;
 
 type TdccEnvelope = Readonly<{
@@ -210,6 +212,7 @@ export class TdccClient {
   readonly #fetch: FetchLike;
   readonly #signal: AbortSignal | undefined;
   readonly #now: () => Date;
+  readonly #onSessionChange: ((session: TdccSession) => void) | undefined;
   #tokenId: string | null;
   #richUrl: string | null;
 
@@ -218,12 +221,22 @@ export class TdccClient {
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
     this.#signal = options.signal;
     this.#now = options.now ?? (() => new Date());
+    this.#onSessionChange = options.onSessionChange;
     this.#tokenId = options.session?.tokenId ?? null;
     this.#richUrl = options.session?.richUrl ?? null;
   }
 
   exportSession(): TdccSession {
     return { tokenId: this.#tokenId, richUrl: this.#richUrl };
+  }
+
+  #updateSession(update: Partial<TdccSession>) {
+    const tokenId = update.tokenId ?? this.#tokenId;
+    const richUrl = update.richUrl ?? this.#richUrl;
+    if (tokenId === this.#tokenId && richUrl === this.#richUrl) return;
+    this.#tokenId = tokenId;
+    this.#richUrl = richUrl;
+    this.#onSessionChange?.(this.exportSession());
   }
 
   async #post(name: keyof typeof TDCC_ENDPOINTS, body: Record<string, string | number>): Promise<TdccEnvelope> {
@@ -263,7 +276,7 @@ export class TdccClient {
     const envelope = await parseJson(name, response);
     const header = isRecord(envelope.responseHeader) ? envelope.responseHeader : {};
     const rotatedToken = optionalString(header.tokenID);
-    if (rotatedToken) this.#tokenId = rotatedToken;
+    if (rotatedToken) this.#updateSession({ tokenId: rotatedToken });
     const code = optionalString(header.returnCode) ?? SUCCESS_CODE;
     const message = optionalString(header.returnMsg);
     if (code !== SUCCESS_CODE && !spec.passCodes.includes(code)) {
@@ -279,7 +292,7 @@ export class TdccClient {
   async getInitialToken(): Promise<void> {
     const { body } = await this.#post("initialToken", {});
     const token = optionalString(body.tokenID);
-    if (token) this.#tokenId = token;
+    if (token) this.#updateSession({ tokenId: token });
   }
 
   async login(details: TdccSignInDetails): Promise<TdccLoginOutcome> {
@@ -299,10 +312,10 @@ export class TdccClient {
       }
       throw error;
     }
-    const richUrl = optionalString(body.richUrl);
-    if (richUrl) this.#richUrl = richUrl;
-    const token = optionalString(body.tokenID);
-    if (token) this.#tokenId = token;
+    this.#updateSession({
+      tokenId: optionalString(body.tokenID),
+      richUrl: optionalString(body.richUrl),
+    });
     return body.isDiffDevice === "Y" || body.isEmailValid === "N"
       ? { kind: "device-verification-required" }
       : { kind: "trusted" };
