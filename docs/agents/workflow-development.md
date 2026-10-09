@@ -16,7 +16,7 @@ npm run workflow:dev -- fixture
 npm run workflow:dev -- inspect http://127.0.0.1:4173
 ```
 
-`list` shows the eleven browser provider definitions in the App registry. `exchange-rates` and `sync-maicoin` are typed non-browser workflows and do not use this browser CLI. `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
+`list` shows the eleven browser provider definitions in the App registry. `exchange-rates` and `sync-maicoin` are typed non-browser workflows and do not use this browser CLI. TDCC e-Passbook has no workflow yet. To inventory its App protocol endpoints, use the development probe described in [Running the TDCC e-Passbook probe](tdcc-probe.md). `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
 
 ```sh
 npm run workflow:dev -- validate src/lib/automation/example-workflow.ts exampleWorkflow --input-env WORKFLOW_DEV_INPUT_JSON
