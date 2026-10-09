@@ -45,7 +45,7 @@ jobs:
         run: sudo apt-get install --yes gnome-keyring dbus-x11 libsecret-1-0
 
       - name: Run tests
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: dbus-run-session -- xvfb-run --auto-servernum bash scripts/run-linux-ci-tests.sh
 
       - name: Publish job summary

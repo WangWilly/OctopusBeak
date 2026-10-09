@@ -1,4 +1,5 @@
 import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
+import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import { createHash } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import type {
@@ -383,11 +384,9 @@ async function transactionRows(
   financialAt: string | null,
   request: Readonly<{ sourceConnectionKey?: string; accountIds?: readonly string[]; transactionIds?: readonly string[]; startDate?: string; endDate?: string }> = {},
 ): Promise<readonly TransactionRow[]> {
-  const predicates: string[] = [];
-  const params: unknown[] = [];
-  if (kind === "current") {
-    predicates.push("1 = 1");
-  } else {
+  const predicates: string[] = [COUNTED_ACCOUNT_SQL("account.account_id")];
+  const params: unknown[] = [await readPGliteCoveredAccountIds(reader, kind === "current" ? await latest(reader) : knowledgeAt)];
+  if (kind !== "current") {
     predicates.push("revision_commit.commit_sequence <= ?");
     params.push(knowledgeAt);
     predicates.push("source_assertion.assertion_id IS NOT NULL");
@@ -1118,9 +1117,13 @@ async function queryPairingTransactionsDirect(
     `SELECT json_agg(json_build_array(encode(transaction_id, 'hex'), effective_on,
       description, amount_coefficient, amount_scale, currency,
       consume_date, posting_date, effective_date_basis)) AS packed
-       FROM current_spending_pairing_entries
-      WHERE TRUE ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
-    dateBounds ? [dateBounds.start, dateBounds.end] : [],
+       FROM current_spending_pairing_entries entry
+      WHERE NOT EXISTS (
+              SELECT 1 FROM financial_transactions identity
+               WHERE identity.transaction_id = entry.transaction_id AND NOT (${COUNTED_ACCOUNT_SQL("identity.account_id")})
+            )
+        ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
+    [await readPGliteCoveredAccountIds(reader, await latest(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],
   );
   const value = packed.rows[0]?.packed;
   const resultRows = (Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"))) as readonly (readonly unknown[])[];
@@ -2213,10 +2216,14 @@ function sqlUuid(expression: string): string {
 /**
  * Every purchase-basis Spending query starts from the same purchase rows: the
  * active invoices, the eligible transactions, the links joining them, and the
- * refunds. The two leading parameters are the knowledge cutoff, twice.
+ * refunds. purchaseRowsParams supplies its leading parameters. A transaction
+ * of an account Direct source precedence covers is not eligible, and neither
+ * is a refund of one.
  */
 const PURCHASE_ROWS_CTE = `
-    WITH invoice_ranked AS (
+    WITH covered_transactions AS MATERIALIZED (
+      SELECT transaction_id FROM financial_transactions WHERE NOT (${COUNTED_ACCOUNT_SQL("account_id")})
+    ), invoice_ranked AS (
       SELECT revision.invoice_id, revision.revision_id, revision.amount_coefficient,
              revision.amount_scale, revision.currency, revision.state,
              revision.occurrence_value, commit_row.commit_sequence,
@@ -2263,9 +2270,11 @@ const PURCHASE_ROWS_CTE = `
       SELECT transaction_id, amount_coefficient, amount_scale, currency,
              COALESCE(consume_date, posting_date, effective_on) AS occurrence_value
         FROM current_spending_pairing_entries
+       WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
       UNION ALL
       SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
         FROM linked_transactions
+       WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
     ), valid_links AS MATERIALIZED (
       SELECT active_link.invoice_id, active_link.transaction_id,
              active_link.confirmed_event_id AS event_id
@@ -2290,6 +2299,7 @@ const PURCHASE_ROWS_CTE = `
         FROM refund_ranked
        WHERE revision_rank = 1 AND state = 'active'
          AND amount_coefficient IS NOT NULL AND occurrence_value IS NOT NULL
+         AND transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
     ), purchase_rows AS MATERIALIZED (
       SELECT 'linked' AS basis, invoice.occurrence_value,
              transaction_row.amount_coefficient, transaction_row.amount_scale, transaction_row.currency,
@@ -2328,6 +2338,10 @@ const PURCHASE_ROWS_CTE = `
              'refund:' || ${sqlUuid("refund.refund_id")}
         FROM active_refunds refund
     )`;
+
+async function purchaseRowsParams(reader: PGliteSpendingReader, knowledgeAt: number): Promise<unknown[]> {
+  return [await readPGliteCoveredAccountIds(reader, knowledgeAt), knowledgeAt, knowledgeAt];
+}
 
 type PurchaseCategoryRow = Readonly<{
   purchaseId: string;
@@ -2385,7 +2399,7 @@ async function queryPurchaseCategoryRows(
   knowledgeAt: number,
   scope: Readonly<{ month?: string | null; day?: string | null }> = {},
 ): Promise<readonly PurchaseCategoryRow[]> {
-  const params: unknown[] = [knowledgeAt, knowledgeAt];
+  const params: unknown[] = await purchaseRowsParams(reader, knowledgeAt);
   const monthFilter = scope.month ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?" : "";
   if (scope.month) params.push(scope.month);
   const dayFilter = scope.day ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) = ?" : "";
@@ -2573,7 +2587,7 @@ export async function queryCurrentSpendingRecordPage(
            strpos(LOWER(COALESCE(search_invoice.seller_name, '')), ?) > 0
         OR strpos(LOWER(COALESCE(search_transaction.description, '')), ?) > 0
         ${search.amount === null ? "" : "OR (purchase_rows.amount_coefficient IS NOT NULL AND purchase_rows.amount_coefficient::numeric = CAST(? AS numeric) * POWER(10::numeric, purchase_rows.amount_scale))"})`;
-  const params: unknown[] = [current, current];
+  const params: unknown[] = await purchaseRowsParams(reader, current);
   if (month !== null) params.push(month);
   if (day !== null) params.push(day);
   if (cursor !== null) params.push(cursor.occurrence, cursor.occurrence, cursor.purchaseId);
@@ -2957,7 +2971,7 @@ export async function queryCurrentSpendingSummary(
         ), '[]'::json)
       ) ORDER BY stats.month, stats.date) FROM record_groups stats
          WHERE stats.all_months = 0 AND stats.all_days = 0), '[]'::json) AS days
-  `, [knowledgeAt, knowledgeAt]);
+  `, await purchaseRowsParams(reader, knowledgeAt));
 
   const row = rows(result)[0];
   if (!row) throw new Error("Spending summary query returned no row.");
@@ -3298,7 +3312,7 @@ async function queryMonthPurchaseFacts(
       LEFT JOIN current_transactions current_row ON current_row.transaction_id = purchase_rows.transaction_id
       LEFT JOIN transaction_revisions transaction_revision ON transaction_revision.revision_id = current_row.revision_id
      WHERE purchase_rows.basis <> 'refund' AND ${monthFilter}`,
-    [knowledgeAt, knowledgeAt, "month" in scope ? scope.month : scope.purchaseId],
+    [...await purchaseRowsParams(reader, knowledgeAt), "month" in scope ? scope.month : scope.purchaseId],
   ));
   return result.map((row) => Object.freeze({
     purchaseId: stringValue(row.purchase_id, "Month purchase identity"),

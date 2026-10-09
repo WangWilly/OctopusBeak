@@ -17,7 +17,13 @@ import type {
 } from "../types.ts";
 
 export type CanonicalProductDto = CurrentProjectionStateDto & {
+  /** The accounts every total counts. */
   accounts: AccountRowDto[];
+  /**
+   * Accounts Direct source precedence covers, each with its coveredBy. Their
+   * positions and transactions are in the by-account maps for their own view.
+   */
+  coveredAccounts: AccountRowDto[];
   marginAccounts: AccountRowDto[];
   positionsByAccount: Record<string, AssetPositionDto[]>;
   transactionsByAccount: Record<string, TransactionRowDto[]>;
@@ -52,18 +58,21 @@ export function mapCanonicalProduct(
     : undefined;
   const visibleAccounts = [...accounts, ...(marginAccounts ?? [])];
   const accountIds = new Set(visibleAccounts.map((account) => account.id));
+  const coveredAccounts = projection.coveredAccounts
+    .filter((account) => product === "assets" ? account.group !== "liability" : account.group === "liability");
+  const shownIds = new Set([...accountIds, ...coveredAccounts.map((account) => account.id)]);
   const positionsByAccount: Record<string, AssetPositionDto[]> = {};
   if (product === "assets") {
-    for (const position of projection.positions) {
-      if (!accountIds.has(position.accountId)) continue;
+    for (const position of [...projection.positions, ...coveredAccounts.flatMap((account) => account.positions)]) {
+      if (!shownIds.has(position.accountId)) continue;
       const rows = positionsByAccount[position.accountId] ?? [];
       rows.push(mapPosition(position));
       positionsByAccount[position.accountId] = rows;
     }
   }
   const transactionsByAccount: Record<string, TransactionRowDto[]> = {};
-  for (const transaction of projection.transactions) {
-    if (!accountIds.has(transaction.accountId)) continue;
+  for (const transaction of [...projection.transactions, ...coveredAccounts.flatMap((account) => account.transactions)]) {
+    if (!shownIds.has(transaction.accountId)) continue;
     const rows = transactionsByAccount[transaction.accountId] ?? [];
     const amountExact = signedExact(transaction.amount, transaction.direction);
     rows.push({
@@ -94,6 +103,7 @@ export function mapCanonicalProduct(
     sourceGaps,
     importedAt: projection.importedAt,
     accounts,
+    coveredAccounts: coveredAccounts.map((account) => ({ ...mapAccount(account), coveredBy: { ...account.coveredBy } })),
     marginAccounts: marginAccounts ?? [],
     positionsByAccount,
     transactionsByAccount,
