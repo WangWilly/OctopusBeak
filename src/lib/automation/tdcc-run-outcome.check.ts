@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { translations } from "../i18n/i18n.ts";
-import { tdccExclusionLines } from "./tdcc-run-outcome.ts";
+import { countsOutsideTdccExclusions, tdccExclusionLines } from "./tdcc-run-outcome.ts";
 
 test("TDCC exclusions read as plain counts and leave out what the run did not report", () => {
   const counts = {
@@ -22,4 +22,5 @@ test("TDCC exclusions read as plain counts and leave out what the run did not re
     "1 account is hidden in the TDCC e-Passbook phone App.",
   ]);
   assert.deepEqual(tdccExclusionLines({ rowCount: 40 }, translations.en), []);
+  assert.deepEqual(countsOutsideTdccExclusions(counts), [["rowCount", 40]], "exclusions are not repeated as raw counts");
 });

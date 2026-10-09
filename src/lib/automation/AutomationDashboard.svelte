@@ -1,7 +1,7 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import TdccDeviceRegistration from "$lib/automation/TdccDeviceRegistration.svelte";
-  import { tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
+  import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
   import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -1747,7 +1747,7 @@ import type {
                           {#if task.appWorkflowOutcome.summary.status}
                             <span>{task.appWorkflowOutcome.summary.status}</span>
                           {/if}
-                          {#each Object.entries(task.appWorkflowOutcome.summary.counts) as count}
+                          {#each task.id === "sync-tdcc" ? countsOutsideTdccExclusions(task.appWorkflowOutcome.summary.counts) : Object.entries(task.appWorkflowOutcome.summary.counts) as count}
                             <span>{count[0]}: {count[1]}</span>
                           {/each}
                         </div>
