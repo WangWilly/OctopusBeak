@@ -133,6 +133,11 @@ export type InvestmentCaptureInput = {
     /** Point-in-time date for holdings and account state. */
     effectiveOn: string;
     complete: true;
+    /**
+     * Present when the holdings list is the account's complete inventory at
+     * effectiveOn, so an empty list means the account holds nothing then.
+     */
+    holdingSnapshot?: Readonly<{ sourceField: string; value: string; contractVersion: string }>;
     /** Independently proven date range for transaction history, when captured. */
     transactionHistory?: Readonly<{
       startDate: string;
@@ -459,6 +464,11 @@ export function admitCanonicalInvestmentCapture(
       "Investment account subtype is unsupported.",
     );
   const effectiveOn = date(capture.scope.effectiveOn, "Scope effective time");
+  const snapshot = capture.scope.holdingSnapshot;
+  if (snapshot && (snapshot.value !== effectiveOn || snapshot.contractVersion !== capture.contractVersion || !snapshot.sourceField?.trim()))
+    throw new CanonicalInvestmentAdmissionError(
+      "A complete holding snapshot requires contract-established source effective-time evidence.",
+    );
   if (capture.scope.transactionHistory) {
     const startDate = date(
       capture.scope.transactionHistory.startDate,

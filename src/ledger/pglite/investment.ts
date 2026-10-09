@@ -363,6 +363,9 @@ function validateCapture(capture: InvestmentCaptureInput): void {
     requireToken(value, `Investment ${label}`);
   if (!/^[A-Z]{3}$/u.test(capture.identity.reportingCurrency)) fail("Investment reporting currency is invalid.");
   date(capture.scope.effectiveOn, "Investment effective date");
+  const snapshot = capture.scope.holdingSnapshot;
+  if (snapshot && (snapshot.value !== capture.scope.effectiveOn || snapshot.contractVersion !== capture.contractVersion || !snapshot.sourceField?.trim()))
+    fail("Investment holding snapshot evidence is incomplete.");
   const transactionHistory = capture.scope.transactionHistory;
   if (transactionHistory) {
     const startDate = date(transactionHistory.startDate, "Investment history start date");
@@ -514,6 +517,8 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
     }
   }
   const securityId = (key: string): Uint8Array => securities.get(key) ?? fail("Investment Security extension is missing.");
+  if (capture.scope.holdingSnapshot)
+    await query(transaction, `INSERT INTO investment_holding_snapshots(capture_id, commit_id, account_id, effective_on, observed_at, source_field) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(capture_id) DO NOTHING`, [context.capture.captureId, context.commitId, context.accountId, capture.scope.effectiveOn, capture.observedAt, capture.scope.holdingSnapshot.sourceField]);
   for (const holding of capture.holdings) {
     const sourceRecordId = records.get(holding.sourceRecordKey);
     if (!sourceRecordId) fail("Investment holding source record is missing.");

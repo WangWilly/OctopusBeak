@@ -774,6 +774,14 @@ async function readProjection(
         WHERE commit_row.commit_sequence <= $1
           AND ($2::text IS NULL OR holding.effective_on <= $2)
           AND ($3::boolean = FALSE OR holding.is_current = 1)
+     ), collections AS (
+       SELECT account_id, observed_at FROM visible
+       UNION
+       SELECT snapshot.account_id, snapshot.observed_at
+         FROM investment_holding_snapshots snapshot
+         JOIN canonical_commits commit_row ON commit_row.commit_id = snapshot.commit_id
+        WHERE commit_row.commit_sequence <= $1
+          AND ($2::text IS NULL OR snapshot.effective_on <= $2)
      ), candidates AS (
        SELECT holding.account_id AS raw_account_id,
               holding.security_id AS raw_security_id,
@@ -808,9 +816,10 @@ async function readProjection(
        FROM candidates candidate
       WHERE selection_rank = 1
         -- A holding capture is a complete snapshot: a newer collection run of
-        -- the account that omits this security means it was sold.
+        -- the account that omits this security means it was sold. A declared
+        -- empty snapshot is a collection run with no holdings.
         AND NOT EXISTS (
-          SELECT 1 FROM visible newer
+          SELECT 1 FROM collections newer
            WHERE newer.account_id = candidate.raw_account_id
              AND newer.observed_at > candidate.observed_at
              AND NOT EXISTS (

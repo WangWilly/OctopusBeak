@@ -959,6 +959,14 @@ CREATE TABLE investment_passbook_movements (
   posted_on TEXT NOT NULL,
   UNIQUE(account_id, movement_key)
 );
+CREATE TABLE investment_holding_snapshots (
+  capture_id BYTEA PRIMARY KEY,
+  commit_id BYTEA NOT NULL,
+  account_id BYTEA NOT NULL,
+  effective_on TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  source_field TEXT NOT NULL
+);
 CREATE TABLE investment_funding_relation_members (
   relation_id BYTEA NOT NULL,
   investment_transaction_id BYTEA NOT NULL,
@@ -3003,6 +3011,9 @@ ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbo
 ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_2" FOREIGN KEY ("account_id") REFERENCES "investment_accounts" ("account_id");
 ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_3" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_4" FOREIGN KEY ("capture_id") REFERENCES "investment_captures" ("capture_id");
+ALTER TABLE "investment_holding_snapshots" ADD CONSTRAINT "fk_investment_holding_snapshots_0" FOREIGN KEY ("capture_id") REFERENCES "investment_captures" ("capture_id");
+ALTER TABLE "investment_holding_snapshots" ADD CONSTRAINT "fk_investment_holding_snapshots_1" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
+ALTER TABLE "investment_holding_snapshots" ADD CONSTRAINT "fk_investment_holding_snapshots_2" FOREIGN KEY ("account_id") REFERENCES "investment_accounts" ("account_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_0" FOREIGN KEY ("created_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_1" FOREIGN KEY ("identity_epoch_id") REFERENCES "identity_epochs" ("identity_epoch_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_2" FOREIGN KEY ("source_connection_id") REFERENCES "source_connections" ("source_connection_id");
