@@ -140,12 +140,30 @@ export type IntermediarySourceLogoKey = "tdcc";
 
 export type LogoKey = LogoInstitutionKey | IntermediarySourceLogoKey;
 
-/** Interface names of the logo institutions, from the one catalog. */
-export function institutionNames(locale: "en" | "zh-TW"): Record<LogoInstitutionKey, string> {
-  return Object.fromEntries(INSTITUTION_KEYS.map((key) => {
-    const name = INSTITUTIONS.get(key)!.name;
-    return [key, name[locale] ?? name["zh-TW"]];
-  })) as Record<LogoInstitutionKey, string>;
+/** Interface names of every catalog Institution. */
+export function institutionNames(locale: "en" | "zh-TW"): Record<InstitutionKey, string> {
+  return Object.fromEntries([...INSTITUTIONS.values()].map(({ key, name }) =>
+    [key, name[locale] ?? name["zh-TW"]])) as Record<InstitutionKey, string>;
+}
+
+/** The logo an Institution shows; null for the many catalog Institutions without a source of their own. */
+export function institutionLogo(key: InstitutionKey | undefined): LogoInstitutionKey | null {
+  return (INSTITUTION_KEYS as readonly string[]).includes(key ?? "") ? key as LogoInstitutionKey : null;
+}
+
+/** The Intermediary source a namespace names, or null for a direct source or an unknown namespace. */
+export function intermediarySource(namespace: string | undefined): IntermediarySourceLogoKey | null {
+  const source = namespace === undefined ? null : sourceInstitution(namespace);
+  return source?.kind === "intermediary" ? source.logo : null;
+}
+
+const INTERMEDIARY_SOURCE_NAMES: Readonly<Record<IntermediarySourceLogoKey, Readonly<{ "zh-TW": string; en: string }>>> = {
+  tdcc: { "zh-TW": "集保 e 存摺", en: "TDCC e-Passbook" },
+};
+
+/** The interface name of an Intermediary source, which is not an Institution. */
+export function intermediarySourceName(key: IntermediarySourceLogoKey, locale: "en" | "zh-TW"): string {
+  return INTERMEDIARY_SOURCE_NAMES[key][locale];
 }
 
 const TASK_LOGOS: Readonly<Record<string, LogoKey>> = {

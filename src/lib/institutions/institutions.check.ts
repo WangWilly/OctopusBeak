@@ -13,7 +13,9 @@ import {
   sourceLogo,
   sourceLogoForTask,
   institutionLogoFile,
+  institutionLogo,
   institutionNames,
+  intermediarySource,
   accountProduct,
   sourceInstitution,
 } from "./institutions.ts";
@@ -73,9 +75,31 @@ test("accounts show the institution and product in the interface language", () =
 
   assert.deepEqual(localizeAccount(account(), dictionaries.en), account());
 
-  const unknown = account({ institution: "Fixture Bank", institutionKey: "fixture-bank", label: "Fixture Bank · Bank account · 1" });
+  const unknown = account({ institution: "Fixture Bank", institutionKey: undefined, label: "Fixture Bank · Bank account · 1" });
   assert.equal(localizeAccount(unknown, dictionaries["zh-TW"]).institution, "Fixture Bank");
   assert.equal(localizeAccount(unknown, dictionaries["zh-TW"]).label, "Fixture Bank · 銀行帳戶 · 1");
+});
+
+test("a TDCC account localizes its stored Institution and shows its logo only when that Institution has one", () => {
+  const taishin = account({
+    label: "Taishin International Bank · Bank account · 200123456",
+    institution: "Taishin International Bank",
+    institutionKey: "bank-812",
+    viaSource: "tdcc",
+  });
+  const zh = localizeAccount(taishin, dictionaries["zh-TW"]);
+  assert.equal(zh.institution, "台新國際商業銀行");
+  assert.equal(zh.label, "台新國際商業銀行 · 銀行帳戶 · 200123456");
+  assert.equal(dictionaries["zh-TW"].accounts.viaSource.tdcc, "經由集保 e 存摺");
+  assert.equal(dictionaries.en.accounts.viaSource.tdcc, "via TDCC e-Passbook");
+  assert.equal(institutionLogo("bank-812"), null);
+  assert.equal(institutionLogo("fubon"), "fubon");
+
+  const broker = account({ label: "永豐金 · Investment account · 1", institution: "永豐金", institutionKey: "broker-9A00", product: "Investment account" });
+  assert.equal(localizeAccount(broker, dictionaries.en).institution, "永豐金");
+  assert.equal(localizeAccount(broker, dictionaries["zh-TW"]).label, "永豐金 · 投資帳戶 · 1");
+  assert.equal(intermediarySource("tdcc"), "tdcc");
+  assert.equal(intermediarySource("fubon"), null);
 });
 
 test("a FISC bank code resolves to one Institution and a code outside the table resolves to none", () => {

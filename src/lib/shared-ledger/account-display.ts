@@ -1,4 +1,11 @@
-import { institutionForNamespace, institutionNames } from "../institutions/institutions.ts";
+import {
+  institutionForNamespace,
+  institutionNames,
+  intermediarySource,
+  intermediarySourceName,
+  isInstitutionKey,
+  type InstitutionKey,
+} from "../institutions/institutions.ts";
 
 export type AccountDisplayAccountType =
   | "depository"
@@ -10,6 +17,8 @@ export type AccountDisplayAccountType =
 export type AccountDisplayInput = Readonly<{
   accountId: string;
   integrationNamespace: string;
+  /** The account's stored Institution, which an Intermediary source does not share with its namespace. */
+  institutionKey: InstitutionKey;
   stream: string;
   /** The provider identifier, never the internal source-account key. */
   accountNo: string | null;
@@ -29,6 +38,7 @@ export type AccountDisplay = Readonly<{
 export type SourceGapForDisplay = Readonly<{
   label?: string;
   integrationNamespace?: string;
+  institutionKey?: string;
   stream?: string;
   accountNo?: string | null;
   reason?: string;
@@ -40,9 +50,13 @@ type AccountDisplayBucket = {
 
 const INSTITUTION_NAMES = institutionNames("en");
 
-function namespaceInstitutionLabel(namespace: string): string | undefined {
-  const key = institutionForNamespace(namespace.trim().toLowerCase());
-  return key ? INSTITUTION_NAMES[key] : undefined;
+/** The name a namespace shows on its own: its Institution for a direct source, the source itself for an Intermediary source. */
+function namespaceLabel(namespace: string): string | undefined {
+  const normalized = namespace.trim().toLowerCase();
+  const key = institutionForNamespace(normalized);
+  if (key) return INSTITUTION_NAMES[key];
+  const intermediary = intermediarySource(normalized);
+  return intermediary ? intermediarySourceName(intermediary, "en") : undefined;
 }
 
 const SOURCE_GAP_FALLBACK = "Source not identified";
@@ -60,6 +74,7 @@ export function buildAccountDisplayMap(
     const identifier = displayableAccountIdentifier(account);
     const key = [
       normalizeNamespace(account.integrationNamespace),
+      account.institutionKey,
       productLabel(account),
       identifier ?? "missing",
     ].join("|");
@@ -94,7 +109,10 @@ export function safeSourceGapLabel(gap: SourceGapForDisplay): string {
   }
 
   if (!namespace) return SOURCE_GAP_FALLBACK;
-  const institution = institutionLabel(namespace);
+  const institution = isInstitutionKey(gap.institutionKey)
+    ? INSTITUTION_NAMES[gap.institutionKey]
+    : namespaceLabel(namespace);
+  if (!institution) return SOURCE_GAP_FALLBACK;
   const stream = gap.stream?.trim();
   if (!stream) return institution;
   const accountType = accountTypeForStream(stream);
@@ -125,10 +143,6 @@ export function containsInternalAccountIdentifier(value: string): boolean {
   return /sha256:/iu.test(value);
 }
 
-export function institutionLabel(namespace: string): string {
-  return namespaceInstitutionLabel(namespace) ?? titleCaseNamespace(namespace);
-}
-
 export function productLabel(account: Pick<AccountDisplayInput, "integrationNamespace" | "stream" | "accountType" | "investmentSubtype">): string {
   const stream = account.stream.trim().toLowerCase();
   if (stream.includes("foreign")) return "Foreign currency account";
@@ -154,7 +168,7 @@ function formatAccountDisplay(
   ordinal: number,
   duplicateCount: number,
 ): AccountDisplay {
-  const institution = institutionLabel(account.integrationNamespace);
+  const institution = INSTITUTION_NAMES[account.institutionKey];
   const product = productLabel(account);
   const identifier = displayableAccountIdentifier(account)
     ?? `Account ${ordinal}`;
@@ -207,7 +221,7 @@ function containsOpaqueToken(value: string): boolean {
 }
 
 function looksLikeRawNamespaceLabel(label: string, namespace: string): boolean {
-  const institution = namespaceInstitutionLabel(namespace);
+  const institution = namespaceLabel(namespace);
   if (institution && label.toLocaleLowerCase().startsWith(institution.toLocaleLowerCase())) return false;
   return new RegExp(`^${escapeRegExp(namespace)}(?:\\s|$)`, "iu").test(label);
 }
@@ -226,11 +240,4 @@ function accountTypeForStream(stream: string): AccountDisplayAccountType {
 
 function normalizeNamespace(value: string): string {
   return value.trim().toLowerCase().replace(/[-_\s]/gu, "");
-}
-
-function titleCaseNamespace(value: string): string {
-  const words = value.trim().split(/[-_\s]+/u).filter(Boolean);
-  return words.length > 0
-    ? words.map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(" ")
-    : SOURCE_GAP_FALLBACK;
 }

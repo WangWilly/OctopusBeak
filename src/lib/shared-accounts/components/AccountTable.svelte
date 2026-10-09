@@ -12,7 +12,7 @@
   import { formatShare } from "$lib/overview/overview-format.ts";
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import { institutionForNamespace } from "$lib/institutions/institutions.ts";
+  import { institutionForNamespace, institutionLogo } from "$lib/institutions/institutions.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
@@ -256,7 +256,7 @@
   >
     <td>
       <span class="account-name">
-        <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
+        <InstitutionLogo institution={institutionLogo(account.institutionKey)} />
         <strong>{account.label}</strong>
       </span>
       {#if covered}
@@ -265,7 +265,10 @@
         <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
       {/if}
     </td>
-    <td class="institution-cell">{account.institution}</td>
+    <td class="institution-cell">
+      {account.institution}
+      {#if account.viaSource}<span class="account-meta via-source">{$t.accounts.viaSource[account.viaSource]}</span>{/if}
+    </td>
     <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
     <td class="right">
       <strong
@@ -504,7 +507,8 @@
     font-weight: 560;
   }
 
-  .covered-by {
+  .covered-by,
+  .via-source {
     display: block;
   }
 

@@ -1,4 +1,4 @@
-import type { InstitutionProduct } from "../institutions/institutions.ts";
+import type { InstitutionKey, InstitutionProduct, IntermediarySourceLogoKey } from "../institutions/institutions.ts";
 
 export type CurrencyAmountDto = {
   currency: string;
@@ -80,8 +80,10 @@ export type AccountRowDto = {
   id: string;
   label: string;
   institution: string;
-  /** The collection namespace that identifies the institution, e.g. "cathay". */
-  institutionKey?: string;
+  /** The Institution that maintains the account, e.g. "cathay" or "bank-812". */
+  institutionKey?: InstitutionKey;
+  /** The Intermediary source that reports this account; absent for a direct source. */
+  viaSource?: IntermediarySourceLogoKey;
   product: string;
   group: AccountGroup;
   kind: AccountKind;

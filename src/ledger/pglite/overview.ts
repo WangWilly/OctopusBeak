@@ -1,7 +1,7 @@
 import type { PGliteStore } from "./transaction.ts";
 import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.ts";
 import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
-import { accountProduct, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
+import { accountProduct, intermediarySource, type InstitutionKey, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
 import { readPGliteDirectSourceCoverage } from "./direct-source-precedence.ts";
 import type {
   CanonicalOverviewAccount,
@@ -49,6 +49,7 @@ type AccountRow = Readonly<{
   account_id: string;
   source_connection_key: string;
   integration_namespace: string;
+  institution_key: InstitutionKey;
   source_account_key: string;
   account_no: string | null;
   stream: string;
@@ -203,6 +204,7 @@ function sourceGap(account: AccountRow, reason: "current-value-not-observed"): C
     sourceAccountKey: account.source_account_key,
     accountNo: account.account_no,
     integrationNamespace: account.integration_namespace,
+    institutionKey: account.institution_key,
     stream: account.stream,
     reason,
   };
@@ -566,6 +568,7 @@ function mapProjection(
   const displays = buildAccountDisplayMap(accounts.map((account) => ({
     accountId: account.account_id,
     integrationNamespace: account.integration_namespace,
+    institutionKey: account.institution_key,
     stream: account.stream,
     accountNo: account.account_no,
     accountType: account.account_type,
@@ -594,6 +597,7 @@ function mapProjection(
       product: account.stream,
     };
     const classification = accountClassification(account);
+    const viaSource = intermediarySource(account.integration_namespace);
     const availability = amounts.length > 0 && !hasUnvaluedHolding ? "available" : "awaiting";
     if (availability === "awaiting") sourceGaps.push(sourceGap(account, "current-value-not-observed"));
     const creditCardBalance = account.account_type === "credit" ? creditCardBalanceFor(rows) : null;
@@ -607,6 +611,8 @@ function mapProjection(
       id: account.account_id,
       sourceConnectionKey: account.source_connection_key,
       integrationNamespace: account.integration_namespace,
+      institutionKey: account.institution_key,
+      ...(viaSource ? { viaSource } : {}),
       sourceAccountKey: account.source_account_key,
       accountNo: account.account_no,
       stream: account.stream,
@@ -673,6 +679,7 @@ async function readProjection(
     `SELECT encode(account.account_id, 'hex') AS account_id,
             connection.source_connection_key,
             connection.integration_namespace,
+            account.institution_key,
             account.source_account_key,
             account.account_no,
             account.stream,
@@ -691,7 +698,7 @@ async function readProjection(
         AND capture_commit.commit_sequence <= $1
       WHERE created_commit.commit_sequence <= $1
       GROUP BY account.account_id, connection.source_connection_key,
-               connection.integration_namespace, account.source_account_key,
+               connection.integration_namespace, account.institution_key, account.source_account_key,
                account.account_no, account.stream, account.account_type,
                account.currency, investment_account.account_subtype
       ORDER BY connection.integration_namespace, account.source_account_key`,
