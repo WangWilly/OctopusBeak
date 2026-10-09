@@ -41,11 +41,26 @@ import {
   packagedBrowserFixtureStartUrl,
 } from "./packaged-browser-fixture.ts";
 
+/**
+ * How the App hosts a workflow. A browser workflow gets a run-scoped page; a
+ * nonbrowser workflow gets no page and always reaches the store through the
+ * authenticated PGlite RPC.
+ */
+export type AppWorkflowRuntime =
+  | Readonly<{ kind: "browser"; startUrl?: string; browserProfile?: AppWorkflowBrowserProfile }>
+  | Readonly<{ kind: "nonbrowser" }>;
+
+const NONBROWSER: AppWorkflowRuntime = { kind: "nonbrowser" };
+const browser = (startUrl?: string, browserProfile?: AppWorkflowBrowserProfile): AppWorkflowRuntime => ({
+  kind: "browser",
+  ...(startUrl === undefined ? {} : { startUrl }),
+  ...(browserProfile === undefined ? {} : { browserProfile }),
+});
+
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
-  startUrl?: string;
-  browserProfile?: AppWorkflowBrowserProfile;
+  runtime: AppWorkflowRuntime;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
   registerHumanAssistance?: (
     provider: AutomationPersistenceProvider,
@@ -152,10 +167,12 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
         { emitProgress: dependencies.exchangeRateProgress ?? (() => undefined) },
       );
     },
+    runtime: NONBROWSER,
     inputFromEnvironment() { return null; },
   },
   {
     definition: createMaicoinWorkflow(),
+    runtime: NONBROWSER,
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -171,7 +188,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: fubonAllStatementsWorkflow,
-    startUrl: "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",
+    runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
     inputFromEnvironment(environment) {
       return {
         managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
@@ -186,6 +203,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: einvoicePersonalInvoicesWorkflow,
+    runtime: browser(),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -197,8 +215,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: esunCreditCardStatementsWorkflow,
-    browserProfile: "esun-login",
-    startUrl: "https://ebank.esunbank.com.tw/index.jsp",
+    runtime: browser("https://ebank.esunbank.com.tw/index.jsp", "esun-login"),
     inputFromEnvironment(environment) {
       return {
         managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
@@ -212,7 +229,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: yuantaAllStatementsWorkflow,
-    startUrl: "https://ebank.yuantabank.com.tw/nib/ibanc.jsp",
+    runtime: browser("https://ebank.yuantabank.com.tw/nib/ibanc.jsp"),
     inputFromEnvironment(environment) {
       return {
         managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
@@ -227,7 +244,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: yuantaTradeStatementsWorkflow,
-    startUrl: YUANTA_TRADE_LOGIN_URL,
+    runtime: browser(YUANTA_TRADE_LOGIN_URL),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -252,7 +269,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: hncbDomesticDepositWorkflow,
-    startUrl: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private",
+    runtime: browser("https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private"),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -265,8 +282,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: ctbcStatementsWorkflow,
-    startUrl: "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010",
-    browserProfile: "ctbc-login",
+    runtime: browser("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", "ctbc-login"),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -279,7 +295,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: linebankStatementsWorkflow,
-    startUrl: "https://accessibility.linebank.com.tw/login",
+    runtime: browser("https://accessibility.linebank.com.tw/login"),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -294,7 +310,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: postDomesticDepositWorkflow,
-    startUrl: "https://ipost.post.gov.tw/pst/home.html",
+    runtime: browser("https://ipost.post.gov.tw/pst/home.html"),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -307,7 +323,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: sinopacStatementsWorkflow,
-    startUrl: SINOPAC_LOGIN_URL,
+    runtime: browser(SINOPAC_LOGIN_URL),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -320,13 +336,12 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: cathayAllStatementsWorkflow,
-    browserProfile: "cathay-login",
     definitionForDependencies(dependencies) {
       return dependencies.cathayGmailOtpPort
         ? createCathayRegistryDefinition(dependencies.cathayGmailOtpPort)
         : cathayAllStatementsWorkflow;
     },
-    startUrl: "https://www.cathaybk.com.tw/MyBank/",
+    runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -347,7 +362,7 @@ export function appWorkflowCatalogForEnvironment(
     packagedBrowserFixtureEnabled(environment)
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
       definition: packagedBrowserFixtureDefinition(workflowId),
-      startUrl: packagedBrowserFixtureStartUrl(environment),
+      runtime: browser(packagedBrowserFixtureStartUrl(environment)),
       inputFromEnvironment() { return null; },
     }))
     : [];
@@ -381,12 +396,19 @@ export function workflowInputForTask(
   return workflowRegistration(workflowId)?.inputFromEnvironment(environment);
 }
 
+/** An unregistered workflow is treated as a browser workflow, which requires a page. */
+export function workflowRuntimeForTask(workflowId: string | undefined): AppWorkflowRuntime {
+  return workflowRegistration(workflowId)?.runtime ?? browser();
+}
+
 export function workflowStartUrlForTask(workflowId: string | undefined) {
-  return workflowRegistration(workflowId)?.startUrl;
+  const runtime = workflowRuntimeForTask(workflowId);
+  return runtime.kind === "browser" ? runtime.startUrl : undefined;
 }
 
 export function workflowBrowserProfileForTask(workflowId: string | undefined) {
-  return workflowRegistration(workflowId)?.browserProfile;
+  const runtime = workflowRuntimeForTask(workflowId);
+  return runtime.kind === "browser" ? runtime.browserProfile : undefined;
 }
 
 /** Register any task-scoped App assistance route for the lifetime of one run. */

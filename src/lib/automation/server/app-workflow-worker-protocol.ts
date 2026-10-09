@@ -10,6 +10,7 @@ import {
   type TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
 import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
+import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import {
   sanitizeSafeWorkflowFailureError,
@@ -271,7 +272,8 @@ export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerSt
   if (!isRecord(value) || !exactKeys(value, [
     "protocolVersion", "workflowId", "taskRunId", "input",
   ], ["browserConnection", "pgliteRpc"])) invalid();
-  const nonbrowser = value.workflowId === "exchange-rates" || value.workflowId === "sync-maicoin";
+  const nonbrowser = typeof value.workflowId === "string"
+    && workflowRuntimeForTask(value.workflowId).kind === "nonbrowser";
   if (
     value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION
     || typeof value.workflowId !== "string"

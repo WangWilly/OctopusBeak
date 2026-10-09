@@ -31,6 +31,7 @@ import {
 } from "./task-run-execution.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
+import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
 import {
   YUANTA_TRADE_APP_TASK_ID,
   routeYuantaTradeAppAssistanceRequest,
@@ -51,7 +52,7 @@ function persistenceTaskRunId(
 
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
-  /** Browser workflows and the two App-owned nonbrowser workflows route explicitly. */
+  /** Browser workflows and the App-owned nonbrowser workflows route explicitly. */
   appWorkflow: boolean;
   provider: AutomationPersistenceProvider;
   launchVerificationSettings: AutomationSettingsFile;
@@ -179,8 +180,6 @@ async function prepareCaptchaRetryRound(
   return true;
 }
 
-const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
-
 // Fubon refuses a login that follows the previous session within seconds.
 const CAPTCHA_RETRY_COOLDOWN_MS: Readonly<Record<string, number>> = {
   "fubon-all-statements": 20_000,
@@ -207,7 +206,7 @@ export async function waitForCaptchaRetryCooldown(
 
 /**
  * Coordinate App CAPTCHA campaigns around single workflow executions.
- * The two nonbrowser workflows execute once and never enter verification routing.
+ * Nonbrowser workflows execute once and never enter verification routing.
  */
 export async function runCaptchaRetryCampaign(
   dependencies: CaptchaRetryCoordinatorDependencies,
@@ -225,7 +224,7 @@ export async function runCaptchaRetryCampaign(
   if (dependencies.appWorkflow !== appWorkflow) {
     throw new Error(`Automation task routing does not match the App catalog: ${taskId}`);
   }
-  if (!appWorkflow && !NON_BROWSER_APP_TASK_IDS.has(taskId)) {
+  if (!appWorkflow && workflowRuntimeForTask(task.workflowId).kind !== "nonbrowser") {
     throw new Error(`Automation task is not an App workflow or supported nonbrowser task: ${taskId}`);
   }
   const route = dependencies.routeWaitingRunVerification

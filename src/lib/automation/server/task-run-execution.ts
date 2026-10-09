@@ -51,6 +51,7 @@ import {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowBrowserProfileForTask,
+  workflowRuntimeForTask,
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
@@ -556,31 +557,29 @@ async function executeSupervisedAppWorkflow(
 
     const input = workflowInputForTask(workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
-    const nonbrowser = workflowId === "exchange-rates" || workflowId === "sync-maicoin";
-    const pgliteRpc = (definition.requiresFinancialCommit || workflowId === "exchange-rates")
+    const runtime = workflowRuntimeForTask(workflowId);
+    const pgliteRpc = (definition.requiresFinancialCommit || runtime.kind === "nonbrowser")
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
-    const startUrl = workflowStartUrlForTask(workflowId);
-    const browserProfile = workflowBrowserProfileForTask(workflowId);
-    const browser = nonbrowser ? undefined : options.workflowBrowserPortFactory?.({
+    const browser = runtime.kind === "nonbrowser" ? undefined : options.workflowBrowserPortFactory?.({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
-      startUrl,
-      browserProfile,
+      startUrl: runtime.startUrl,
+      browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
-    }) ?? (nonbrowser ? undefined : createAppWorkflowBrowserPort({
+    }) ?? createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
-      startUrl,
-      browserProfile,
+      startUrl: runtime.startUrl,
+      browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
       nativeDialogOwner: "worker",
-    }));
+    });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: execution.run.taskRunId,
       persistence: execution.persistence,
@@ -819,7 +818,7 @@ export async function runAutomationTaskExecution(
   if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
   }
-  const nonbrowserLaunchEnv = task.id === "sync-maicoin" || task.id === "exchange-rates"
+  const nonbrowserLaunchEnv = workflowRuntimeForTask(task.workflowId).kind === "nonbrowser"
     ? options.launchEnv ?? automationProcessEnv()
     : undefined;
   if (nonbrowserLaunchEnv
