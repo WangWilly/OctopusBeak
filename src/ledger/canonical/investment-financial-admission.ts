@@ -16,6 +16,7 @@ import type {
   CanonicalOccurrenceGroupCoverage,
 } from "./occurrence-groups.ts";
 import { sumInvestmentExactAmounts, investmentExactAmountsEqual } from "./investment-exact-amount.ts";
+import { sourceInstitution, type InstitutionKey } from "../../lib/institutions/institutions.ts";
 
 export { YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION };
 
@@ -28,11 +29,12 @@ export const INVESTMENT_CANONICAL_CONTRACT_VERSION =
  * obtains the full account and effective date from the independently captured
  * foreign-currency statement.
  */
-export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade" | "maicoin";
+export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade" | "maicoin" | "tdcc";
 export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
   "yuanta-fund",
   "yuanta-trade",
   "maicoin",
+  "tdcc",
 ] as const;
 export type InvestmentExactAmount = { coefficient: string; scale: number };
 export type InvestmentMoney = InvestmentExactAmount & { currency: string };
@@ -70,6 +72,9 @@ export function investmentTransactionDirection(action: string): "inflow" | "outf
       throw new Error(`Unsupported investment transaction action: ${action}`);
   }
 }
+/** The quantity direction of a Passbook movement. It has no cash leg by definition. */
+export type PassbookMovementAction = "buy" | "sell";
+export const PASSBOOK_MOVEMENT_ACTIONS: readonly PassbookMovementAction[] = ["buy", "sell"];
 export type InvestmentFundingEvidence =
   | { kind: "unresolved"; sourceRecordKey: string }
   | {
@@ -121,6 +126,8 @@ export type InvestmentCaptureInput = {
     accountType: "investment";
     accountSubtype?: "crypto_exchange" | "non_custodial_wallet";
     reportingCurrency: string;
+    /** The maintaining Institution from contract evidence; an Intermediary source must supply it. */
+    institutionKey?: InstitutionKey;
   };
   scope: {
     /** Point-in-time date for holdings and account state. */
@@ -182,6 +189,20 @@ export type InvestmentCaptureInput = {
     /** Provider memo/description; null means the source did not provide one. */
     description?: string | null;
     fundingEvidence: InvestmentFundingEvidence;
+  }>;
+  /**
+   * Passbook movements change Security quantity only. They carry no cash
+   * field, so no path can turn one into a cash fact.
+   */
+  passbookMovements?: Array<{
+    sourceRecordKey: string;
+    /** Stable source identity of the movement within its account. */
+    movementKey: string;
+    securityKey: string;
+    action: PassbookMovementAction;
+    quantity: InvestmentExactAmount;
+    tradeOn: string;
+    postedOn: string;
   }>;
   margin?:
     | {
@@ -358,6 +379,26 @@ export function assertInvestmentHoldingSourceLots(
         throw new CanonicalInvestmentAdmissionError("Holding aggregate does not equal its source lots.");
       }
     }
+}
+
+/**
+ * ADR 0042: cash and quantity-only movements never share a source. A direct
+ * source reports investment transactions with cash; an Intermediary source
+ * reports Passbook movements and no investment cash, because the settlement
+ * account carries it. Checked at admission and at the database commit boundary.
+ */
+export function assertInvestmentCashBoundary(
+  capture: Pick<InvestmentCaptureInput, "sourceId" | "transactions" | "passbookMovements">,
+): void {
+  const intermediary = sourceInstitution(capture.sourceId)?.kind === "intermediary";
+  if (intermediary && capture.transactions.length > 0)
+    throw new CanonicalInvestmentAdmissionError(
+      "An Intermediary source reports no investment cash; its movements must be Passbook movements.",
+    );
+  if (!intermediary && (capture.passbookMovements?.length ?? 0) > 0)
+    throw new CanonicalInvestmentAdmissionError(
+      "Passbook movements come only from an Intermediary source.",
+    );
 }
 
 export function admitCanonicalInvestmentCapture(
@@ -682,6 +723,30 @@ export function admitCanonicalInvestmentCapture(
         throw new CanonicalInvestmentAdmissionError(
           "Funding settlement source market code is outside the versioned mapping contract.",
         );
+    }
+  }
+  assertInvestmentCashBoundary(capture);
+  const movementKeys = new Set<string>();
+  const sourceRecordKeys = new Set(capture.transactions.map((transaction) => transaction.sourceRecordKey));
+  for (const movement of capture.passbookMovements ?? []) {
+    token(movement.sourceRecordKey, "Passbook movement source record key");
+    token(movement.movementKey, "Passbook movement key");
+    if (movementKeys.has(movement.movementKey) || sourceRecordKeys.has(movement.sourceRecordKey))
+      throw new CanonicalInvestmentAdmissionError("Duplicate Passbook movement.");
+    movementKeys.add(movement.movementKey);
+    sourceRecordKeys.add(movement.sourceRecordKey);
+    if (!PASSBOOK_MOVEMENT_ACTIONS.includes(movement.action))
+      throw new CanonicalInvestmentAdmissionError("Passbook movement action must be buy or sell.");
+    if (!securityKeys.has(movement.securityKey))
+      throw new CanonicalInvestmentAdmissionError("Passbook movement security is not captured.");
+    amount(movement.quantity, "Passbook movement quantity");
+    const history = capture.scope.transactionHistory;
+    if (!history)
+      throw new CanonicalInvestmentAdmissionError("Passbook movements require a complete history range.");
+    for (const [value, label] of [[movement.tradeOn, "trade"], [movement.postedOn, "posted"]] as const) {
+      date(value, `Passbook movement ${label} date`);
+      if (value < history.startDate || value > history.endDate)
+        throw new CanonicalInvestmentAdmissionError("Passbook movement falls outside its history range.");
     }
   }
   if (capture.margin?.kind === "embedded") {
