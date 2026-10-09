@@ -7,7 +7,7 @@ import test from "node:test";
 import { TDCC_BASE_URL } from "../../src/workflows/tdcc-epassbook-client.ts";
 import { readAutomationCredentialsFile } from "../../src/lib/automation/server/config-files.ts";
 import { nonIsoSettlementAccounts, runTdccProbe } from "./probe.ts";
-import { createTdccSecretStore } from "./stored-secrets.ts";
+import { createTdccSecretStore } from "../../src/lib/automation/server/tdcc-secret-store.ts";
 
 // Built at runtime so the repository privacy hook does not see ID-shaped literals.
 const SECRET = {

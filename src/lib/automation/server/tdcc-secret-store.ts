@@ -6,8 +6,8 @@ import {
   readAutomationCredentialsFile,
   writeAutomationCredentialsFile,
   type AutomationCredentialCodec,
-} from "../../src/lib/automation/server/config-files.ts";
-import type { TdccDeviceIdentity, TdccSession } from "../../src/workflows/tdcc-epassbook-client.ts";
+} from "./config-files.ts";
+import type { TdccDeviceIdentity, TdccSession } from "../../../workflows/tdcc-epassbook-client.ts";
 
 /** A device identity is bound to the sign-in identifier it was registered for. */
 export type StoredTdccDevice = TdccDeviceIdentity & Readonly<{ userId: string }>;
