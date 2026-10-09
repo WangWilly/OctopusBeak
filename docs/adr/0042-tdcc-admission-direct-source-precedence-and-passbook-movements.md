@@ -24,6 +24,14 @@ Each Financial Account records its Institution in a required `institution_key` c
 
 Two other placements were considered. Keeping the Institution only in account identity metadata, such as the source account key or capture evidence, needs no column, but every reader would parse the key or join through captures, and direct-source accounts would have no stored value to compare. A separate `account_institutions` table would hold only intermediary accounts, so readers would need two paths. The column gives every account one place for its Institution, which Direct source precedence can group on.
 
+### Product classification
+
+Direct source precedence compares products, so every account it decides needs one: `deposit`, `securities`, or `fund`. `accountProduct` in the catalog derives it from data the account already records. Every `depository` account is a deposit. An `investment` account's product comes from its source's entry in the catalog, which names the product of each investment stream: `yuanta-trade` collects securities, `yuanta-fund` collects funds, and `tdcc` collects securities on `investment` and funds on `investment-fund`. Credit cards, loans, margin accounts, and crypto accounts have no product, so they are never covered and never cover anything. The overview reads the same function to tell a fund account from a broker account.
+
+TDCC securities and funds were first one route on one stream, so a TDCC fund account looked like a broker account. TR051V1 fund holdings now have their own route, `tdcc/investment-fund/canonical-v1`, on the `investment-fund` stream. A product stream is part of account identity, so a fund account and a broker account at the same Institution are different accounts. The same stream lets the store list the fund accounts it has admitted, which the empty-snapshot rule needs.
+
+An explicit `product` column on `financial_accounts`, resolved at creation like `institution_key`, was the other option. It would store the value once and let SQL group on it. But it needs a product for every account, including credit cards, loans, and margin accounts that this rule never compares. TDCC funds and securities would also still share a stream, which the route model treats as one projection input. Plaid-style investment subtypes such as `brokerage` and `mutual_fund` were also considered. They are optional by definition, and every direct-source adapter would have to remember to set them, while the namespace already decides a direct source's product.
+
 ### Settlement accounts
 
 Each settlement account is one Financial Account per bank code, account number, and currency, on the `tdcc` namespace and the `domestic-deposit` stream. `src/ledger/canonical/tdcc-settlement-admission.ts` turns TSP006 and TSP007 bodies into captures.
