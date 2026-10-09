@@ -43,6 +43,7 @@ registerHooks({
 
 const {
   buildYuantaCapture,
+  waitForYuantaDepositQueryResult,
   deriveYuantaDomesticDepositAccountNumberEvidence,
   deriveYuantaDomesticDepositQueryRange,
   readYuantaDepositAccountOptions,
@@ -573,7 +574,7 @@ try {
         assert.equal(preparedDateRange, "one_month", "the selected range must be prepared before account collection");
         return [workflowAccount];
       },
-      queryAccount: async () => { collectionActivities.push("query-call"); },
+      queryAccount: async () => { collectionActivities.push("query-call"); return "download-ready"; },
       downloadStatementRows: async () => {
         collectionActivities.push("download-call");
         return workflowDownload;
@@ -600,6 +601,53 @@ try {
   assert.ok(deferredItems.every((item) => item.provider === "yuanta" && item.command));
   assert.deepEqual(await readdir(typedOutputDir), []);
 
+  const noDataItems: PGliteWorkflowRunItem[] = [];
+  const downloadedAccounts: string[] = [];
+  const noDataResult = await runYuantaStatements(
+    {} as never,
+    { dateRange: "three_months", accountFilters: [], replaceActiveSession: true },
+    {
+      preparePage: async () => undefined,
+      observedAt: stableConnectionIdentity.observedAt,
+      readDepositAccountOptions: async () => [workflowAccount, secondWorkflowAccount],
+      queryAccount: async (_page, account) =>
+        account.value === workflowAccount.value ? "provider-explicit-no-data" : "download-ready",
+      downloadStatementRows: async (_page, account) => {
+        downloadedAccounts.push(account.value);
+        return secondWorkflowDownload;
+      },
+      sourceConnectionScope: stableConnectionScope,
+      sourceConnectionKey: stableConnectionKey,
+      readCurrentDepositBalances: async () => [
+        workflowCurrentBalanceRow,
+        {
+          ...workflowCurrentBalanceRow,
+          accountNumber: secondWorkflowAccount.value,
+          sourceAccountKey: deriveYuantaDomesticDepositAccountKey(secondWorkflowAccount.value),
+        },
+      ],
+      deferredCommitItems: noDataItems,
+      sourceText: strictSourceText,
+      signal: new AbortController().signal,
+    },
+  );
+  assert.deepEqual(
+    downloadedAccounts,
+    [secondWorkflowAccount.value],
+    "an account the bank reports as 查無資料 has no CSV to download, and later accounts are still collected",
+  );
+  assert.equal(noDataResult.sourceCount, 2);
+  assert.equal(noDataResult.rowCount, 1);
+  assert.deepEqual(
+    noDataItems.map((item) => item.product).sort(),
+    ["current-balance", "current-balance", "domestic-deposit", "domestic-deposit"],
+    "the empty account commits a zero-row statement capture and its current balance",
+  );
+  assert.ok(
+    JSON.stringify(noDataItems).includes("provider-explicit-no-data"),
+    "the zero-row capture must carry the provider's explicit no-data authority",
+  );
+
   const rejectedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
     runYuantaStatements(
@@ -609,7 +657,7 @@ try {
         preparePage: async () => undefined,
         observedAt: stableConnectionIdentity.observedAt,
         readDepositAccountOptions: async () => [workflowAccount],
-        queryAccount: async () => undefined,
+        queryAccount: async () => "download-ready",
         downloadStatementRows: async () => {
           strictSourceText.decode(Uint8Array.of(0x81), "big5");
           return workflowDownload;
@@ -833,6 +881,24 @@ try {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({ headless: true });
   try {
+    const resultPage = await browser.newPage();
+    await resultPage.setContent(
+      '<table><tr><th>交易日期</th><th>交易說明</th></tr><tr><td colspan="2">查無資料</td></tr></table>',
+    );
+    assert.equal(
+      await waitForYuantaDepositQueryResult(resultPage, 2_000),
+      "provider-explicit-no-data",
+      "the bank's 查無資料 result row is an explicit empty result, not a missing CSV",
+    );
+    await resultPage.setContent('<p>查無資料的說明</p><a class="order_2 m_color_check" href="/x.csv">下載CSV檔</a>');
+    assert.equal(await waitForYuantaDepositQueryResult(resultPage, 2_000), "download-ready");
+    await resultPage.setContent("<p>查詢中</p>");
+    await assert.rejects(
+      waitForYuantaDepositQueryResult(resultPage, 1_000),
+      /CSV download link or a no-data result/u,
+    );
+    await resultPage.close();
+
     let runOrdinal = 0;
     async function collectFixture(
       controller = new AbortController(),
@@ -859,7 +925,7 @@ try {
           {
             preparePage: async () => undefined,
             readDepositAccountOptions: async () => [workflowAccount],
-            queryAccount: async () => undefined,
+            queryAccount: async () => "download-ready",
             observedAt: stableConnectionIdentity.observedAt,
             readCurrentDepositBalances: async () => [],
             sourceConnectionScope: stableConnectionScope,
