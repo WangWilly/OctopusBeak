@@ -2020,6 +2020,7 @@ function collectYuantaFundCanonicalItems(
     ? captureGroups.keys().next().value as string | undefined
     : undefined;
   for (const [sourceEffectiveOn, group] of captureGroups) {
+    const holdingSnapshot = yuantaFundHoldingSnapshot(group, historyProof, observedAt);
     const capture = buildYuantaInvestmentCapture({
       sourceId: "yuanta-fund",
       captureId: `yuanta-fund-investment:${deriveSourceConnectionIdentityKey("yuanta-fund-capture", [sourceConnectionKey, accountKey, sourceEffectiveOn, observedAt])}`,
@@ -2038,6 +2039,7 @@ function collectYuantaFundCanonicalItems(
             occurrenceGroupCoverage: historyProof.occurrenceGroupCoverage,
           }
         : {}),
+      ...(holdingSnapshot ? { holdingSnapshot } : {}),
       holdings: group.holdings,
       transactions: group.transactions,
     });
@@ -2069,6 +2071,33 @@ function collectYuantaFundCanonicalItems(
   options.signal.throwIfAborted();
   options.deferredCommitItems.push(...items);
   return items.length;
+}
+
+/**
+ * Every admitted holding comes from the account-wide overview, so a capture
+ * with holdings is the account's complete inventory at its NAV basis date. An
+ * explicit position absence is complete only when the account history runs to
+ * the collection date, because a sale after a past query end would otherwise
+ * be dated too early.
+ */
+function yuantaFundHoldingSnapshot(
+  group: Readonly<{ holdings: readonly YuantaCanonicalInvestmentRow[]; transactions: readonly YuantaCanonicalInvestmentRow[] }>,
+  historyProof: YuantaFundHistoryProof | undefined,
+  observedAt: string,
+): Readonly<{ sourceField: string }> | undefined {
+  if (group.holdings.length > 0)
+    return { sourceField: [...new Set(group.holdings.map(holding => holding.effectiveTimeEvidence?.sourceField ?? "as_of_date"))].sort().join("+") };
+  if (historyProof?.transactionHistory.endDate !== taipeiDate(observedAt)) return undefined;
+  return {
+    sourceField: group.transactions.length > 0
+      ? "position-absence-and-latest-history-transaction-date"
+      : "position-absence-and-history-end-date",
+  };
+}
+
+function taipeiDate(instant: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date(instant));
 }
 
 export type YuantaFundWorkflowCollection = Readonly<{
