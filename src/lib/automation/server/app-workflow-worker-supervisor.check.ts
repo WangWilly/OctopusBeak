@@ -507,6 +507,14 @@ test("TDCC session requests are answered only by the host port of a TDCC run", a
   task.worker.exit(0);
   assert.equal((await task.run).status, "completed");
 
+  const leaked = harness({ tdccSession: {
+    ...tdcc.host,
+    open: () => ({ ...tdcc.host.open(), password: "fixture-password" }),
+  } });
+  leaked.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
+  assert.equal(leaked.worker.sent.some((frame) => frame.kind === "tdcc-session-response"), false, "a lease carrying a password is never sent");
+  assert.equal((await leaked.run).errorCode, "protocol-invalid");
+
   const other = harness();
   other.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
   const outcome = await other.run;
@@ -523,6 +531,16 @@ test("the newest rotated TDCC session is saved even when the worker fails or exi
   failing.worker.exit(1);
   assert.equal((await failing.run).status, "failed");
   assert.deepEqual(failedRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-2"]);
+
+  const cancelledRun = fakeTdccSessionHost();
+  const controller = new AbortController();
+  const cancelling = harness({ tdccSession: cancelledRun.host, signal: controller.signal });
+  controller.abort();
+  cancelling.worker.send(rotated("token-after-cancel"));
+  cancelling.worker.send({ protocolVersion: 2, kind: "cancelled", taskRunId: base.runId });
+  cancelling.worker.exit(0);
+  assert.equal((await cancelling.run).status, "cancelled");
+  assert.deepEqual(cancelledRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-after-cancel"]);
 
   const crashedRun = fakeTdccSessionHost();
   const crashing = harness({ tdccSession: crashedRun.host });
