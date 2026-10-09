@@ -33,7 +33,11 @@ type TypedWorkflowCountName =
   | "canonicalCaptureCount"
   | "committedCount"
   | "count"
+  | "excludedNonIsoCurrencyCount"
+  | "excludedTimeDepositCount"
+  | "excludedUnknownInstitutionCount"
   | "financialItemCount"
+  | "hiddenAccountCount"
   | "holdingGridCount"
   | "holdingPageCount"
   | "holdingRowCount"
@@ -61,7 +65,11 @@ const SAFE_COUNT_NAMES = [
   "canonicalCaptureCount",
   "committedCount",
   "count",
+  "excludedNonIsoCurrencyCount",
+  "excludedTimeDepositCount",
+  "excludedUnknownInstitutionCount",
   "financialItemCount",
+  "hiddenAccountCount",
   "holdingGridCount",
   "holdingPageCount",
   "holdingRowCount",
