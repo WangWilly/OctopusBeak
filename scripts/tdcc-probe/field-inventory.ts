@@ -72,9 +72,13 @@ function typeOf(value: unknown): FieldValueType {
 /**
  * Builds a redacted inventory of every JSON path in `root`. Array elements
  * collapse to `[]`; an array nested directly in an array is a positional
- * tuple (TR001/TR002 rows), so its slots keep their index.
+ * tuple (TR001/TR002 rows), so its slots keep their index. A positional slot
+ * reports distinct values only when the caller names it in `enumSlots`.
  */
-export function inventoryFields(root: unknown): FieldInventory {
+export function inventoryFields(
+  root: unknown,
+  { enumSlots = [] }: { enumSlots?: readonly string[] } = {},
+): FieldInventory {
   const fields = new Map<string, FieldAccumulator>();
   const containerCounts = new Map<string, number>();
   const parents = new Map<string, string | null>();
@@ -83,7 +87,7 @@ export function inventoryFields(root: unknown): FieldInventory {
     parents.set(path, parent);
     let field = fields.get(path);
     if (!field) {
-      field = { types: new Set(), present: 0, example: null, values: enumEligibleKey(path) ? new Set() : null };
+      field = { types: new Set(), present: 0, example: null, values: enumSlots.includes(path) || enumEligibleKey(path) ? new Set() : null };
       fields.set(path, field);
     }
     field.present += 1;

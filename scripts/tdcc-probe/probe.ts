@@ -39,6 +39,8 @@ type ProbeFailure = TdccFailure | { reason: "unexpected"; errorName: string };
 export type EndpointReport = Readonly<{
   calls: number;
   pages: number;
+  /** Row count of each page with an `items` array, to show where paging stopped. */
+  pageRows?: readonly number[];
   failures: readonly ProbeFailure[];
   inventory: FieldInventory | null;
   skipped?: string;
@@ -187,6 +189,7 @@ async function collect(
   terminal: ProbeTerminal,
   name: string,
   calls: ReadonlyArray<() => Promise<unknown[]>>,
+  enumSlots: readonly string[] = [],
 ): Promise<EndpointReport> {
   if (calls.length === 0) {
     terminal.print(`${name}: skipped, no accounts reported`);
@@ -205,8 +208,22 @@ async function collect(
     }
   }
   terminal.print(`${name}: ${calls.length} call(s), ${pages.length} page(s), ${failures.length} failure(s)`);
-  return { calls: calls.length, pages: pages.length, failures, inventory: pages.length > 0 ? inventoryFields(pages) : null };
+  const pageRows = pages.flatMap((page) => {
+    const items = typeof page === "object" && page !== null ? (page as { items?: unknown }).items : undefined;
+    return Array.isArray(items) ? [items.length] : [];
+  });
+  return {
+    calls: calls.length,
+    pages: pages.length,
+    ...(pageRows.length > 0 ? { pageRows } : {}),
+    failures,
+    inventory: pages.length > 0 ? inventoryFields(pages, { enumSlots }) : null,
+  };
 }
+
+// TR002 row slots that hold exchange, status, unit, credit type, stock type,
+// transaction code and name, debit/credit, transaction type and currency codes.
+const TRADE_CODE_SLOTS = [4, 5, 6, 7, 8, 10, 11, 14, 15, 20].map((slot) => `$[].items[][${slot}]`);
 
 async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
   let positions: unknown = null;
@@ -225,6 +242,7 @@ async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
     terminal,
     "tradeDetails (TR002)",
     brokerAccounts(positions).map((account) => () => client.tradeDetails(account)),
+    TRADE_CODE_SLOTS,
   );
   endpoints.assetTrend = client.exportSession().richUrl
     ? await collect(terminal, "assetTrend (TR087)", [async () => [await client.assetTrend("1Y")]])
