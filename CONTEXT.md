@@ -111,6 +111,10 @@ _Avoid_: Supported source, corporate-group brand, workflow provider code
 A supported source that reports Financial Accounts maintained by other Institutions rather than by itself, such as TDCC e-Passbook reporting broker securities accounts and bank settlement accounts. Each reported account's Institution is the maintaining broker or bank, while the Source connection belongs to the intermediary.
 _Avoid_: TDCC as Institution, aggregator account, depository-owned account
 
+**Direct source precedence**:
+The rule that, for one Institution and product, a Financial Account collected from a source operated by that Institution counts toward totals ahead of any account an Intermediary source reports there. Coverage exists while the direct source holds at least one current account for that Institution and product. A covered intermediary account stays visible in its own account view but is excluded from totals, net worth, activity, and spending; nothing compares account numbers, and no identities merge.
+_Avoid_: Account matching, cross-source deduplication, identity merge, user-selected authority
+
 **Institution source coverage**:
 The many-to-many mapping that records which Institutions and products a supported source can collect or import. Coverage does not make a supported-source identifier the canonical identity of an Institution.
 _Avoid_: Source connection, Institution identity, account ownership
@@ -150,6 +154,10 @@ _Avoid_: Crypto holding observation, token, UI wallet label
 **Holding observation**:
 A source-reported quantity, cost, or valuation of a Security held in an investment financial account, recorded as a distinct evidence checkpoint only when its integration contract can establish when the measurement was financially effective. The current holding is a projection from the latest valid observation, while transaction history remains a separate event record.
 _Avoid_: Investment transaction, mutable current holding, liability balance
+
+**Passbook movement**:
+An Intermediary source's record of a change in Security quantity that carries no settlement cash, such as a TDCC e-Passbook buy or sell row. It moves quantity only and never creates a cash fact; the matching cash comes from the settlement account. An unfamiliar movement code rejects the Capture.
+_Avoid_: Investment transaction with estimated cash, quantity-times-price amount, raw movement text
 
 **Investment transaction action**:
 A source-reported investment event whose meaning is explicit in the provider record. `buy` and `sell` move both Security quantity and settlement cash; `corporate_action_in` and `corporate_action_out` move Security quantity with provider-reported zero cash; `dividend` records provider-reported cash with zero Security quantity. An unfamiliar provider label is not coerced from date, amount, or direction and instead rejects the Capture. Only buy and sell actions may participate in a bank-settlement Transaction Relation.
@@ -300,7 +308,7 @@ The point at which a committed Contract Purge, Canonical Reset cleanup, or separ
 _Avoid_: Assertion withdrawal, query-hidden archive, forensic erasure guarantee, backup deletion
 
 **Source authority routing**:
-A versioned, immutable contract-defined assignment of exactly one authoritative integration, connection, product stream, and producer to each projection input scope at one Canonical Knowledge Point, preventing duplicate financial facts without merging source-scoped identities. Missing or overlapping routes fail admission or projection rebuild rather than invoking runtime priority; route changes create new knowledge and Historical Financial Projections retain the route valid at their cutoff. Another source may serve a different stream, but no fuzzy or user-selected reconciliation moves facts between identities.
+A versioned, immutable contract-defined assignment of exactly one authoritative integration, connection, product stream, and producer to each projection input scope at one Canonical Knowledge Point, preventing duplicate financial facts without merging source-scoped identities. Missing or overlapping routes fail admission or projection rebuild rather than invoking runtime priority, except where Direct source precedence decides between a direct and an intermediary source; route changes create new knowledge and Historical Financial Projections retain the route valid at their cutoff. Another source may serve a different stream, but no fuzzy or user-selected reconciliation moves facts between identities.
 _Avoid_: Cross-source deduplication, identity merge, last-write-wins
 
 **Automatic enrichment authority route**:
