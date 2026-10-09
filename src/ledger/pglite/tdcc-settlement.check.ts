@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalBalanceCapture } from "./balance.ts";
 import { currentDepositBalanceCommandRequest } from "./current-deposit-balance-command.ts";
 import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
@@ -144,9 +143,8 @@ test("TSP007 without a declared complete range, or with an unusable row, is reje
 });
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   try {
-    await applyPgliteBaseline(database);
     await run(new PGliteStore(database));
   } finally {
     await database.close();
