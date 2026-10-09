@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { institutionLogoFile, type InstitutionKey } from "./institutions.ts";
+  import { institutionLogoFile, type LogoInstitutionKey } from "./institutions.ts";
 
-  export let institution: InstitutionKey | null;
+  export let institution: LogoInstitutionKey | null;
   export let size = 20;
 
   const logos = import.meta.glob<string>("../../../site/assets/logos/*.webp", {

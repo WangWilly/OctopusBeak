@@ -6,9 +6,14 @@ import { localizeAccount } from "../shared-accounts/localize-account.ts";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
 import {
   INSTITUTION_KEYS,
+  INSTITUTIONS,
+  institutionForBankCode,
+  institutionForBrokerBranch,
   institutionForNamespace,
   institutionForTask,
   institutionLogoFile,
+  institutionNames,
+  sourceInstitution,
 } from "./institutions.ts";
 
 test("every institution has a downloaded logo and a name in both locales", () => {
@@ -61,4 +66,38 @@ test("accounts show the institution and product in the interface language", () =
   const unknown = account({ institution: "Fixture Bank", institutionKey: "fixture-bank", label: "Fixture Bank · Bank account · 1" });
   assert.equal(localizeAccount(unknown, dictionaries["zh-TW"]).institution, "Fixture Bank");
   assert.equal(localizeAccount(unknown, dictionaries["zh-TW"]).label, "Fixture Bank · 銀行帳戶 · 1");
+});
+
+test("a FISC bank code resolves to one Institution and a code outside the table resolves to none", () => {
+  assert.equal(institutionForBankCode("013"), "cathay");
+  assert.equal(institutionForBankCode("822"), "ctbc");
+  assert.equal(institutionForBankCode("004"), "bank-004");
+  assert.equal(INSTITUTIONS.get("bank-004")?.name["zh-TW"], "臺灣銀行");
+  assert.equal(INSTITUTIONS.get("bank-004")?.kind, "bank");
+  assert.equal(institutionForBankCode("815"), null, "a merged bank's retired code is unknown");
+  assert.equal(institutionForBankCode("060"), null, "a bills finance company holds no deposit accounts");
+  assert.equal(institutionForBankCode("13"), null);
+});
+
+test("a TWSE broker branch resolves to its firm, case-sensitively", () => {
+  assert.equal(institutionForBrokerBranch("9800"), "yuanta-securities");
+  assert.equal(institutionForBrokerBranch("981a"), "yuanta-securities");
+  assert.equal(institutionForBrokerBranch("9A9A"), "broker-9A00");
+  assert.equal(institutionForBrokerBranch("1021"), "broker-1020");
+  assert.equal(institutionForBrokerBranch("888B"), "broker-8880");
+  assert.equal(INSTITUTIONS.get("broker-9A00")?.kind, "broker");
+  assert.equal(institutionForBrokerBranch("ZZZZ"), null);
+});
+
+test("TDCC is an Intermediary source with no Institution of its own", () => {
+  assert.deepEqual(sourceInstitution("tdcc"), { kind: "intermediary" });
+  assert.deepEqual(sourceInstitution("cathay"), { kind: "direct", institution: "cathay" });
+  assert.equal(sourceInstitution("toString"), null);
+  assert.equal(institutionForNamespace("tdcc"), null);
+});
+
+test("every logo institution names a catalog Institution in both locales", () => {
+  for (const key of INSTITUTION_KEYS) assert.ok(INSTITUTIONS.has(key), key);
+  assert.equal(institutionNames("en").cathay, "Cathay United Bank");
+  assert.equal(institutionNames("zh-TW")["yuanta-securities"], "元大證券");
 });
