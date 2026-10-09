@@ -34,6 +34,8 @@
   type SortColumn = { key: SortKey; label: string; right?: boolean };
 
   export let accounts: AccountRowDto[] = [];
+  /** Accounts a direct source already counts: listed after the counted ones, in no total and with no share. */
+  export let coveredAccounts: AccountRowDto[] = [];
   export let positionsByAccount: Record<string, AssetPositionDto[]> = {};
   export let transactionsByAccount: Record<string, TransactionRowDto[]> = {};
   export let dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]> = {};
@@ -79,7 +81,7 @@
     { id: "other" as const, label: $t.accounts.other },
   ] satisfies Filter[];
 
-  $: availableKinds = new Set(accounts.map((account) => account.kind));
+  $: availableKinds = new Set([...accounts, ...coveredAccounts].map((account) => account.kind));
   $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter((item) =>
     accounts.length === 0
       ? EMPTY_PAGE_FILTERS[mode].includes(item.id)
@@ -88,34 +90,23 @@
   $: emptyCopy = mode === "asset" ? $t.assets.empty : $t.liabilities.empty;
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
-  $: filtered = accounts.flatMap((account) => {
-    const shown = localizeAccount(account, $t);
-    const filterMatch = filter === "all" || account.kind === filter;
-    const text = [
-      shown.label,
-      shown.institution,
-      shown.product,
-      account.institution,
-      account.product,
-      account.typeLabel,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return filterMatch && (!query || text.includes(query)) ? [shown] : [];
-  });
-  $: latestUpdated = accounts.reduce<string | null>(
+  $: filtered = matchingAccounts(accounts, filter, query, $t);
+  $: filteredCovered = matchingAccounts(coveredAccounts, filter, query, $t);
+  $: latestUpdated = [...accounts, ...coveredAccounts].reduce<string | null>(
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
   $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares);
-  $: if (sorted.length === 0 && selectedAccountId !== null) {
+  $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares);
+  $: listed = [...sorted, ...sortedCovered];
+  $: if (listed.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
   }
-  $: if (sorted.length > 0 && !sorted.some((account) => account.id === selectedAccountId)) {
-    selectedAccountId = sorted[0].id;
+  $: if (listed.length > 0 && !listed.some((account) => account.id === selectedAccountId)) {
+    selectedAccountId = listed[0].id;
   }
   $: selectedAccount =
-    sorted.find((account) => account.id === selectedAccountId) ?? null;
+    listed.find((account) => account.id === selectedAccountId) ?? null;
   $: selectedTransactions =
     selectedAccount ? transactionsByAccount[selectedAccount.id] ?? [] : [];
   $: selectedPositions =
@@ -139,13 +130,35 @@
   }
 
   async function focusAccount(accountId: string) {
-    if (!accounts.some((account) => account.id === accountId)) return;
+    if (![...accounts, ...coveredAccounts].some((account) => account.id === accountId)) return;
     selectedAccountId = accountId;
     await tick();
     const row = [...(tableWrap?.querySelectorAll<HTMLElement>("[data-account-id]") ?? [])]
       .find((element) => element.dataset.accountId === accountId);
     row?.scrollIntoView({ block: "nearest" });
     row?.focus({ preventScroll: true });
+  }
+
+  function matchingAccounts(rows: AccountRowDto[], kind: AccountKind | "all", text: string, dictionary: Translation) {
+    return rows.flatMap((account) => {
+      const shown = localizeAccount(account, dictionary);
+      const searchable = [
+        shown.label,
+        shown.institution,
+        shown.product,
+        account.institution,
+        account.product,
+        account.typeLabel,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return (kind === "all" || account.kind === kind) && (!text || searchable.includes(text)) ? [shown] : [];
+    });
+  }
+
+  function coveredByName(account: AccountRowDto, dictionary: Translation) {
+    const institution = institutionForNamespace(account.coveredBy?.namespace);
+    return institution ? dictionary.institutions[institution] : account.coveredBy?.namespace ?? "";
   }
 
   function sortAccounts(rows: AccountRowDto[], key: SortKey | null, direction: SortDirection, shareOf: ReadonlyMap<string, number>) {
@@ -224,6 +237,68 @@
   }
 </script>
 
+{#snippet accountRow(account: AccountRowDto, covered: boolean)}
+  {@const share = covered ? undefined : shares.get(account.id)}
+  {@const availableBalanceBasis = account.amountLines.some((amount) =>
+    amount.traces?.some((trace) => trace.balanceKind === "available"),
+  )}
+  {@const estimatedCreditBasis = account.amountLines.some((amount) =>
+    amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+  )}
+  <tr
+    class:selected={account.id === selectedAccountId}
+    class:covered
+    class="account-card"
+    data-account-id={account.id}
+    data-covered-by={account.coveredBy?.namespace}
+    tabindex={account.id === selectedAccountId ? 0 : -1}
+    on:click={() => selectAccount(account.id)}
+  >
+    <td>
+      <span class="account-name">
+        <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
+        <strong>{account.label}</strong>
+      </span>
+      {#if covered}
+        <span class="account-meta covered-by">{$t.accounts.coveredBy(coveredByName(account, $t))}</span>
+      {:else}
+        <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
+      {/if}
+    </td>
+    <td class="institution-cell">{account.institution}</td>
+    <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
+    <td class="right">
+      <strong
+        class="money"
+        data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
+        title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
+      >
+        {#if account.valueAvailability === "awaiting"}
+          <span>{$t.overview.currentAwaiting}</span>
+        {:else if account.valueAvailability === "unavailable"}
+          <span>{$t.accounts.noAvailableData}</span>
+        {:else}
+          {formatAmountLines(account.amountLines)}
+        {/if}
+      </strong><br />
+      {#if availableBalanceBasis}
+        <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
+      {/if}
+      {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
+        <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
+      {/if}
+    </td>
+    <td class="right">
+      {#if account.valueAvailability === "available" && share !== undefined}
+        <span class="account-meta num" data-sensitive>{formatShare(share, $locale)}</span>
+        <div class="row-bar" aria-hidden="true">
+          <span data-sensitive style={`width:${share * 100}%`}></span>
+        </div>
+      {/if}
+    </td>
+  </tr>
+{/snippet}
+
 <div class="toolbar account-toolbar">
   <div class="filters" aria-label={mode === "asset" ? $t.accounts.assetFiltersAria : $t.accounts.debtFiltersAria}>
     {#each filters as item}
@@ -295,65 +370,24 @@
               </tr>
             </thead>
             <tbody>
-              {#each sorted as account}
-                {@const share = shares.get(account.id)}
-                {@const availableBalanceBasis = account.amountLines.some((amount) =>
-                  amount.traces?.some((trace) => trace.balanceKind === "available"),
-                )}
-                {@const estimatedCreditBasis = account.amountLines.some((amount) =>
-                  amount.traces?.some((trace) => trace.estimateKind === "estimate"),
-                )}
-                <tr
-                  class:selected={account.id === selectedAccountId}
-                  class="account-card"
-                  data-account-id={account.id}
-                  tabindex={account.id === selectedAccountId ? 0 : -1}
-                  on:click={() => selectAccount(account.id)}
-                >
-                  <td>
-                    <span class="account-name">
-                      <InstitutionLogo institution={institutionForNamespace(account.institutionKey)} />
-                      <strong>{account.label}</strong>
-                    </span>
-                    <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
-                  </td>
-                  <td class="institution-cell">{account.institution}</td>
-                  <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
-                  <td class="right">
-                    <strong
-                      class="money"
-                      data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
-                      title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
-                    >
-                      {#if account.valueAvailability === "awaiting"}
-                        <span>{$t.overview.currentAwaiting}</span>
-                      {:else if account.valueAvailability === "unavailable"}
-                        <span>{$t.accounts.noAvailableData}</span>
-                      {:else}
-                        {formatAmountLines(account.amountLines)}
-                      {/if}
-                    </strong><br />
-                    {#if availableBalanceBasis}
-                      <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
-                    {/if}
-                    {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
-                      <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
-                    {/if}
-                  </td>
-                  <td class="right">
-                    {#if account.valueAvailability === "available" && share !== undefined}
-                      <span class="account-meta num" data-sensitive>{formatShare(share, $locale)}</span>
-                      <div class="row-bar" aria-hidden="true">
-                        <span data-sensitive style={`width:${share * 100}%`}></span>
-                      </div>
-                    {/if}
-                  </td>
-                </tr>
+              {#each sorted as account (account.id)}
+                {@render accountRow(account, false)}
               {:else}
                 <tr>
                   <td colspan="5">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
                 </tr>
               {/each}
+              {#if sortedCovered.length}
+                <tr class="covered-heading">
+                  <td colspan="5">
+                    <strong>{$t.accounts.coveredHeading}</strong>
+                    <span class="account-meta">{$t.accounts.coveredHeadingNote}</span>
+                  </td>
+                </tr>
+                {#each sortedCovered as account (account.id)}
+                  {@render accountRow(account, true)}
+                {/each}
+              {/if}
             </tbody>
           </table>
         </div>
@@ -447,6 +481,31 @@
 
   .institution-cell {
     white-space: nowrap;
+  }
+
+  .covered-heading td {
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-3);
+    background: var(--surface-soft);
+  }
+
+  .covered-heading strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 680;
+  }
+
+  .account-card.covered strong,
+  .account-card.covered .institution-cell {
+    color: var(--muted);
+  }
+
+  .account-card.covered .money {
+    font-weight: 560;
+  }
+
+  .covered-by {
+    display: block;
   }
 
   .table-updated {

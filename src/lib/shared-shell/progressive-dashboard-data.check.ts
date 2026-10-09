@@ -101,6 +101,7 @@ test("progressive dashboard adapters prefer a settled block and fall back to the
     sourceGaps: [],
     importedAt: null,
     accounts: [account("fallback")],
+    coveredAccounts: [],
     positionsByAccount: {},
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
@@ -109,6 +110,7 @@ test("progressive dashboard adapters prefer a settled block and fall back to the
   } as AssetsPageDto;
   const blockAssets: DashboardBlockValueMap["assets"]["list"] = {
     accounts: [account("block")],
+    coveredAccounts: [],
     positionsByAccount: {},
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
