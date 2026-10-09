@@ -77,6 +77,11 @@ export type YuantaInvestmentAdapterInput = {
     complete: true;
   }>;
   occurrenceGroupCoverage?: readonly CanonicalOccurrenceGroupCoverage[];
+  /**
+   * Present only when the holdings are the account's complete inventory at
+   * sourceEffectiveOn, naming the source field that dates it.
+   */
+  holdingSnapshot?: Readonly<{ sourceField: string }>;
   holdings: YuantaCanonicalInvestmentRow[];
   transactions: YuantaCanonicalInvestmentRow[];
 };
@@ -206,6 +211,15 @@ export function buildYuantaInvestmentCapture(
     scope: {
       effectiveOn: input.sourceEffectiveOn,
       complete: true,
+      ...(input.holdingSnapshot
+        ? {
+            holdingSnapshot: {
+              sourceField: input.holdingSnapshot.sourceField,
+              value: input.sourceEffectiveOn,
+              contractVersion,
+            },
+          }
+        : {}),
       ...(input.transactionHistory
         ? { transactionHistory: input.transactionHistory }
         : {}),
