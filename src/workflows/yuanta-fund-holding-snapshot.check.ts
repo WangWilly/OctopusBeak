@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { createBaselinePGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { readPGliteDailyHistory } from "../ledger/pglite/daily-history.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "../ledger/pglite/investment.ts";
 import { createPGliteCanonicalOverviewQuery } from "../ledger/pglite/overview.ts";
@@ -155,9 +154,8 @@ for (const { name, redeemedOn, clearedOn } of [
   { name: "with no history events", redeemedOn: undefined, clearedOn: "2026-09-10" },
   { name: "after a reported redemption", redeemedOn: "2026-09-05", clearedOn: "2026-09-05" },
 ]) test(`a later empty Yuanta Fund collection ${name} clears the held fund from the overview and daily history`, async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   try {
-    await applyPgliteBaseline(database);
     const store = new PGliteStore(database);
     const query = createPGliteCanonicalOverviewQuery(store);
 
