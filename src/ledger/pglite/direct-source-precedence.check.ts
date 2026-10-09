@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalBalanceCapture, type PGliteCanonicalBalanceCaptureRequest } from "./balance.ts";
 import { currentDepositBalanceCommandRequest } from "./current-deposit-balance-command.ts";
 import { readPGliteDailyHistoryWithAccounts } from "./daily-history.ts";
@@ -37,9 +36,8 @@ const BROKER_ACCOUNT = ["98", "76543"].join("");
 const CATHAY_ACCOUNT = ["1234", "56"].join("");
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   try {
-    await applyPgliteBaseline(database);
     await run(new PGliteStore(database));
   } finally {
     await database.close();
