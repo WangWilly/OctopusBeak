@@ -38,6 +38,15 @@ Each settlement account is one Financial Account per bank code, account number, 
 
 TR002 rows are Passbook movements, not investment transactions. They change Security quantity and never create a cash fact, because TDCC reports no settlement amount and quantity times price omits fees and tax. The settlement account carries the cash. Code `113` maps to buy and `123` maps to sell. Any other code rejects the Capture for that broker account. Dates are ROC `0YYYMMDD` and are converted exactly.
 
+- Each broker account is one Financial Account on the `tdcc` namespace and the `investment` stream, keyed by broker branch code and account number. Its Institution is the branch's firm from the catalog. An account whose branch code is not in the catalog is reported as a typed exclusion.
+- One capture per broker account holds every TR002 page the client walked back to `D0002`. Its complete history range ends on the collection day in Asia/Taipei, because no later movement can exist yet, and starts at the oldest trade or posting date.
+- A movement's identity is its `txnDate`, `postDate`, and `txnSerNo`. These are unique per account, so the route needs no occurrence groups. A repeated identity in one capture, or a recollected movement whose content changed, rejects the Capture.
+- Quantity is slot 12, the trade date slot 9, and the posted date slot 0. The Security is slot 2, named by slot 3. Its type comes from slot 8 through a closed table (`00` equity, `12` mutual fund), and a symbol that starts with `00` is an ETF. Its currency is slot 20 and must be an ISO 4217 code.
+
+Passbook movements are a separate list on the investment capture, `passbookMovements`, beside the cash-bearing `transactions`, and they are stored in their own `investment_passbook_movements` table. The movement type has no cash field, the table has no cash columns, and only `transactions` reach the financial-fact writer, so no path turns a movement into a cash fact. One rule, checked at admission and again at the commit boundary, keys on the catalog's direct or intermediary mark for the namespace. An Intermediary source may carry Passbook movements and no `transactions`. A direct source may carry `transactions`, each with its required cash, and no Passbook movements.
+
+The other placement considered was an optional `cashEffect` on investment transactions, allowed when the route sets a quantity-only flag. It reuses one list and one table, but `investment_transactions` would gain nullable cash columns that every reader of activity and funding relations must handle. The type would also allow a direct-source row without cash, and only a runtime flag check would stop it. A separate list makes both mistakes impossible to express.
+
 ### Holdings and fund values
 
 Every value comes from exactly one provider field. A missing field rejects the Capture, and nothing falls back to another field or a default.
@@ -52,6 +61,15 @@ Every value comes from exactly one provider field. A missing field rejects the C
   - The effective date is `updateTime`.
 
 Slot 17 and the fund fields are taken from the TedLin1993/all-set-tw reference. They are not yet confirmed against a live account that holds them. A wrong mapping is repaired by purge and recollection.
+
+- `lastServerTime` and `updateTime` are Gregorian Asia/Taipei `YYYYMMDDhhmmss` times, read like TSP006 `updateTime`. The holding's effective date is the local date, with source-reported-as-of evidence that names the field.
+- A securities holding's Security is item slot 0, named by slot 1, typed by slot 6 through the same table as TR002, and priced in the slot 19 currency, which must be an ISO 4217 code. A broker account repeating one Security rejects the Capture.
+- Each fund account holds the funds of one sale organisation. Its Institution is the catalog bank (3-digit code) or broker (4-character code) for `saleOrgCode`, and any other code is reported as a typed exclusion with its holding count. A fund Security is `fundNo`, named by `fundCHName`. Its own pricing currency is not admitted, because only the TWD value is.
+- Every TDCC investment account reports in TWD.
+
+### Empty holding snapshots
+
+The holdings projections treated a collection run of an account as the set of holding rows that share one `observed_at`. A run with no holdings wrote nothing, so the last Security an account sold stayed current. A holding capture may now declare that its holdings are the account's complete inventory at its effective date, with the source field that dates it. The store records each declaration in `investment_holding_snapshots`, and the overview and daily history count it as a collection run even when it holds nothing. Every TDCC holding capture declares one, so a broker account that holds nothing commits an empty snapshot. A fund account that TR051V1 no longer lists also holds nothing, so the caller passes every fund account it has already admitted and each absent one commits an empty snapshot. Captures from other sources do not declare snapshots, and their projections are unchanged.
 
 ### Currency
 
@@ -68,5 +86,5 @@ A settlement account whose currency is not an ISO 4217 code, such as TDCC's `NAN
 ## Consequences
 
 - A direct source that misses one of the Institution's accounts makes TDCC's copy of it uncounted, so totals can understate. They never double count.
-- Securities admission gains a quantity-only path without cash. That path is limited to Passbook movements from an Intermediary source.
+- Securities admission gains a quantity-only path without cash. That path is limited to Passbook movements from an Intermediary source. The `investment_passbook_movements` and `investment_holding_snapshots` tables are baseline changes, so an existing database must be rebuilt.
 - Holding valuations rest on an unverified slot until a live sample confirms it.
