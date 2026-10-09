@@ -14,7 +14,8 @@ import type {
   PGliteCanonicalFinancialFactInput,
 } from "./source-admission-validation.ts";
 import type { InvestmentCaptureInput } from "../canonical/investment-financial.ts";
-import { assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid } from "../canonical/investment-financial-admission.ts";
+import { assertInvestmentCashBoundary, assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid, PASSBOOK_MOVEMENT_ACTIONS } from "../canonical/investment-financial-admission.ts";
+import { TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "../canonical/tdcc-investment-contract.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
 
@@ -47,6 +48,7 @@ const SOURCES: Readonly<Record<InvestmentCaptureInput["sourceId"], { route: stri
   "yuanta-fund": { route: "yuanta-fund/investment/canonical-v1", contract: "yuanta-fund/investment/canonical-v1" },
   "yuanta-trade": { route: "yuanta-trade/investment/canonical-v1", contract: "yuanta-trade/investment/canonical-v1" },
   maicoin: { route: "maicoin/investment/canonical-v1", contract: "maicoin/investment/canonical-v1" },
+  tdcc: { route: TDCC_INVESTMENT_ROUTE, contract: TDCC_INVESTMENT_CONTRACT },
 };
 
 function fail(message: string): never {
@@ -145,6 +147,8 @@ function sourceRecords(capture: InvestmentCaptureInput): CanonicalSourceRecord[]
     const { transactionKey: _transactionKey, ...sourceFact } = transaction;
     records.push(recordEnvelope(capture, transaction, { kind: "investment-transaction", ...sourceFact }, capture.holdings.length + index));
   }
+  for (const movement of capture.passbookMovements ?? [])
+    records.push(recordEnvelope(capture, movement, { kind: "passbook-movement", ...movement }, records.length));
   if (capture.margin?.kind === "embedded")
     records.push(recordEnvelope(capture, capture.margin, { ...capture.margin, kind: "margin-balance" }, records.length));
   return records;
@@ -450,6 +454,20 @@ function validateCapture(capture: InvestmentCaptureInput): void {
       requireToken(transaction.fundingEvidence.sourceLinkageKey, "Investment settlement linkage key");
     } else if (transaction.fundingEvidence.kind !== "unresolved") fail("Investment funding evidence kind is unsupported.");
   }
+  assertInvestmentCashBoundary(capture);
+  const movementKeys = new Set<string>();
+  for (const movement of capture.passbookMovements ?? []) {
+    requireToken(movement.sourceRecordKey, "Passbook movement source record key");
+    requireToken(movement.movementKey, "Passbook movement key");
+    if (sourceRecords.has(movement.sourceRecordKey) || movementKeys.has(movement.movementKey)) fail("Passbook movement keys must be unique.");
+    sourceRecords.add(movement.sourceRecordKey);
+    movementKeys.add(movement.movementKey);
+    if (!securities.has(movement.securityKey) || !PASSBOOK_MOVEMENT_ACTIONS.includes(movement.action)) fail("Passbook movement identity is unsupported.");
+    amount(movement.quantity, "Passbook movement quantity");
+    if (!transactionHistory) fail("Passbook movements require a complete transaction-history range.");
+    for (const value of [date(movement.tradeOn, "Passbook movement trade date"), date(movement.postedOn, "Passbook movement posted date")])
+      if (value < transactionHistory.startDate || value > transactionHistory.endDate) fail("Passbook movement falls outside its history range.");
+  }
   if (capture.margin?.kind === "embedded") {
     requireToken(capture.margin.sourceRecordKey, "Investment margin source record key");
     date(capture.margin.effectiveOn, "Investment margin effective date");
@@ -540,6 +558,17 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
     }
     await query(transaction, `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [bytes(committed.transactionId, "Investment transaction"), context.capture.captureId, context.commitId, context.accountId, expected.security, sourceRecordId, expected.action, expected.quantityCoefficient, expected.quantityScale, expected.cashCoefficient, expected.cashScale, expected.cashCurrency, expected.effectiveOn, expected.fundingEvidenceJson]);
   }
+  for (const movement of capture.passbookMovements ?? []) {
+    const sourceRecordId = records.get(movement.sourceRecordKey);
+    if (!sourceRecordId) fail("Passbook movement source record is missing.");
+    const security = securityId(movement.securityKey);
+    const existing = await first<{ security_id: unknown; action: string; quantity_coefficient: string; quantity_scale: number | string; trade_on: string; posted_on: string }>(transaction, "SELECT security_id, action, quantity_coefficient, quantity_scale, trade_on, posted_on FROM investment_passbook_movements WHERE account_id = ? AND movement_key = ?", [context.accountId, movement.movementKey]);
+    if (existing) {
+      if (!Buffer.from(bytes(existing.security_id, "Investment Security")).equals(Buffer.from(security)) || existing.action !== movement.action || existing.quantity_coefficient !== movement.quantity.coefficient || Number(existing.quantity_scale) !== movement.quantity.scale || existing.trade_on !== movement.tradeOn || existing.posted_on !== movement.postedOn) fail("Passbook movement conflicts with prior canonical evidence.");
+      continue;
+    }
+    await query(transaction, `INSERT INTO investment_passbook_movements(movement_id, capture_id, commit_id, account_id, security_id, source_record_id, movement_key, action, quantity_coefficient, quantity_scale, trade_on, posted_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, security, sourceRecordId, movement.movementKey, movement.action, movement.quantity.coefficient, movement.quantity.scale, movement.tradeOn, movement.postedOn]);
+  }
   if (capture.margin?.kind === "embedded") {
     const sourceRecordId = records.get(capture.margin.sourceRecordKey);
     if (!sourceRecordId) fail("Investment margin source record is missing.");
@@ -549,7 +578,13 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
 }
 
 function account(capture: InvestmentCaptureInput): PGliteCanonicalFinancialAccountInput {
-  return { sourceAccountKey: capture.identity.accountKey, accountNo: capture.identity.accountNumber?.value ?? null, accountType: "investment", currency: capture.identity.reportingCurrency };
+  return {
+    sourceAccountKey: capture.identity.accountKey,
+    accountNo: capture.identity.accountNumber?.value ?? null,
+    accountType: "investment",
+    currency: capture.identity.reportingCurrency,
+    ...(capture.identity.institutionKey ? { institutionKey: capture.identity.institutionKey } : {}),
+  };
 }
 
 export async function commitPGliteCanonicalInvestmentCapture(
