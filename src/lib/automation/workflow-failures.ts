@@ -12,6 +12,8 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
   "authentication-dialog-interrupted",
   "authentication-failed",
   "verification-failed",
+  "device-registration-required",
+  "provider-protocol-outdated",
   "source-collection-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
@@ -36,6 +38,14 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
   "verification-failed": {
     zh: "驗證步驟未成功完成，這次同步已停止。",
     en: "The verification step did not complete successfully, so this run stopped.",
+  },
+  "device-registration-required": {
+    zh: "集保 e 存摺不再信任這台裝置。請到登入設定重新註冊裝置，再執行同步。",
+    en: "TDCC e-Passbook no longer trusts this device. Register the device again in sign-in settings, then run the sync.",
+  },
+  "provider-protocol-outdated": {
+    zh: "集保 e 存摺的 App 介面已變更，需要更新 Octopus Beak 才能繼續同步。",
+    en: "The TDCC e-Passbook App interface changed. Update Octopus Beak to sync again.",
   },
   "source-collection-failed": {
     zh: "來源資料收集失敗，未完成這次來源的資料驗證。",

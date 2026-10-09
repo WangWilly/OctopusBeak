@@ -158,6 +158,13 @@ export const BANK_STATEMENT_CAPABILITIES = {
     statementSelectionKey: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES",
     statementTypes: types("accounts"),
   },
+  tdcc: {
+    id: "tdcc",
+    label: "TDCC",
+    enabledKey: "LIBRETTO_CLOUD_TDCC_ENABLED",
+    statementSelectionKey: "LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES",
+    statementTypes: types("securities", "fund", "settlement"),
+  },
 } as const satisfies Record<string, StatementSelectionGroup>;
 
 export function selectStatementTypes(
