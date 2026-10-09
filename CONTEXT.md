@@ -108,7 +108,7 @@ The contract-established provider reference that maintains a Financial Account, 
 _Avoid_: Supported source, corporate-group brand, workflow provider code
 
 **Intermediary source**:
-A supported source that reports Financial Accounts maintained by other Institutions rather than by itself, such as TDCC e-Passbook reporting broker securities accounts and bank settlement accounts. Each reported account's Institution is the maintaining broker or bank, while the Source connection belongs to the intermediary.
+A supported source that reports Financial Accounts maintained by other Institutions rather than by itself, such as TDCC e-Passbook reporting broker securities accounts and bank settlement accounts. Each reported account's Institution is the maintaining broker or bank, while the Source connection belongs to the intermediary. The TDCC e-Passbook App's official Traditional Chinese name is 集保e手掌握 (formerly 集保 e 存摺).
 _Avoid_: TDCC as Institution, aggregator account, depository-owned account
 
 **Direct source precedence**:

@@ -158,7 +158,7 @@ export function intermediarySource(namespace: string | undefined): IntermediaryS
 }
 
 const INTERMEDIARY_SOURCE_NAMES: Readonly<Record<IntermediarySourceLogoKey, Readonly<{ "zh-TW": string; en: string }>>> = {
-  tdcc: { "zh-TW": "集保 e 存摺", en: "TDCC e-Passbook" },
+  tdcc: { "zh-TW": "集保e手掌握", en: "TDCC e-Passbook" },
 };
 
 /** The interface name of an Intermediary source, which is not an Institution. */

@@ -945,8 +945,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     }),
     credentialGroup({
       ...BANK_STATEMENT_CAPABILITIES.tdcc,
-      displayName: localized("TDCC e-Passbook", "集保 e 存摺（TDCC e-Passbook）"),
-      searchAliases: ["TDCC", "e-Passbook", "集保", "e存摺", "集保e存摺"],
+      displayName: localized("TDCC e-Passbook", "集保e手掌握（TDCC e-Passbook）"),
+      searchAliases: ["TDCC", "e-Passbook", "集保", "e手掌握", "集保e手掌握", "e存摺", "集保e存摺"],
       credentialFields: [
         field(
           "LIBRETTO_CLOUD_TDCC_USER_ID",
@@ -958,17 +958,17 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
         field(
           "LIBRETTO_CLOUD_TDCC_PASSWORD",
           "e-Passbook password",
-          "集保 e 存摺密碼",
+          "集保e手掌握密碼",
           "password",
         ),
       ],
       setupGuide: {
         summary: localized(
           "Use the ID number and password you use in the TDCC e-Passbook phone App. TDCC trusts one device at a time, so syncing here signs the phone App out.",
-          "請使用登入集保 e 存摺手機 App 的身分證字號與密碼。集保一次只信任一台裝置，在這裡同步會讓手機 App 登出。",
+          "請使用登入集保e手掌握 App 的身分證字號與密碼。集保一次只信任一台裝置，在這裡同步會讓手機 App 登出。",
         ),
         requirements: [
-          localized("An active TDCC e-Passbook account", "已開通的集保 e 存摺帳戶"),
+          localized("An active TDCC e-Passbook account", "已開通的集保e手掌握帳戶"),
           localized(
             "Access to the email and mobile number registered with TDCC, for the one-time codes of device registration",
             "能收到集保登記的電子郵件與手機簡訊，以完成裝置註冊的一次性驗證碼",
@@ -977,7 +977,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
         steps: [
           localized(
             "Enter your ID number and e-Passbook password here.",
-            "在這裡輸入身分證字號與集保 e 存摺密碼。",
+            "在這裡輸入身分證字號與集保e手掌握密碼。",
           ),
           localized(
             "Register this device and enter the codes TDCC sends by email and SMS.",
@@ -992,7 +992,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           link(
             "service",
             "Open the TDCC e-Passbook site (Chinese)",
-            "前往集保 e 存摺網站",
+            "前往集保e手掌握網站",
             "https://epassbook.tdcc.com.tw/zh/a1.aspx",
             ["epassbook.tdcc.com.tw"],
           ),
