@@ -26,6 +26,7 @@
   import linebankLogo from "../../../site/assets/logos/linebank.webp";
   import postLogo from "../../../site/assets/logos/post.webp";
   import sinopacLogo from "../../../site/assets/logos/sinopac.webp";
+  import tdccLogo from "../../../site/assets/logos/tdcc.webp";
   import yuantaLogo from "../../../site/assets/logos/yuanta-bank.webp";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import appIcon from "./assets/app-icon.png";
@@ -67,6 +68,7 @@
     { name: "LINE Bank", logo: linebankLogo },
     { name: "Chunghwa Post", logo: postLogo },
     { name: "E-Invoice Platform", logo: einvoiceLogo },
+    { name: "TDCC e-Passbook", logo: tdccLogo },
   ];
 
   let root: HTMLElement;

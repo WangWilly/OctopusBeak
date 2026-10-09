@@ -2,7 +2,7 @@
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import TdccDeviceRegistration from "$lib/automation/TdccDeviceRegistration.svelte";
   import { tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
-  import { institutionForNamespace, institutionForTask } from "$lib/institutions/institutions.ts";
+  import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import {
@@ -1435,8 +1435,8 @@ import type {
                 >
                   {#if task.status === "waiting_for_human"}
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
-                  {:else if institutionForTask(task.id)}
-                    <InstitutionLogo institution={institutionForTask(task.id)} size={22} />
+                  {:else if sourceLogoForTask(task.id)}
+                    <InstitutionLogo institution={sourceLogoForTask(task.id)} size={22} />
                   {:else if task.kind === "crawler"}
                     <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else}
@@ -1589,7 +1589,7 @@ import type {
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
-                    <span class="task-logo"><InstitutionLogo institution={institutionForTask(task.id)} /></span>
+                    <span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(task.id)} /></span>
                     <strong>{taskLabel(task, $t)}</strong>
                   </div>
                 </td>
@@ -1929,7 +1929,7 @@ import type {
                       aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
-                      <InstitutionLogo institution={institutionForNamespace(group.id)} size={24} />
+                      <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy">
                         <strong>{credentialGroupName(group)}</strong>
                         {#if syncStatus}
@@ -1957,7 +1957,7 @@ import type {
                       aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
-                      <InstitutionLogo institution={institutionForNamespace(group.id)} size={24} />
+                      <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy"><strong>{credentialGroupName(group)}</strong></span>
                     </button>
                     <button
@@ -1979,7 +1979,7 @@ import type {
           {@const selectedTypes = effectiveStatementSelection(credentialGroups, credentialChanges, group.id)}
           <section class="credential-body" aria-labelledby={`${group.id}-credentials-title`}>
             <div class="credential-section-head">
-              <InstitutionLogo institution={institutionForNamespace(group.id)} size={40} />
+              <InstitutionLogo institution={sourceLogo(group.id)} size={40} />
               <div class="credential-title">
                 <h3 id={`${group.id}-credentials-title`}>{credentialGroupName(group)}</h3>
                 {#if credentialGroupAltName(group)}<p>{credentialGroupAltName(group)}</p>{/if}
@@ -2407,7 +2407,7 @@ import type {
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={institutionForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
+                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>

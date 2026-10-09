@@ -10,7 +10,8 @@ import {
   institutionForBankCode,
   institutionForBrokerBranch,
   institutionForNamespace,
-  institutionForTask,
+  sourceLogo,
+  sourceLogoForTask,
   institutionLogoFile,
   institutionNames,
   accountProduct,
@@ -33,10 +34,18 @@ test("collection namespaces and automation tasks resolve to their institution", 
   assert.equal(institutionForNamespace("fubon"), "fubon");
   assert.equal(institutionForNamespace("unknown-bank"), null);
   assert.equal(institutionForNamespace(undefined), null);
-  assert.equal(institutionForTask("cathay-all-statements"), "cathay");
-  assert.equal(institutionForTask("sync-maicoin"), "maicoin");
-  assert.equal(institutionForTask("einvoice-personal-invoices"), "einvoice");
-  assert.equal(institutionForTask("exchange-rates"), null);
+  assert.equal(sourceLogoForTask("cathay-all-statements"), "cathay");
+  assert.equal(sourceLogoForTask("sync-maicoin"), "maicoin");
+  assert.equal(sourceLogoForTask("einvoice-personal-invoices"), "einvoice");
+  assert.equal(sourceLogoForTask("exchange-rates"), null);
+});
+
+test("TDCC is an Intermediary source with its own logo, never an Institution", () => {
+  assert.equal(institutionForNamespace("tdcc"), null);
+  assert.equal(sourceLogo("tdcc"), "tdcc");
+  assert.equal(sourceLogo("yuanta-trade"), "yuanta-securities");
+  assert.equal(sourceLogoForTask("sync-tdcc"), "tdcc");
+  assert.ok(existsSync(new URL(`../../../site/assets/logos/${institutionLogoFile("tdcc")}`, import.meta.url)), "the TDCC logo exists");
 });
 
 const account = (overrides: Partial<AccountRowDto> = {}): AccountRowDto => ({
