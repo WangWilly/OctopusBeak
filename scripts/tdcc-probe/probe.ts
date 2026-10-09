@@ -15,6 +15,8 @@ import {
   type TdccClientOptions,
   type TdccFailure,
   type TdccSignInDetails,
+  nextTradeCursor,
+  type TdccTradeCursor,
 } from "../../src/workflows/tdcc-epassbook-client.ts";
 import { inventoryFields, type FieldInventory } from "./field-inventory.ts";
 import type { StoredTdccDevice, StoredTdccSecrets, TdccSecretStore } from "./stored-secrets.ts";
@@ -99,8 +101,10 @@ export async function runTdccProbe(options: TdccProbeOptions): Promise<string> {
   }
 
   let endpoints: Record<string, EndpointReport>;
+  let tradeCursorExperiment: TradeCursorTrial[];
   try {
     endpoints = await probeEndpoints(client, terminal);
+    tradeCursorExperiment = await probeTradeCursors(client, terminal);
   } finally {
     store.write({ session: { ...client.exportSession(), issuedAt } });
   }
@@ -114,6 +118,7 @@ export async function runTdccProbe(options: TdccProbeOptions): Promise<string> {
     freshLogin,
     phoneAppSignedOut,
     endpoints,
+    tradeCursorExperiment,
   };
   mkdirSync(options.reportsDirectory, { recursive: true });
   const reportPath = join(options.reportsDirectory, `${report.probedAt.replaceAll(":", "-")}.json`);
@@ -224,6 +229,44 @@ async function collect(
 // TR002 row slots that hold exchange, status, unit, credit type, stock type,
 // transaction code and name, debit/credit, transaction type and currency codes.
 const TRADE_CODE_SLOTS = [4, 5, 6, 7, 8, 10, 11, 14, 15, 20].map((slot) => `$[].items[][${slot}]`);
+
+type TradeCursorTrial = Readonly<{
+  firstPageRows: number;
+  secondPage: ReadonlyArray<{ cursor: string; end: boolean; rows: number } | { cursor: string; failure: ProbeFailure }>;
+}>;
+
+// Which TR002 cursor form TDCC accepts is unconfirmed, so ask for page two of
+// each account with a non-empty first page in every candidate form.
+const TRADE_CURSOR_FORMS: ReadonlyArray<readonly [string, (row: readonly unknown[]) => TdccTradeCursor]> = [
+  ["app-joined", nextTradeCursor],
+  ["postDate+txnSerNo", (row) => ({ postDate: String(row[0] ?? ""), txnSerNo: String(row[1] ?? "") })],
+  ["txnSerNo-only", (row) => ({ postDate: "", txnSerNo: String(row[1] ?? "") })],
+];
+
+async function probeTradeCursors(client: TdccClient, terminal: ProbeTerminal): Promise<TradeCursorTrial[]> {
+  const trials: TradeCursorTrial[] = [];
+  for (const account of brokerAccounts(await client.positions())) {
+    const first = await client.tradeDetailsPage(account);
+    if (first.end) continue;
+    const last = first.rows.at(-1)!;
+    const secondPage: TradeCursorTrial["secondPage"][number][] = [];
+    for (const [cursor, form] of TRADE_CURSOR_FORMS) {
+      try {
+        const page = await client.tradeDetailsPage(account, form(last));
+        secondPage.push({ cursor, end: page.end, rows: page.rows.length });
+      } catch (error) {
+        secondPage.push({ cursor, failure: probeFailure(error) });
+      }
+    }
+    terminal.print(
+      `tradeCursorExperiment: first page ${first.rows.length} row(s); page two ${secondPage
+        .map((trial) => `${trial.cursor}=${"rows" in trial ? trial.rows : "failed"}`)
+        .join(", ")}`,
+    );
+    trials.push({ firstPageRows: first.rows.length, secondPage });
+  }
+  return trials;
+}
 
 async function probeEndpoints(client: TdccClient, terminal: ProbeTerminal) {
   let positions: unknown = null;

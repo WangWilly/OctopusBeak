@@ -40,6 +40,17 @@ export type TdccSignInDetails = Readonly<{ userId: string; password: string }>;
 
 export type TdccBankAccountRef = Readonly<{ bankId: string; accountNo: string; currency: string }>;
 export type TdccBrokerAccountRef = Readonly<{ brokerNo: string; brokerAccount: string }>;
+export type TdccTradeCursor = Readonly<{ postDate: string; txnSerNo: string }>;
+
+const FIRST_TRADE_CURSOR: TdccTradeCursor = { postDate: "", txnSerNo: "" };
+
+/**
+ * Like the App, the next TR002 cursor is the last row's txnDate, postDate and
+ * txnSerNo joined into txnSerNo, with postDate left empty.
+ */
+export function nextTradeCursor(lastRow: readonly unknown[]): TdccTradeCursor {
+  return { postDate: "", txnSerNo: [lastRow[9], lastRow[0], lastRow[1]].map((slot) => String(slot ?? "")).join("") };
+}
 
 export type TdccFailure =
   | { reason: "device-untrusted"; code: string | null }
@@ -366,33 +377,36 @@ export class TdccClient {
     }
   }
 
-  /**
-   * Every TR002 page body for one broker account, walking backward from the
-   * newest trade. Like the App, the cursor is the last row's txnDate, postDate and
-   * txnSerNo joined into txnSerNo with postDate left empty; D0002 ends it.
-   */
+  /** One TR002 page for one broker account. `end` is TDCC's D0002 or an empty page. */
+  async tradeDetailsPage(
+    account: TdccBrokerAccountRef,
+    cursor: TdccTradeCursor = FIRST_TRADE_CURSOR,
+  ): Promise<{ end: boolean; rows: unknown[][]; body: Record<string, unknown> }> {
+    const { code, body } = await this.#post("tradeDetails", {
+      brokerNo: account.brokerNo,
+      brokerAccount: account.brokerAccount,
+      postDate: cursor.postDate,
+      txnSerNo: cursor.txnSerNo,
+      updateType: "B",
+    });
+    const rows = Array.isArray(body.items) ? body.items.filter(Array.isArray) : [];
+    return { end: code === TRADE_DETAILS_END_CODE || rows.length === 0, rows, body };
+  }
+
+  /** Every TR002 page body for one broker account, walking backward from the newest trade. */
   async tradeDetails(account: TdccBrokerAccountRef): Promise<unknown[]> {
     const pages: unknown[] = [];
     const seenCursors = new Set<string>();
-    let cursor = { postDate: "", txnSerNo: "" };
+    let cursor = FIRST_TRADE_CURSOR;
     for (;;) {
       if (pages.length >= TDCC_MAX_PAGES) {
         throw new TdccError("tradeDetails", { reason: "pagination", detail: "page-limit" });
       }
       seenCursors.add(`${cursor.postDate}\u0000${cursor.txnSerNo}`);
-      const { code, body } = await this.#post("tradeDetails", {
-        brokerNo: account.brokerNo,
-        brokerAccount: account.brokerAccount,
-        postDate: cursor.postDate,
-        txnSerNo: cursor.txnSerNo,
-        updateType: "B",
-      });
-      if (code === TRADE_DETAILS_END_CODE) return pages;
-      const rows = Array.isArray(body.items) ? body.items.filter(Array.isArray) : [];
-      if (rows.length === 0) return pages;
-      pages.push(body);
-      const last = rows.at(-1) as unknown[];
-      cursor = { postDate: "", txnSerNo: [last[9], last[0], last[1]].map((slot) => String(slot ?? "")).join("") };
+      const page = await this.tradeDetailsPage(account, cursor);
+      if (page.end) return pages;
+      pages.push(page.body);
+      cursor = nextTradeCursor(page.rows.at(-1)!);
       if (seenCursors.has(`${cursor.postDate}\u0000${cursor.txnSerNo}`)) {
         throw new TdccError("tradeDetails", { reason: "pagination", detail: "repeated-cursor" });
       }
