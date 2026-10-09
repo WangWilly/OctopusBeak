@@ -56,8 +56,32 @@ const absence = {
   category: "investment-source-evidence", fund: null, period: null, tableLabel: "current-position-absence", rows: [["無基金部位"]],
 };
 
-/** A complete account-wide history in which every report is explicitly empty. */
-function withEmptyHistory(source: Pick<SourceTables, "positions" | "tables">, startDate: string, endDate: string): SourceTables {
+const redemptionHeader = [
+  "贖回日期 分配日期", "基金名稱 交易編號", "贖回投資金額 單位數", "贖回價格 贖回匯率",
+  "信託管理費 短線費用", "入帳帳號 入帳淨額", "贖回參考損益 參考贖回報酬率", "預計入帳",
+];
+const redemptionFooter = ["合計", "贖回投資金額", "台幣 10500", "贖回參考損益", "台幣 500", "贖回參考報酬率", "5%", ""];
+
+/** The held fund redeemed in full on redeemedOn, as the account-wide single-fund sell report shows it. */
+function redemption(redeemedOn: string) {
+  const data = [[redeemedOn.replaceAll("-", "/"), redeemedOn.replaceAll("-", "/")], ["SANITIZED FUND", "FS00000001"],
+    ["台幣 10500", "1000"], ["10.5", "1"], ["台幣 0", "台幣 0"],
+    ["SANITIZED ACCOUNT DESCRIPTION", "0001", "台幣 10500"], ["台幣 500", "5%"], []];
+  return {
+    tableLabel: "redemption-account-details",
+    rows: [redemptionHeader, data.map(lines => lines.join(" ")), redemptionFooter],
+    cellLines: [redemptionHeader.map(value => value.split(" ")), data, redemptionFooter.map(value => [value])],
+    cellColspans: Array.from({ length: 3 }, () => Array(8).fill(1) as number[]),
+  };
+}
+
+/** A complete account-wide history whose reports are explicitly empty, apart from an optional full redemption. */
+function withHistory(
+  source: Pick<SourceTables, "positions" | "tables">,
+  startDate: string,
+  endDate: string,
+  redeemedOn?: string,
+): SourceTables {
   const period = `${startDate.replaceAll("-", "/")}-${endDate.replaceAll("-", "/")}`;
   return {
     ...source,
@@ -66,6 +90,7 @@ function withEmptyHistory(source: Pick<SourceTables, "positions" | "tables">, st
       tableLabel: query.detail === "deduct" && query.investmentType === "type3"
         ? "variable-deduction-details" : yuantaFundAccountHistoryTableLabels[query.detail],
       rows: [["查無資料"]],
+      ...(redeemedOn && query.investmentType === "single" && query.detail === "sell" ? redemption(redeemedOn) : {}),
     }))],
     transactionHistory: { startDate, endDate, complete: true },
     accountHistoryQueryCoverage: yuantaFundAccountHistoryQueries,
@@ -96,9 +121,9 @@ async function collect(source: SourceTables, endDate: string, now: string): Prom
 }
 
 const held = (endDate: string, now: string) =>
-  collect(withEmptyHistory({ positions: [position], tables: [overview, basis] }, "2026-08-01", endDate), endDate, now);
-const soldOut = (endDate: string, now: string) =>
-  collect(withEmptyHistory({ positions: [], tables: [absence] }, "2026-08-01", endDate), endDate, now);
+  collect(withHistory({ positions: [position], tables: [overview, basis] }, "2026-08-01", endDate), endDate, now);
+const soldOut = (endDate: string, now: string, redeemedOn?: string) =>
+  collect(withHistory({ positions: [], tables: [absence] }, "2026-08-01", endDate, redeemedOn), endDate, now);
 
 test("a Yuanta Fund holding capture declares the overview as the account's complete inventory", async () => {
   const capture = await held("2026-09-09", "2026-09-09T12:00:00.000Z");
@@ -112,11 +137,24 @@ test("an explicit absence declares an empty snapshot only when the history reach
   assert.deepEqual(current.scope.holdingSnapshot, {
     sourceField: "position-absence-and-history-end-date", value: "2026-09-10", contractVersion: "yuanta-fund/investment/canonical-v1",
   });
+  const redeemed = await soldOut("2026-09-10", "2026-09-10T02:00:00.000Z", "2026-09-05");
+  assert.deepEqual(redeemed.transactions.map(({ action, effectiveOn }) => ({ action, effectiveOn })), [
+    { action: "sell", effectiveOn: "2026-09-05" },
+  ]);
+  assert.deepEqual(redeemed.scope.holdingSnapshot, {
+    sourceField: "position-absence-and-latest-history-transaction-date", value: "2026-09-05",
+    contractVersion: "yuanta-fund/investment/canonical-v1",
+  }, "nothing moves after the last reported sale, so the account is empty from that date");
   const past = await soldOut("2026-09-05", "2026-09-10T02:00:00.000Z");
   assert.equal(past.scope.holdingSnapshot, undefined, "a sale after a past query end must not be dated at that end");
+  const pastRedeemed = await soldOut("2026-09-07", "2026-09-10T02:00:00.000Z", "2026-09-05");
+  assert.equal(pastRedeemed.scope.holdingSnapshot, undefined, "a reported sale does not prove nothing moved after the query end");
 });
 
-test("a later empty Yuanta Fund collection clears the held fund from the overview and daily history", async () => {
+for (const { name, redeemedOn, clearedOn } of [
+  { name: "with no history events", redeemedOn: undefined, clearedOn: "2026-09-10" },
+  { name: "after a reported redemption", redeemedOn: "2026-09-05", clearedOn: "2026-09-05" },
+]) test(`a later empty Yuanta Fund collection ${name} clears the held fund from the overview and daily history`, async () => {
   const database = await PGlite.create();
   try {
     await applyPgliteBaseline(database);
@@ -128,14 +166,14 @@ test("a later empty Yuanta Fund collection clears the held fund from the overvie
       { symbol: "yuanta-fund:name:SANITIZED FUND", units: { coefficient: "1000", scale: 0 } },
     ]);
 
-    await commitPGliteCanonicalInvestmentCapture(store, { capture: await soldOut("2026-09-10", "2026-09-10T02:00:00.000Z") });
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: await soldOut("2026-09-10", "2026-09-10T02:00:00.000Z", redeemedOn) });
     const { projection } = await query.current();
     assert.deepEqual(projection.positions, [], "the sold fund is no longer current");
 
     const history = await readPGliteDailyHistory(store, projection.knowledgePoint, projection.accounts);
     const day = (date: string) => history.find(row => row.date === date);
     assert.equal(day("2026-09-02")?.positionCount, 1, "the fund is held from its NAV date");
-    assert.deepEqual(history.at(-1), { ...history.at(-1)!, date: "2026-09-10", positionCount: 0, assets: [] });
+    assert.deepEqual(history.at(-1), { ...history.at(-1)!, date: clearedOn, positionCount: 0, assets: [] });
   } finally {
     await database.close();
   }
