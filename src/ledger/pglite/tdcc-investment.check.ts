@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { readPGliteDailyHistory } from "./daily-history.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
 import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
@@ -166,9 +165,8 @@ test("Passbook movements belong only to an Intermediary source, and an Intermedi
 });
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   try {
-    await applyPgliteBaseline(database);
     await run(new PGliteStore(database));
   } finally {
     await database.close();
