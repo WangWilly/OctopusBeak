@@ -4,7 +4,7 @@ Status: accepted
 
 ## Decision
 
-TDCC e-Passbook (集保 e 存摺) is a shipped supported source that calls the e-Passbook mobile App's HTTP API directly, the way the TedLin1993/all-set-tw reference project does. It does not automate a web page. It runs as a non-browser workflow through the same typed runtime, queue, and Financial Commit port as MaiCoin ([ADR 0032](0032-app-owned-workflow-runtime.md)).
+TDCC e-Passbook (集保 e 存摺) is a shipped supported source that calls the e-Passbook mobile App's HTTP API directly, the way the TedLin1993/all-set-tw reference project does. It does not automate a web page. It runs as a non-browser workflow through the same typed runtime, queue, and Financial Commit port as MaiCoin ([ADR 0032](0032-app-owned-workflow-runtime.md)). The App's official name is 集保e手掌握 (formerly 集保 e 存摺).
 
 The client reproduces the App's request envelope: `appInfo`, device ID, device type, `sequence`, a SHA-256 `signature` over the request body, a rotating `tokenID`, and AES-CBC encryption of sign-in fields under a key derived from the timestamp and device type. The App version, API version, and key-derivation rule are fixed in code. When TDCC rejects a request in a way that shows the protocol changed, the run fails with the typed reason `provider-protocol-outdated` and the fix ships in a new App release. There is no remote protocol configuration.
 

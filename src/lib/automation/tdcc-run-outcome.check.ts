@@ -14,7 +14,7 @@ test("TDCC exclusions read as plain counts and leave out what the run did not re
   assert.deepEqual(tdccExclusionLines(counts, translations["zh-TW"]), [
     "2 個帳戶的銀行或券商代碼尚未收錄。",
     "3 筆定期存款目前不匯入。",
-    "1 個帳戶在集保 e 存摺手機 App 中設為隱藏。",
+    "1 個帳戶在集保e手掌握 App 中設為隱藏。",
   ]);
   assert.deepEqual(tdccExclusionLines(counts, translations.en), [
     "2 accounts are at a bank or broker code OctopusBeak does not know yet.",

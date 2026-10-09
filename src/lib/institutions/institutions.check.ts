@@ -90,7 +90,7 @@ test("a TDCC account localizes its stored Institution and shows its logo only wh
   const zh = localizeAccount(taishin, dictionaries["zh-TW"]);
   assert.equal(zh.institution, "台新國際商業銀行");
   assert.equal(zh.label, "台新國際商業銀行 · 銀行帳戶 · 200123456");
-  assert.equal(dictionaries["zh-TW"].accounts.viaSource.tdcc, "經由集保 e 存摺");
+  assert.equal(dictionaries["zh-TW"].accounts.viaSource.tdcc, "經由集保e手掌握");
   assert.equal(dictionaries.en.accounts.viaSource.tdcc, "via TDCC e-Passbook");
   assert.equal(institutionLogo("bank-812"), null);
   assert.equal(institutionLogo("fubon"), "fubon");
