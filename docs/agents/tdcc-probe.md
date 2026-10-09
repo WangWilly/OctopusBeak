@@ -1,6 +1,6 @@
 # Running the TDCC e-Passbook probe
 
-The TDCC probe is a development-only command for Phase 0 of the TDCC App protocol decision (`docs/adr/`, `tdcc-epassbook-app-protocol-source`). It signs in to TDCC e-Passbook with the production client in `src/workflows/tdcc-epassbook-client.ts` and calls every endpoint. It then writes a redacted field inventory, which Phase 1 uses to settle each product's Source Contract. It never writes to the canonical store, and the installer does not include it.
+The TDCC probe is a development-only command for Phase 0 of [ADR 0041](../adr/0041-tdcc-epassbook-app-protocol-source.md). It signs in to TDCC e-Passbook with the production client in `src/workflows/tdcc-epassbook-client.ts` and calls every endpoint. It then writes a redacted field inventory, which Phase 1 uses to settle each product's Source Contract. It never writes to the canonical store, and the installer does not include it.
 
 ## Before you run it
 
