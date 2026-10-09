@@ -19,7 +19,7 @@ import {
   type TdccTradeCursor,
 } from "../../src/workflows/tdcc-epassbook-client.ts";
 import { inventoryFields, type FieldInventory } from "./field-inventory.ts";
-import type { StoredTdccDevice, StoredTdccSecrets, TdccSecretStore } from "./stored-secrets.ts";
+import type { StoredTdccDevice, StoredTdccSecrets, TdccSecretStore } from "../../src/lib/automation/server/tdcc-secret-store.ts";
 import type { ProbeTerminal } from "./terminal.ts";
 
 export const TDCC_PROBE_USAGE = `Usage: npm run probe:tdcc [-- --help]
