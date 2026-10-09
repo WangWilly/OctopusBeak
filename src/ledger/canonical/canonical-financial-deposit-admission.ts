@@ -10,6 +10,11 @@ import {
   type CanonicalOccurrenceGroupCoverage,
 } from "./occurrence-groups.ts";
 import { assertCanonicalOccurrenceGroupEvidence, CanonicalOccurrenceGroupConflictError } from "./occurrence-group-evidence.ts";
+import type { InstitutionKey } from "../../lib/institutions/institutions.ts";
+import {
+  TDCC_SETTLEMENT_DEPOSIT_PROFILE,
+  TDCC_SETTLEMENT_DEPOSIT_ROUTE,
+} from "./tdcc-settlement-contract.ts";
 import {
   CANONICAL_SOURCE_ROUTE_REGISTRY,
   canonicalSourceRuleCombination,
@@ -129,6 +134,8 @@ export type CanonicalFinancialDepositCapture = {
     accountType: string;
     /** Nullable for a source-proven multi-currency account. */
     currency: string | null;
+    /** The maintaining Institution from contract evidence; an Intermediary source must supply it. */
+    institutionKey?: InstitutionKey;
   };
   observedAt: string;
   scope: {
@@ -827,6 +834,7 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       contractVersion: "human-attested-v1",
       requireProviderGuaranteedFalse: true,
     },
+    [TDCC_SETTLEMENT_DEPOSIT_ROUTE]: TDCC_SETTLEMENT_DEPOSIT_PROFILE,
   };
   for (const metadata of Object.values(
     FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA,

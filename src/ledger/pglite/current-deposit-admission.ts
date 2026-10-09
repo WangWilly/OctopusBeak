@@ -3,6 +3,12 @@ import {
   stableCanonicalSourceJson,
   type CanonicalSourcePage,
 } from "../canonical/canonical-source-evidence.ts";
+import {
+  TDCC_NAMESPACE,
+  TDCC_SETTLEMENT_BALANCE_CONTRACT,
+  TDCC_SETTLEMENT_BALANCE_ROUTE,
+} from "../canonical/tdcc-settlement-contract.ts";
+import type { InstitutionKey } from "../../lib/institutions/institutions.ts";
 
 export type CurrentDepositBalanceKind = "ledger" | "available";
 
@@ -18,6 +24,8 @@ export type CurrentDepositAccountScope = Readonly<{
   stream: "domestic-deposit" | "foreign-currency-deposit";
   /** Existing canonical source identity. This may be an opaque digest. */
   sourceAccountKey: string;
+  /** The maintaining Institution from contract evidence; an Intermediary source must supply it. */
+  institutionKey?: InstitutionKey;
 }>;
 
 export type CurrentDepositTimeEvidence = Readonly<{
@@ -109,6 +117,11 @@ type CurrentDepositRouteContract = Readonly<{
   requestDiscriminant?: CurrentDepositRequestDiscriminant;
   effectiveTimeBasis: CurrentDepositTimeEvidence["effectiveTimeBasis"];
   effectiveTimeSourceField: string;
+  /**
+   * A provider system time written as Gregorian Asia/Taipei local
+   * `YYYYMMDDhhmmss`, which carries no offset of its own.
+   */
+  systemTimeLexeme?: "taipei-yyyymmddhhmmss";
   /** Additional provider time evidence accepted by this route. */
   effectiveTimeAlternates?: readonly Readonly<{
     effectiveTimeBasis: CurrentDepositTimeEvidence["effectiveTimeBasis"];
@@ -290,6 +303,21 @@ export const CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS: Readonly<
       available: ["wdrwAvblAmt"],
     },
   },
+  [TDCC_SETTLEMENT_BALANCE_ROUTE]: {
+    integrationNamespace: TDCC_NAMESPACE,
+    stream: "domestic-deposit",
+    contractVersion: TDCC_SETTLEMENT_BALANCE_CONTRACT,
+    endpointHost: "epassbooksys.tdcc.com.tw",
+    endpointPath: "/MPSBKV2/rest/tsp/TSP006",
+    effectiveTimeBasis: "provider-system-time",
+    effectiveTimeSourceField: "updateTime",
+    systemTimeLexeme: "taipei-yyyymmddhhmmss",
+    requiredCacheTokens: [],
+    fields: {
+      ledger: ["balanceAmt"],
+      available: ["availableBalance"],
+    },
+  },
   "post/domestic-deposit/current-balance-v1": {
     integrationNamespace: "post",
     stream: "domestic-deposit",
@@ -415,12 +443,28 @@ export function canonicalInstant(value: string): string {
   );
 }
 
+/** Gregorian years only: an ROC `0YYY` year would otherwise parse as year 0YYY. */
+const TAIPEI_COMPACT_TIME = /^((?:19|20)\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/u;
+
+export function taipeiCompactTimeInstant(value: string): string | null {
+  const match = TAIPEI_COMPACT_TIME.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const local = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  const civil = new Date(`${local}Z`);
+  if (Number.isNaN(civil.getTime()) || civil.toISOString().slice(0, 19) !== local) return null;
+  return canonicalInstant(`${local}+08:00`);
+}
+
 function providerTimeInstant(
   value: string,
   basis: CurrentDepositTimeEvidence["effectiveTimeBasis"],
+  contract: CurrentDepositRouteContract,
 ): string {
   if (basis === "provider-http-date" && !HTTP_DATE.test(value))
     fail("Current deposit provider HTTP Date is invalid.");
+  if (basis === "provider-system-time" && contract.systemTimeLexeme === "taipei-yyyymmddhhmmss")
+    return taipeiCompactTimeInstant(value) ?? fail("Current deposit provider system time is invalid.");
   if (basis === "provider-system-time") {
     if (RFC3339.test(value)) return canonicalInstant(value);
     if (/^\d{13}$/u.test(value)) {
@@ -605,6 +649,7 @@ function validateProviderTime(
   const sourceValue = providerTimeInstant(
     time.sourceValue,
     time.effectiveTimeBasis,
+    contract,
   );
   const effectiveAt = canonicalInstant(
     requireRfc3339(time.effectiveAt, "Current deposit effective time"),

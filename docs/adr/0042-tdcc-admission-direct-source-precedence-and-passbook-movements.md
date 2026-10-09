@@ -24,6 +24,16 @@ Each Financial Account records its Institution in a required `institution_key` c
 
 Two other placements were considered. Keeping the Institution only in account identity metadata, such as the source account key or capture evidence, needs no column, but every reader would parse the key or join through captures, and direct-source accounts would have no stored value to compare. A separate `account_institutions` table would hold only intermediary accounts, so readers would need two paths. The column gives every account one place for its Institution, which Direct source precedence can group on.
 
+### Settlement accounts
+
+Each settlement account is one Financial Account per bank code, account number, and currency, on the `tdcc` namespace and the `domestic-deposit` stream. `src/ledger/canonical/tdcc-settlement-admission.ts` turns TSP006 and TSP007 bodies into captures.
+
+- TSP007 transactions form one complete-range capture per account. Every page must report `isComplete: true` and the same `startDate` and `endDate`, or the capture is rejected. The signed amount comes from `transferInAmount` or `transferOutAmount`, and exactly one of them must be non-zero. `balance` is the balance after the row.
+- `txnDateTime`, `startDate`, `endDate`, and `updateTime` are read as Gregorian Asia/Taipei times, as the all-set-tw reference reads them. The 14-digit and 8-digit shapes would also fit an ROC `0YYY` year, so a year outside 1900 to 2099 rejects the capture instead of being misread.
+- TSP007 has no reliable occurrence identifier. The reference client saw TDCC fill in `stan` after a row first appeared, so `stan` and `hcode` stay out of identity and content. Identical rows keep their multiplicity through occurrence groups ([ADR 0034](0034-workflow-semantic-occurrence-disambiguation.md)). Only the `hcode` values seen live, empty and `0`, are admitted.
+- TSP006 gives one current-balance capture per account: `balanceAmt` is the ledger balance and `availableBalance` is the available balance, both effective at the response's `updateTime`.
+- An account with an unknown bank code or a non-ISO currency, and every TSP006 time deposit, is reported as a typed exclusion rather than dropped.
+
 ### Passbook movements
 
 TR002 rows are Passbook movements, not investment transactions. They change Security quantity and never create a cash fact, because TDCC reports no settlement amount and quantity times price omits fees and tax. The settlement account carries the cash. Code `113` maps to buy and `123` maps to sell. Any other code rejects the Capture for that broker account. Dates are ROC `0YYYMMDD` and are converted exactly.

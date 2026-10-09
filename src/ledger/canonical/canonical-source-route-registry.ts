@@ -27,6 +27,13 @@ import {
   sinopacHumanAttestedManifestFingerprint,
 } from "./sinopac-human-attestation-contract.ts";
 import {
+  TDCC_NAMESPACE,
+  TDCC_SETTLEMENT_BALANCE_CONTRACT,
+  TDCC_SETTLEMENT_BALANCE_ROUTE,
+  TDCC_SETTLEMENT_DEPOSIT_CONTRACT,
+  TDCC_SETTLEMENT_DEPOSIT_ROUTE,
+} from "./tdcc-settlement-contract.ts";
+import {
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   manifestFingerprint as yuantaHumanAttestationFingerprint,
 } from "./yuanta-human-attestation-contract.ts";
@@ -439,6 +446,23 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     contractVersions: ["foreign-currency/sinopac/human-attested-v1"],
     ruleCombinations: [sameRuleTuple("foreign-currency/sinopac/human-attested-v1", "foreign-currency/sinopac/human-attested-v1")],
     occurrenceGroups: "required",
+  },
+
+  {
+    routeKey: TDCC_SETTLEMENT_DEPOSIT_ROUTE,
+    integrationNamespace: TDCC_NAMESPACE,
+    stream: "domestic-deposit",
+    contractVersions: [TDCC_SETTLEMENT_DEPOSIT_CONTRACT],
+    completenessRuleVersions: [TDCC_SETTLEMENT_DEPOSIT_ROUTE],
+    ruleCombinations: [sameRuleTuple(TDCC_SETTLEMENT_DEPOSIT_CONTRACT, TDCC_SETTLEMENT_DEPOSIT_ROUTE)],
+    occurrenceGroups: "required",
+  },
+  {
+    routeKey: TDCC_SETTLEMENT_BALANCE_ROUTE,
+    integrationNamespace: TDCC_NAMESPACE,
+    stream: "domestic-deposit",
+    contractVersions: [TDCC_SETTLEMENT_BALANCE_CONTRACT],
+    ruleCombinations: [effectiveTimeOnly(TDCC_SETTLEMENT_BALANCE_CONTRACT, TDCC_SETTLEMENT_BALANCE_CONTRACT)],
   },
 
   // E-Invoice canonical capture.  This route is provider-neutral because the
