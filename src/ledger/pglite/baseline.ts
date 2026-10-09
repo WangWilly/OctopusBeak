@@ -17,7 +17,7 @@ import {
 import type { PGliteStore } from "./transaction.ts";
 
 /** The first PGlite schema is a consolidated, fresh-start baseline. */
-export const PGLITE_BASELINE_VERSION = 4;
+export const PGLITE_BASELINE_VERSION = 5;
 export const CANONICAL_SQLITE_SCHEMA_VERSION = 28;
 
 /**

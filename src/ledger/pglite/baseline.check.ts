@@ -184,7 +184,7 @@ try {
     [sourceRecordId, captureId, sourceCommitId, "test", "1", "{}"],
   );
   await store.query(
-    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'cathay', $9)",
     [accountId, sourceConnectionId, identityEpochId, baselineSourceRegistration.stream, "account", null, "depository", "TWD", sourceCommitId],
   );
   await store.query(

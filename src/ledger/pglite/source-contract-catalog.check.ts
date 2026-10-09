@@ -105,8 +105,8 @@ async function seedCapture(
   await database.query(
     `INSERT INTO financial_accounts
        (account_id, source_connection_id, identity_epoch_id, stream,
-        source_account_key, account_no, account_type, currency, created_commit_id)
-     VALUES ($1, $2, $3, $4, 'account', NULL, 'depository', 'TWD', $5)`,
+        source_account_key, account_no, account_type, currency, institution_key, created_commit_id)
+     VALUES ($1, $2, $3, $4, 'account', NULL, 'depository', 'TWD', 'cathay', $5)`,
     [
       ids.accountId,
       ids.connectionId,

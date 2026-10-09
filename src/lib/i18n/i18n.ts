@@ -1,4 +1,5 @@
 import { derived, writable } from "svelte/store";
+import { institutionNames } from "../institutions/institutions.ts";
 
 export const locales = ["en", "zh-TW"] as const;
 export type Locale = (typeof locales)[number];
@@ -1122,20 +1123,7 @@ const en = {
     onboardingLinkedSources: (sources: number, firstSyncSucceeded: boolean) =>
       `${sources} source${sources === 1 ? "" : "s"} linked${firstSyncSucceeded ? ", first sync succeeded" : ""}`,
   },
-  institutions: {
-    fubon: "Taipei Fubon Bank",
-    esun: "E.SUN Bank",
-    "yuanta-bank": "Yuanta Bank",
-    "yuanta-securities": "Yuanta Securities",
-    cathay: "Cathay United Bank",
-    hncb: "Hua Nan Bank",
-    ctbc: "CTBC Bank",
-    post: "Chunghwa Post",
-    sinopac: "Bank SinoPac",
-    linebank: "LINE Bank",
-    einvoice: "E-Invoice",
-    maicoin: "MaiCoin",
-  },
+  institutions: institutionNames("en"),
   accountProducts: {
     "Bank account": "Bank account",
     "Foreign currency account": "Foreign currency account",
@@ -2259,20 +2247,7 @@ const zh: typeof en = {
     onboardingLinkedSources: (sources, firstSyncSucceeded) =>
       `已連結 ${sources} 個來源${firstSyncSucceeded ? "，第一次同步成功" : ""}`,
   },
-  institutions: {
-    fubon: "台北富邦銀行",
-    esun: "玉山銀行",
-    "yuanta-bank": "元大銀行",
-    "yuanta-securities": "元大證券",
-    cathay: "國泰世華銀行",
-    hncb: "華南銀行",
-    ctbc: "中國信託銀行",
-    post: "中華郵政",
-    sinopac: "永豐銀行",
-    linebank: "LINE Bank",
-    einvoice: "電子發票",
-    maicoin: "MaiCoin",
-  },
+  institutions: institutionNames("zh-TW"),
   accountProducts: {
     "Bank account": "銀行帳戶",
     "Foreign currency account": "外幣帳戶",

@@ -286,7 +286,7 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
     [commitId],
   );
   await store.query(
-    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES ($1, $2, $3, 'investment', 'brokerage-1', 'BR-001', 'investment', 'TWD', $4)",
+    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id) VALUES ($1, $2, $3, 'investment', 'brokerage-1', 'BR-001', 'investment', 'TWD', 'yuanta-securities', $4)",
     [accountId, connectionId, epochId, commitId],
   );
   await store.query(
@@ -363,6 +363,11 @@ test("PGlite deposit and balance commands feed current and historical overview a
     );
     assert.equal(deposit.transactions.length, 1);
     assert.equal(deposit.balanceRevisionCount, 0);
+    assert.deepEqual(
+      (await store.query<{ institution_key: string }>("SELECT institution_key FROM financial_accounts")).rows,
+      [{ institution_key: "cathay" }],
+      "a direct-source account records its namespace's Institution",
+    );
     assert.deepEqual(
       (await store.query<{ scope_kind: string; completeness: string }>(
         `SELECT scope_kind, completeness
