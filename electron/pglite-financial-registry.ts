@@ -94,6 +94,7 @@ import {
 } from "../src/ledger/pglite/loan.ts";
 import {
   executePGliteCanonicalInvestmentCommand,
+  listPGliteTdccFundAccounts,
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
 import {
@@ -394,6 +395,8 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
       return args.length === 0 || (args.length === 1 && typeof args[0] === "string");
     case "financial.exchangeRates.read":
       return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"));
+    case "financial.tdccFundAccounts.list":
+      return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
     case "financial.exchangeRates.upsert":
       return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
     default:
@@ -761,6 +764,7 @@ export function createPGliteFinancialRegistry(
     currentInvestmentRelations: (sourceConnectionKey) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
     readExchangeRates: (currencies) => exchangeRates.readExchangeRates(currencies),
     upsertExchangeRates: (rows) => exchangeRates.upsertExchangeRates(rows),
+    listTdccFundAccounts: (connection) => listPGliteTdccFundAccounts(store, connection),
   });
 }
 
@@ -800,6 +804,7 @@ async function invoke(
     case "financial.loanSettlementGroups.current": return registry.currentLoanSettlementGroups(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined);
     case "financial.investmentRelations.current": return registry.currentInvestmentRelations(args[0] as string | undefined);
     case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
+    case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
     case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
   }
 }

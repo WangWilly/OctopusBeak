@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { automationConfigEnv, type AutomationSettingsFile } from "./config-files.ts";
+import {
+  AUTOMATION_CREDENTIALS_PATH,
+  automationConfigEnv,
+  getAutomationCredentialCodec,
+  type AutomationSettingsFile,
+} from "./config-files.ts";
+import { createTdccSecretStore } from "./tdcc-secret-store.ts";
+import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
 import {
   finalizeAutomationTaskRun,
   type AutomationTaskExecutionResult,
@@ -90,6 +97,8 @@ export type AutomationTaskExecutionOptions = {
   workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
   createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
+  /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
+  createTdccSessionHost?: () => TdccSessionHost;
   /** Test seam for the supervised App workflow worker. Production uses Worker. */
   appWorkflowWorkerFactory?: RunSupervisedAppWorkflowOptions["workerFactory"];
   /** Test seam for proving that the worker receives the active host descriptor. */
@@ -346,6 +355,7 @@ async function executeInlineAppWorkflow(
           onRuntimeUpdate: execution.onRuntimeUpdate,
         }),
       ...(financialCommit ? { financialCommit } : {}),
+      ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
       events: injectedPorts.events ?? {
         async append(event) {
           await progressReporter.appendEvent(event);
@@ -509,6 +519,13 @@ function sanitizedWorkerResult(
   };
 }
 
+function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHost {
+  if (options.createTdccSessionHost) return options.createTdccSessionHost();
+  const codec = getAutomationCredentialCodec();
+  if (!codec) throw new Error("Encrypted credential storage is unavailable.");
+  return createTdccSessionHost(createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec));
+}
+
 async function executeSupervisedAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
@@ -620,6 +637,7 @@ async function executeSupervisedAppWorkflow(
         } : {}),
         requestHumanAssistance: (contract, signal) =>
           humanAssistance.request(contract, signal),
+        ...(definition.requiresTdcc ? { tdccSession: tdccSessionHost(options) } : {}),
         ...(options.createCathayGmailOtpPort
           ? {
               createCathayGmailOtpPort: (signal) =>
