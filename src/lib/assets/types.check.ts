@@ -7,6 +7,7 @@ const model = {
   sourceGaps: [],
   importedAt: null,
   accounts: [],
+  coveredAccounts: [],
   positionsByAccount: {},
   transactionsByAccount: {},
   dailyHistoryByAccount: {},

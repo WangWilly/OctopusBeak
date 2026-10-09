@@ -147,7 +147,7 @@ function projectRouteBlockData(
   if (target === "assets") {
     if (block === "summary") return pick(record, ASSETS_SUMMARY_FIELDS);
     if (block === "chart") return pick(record, ["accounts", "dailyHistory", "dailyHistoryByAccount"]);
-    return pick(record, ["accounts", "positionsByAccount", "transactionsByAccount", "dailyHistoryByAccount"]);
+    return pick(record, ["accounts", "coveredAccounts", "positionsByAccount", "transactionsByAccount", "dailyHistoryByAccount"]);
   }
   if (target === "liabilities") {
     if (block === "summary") return pick(record, LIABILITIES_SUMMARY_FIELDS);
