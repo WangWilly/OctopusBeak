@@ -195,12 +195,22 @@ export function createTdccRegistrationService(options: TdccRegistrationServiceOp
 export type TdccRegistrationService = ReturnType<typeof createTdccRegistrationService>;
 
 let configuredService: TdccRegistrationService | null = null;
+let fixtureFetch: TdccClientOptions["fetch"] | undefined;
+
+/** Development CDP fixture only: answer registration from a scripted TDCC instead of the network. */
+export function useTdccRegistrationFixture(fetch: NonNullable<TdccClientOptions["fetch"]>) {
+  fixtureFetch = fetch;
+  configuredService = null;
+}
 
 function service(): TdccRegistrationService {
   if (configuredService) return configuredService;
   const codec = getAutomationCredentialCodec();
   if (!codec) throw new Error("Encrypted credential storage is unavailable.");
-  configuredService = createTdccRegistrationService({ store: createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec) });
+  configuredService = createTdccRegistrationService({
+    store: createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec),
+    ...(fixtureFetch ? { fetch: fixtureFetch } : {}),
+  });
   return configuredService;
 }
 
