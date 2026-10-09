@@ -843,6 +843,8 @@ const en = {
       brokerage: "Brokerage",
       domestic: "Domestic accounts",
       accounts: "Accounts",
+      securities: "Securities",
+      settlement: "Settlement accounts",
     } as Record<string, string>,
     workflowOutcomeSummary: "Workflow outcome summary",
     productResults: "Product results",
@@ -936,6 +938,7 @@ const en = {
       "einvoice-personal-invoices": "E-Invoice",
       "exchange-rates": "Exchange rates",
       "sync-maicoin": "MaiCoin",
+      "sync-tdcc": "TDCC e-Passbook",
     },
   },
   firstRunWelcome: {
@@ -1976,6 +1979,8 @@ const zh: typeof en = {
       brokerage: "證券帳戶",
       domestic: "國內帳戶",
       accounts: "帳戶",
+      securities: "證券",
+      settlement: "交割帳戶",
     },
     workflowOutcomeSummary: "工作流程結果摘要",
     productResults: "產品結果",
@@ -2068,6 +2073,7 @@ const zh: typeof en = {
       "einvoice-personal-invoices": "電子發票（E-Invoice）",
       "exchange-rates": "匯率同步",
       "sync-maicoin": "MaiCoin",
+      "sync-tdcc": "集保 e 存摺",
     },
   },
   firstRunWelcome: {

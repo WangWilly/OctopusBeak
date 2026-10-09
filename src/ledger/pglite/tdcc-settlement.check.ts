@@ -22,6 +22,8 @@ const TWD_ACCOUNT = ["2001", "2345678"].join("");
 const USD_ACCOUNT = ["2001", "2345679"].join("");
 const NAN_ACCOUNT = ["2001", "2345680"].join("");
 const UNKNOWN_BANK_ACCOUNT = ["3001", "2345678"].join("");
+const HIDDEN_ACCOUNT = ["1234", "5678", "909999"].join("");
+const DASHED_NAN_ACCOUNT = ["1234", "5678", "908888"].join("");
 const TWD_KEY = ["812", TWD_ACCOUNT, "TWD"].join("-");
 const USD_KEY = ["812", USD_ACCOUNT, "USD"].join("-");
 
@@ -117,6 +119,20 @@ test("TSP006 reports time deposits instead of dropping them", () => {
     readTdccSettlementSnapshot(body).exclusions[0],
     { reason: "time-deposits-not-admitted", bankId: "812", count: 1 },
   );
+});
+
+test("TSP006 reports hidden accounts, and reads no balance of an account it does not admit", () => {
+  const body = tsp006();
+  body.tspAccountInfos[0]!.tspAccount.push(
+    { ...account(HIDDEN_ACCOUNT, "TWD", "-", "0"), isShow: false },
+    account(DASHED_NAN_ACCOUNT, "NAN", "0", "-"),
+  );
+  const snapshot = readTdccSettlementSnapshot(body);
+  assert.deepEqual(snapshot.exclusions.filter(({ reason }) => reason === "hidden-account"), [
+    { reason: "hidden-account", bankId: "812", currency: "TWD", accountNoSuffix: "9999" },
+  ]);
+  assert.equal(snapshot.accounts.some(({ accountNo }) => accountNo === HIDDEN_ACCOUNT), false);
+  assert.ok(snapshot.exclusions.some((exclusion) => exclusion.reason === "non-iso-currency" && exclusion.accountNoSuffix === "8888"));
 });
 
 test("TSP006 without a required field or with an ROC updateTime is rejected", () => {

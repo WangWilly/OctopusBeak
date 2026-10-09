@@ -118,6 +118,24 @@ test("an empty body is signed over the timestamp and a rotated response tokenID 
   assert.equal(sent[2].body.requestHeader.tokenID, "rotated-2");
 });
 
+test("every token or richUrl change is reported once, even when the request then fails", async () => {
+  const fake = fakeTdcc([
+    { header: { returnCode: "0000", tokenID: "rotated-1" }, body: { tokenID: "after-login", richUrl: "https://rich.example/p?sid=1", isDiffDevice: "N" } },
+    { header: { returnCode: "0000", tokenID: "after-login" }, body: {} },
+    { header: { returnCode: "E1234", tokenID: "rotated-2", returnMsg: "rejected" } },
+  ]);
+  const changes: unknown[] = [];
+  const tdcc = new TdccClient({ identity: IDENTITY, fetch: fake.fetch, now: () => FIXED_NOW, onSessionChange: (session) => changes.push(session) });
+  await tdcc.login(DETAILS);
+  await tdcc.positions();
+  await assert.rejects(tdcc.bankBalances(), TdccError);
+  assert.deepEqual(changes, [
+    { tokenId: "rotated-1", richUrl: null },
+    { tokenId: "after-login", richUrl: "https://rich.example/p?sid=1" },
+    { tokenId: "rotated-2", richUrl: "https://rich.example/p?sid=1" },
+  ]);
+});
+
 test("login reports device verification from response flags and from device codes", async () => {
   for (const reply of [
     { body: { isDiffDevice: "Y" } },

@@ -101,6 +101,32 @@ export type CathayGmailOtpConnectionError =
   | "gmail-profile-failed"
   | "credential-storage-failed";
 
+export type TdccRegistrationChannel = "email" | "sms";
+
+export type TdccRegistrationFailure =
+  | "sign-in-details-missing"
+  | "sign-in-rejected"
+  | "code-rejected"
+  | "code-expired"
+  | "not-trusted"
+  | "protocol-outdated"
+  | "unavailable"
+  | "expired"
+  | "cancelled"
+  | "not-found";
+
+/**
+ * One step of TDCC Source device registration (ADR 0041), as the renderer
+ * sees it. It carries no code, token, or sign-in identifier.
+ */
+export type TdccRegistrationStep =
+  | Readonly<{ status: "code-required"; registrationId: string; channel: TdccRegistrationChannel }>
+  | Readonly<{ status: "registered"; channels: readonly TdccRegistrationChannel[] }>
+  | Readonly<{ status: "failed"; reason: TdccRegistrationFailure }>;
+
+/** Whether a device is registered for the saved TDCC sign-in identifier. */
+export type TdccDeviceRegistrationStatus = Readonly<{ registered: boolean }>;
+
 export type AutomationTaskSummary = {
   id: string;
   label: string;

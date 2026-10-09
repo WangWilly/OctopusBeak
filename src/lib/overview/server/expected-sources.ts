@@ -13,6 +13,7 @@ import {
   readAutomationSettings,
 } from "../../automation/server/settings.ts";
 import type { AutomationSettingsFile } from "../../automation/server/config-files.ts";
+import { TDCC_FUND_STREAM } from "../../../ledger/canonical/tdcc-investment-contract.ts";
 
 type ExpectedSourceDefinition = Readonly<{
   integrationNamespace: string;
@@ -84,6 +85,14 @@ const EXPECTED_SOURCE_DEFINITIONS: Readonly<Record<string, ExpectedSourceDefinit
     integrationNamespace: "maicoin",
     products: {},
     defaultStream: "investment",
+  },
+  tdcc: {
+    integrationNamespace: "tdcc",
+    products: {
+      securities: { stream: "investment" },
+      fund: { stream: TDCC_FUND_STREAM },
+      settlement: { stream: "domestic-deposit" },
+    },
   },
 };
 

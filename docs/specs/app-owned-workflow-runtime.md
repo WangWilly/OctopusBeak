@@ -1,14 +1,14 @@
 # App-owned workflow runtime
 
-This is the production contract for automation and the implementation baseline for new workflows. [ADR 0032](../adr/0032-app-owned-workflow-runtime.md) records the architectural decision. All 13 production task entries currently run through the desktop App's typed execution path. Provider collection code does not start its own production command or choose its own persistence route.
+This is the production contract for automation and the implementation baseline for new workflows. [ADR 0032](../adr/0032-app-owned-workflow-runtime.md) records the architectural decision. All 14 production task entries currently run through the desktop App's typed execution path. Provider collection code does not start its own production command or choose its own persistence route.
 
 For each task's approximate stage-based progress display, see the [Workflow run progress contract](workflow-run-progress.md).
 
 ## Production boundary
 
-Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. All thirteen production tasks run in App-supervised workers, including exchange rates, MaiCoin, and E-Invoice. Every browser workflow uses the same headless Chromium worker path.
+Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. All fourteen production tasks run in App-supervised workers, including exchange rates, MaiCoin, TDCC, and E-Invoice. Each registration in the App workflow registry declares a browser or nonbrowser runtime; a nonbrowser workflow gets no page and always receives the authenticated PGlite RPC. Every browser workflow uses the same headless Chromium worker path.
 
-`WorkflowContext` injects narrow ports for browser access, strict source-text decoding and integrity checks, solver verification (the `humanAssistance` port), stage events, cancellation, and the existing Canonical Financial Commit. The App's browser host supplies the Playwright page. Financial workflows receive only a typed commit capability; they cannot open the financial database or select an alternate persistence route. MaiCoin uses its own injected operational-persistence port.
+`WorkflowContext` injects narrow ports for browser access, strict source-text decoding and integrity checks, solver verification (the `humanAssistance` port), stage events, cancellation, and the existing Canonical Financial Commit. The App's browser host supplies the Playwright page. Financial workflows receive only a typed commit capability; they cannot open the financial database or select an alternate persistence route. MaiCoin uses its own injected operational-persistence port. TDCC uses a host-owned session port for its device identity, sign-in details, and rotating session token, which never enter the workflow input or environment ([ADR 0041](../adr/0041-tdcc-epassbook-app-protocol-source.md#session-port)).
 
 The executor emits typed events with a run ID, stage, code, timestamp, and optional bounded counts. Events are not reconstructed from stdout. The operational database keeps a bounded number per run and prunes events older than 30 days at startup and daily. A sanitized outcome, stable error code, and compact count summary stay with the run record; raw exception text and process output are not persisted.
 
@@ -26,7 +26,7 @@ This result contract uses the existing operational run-outcome record and does n
 
 ## App task catalog
 
-Each row is an App production task routed through the typed runtime. The eleven statement and invoice tasks use browser provider definitions and the injected Canonical Financial Commit. The exchange-rate and MaiCoin tasks use typed non-browser workflows.
+Each row is an App production task routed through the typed runtime. The eleven statement and invoice tasks use browser provider definitions and the injected Canonical Financial Commit. The exchange-rate, MaiCoin, and TDCC tasks use typed non-browser workflows.
 
 | Task ID | Collection or sync path |
 | --- | --- |
@@ -43,6 +43,7 @@ Each row is an App production task routed through the typed runtime. The eleven 
 | `einvoice-personal-invoices` | E-Invoice browser workflow |
 | `exchange-rates` | Typed exchange-rate synchronization workflow |
 | `sync-maicoin` | Typed MaiCoin synchronization workflow with injected persistence |
+| `sync-tdcc` | Typed TDCC e-Passbook App-protocol workflow with the host-owned session port |
 
 The task catalog and executor wiring establish which path the App starts; fixture tests establish behavior for the inputs they exercise. Neither proves that a bank's current live login or export page still matches those fixtures. In particular, HNCB checks use synthetic CP950/Big5 export bytes and a local HTTP/browser fixture to exercise in-memory collection, parsing, and injected commit behavior. They do not constitute a live HNCB login or export acceptance run. This document does not claim live-bank acceptance for any provider based solely on repository tests.
 

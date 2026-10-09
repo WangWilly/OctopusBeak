@@ -10,6 +10,8 @@ import {
   type TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
 import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
+import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
+import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import {
   sanitizeSafeWorkflowFailureError,
@@ -86,7 +88,40 @@ export type AppWorkflowWorkerInboundFrame =
     requestId: string;
     status: Exclude<HumanAssistanceCompletionStatus, "pending">;
   }>
-  | CathayGmailOtpResponseFrame;
+  | CathayGmailOtpResponseFrame
+  | TdccSessionResponseFrame;
+
+export type TdccSessionOperation = "open" | "sign-in-details";
+
+export type TdccSessionRequestFrame = Readonly<{
+  protocolVersion: 2;
+  kind: "tdcc-session-request";
+  requestId: string;
+  operation: TdccSessionOperation;
+}>;
+
+/** One-way: the host saves the session without acknowledging, so it survives a run that stops right after. */
+export type TdccSessionRotatedFrame = Readonly<{
+  protocolVersion: 2;
+  kind: "tdcc-session-rotated";
+  session: TdccIssuedSession;
+}>;
+
+export type TdccSessionResponseFrame =
+  | Readonly<{
+    protocolVersion: 2;
+    kind: "tdcc-session-response";
+    requestId: string;
+    operation: "open";
+    lease: TdccSessionLease;
+  }>
+  | Readonly<{
+    protocolVersion: 2;
+    kind: "tdcc-session-response";
+    requestId: string;
+    operation: "sign-in-details";
+    lease: TdccSignInLease;
+  }>;
 
 export type CathayGmailOtpOperation = "ensure-access" | "prepare-retrieval" | "retrieve";
 
@@ -180,7 +215,9 @@ export type AppWorkflowWorkerOutboundFrame =
     taskRunId: string;
     summary?: TypedWorkflowOutcomeSummary | null;
   }>
-  | CathayGmailOtpRequestFrame;
+  | CathayGmailOtpRequestFrame
+  | TdccSessionRequestFrame
+  | TdccSessionRotatedFrame;
 
 export class AppWorkflowWorkerProtocolError extends Error {
   readonly code = "invalid-frame";
@@ -239,6 +276,56 @@ function boundedJson(value: unknown): boolean {
   }
 }
 
+const CONNECTION_KEY = /^sha256:[A-Za-z0-9_-]{43}$/u;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
+
+function boundedText(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
+
+function nullableBoundedText(value: unknown, maxLength: number) {
+  return value === null || boundedText(value, maxLength);
+}
+
+function validTdccSession(value: unknown): value is TdccIssuedSession {
+  return isRecord(value)
+    && exactKeys(value, ["tokenId", "richUrl", "issuedAt"])
+    && nullableBoundedText(value.tokenId, 512)
+    && nullableBoundedText(value.richUrl, 2_048)
+    && typeof value.issuedAt === "string"
+    && ISO_INSTANT.test(value.issuedAt);
+}
+
+function validTdccSessionLease(value: unknown): value is TdccSessionLease {
+  if (!isRecord(value)) return false;
+  if (value.status === "device-registration-required") return exactKeys(value, ["status"]);
+  return value.status === "ready"
+    && exactKeys(value, ["status", "connection", "device", "session"])
+    && isRecord(value.connection)
+    && exactKeys(value.connection, ["sourceConnectionKey", "identityEpochKey"])
+    && typeof value.connection.sourceConnectionKey === "string"
+    && CONNECTION_KEY.test(value.connection.sourceConnectionKey)
+    && typeof value.connection.identityEpochKey === "string"
+    && CONNECTION_KEY.test(value.connection.identityEpochKey)
+    && isRecord(value.device)
+    && exactKeys(value.device, ["deviceId", "devType", "devModel"])
+    && boundedText(value.device.deviceId, 64)
+    && boundedText(value.device.devType, 64)
+    && boundedText(value.device.devModel, 64)
+    && (value.session === null || validTdccSession(value.session));
+}
+
+function validTdccSignInLease(value: unknown): value is TdccSignInLease {
+  if (!isRecord(value)) return false;
+  if (value.status === "device-registration-required") return exactKeys(value, ["status"]);
+  return value.status === "ready"
+    && exactKeys(value, ["status", "details"])
+    && isRecord(value.details)
+    && exactKeys(value.details, ["userId", "password"])
+    && boundedText(value.details.userId, 64)
+    && boundedText(value.details.password, 256);
+}
+
 function validLoopbackConnection(value: unknown): value is AppWorkflowWorkerStart["browserConnection"] {
   if (!isRecord(value) || !exactKeys(value, ["endpoint", "targetId"])) return false;
   if (typeof value.endpoint !== "string" || typeof value.targetId !== "string") return false;
@@ -271,7 +358,8 @@ export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerSt
   if (!isRecord(value) || !exactKeys(value, [
     "protocolVersion", "workflowId", "taskRunId", "input",
   ], ["browserConnection", "pgliteRpc"])) invalid();
-  const nonbrowser = value.workflowId === "exchange-rates" || value.workflowId === "sync-maicoin";
+  const nonbrowser = typeof value.workflowId === "string"
+    && workflowRuntimeForTask(value.workflowId).kind === "nonbrowser";
   if (
     value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION
     || typeof value.workflowId !== "string"
@@ -308,6 +396,15 @@ export function parseAppWorkflowWorkerInboundFrame(value: unknown): AppWorkflowW
       || !SAFE_ID.test(value.requestId)
       || typeof value.status !== "string"
       || !completionStatuses.has(value.status as Exclude<HumanAssistanceCompletionStatus, "pending">)
+    ) invalid();
+    return value as unknown as AppWorkflowWorkerInboundFrame;
+  }
+  if (value.kind === "tdcc-session-response" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "lease"])) {
+    if (
+      typeof value.requestId !== "string"
+      || !UUID.test(value.requestId)
+      || !(value.operation === "open" ? validTdccSessionLease(value.lease)
+        : value.operation === "sign-in-details" && validTdccSignInLease(value.lease))
     ) invalid();
     return value as unknown as AppWorkflowWorkerInboundFrame;
   }
@@ -432,6 +529,18 @@ export function parseAppWorkflowWorkerOutboundFrame(
   }
   if (value.kind === "human-assistance-request" && exactKeys(value, ["protocolVersion", "kind", "requestId", "contract"])) {
     if (typeof value.requestId !== "string" || !SAFE_ID.test(value.requestId) || !validHumanContract(value.contract)) invalid();
+    return value as unknown as AppWorkflowWorkerOutboundFrame;
+  }
+  if (value.kind === "tdcc-session-request" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation"])) {
+    if (
+      typeof value.requestId !== "string"
+      || !UUID.test(value.requestId)
+      || (value.operation !== "open" && value.operation !== "sign-in-details")
+    ) invalid();
+    return value as unknown as AppWorkflowWorkerOutboundFrame;
+  }
+  if (value.kind === "tdcc-session-rotated" && exactKeys(value, ["protocolVersion", "kind", "session"])) {
+    if (!validTdccSession(value.session)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
   if (value.kind === "cathay-gmail-otp-request") {

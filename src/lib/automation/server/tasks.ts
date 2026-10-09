@@ -943,6 +943,62 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
         },
       },
     }),
+    credentialGroup({
+      ...BANK_STATEMENT_CAPABILITIES.tdcc,
+      displayName: localized("TDCC e-Passbook", "集保 e 存摺（TDCC e-Passbook）"),
+      searchAliases: ["TDCC", "e-Passbook", "集保", "e存摺", "集保e存摺"],
+      credentialFields: [
+        field(
+          "LIBRETTO_CLOUD_TDCC_USER_ID",
+          "Taiwan ID number",
+          "台灣身分證字號",
+          "text",
+          "partial",
+        ),
+        field(
+          "LIBRETTO_CLOUD_TDCC_PASSWORD",
+          "e-Passbook password",
+          "集保 e 存摺密碼",
+          "password",
+        ),
+      ],
+      setupGuide: {
+        summary: localized(
+          "Use the ID number and password you use in the TDCC e-Passbook phone App. TDCC trusts one device at a time, so syncing here signs the phone App out.",
+          "請使用登入集保 e 存摺手機 App 的身分證字號與密碼。集保一次只信任一台裝置，在這裡同步會讓手機 App 登出。",
+        ),
+        requirements: [
+          localized("An active TDCC e-Passbook account", "已開通的集保 e 存摺帳戶"),
+          localized(
+            "Access to the email and mobile number registered with TDCC, for the one-time codes of device registration",
+            "能收到集保登記的電子郵件與手機簡訊，以完成裝置註冊的一次性驗證碼",
+          ),
+        ],
+        steps: [
+          localized(
+            "Enter your ID number and e-Passbook password here.",
+            "在這裡輸入身分證字號與集保 e 存摺密碼。",
+          ),
+          localized(
+            "Register this device and enter the codes TDCC sends by email and SMS.",
+            "註冊這台裝置，並輸入集保以電子郵件與簡訊寄送的驗證碼。",
+          ),
+          localized(
+            "If you sign in to the phone App again, register this device again before the next sync.",
+            "如果之後又登入手機 App，下次同步前請在這裡重新註冊裝置。",
+          ),
+        ],
+        links: [
+          link(
+            "service",
+            "Open the TDCC website (Chinese)",
+            "前往集保結算所網站",
+            "https://www.tdcc.com.tw/",
+            ["www.tdcc.com.tw"],
+          ),
+        ],
+      },
+    }),
   ];
 
 const coreAutomationTasks: readonly AutomationTask[] = [
@@ -1073,6 +1129,16 @@ const coreAutomationTasks: readonly AutomationTask[] = [
     kind: "sync",
     credentialGroupId: "maicoin",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[11].credentialKeys,
+    dependencies: [],
+    maxAttempts: 1,
+  },
+  {
+    id: "sync-tdcc",
+    label: "TDCC e-Passbook sync",
+    workflowId: "sync-tdcc",
+    kind: "sync",
+    credentialGroupId: "tdcc",
+    credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[12].credentialKeys,
     dependencies: [],
     maxAttempts: 1,
   },
