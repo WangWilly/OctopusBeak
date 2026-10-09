@@ -1,6 +1,7 @@
 import type { PGliteStore } from "./transaction.ts";
 import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.ts";
 import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
+import { accountProduct, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -220,6 +221,10 @@ function expectedSourceGap(
   };
 }
 
+function productOf(account: AccountRow): InstitutionProduct | null {
+  return accountProduct({ integrationNamespace: account.integration_namespace, stream: account.stream, accountType: account.account_type });
+}
+
 function accountClassification(account: AccountRow): Pick<CanonicalOverviewAccount, "group" | "kind" | "typeLabel"> {
   const foreign = account.account_type === "depository" &&
     (account.stream === "foreign-currency-deposit" || (account.currency !== null && account.currency !== "TWD"));
@@ -234,7 +239,7 @@ function accountClassification(account: AccountRow): Pick<CanonicalOverviewAccou
       account.investment_subtype === "non_custodial_wallet" ||
       account.stream.includes("crypto") ||
       account.integration_namespace === "maicoin";
-    const fund = account.stream.includes("fund") || account.integration_namespace === "yuanta-fund";
+    const fund = productOf(account) === "fund";
     return { group: "investment", kind: crypto ? "crypto" : fund ? "fund" : "brokerage", typeLabel: crypto ? "Crypto" : fund ? "Fund" : "Investment" };
   }
   return { group: "asset", kind: "other", typeLabel: "Other" };
@@ -440,7 +445,7 @@ function holdingPosition(
     account.investment_subtype === "non_custodial_wallet" ||
     account.stream.includes("crypto") ||
     account.integration_namespace === "maicoin";
-  const fund = account.integration_namespace === "yuanta-fund" || account.stream.includes("fund");
+  const fund = productOf(account) === "fund";
   const amount = holding.valuation_coefficient === null || holding.valuation_scale === null || holding.valuation_currency === null
     ? null
     : {

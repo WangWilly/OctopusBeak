@@ -3,6 +3,7 @@ import {
   BROKER_BRANCH_FIRMS,
   BROKER_FIRM_ROWS,
 } from "./institution-tables.generated.ts";
+import { TDCC_FUND_STREAM } from "../../ledger/canonical/tdcc-investment-contract.ts";
 
 /**
  * The Institutions this app can name, keyed by a stable key the canonical
@@ -70,17 +71,27 @@ export function institutionForBrokerBranch(code: string): InstitutionKey | null 
  * Institutions maintain, so each of its accounts carries its own Institution.
  */
 export type SourceInstitution =
-  | Readonly<{ kind: "direct"; institution: LogoInstitutionKey }>
-  | Readonly<{ kind: "intermediary" }>;
+  | Readonly<{ kind: "direct"; institution: LogoInstitutionKey; investmentStreams: InvestmentStreamProducts }>
+  | Readonly<{ kind: "intermediary"; investmentStreams: InvestmentStreamProducts }>;
 
-const direct = (institution: LogoInstitutionKey): SourceInstitution => ({ kind: "direct", institution });
+/**
+ * The products Direct source precedence decides between. Every depository
+ * account is a deposit; an investment account's product is named by its
+ * source's stream. Other accounts have no product and are never covered.
+ */
+export type InstitutionProduct = "deposit" | "securities" | "fund";
+
+type InvestmentStreamProducts = Readonly<Record<string, Exclude<InstitutionProduct, "deposit">>>;
+
+const direct = (institution: LogoInstitutionKey, investmentStreams: InvestmentStreamProducts = {}): SourceInstitution =>
+  ({ kind: "direct", institution, investmentStreams });
 
 const SOURCE_INSTITUTIONS: Readonly<Record<string, SourceInstitution>> = {
   fubon: direct("fubon"),
   esun: direct("esun"),
   yuanta: direct("yuanta-bank"),
-  "yuanta-fund": direct("yuanta-bank"),
-  "yuanta-trade": direct("yuanta-securities"),
+  "yuanta-fund": direct("yuanta-bank", { investment: "fund" }),
+  "yuanta-trade": direct("yuanta-securities", { investment: "securities" }),
   cathay: direct("cathay"),
   hncb: direct("hncb"),
   ctbc: direct("ctbc"),
@@ -89,11 +100,21 @@ const SOURCE_INSTITUTIONS: Readonly<Record<string, SourceInstitution>> = {
   linebank: direct("linebank"),
   einvoice: direct("einvoice"),
   maicoin: direct("maicoin"),
-  tdcc: { kind: "intermediary" },
+  tdcc: { kind: "intermediary", investmentStreams: { investment: "securities", [TDCC_FUND_STREAM]: "fund" } },
 };
 
 export function sourceInstitution(namespace: string): SourceInstitution | null {
   return Object.hasOwn(SOURCE_INSTITUTIONS, namespace) ? SOURCE_INSTITUTIONS[namespace]! : null;
+}
+
+/** An account's product, or null when it is not one Direct source precedence decides. */
+export function accountProduct(
+  account: Readonly<{ integrationNamespace: string; stream: string; accountType: string }>,
+): InstitutionProduct | null {
+  if (account.accountType === "depository") return "deposit";
+  if (account.accountType !== "investment") return null;
+  const streams = sourceInstitution(account.integrationNamespace)?.investmentStreams;
+  return streams && Object.hasOwn(streams, account.stream) ? streams[account.stream]! : null;
 }
 
 /** Institutions with a supported source of their own, a logo, and an interface name. */

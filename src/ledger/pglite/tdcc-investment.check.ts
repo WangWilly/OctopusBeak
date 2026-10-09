@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { readPGliteDailyHistory } from "./daily-history.ts";
-import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
+import { commitPGliteCanonicalInvestmentCapture, listPGliteTdccFundAccounts } from "./investment.ts";
 import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
@@ -375,5 +375,51 @@ test("an account that holds nothing commits a valid empty snapshot", async () =>
     const snapshots = await store.query<{ effective_on: string; source_field: string }>("SELECT effective_on, source_field FROM investment_holding_snapshots");
     assert.deepEqual(snapshots.rows, [{ effective_on: "2026-10-09", source_field: "lastServerTime" }]);
     assert.deepEqual(await positions(store), []);
+  });
+});
+
+test("a TDCC fund account is a different product from a broker account at the same Institution", async () => {
+  await withStore(async (store) => {
+    const funds = readTdccFunds(tr051v1([fund({ saleOrgCode: "1020" })]));
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: securitiesCapture("tr001-product", positionsWith([holdingItem()])) });
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: tdccFundHoldingCapture({ captureId: "tr051-product", observedAt, connection, funds, account: funds.accounts[0]! }) });
+    const accounts = (await createPGliteCanonicalOverviewQuery(store).current()).projection.accounts
+      .map(({ stream, kind }) => ({ stream, kind }))
+      .sort((left, right) => left.stream.localeCompare(right.stream));
+    assert.deepEqual(accounts, [
+      { stream: "investment", kind: "brokerage" },
+      { stream: "investment-fund", kind: "fund" },
+    ]);
+    const institutions = await store.query<{ institution_key: string }>("SELECT DISTINCT institution_key FROM financial_accounts");
+    assert.deepEqual(institutions.rows, [{ institution_key: "broker-1020" }]);
+  });
+});
+
+test("the store lists every admitted TDCC fund account of one connection, so a vanished sale organisation commits an empty snapshot", async () => {
+  await withStore(async (store) => {
+    assert.deepEqual(await listPGliteTdccFundAccounts(store, connection), []);
+    const funds = readTdccFunds(tr051v1([fund(), fund({ fundNo: "XYZ9", saleOrgCode: "1020" })]));
+    for (const account of funds.accounts)
+      await commitPGliteCanonicalInvestmentCapture(store, { capture: tdccFundHoldingCapture({ captureId: `tr051-${account.saleOrgCode}`, observedAt, connection, funds, account }) });
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: securitiesCapture("tr001-list", positionsWith([holdingItem()])) });
+    assert.deepEqual(await listPGliteTdccFundAccounts(store, { ...connection, identityEpochKey: token("other-epoch") }), []);
+
+    const admitted = await listPGliteTdccFundAccounts(store, connection);
+    assert.deepEqual(
+      admitted.map(({ institutionKey }) => institutionKey).sort(),
+      ["bank-004", "broker-1020"],
+      "every fund account, never the broker account",
+    );
+    assert.deepEqual(new Set(admitted.map(({ accountKey }) => accountKey)), new Set(funds.accounts.map(({ accountKey }) => accountKey)));
+
+    const later = "2026-10-10T02:31:00.000Z";
+    const remaining = readTdccFunds(tr051v1([fund()], "20261010103000"));
+    for (const account of admitted)
+      await commitPGliteCanonicalInvestmentCapture(store, { capture: tdccFundHoldingCapture({ captureId: `tr051-later-${account.institutionKey}`, observedAt: later, connection, funds: remaining, account }) });
+    assert.deepEqual(
+      (await positions(store)).map(({ symbol }) => symbol),
+      ["tdcc:2330", "tdcc:ABC123"],
+      "the fund the vanished sale organisation held is gone",
+    );
   });
 });
