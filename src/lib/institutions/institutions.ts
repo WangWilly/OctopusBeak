@@ -72,7 +72,7 @@ export function institutionForBrokerBranch(code: string): InstitutionKey | null 
  */
 export type SourceInstitution =
   | Readonly<{ kind: "direct"; institution: LogoInstitutionKey; investmentStreams: InvestmentStreamProducts }>
-  | Readonly<{ kind: "intermediary"; investmentStreams: InvestmentStreamProducts }>;
+  | Readonly<{ kind: "intermediary"; logo: IntermediarySourceLogoKey; investmentStreams: InvestmentStreamProducts }>;
 
 /**
  * The products Direct source precedence decides between. Every depository
@@ -100,7 +100,7 @@ const SOURCE_INSTITUTIONS: Readonly<Record<string, SourceInstitution>> = {
   linebank: direct("linebank"),
   einvoice: direct("einvoice"),
   maicoin: direct("maicoin"),
-  tdcc: { kind: "intermediary", investmentStreams: { investment: "securities", [TDCC_FUND_STREAM]: "fund" } },
+  tdcc: { kind: "intermediary", logo: "tdcc", investmentStreams: { investment: "securities", [TDCC_FUND_STREAM]: "fund" } },
 };
 
 export function sourceInstitution(namespace: string): SourceInstitution | null {
@@ -135,6 +135,11 @@ export const INSTITUTION_KEYS = [
 
 export type LogoInstitutionKey = (typeof INSTITUTION_KEYS)[number];
 
+/** Intermediary sources are not Institutions, but each still shows its own logo wherever sources are listed. */
+export type IntermediarySourceLogoKey = "tdcc";
+
+export type LogoKey = LogoInstitutionKey | IntermediarySourceLogoKey;
+
 /** Interface names of the logo institutions, from the one catalog. */
 export function institutionNames(locale: "en" | "zh-TW"): Record<LogoInstitutionKey, string> {
   return Object.fromEntries(INSTITUTION_KEYS.map((key) => {
@@ -143,7 +148,7 @@ export function institutionNames(locale: "en" | "zh-TW"): Record<LogoInstitution
   })) as Record<LogoInstitutionKey, string>;
 }
 
-const TASK_INSTITUTIONS: Readonly<Record<string, LogoInstitutionKey>> = {
+const TASK_LOGOS: Readonly<Record<string, LogoKey>> = {
   "fubon-all-statements": "fubon",
   "esun-credit-card-statements": "esun",
   "yuanta-all-statements": "yuanta-bank",
@@ -156,6 +161,7 @@ const TASK_INSTITUTIONS: Readonly<Record<string, LogoInstitutionKey>> = {
   "linebank-statements": "linebank",
   "einvoice-personal-invoices": "einvoice",
   "sync-maicoin": "maicoin",
+  "sync-tdcc": "tdcc",
 };
 
 /** The Institution that operates a direct source; null for an Intermediary source or an unknown namespace. */
@@ -164,10 +170,17 @@ export function institutionForNamespace(namespace: string | undefined): LogoInst
   return source?.kind === "direct" ? source.institution : null;
 }
 
-export function institutionForTask(taskId: string): LogoInstitutionKey | null {
-  return TASK_INSTITUTIONS[taskId] ?? null;
+/** The logo of the source an integration namespace names: its Institution for a direct source, its own for an Intermediary source. */
+export function sourceLogo(namespace: string): LogoKey | null {
+  const source = sourceInstitution(namespace);
+  if (!source) return null;
+  return source.kind === "direct" ? source.institution : source.logo;
 }
 
-export function institutionLogoFile(key: LogoInstitutionKey): string {
+export function sourceLogoForTask(taskId: string): LogoKey | null {
+  return TASK_LOGOS[taskId] ?? null;
+}
+
+export function institutionLogoFile(key: LogoKey): string {
   return `${key}.webp`;
 }

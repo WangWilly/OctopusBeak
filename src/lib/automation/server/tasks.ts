@@ -991,10 +991,10 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
         links: [
           link(
             "service",
-            "Open the TDCC website (Chinese)",
-            "前往集保結算所網站",
-            "https://www.tdcc.com.tw/",
-            ["www.tdcc.com.tw"],
+            "Open the TDCC e-Passbook site (Chinese)",
+            "前往集保 e 存摺網站",
+            "https://epassbook.tdcc.com.tw/zh/a1.aspx",
+            ["epassbook.tdcc.com.tw"],
           ),
         ],
       },
