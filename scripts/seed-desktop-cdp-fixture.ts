@@ -5,6 +5,14 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteOperationalBaseline, createPgliteOperationalStore } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
+import type { TypedWorkflowOutcome } from "../src/lib/automation/server/typed-workflow-outcome.ts";
+import {
+  commitCathay,
+  commitTdccSettlement,
+  commitTdccYuantaBroker,
+  commitYuantaTrade,
+} from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
@@ -50,9 +58,56 @@ export const desktopCdpFixtureCredentials = Object.fromEntries(
   }),
 ) as Record<string, string>;
 
+/** The latest sync-tdcc outcome the TDCC fixture shows. */
+export const desktopCdpTdccOutcomes = ["device-registration-required", "provider-protocol-outdated", "exclusions"] as const;
+export type DesktopCdpTdccOutcome = (typeof desktopCdpTdccOutcomes)[number];
+
 export type DesktopCdpFixtureOptions = Readonly<{
   includeCathayVerificationFailure?: boolean;
+  /**
+   * Enable TDCC with inert sign-in details and no registered device, seed
+   * one sync-tdcc run with this outcome, and commit Cathay, Yuanta Trade,
+   * and TDCC accounts so Assets lists covered TDCC accounts.
+   */
+  tdccOutcome?: DesktopCdpTdccOutcome;
 }>;
+
+const tdccFixtureCredentials = Object.fromEntries(
+  fixtureCredentialGroup("tdcc").credentialFields.map((credentialField, index) =>
+    [credentialField.key, `fixture-cdp-tdcc-${index + 1}`] as const),
+);
+
+function tdccRunOutcome(outcome: DesktopCdpTdccOutcome): Readonly<{
+  status: "partial" | "failed";
+  appWorkflowOutcome: TypedWorkflowOutcome;
+}> {
+  if (outcome === "exclusions") {
+    return {
+      status: "partial",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: {
+          status: "partial",
+          counts: {
+            excludedUnknownInstitutionCount: 1,
+            excludedNonIsoCurrencyCount: 1,
+            excludedTimeDepositCount: 2,
+            hiddenAccountCount: 1,
+          },
+          products: [
+            { typeId: "securities", status: "success", itemCount: 2, committedCount: 2 },
+            { typeId: "fund", status: "success", itemCount: 1, committedCount: 1 },
+            { typeId: "settlement", status: "failed", itemCount: 1, committedCount: 0, errorCode: "source-collection-failed" },
+          ],
+        },
+      },
+    };
+  }
+  return {
+    status: "failed",
+    appWorkflowOutcome: { errorCode: outcome, summary: { status: "failed", counts: {} } },
+  };
+}
 
 /**
  * Keep the base fixture small: one partially completed bank source, one
@@ -98,16 +153,17 @@ export async function seedDesktopCdpFixture(
 ) {
   const root = assertDisposableFixtureRoot(userData);
   mkdirSync(root, { recursive: true });
-  const fixtureSettings = options.includeCathayVerificationFailure
-    ? {
-      ...desktopCdpFixtureSettings,
-      LIBRETTO_CLOUD_CATHAY_ENABLED: true,
-    }
-    : desktopCdpFixtureSettings;
+  const fixtureSettings = {
+    ...desktopCdpFixtureSettings,
+    ...(options.includeCathayVerificationFailure ? { LIBRETTO_CLOUD_CATHAY_ENABLED: true } : {}),
+    ...(options.tdccOutcome
+      ? { LIBRETTO_CLOUD_TDCC_ENABLED: true, LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "securities,fund,settlement" }
+      : {}),
+  };
   writeAutomationSettingsFile(join(root, "settings.json"), fixtureSettings);
   writeAutomationCredentialsFile(
     join(root, "credentials.json"),
-    desktopCdpFixtureCredentials,
+    options.tdccOutcome ? { ...desktopCdpFixtureCredentials, ...tdccFixtureCredentials } : desktopCdpFixtureCredentials,
     null,
   );
   const dataDir = join(root, "data", "pglite");
@@ -115,6 +171,14 @@ export async function seedDesktopCdpFixture(
   const database = await PGlite.create({ dataDir });
   try {
     const store = new PGliteStore(database);
+    if (options.tdccOutcome) {
+      await applyPgliteBaseline(database);
+      await commitCathay(store);
+      await commitTdccSettlement(store, "013");
+      await commitTdccSettlement(store, "812");
+      await commitYuantaTrade(store);
+      await commitTdccYuantaBroker(store);
+    }
     await applyPgliteOperationalBaseline(store);
     const automation = createPgliteOperationalStore(store);
     const day = referenceDate.toISOString().slice(0, 10);
@@ -197,6 +261,23 @@ export async function seedDesktopCdpFixture(
         },
       });
     }
+    if (options.tdccOutcome) {
+      const tdccRun = await automation.createTaskRun({
+        taskId: "sync-tdcc",
+        kind: "sync",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: `${day}T11:00:00.000Z`,
+      });
+      const { status, appWorkflowOutcome } = tdccRunOutcome(options.tdccOutcome);
+      await automation.transitionTaskRunToTerminal(tdccRun.taskRunId, {
+        status,
+        finishedAt: `${day}T11:01:00.000Z`,
+        exitCode: status === "failed" ? 1 : 0,
+        appWorkflowOutcome,
+      });
+    }
   } finally {
     await database.close();
   }
@@ -217,8 +298,10 @@ async function main() {
   const userData = process.argv[2];
   if (!userData) throw new Error("Usage: seed-desktop-cdp-fixture <user-data-root>");
   removeDesktopCdpFixture(userData);
+  const tdccOutcome = desktopCdpTdccOutcomes.find((outcome) => outcome === process.env.OCTOPUSBEAK_CDP_TDCC_OUTCOME);
   console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData, new Date(), {
     includeCathayVerificationFailure: process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1",
+    ...(tdccOutcome ? { tdccOutcome } : {}),
   })}`);
 }
 

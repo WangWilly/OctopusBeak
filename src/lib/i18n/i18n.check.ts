@@ -181,7 +181,7 @@ assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
   "einvoice-personal-invoices": "電子發票（E-Invoice）",
   "exchange-rates": "匯率同步",
   "sync-maicoin": "MaiCoin",
-  "sync-tdcc": "集保 e 存摺",
+  "sync-tdcc": "集保e手掌握",
 });
 assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
 assert.equal(

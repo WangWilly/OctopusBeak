@@ -3,7 +3,7 @@
 
   import { t } from "$lib/i18n/i18n.ts";
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import { institutionForNamespace } from "$lib/institutions/institutions.ts";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
   import type { AccountRowDto } from "$lib/shared-ledger/types.ts";
 
@@ -12,7 +12,7 @@
   export let titleId: string;
   export let onClose: () => void;
 
-  $: institution = account ? institutionForNamespace(account.institutionKey) : null;
+  $: institution = account ? institutionLogo(account.institutionKey) : null;
   $: title = account ? accountModalTitle(account, $t) : eyebrow;
 </script>
 
@@ -24,6 +24,9 @@
     <div>
       <p class="eyebrow-label">{eyebrow}</p>
       <h2 id={titleId}>{title}</h2>
+      {#if account?.viaSource}
+        <p class="via-source">{$t.accounts.viaSource[account.viaSource]}</p>
+      {/if}
     </div>
   </div>
   <slot />
@@ -70,6 +73,12 @@
     margin: 2px 0 0;
     font-size: 20px;
     font-weight: 750;
+  }
+
+  .via-source {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .modal-close {

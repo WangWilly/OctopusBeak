@@ -25,6 +25,7 @@ import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../l
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
+import { TdccDeviceBusyError, tdccDeviceLock } from "./tdcc-device-lock.ts";
 
 function providerStub(automation: Record<string, unknown> = {}) {
   return {
@@ -100,6 +101,29 @@ test("Fubon cannot start with missing or unknown statement selections", async ()
     );
     assert.equal(hasActiveAutomationTask(), false);
   } finally {
+    process.chdir(previousDirectory);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a TDCC sync cannot start while a Source device registration holds the device", async () => {
+  const root = await mkdtemp(join(tmpdir(), "automation-runner-tdcc-lock-"));
+  const previousDirectory = process.cwd();
+  try {
+    process.chdir(root);
+    writeAutomationSettingsFile("settings.json", {
+      LIBRETTO_CLOUD_TDCC_ENABLED: true,
+      LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "securities",
+    });
+    assert.equal(tdccDeviceLock.claim("registration"), null);
+    await assert.rejects(
+      startAutomationTask("sync-tdcc", providerStub()),
+      (error: unknown) => error instanceof TdccDeviceBusyError && error.holder === "registration",
+    );
+    assert.equal(hasActiveAutomationTask(), false);
+    assert.equal(tdccDeviceLock.holder(), "registration", "the refused run leaves the registration holding the device");
+  } finally {
+    tdccDeviceLock.release("registration");
     process.chdir(previousDirectory);
     await rm(root, { recursive: true, force: true });
   }

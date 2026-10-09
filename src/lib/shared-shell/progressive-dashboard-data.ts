@@ -45,6 +45,7 @@ export function resolveAssetsList(
 ): DashboardBlockValueMap["assets"]["list"] {
   return {
     accounts: block?.accounts ?? fallback.accounts,
+    coveredAccounts: block?.coveredAccounts ?? fallback.coveredAccounts,
     positionsByAccount: block?.positionsByAccount ?? fallback.positionsByAccount,
     transactionsByAccount: block?.transactionsByAccount ?? fallback.transactionsByAccount,
     dailyHistoryByAccount: block?.dailyHistoryByAccount ?? fallback.dailyHistoryByAccount,

@@ -204,6 +204,7 @@
       {@const listDataBlock = resolveAssetsList(assets, listBlock)}
       <AccountTable
         accounts={listDataBlock.accounts}
+        coveredAccounts={listDataBlock.coveredAccounts}
         mode="asset"
         bind:search
         bind:filter={accountFilter}

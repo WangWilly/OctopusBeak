@@ -33,6 +33,7 @@ test("assets settled list block overrides the route fallback for shared account 
     sourceGaps: [],
     importedAt: null,
     accounts: [account("fallback")],
+    coveredAccounts: [],
     positionsByAccount: {},
     transactionsByAccount: {},
     dailyHistoryByAccount: {},
@@ -41,6 +42,7 @@ test("assets settled list block overrides the route fallback for shared account 
   } as AssetsPageDto;
   const block = {
     accounts: [account("block")],
+    coveredAccounts: [account("covered")],
     positionsByAccount: { block: [] },
     transactionsByAccount: { block: [] },
     dailyHistoryByAccount: { block: [] },
@@ -48,6 +50,8 @@ test("assets settled list block overrides the route fallback for shared account 
   assert.equal(resolveAssetsList(fallback, block).accounts[0]?.id, "block");
   assert.deepEqual(resolveAssetsList(fallback, block).positionsByAccount, { block: [] });
   assert.equal(resolveAssetsList(fallback).accounts[0]?.id, "fallback");
+  assert.equal(resolveAssetsList(fallback, block).coveredAccounts[0]?.id, "covered", "the list block carries covered accounts");
+  assert.match(source, /coveredAccounts=\{listDataBlock\.coveredAccounts\}/);
   assert.match(source, /resolveAssetsList\(assets, listBlock\)/);
   assert.match(source, /positionsByAccount=\{listDataBlock\.positionsByAccount\}/);
   assert.match(source, /transactionsByAccount=\{listDataBlock\.transactionsByAccount\}/);

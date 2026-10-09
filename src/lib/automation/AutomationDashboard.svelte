@@ -1,6 +1,8 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import { institutionForNamespace, institutionForTask } from "$lib/institutions/institutions.ts";
+  import TdccDeviceRegistration from "$lib/automation/TdccDeviceRegistration.svelte";
+  import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
+  import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import {
@@ -172,6 +174,7 @@ import type {
   let credentialFileErrors: Record<string, string> = {};
   let focusedCredentialKey: string | null = null;
   let cathayGmailOtpBusy = false;
+  let tdccRegistering = false;
   let cathayGmailOtpError = "";
   let statementSelectionConfirmed = false;
   let selectedCredentialGroupId = "";
@@ -676,6 +679,19 @@ import type {
     if (task) await runTask(task);
   }
 
+  async function openTdccDeviceRegistration() {
+    openCredentials();
+    selectCredentialGroup("tdcc");
+    await tick();
+    document.getElementById("tdcc-device-title")?.focus();
+  }
+
+  function runStartErrorMessage(message: string) {
+    return message.includes("TDCC device registration is in progress")
+      ? $t.automation.tdccSyncBlockedByRegistration
+      : message;
+  }
+
   async function openCathayGmailOtpSettings() {
     openCredentials();
     selectCredentialGroup("cathay");
@@ -883,6 +899,10 @@ import type {
 
   async function runTask(task: AutomationTaskRow) {
     if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
+    if (task.id === "sync-tdcc" && tdccRegistering) {
+      actionError = $t.automation.tdccSyncBlockedByRegistration;
+      return;
+    }
     const token = beginActionToken(task.id, "run");
     if (!token) return;
     const onboardingToken = onOnboardingWorkflowStarting(task.id, task.credentialGroupId ?? null);
@@ -902,7 +922,7 @@ import type {
       const pending = preparingTimeouts.get(task.id);
       if (pending) clearTimeout(pending);
       preparingTimeouts.delete(task.id);
-      actionError = message;
+      actionError = runStartErrorMessage(message);
     }
   }
 
@@ -970,7 +990,7 @@ import type {
       const result = await window.octopusBeak.automation.runMany(actionTokens.map((token) => token.taskId));
       if (result.errors && Object.keys(result.errors).length) {
         actionError = Object.entries(result.errors)
-          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $t)}: ${message}`)
+          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $t)}: ${runStartErrorMessage(message)}`)
           .join("\n");
       }
       for (const task of tasks) {
@@ -1415,8 +1435,8 @@ import type {
                 >
                   {#if task.status === "waiting_for_human"}
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
-                  {:else if institutionForTask(task.id)}
-                    <InstitutionLogo institution={institutionForTask(task.id)} size={22} />
+                  {:else if sourceLogoForTask(task.id)}
+                    <InstitutionLogo institution={sourceLogoForTask(task.id)} size={22} />
                   {:else if task.kind === "crawler"}
                     <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else}
@@ -1569,7 +1589,7 @@ import type {
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
-                    <span class="task-logo"><InstitutionLogo institution={institutionForTask(task.id)} /></span>
+                    <span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(task.id)} /></span>
                     <strong>{taskLabel(task, $t)}</strong>
                   </div>
                 </td>
@@ -1618,6 +1638,11 @@ import type {
                         <code>{task.appWorkflowOutcome.errorCode}</code>
                         {#if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                           <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                        {/if}
+                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
+                          <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
+                            {$t.automation.tdccDevice.openSettings}
+                          </button>
                         {/if}
                       </div>
                     {/if}
@@ -1697,6 +1722,11 @@ import type {
                                 {$t.automation.cathayGmailOtpSettingsAction}
                               </button>
                             {/if}
+                          {:else if task.appWorkflowOutcome.errorCode === "device-registration-required"}
+                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                            <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
+                              {$t.automation.tdccDevice.openSettings}
+                            </button>
                           {:else if solverExhausted}
                             <span>{$t.automation.verificationSolverExhausted}</span>
                           {:else if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
@@ -1717,10 +1747,21 @@ import type {
                           {#if task.appWorkflowOutcome.summary.status}
                             <span>{task.appWorkflowOutcome.summary.status}</span>
                           {/if}
-                          {#each Object.entries(task.appWorkflowOutcome.summary.counts) as count}
+                          {#each task.id === "sync-tdcc" ? countsOutsideTdccExclusions(task.appWorkflowOutcome.summary.counts) : Object.entries(task.appWorkflowOutcome.summary.counts) as count}
                             <span>{count[0]}: {count[1]}</span>
                           {/each}
                         </div>
+                      {/if}
+                      {#if task.id === "sync-tdcc" && task.appWorkflowOutcome?.summary}
+                        {@const exclusions = tdccExclusionLines(task.appWorkflowOutcome.summary.counts, $t)}
+                        {#if exclusions.length}
+                          <div class="tdcc-exclusions" aria-label={$t.automation.tdccExclusions.title}>
+                            <strong>{$t.automation.tdccExclusions.title}</strong>
+                            <ul>
+                              {#each exclusions as line}<li>{line}</li>{/each}
+                            </ul>
+                          </div>
+                        {/if}
                       {/if}
                       {#if task.appWorkflowOutcome?.summary?.products?.length}
                         <ul class="workflow-product-results" aria-label={$t.automation.productResults}>
@@ -1888,7 +1929,7 @@ import type {
                       aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
-                      <InstitutionLogo institution={institutionForNamespace(group.id)} size={24} />
+                      <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy">
                         <strong>{credentialGroupName(group)}</strong>
                         {#if syncStatus}
@@ -1916,7 +1957,7 @@ import type {
                       aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
-                      <InstitutionLogo institution={institutionForNamespace(group.id)} size={24} />
+                      <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy"><strong>{credentialGroupName(group)}</strong></span>
                     </button>
                     <button
@@ -1938,7 +1979,7 @@ import type {
           {@const selectedTypes = effectiveStatementSelection(credentialGroups, credentialChanges, group.id)}
           <section class="credential-body" aria-labelledby={`${group.id}-credentials-title`}>
             <div class="credential-section-head">
-              <InstitutionLogo institution={institutionForNamespace(group.id)} size={40} />
+              <InstitutionLogo institution={sourceLogo(group.id)} size={40} />
               <div class="credential-title">
                 <h3 id={`${group.id}-credentials-title`}>{credentialGroupName(group)}</h3>
                 {#if credentialGroupAltName(group)}<p>{credentialGroupAltName(group)}</p>{/if}
@@ -1981,7 +2022,7 @@ import type {
                   <button
                     class="button"
                     type="button"
-                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id)}
+                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || (syncTask.id === "sync-tdcc" && tdccRegistering)}
                     onclick={() => void runTask(syncTask)}
                   ><RefreshCw size={14} />{$t.automation.resync}</button>
                 {/if}
@@ -2173,6 +2214,16 @@ import type {
               </section>
             {/if}
 
+            {#if group.id === "tdcc"}
+              <TdccDeviceRegistration
+                signInDetailsSaved={group.credentialFields.every((credentialField) =>
+                  credentialState(credentialField.key) === "ready" && !credentialChanges.credentials[credentialField.key])}
+                syncActive={Boolean(selectedGroupTask?.isActive)}
+                sourceEnabled={groupOn}
+                bind:registering={tdccRegistering}
+              />
+            {/if}
+
             {#if group.statementTypes?.length}
               <fieldset
                 class="statement-selection"
@@ -2356,7 +2407,7 @@ import type {
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={institutionForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
+                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>
@@ -3113,8 +3164,31 @@ import type {
     font-family: var(--font-mono);
   }
 
-  .cathay-gmail-settings-action {
+  .cathay-gmail-settings-action,
+  .tdcc-registration-action {
     min-height: 32px;
+  }
+
+  .workflow-failure-summary .tdcc-registration-action {
+    width: fit-content;
+    margin-top: var(--space-1);
+  }
+
+  .tdcc-exclusions {
+    display: grid;
+    gap: var(--space-1);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .tdcc-exclusions strong {
+    color: var(--fg);
+    font-weight: 680;
+  }
+
+  .tdcc-exclusions ul {
+    margin: 0;
+    padding-left: var(--space-4);
   }
 
   .workflow-outcome-summary {

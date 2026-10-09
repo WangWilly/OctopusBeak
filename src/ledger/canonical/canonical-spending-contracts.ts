@@ -123,6 +123,8 @@ export type CanonicalSpendingTransaction = Readonly<{
   accountNumber: string | null;
   sourceConnectionKey: string;
   integrationNamespace: string;
+  /** The Institution that maintains the account, stored with it. */
+  institutionKey: string;
   stream: string;
   effectiveOn: string;
   consumeDate?: string | null;

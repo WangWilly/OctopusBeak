@@ -1,5 +1,6 @@
 import { derived, writable } from "svelte/store";
-import { institutionNames } from "../institutions/institutions.ts";
+import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
+import type { TdccRegistrationChannel, TdccRegistrationFailure } from "../automation/types.ts";
 
 export const locales = ["en", "zh-TW"] as const;
 export type Locale = (typeof locales)[number];
@@ -467,6 +468,10 @@ const en = {
     unavailable: "No available data",
     noAvailableData: "No available data",
     noAssetMatches: "No matching asset accounts.",
+    coveredHeading: "Counted through another source",
+    coveredHeadingNote: "These accounts are left out of every total, because the source named on each one already counts them.",
+    coveredBy: (source: string) => `Counted by ${source}`,
+    viaSource: { tdcc: "via TDCC e-Passbook" } satisfies Record<IntermediarySourceLogoKey, string>,
     noLiabilityMatches: "No matching liabilities.",
     availableBalanceBasis: "Based on LINE Bank available balance",
     creditCardEstimateBasis: "Estimated credit-card used credit (including unbilled consumption)",
@@ -804,6 +809,54 @@ const en = {
       "Google authorization could not be stored securely on this device.",
     confirmCathayGmailOtpDisconnect:
       "Disconnect Google account? Cathay verification will require Gmail authorization again.",
+    tdccDevice: {
+      title: "Device registration",
+      description:
+        "TDCC asks for one-time codes the first time this device signs in. Register here once, and again whenever TDCC stops trusting this device.",
+      registered: "Registered",
+      notRegistered: "Not registered",
+      register: "Register this device",
+      registerAgain: "Register again",
+      starting: "Signing in to TDCC…",
+      codeLabel: {
+        email: "Enter the code TDCC sent to your email",
+        sms: "Enter the code TDCC sent by text message",
+      } as Record<TdccRegistrationChannel, string>,
+      codeHelp: "The code goes straight to TDCC. OctopusBeak does not save it.",
+      submit: "Submit code",
+      registeredMessage: "This device is registered. TDCC sync can sign in now.",
+      saveFirst: "Save your ID number and password first, then register this device.",
+      openSettings: "Register this device",
+      conflictTitle: "TDCC trusts one device at a time",
+      conflictBody:
+        "Syncing here signs the TDCC e-Passbook phone App out, and the phone App asks for a code the next time you sign in there. If you use the phone App again, register this device again before the next sync.",
+      failures: {
+        "sign-in-details-missing": "Save your ID number and password first, then register this device.",
+        "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
+        "code-rejected": "TDCC did not accept that code. Register again to get a new code.",
+        "code-expired": "That code has expired. Register again to get a new code.",
+        "not-trusted": "TDCC accepted the codes but still does not trust this device. Register again.",
+        "protocol-outdated": "TDCC changed its App interface. Update OctopusBeak to register this device.",
+        unavailable: "TDCC could not be reached. Try again later.",
+        expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
+        cancelled: "Registration cancelled.",
+        "not-found": "This registration has ended. Register again.",
+        "sync-running": "A TDCC sync is running. Register this device after it finishes.",
+      } as Record<TdccRegistrationFailure, string>,
+    },
+    tdccSyncBlockedByRegistration:
+      "TDCC device registration is in progress. Finish or cancel it, then run the sync.",
+    tdccExclusions: {
+      title: "Not imported from TDCC",
+      unknownInstitution: (count: number) =>
+        `${count} ${count === 1 ? "account is" : "accounts are"} at a bank or broker code OctopusBeak does not know yet.`,
+      nonIsoCurrency: (count: number) =>
+        `${count} settlement ${count === 1 ? "account has" : "accounts have"} a currency TDCC does not name with a standard code.`,
+      timeDeposits: (count: number) =>
+        `${count} time ${count === 1 ? "deposit is" : "deposits are"} not imported yet.`,
+      hiddenAccounts: (count: number) =>
+        `${count} ${count === 1 ? "account is" : "accounts are"} hidden in the TDCC e-Passbook phone App.`,
+    },
     credentialSearch: "Search banks or services",
     setupGuide: "Setup guide",
     whatYouNeed: "What you’ll need",
@@ -1621,6 +1674,10 @@ const zh: typeof en = {
     unavailable: "無可用資料",
     noAvailableData: "無可用資料",
     noAssetMatches: "沒有符合條件的資產帳戶。",
+    coveredHeading: "已由其他來源計入",
+    coveredHeadingNote: "這些帳戶不計入任何總額，因為各自標示的來源已經計入。",
+    coveredBy: (source) => `已由 ${source} 計入`,
+    viaSource: { tdcc: "經由集保e手掌握" },
     noLiabilityMatches: "沒有符合條件的負債。",
     availableBalanceBasis: "依 LINE Bank 可用餘額計算",
     creditCardEstimateBasis: "信用卡已使用額度估算（含未請款消費）",
@@ -1945,6 +2002,49 @@ const zh: typeof en = {
       "無法在這台裝置上安全保存 Google 授權。",
     confirmCathayGmailOtpDisconnect:
       "要解除 Google 帳號連結嗎？下次國泰驗證前需要重新授權 Gmail。",
+    tdccDevice: {
+      title: "裝置註冊",
+      description:
+        "這台裝置第一次登入集保時，集保會要求輸入一次性驗證碼。請在這裡註冊；之後集保不再信任這台裝置時，再註冊一次。",
+      registered: "已註冊",
+      notRegistered: "尚未註冊",
+      register: "註冊此裝置",
+      registerAgain: "重新註冊",
+      starting: "正在登入集保…",
+      codeLabel: {
+        email: "輸入集保寄到你電子郵件的驗證碼",
+        sms: "輸入集保以簡訊寄送的驗證碼",
+      },
+      codeHelp: "驗證碼會直接送給集保，OctopusBeak 不會保存。",
+      submit: "送出驗證碼",
+      registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
+      saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
+      openSettings: "註冊此裝置",
+      conflictTitle: "集保一次只信任一台裝置",
+      conflictBody:
+        "在這裡同步會讓集保e手掌握 App 登出，下次在手機登入時需要輸入驗證碼。如果之後又使用手機 App，下次同步前請在這裡重新註冊這台裝置。",
+      failures: {
+        "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
+        "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
+        "code-rejected": "集保不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
+        "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
+        "not-trusted": "集保已接受驗證碼，但仍不信任這台裝置。請再註冊一次。",
+        "protocol-outdated": "集保e手掌握的 App 介面已變更，需要更新 OctopusBeak 才能註冊裝置。",
+        unavailable: "目前無法連線到集保，請稍後再試。",
+        expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
+        cancelled: "已取消註冊。",
+        "not-found": "這次註冊已結束，請重新註冊。",
+        "sync-running": "集保同步進行中，同步結束後再註冊這台裝置。",
+      },
+    },
+    tdccSyncBlockedByRegistration: "集保裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    tdccExclusions: {
+      title: "未從集保匯入",
+      unknownInstitution: (count) => `${count} 個帳戶的銀行或券商代碼尚未收錄。`,
+      nonIsoCurrency: (count) => `${count} 個交割帳戶的幣別沒有標準幣別代碼。`,
+      timeDeposits: (count) => `${count} 筆定期存款目前不匯入。`,
+      hiddenAccounts: (count) => `${count} 個帳戶在集保e手掌握 App 中設為隱藏。`,
+    },
     credentialSearch: "搜尋銀行或服務",
     setupGuide: "設定說明",
     whatYouNeed: "需要準備",
@@ -2073,7 +2173,7 @@ const zh: typeof en = {
       "einvoice-personal-invoices": "電子發票（E-Invoice）",
       "exchange-rates": "匯率同步",
       "sync-maicoin": "MaiCoin",
-      "sync-tdcc": "集保 e 存摺",
+      "sync-tdcc": "集保e手掌握",
     },
   },
   firstRunWelcome: {

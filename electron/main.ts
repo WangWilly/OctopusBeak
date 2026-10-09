@@ -38,6 +38,8 @@ import {
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
 import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
 import { createHumanAssistanceContract } from "../src/lib/automation/human-assistance.ts";
+import { createTdccRegistrationFixtureFetch } from "../src/lib/automation/server/tdcc-registration-fixture.ts";
+import { useTdccRegistrationFixture } from "../src/lib/automation/server/tdcc-registration-service.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -249,6 +251,13 @@ async function start() {
     && cdpFixture
     && process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1";
   if (cdpVerificationFixture) assertDisposableVerificationFixtureRoot(userData);
+  const cdpTdccFixture = !app.isPackaged
+    && cdpFixture
+    && process.env.OCTOPUSBEAK_CDP_TDCC_FIXTURE === "1";
+  if (cdpTdccFixture) {
+    assertDisposableVerificationFixtureRoot(userData);
+    useTdccRegistrationFixture(createTdccRegistrationFixtureFetch());
+  }
   ensureDataRoot(userData);
   stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),

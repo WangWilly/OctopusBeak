@@ -423,7 +423,7 @@ async function transactionRows(
       `SELECT current_row.transaction_id, current_row.revision_id,
               transaction_row.account_id, account.account_no,
               connection_scope.source_connection_key,
-              connection_scope.integration_namespace, account.stream,
+              connection_scope.integration_namespace, account.institution_key, account.stream,
               revision.amount_coefficient, revision.amount_scale,
               revision.currency, revision.direction, revision.posting_status,
               revision.economic_status, revision.administrative_state,
@@ -450,7 +450,7 @@ async function transactionRows(
        SELECT transaction_row.transaction_id, revision.revision_id,
               transaction_row.account_id, account.account_no,
               connection_scope.source_connection_key,
-              connection_scope.integration_namespace, account.stream,
+              connection_scope.integration_namespace, account.institution_key, account.stream,
               revision.amount_coefficient, revision.amount_scale,
               revision.currency, revision.direction, revision.posting_status,
               revision.economic_status, revision.administrative_state,
@@ -469,7 +469,7 @@ async function transactionRows(
         WHERE ${predicates.join(" AND ")}
      )
      SELECT transaction_id, revision_id, account_id, account_no,
-            source_connection_key, integration_namespace, stream,
+            source_connection_key, integration_namespace, institution_key, stream,
             amount_coefficient, amount_scale, currency, direction,
             posting_status, economic_status, administrative_state,
             effective_on, description
@@ -699,6 +699,7 @@ function transactionFromRow(row: TransactionRow, fact: DateFact | undefined, cat
     accountNumber: nullableString(row.account_no),
     sourceConnectionKey: stringValue(row.source_connection_key, "Source connection key"),
     integrationNamespace: stringValue(row.integration_namespace, "Integration namespace"),
+    institutionKey: stringValue(row.institution_key, "Account Institution"),
     stream,
     effectiveOn: stringValue(row.effective_on, "Effective date"),
     consumeDate,
@@ -3413,7 +3414,7 @@ export async function queryCurrentSpendingMergeLog(
             payment.description AS payment_description, payment.amount_coefficient AS payment_amount_coefficient,
             payment.amount_scale AS payment_amount_scale, payment.currency AS payment_currency,
             COALESCE(detail.consume_date, detail.posting_date, payment.effective_on) AS payment_date,
-            payment_scope.integration_namespace AS payment_institution
+            payment_account.institution_key AS payment_institution
        FROM spending_dedup_decision_events event
        JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
        LEFT JOIN LATERAL (
@@ -3429,7 +3430,6 @@ export async function queryCurrentSpendingMergeLog(
        LEFT JOIN transaction_revisions payment ON payment.revision_id = current_row.revision_id
        LEFT JOIN financial_transactions payment_identity ON payment_identity.transaction_id = event.transaction_id
        LEFT JOIN financial_accounts payment_account ON payment_account.account_id = payment_identity.account_id
-       LEFT JOIN source_connections payment_scope ON payment_scope.source_connection_id = payment_account.source_connection_id
        LEFT JOIN LATERAL (
          SELECT consume_date, posting_date
            FROM canonical_credit_card_transaction_details detail

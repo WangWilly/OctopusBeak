@@ -28,6 +28,7 @@ import {
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
+import { TDCC_SYNC_TASK_ID, TdccDeviceBusyError, tdccDeviceLock } from "./tdcc-device-lock.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -185,7 +186,16 @@ function claimTask(taskId: string) {
   if (activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is already running: ${taskId}`);
   }
+  if (taskId === TDCC_SYNC_TASK_ID) {
+    const holder = tdccDeviceLock.claim("sync");
+    if (holder) throw new TdccDeviceBusyError(holder);
+  }
   activeTaskRunIds.set(taskId, "pending");
+}
+
+function releaseTask(taskId: string) {
+  activeTaskRunIds.delete(taskId);
+  if (taskId === TDCC_SYNC_TASK_ID) tdccDeviceLock.release("sync");
 }
 
 function runtimeForTask(taskId: string) {
@@ -318,7 +328,7 @@ export async function startAutomationTask(
     }
     return await startPreparedTaskWithPersistence(task, provider, options, existingRun);
   } catch (error) {
-    activeTaskRunIds.delete(taskId);
+    releaseTask(taskId);
     throw error;
   }
 }
@@ -652,7 +662,7 @@ export async function runAutomationTask(
     queueController.abort();
     if (releaseSlot) releaseSlot();
     else await slotReady?.then((release) => release(), () => undefined);
-    activeTaskRunIds.delete(taskId);
+    releaseTask(taskId);
     if (activeTaskRunCompletions.get(taskId) === runCompletion) {
       activeTaskRunCompletions.delete(taskId);
     }

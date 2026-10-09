@@ -44,7 +44,7 @@ export type PurchasePaymentSourceFacts = Readonly<{
 }>;
 
 export type PurchasePaymentSource = PurchasePaymentSourceFacts & Readonly<{
-  /** The transaction's integration namespace, such as `fubon` or `cathay`. */
+  /** The paying account's Institution key, such as `fubon` or `bank-812`. */
   institution: string;
 }>;
 
@@ -283,7 +283,7 @@ export function purchasePaymentSource(
   if (!transaction || !index) return null;
   const facts = index.get(canonicalPurchaseUuid(transaction.transactionId, "Purchase transaction identity"));
   return Object.freeze({
-    institution: transaction.integrationNamespace,
+    institution: transaction.institutionKey,
     cardMask: facts?.cardMask ?? null,
     billingPeriod: facts?.billingPeriod ?? null,
   });
