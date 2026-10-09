@@ -18,6 +18,7 @@ export function currentDepositBalanceCommandRequest(
       sourceAccountKey: capture.identity.sourceAccountKey,
       accountType: "depository",
       currency: capture.identity.stream === "foreign-currency-deposit" ? null : currency,
+      ...(capture.identity.institutionKey === undefined ? {} : { institutionKey: capture.identity.institutionKey }),
     },
     observations: capture.observations.map((observation) => ({
       observationKey: observation.observationKey,
