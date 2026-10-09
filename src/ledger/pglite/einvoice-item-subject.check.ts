@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   EINVOICE_ITEM_CATEGORY_ENRICHMENT_ROUTE_ID,
@@ -16,9 +15,8 @@ function id(seed: number): Uint8Array {
 }
 
 async function fixture(): Promise<PGliteStore> {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
-  await applyPgliteBaseline(database);
   await store.query(
     "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, 'fixture', 'source_capture')",
     [id(1)],

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { PGlite } from "@electric-sql/pglite";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { createBaselinePGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -1215,10 +1214,9 @@ assert.throws(
   /total row count mismatch/,
 );
 
-const pglite = await PGlite.create();
+const pglite = await createBaselinePGlite();
 const pgliteStore = new PGliteStore(pglite);
 try {
-  await applyPgliteBaseline(pglite);
   const normalizedDomestic = normalizeLineBankFinancialCapture(canonicalCapture!);
   const domestic = await commitPGliteCanonicalDepositCapture(
     pgliteStore,
