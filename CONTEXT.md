@@ -107,6 +107,10 @@ _Avoid_: Mutable entity field, optional classification, display label, current f
 The contract-established provider reference that maintains a Financial Account, such as a bank, broker, card issuer, fund platform, or crypto service. Its provider type is a technical taxonomy rather than a regulatory determination; an integration must map external provider identifiers uniquely before admission rather than creating provisional or conflicted Institution identity.
 _Avoid_: Supported source, corporate-group brand, workflow provider code
 
+**Intermediary source**:
+A supported source that reports Financial Accounts maintained by other Institutions rather than by itself, such as TDCC e-Passbook reporting broker securities accounts and bank settlement accounts. Each reported account's Institution is the maintaining broker or bank, while the Source connection belongs to the intermediary.
+_Avoid_: TDCC as Institution, aggregator account, depository-owned account
+
 **Institution source coverage**:
 The many-to-many mapping that records which Institutions and products a supported source can collect or import. Coverage does not make a supported-source identifier the canonical identity of an Institution.
 _Avoid_: Source connection, Institution identity, account ownership
@@ -670,6 +674,10 @@ _Avoid_: Financial account identifier, account data
 **Gmail OTP mailbox authorization**:
 The person's explicit Google consent that allows the application to retrieve Cathay sign-in codes from Gmail. Automatic retrieval is always enabled, but the grant must be given or restored explicitly in sign-in settings. Disconnecting removes that grant and makes verification require authorization again.
 _Avoid_: Email password, unrestricted mailbox ownership, generic email login
+
+**Source device registration**:
+The one-time sign-in setting action in which the person makes a supported source trust this installation's device identity, typing any one-time code the source sends during that action. It is setup, not a workflow stage, so it does not breach ADR 0039; a later run that finds the device untrusted fails with an actionable reason instead of waiting for a person. The registered device identity is an authentication secret, retained across password changes and reset only when the sign-in identifier changes.
+_Avoid_: Workflow OTP prompt, manual verification stage, human assistance
 
 **Authentication certificate file**:
 A user-owned certificate file selected for a supported source's authentication flow. The application retains a reference to the original file without copying it, presents only its filename in ordinary UI, and treats its password separately as an authentication secret.

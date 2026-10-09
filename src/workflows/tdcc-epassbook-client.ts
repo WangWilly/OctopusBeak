@@ -1,8 +1,7 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 
 // Reproduces the TDCC e-Passbook Android App's request envelope, ported from
-// the TedLin1993/all-set-tw reference client. See the TDCC App protocol ADR
-// (docs/adr/, tdcc-epassbook-app-protocol-source).
+// the TedLin1993/all-set-tw reference client. See ADR 0041.
 export const TDCC_BASE_URL = "https://epassbooksys.tdcc.com.tw/MPSBKV2/rest/";
 export const TDCC_APP_INFO = "tw.com.tdcc.epassbook:3.3.8";
 export const TDCC_API_VER = "20250220";
