@@ -18,6 +18,11 @@ import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "./workflow-executor.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
+import { EventEmitter } from "node:events";
+import { MessageChannel } from "node:worker_threads";
+import { runSupervisedAppWorkflow, type AppWorkflowWorkerHandle } from "./server/app-workflow-worker-supervisor.ts";
+import { runAppWorkflowWorker } from "./server/app-workflow-worker-runtime.ts";
+import { parseAppWorkflowWorkerOutboundFrame } from "./server/app-workflow-worker-protocol.ts";
 
 // Built at runtime so the repository privacy and secret scanners do not read fixtures as real accounts.
 const USER_ID = ["Q", "2", "87654321"].join("");
@@ -151,6 +156,7 @@ function fakeTdcc(options: FakeOptions = {}) {
 type Harness = Readonly<{
   run(input: unknown, fake: ReturnType<typeof fakeTdcc>): Promise<Record<string, unknown>>;
   secrets: ReturnType<typeof createTdccSecretStore>;
+  pgliteRpc: Readonly<{ endpoint: string; token: string }>;
   count(sql: string): Promise<number>;
   events: WorkflowRunEvent[];
 }>;
@@ -185,6 +191,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
     await body({
       secrets,
       events,
+      pgliteRpc: { endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT!, token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN! },
       async count(sql) {
         return (await store.query<{ count: number }>(sql)).rows[0]!.count;
       },
@@ -325,5 +332,58 @@ test("a fund account TDCC no longer lists commits an empty holding snapshot", as
       `SELECT COUNT(*)::int AS count FROM investment_holding_snapshots snapshot
         WHERE NOT EXISTS (SELECT 1 FROM investment_holding_observations holding WHERE holding.capture_id = snapshot.capture_id)`,
     ), 1, "only the absent sale organisation's latest snapshot is empty");
+  });
+});
+
+/** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
+function inProcessWorker(workerData: unknown, fetch: ReturnType<typeof fakeTdcc>["fetch"]): AppWorkflowWorkerHandle {
+  const channel = new MessageChannel();
+  const worker = new EventEmitter() as EventEmitter & AppWorkflowWorkerHandle;
+  channel.port2.on("message", (value: unknown) => {
+    worker.emit("message", value);
+    const { kind } = parseAppWorkflowWorkerOutboundFrame(value);
+    if (kind === "completed" || kind === "failed" || kind === "cancelled") {
+      channel.port2.close();
+      worker.emit("exit", 0);
+    }
+  });
+  Object.assign(worker, {
+    postMessage: (frame: unknown) => channel.port2.postMessage(frame),
+    terminate: () => {
+      channel.port1.close();
+      worker.emit("exit", 1);
+      return 1;
+    },
+  });
+  setImmediate(() => {
+    worker.emit("online");
+    void runAppWorkflowWorker({
+      port: channel.port1,
+      workerData,
+      resolveDefinition: () => createTdccWorkflow({ fetch }),
+    });
+  });
+  return worker;
+}
+
+test("through the supervised worker frames, a rotated token is saved when the run fails part way", async () => {
+  await withHarness(async ({ secrets, pgliteRpc }) => {
+    const fake = fakeTdcc({ acceptedToken: null, httpFailureAt: "tsp/TSP007" });
+    const outcome = await runSupervisedAppWorkflow({
+      runId: "tdcc-worker-run",
+      workflowId: "sync-tdcc",
+      input: { statementTypes: ["settlement"] },
+      pgliteRpc,
+      signal: new AbortController().signal,
+      appendEvent: async () => undefined,
+      requestHumanAssistance: async () => "failed",
+      tdccSession: createTdccSessionHost(secrets),
+      workerFactory: (_path, options) => inProcessWorker(options.workerData, fake.fetch),
+    });
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.errorCode, "source-unavailable");
+    assert.deepEqual(fake.calls, ["tsp/TSP006", "CM001", "AU001", "tsp/TSP006", "tsp/TSP007"]);
+    assert.equal(secrets.read().session?.tokenId, "rotated-3", "the token TSP006 rotated reached credentials.json through the worker frames");
+    assert.equal(JSON.stringify(outcome).includes("fixture-password"), false);
   });
 });
