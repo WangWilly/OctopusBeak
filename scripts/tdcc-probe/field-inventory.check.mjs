@@ -113,3 +113,10 @@ test("present counts the containers that carry the key", () => {
 test("shape masking keeps length and classes", () => {
   assert.equal(maskShape("Ab-12 中文é"), "Aa-99 中中a");
 });
+
+test("a positional slot reports distinct values only when the caller names it", () => {
+  const rows = [{ items: [["20260301", "B"], ["20260302", "S"]] }];
+  assert.equal(inventoryFields(rows)["$[].items[][1]"].values, undefined);
+  assert.deepEqual(inventoryFields(rows, { enumSlots: ["$[].items[][1]"] })["$[].items[][1]"].values, ["B", "S"]);
+  assert.equal(inventoryFields(rows, { enumSlots: ["$[].items[][0]"] })["$[].items[][0]"].values, undefined);
+});
