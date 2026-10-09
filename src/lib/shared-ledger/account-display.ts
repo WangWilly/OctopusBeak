@@ -1,3 +1,5 @@
+import { institutionForNamespace, institutionNames } from "../institutions/institutions.ts";
+
 export type AccountDisplayAccountType =
   | "depository"
   | "credit"
@@ -36,20 +38,12 @@ type AccountDisplayBucket = {
   rows: AccountDisplayInput[];
 };
 
-const INSTITUTION_LABELS: Readonly<Record<string, string>> = {
-  cathay: "Cathay United Bank",
-  ctbc: "CTBC Bank",
-  esun: "E.SUN Bank",
-  fubon: "Taipei Fubon Bank",
-  hncb: "Hua Nan Bank",
-  linebank: "LINE Bank",
-  maicoin: "MaiCoin",
-  post: "Chunghwa Post",
-  sinopac: "Bank SinoPac",
-  yuanta: "Yuanta Bank",
-  yuantafund: "Yuanta Bank",
-  yuantatrade: "Yuanta Securities",
-};
+const INSTITUTION_NAMES = institutionNames("en");
+
+function namespaceInstitutionLabel(namespace: string): string | undefined {
+  const key = institutionForNamespace(namespace.trim().toLowerCase());
+  return key ? INSTITUTION_NAMES[key] : undefined;
+}
 
 const SOURCE_GAP_FALLBACK = "Source not identified";
 
@@ -132,8 +126,7 @@ export function containsInternalAccountIdentifier(value: string): boolean {
 }
 
 export function institutionLabel(namespace: string): string {
-  const normalized = normalizeNamespace(namespace);
-  return INSTITUTION_LABELS[normalized] ?? titleCaseNamespace(namespace);
+  return namespaceInstitutionLabel(namespace) ?? titleCaseNamespace(namespace);
 }
 
 export function productLabel(account: Pick<AccountDisplayInput, "integrationNamespace" | "stream" | "accountType" | "investmentSubtype">): string {
@@ -214,7 +207,7 @@ function containsOpaqueToken(value: string): boolean {
 }
 
 function looksLikeRawNamespaceLabel(label: string, namespace: string): boolean {
-  const institution = INSTITUTION_LABELS[normalizeNamespace(namespace)];
+  const institution = namespaceInstitutionLabel(namespace);
   if (institution && label.toLocaleLowerCase().startsWith(institution.toLocaleLowerCase())) return false;
   return new RegExp(`^${escapeRegExp(namespace)}(?:\\s|$)`, "iu").test(label);
 }

@@ -30,6 +30,8 @@ The probe does these steps in order:
 - `reports/tdcc-probe/<timestamp>.json`: the session result and, for each endpoint, the call, page, and failure counts and a field inventory.
 - `reports/tdcc-probe/session-log.jsonl`: one line for each run, with the sign-in time, saved-session validity and age, registration result, and phone-app answer.
 
+The report also lists each visible settlement account whose currency is not an ISO 4217 code, such as `NAN`, under `nonIsoSettlementAccounts`. It records the currency and three facts: whether the balance is non-zero, whether the available balance is non-zero, and whether TSP007 returned any transactions. A value that is not a plain decimal shows as `unparseable`, and a failed TSP007 call shows as `call-failed`. [ADR 0042](../adr/0042-tdcc-admission-direct-source-precedence-and-passbook-movements.md) does not admit these accounts.
+
 `reports/` is git-ignored and excluded from the installer. The field inventory lists every JSON path, with array items collapsed to `[]` and positional row slots kept as `[n]`. For each path, it records the value types, present and total counts, and a masked example: digits become `9`, letters `A` or `a`, CJK characters `中`, and the length stays the same. Distinct values appear only for short enum-like fields whose key does not name an identifier, account, name, amount, balance, quantity, price, date, token, or contact detail. The report never contains raw national IDs, account numbers, names, amounts, or tokens.
 
 Device identity and the session token are Authentication secrets. They stay in the safeStorage-encrypted `credentials.json` under the `LIBRETTO_CLOUD_TDCC_*` keys, and are never copied into a workflow environment.
