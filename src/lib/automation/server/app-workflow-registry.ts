@@ -7,6 +7,7 @@ import { postDomesticDepositWorkflow } from "../post-workflow.ts";
 import { sinopacStatementsWorkflow } from "../sinopac-workflow.ts";
 import { createExchangeRateWorkflow, type ExchangeRateSyncService } from "../exchange-rate-workflow.ts";
 import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
+import { createTdccWorkflow } from "../tdcc-workflow.ts";
 import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
@@ -184,6 +185,13 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
             : {}),
         },
       };
+    },
+  },
+  {
+    definition: createTdccWorkflow(),
+    runtime: NONBROWSER,
+    inputFromEnvironment(environment) {
+      return { statementTypes: statementTypeIdsFromEnvironment("tdcc", environment) };
     },
   },
   {

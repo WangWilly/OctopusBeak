@@ -211,6 +211,8 @@ export type CollectSelectedProductsOptions<
   productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
   /** Provider-specific typed session/terminal-state errors can join the shared fatal set. */
   classifyFatal?: (error: unknown) => TypedWorkflowErrorCode | undefined;
+  /** Names a recoverable product failure more precisely than source-collection-failed. */
+  classifyFailure?: (error: unknown) => TypedWorkflowErrorCode | undefined;
 }>;
 
 function isSafeCount(value: number): boolean {
@@ -546,7 +548,7 @@ export async function collectSelectedProducts<
         completedByType.set(typeId, createOutcome(typeId, error.disposition));
         await emitProductEvent("collection", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
       } else {
-        const errorCode = productFailureCode(error);
+        const errorCode = options.classifyFailure?.(error) ?? productFailureCode(error);
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
         await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
         await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);

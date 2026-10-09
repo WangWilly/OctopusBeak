@@ -1,6 +1,6 @@
 # Developing typed workflows
 
-All 13 production tasks currently run through the desktop App's typed execution path. Use the project-owned `workflow:dev` command while building a browser provider; it loads the same `WorkflowDefinition` used by the App and injects development ports. Do not use generic Libretto `run` commands as the workflow development contract.
+All 14 production tasks currently run through the desktop App's typed execution path. Use the project-owned `workflow:dev` command while building a browser provider; it loads the same `WorkflowDefinition` used by the App and injects development ports. Do not use generic Libretto `run` commands as the workflow development contract.
 
 For headed development browser sessions, install full Chromium into Playwright's default user cache with `npx playwright install chromium` while `PLAYWRIGHT_BROWSERS_PATH` is unset. Desktop packaging uses a separate project-local cache and installs only Chromium headless shell; the packaging cleanup never removes the developer's default cache.
 
@@ -16,7 +16,7 @@ npm run workflow:dev -- fixture
 npm run workflow:dev -- inspect http://127.0.0.1:4173
 ```
 
-`list` shows the eleven browser provider definitions in the App registry. `exchange-rates` and `sync-maicoin` are typed non-browser workflows and do not use this browser CLI. TDCC e-Passbook has no workflow yet. To inventory its App protocol endpoints, use the development probe described in [Running the TDCC e-Passbook probe](tdcc-probe.md). `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
+`list` shows the eleven browser provider definitions in the App registry. `exchange-rates`, `sync-maicoin`, and `sync-tdcc` are typed non-browser workflows and do not use this browser CLI. To inventory the TDCC e-Passbook App protocol endpoints, use the development probe described in [Running the TDCC e-Passbook probe](tdcc-probe.md). `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
 
 ```sh
 npm run workflow:dev -- validate src/lib/automation/example-workflow.ts exampleWorkflow --input-env WORKFLOW_DEV_INPUT_JSON
