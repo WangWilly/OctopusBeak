@@ -33,6 +33,13 @@ export async function readPGliteDirectSourceCoverage(
   return directSourceCoverage(result.rows);
 }
 
+/**
+ * A `?`-placeholder predicate, true when the bytea account column is not
+ * covered. It binds one parameter: the ids from readPGliteCoveredAccountIds.
+ */
+export const COUNTED_ACCOUNT_SQL = (column: string): string =>
+  `${column} NOT IN (SELECT decode(covered.id, 'hex') FROM unnest(CAST(? AS TEXT[])) AS covered(id))`;
+
 /** Covered account ids for a SQL `text[]` parameter that excludes them from a total. */
 export async function readPGliteCoveredAccountIds(reader: CoverageReader, knowledgePoint: number): Promise<string[]> {
   return [...(await readPGliteDirectSourceCoverage(reader, knowledgePoint)).keys()];

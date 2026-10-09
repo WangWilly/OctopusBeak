@@ -1,3 +1,5 @@
+import type { InstitutionProduct } from "../institutions/institutions.ts";
+
 export type CurrencyAmountDto = {
   currency: string;
   value: number;
@@ -92,6 +94,8 @@ export type AccountRowDto = {
   valueAvailability: "available" | "awaiting" | "unavailable";
   canonicalAccountId?: string;
   creditCard?: CreditCardAccountDto;
+  /** The direct source that counts this Intermediary-source account, which no total includes. */
+  coveredBy?: Readonly<{ namespace: string; institutionKey: string; product: InstitutionProduct }>;
 };
 
 export type CreditCardStatementMembershipDto = {
