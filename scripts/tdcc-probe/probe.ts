@@ -22,7 +22,7 @@ import type { ProbeTerminal } from "./terminal.ts";
 
 export const TDCC_PROBE_USAGE = `Usage: npm run probe:tdcc [-- --help]
 
-Development-only TDCC e-Passbook probe (Phase 0 of the TDCC App protocol ADR).
+Development-only TDCC e-Passbook probe (Phase 0 of ADR 0041).
 
 Reads the TDCC sign-in details from the App's credentials.json, and asks for
 them in the terminal when they are not saved. Reuses the saved session when
