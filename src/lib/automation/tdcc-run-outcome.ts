@@ -3,6 +3,18 @@ import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 
 type OutcomeCounts = NonNullable<TypedWorkflowOutcome["summary"]>["counts"];
 
+const EXCLUSION_COUNT_NAMES: ReadonlySet<string> = new Set([
+  "excludedUnknownInstitutionCount",
+  "excludedNonIsoCurrencyCount",
+  "excludedTimeDepositCount",
+  "hiddenAccountCount",
+]);
+
+/** The run's other counts, which the generic summary row still lists. */
+export function countsOutsideTdccExclusions(counts: OutcomeCounts): [string, number | undefined][] {
+  return Object.entries(counts).filter(([name]) => !EXCLUSION_COUNT_NAMES.has(name));
+}
+
 /** Plain-words lines for the TDCC accounts a run reported but did not admit (ADR 0042), counts only. */
 export function tdccExclusionLines(counts: OutcomeCounts, dictionary: Translation): string[] {
   const copy = dictionary.automation.tdccExclusions;
