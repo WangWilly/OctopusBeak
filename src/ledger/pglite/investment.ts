@@ -15,7 +15,11 @@ import type {
 } from "./source-admission-validation.ts";
 import type { InvestmentCaptureInput } from "../canonical/investment-financial.ts";
 import { assertInvestmentCashBoundary, assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid, PASSBOOK_MOVEMENT_ACTIONS } from "../canonical/investment-financial-admission.ts";
-import { TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "../canonical/tdcc-investment-contract.ts";
+import { TDCC_FUND_CONTRACT, TDCC_FUND_ROUTE, TDCC_FUND_STREAM, TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "../canonical/tdcc-investment-contract.ts";
+import { TDCC_NAMESPACE } from "../canonical/tdcc-settlement-contract.ts";
+import type { TdccAdmittedFundAccount } from "../canonical/tdcc-investment-admission.ts";
+import { isInstitutionKey } from "../../lib/institutions/institutions.ts";
+import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
 
@@ -44,11 +48,15 @@ export type PGliteCanonicalInvestmentCommitResult = Readonly<{
 }>;
 
 const TOKEN = /^sha256:[A-Za-z0-9_-]+$/u;
-const SOURCES: Readonly<Record<InvestmentCaptureInput["sourceId"], { route: string; contract: string }>> = {
-  "yuanta-fund": { route: "yuanta-fund/investment/canonical-v1", contract: "yuanta-fund/investment/canonical-v1" },
-  "yuanta-trade": { route: "yuanta-trade/investment/canonical-v1", contract: "yuanta-trade/investment/canonical-v1" },
-  maicoin: { route: "maicoin/investment/canonical-v1", contract: "maicoin/investment/canonical-v1" },
-  tdcc: { route: TDCC_INVESTMENT_ROUTE, contract: TDCC_INVESTMENT_CONTRACT },
+/** Each source's investment routes. A route's registered stream is its accounts' product stream. */
+const SOURCES: Readonly<Record<InvestmentCaptureInput["sourceId"], readonly { route: string; contract: string }[]>> = {
+  "yuanta-fund": [{ route: "yuanta-fund/investment/canonical-v1", contract: "yuanta-fund/investment/canonical-v1" }],
+  "yuanta-trade": [{ route: "yuanta-trade/investment/canonical-v1", contract: "yuanta-trade/investment/canonical-v1" }],
+  maicoin: [{ route: "maicoin/investment/canonical-v1", contract: "maicoin/investment/canonical-v1" }],
+  tdcc: [
+    { route: TDCC_INVESTMENT_ROUTE, contract: TDCC_INVESTMENT_CONTRACT },
+    { route: TDCC_FUND_ROUTE, contract: TDCC_FUND_CONTRACT },
+  ],
 };
 
 function fail(message: string): never {
@@ -155,7 +163,8 @@ function sourceRecords(capture: InvestmentCaptureInput): CanonicalSourceRecord[]
 }
 
 function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence {
-  const source = SOURCES[capture.sourceId];
+  const route = canonicalSourceRouteRegistration(capture.authorityRoute);
+  if (!route) fail("Investment route is not registered.");
   const records = sourceRecords(capture);
   const contractFingerprint = digest(`investment-contract:${capture.contractVersion}`);
   const preflightFingerprint = digest(`investment-capture:${capture.captureId}`);
@@ -168,7 +177,7 @@ function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence
     integrationNamespace: capture.sourceId,
     sourceConnectionKey: capture.identity.sourceConnectionKey,
     identityEpoch: capture.identity.identityEpochKey,
-    stream: "investment",
+    stream: route.stream,
     recordKind: "investment-source-record",
     routeKey: capture.authorityRoute,
     contractVersion: capture.contractVersion,
@@ -355,8 +364,7 @@ function independentMarginBalanceSource(capture: InvestmentCaptureInput): {
 
 function validateCapture(capture: InvestmentCaptureInput): void {
   if (!capture || typeof capture !== "object") fail("An investment capture is required.");
-  const expected = SOURCES[capture.sourceId];
-  if (!expected || capture.authorityRoute !== expected.route || capture.contractVersion !== expected.contract)
+  if (!SOURCES[capture.sourceId]?.some((expected) => capture.authorityRoute === expected.route && capture.contractVersion === expected.contract))
     fail("Investment route or contract version is unsupported.");
   rfc3339(capture.observedAt, "Investment observedAt");
   for (const [value, label] of [[capture.identity.sourceConnectionKey, "source connection"], [capture.identity.identityEpochKey, "identity epoch"], [capture.identity.accountKey, "account key"]] as const)
@@ -590,6 +598,33 @@ function account(capture: InvestmentCaptureInput): PGliteCanonicalFinancialAccou
     currency: capture.identity.reportingCurrency,
     ...(capture.identity.institutionKey ? { institutionKey: capture.identity.institutionKey } : {}),
   };
+}
+
+/**
+ * Every TDCC fund account already admitted for one connection and identity
+ * epoch. A TR051V1 response that no longer lists one of them means it holds
+ * nothing, so the caller commits an empty snapshot for each (ADR 0042).
+ */
+export async function listPGliteTdccFundAccounts(
+  store: Pick<PGliteStore, "query">,
+  connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>,
+): Promise<readonly TdccAdmittedFundAccount[]> {
+  const rows = await store.query<{ account_key: string; institution_key: string }>(
+    `SELECT account.source_account_key AS account_key, account.institution_key
+       FROM financial_accounts account
+       JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+       JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
+      WHERE connection.integration_namespace = $1
+        AND connection.source_connection_key = $2
+        AND epoch.epoch_key = $3
+        AND account.stream = $4
+      ORDER BY account.source_account_key`,
+    [TDCC_NAMESPACE, connection.sourceConnectionKey, connection.identityEpochKey, TDCC_FUND_STREAM],
+  );
+  return rows.rows.map((row) => {
+    if (!isInstitutionKey(row.institution_key)) fail("A TDCC fund account records an Institution outside the catalog.");
+    return { accountKey: row.account_key, institutionKey: row.institution_key };
+  });
 }
 
 export async function commitPGliteCanonicalInvestmentCapture(

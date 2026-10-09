@@ -1,6 +1,7 @@
 import type { CanonicalOverviewExactAmount } from "../pglite/overview-amount.ts";
+import type { CoveredBy } from "./direct-source-precedence.ts";
 
-export type { CanonicalOverviewExactAmount };
+export type { CanonicalOverviewExactAmount, CoveredBy };
 
 export type CanonicalOverviewAvailability =
   | "empty"
@@ -166,9 +167,22 @@ export type CanonicalOverviewExpectedSource = Readonly<{
   stream?: string;
 }>;
 
+/**
+ * An Intermediary-source account that Direct source precedence covers. It
+ * keeps its own values for its account view, but no total, history,
+ * activity, or spending counts it, so it sits apart from the counted
+ * accounts, positions, and transactions.
+ */
+export type CanonicalOverviewCoveredAccount = CanonicalOverviewAccount & Readonly<{
+  coveredBy: CoveredBy;
+  transactions: readonly CanonicalOverviewTransaction[];
+}>;
+
 export type CanonicalOverviewProjection = Readonly<{
   availability: CanonicalOverviewAvailability;
+  /** The accounts every total counts. */
   accounts: readonly CanonicalOverviewAccount[];
+  coveredAccounts: readonly CanonicalOverviewCoveredAccount[];
   positions: readonly CanonicalOverviewPosition[];
   transactions: readonly CanonicalOverviewTransaction[];
   sourceGaps: readonly CanonicalOverviewSourceGap[];

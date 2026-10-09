@@ -173,6 +173,9 @@ function holdingCollectionsByStart(rows: readonly DailyHistoryEventRow[]): Map<s
 /**
  * The per-account rows hold only that account's own balances and holdings on
  * the dates it changed; readers carry the latest row forward between dates.
+ * Only the given accounts count, so an account Direct source precedence
+ * covers, which the overview projection keeps out of its accounts, adds
+ * nothing to any date.
  */
 export async function readPGliteDailyHistoryWithAccounts(
   reader: PGliteDailyHistoryReader,
@@ -275,9 +278,11 @@ export async function readPGliteDailyHistoryWithAccounts(
     [knowledgePoint],
   );
 
-  if (result.rows.length === 0) return { dailyHistory: [], dailyHistoryByAccount: {} };
+  const counted = new Set(accounts.map((account) => account.id));
+  const events = result.rows.filter((row) => counted.has(row.account_id));
+  if (events.length === 0) return { dailyHistory: [], dailyHistoryByAccount: {} };
 
-  const collectionsByStart = holdingCollectionsByStart(result.rows);
+  const collectionsByStart = holdingCollectionsByStart(events);
   const labelByAccount = new Map(accounts.map((account) => [account.id, account.label]));
   const accountOrder = new Map(accounts.map((account, index) => [account.id, index]));
   const balanceStates = new Map<string, DailyHistoryEventRow>();
@@ -301,8 +306,8 @@ export async function readPGliteDailyHistoryWithAccounts(
     adjustBucket(accountState(accountId)[side], currency, value, sign);
   };
 
-  for (let start = 0; start < result.rows.length;) {
-    const date = result.rows[start]!.event_date;
+  for (let start = 0; start < events.length;) {
+    const date = events[start]!.event_date;
     const changedAccounts = new Set<string>();
     for (const collection of collectionsByStart.get(date) ?? []) {
       const state = accountState(collection.accountId);
@@ -317,8 +322,8 @@ export async function readPGliteDailyHistoryWithAccounts(
       }
     }
     let end = start;
-    while (end < result.rows.length && result.rows[end]!.event_date === date) {
-      const event = result.rows[end]!;
+    while (end < events.length && events[end]!.event_date === date) {
+      const event = events[end]!;
       changedAccounts.add(event.account_id);
       if (event.event_type === "balance" && event.balance_kind !== null && event.currency !== null) {
         const key = balanceKey(event.account_id, event.balance_kind, event.currency);

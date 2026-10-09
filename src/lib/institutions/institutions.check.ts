@@ -13,6 +13,7 @@ import {
   institutionForTask,
   institutionLogoFile,
   institutionNames,
+  accountProduct,
   sourceInstitution,
 } from "./institutions.ts";
 
@@ -90,8 +91,8 @@ test("a TWSE broker branch resolves to its firm, case-sensitively", () => {
 });
 
 test("TDCC is an Intermediary source with no Institution of its own", () => {
-  assert.deepEqual(sourceInstitution("tdcc"), { kind: "intermediary" });
-  assert.deepEqual(sourceInstitution("cathay"), { kind: "direct", institution: "cathay" });
+  assert.equal(sourceInstitution("tdcc")?.kind, "intermediary");
+  assert.deepEqual(sourceInstitution("cathay"), { kind: "direct", institution: "cathay", investmentStreams: {} });
   assert.equal(sourceInstitution("toString"), null);
   assert.equal(institutionForNamespace("tdcc"), null);
 });
@@ -100,4 +101,20 @@ test("every logo institution names a catalog Institution in both locales", () =>
   for (const key of INSTITUTION_KEYS) assert.ok(INSTITUTIONS.has(key), key);
   assert.equal(institutionNames("en").cathay, "Cathay United Bank");
   assert.equal(institutionNames("zh-TW")["yuanta-securities"], "元大證券");
+});
+
+test("an account's product comes from its account type and its source's investment stream", () => {
+  const product = (integrationNamespace: string, stream: string, accountType: string) =>
+    accountProduct({ integrationNamespace, stream, accountType });
+  assert.equal(product("cathay", "domestic-deposit", "depository"), "deposit");
+  assert.equal(product("cathay", "foreign-currency-deposit", "depository"), "deposit");
+  assert.equal(product("tdcc", "domestic-deposit", "depository"), "deposit");
+  assert.equal(product("yuanta-trade", "investment", "investment"), "securities");
+  assert.equal(product("yuanta-fund", "investment", "investment"), "fund");
+  assert.equal(product("tdcc", "investment", "investment"), "securities");
+  assert.equal(product("tdcc", "investment-fund", "investment"), "fund");
+  assert.equal(product("maicoin", "investment", "investment"), null, "crypto is not a product TDCC reports");
+  assert.equal(product("yuanta-trade", "investment-margin", "loan"), null);
+  assert.equal(product("cathay", "credit-card", "credit"), null);
+  assert.equal(product("tdcc", "toString", "investment"), null);
 });

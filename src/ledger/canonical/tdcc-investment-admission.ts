@@ -8,7 +8,12 @@ import {
   type InvestmentValidatedCapture,
   type PassbookMovementAction,
 } from "./investment-financial-admission.ts";
-import { TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "./tdcc-investment-contract.ts";
+import {
+  TDCC_FUND_CONTRACT,
+  TDCC_FUND_ROUTE,
+  TDCC_INVESTMENT_CONTRACT,
+  TDCC_INVESTMENT_ROUTE,
+} from "./tdcc-investment-contract.ts";
 import { taipeiCompactTimeInstant } from "../pglite/current-deposit-admission.ts";
 import {
   institutionForBankCode,
@@ -44,6 +49,14 @@ export type TdccFundAccount = Readonly<{
   institutionKey: InstitutionKey;
   accountKey: string;
 }>;
+
+/** A fund account as the store keeps it once admitted, which is all a later holding capture needs. */
+export type TdccAdmittedFundAccount = Pick<TdccFundAccount, "institutionKey" | "accountKey">;
+
+type TdccRoute = Readonly<{ route: string; contract: string }>;
+
+const SECURITIES_ROUTE: TdccRoute = { route: TDCC_INVESTMENT_ROUTE, contract: TDCC_INVESTMENT_CONTRACT };
+const FUND_ROUTE: TdccRoute = { route: TDCC_FUND_ROUTE, contract: TDCC_FUND_CONTRACT };
 
 /** A reported account that this contract does not admit. Nothing is dropped without one. */
 export type TdccInvestmentExclusion =
@@ -210,14 +223,14 @@ function securityCollector() {
   };
 }
 
-function security(symbol: string, name: string, type: InvestmentSecurityType, securityCurrency: string): Security {
+function security(symbol: string, name: string, type: InvestmentSecurityType, securityCurrency: string, contract: string): Security {
   return {
     securityKey: `tdcc:${symbol}`,
     producerSecurityId: symbol,
     name,
     currency: securityCurrency,
     securityType: type,
-    identityEvidence: { kind: "producer-security-id", contractVersion: TDCC_INVESTMENT_CONTRACT },
+    identityEvidence: { kind: "producer-security-id", contractVersion: contract },
   };
 }
 
@@ -244,6 +257,7 @@ function movementRow(
       nonEmpty(slot("name"), `${label} name`),
       securityType(symbol, text(slot("stockType"), `${label} stockType`), label),
       currency(slot("currency"), `${label} currency`),
+      TDCC_INVESTMENT_CONTRACT,
     ),
     label,
   );
@@ -374,7 +388,7 @@ function taipeiDate(instant: string): string {
   return new Date(epoch + 8 * 3_600_000).toISOString().slice(0, 10);
 }
 
-function identity(input: CaptureInput, account: TdccBrokerAccount | TdccFundAccount): InvestmentCaptureInput["identity"] {
+function identity(input: CaptureInput, account: TdccBrokerAccount | TdccAdmittedFundAccount): InvestmentCaptureInput["identity"] {
   return {
     sourceConnectionKey: input.connection.sourceConnectionKey,
     identityEpochKey: input.connection.identityEpochKey,
@@ -402,14 +416,15 @@ function identity(input: CaptureInput, account: TdccBrokerAccount | TdccFundAcco
  */
 function holdingCapture(
   input: CaptureInput,
-  account: TdccBrokerAccount | TdccFundAccount,
+  route: TdccRoute,
+  account: TdccBrokerAccount | TdccAdmittedFundAccount,
   rows: readonly HoldingRow[],
   time: Readonly<{ sourceField: string; lexeme: string; effectiveOn: string }>,
 ): InvestmentValidatedCapture {
   const securities = securityCollector();
   const holdings = rows.map((row, index): InvestmentCaptureInput["holdings"][number] => {
     const label = `${time.sourceField} holding ${index}`;
-    const securityKey = securities.add(security(row.symbol, row.name, row.securityType, row.securityCurrency), label);
+    const securityKey = securities.add(security(row.symbol, row.name, row.securityType, row.securityCurrency, route.contract), label);
     const sourceRecordKey = digest("tdcc-holding-record-v1", account.accountKey, row.symbol, time.lexeme, ...row.lexemes);
     return {
       measurementKey: digest("tdcc-holding-measurement-v1", input.captureId, account.accountKey, row.symbol),
@@ -425,22 +440,22 @@ function holdingCapture(
         sourceRecordKey,
         sourceField: time.sourceField,
         value: time.effectiveOn,
-        contractVersion: TDCC_INVESTMENT_CONTRACT,
+        contractVersion: route.contract,
       },
-      lineage: { page: 0, row: index, contractVersion: TDCC_INVESTMENT_CONTRACT },
+      lineage: { page: 0, row: index, contractVersion: route.contract },
     };
   });
   return admitCanonicalInvestmentCapture({
     captureId: input.captureId,
     sourceId: "tdcc",
-    authorityRoute: TDCC_INVESTMENT_ROUTE,
-    contractVersion: TDCC_INVESTMENT_CONTRACT,
+    authorityRoute: route.route,
+    contractVersion: route.contract,
     observedAt: input.observedAt,
     identity: identity(input, account),
     scope: {
       effectiveOn: time.effectiveOn,
       complete: true,
-      holdingSnapshot: { sourceField: time.sourceField, value: time.effectiveOn, contractVersion: TDCC_INVESTMENT_CONTRACT },
+      holdingSnapshot: { sourceField: time.sourceField, value: time.effectiveOn, contractVersion: route.contract },
     },
     securities: securities.values(),
     holdings,
@@ -452,7 +467,7 @@ function holdingCapture(
 export function tdccSecuritiesHoldingCapture(
   input: CaptureInput & Readonly<{ positions: TdccPositions; account: TdccPositions["accounts"][number] }>,
 ): InvestmentValidatedCapture {
-  return holdingCapture(input, input.account, input.account.holdings, {
+  return holdingCapture(input, SECURITIES_ROUTE, input.account, input.account.holdings, {
     sourceField: "lastServerTime",
     lexeme: input.positions.lastServerTime,
     effectiveOn: input.positions.effectiveOn,
@@ -466,10 +481,10 @@ export function tdccSecuritiesHoldingCapture(
  * empty snapshot.
  */
 export function tdccFundHoldingCapture(
-  input: CaptureInput & Readonly<{ funds: TdccFunds; account: TdccFundAccount }>,
+  input: CaptureInput & Readonly<{ funds: TdccFunds; account: TdccAdmittedFundAccount }>,
 ): InvestmentValidatedCapture {
   const holdings = input.funds.accounts.find((candidate) => candidate.accountKey === input.account.accountKey)?.holdings ?? [];
-  return holdingCapture(input, input.account, holdings, {
+  return holdingCapture(input, FUND_ROUTE, input.account, holdings, {
     sourceField: "updateTime",
     lexeme: input.funds.updateTime,
     effectiveOn: input.funds.effectiveOn,

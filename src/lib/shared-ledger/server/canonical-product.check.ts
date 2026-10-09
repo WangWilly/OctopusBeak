@@ -50,6 +50,7 @@ test("canonical product rows retain exact signed transaction and position values
         availability: "available",
       },
     ],
+    coveredAccounts: [],
     positions: [
       {
         id: "position-1",
@@ -129,6 +130,7 @@ test("canonical products carry daily history only for the accounts they show", (
   const projection = {
     availability: "available",
     accounts: [],
+    coveredAccounts: [],
     positions: [],
     transactions: [],
     sourceGaps: [],
