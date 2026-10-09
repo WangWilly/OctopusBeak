@@ -55,7 +55,12 @@ export type TdccSettlementAccount = Readonly<{
 
 /** A reported account or holding that this contract does not admit. Nothing is dropped without one. */
 export type TdccSettlementExclusion =
-  | Readonly<{ reason: "unknown-institution-code" | "non-iso-currency"; bankId: string; currency: string; accountNoSuffix: string }>
+  | Readonly<{
+    reason: "hidden-account" | "unknown-institution-code" | "non-iso-currency";
+    bankId: string;
+    currency: string;
+    accountNoSuffix: string;
+  }>
   | Readonly<{ reason: "time-deposits-not-admitted"; bankId: string; count: number }>;
 
 export type TdccSettlementSnapshot = Readonly<{
@@ -134,12 +139,13 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
       const label = `TSP006 bank ${infoIndex} account ${accountIndex}`;
       const row = object(accountValue, label);
       const accountNo = text(row.accountNo, `${label} accountNo`);
-      if (!/^\d{6,24}$/u.test(accountNo)) reject(`${label} accountNo must be 6 to 24 digits.`);
       const currency = text(row.currency, `${label} currency`);
-      const balances = {
-        ledger: { lexeme: text(row.balanceAmt, `${label} balanceAmt`), amount: decimal(row.balanceAmt, `${label} balanceAmt`, true) },
-        available: { lexeme: text(row.availableBalance, `${label} availableBalance`), amount: decimal(row.availableBalance, `${label} availableBalance`, true) },
-      };
+      // The person hid the account in the TDCC App; the App queries no TSP007 for it either.
+      if (row.isShow === false) {
+        exclusions.push({ reason: "hidden-account", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
+        continue;
+      }
+      if (!/^\d{6,24}$/u.test(accountNo)) reject(`${label} accountNo must be 6 to 24 digits.`);
       if (!institutionKey) {
         exclusions.push({ reason: "unknown-institution-code", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
@@ -148,6 +154,10 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
         exclusions.push({ reason: "non-iso-currency", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
       }
+      const balances = {
+        ledger: { lexeme: text(row.balanceAmt, `${label} balanceAmt`), amount: decimal(row.balanceAmt, `${label} balanceAmt`, true) },
+        available: { lexeme: text(row.availableBalance, `${label} availableBalance`), amount: decimal(row.availableBalance, `${label} availableBalance`, true) },
+      };
       const sourceAccountKey = `${bankId}-${accountNo}-${currency}`;
       if (keys.has(sourceAccountKey)) reject(`${label} repeats a settlement account.`);
       keys.add(sourceAccountKey);
