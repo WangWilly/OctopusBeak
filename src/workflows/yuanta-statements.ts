@@ -95,6 +95,8 @@ export type YuantaStatementDownload = {
   filename: string;
   rows: BankTransactionRow[];
   source: YuantaDomesticDepositDownloadEvidence;
+  /** Set only when the bank's result table said 查無資料 instead of offering a CSV. */
+  zeroResultAuthority?: "provider-explicit-no-data";
   /** Optional exact evidence from a provider detail/mandate page. */
   counterpartyAccountEvidence?: readonly YuantaCounterpartyAccountEvidence[];
 };
@@ -110,7 +112,7 @@ export type YuantaStatementsRunDependencies = {
   queryAccount?: (
     page: Page,
     account: { label: string; value: string },
-  ) => Promise<void>;
+  ) => Promise<YuantaDepositQueryResult>;
   downloadStatementRows?: (
     page: Page,
     account: { label: string; value: string },
@@ -914,28 +916,57 @@ export async function readYuantaDepositAccountOptions(
   return availableAccounts;
 }
 
+export type YuantaDepositQueryResult = "download-ready" | "provider-explicit-no-data";
+
+const csvDownloadLink = (scope: BrowserScope) =>
+  scope.locator("a.order_2.m_color_check").filter({ hasText: "下載CSV檔" });
+
+/** Waits for the submitted query to show either a CSV link or the bank's 查無資料 row. */
+export async function waitForYuantaDepositQueryResult(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<YuantaDepositQueryResult> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if (await hasAttachedLocator(csvDownloadLink(scope))) return "download-ready";
+      if (await hasAttachedLocator(scope.getByText("查無資料", { exact: true }))) {
+        return "provider-explicit-no-data";
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error("Could not find YuanTa CSV download link or a no-data result in any frame.");
+}
+
 async function queryAccount(
   page: Page,
   account: { label: string; value: string },
-): Promise<void> {
+): Promise<YuantaDepositQueryResult> {
   const scope = await findScopeWithSelector(page, "#acctno");
   await scope.locator("#acctno").selectOption(account.value);
   await scope.locator("#submitbutton").click();
   await settleAfterNavigation(page);
+  return await waitForYuantaDepositQueryResult(page);
+}
 
-  const resultScope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("a.order_2.m_color_check")
-        .filter({ hasText: "下載CSV檔" }),
-    "YuanTa CSV download link",
-  );
-  await resultScope
-    .locator("a.order_2.m_color_check")
-    .filter({ hasText: "下載CSV檔" })
-    .first()
-    .waitFor({ state: "attached", timeout: 60_000 });
+const YUANTA_EXPLICIT_NO_DATA_FILENAME = "yuanta-provider-explicit-no-data";
+
+/** A terminal zero-row download standing in for the CSV the bank does not offer. */
+function yuantaExplicitNoDataDownload(): YuantaStatementDownload {
+  return {
+    filename: YUANTA_EXPLICIT_NO_DATA_FILENAME,
+    rows: [],
+    zeroResultAuthority: "provider-explicit-no-data",
+    source: {
+      filename: YUANTA_EXPLICIT_NO_DATA_FILENAME,
+      byteLength: 0,
+      contentDigest: `sha256:${createHash("sha256").digest("base64url")}`,
+      columnNames: YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+      terminal: true,
+      rows: [],
+    },
+  };
 }
 
 async function downloadStatementRows(
@@ -1021,6 +1052,9 @@ export function buildYuantaCapture(
     },
     queryRange,
     downloads: [download.source],
+    ...(download.zeroResultAuthority
+      ? { zeroResultAuthority: download.zeroResultAuthority }
+      : {}),
     provenance: {
       source: "yuanta-ebank-domestic-deposit-csv",
       encoding: "big5",
@@ -1140,10 +1174,15 @@ export async function runYuantaStatements(
   for (const account of accounts) {
     overrides.signal.throwIfAborted();
     await overrides.reportActivity?.("query");
-    await query(page, account);
+    const queryResult = await query(page, account);
     overrides.signal.throwIfAborted();
-    await overrides.reportActivity?.("download");
-    const downloaded = await download(page, account);
+    let downloaded: YuantaStatementDownload;
+    if (queryResult === "provider-explicit-no-data") {
+      downloaded = yuantaExplicitNoDataDownload();
+    } else {
+      await overrides.reportActivity?.("download");
+      downloaded = await download(page, account);
+    }
     overrides.sourceText.assertIntact(JSON.stringify(downloaded));
     if (downloaded.source.terminal !== true)
       throw new Error(
