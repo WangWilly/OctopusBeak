@@ -944,6 +944,21 @@ CREATE TABLE investment_transactions (
   effective_on TEXT NOT NULL,
   funding_evidence_json TEXT NOT NULL
 );
+CREATE TABLE investment_passbook_movements (
+  movement_id BYTEA PRIMARY KEY CHECK(length(movement_id) = 16),
+  capture_id BYTEA NOT NULL,
+  commit_id BYTEA NOT NULL,
+  account_id BYTEA NOT NULL,
+  security_id BYTEA NOT NULL,
+  source_record_id BYTEA NOT NULL,
+  movement_key TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('buy','sell')),
+  quantity_coefficient TEXT NOT NULL,
+  quantity_scale BIGINT NOT NULL CHECK(quantity_scale >= 0),
+  trade_on TEXT NOT NULL,
+  posted_on TEXT NOT NULL,
+  UNIQUE(account_id, movement_key)
+);
 CREATE TABLE investment_funding_relation_members (
   relation_id BYTEA NOT NULL,
   investment_transaction_id BYTEA NOT NULL,
@@ -2983,6 +2998,11 @@ ALTER TABLE "investment_transactions" ADD CONSTRAINT "fk_investment_transactions
 ALTER TABLE "investment_transactions" ADD CONSTRAINT "fk_investment_transactions_3" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "investment_transactions" ADD CONSTRAINT "fk_investment_transactions_4" FOREIGN KEY ("capture_id") REFERENCES "investment_captures" ("capture_id");
 ALTER TABLE "investment_transactions" ADD CONSTRAINT "fk_investment_transactions_5" FOREIGN KEY ("transaction_id") REFERENCES "financial_transactions" ("transaction_id");
+ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_0" FOREIGN KEY ("source_record_id") REFERENCES "source_records" ("source_record_id");
+ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_1" FOREIGN KEY ("security_id") REFERENCES "investment_securities" ("security_id");
+ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_2" FOREIGN KEY ("account_id") REFERENCES "investment_accounts" ("account_id");
+ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_3" FOREIGN KEY ("commit_id") REFERENCES "canonical_commits" ("commit_id");
+ALTER TABLE "investment_passbook_movements" ADD CONSTRAINT "fk_investment_passbook_movements_4" FOREIGN KEY ("capture_id") REFERENCES "investment_captures" ("capture_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_0" FOREIGN KEY ("created_commit_id") REFERENCES "canonical_commits" ("commit_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_1" FOREIGN KEY ("identity_epoch_id") REFERENCES "identity_epochs" ("identity_epoch_id");
 ALTER TABLE "loan_account_identities" ADD CONSTRAINT "fk_loan_account_identities_2" FOREIGN KEY ("source_connection_id") REFERENCES "source_connections" ("source_connection_id");
