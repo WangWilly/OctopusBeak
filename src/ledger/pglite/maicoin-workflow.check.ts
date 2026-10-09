@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import {
   buildMaicoinInvestmentCapture,
   parseMaicoinProviderDate,
@@ -15,7 +14,7 @@ import { createMaicoinWorkflow } from "../../lib/automation/maicoin-workflow.ts"
 import { createWorkflowFinancialCommitPort } from "../../lib/automation/workflow-financial-commit.ts";
 import { strictSourceText } from "../../lib/automation/source-text.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "./operational.ts";
@@ -23,9 +22,8 @@ import { PGliteStore } from "./transaction.ts";
 
 test("MaiCoin workflow commits through the injected canonical worker and operational ports", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-pglite-workflow-"));
-  const database = await PGlite.create(join(root, "pglite"));
+  const database = await createBaselinePGlite({ dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteBaseline(database);
   await applyPgliteOperationalBaseline(store);
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
@@ -96,7 +94,7 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
 });
 
 test("MaiCoin complete history proof persists empty/native-ID bounded scope and blocks conflicting ID payloads atomically", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   const providerDate = parseMaicoinProviderDate("Wed, 02 Sep 2026 04:05:06 GMT");
   const history = {
@@ -142,7 +140,6 @@ test("MaiCoin complete history proof persists empty/native-ID bounded scope and 
   });
 
   try {
-    await applyPgliteBaseline(database);
     const first = makeCapture("maicoin-native-id-first", "1.25");
     assert.equal(first.scope.effectiveOn, "2026-09-02");
     assert.deepEqual(first.scope.transactionHistory, history);

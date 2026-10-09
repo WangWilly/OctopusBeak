@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
   PGLITE_EINVOICE_CONTRACT_VERSION,
@@ -118,10 +117,9 @@ async function userCommit(store: PGliteStore): Promise<Uint8Array> {
 }
 
 test("a committed capture derives item categories by name first, then seller, and re-derives per revision", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-issued", [invoice(1, [
       item(1, "拿鐵", "120"),
       item(2, "Unlabelled", "80"),
@@ -166,10 +164,9 @@ test("a committed capture derives item categories by name first, then seller, an
 });
 
 test("a full enrichment refresh, as a credit-card commit runs it, ignores item category assertions", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-full-refresh", [invoice(1, [item(1, "拿鐵", "120")])]));
     assert.equal((await currentRows(store)).length, 1);
     const commitId = await userCommit(store);
@@ -187,10 +184,9 @@ test("a full enrichment refresh, as a credit-card commit runs it, ignores item c
 });
 
 test("items with no matching rule stay uncategorized without a fallback assertion", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-unknown", [invoice(1, [item(1, "Unlabelled", "50")], { sellerName: "網路家庭國際資訊" })]));
     assert.deepEqual(await currentRows(store), []);
     assert.deepEqual(await lineage(store), []);
@@ -201,10 +197,9 @@ test("items with no matching rule stay uncategorized without a fallback assertio
 });
 
 test("a user item assertion survives a revision that keeps the item's facts and is withdrawn when they change (check 22)", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-issued", [invoice(1, [
       item(1, "拿鐵", "120"),
       item(2, "Unlabelled", "80"),
@@ -245,10 +240,9 @@ test("a user item assertion survives a revision that keeps the item's facts and 
 });
 
 test("clearing a user item categorization falls back to the routed Derived result (check 24)", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalEInvoiceCapture(store, capture("item-category-issued", [invoice(1, [item(1, "拿鐵", "120")])]));
     const invoice1 = await invoiceId(store);
     const setCommit = await userCommit(store);

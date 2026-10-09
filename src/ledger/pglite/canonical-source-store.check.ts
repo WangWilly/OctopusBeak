@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalFinancialBatch,
   commitPGliteCanonicalFinancialCapture,
@@ -114,10 +114,9 @@ async function counts(store: PGliteStore): Promise<Record<string, number>> {
 }
 
 test("PGlite occurrence continuity rejects unsupported stored payloads without recovery", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalFinancialCapture(store, request("capture-original"));
     const before = await counts(store);
     // Simulate an unsupported on-disk payload in this isolated test database.
@@ -137,10 +136,9 @@ test("PGlite occurrence continuity rejects unsupported stored payloads without r
 });
 
 test("mixed raw evidence and derived financial facts commit or roll back together", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const committed = await commitPGliteCanonicalMixedCapture(store, {
       steps: [
         { kind: "source", request: request("raw-1", token("x"), token("y")).capture },
@@ -168,10 +166,9 @@ test("mixed raw evidence and derived financial facts commit or roll back togethe
 });
 
 test("PGlite canonical source admission writes typed facts atomically", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = await commitPGliteCanonicalFinancialCapture(store, request("capture-1"), {
       clock: () => 100,
     });
@@ -285,10 +282,9 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
 });
 
 test("financial fact denomination is independent of account reporting currency", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const base = request("capture-cross-currency");
     const input = {
       ...base,
@@ -305,10 +301,9 @@ test("financial fact denomination is independent of account reporting currency",
 });
 
 test("a non-MAX capture cannot admit USDT by claiming the MAX posting version", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const base = request("capture-false-max-version");
     await assert.rejects(commitPGliteCanonicalFinancialCapture(store, {
       ...base,
@@ -327,10 +322,9 @@ test("a non-MAX capture cannot admit USDT by claiming the MAX posting version", 
 });
 
 test("the registered MAX route admits a USDT booked financial fact", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const base = request("capture-max-usdt");
     const route = "maicoin/investment/canonical-v1";
     await commitPGliteCanonicalFinancialCapture(store, {
@@ -362,7 +356,7 @@ test("the registered MAX route admits a USDT booked financial fact", async () =>
 });
 
 test("financial admission seeds local attestation and rejects a revoked durable chain", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   const authorityRoute = "ctbc/domestic-deposit/human-attested-v1";
   const providerRequest = (captureId: string) => {
@@ -410,7 +404,6 @@ test("financial admission seeds local attestation and rejects a revoked durable 
     } satisfies PGliteCanonicalFinancialCommitRequest;
   };
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalFinancialCapture(store, providerRequest("ctbc-first"));
     const active = await store.transaction((transaction) =>
       getPGliteHumanAttestationStatus(transaction, { authorityRoute }));
@@ -434,10 +427,9 @@ test("financial admission seeds local attestation and rejects a revoked durable 
 });
 
 test("PGlite canonical financial batches retain one transaction boundary", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = request("batch-1");
     const second = {
       ...request("batch-2", token("x"), token("y")),

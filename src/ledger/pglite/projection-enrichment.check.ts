@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   commitPGliteCanonicalDepositCapture,
@@ -246,10 +246,9 @@ test("Cathay worker classification preserves transfer and unsupported outcomes",
 });
 
 test("PGlite provider deposits maintain current transaction and derived bank kind", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const capture = createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1);
     await commitPGliteCanonicalDepositCapture(store, capture);
     const rows = await store.query<{ transaction_id: Uint8Array; value_text: string; route_id: string }>(
@@ -327,10 +326,9 @@ test("PGlite provider deposits maintain current transaction and derived bank kin
 });
 
 test("PGlite source revision recurrence and complete-range withdrawal update current rows", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = cathayDepositCapture("projection-first");
     const recurrent = cathayDepositCapture("projection-recurrent");
     await commitPGliteCanonicalDepositCapture(store, first);
@@ -346,10 +344,9 @@ test("PGlite source revision recurrence and complete-range withdrawal update cur
 });
 
 test("PGlite Fubon deposit and card commands refresh kind rows and rollback a failed projection", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalDepositCapture(store, fubonCapture());
     assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 1);
     const card = cardCapture("projection-card-capture");

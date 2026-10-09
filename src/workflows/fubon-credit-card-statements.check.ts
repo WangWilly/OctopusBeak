@@ -6,8 +6,7 @@ import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { createBaselinePGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-commands.ts";
@@ -1705,10 +1704,9 @@ test("an unbilled grid served as the bank's no-record page collects and commits"
   assert.equal(unbilledPage.proofKind, "provider-no-record-terminal-grid");
   assert.equal(unbilledPage.rowCount, 0);
   assert.equal(unbilledPage.terminal, true);
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const committed = await commitPGliteCanonicalCreditCardCapture(store, item.command.request);
     assert.equal(committed.transactionCount, 2);
     assert.equal(committed.statementCount, 5);
@@ -1841,10 +1839,9 @@ test("losing PAN visibility between captures does not re-admit billed transactio
     unbilledRows: last4LabeledUnbilledRows,
     observedAt: "2026-10-07T00:00:00.000Z",
   });
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalCreditCardCapture(store, panVisibleRequest);
     await commitPGliteCanonicalCreditCardCapture(store, panHiddenRequest);
     const counted = await database.query<{ transactions: string; instruments: string }>(`
@@ -1923,10 +1920,9 @@ test("unbilled purchases seen with PAN labels hand off to a new billed period wi
     ],
     observedAt: "2026-10-07T00:00:00.000Z",
   });
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalCreditCardCapture(store, unbilledSeenRequest);
     await commitPGliteCanonicalCreditCardCapture(store, nowBilledRequest);
     const lifecycle = await database.query<{ transaction_id: string; billing_status: string; description: string }>(`
