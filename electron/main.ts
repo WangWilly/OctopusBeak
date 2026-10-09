@@ -16,6 +16,7 @@ import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-re
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
+import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
@@ -95,8 +96,7 @@ function handleAutomationRuntimeFatal(details: {
   app.exit(1);
 }
 
-app.setName("OctopusBeak");
-app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
+applyOctopusBeakAppIdentity(app);
 process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   projectRoot(),
   "src",
