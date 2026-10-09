@@ -3,14 +3,20 @@ import {
   admitCanonicalInvestmentCapture,
   type InvestmentCaptureInput,
   type InvestmentExactAmount,
+  type InvestmentMoney,
   type InvestmentSecurityType,
   type InvestmentValidatedCapture,
   type PassbookMovementAction,
 } from "./investment-financial-admission.ts";
 import { TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "./tdcc-investment-contract.ts";
-import { institutionForBrokerBranch, type InstitutionKey } from "../../lib/institutions/institutions.ts";
+import { taipeiCompactTimeInstant } from "../pglite/current-deposit-admission.ts";
+import {
+  institutionForBankCode,
+  institutionForBrokerBranch,
+  type InstitutionKey,
+} from "../../lib/institutions/institutions.ts";
 
-/** A TR001 or TR002 response that breaks the investment contract. The whole attempted capture is cancelled. */
+/** A TR001, TR002, or TR051V1 response that breaks the investment contract. The whole attempted capture is cancelled. */
 export class TdccInvestmentContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -32,16 +38,42 @@ export type TdccBrokerAccount = Readonly<{
   accountKey: string;
 }>;
 
-/** A reported account that this contract does not admit. Nothing is dropped without one. */
-export type TdccInvestmentExclusion = Readonly<{
-  reason: "unknown-institution-code";
-  product: "securities";
-  brokerNo: string;
-  accountNoSuffix: string;
+/** A TR051V1 fund account: the funds held through one catalog sale organisation. */
+export type TdccFundAccount = Readonly<{
+  saleOrgCode: string;
+  institutionKey: InstitutionKey;
+  accountKey: string;
 }>;
 
-export type TdccBrokerAccounts = Readonly<{
-  accounts: readonly TdccBrokerAccount[];
+/** A reported account that this contract does not admit. Nothing is dropped without one. */
+export type TdccInvestmentExclusion =
+  | Readonly<{ reason: "unknown-institution-code"; product: "securities"; brokerNo: string; accountNoSuffix: string }>
+  | Readonly<{ reason: "unknown-institution-code"; product: "funds"; saleOrgCode: string; holdingCount: number }>;
+
+type HoldingRow = Readonly<{
+  symbol: string;
+  name: string;
+  securityType: InvestmentSecurityType;
+  securityCurrency: string;
+  quantity: InvestmentExactAmount;
+  valuation: InvestmentMoney;
+  /** The provider lexemes the record keeps, so a changed value is a new record. */
+  lexemes: readonly string[];
+}>;
+
+/** TR001 as of its lastServerTime: admissible broker accounts with their holdings, and typed exclusions. */
+export type TdccPositions = Readonly<{
+  lastServerTime: string;
+  effectiveOn: string;
+  accounts: readonly (TdccBrokerAccount & Readonly<{ holdings: readonly HoldingRow[] }>)[];
+  exclusions: readonly TdccInvestmentExclusion[];
+}>;
+
+/** TR051V1 as of its updateTime: admissible fund accounts with their holdings, and typed exclusions. */
+export type TdccFunds = Readonly<{
+  updateTime: string;
+  effectiveOn: string;
+  accounts: readonly (TdccFundAccount & Readonly<{ holdings: readonly HoldingRow[] }>)[];
   exclusions: readonly TdccInvestmentExclusion[];
 }>;
 
@@ -51,6 +83,9 @@ export type TdccBrokerAccounts = Readonly<{
  * currency its own row reports.
  */
 const TDCC_REPORTING_CURRENCY = "TWD";
+
+/** refTWDValue is a fund's reference value in TWD. */
+const FUND_VALUATION_CURRENCY = "TWD";
 
 /** TR002 txnCode values and the quantity direction each one reports. Any other code rejects the capture. */
 const PASSBOOK_MOVEMENT_CODES: Readonly<Record<string, PassbookMovementAction>> = {
@@ -78,6 +113,15 @@ const TR002_SLOT = {
   txnCode: 10,
   quantity: 12,
   currency: 20,
+} as const;
+
+const TR001_ITEM_SLOT = {
+  symbol: 0,
+  name: 1,
+  stockType: 6,
+  quantity: 7,
+  price: 17,
+  currency: 19,
 } as const;
 
 const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
@@ -135,42 +179,16 @@ export function tdccRocDate(value: unknown, label: string): string {
   return iso;
 }
 
-const accountNoSuffix = (accountNo: string) => accountNo.slice(-4);
-
-/** Resolves a broker branch code through the catalog, or reports the account as excluded. */
-export function tdccBrokerAccount(brokerNo: string, brokerAccount: string): TdccBrokerAccount | TdccInvestmentExclusion {
+/** The broker account when its branch code is in the catalog, else null. */
+export function tdccBrokerAccount(brokerNo: string, brokerAccount: string): TdccBrokerAccount | null {
   const institutionKey = institutionForBrokerBranch(brokerNo);
-  if (!institutionKey)
-    return { reason: "unknown-institution-code", product: "securities", brokerNo, accountNoSuffix: accountNoSuffix(brokerAccount) };
-  return { brokerNo, brokerAccount, institutionKey, accountKey: digest("tdcc-broker-account-v1", brokerNo, brokerAccount) };
-}
-
-const isExclusion = (value: TdccBrokerAccount | TdccInvestmentExclusion): value is TdccInvestmentExclusion =>
-  "reason" in value;
-
-/** Reads the TR001 broker accounts into admissible accounts and typed exclusions. */
-export function readTdccBrokerAccounts(body: unknown): TdccBrokerAccounts {
-  const root = object(body, "TR001 response");
-  const accounts: TdccBrokerAccount[] = [];
-  const exclusions: TdccInvestmentExclusion[] = [];
-  const keys = new Set<string>();
-  for (const [index, value] of list(root.accounts, "TR001 accounts").entries()) {
-    const row = object(value, `TR001 account ${index}`);
-    const brokerNo = nonEmpty(row.brokerNo, `TR001 account ${index} brokerNo`);
-    const brokerAccount = nonEmpty(row.brokerAccount, `TR001 account ${index} brokerAccount`);
-    const resolved = tdccBrokerAccount(brokerNo, brokerAccount);
-    if (isExclusion(resolved)) {
-      exclusions.push(resolved);
-      continue;
-    }
-    if (keys.has(resolved.accountKey)) reject(`TR001 account ${index} repeats a broker account.`);
-    keys.add(resolved.accountKey);
-    accounts.push(resolved);
-  }
-  return { accounts, exclusions };
+  return institutionKey
+    ? { brokerNo, brokerAccount, institutionKey, accountKey: digest("tdcc-broker-account-v1", brokerNo, brokerAccount) }
+    : null;
 }
 
 type Security = InvestmentCaptureInput["securities"][number];
+
 type Movement = NonNullable<InvestmentCaptureInput["passbookMovements"]>[number];
 
 function securityType(symbol: string, stockType: string, label: string): InvestmentSecurityType {
@@ -241,11 +259,113 @@ function movementRow(
   };
 }
 
-export type TdccInvestmentCaptureInput = Readonly<{
+/** TR001 lastServerTime and TR051V1 updateTime are Gregorian Asia/Taipei `YYYYMMDDhhmmss`, like TSP006 updateTime. */
+function taipeiSystemDate(lexeme: string, label: string): string {
+  if (!taipeiCompactTimeInstant(lexeme)) reject(`${label} must be a Gregorian Asia/Taipei YYYYMMDDhhmmss time.`);
+  return `${lexeme.slice(0, 4)}-${lexeme.slice(4, 6)}-${lexeme.slice(6, 8)}`;
+}
+
+function multiply(left: InvestmentExactAmount, right: InvestmentExactAmount): InvestmentExactAmount {
+  return { coefficient: (BigInt(left.coefficient) * BigInt(right.coefficient)).toString(), scale: left.scale + right.scale };
+}
+
+function uniqueSymbols(rows: readonly HoldingRow[], label: string): readonly HoldingRow[] {
+  if (new Set(rows.map((row) => row.symbol)).size !== rows.length) reject(`${label} reports one Security twice.`);
+  return rows;
+}
+
+/** Valuation is quantity times slot 17, an accepted risk until a live account confirms the slot (ADR 0042). */
+function securitiesHolding(value: unknown, label: string): HoldingRow {
+  const row = list(value, label);
+  const slot = (name: keyof typeof TR001_ITEM_SLOT) => row[TR001_ITEM_SLOT[name]];
+  const symbol = nonEmpty(slot("symbol"), `${label} symbol`);
+  const quantity = decimal(slot("quantity"), `${label} quantity`);
+  const price = decimal(slot("price"), `${label} price`);
+  const securityCurrency = currency(slot("currency"), `${label} currency`);
+  return {
+    symbol,
+    name: nonEmpty(slot("name"), `${label} name`),
+    securityType: securityType(symbol, text(slot("stockType"), `${label} stockType`), label),
+    securityCurrency,
+    quantity,
+    valuation: { ...multiply(quantity, price), currency: securityCurrency },
+    lexemes: [text(slot("quantity"), label), text(slot("price"), label)],
+  };
+}
+
+/** Reads TR001 into broker accounts with their holdings and typed exclusions. */
+export function readTdccPositions(body: unknown): TdccPositions {
+  const root = object(body, "TR001 response");
+  const lastServerTime = text(root.lastServerTime, "TR001 lastServerTime");
+  const effectiveOn = taipeiSystemDate(lastServerTime, "TR001 lastServerTime");
+  const accounts: TdccPositions["accounts"][number][] = [];
+  const exclusions: TdccInvestmentExclusion[] = [];
+  const keys = new Set<string>();
+  for (const [index, value] of list(root.accounts, "TR001 accounts").entries()) {
+    const label = `TR001 account ${index}`;
+    const row = object(value, label);
+    const brokerNo = nonEmpty(row.brokerNo, `${label} brokerNo`);
+    const brokerAccount = nonEmpty(row.brokerAccount, `${label} brokerAccount`);
+    const items = list(row.items, `${label} items`);
+    const resolved = tdccBrokerAccount(brokerNo, brokerAccount);
+    if (!resolved) {
+      exclusions.push({ reason: "unknown-institution-code", product: "securities", brokerNo, accountNoSuffix: brokerAccount.slice(-4) });
+      continue;
+    }
+    if (keys.has(resolved.accountKey)) reject(`${label} repeats a broker account.`);
+    keys.add(resolved.accountKey);
+    const holdings = items.map((item, itemIndex) => securitiesHolding(item, `${label} item ${itemIndex}`));
+    accounts.push({ ...resolved, holdings: uniqueSymbols(holdings, label) });
+  }
+  return { lastServerTime, effectiveOn, accounts, exclusions };
+}
+
+/**
+ * A sale organisation is a bank (3-digit FISC code) or a broker (4-character
+ * TWSE code). The code sets differ in length, so at most one lookup matches.
+ * Null means the code is not in the catalog.
+ */
+export function tdccFundAccount(saleOrgCode: string): TdccFundAccount | null {
+  const institutionKey = institutionForBankCode(saleOrgCode) ?? institutionForBrokerBranch(saleOrgCode);
+  return institutionKey ? { saleOrgCode, institutionKey, accountKey: digest("tdcc-fund-account-v1", saleOrgCode) } : null;
+}
+
+/** Reads TR051V1 into fund accounts, one per catalog sale organisation, and typed exclusions. */
+export function readTdccFunds(body: unknown): TdccFunds {
+  const root = object(body, "TR051V1 response");
+  const updateTime = text(root.updateTime, "TR051V1 updateTime");
+  const effectiveOn = taipeiSystemDate(updateTime, "TR051V1 updateTime");
+  const bySaleOrg = new Map<string, HoldingRow[]>();
+  for (const [index, value] of list(root.fundDetails, "TR051V1 fundDetails").entries()) {
+    const label = `TR051V1 fund ${index}`;
+    const row = object(value, label);
+    const saleOrgCode = nonEmpty(row.saleOrgCode, `${label} saleOrgCode`);
+    const holding: HoldingRow = {
+      symbol: nonEmpty(row.fundNo, `${label} fundNo`),
+      name: nonEmpty(row.fundCHName, `${label} fundCHName`),
+      securityType: "mutual_fund",
+      // TR051V1 values a fund in TWD only, so its own pricing currency is not admitted.
+      securityCurrency: "",
+      quantity: decimal(row.fundSHR, `${label} fundSHR`),
+      valuation: { ...decimal(row.refTWDValue, `${label} refTWDValue`), currency: FUND_VALUATION_CURRENCY },
+      lexemes: [text(row.fundSHR, label), text(row.refTWDValue, label)],
+    };
+    bySaleOrg.set(saleOrgCode, [...(bySaleOrg.get(saleOrgCode) ?? []), holding]);
+  }
+  const accounts: TdccFunds["accounts"][number][] = [];
+  const exclusions: TdccInvestmentExclusion[] = [];
+  for (const [saleOrgCode, holdings] of bySaleOrg) {
+    const account = tdccFundAccount(saleOrgCode);
+    if (!account) exclusions.push({ reason: "unknown-institution-code", product: "funds", saleOrgCode, holdingCount: holdings.length });
+    else accounts.push({ ...account, holdings: uniqueSymbols(holdings, `TR051V1 sale organisation ${saleOrgCode}`) });
+  }
+  return { updateTime, effectiveOn, accounts, exclusions };
+}
+
+type CaptureInput = Readonly<{
   captureId: string;
   observedAt: string;
   connection: TdccInvestmentConnection;
-  account: TdccBrokerAccount;
 }>;
 
 function taipeiDate(instant: string): string {
@@ -254,21 +374,106 @@ function taipeiDate(instant: string): string {
   return new Date(epoch + 8 * 3_600_000).toISOString().slice(0, 10);
 }
 
-function identity(input: TdccInvestmentCaptureInput): InvestmentCaptureInput["identity"] {
+function identity(input: CaptureInput, account: TdccBrokerAccount | TdccFundAccount): InvestmentCaptureInput["identity"] {
   return {
     sourceConnectionKey: input.connection.sourceConnectionKey,
     identityEpochKey: input.connection.identityEpochKey,
-    accountKey: input.account.accountKey,
-    accountNumber: {
-      value: input.account.brokerAccount,
-      kind: "brokerage-account",
-      evidenceVersion: TDCC_INVESTMENT_CONTRACT,
-      sourceField: "brokerAccount",
-    },
+    accountKey: account.accountKey,
+    ...("brokerAccount" in account
+      ? {
+          accountNumber: {
+            value: account.brokerAccount,
+            kind: "brokerage-account" as const,
+            evidenceVersion: TDCC_INVESTMENT_CONTRACT,
+            sourceField: "brokerAccount",
+          },
+        }
+      : {}),
     accountType: "investment",
     reportingCurrency: TDCC_REPORTING_CURRENCY,
-    institutionKey: input.account.institutionKey,
+    institutionKey: account.institutionKey,
   };
+}
+
+/**
+ * One holding capture per account. Its holdings are the account's complete
+ * inventory at the response time, so an account that holds nothing still
+ * commits an empty snapshot and a later sale is not left current.
+ */
+function holdingCapture(
+  input: CaptureInput,
+  account: TdccBrokerAccount | TdccFundAccount,
+  rows: readonly HoldingRow[],
+  time: Readonly<{ sourceField: string; lexeme: string; effectiveOn: string }>,
+): InvestmentValidatedCapture {
+  const securities = securityCollector();
+  const holdings = rows.map((row, index): InvestmentCaptureInput["holdings"][number] => {
+    const label = `${time.sourceField} holding ${index}`;
+    const securityKey = securities.add(security(row.symbol, row.name, row.securityType, row.securityCurrency), label);
+    const sourceRecordKey = digest("tdcc-holding-record-v1", account.accountKey, row.symbol, time.lexeme, ...row.lexemes);
+    return {
+      measurementKey: digest("tdcc-holding-measurement-v1", input.captureId, account.accountKey, row.symbol),
+      measurementSubjectKey: digest("tdcc-holding-subject-v1", account.accountKey, row.symbol, time.effectiveOn),
+      sourceRecordKey,
+      securityKey,
+      quantity: row.quantity,
+      valuation: row.valuation,
+      effectiveOn: time.effectiveOn,
+      observedAt: input.observedAt,
+      effectiveTimeEvidence: {
+        kind: "source-reported-as-of",
+        sourceRecordKey,
+        sourceField: time.sourceField,
+        value: time.effectiveOn,
+        contractVersion: TDCC_INVESTMENT_CONTRACT,
+      },
+      lineage: { page: 0, row: index, contractVersion: TDCC_INVESTMENT_CONTRACT },
+    };
+  });
+  return admitCanonicalInvestmentCapture({
+    captureId: input.captureId,
+    sourceId: "tdcc",
+    authorityRoute: TDCC_INVESTMENT_ROUTE,
+    contractVersion: TDCC_INVESTMENT_CONTRACT,
+    observedAt: input.observedAt,
+    identity: identity(input, account),
+    scope: {
+      effectiveOn: time.effectiveOn,
+      complete: true,
+      holdingSnapshot: { sourceField: time.sourceField, value: time.effectiveOn, contractVersion: TDCC_INVESTMENT_CONTRACT },
+    },
+    securities: securities.values(),
+    holdings,
+    transactions: [],
+  });
+}
+
+/** One TR001 holding snapshot for one broker account, effective at lastServerTime. */
+export function tdccSecuritiesHoldingCapture(
+  input: CaptureInput & Readonly<{ positions: TdccPositions; account: TdccPositions["accounts"][number] }>,
+): InvestmentValidatedCapture {
+  return holdingCapture(input, input.account, input.account.holdings, {
+    sourceField: "lastServerTime",
+    lexeme: input.positions.lastServerTime,
+    effectiveOn: input.positions.effectiveOn,
+  });
+}
+
+/**
+ * One TR051V1 holding snapshot for one fund account, effective at updateTime.
+ * An account the response no longer lists holds nothing, so the caller passes
+ * every fund account it has admitted before and each absent one commits an
+ * empty snapshot.
+ */
+export function tdccFundHoldingCapture(
+  input: CaptureInput & Readonly<{ funds: TdccFunds; account: TdccFundAccount }>,
+): InvestmentValidatedCapture {
+  const holdings = input.funds.accounts.find((candidate) => candidate.accountKey === input.account.accountKey)?.holdings ?? [];
+  return holdingCapture(input, input.account, holdings, {
+    sourceField: "updateTime",
+    lexeme: input.funds.updateTime,
+    effectiveOn: input.funds.effectiveOn,
+  });
 }
 
 /**
@@ -278,7 +483,7 @@ function identity(input: TdccInvestmentCaptureInput): InvestmentCaptureInput["id
  * movement can exist yet, and starts at the oldest movement.
  */
 export function tdccPassbookMovementCapture(
-  input: TdccInvestmentCaptureInput & Readonly<{ pages: readonly unknown[] }>,
+  input: CaptureInput & Readonly<{ account: TdccBrokerAccount; pages: readonly unknown[] }>,
 ): InvestmentValidatedCapture {
   const { account } = input;
   const securities = securityCollector();
@@ -299,7 +504,7 @@ export function tdccPassbookMovementCapture(
       authorityRoute: TDCC_INVESTMENT_ROUTE,
       contractVersion: TDCC_INVESTMENT_CONTRACT,
       observedAt: input.observedAt,
-      identity: identity(input),
+      identity: identity(input, account),
       scope: { effectiveOn: endDate, complete: true, transactionHistory: { startDate, endDate, complete: true } },
       securities: securities.values(),
       holdings: [],

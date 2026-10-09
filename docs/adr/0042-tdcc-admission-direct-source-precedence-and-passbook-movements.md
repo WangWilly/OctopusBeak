@@ -62,6 +62,15 @@ Every value comes from exactly one provider field. A missing field rejects the C
 
 Slot 17 and the fund fields are taken from the TedLin1993/all-set-tw reference. They are not yet confirmed against a live account that holds them. A wrong mapping is repaired by purge and recollection.
 
+- `lastServerTime` and `updateTime` are Gregorian Asia/Taipei `YYYYMMDDhhmmss` times, read like TSP006 `updateTime`. The holding's effective date is the local date, with source-reported-as-of evidence that names the field.
+- A securities holding's Security is item slot 0, named by slot 1, typed by slot 6 through the same table as TR002, and priced in the slot 19 currency, which must be an ISO 4217 code. A broker account repeating one Security rejects the Capture.
+- Each fund account holds the funds of one sale organisation. Its Institution is the catalog bank (3-digit code) or broker (4-character code) for `saleOrgCode`, and any other code is reported as a typed exclusion with its holding count. A fund Security is `fundNo`, named by `fundCHName`. Its own pricing currency is not admitted, because only the TWD value is.
+- Every TDCC investment account reports in TWD.
+
+### Empty holding snapshots
+
+The holdings projections treated a collection run of an account as the set of holding rows that share one `observed_at`. A run with no holdings wrote nothing, so the last Security an account sold stayed current. A holding capture may now declare that its holdings are the account's complete inventory at its effective date, with the source field that dates it. The store records each declaration in `investment_holding_snapshots`, and the overview and daily history count it as a collection run even when it holds nothing. Every TDCC holding capture declares one, so a broker account that holds nothing commits an empty snapshot. A fund account that TR051V1 no longer lists also holds nothing, so the caller passes every fund account it has already admitted and each absent one commits an empty snapshot. Captures from other sources do not declare snapshots, and their projections are unchanged.
+
 ### Currency
 
 A settlement account whose currency is not an ISO 4217 code, such as TDCC's `NAN`, is not admitted, and the run reports it. The development probe records whether such an account has a non-zero balance or any transactions.
@@ -77,5 +86,5 @@ A settlement account whose currency is not an ISO 4217 code, such as TDCC's `NAN
 ## Consequences
 
 - A direct source that misses one of the Institution's accounts makes TDCC's copy of it uncounted, so totals can understate. They never double count.
-- Securities admission gains a quantity-only path without cash. That path is limited to Passbook movements from an Intermediary source. The `investment_passbook_movements` table is a baseline change, so an existing database must be rebuilt.
+- Securities admission gains a quantity-only path without cash. That path is limited to Passbook movements from an Intermediary source. The `investment_passbook_movements` and `investment_holding_snapshots` tables are baseline changes, so an existing database must be rebuilt.
 - Holding valuations rest on an unverified slot until a live sample confirms it.
