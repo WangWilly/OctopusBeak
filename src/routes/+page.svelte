@@ -402,6 +402,7 @@
       }),
       list: readyDashboardBlock("assets", "list", {
         accounts: value.accounts,
+        coveredAccounts: value.coveredAccounts,
         positionsByAccount: value.positionsByAccount,
         transactionsByAccount: value.transactionsByAccount,
         dailyHistoryByAccount: value.dailyHistoryByAccount,

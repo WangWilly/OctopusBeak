@@ -56,7 +56,7 @@ export type DashboardBlockValueMap = {
   assets: {
     summary: Pick<AssetsPageDto, (typeof ASSETS_SUMMARY_FIELDS)[number]>;
     chart: Pick<AssetsPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount">;
-    list: Pick<AssetsPageDto, "accounts" | "positionsByAccount" | "transactionsByAccount" | "dailyHistoryByAccount">;
+    list: Pick<AssetsPageDto, "accounts" | "coveredAccounts" | "positionsByAccount" | "transactionsByAccount" | "dailyHistoryByAccount">;
   };
   liabilities: {
     summary: Pick<LiabilitiesPageDto, (typeof LIABILITIES_SUMMARY_FIELDS)[number]>;

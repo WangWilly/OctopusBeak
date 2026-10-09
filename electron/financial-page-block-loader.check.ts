@@ -85,6 +85,29 @@ test("assets and liabilities summaries carry what a converted total and its 30-d
   }
 });
 
+test("the assets list block carries covered accounts and no total carries them", async () => {
+  const page = {
+    accounts: [{ id: "counted" }],
+    coveredAccounts: [{ id: "covered", coveredBy: { namespace: "cathay", institutionKey: "cathay", product: "deposit" } }],
+    dailyHistory: [],
+    dailyHistoryByAccount: {},
+    exchangeRates: [],
+    positionsByAccount: {},
+    transactionsByAccount: {},
+  };
+  const loader = createFinancialPageBlockLoader(() => page);
+  assert.deepEqual((await loader.load("assets", "list")).data, {
+    accounts: page.accounts,
+    coveredAccounts: page.coveredAccounts,
+    positionsByAccount: page.positionsByAccount,
+    transactionsByAccount: page.transactionsByAccount,
+    dailyHistoryByAccount: page.dailyHistoryByAccount,
+  });
+  for (const block of ["summary", "chart"] as const) {
+    assert.equal("coveredAccounts" in (await loader.load("assets", block)).data, false, `${block} block leaves covered accounts out`);
+  }
+});
+
 test("automation blocks receive only sanitized credential state and never encrypted data", async () => {
   const contexts: unknown[] = [];
   const loader = createFinancialPageBlockLoader((_target, _options, context) => {

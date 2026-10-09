@@ -4,7 +4,7 @@ Status: accepted
 
 ## Decision
 
-Phase 1 of [ADR 0041](0041-tdcc-epassbook-app-protocol-source.md) admits four TDCC e-Passbook products: securities holdings, fund holdings, settlement bank accounts with their transactions, and securities passbook movements. Statement selection offers three items: securities (holdings and passbook movements), funds, and settlement accounts. The TR087 asset trend is not collected, because the canonical store has no provider-reported time series and the daily history is computed from observations.
+Phase 1 of [ADR 0041](0041-tdcc-epassbook-app-protocol-source.md) admits four TDCC e-Passbook products: securities holdings, fund holdings, settlement bank accounts with their transactions, and securities passbook movements. The App's official name is 集保e手掌握 (formerly 集保 e 存摺). Statement selection offers three items: securities (holdings and passbook movements), funds, and settlement accounts. The TR087 asset trend is not collected, because the canonical store has no provider-reported time series and the daily history is computed from observations.
 
 ### Direct source precedence
 

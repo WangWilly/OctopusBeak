@@ -8,7 +8,10 @@ import type {
 } from "$lib/shared-ledger/types.ts";
 
 export type AssetsPageDto = CurrentProjectionStateDto & {
+  /** The accounts every total counts. */
   accounts: AccountRowDto[];
+  /** Intermediary-source accounts a direct source already counts, listed but in no total. */
+  coveredAccounts: AccountRowDto[];
   positionsByAccount: Record<string, AssetPositionDto[]>;
   transactionsByAccount: Record<string, TransactionRowDto[]>;
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;

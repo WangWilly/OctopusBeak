@@ -4,7 +4,7 @@ Status: accepted
 
 ## Decision
 
-TDCC e-Passbook (集保 e 存摺) is a shipped supported source that calls the e-Passbook mobile App's HTTP API directly, the way the TedLin1993/all-set-tw reference project does. It does not automate a web page. It runs as a non-browser workflow through the same typed runtime, queue, and Financial Commit port as MaiCoin ([ADR 0032](0032-app-owned-workflow-runtime.md)).
+TDCC e-Passbook (集保 e 存摺) is a shipped supported source that calls the e-Passbook mobile App's HTTP API directly, the way the TedLin1993/all-set-tw reference project does. It does not automate a web page. It runs as a non-browser workflow through the same typed runtime, queue, and Financial Commit port as MaiCoin ([ADR 0032](0032-app-owned-workflow-runtime.md)). The App's official name is 集保e手掌握 (formerly 集保 e 存摺).
 
 The client reproduces the App's request envelope: `appInfo`, device ID, device type, `sequence`, a SHA-256 `signature` over the request body, a rotating `tokenID`, and AES-CBC encryption of sign-in fields under a key derived from the timestamp and device type. The App version, API version, and key-derivation rule are fixed in code. When TDCC rejects a request in a way that shows the protocol changed, the run fails with the typed reason `provider-protocol-outdated` and the fix ships in a new App release. There is no remote protocol configuration.
 
@@ -18,7 +18,7 @@ The Phase 0 probe showed that TDCC trusts one device per person at a time. A sig
 
 The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it: the stored device records the identifier it was registered for, and a device registered for another identifier counts as unregistered. Gmail retrieval of TDCC codes is out of scope.
 
-In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device.
+In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device. A registration and a sync-tdcc run each sign in with the same device, so the host never runs them at once: one device lock (`tdcc-device-lock.ts`) refuses a registration while a run holds the device and refuses a run while a registration holds it.
 
 ## Session port
 

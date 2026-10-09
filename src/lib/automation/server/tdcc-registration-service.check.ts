@@ -6,6 +6,8 @@ import test from "node:test";
 import { TDCC_BASE_URL } from "../../../workflows/tdcc-epassbook-client.ts";
 import { createTdccRegistrationService } from "./tdcc-registration-service.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
+import { createTdccDeviceLock, type TdccDeviceLock } from "./tdcc-device-lock.ts";
+import { createTdccRegistrationFixtureFetch } from "./tdcc-registration-fixture.ts";
 
 // Built at runtime so the repository privacy hook does not read ID-shaped literals.
 const USER_ID = ["Q", "2", "87654321"].join("");
@@ -57,7 +59,7 @@ function withService(
     store: ReturnType<typeof createTdccSecretStore>;
     credentialsText: () => string;
   }>) => Promise<void>,
-  options: { codeTimeoutMs?: number; signInDetails?: boolean } = {},
+  options: { codeTimeoutMs?: number; signInDetails?: boolean; deviceLock?: TdccDeviceLock } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "tdcc-registration-"));
   const path = join(directory, "credentials.json");
@@ -68,6 +70,7 @@ function withService(
     fetch: fake.fetch,
     now: () => new Date("2026-10-09T02:31:00.000Z"),
     createDevice: () => DEVICE,
+    deviceLock: options.deviceLock ?? createTdccDeviceLock(),
     ...(options.codeTimeoutMs === undefined ? {} : { codeTimeoutMs: options.codeTimeoutMs }),
   });
   const credentialsText = () => codec.decrypt(JSON.parse(readFileSync(path, "utf8")).data);
@@ -160,5 +163,42 @@ test("a registered device is reused when the person registers again", async () =
     await service.submitCode(registrationId, EMAIL_CODE);
     await service.submitCode(registrationId, SMS_CODE);
     assert.deepEqual(store.read().device, existing);
+  });
+});
+
+test("registration is refused while a TDCC sync holds the device, and holds the device until it ends", async () => {
+  const deviceLock = createTdccDeviceLock();
+  const fake = fakeTdcc();
+  await withService(fake, async ({ service }) => {
+    deviceLock.claim("sync");
+    assert.deepEqual(await service.start(), { status: "failed", reason: "sync-running" });
+    assert.deepEqual(fake.calls, [], "a refused registration never signs in");
+    deviceLock.release("sync");
+
+    const email = await service.start();
+    const registrationId = email.status === "code-required" ? email.registrationId : "";
+    assert.equal(deviceLock.claim("sync"), "registration", "a sync cannot take the device mid-registration");
+    service.cancel(registrationId);
+    assert.equal(deviceLock.holder(), null, "a cancelled registration releases the device");
+
+    const again = await service.start();
+    const againId = again.status === "code-required" ? again.registrationId : "";
+    await service.submitCode(againId, EMAIL_CODE);
+    assert.deepEqual(await service.submitCode(againId, SMS_CODE), { status: "registered", channels: ["email", "sms"] });
+    assert.equal(deviceLock.holder(), null, "a finished registration releases the device");
+  }, { deviceLock });
+});
+
+test("the CDP registration fixture rejects the first code, then walks Email and SMS to a registered device", async () => {
+  const fake = { fetch: createTdccRegistrationFixtureFetch({ delayMs: 0 }), calls: [] as string[] };
+  await withService(fake, async ({ service, store }) => {
+    const first = await service.start();
+    const firstId = first.status === "code-required" ? first.registrationId : "";
+    assert.deepEqual(await service.submitCode(firstId, EMAIL_CODE), { status: "failed", reason: "code-rejected" });
+    const email = await service.start();
+    const registrationId = email.status === "code-required" ? email.registrationId : "";
+    assert.deepEqual(await service.submitCode(registrationId, EMAIL_CODE), { status: "code-required", registrationId, channel: "sms" });
+    assert.deepEqual(await service.submitCode(registrationId, SMS_CODE), { status: "registered", channels: ["email", "sms"] });
+    assert.equal(store.read().session?.tokenId, "fixture-session-token");
   });
 });

@@ -113,7 +113,8 @@ export type TdccRegistrationFailure =
   | "unavailable"
   | "expired"
   | "cancelled"
-  | "not-found";
+  | "not-found"
+  | "sync-running";
 
 /**
  * One step of TDCC Source device registration (ADR 0041), as the renderer

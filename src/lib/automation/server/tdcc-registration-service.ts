@@ -9,6 +9,7 @@ import {
 import { registerTdccDevice } from "../../../workflows/tdcc-device-registration.ts";
 import { AUTOMATION_CREDENTIALS_PATH, getAutomationCredentialCodec } from "./config-files.ts";
 import { createTdccSecretStore, type StoredTdccDevice, type TdccSecretStore } from "./tdcc-secret-store.ts";
+import { tdccDeviceLock, type TdccDeviceLock } from "./tdcc-device-lock.ts";
 import type {
   TdccDeviceRegistrationStatus,
   TdccRegistrationFailure,
@@ -22,6 +23,7 @@ export type TdccRegistrationServiceOptions = Readonly<{
   /** How long the host keeps a registration waiting for the person's code. */
   codeTimeoutMs?: number;
   createDevice?: () => TdccDeviceIdentity;
+  deviceLock?: TdccDeviceLock;
 }>;
 
 /** TDCC codes stay valid for a few minutes; a registration left longer is abandoned. */
@@ -77,13 +79,19 @@ type Registration = {
 export function createTdccRegistrationService(options: TdccRegistrationServiceOptions) {
   const now = options.now ?? (() => new Date());
   const codeTimeoutMs = options.codeTimeoutMs ?? DEFAULT_CODE_TIMEOUT_MS;
+  const deviceLock = options.deviceLock ?? tdccDeviceLock;
   let active: Registration | null = null;
   let closed: Readonly<{ id: string; reason: TdccRegistrationFailure }> | null = null;
+
+  const settle = () => {
+    active = null;
+    deviceLock.release("registration");
+  };
 
   const close = (registration: Registration, reason: "expired" | "cancelled") => {
     if (active !== registration) return;
     if (registration.timer) clearTimeout(registration.timer);
-    active = null;
+    settle();
     closed = { id: registration.id, reason };
     registration.controller.abort();
     registration.code?.reject(new RegistrationClosedError(reason));
@@ -125,12 +133,12 @@ export function createTdccRegistrationService(options: TdccRegistrationServiceOp
   function launch(registration: Registration) {
     register(registration).then(
       (channels) => {
-        if (active === registration) active = null;
+        if (active === registration) settle();
         registration.next.resolve({ status: "registered", channels });
       },
       (error: unknown) => {
         if (active === registration) {
-          active = null;
+          settle();
           if (registration.timer) clearTimeout(registration.timer);
         }
         registration.next.resolve({ status: "failed", reason: failure(error) });
@@ -144,9 +152,14 @@ export function createTdccRegistrationService(options: TdccRegistrationServiceOp
       return { registered: Boolean(secrets.userId && secrets.password && secrets.device?.userId === secrets.userId) };
     },
 
-    /** Signs in and, when TDCC does not trust the device, sends the first code. Replaces any registration in progress. */
+    /**
+     * Signs in and, when TDCC does not trust the device, sends the first code.
+     * Replaces any registration in progress; refused while a sync-tdcc run holds the device.
+     */
     async start(): Promise<TdccRegistrationStep> {
+      if (deviceLock.claim("registration")) return { status: "failed", reason: "sync-running" };
       if (active) close(active, "cancelled");
+      deviceLock.claim("registration");
       const registration: Registration = {
         id: randomUUID(),
         controller: new AbortController(),
@@ -182,12 +195,22 @@ export function createTdccRegistrationService(options: TdccRegistrationServiceOp
 export type TdccRegistrationService = ReturnType<typeof createTdccRegistrationService>;
 
 let configuredService: TdccRegistrationService | null = null;
+let fixtureFetch: TdccClientOptions["fetch"] | undefined;
+
+/** Development CDP fixture only: answer registration from a scripted TDCC instead of the network. */
+export function useTdccRegistrationFixture(fetch: NonNullable<TdccClientOptions["fetch"]>) {
+  fixtureFetch = fetch;
+  configuredService = null;
+}
 
 function service(): TdccRegistrationService {
   if (configuredService) return configuredService;
   const codec = getAutomationCredentialCodec();
   if (!codec) throw new Error("Encrypted credential storage is unavailable.");
-  configuredService = createTdccRegistrationService({ store: createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec) });
+  configuredService = createTdccRegistrationService({
+    store: createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec),
+    ...(fixtureFetch ? { fetch: fixtureFetch } : {}),
+  });
   return configuredService;
 }
 

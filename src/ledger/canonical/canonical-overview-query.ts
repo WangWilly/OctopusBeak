@@ -1,5 +1,6 @@
 import type { CanonicalOverviewExactAmount } from "../pglite/overview-amount.ts";
 import type { CoveredBy } from "./direct-source-precedence.ts";
+import type { InstitutionKey, IntermediarySourceLogoKey } from "../../lib/institutions/institutions.ts";
 
 export type { CanonicalOverviewExactAmount, CoveredBy };
 
@@ -113,6 +114,10 @@ export type CanonicalOverviewAccount = Readonly<{
   id: string;
   sourceConnectionKey: string;
   integrationNamespace: string;
+  /** The Institution that maintains the account, stored with it. */
+  institutionKey: InstitutionKey;
+  /** The Intermediary source that reports this account; absent for a direct source. */
+  viaSource?: IntermediarySourceLogoKey;
   sourceAccountKey: string;
   accountNo: string | null;
   stream: string;
@@ -147,6 +152,7 @@ export type CanonicalOverviewSourceGap = Readonly<{
   sourceAccountKey?: string;
   accountNo: string | null;
   integrationNamespace?: string;
+  institutionKey?: InstitutionKey;
   stream?: string;
   label?: string;
   reason:
