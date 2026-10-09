@@ -16,7 +16,9 @@ TDCC asks for a one-time code when a device it does not trust signs in. That cod
 
 The Phase 0 probe showed that TDCC trusts one device per person at a time. A sign-in from this App signs the e-Passbook phone App out, and signing in to the phone App again asks for a one-time code. A phone App sign-in in turn withdraws trust from this App's device, so the next run fails and the person registers again. Registration is therefore repeated, not once. A run reuses the saved session token where it can, because only a fresh sign-in signs the phone App out. In the probe a session stayed valid for at least 6.5 minutes and had expired by 30 minutes, but a phone App sign-in fell inside that window, so the expiry time is not yet known.
 
-The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it. Gmail retrieval of TDCC codes is out of scope.
+The device identity has a fixed common Android model, a random device ID, and the latest session token. It is an Authentication secret stored in the safeStorage-encrypted `credentials.json`. Password changes keep it, because they must not force another OTP. A change of Sign-in identifier resets it: the stored device records the identifier it was registered for, and a device registered for another identifier counts as unregistered. Gmail retrieval of TDCC codes is out of scope.
+
+In the App, Electron main runs registration across IPC calls (`tdcc-registration-service.ts`). It keeps one registration between calls, passes each typed code straight to TDCC without storing it, and abandons a registration that waits more than ten minutes for a code. A device registered again keeps its device ID. The device identity and session are saved only after a fresh sign-in shows that TDCC trusts the device.
 
 ## Session port
 
