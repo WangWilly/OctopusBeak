@@ -7,6 +7,8 @@ import type {
   AutomationTaskProgress,
   TypedWorkflowOutcome,
   CathayGmailOtpStatus,
+  TdccDeviceRegistrationStatus,
+  TdccRegistrationStep,
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -270,6 +272,10 @@ export type OctopusBeakApi = {
     enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
     setCathayGmailOtpEnabled(enabled: boolean): Promise<CathayGmailOtpStatus>;
     disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
+    tdccDeviceRegistrationStatus(): Promise<TdccDeviceRegistrationStatus>;
+    startTdccDeviceRegistration(): Promise<TdccRegistrationStep>;
+    submitTdccRegistrationCode(registrationId: string, code: string): Promise<TdccRegistrationStep>;
+    cancelTdccDeviceRegistration(registrationId: string): Promise<void>;
     selectCertificateFile(locale: "en" | "zh-TW"): Promise<CertificateFileSelectionResult>;
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
@@ -322,6 +328,10 @@ export const octopusBeakApiChannels = [
   "automation:enableCathayGmailOtp",
   "automation:setCathayGmailOtpEnabled",
   "automation:disconnectCathayGmailOtp",
+  "automation:tdccDeviceRegistrationStatus",
+  "automation:startTdccDeviceRegistration",
+  "automation:submitTdccRegistrationCode",
+  "automation:cancelTdccDeviceRegistration",
   "automation:selectCertificateFile",
   "automation:openSetupGuideLink",
   "automation:run",
