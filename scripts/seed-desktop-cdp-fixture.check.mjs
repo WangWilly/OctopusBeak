@@ -135,6 +135,26 @@ assert.deepEqual(cathayRecord.events.map(({ stage, code, occurredAt }) => ({ sta
 assert.equal(JSON.stringify(cathayRecord).includes("otp"), true);
 assert.equal(JSON.stringify(cathayRecord).includes("fixture-cdp-"), false);
 await verificationDb.close();
+
+removeDesktopCdpFixture(root);
+await seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"), { tdccOutcome: "device-registration-required" });
+const tdccSettings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
+assert.equal(tdccSettings.LIBRETTO_CLOUD_TDCC_ENABLED, true);
+const tdccCredentials = JSON.parse(await readFile(join(root, "credentials.json"), "utf8"));
+assert.deepEqual(
+  Object.keys(tdccCredentials).filter((key) => key.includes("TDCC")).sort(),
+  ["LIBRETTO_CLOUD_TDCC_PASSWORD", "LIBRETTO_CLOUD_TDCC_USER_ID"],
+  "the TDCC fixture registers no device",
+);
+const tdccDb = await PGlite.create({ dataDir: join(root, "data", "pglite") });
+const tdccRun = (await tdccDb.query("SELECT status, record_json FROM automation_task_runs WHERE task_id = 'sync-tdcc'")).rows[0];
+assert.equal(tdccRun.status, "failed");
+assert.equal(JSON.parse(tdccRun.record_json).appWorkflowOutcome.errorCode, "device-registration-required");
+const institutions = (await tdccDb.query("SELECT institution_key FROM financial_accounts ORDER BY institution_key")).rows
+  .map((row) => row.institution_key);
+assert.equal(institutions.length, 5, "Cathay, Yuanta Trade, and three TDCC accounts");
+assert.equal(institutions.filter((key) => key === "cathay").length, 2, "a direct Cathay account and the TDCC account it covers");
+await tdccDb.close();
 } finally {
   removeDesktopCdpFixture(root);
 }
