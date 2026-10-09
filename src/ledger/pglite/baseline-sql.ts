@@ -351,6 +351,7 @@ CREATE TABLE "financial_accounts" (
   account_no TEXT,
   account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')),
   currency TEXT,
+  institution_key TEXT NOT NULL CHECK(institution_key ~ '^[a-z0-9]+(-[A-Za-z0-9]+)*$'),
   created_commit_id BYTEA NOT NULL,
   UNIQUE(source_connection_id, identity_epoch_id, stream, source_account_key)
 );

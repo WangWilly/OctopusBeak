@@ -12,6 +12,11 @@ import {
   canonicalSourceRuleCombination,
 } from "../canonical/canonical-source-route-registry.ts";
 import { assertCanonicalOccurrenceGroupEvidence, CanonicalOccurrenceGroupConflictError } from "../canonical/occurrence-group-evidence.ts";
+import {
+  isInstitutionKey,
+  sourceInstitution,
+  type InstitutionKey,
+} from "../../lib/institutions/institutions.ts";
 
 export { validateCanonicalSourceAccountNumber };
 
@@ -618,7 +623,40 @@ export type PGliteCanonicalFinancialAccountInput = Readonly<{
   accountNo?: string | null;
   accountType: "depository" | "credit" | "loan" | "investment" | "other";
   currency: string | null;
+  /** The maintaining Institution from contract evidence; required from an Intermediary source. */
+  institutionKey?: InstitutionKey;
 }>;
+
+/**
+ * The Institution a new or existing account must record. A direct source's
+ * namespace decides it, so supplied evidence may only agree. An Intermediary
+ * source has no Institution of its own, so the capture must supply one.
+ */
+export function resolvePGliteAccountInstitution(
+  account: PGliteCanonicalFinancialAccountInput,
+  evidence: PGliteCanonicalSourceEvidence,
+): InstitutionKey {
+  const source = sourceInstitution(evidence.integrationNamespace);
+  if (!source)
+    throw new PGliteCanonicalSourceAdmissionError(
+      "invalid-financial-fact",
+      `Integration namespace ${evidence.integrationNamespace} has no Institution mapping for its accounts.`,
+    );
+  if (source.kind === "direct") {
+    if (account.institutionKey !== undefined && account.institutionKey !== source.institution)
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "A direct-source account cannot claim another Institution.",
+      );
+    return source.institution;
+  }
+  if (!isInstitutionKey(account.institutionKey))
+    throw new PGliteCanonicalSourceAdmissionError(
+      "invalid-financial-fact",
+      "An Intermediary-source account requires a known maintaining Institution.",
+    );
+  return account.institutionKey;
+}
 
 export function validatePGliteCanonicalFinancialAccount(
   account: PGliteCanonicalFinancialAccountInput,
