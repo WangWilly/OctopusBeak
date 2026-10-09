@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { applyPgliteBaseline } from "./baseline.ts";
+import { createBaselinePGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalCreditCardBalanceCapture,
   commitPGliteCanonicalCreditCardCapture,
@@ -274,10 +274,9 @@ function fubonLifecycleCapture(
 }
 
 test("PGlite credit-card command keeps identity, instrument, statements, lifecycle, balances, and recurrence", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = await commitPGliteCanonicalCreditCardCapture(store, capture("credit-card-capture-a"));
     assert.equal(first.transactionCount, 1);
     assert.equal(first.instrumentCount, 1);
@@ -327,10 +326,9 @@ test("PGlite credit-card command keeps identity, instrument, statements, lifecyc
 });
 
 test("the overview reads each stored statement's newest visible revision onto its card account", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const first = await commitPGliteCanonicalCreditCardCapture(store, capture("credit-card-statement-a"));
     const template = capture("credit-card-statement-b");
     const reissued: PGliteCanonicalCreditCardCaptureRequest = {
@@ -391,10 +389,9 @@ test("the overview reads each stored statement's newest visible revision onto it
 });
 
 test("PGlite credit-card extension conflict rolls back source capture and typed rows", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalCreditCardCapture(store, capture("credit-card-rollback-seed"));
     const conflicting = capture("credit-card-rollback-conflict", token("changed-identity"));
     await assert.rejects(commitPGliteCanonicalCreditCardCapture(store, conflicting), /identity changed|identity-conflict/iu);
@@ -406,10 +403,9 @@ test("PGlite credit-card extension conflict rolls back source capture and typed 
 });
 
 test("card routes reject date-only or incomplete group proof before writing", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const complete = capture("credit-card-missing-inventory");
     const dateOnly = {
       ...complete,
@@ -451,10 +447,9 @@ test("card routes reject date-only or incomplete group proof before writing", as
 });
 
 test("Fubon duplicate group slots preserve billing lifecycle and reject billed/unbilled overlap", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     await commitPGliteCanonicalCreditCardCapture(
       store,
       fubonLifecycleCapture("fubon-unbilled-duplicates", ["unbilled", "unbilled"]),
@@ -596,10 +591,9 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
 
 
 test("Fubon current balance capture succeeds after grouped billed history without transaction inventory", async () => {
-  const database = await PGlite.create();
+  const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const history = fubonLifecycleCapture("fubon-before-current-balance", ["billed"]);
     await commitPGliteCanonicalCreditCardCapture(store, history);
     const template = capture("fubon-current-balance-template");
