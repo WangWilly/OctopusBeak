@@ -35,7 +35,7 @@ export type EInvoiceAppSession = {
   now?: number;
 };
 
-type LDataCryptoContext = { key: Uint8Array; iv: Uint8Array };
+export type LDataCryptoContext = { key: Uint8Array; iv: Uint8Array };
 
 function sha256(value: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(value, "utf8").digest());
@@ -76,7 +76,8 @@ function aesGcmDecrypt(ciphertext: Uint8Array, key: Uint8Array, iv: Uint8Array):
   return new Uint8Array(Buffer.concat([decipher.update(data), decipher.final()]));
 }
 
-function ldataContext(a: string, b: string): LDataCryptoContext {
+/** The key and iv an a|ciphertext|b envelope's two seeds derive. */
+export function ldataContext(a: string, b: string): LDataCryptoContext {
   const reversed = (value: string): string => [...value].reverse().join("");
   const seed = `${swapPairs(b)}${swapPairs(a)}${reversed(a)}${reversed(b)}`;
   return {
@@ -103,16 +104,29 @@ export function encryptLoginData(
   };
 }
 
-/** Decrypts the ldata response returned in the middle API payload. */
-export function decryptLoginData(value: string): Record<string, unknown> {
+/**
+ * Decrypts the middle API login payload. The live server returns a bare base64
+ * ciphertext sealed under the request's context; an a|ciphertext|b envelope
+ * carries its own seed instead.
+ */
+export function decryptLoginData(
+  value: string,
+  requestContext?: LDataCryptoContext,
+): Record<string, unknown> {
   const parts = value.split("|");
-  if (parts.length !== 3 || parts[0].length !== 16 || parts[2].length !== 16) {
+  let context: LDataCryptoContext;
+  let encoded: string;
+  if (parts.length === 3 && parts[0]!.length === 16 && parts[2]!.length === 16) {
+    context = ldataContext(parts[0]!, parts[2]!);
+    encoded = parts[1]!;
+  } else if (parts.length === 1 && requestContext) {
+    context = requestContext;
+    encoded = value;
+  } else {
     throw new Error("新版電子發票登入回應的 ldata 格式無效。");
   }
-  const [a, encoded, b] = parts;
-  const context = ldataContext(a!, b!);
   const plaintext = aesGcmDecrypt(
-    new Uint8Array(Buffer.from(encoded!, "base64")),
+    new Uint8Array(Buffer.from(encoded, "base64")),
     context.key,
     context.iv,
   );

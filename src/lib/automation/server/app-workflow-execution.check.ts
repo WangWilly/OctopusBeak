@@ -1,3 +1,4 @@
+import { createCipheriv } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,7 +17,7 @@ import { shutdownAppAutomationWorkflows } from "./runner.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import { encryptLoginData } from "../../../workflows/einvoice-app-protocol.ts";
+import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
 
 const middleHost = "https://uia.einvoice.nat.gov.tw";
 const bigHost = "https://upi.einvoice.nat.gov.tw";
@@ -25,8 +26,17 @@ const testCredentialEnvironment = () => ({
   [["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_")]: "test-only-secret",
 });
 
-// A valid login ldata so the transport can decrypt a session.
-const loginLdata = encryptLoginData({
+// The live login endpoint answers with a bare base64 ciphertext sealed under
+// the key and iv of the request's own a|ciphertext|b ldata.
+function sealedLoginPayload(requestBody: string | null): string {
+  const [a, , b] = (JSON.parse(requestBody ?? "{}") as { ldata: string }).ldata.split("|");
+  const { key, iv } = ldataContext(a!, b!);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  return Buffer.concat([cipher.update(JSON.stringify(loginSession), "utf8"), cipher.final(), cipher.getAuthTag()])
+    .toString("base64");
+}
+
+const loginSession = {
   sid: "S" + "x".repeat(17),
   token: "t",
   appid: "a",
@@ -34,7 +44,7 @@ const loginLdata = encryptLoginData({
   liat: 1,
   carrier_code: "/AB+123",
   now: Math.floor(Date.now() / 1000),
-}).ldata;
+};
 
 async function installEinvoiceAppMock(context: BrowserContext, loginDelayMs = 0) {
   await context.route("https://**einvoice.nat.gov.tw/**", async (route) => {
@@ -44,7 +54,7 @@ async function installEinvoiceAppMock(context: BrowserContext, loginDelayMs = 0)
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ result: 0, payload: loginLdata, id: "fixture" }),
+        body: JSON.stringify({ result: 0, payload: sealedLoginPayload(route.request().postData()), id: "fixture" }),
       });
       return;
     }
