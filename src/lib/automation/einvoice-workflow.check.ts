@@ -161,21 +161,36 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
 
 type CommittedCapture = {
   scope: { itemCompleteness: string };
-  invoices: Array<{ items: Array<{ completeness: string; unitPrice: unknown }> }>;
+  invoices: Array<{
+    occurrence: { value: string; precision: string; timeZone: string };
+    items: Array<{ completeness: string; unitPrice: unknown }>;
+  }>;
 };
 
 function committedCapture(commits: unknown[]): CommittedCapture {
   return (commits[0] as { command: { request: CommittedCapture } }).command.request;
 }
 
+// Dates and times are copied from a live header row (2026-10-10).
 const issuedHeader = {
   invNum: "AB12345678",
   sellerBan: "12345678",
   sellerName: "測試商店",
   amount: "120",
   invStatus: "開立已確認",
-  invoiceTime: "12:30:00",
-  invDate: { year: "2026", month: "9", date: "15" },
+  invPeriod: "11504",
+  invoiceTime: "13:25:11",
+  invDate: {
+    year: "115",
+    month: "3",
+    date: "1",
+    day: "0",
+    hours: "13",
+    minutes: "25",
+    seconds: "11",
+    time: "1772342711000",
+    timezoneOffset: "-480",
+  },
 };
 
 function oneInvoiceSource(
@@ -190,6 +205,32 @@ function oneInvoiceSource(
       return { ...emptyHeaders, details: [header] };
     },
     queryDetail: async () => ({ ...emptyDetail, details: items }),
+  });
+}
+
+// The App reports the ROC year and a 1-based month. The purchase occurrence
+// and the detail query must both land on the Gregorian calendar day.
+{
+  const detailDates: string[] = [];
+  let served = false;
+  const { context, commits } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+    queryHeaders: async () => {
+      if (served) return emptyHeaders;
+      served = true;
+      return { ...emptyHeaders, details: [issuedHeader] };
+    },
+    queryDetail: async (_session, _invNum, invDate) => {
+      detailDates.push(invDate);
+      return { ...emptyDetail, details: [{ rowNum: "1", description: "咖啡", quantity: "1", unitPrice: "120", amount: "120" }] };
+    },
+  }));
+  assert.deepEqual(detailDates, ["2026/03/01"]);
+  assert.deepEqual(committedCapture(commits).invoices[0]!.occurrence, {
+    value: "2026-03-01T13:25:11",
+    precision: "second",
+    timeZone: "Asia/Taipei",
+    origin: "source-reported",
   });
 }
 

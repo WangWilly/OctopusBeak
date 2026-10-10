@@ -41,11 +41,18 @@ export type AppInvoiceHeader = Readonly<{
   currency?: string;
   donateMark?: string;
   npoBan?: string;
+  // Observed live: the ROC year ("115"), a 1-based month, the day of the
+  // month, and `time` as epoch milliseconds, all as strings.
   invDate?: {
     year?: string;
     month?: string;
     date?: string;
+    day?: string;
+    hours?: string;
+    minutes?: string;
+    seconds?: string;
     time?: string;
+    timezoneOffset?: string;
   };
 }>;
 
