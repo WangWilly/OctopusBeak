@@ -98,6 +98,8 @@ async function inPagePost(
   );
 }
 
+const EINVOICE_APP_QUERY_SUCCESS_CODE = "200";
+
 const jsonHeaders = {
   Accept: "application/json",
   "Content-Type": "application/json; charset=utf-8",
@@ -145,7 +147,7 @@ export async function loginEinvoiceApp(
     ts: Math.floor(Date.now() / 1000),
     pdid: `a:${deviceId}`,
   };
-  const { ldata } = encryptLoginData(inner);
+  const { ldata, context } = encryptLoginData(inner);
   const response = await inPagePost(
     page,
     `${EINVOICE_APP_MIDDLE_HOST}/mid/v1/login`,
@@ -168,7 +170,7 @@ export async function loginEinvoiceApp(
   if (typeof payload !== "string") {
     throw new Error("E-Invoice App login response has no encrypted payload.");
   }
-  return parseLoginSession(decryptLoginData(payload));
+  return parseLoginSession(decryptLoginData(payload, context));
 }
 
 /** Queries one header page. Returns the envelope plus parsed rows. */
@@ -211,14 +213,11 @@ export async function queryEinvoiceHeaders(
     throw new Error("E-Invoice App header query response is not valid JSON.");
   }
   const carrierQueryList = asRecord(body.carrierQueryList);
+  const { code, msg } = requireSuccessEnvelope("header", carrierQueryList);
   const details = Array.isArray(carrierQueryList?.details)
     ? (carrierQueryList.details as AppInvoiceHeader[])
     : [];
-  return {
-    code: stringValue(carrierQueryList?.code),
-    msg: stringValue(carrierQueryList?.msg),
-    details,
-  };
+  return { code, msg, details };
 }
 
 /** Queries one invoice's line items. */
@@ -257,12 +256,24 @@ export async function queryEinvoiceDetail(
   } catch {
     throw new Error("E-Invoice App detail query response is not valid JSON.");
   }
+  const { code, msg } = requireSuccessEnvelope("detail", body);
   const details = Array.isArray(body.details) ? (body.details as AppInvoiceItem[]) : [];
-  return {
-    code: stringValue(body.code),
-    msg: stringValue(body.msg),
-    details,
-  };
+  return { code, msg, details };
+}
+
+// An empty `details` only means "no rows" under a success code. Any other
+// envelope (session expiry, throttling, a rejected signature) carries no rows
+// either, so reading it as data would end paging early or admit an invoice
+// with no items.
+function requireSuccessEnvelope(
+  query: "header" | "detail",
+  envelope: Record<string, unknown> | undefined,
+): { code: string; msg: string } {
+  const code = stringValue(envelope?.code);
+  const msg = stringValue(envelope?.msg);
+  if (code !== EINVOICE_APP_QUERY_SUCCESS_CODE)
+    throw new Error(`E-Invoice App ${query} query rejected (code ${code || "(missing)"}: ${msg}).`);
+  return { code, msg };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

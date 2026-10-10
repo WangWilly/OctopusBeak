@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createCipheriv } from "node:crypto";
 import { test } from "node:test";
 import {
   decryptLoginData,
@@ -20,6 +21,16 @@ test("encryptLoginData round-trips through decryptLoginData", () => {
 test("decryptLoginData rejects malformed ldata", () => {
   assert.throws(() => decryptLoginData("not-a-valid-ldata"), /ldata 格式無效/u);
   assert.throws(() => decryptLoginData("a|b|c"), /ldata 格式無效/u);
+});
+
+// The live login endpoint answers with a bare base64 ciphertext sealed under
+// the request's own ldata key and iv, not with a fresh a|ciphertext|b envelope.
+test("decryptLoginData opens a bare login payload with the request context", () => {
+  const { context } = encryptLoginData({ type: 0 });
+  const session = { sid: "S", token: "t", appid: "a", ssme: "s", liat: 1 };
+  const cipher = createCipheriv("aes-256-gcm", context.key, context.iv);
+  const sealed = Buffer.concat([cipher.update(JSON.stringify(session), "utf8"), cipher.final(), cipher.getAuthTag()]);
+  assert.deepEqual(decryptLoginData(sealed.toString("base64"), context), session);
 });
 
 test("encryptLoginData produces distinct ldata per call", () => {

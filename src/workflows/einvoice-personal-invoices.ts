@@ -539,8 +539,8 @@ async function readAppProtocolInvoices(
 
   for (const [monthIndex, month] of months.entries()) {
     signal.throwIfAborted();
-    const startDate = `${monthLabel(month)}-01`;
-    const endDate = `${monthLabel(month)}-${String(monthEndDay(month)).padStart(2, "0")}`;
+    const startDate = `${month.year}/${String(month.month).padStart(2, "0")}/01`;
+    const endDate = `${month.year}/${String(month.month).padStart(2, "0")}/${String(monthEndDay(month)).padStart(2, "0")}`;
     let pageIndex = 0;
     for (;;) {
       signal.throwIfAborted();
