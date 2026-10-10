@@ -45,6 +45,7 @@ Each settlement account is one Financial Account per bank code, account number, 
 - TSP007 has no reliable occurrence identifier. The reference client saw TDCC fill in `stan` after a row first appeared, so `stan` and `hcode` stay out of identity and content. Identical rows keep their multiplicity through occurrence groups ([ADR 0034](0034-workflow-semantic-occurrence-disambiguation.md)). Only the `hcode` values seen live, empty and `0`, are admitted.
 - TSP006 gives one current-balance capture per account: `balanceAmt` is the ledger balance and `availableBalance` is the available balance, both effective at the response's `updateTime`.
 - An account with an unknown bank code, a non-ISO currency, or an account number that is not 6 to 24 digits, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read.
+- A bank whose TSP006 `execStatue` is not `0000` was not refreshed by TDCC. It reports `null` account lists and a message such as 「資料並未更新成功」, so the bank is reported as one typed exclusion and the other banks are still admitted.
 
 ### Passbook movements
 

@@ -121,6 +121,29 @@ test("TSP006 reports time deposits instead of dropping them", () => {
   );
 });
 
+test("TSP006 reports a bank TDCC could not update, and still admits the other banks", () => {
+  const body = tsp006();
+  // Shaped like the bank entry TDCC returned when it could not refresh that bank.
+  body.tspAccountInfos.unshift({
+    bankId: "808",
+    execMsg: "因系統關係，資料並未更新成功，請稍後再點選更新",
+    execStatue: "9999",
+    tspAccount: null,
+    tspTimeAccounts: null,
+  } as never);
+  const snapshot = readTdccSettlementSnapshot(body);
+  assert.deepEqual(snapshot.accounts.map(({ sourceAccountKey }) => sourceAccountKey), [TWD_KEY, USD_KEY]);
+  assert.deepEqual(snapshot.exclusions[0], { reason: "bank-not-updated", bankId: "808" });
+});
+
+test("TSP006 still rejects a bank TDCC updated whose account lists are not arrays", () => {
+  for (const field of ["tspAccount", "tspTimeAccounts"] as const) {
+    const body = tsp006();
+    (body.tspAccountInfos[0] as Record<string, unknown>)[field] = null;
+    assert.throws(() => readTdccSettlementSnapshot(body), TdccSettlementContractError);
+  }
+});
+
 test("TSP006 reports hidden accounts, and reads no balance of an account it does not admit", () => {
   const body = tsp006();
   body.tspAccountInfos[0]!.tspAccount.push(

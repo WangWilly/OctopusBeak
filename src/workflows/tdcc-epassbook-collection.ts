@@ -140,10 +140,11 @@ export type TdccExclusionCounts = {
   excludedNonNumericAccountCount: number;
   excludedTimeDepositCount: number;
   hiddenAccountCount: number;
+  excludedBankNotUpdatedCount: number;
 };
 
 export function emptyTdccExclusionCounts(): TdccExclusionCounts {
-  return { excludedUnknownInstitutionCount: 0, excludedNonIsoCurrencyCount: 0, excludedNonNumericAccountCount: 0, excludedTimeDepositCount: 0, hiddenAccountCount: 0 };
+  return { excludedUnknownInstitutionCount: 0, excludedNonIsoCurrencyCount: 0, excludedNonNumericAccountCount: 0, excludedTimeDepositCount: 0, hiddenAccountCount: 0, excludedBankNotUpdatedCount: 0 };
 }
 
 function countExclusions(counts: TdccExclusionCounts, exclusions: readonly (TdccSettlementExclusion | TdccInvestmentExclusion)[]) {
@@ -154,6 +155,7 @@ function countExclusions(counts: TdccExclusionCounts, exclusions: readonly (Tdcc
       case "non-numeric-account-number": counts.excludedNonNumericAccountCount += 1; break;
       case "time-deposits-not-admitted": counts.excludedTimeDepositCount += exclusion.count; break;
       case "hidden-account": counts.hiddenAccountCount += 1; break;
+      case "bank-not-updated": counts.excludedBankNotUpdatedCount += 1; break;
     }
   }
 }

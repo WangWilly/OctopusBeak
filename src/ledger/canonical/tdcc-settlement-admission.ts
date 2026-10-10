@@ -61,7 +61,9 @@ export type TdccSettlementExclusion =
     currency: string;
     accountNoSuffix: string;
   }>
-  | Readonly<{ reason: "time-deposits-not-admitted"; bankId: string; count: number }>;
+  | Readonly<{ reason: "time-deposits-not-admitted"; bankId: string; count: number }>
+  /** TDCC could not refresh this bank, so it reported no accounts for it. */
+  | Readonly<{ reason: "bank-not-updated"; bankId: string }>;
 
 export type TdccSettlementSnapshot = Readonly<{
   updateTime: string;
@@ -120,6 +122,9 @@ function gregorianDate(value: unknown, label: string): string {
 
 const accountNoSuffix = (accountNo: string) => accountNo.slice(-4);
 
+/** The execStatue of a bank TDCC refreshed; any other status comes with null account lists. */
+const TSP006_BANK_UPDATED = "0000";
+
 /** Reads TSP006 into admissible accounts and typed exclusions. */
 export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapshot {
   const root = object(body, "TSP006 response");
@@ -132,6 +137,10 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
   for (const [infoIndex, infoValue] of list(root.tspAccountInfos, "TSP006 tspAccountInfos").entries()) {
     const info = object(infoValue, `TSP006 bank ${infoIndex}`);
     const bankId = text(info.bankId, `TSP006 bank ${infoIndex} bankId`);
+    if (text(info.execStatue, `TSP006 bank ${infoIndex} execStatue`) !== TSP006_BANK_UPDATED) {
+      exclusions.push({ reason: "bank-not-updated", bankId });
+      continue;
+    }
     const timeAccounts = list(info.tspTimeAccounts, `TSP006 bank ${infoIndex} tspTimeAccounts`);
     if (timeAccounts.length > 0) exclusions.push({ reason: "time-deposits-not-admitted", bankId, count: timeAccounts.length });
     const institutionKey = institutionForBankCode(bankId);
