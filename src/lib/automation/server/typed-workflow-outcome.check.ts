@@ -176,7 +176,7 @@ test("SinoPac rejection is typed without relying on operational events", () => {
 test("stage diagnostics survive storage sanitization without exception details", () => {
   const codes = [
     "authentication-timeout", "authentication-dialog-interrupted", "authentication-failed",
-    "verification-failed", "source-collection-failed",
+    "verification-failed", "source-collection-failed", "browser-runtime-config-failed",
   ] as const;
   for (const errorCode of codes) {
     const outcome = sanitizeTypedWorkflowOutcome({
