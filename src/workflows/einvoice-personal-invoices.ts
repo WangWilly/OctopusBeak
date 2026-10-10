@@ -1,21 +1,10 @@
-import { randomUUID, createHash } from "node:crypto";
-import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { errors, type Page, type Request } from "playwright";
+import { randomUUID, createHash, randomBytes } from "node:crypto";
+import type { Page } from "playwright";
 import { z } from "zod";
 import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
-import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
-import { SourceAccessChallengeError } from "../lib/automation/source-access.ts";
-import {
-  emitHumanAssistanceStage,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
@@ -31,13 +20,14 @@ import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteCanonicalEInvoiceCommitResult } from "../ledger/pglite/einvoice.ts";
-
-const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
-const SEARCH_URL =
-  "https://www.einvoice.nat.gov.tw/portal/btc/mobile/btc502w/search";
-const LIST_ENDPOINT = "/btc/cloud/api/btc502w/searchCarrierInvoice";
-const HEADER_ENDPOINT = "/btc/cloud/api/common/getCarrierInvoiceData";
-const ITEMS_ENDPOINT = "/btc/cloud/api/common/getCarrierInvoiceDetail";
+import {
+  liveEinvoiceAppSource,
+  type AppInvoiceHeader,
+  type AppInvoiceItem,
+  type EinvoiceAppClient,
+  type EinvoiceAppSource,
+} from "./einvoice-app-transport.ts";
+import type { EInvoiceAppSession } from "./einvoice-app-protocol.ts";
 
 export type EinvoiceCredentials = {
   einvoice_phone_number?: string;
@@ -57,14 +47,6 @@ type InvoiceListEntry = {
   extStatus?: string | null;
   invoiceStrStatus?: string | null;
   buyerId?: string | null;
-};
-
-type InvoiceListResponse = {
-  httpStatus: 200 | 204;
-  totalElements: number;
-  totalPages: number;
-  size: number;
-  content: InvoiceListEntry[];
 };
 
 type InvoiceHeader = {
@@ -89,102 +71,6 @@ type InvoiceItem = {
   amount?: string | null;
 };
 
-type InvoiceDetailResponse = {
-  totalElements: number;
-  totalPages: number;
-  size: number;
-  content: InvoiceItem[];
-};
-
-const optionalText = z.string().nullable().optional();
-const optionalAmount = z.union([z.string(), z.number()]).nullable().optional();
-const invoiceListEntrySchema = z.object({
-  token: z.string().trim().min(1),
-  invoiceNumber: z.string().trim().min(1),
-  carrierName: optionalText,
-  totalAmount: optionalAmount,
-  extStatus: optionalText,
-  invoiceStrStatus: optionalText,
-  buyerId: optionalText,
-});
-const invoiceListEnvelopeSchema = z.object({
-  totalElements: z.number().int().nonnegative(),
-  totalPages: z.number().int().nonnegative(),
-  size: z.number().int().nonnegative(),
-  content: z.array(invoiceListEntrySchema),
-});
-const invoiceHeaderSchema = z.object({
-  invoiceDate: optionalText,
-  invoiceTime: optionalText,
-  invoiceInstantDate: optionalText,
-  totalAmount: optionalAmount,
-  extStatus: optionalText,
-  invoiceStrStatus: optionalText,
-  alwFlag: optionalText,
-  sellerId: optionalText,
-  sellerName: optionalText,
-  sellerAddress: optionalText,
-  buyerId: optionalText,
-});
-const invoiceDetailItemSchema = z.object({
-  sequenceNumber: optionalText,
-  item: optionalText,
-  quantity: optionalAmount,
-  unitPrice: optionalText,
-  amount: optionalText,
-});
-const invoiceDetailEnvelopeSchema = z.object({
-  totalElements: z.number().int().nonnegative(),
-  totalPages: z.number().int().nonnegative(),
-  size: z.number().int().nonnegative(),
-  content: z.array(invoiceDetailItemSchema),
-});
-
-async function parseProviderJson<T>(
-  response: Awaited<ReturnType<Page["waitForResponse"]>>,
-  label: string,
-  schema: z.ZodType<T>,
-  text: SourceTextPort,
-): Promise<T> {
-  const source = text.decode(new Uint8Array(await response.body()), "utf-8");
-  text.assertIntact(source);
-  let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch {
-    throw new Error(`${label} response is not valid JSON.`);
-  }
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) throw new Error(`${label} response is malformed.`);
-  return parsed.data;
-}
-
-export function validatePaginationEnvelope(
-  label: string,
-  value: Readonly<{
-    totalElements: number;
-    totalPages: number;
-    size: number;
-    content: readonly unknown[];
-  }>,
-): void {
-  if (!Number.isSafeInteger(value.totalElements) || value.totalElements < 0)
-    throw new Error(`${label} totalElements is invalid.`);
-  if (!Number.isSafeInteger(value.totalPages) || value.totalPages < 0)
-    throw new Error(`${label} totalPages is invalid.`);
-  if (!Number.isSafeInteger(value.size) || value.size < 0)
-    throw new Error(`${label} page size is invalid.`);
-  if (value.totalElements === 0) {
-    if (value.content.length !== 0)
-      throw new Error(`${label} returned rows for an empty result.`);
-    return;
-  }
-  if (value.totalPages < 1 || value.content.length === 0)
-    throw new Error(`${label} pagination metadata is incomplete.`);
-  if (value.size > 0 && value.content.length > value.size)
-    throw new Error(`${label} returned more rows than its declared page size.`);
-}
-
 export type InvoiceCaptureRecord = Readonly<{
   month: YearMonth;
   listPageIndex: number;
@@ -193,13 +79,6 @@ export type InvoiceCaptureRecord = Readonly<{
   items: readonly InvoiceItem[];
   itemCompleteness: "complete" | "incomplete";
 }>;
-
-type InvoiceReadResult = {
-  records: InvoiceCaptureRecord[];
-  pages: Array<{ month: YearMonth; pageIndex: number; list: InvoiceListResponse }>;
-  months: string[];
-  invoiceCount: number;
-};
 
 const workflowInputSchema = z.object({
   credentials: z.object({
@@ -285,12 +164,6 @@ function monthEndDay(month: YearMonth, today = new Date()): number {
   return new Date(month.year, month.month, 0).getDate();
 }
 
-function parsePickerMonth(text: string): YearMonth {
-  const match = text.match(/(\d{1,2})月\s*(\d{4})年/);
-  if (!match) throw new Error(`Could not parse date picker month: ${text}`);
-  return { year: Number(match[2]), month: Number(match[1]) };
-}
-
 export function invoiceStatus(
   entry: InvoiceListEntry,
   header: InvoiceHeader,
@@ -299,6 +172,7 @@ export function invoiceStatus(
     "2": "confirmed",
     INVOICE0003S: "confirmed",
     "已確認": "confirmed",
+    "開立已確認": "confirmed",
     "4": "voided",
     "已作廢": "voided",
   };
@@ -547,602 +421,6 @@ export function mapCanonicalEInvoiceRecord(
   };
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  if (page.url().includes("/portal/btc/mobile")) return true;
-  return await page
-    .getByText(/登出|會員專區|載具歸戶/i)
-    .first()
-    .isVisible({ timeout: 3_000 })
-    .catch(() => false);
-}
-
-/** Retry a pre-submit action when navigation invalidates its execution context.
- * No login request or CAPTCHA answer has been submitted at this point. */
-export async function retryEinvoiceLoginNavigation<T>(action: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await action();
-    } catch (error) {
-      if (attempt >= 4 || !/Execution context was destroyed|Cannot find context with specified id/i.test(String(error))) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-}
-
-export type EinvoiceLoginOutcome =
-  | "authenticated"
-  | "captcha-rejected"
-  | "credentials-rejected"
-  | "form-rejected"
-  | "unconfirmed";
-
-function waitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
-
-/** Observe the response to one submission without submitting credentials or
- * CAPTCHA again. Site messages are used only for classification, never logged. */
-export async function waitForEinvoiceLoginOutcome(
-  page: Page,
-  timeoutMs = 120_000,
-  signal?: AbortSignal,
-): Promise<EinvoiceLoginOutcome> {
-  const deadline = performance.now() + timeoutMs;
-  const rejection = /錯誤|不正確|有誤|失敗|重新|無效|incorrect|invalid|failed/i;
-  while (true) {
-    signal?.throwIfAborted();
-    if (await isSignedIn(page)) return "authenticated";
-    for (const alert of await page.locator('[role="alert"], [role="dialog"], .alert, .invalid-feedback, .error-message, .el-message, .swal2-popup').all()) {
-      if (!(await alert.isVisible())) continue;
-      const message = (await alert.innerText()).trim();
-      if (!rejection.test(message)) continue;
-      if (/圖形驗證碼|captcha/i.test(message)) return "captcha-rejected";
-      if (/手機號碼|密碼|password/i.test(message)) return "credentials-rejected";
-      if (/登入|驗證碼|驗證/i.test(message)) return "form-rejected";
-    }
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) return "unconfirmed";
-    await waitWithAbort(page.waitForTimeout(Math.min(250, remaining)), signal);
-  }
-}
-
-export function einvoiceCaptchaAssistanceStage(
-  page: Page,
-): WorkflowHumanAssistanceStage {
-  return {
-    stageId: "einvoice-login-captcha",
-    title: "Enter the e-invoice CAPTCHA",
-    targets: [
-      {
-        id: "captcha-input",
-        label: "CAPTCHA input",
-        semanticId: "einvoice.login.captcha-input",
-        modes: ["click", "type"],
-        locator: page.locator("#captcha"),
-      },
-    ],
-    contextRegions: [
-      {
-        id: "captcha-challenge",
-        label: "CAPTCHA challenge and instructions",
-        semanticId: "einvoice.login.captcha-challenge",
-      },
-    ],
-    challengeKind: "text-captcha",
-    charset: "digits",
-    ocrPageSegmentationMode: "single-word",
-    ocrAttemptPlan: [
-      { imagePreprocessing: ["mask-bottom-interference-band"] },
-      { imagePreprocessing: ["suppress-horizontal-interference"] },
-    ],
-    solveAcceptancePolicy: { mode: "agreement-only" },
-    expectedAnswerLength: 5,
-    challengeImageRegion: {
-      id: "captcha-image",
-      label: "CAPTCHA image",
-      semanticId: "einvoice.login.captcha-image",
-      locator: page
-        .locator(".input-group-text.code_num")
-        .locator('img[alt="圖形驗證碼"]:visible')
-        .first(),
-    },
-    completion: { mode: "inline", targetIds: ["captcha-input"] },
-    focus: {
-      targetId: "captcha-input",
-      contextRegionIds: ["captcha-challenge"],
-      initialZoom: 1.15,
-    },
-  };
-}
-
-type EinvoiceHumanAssistanceRequest = (
-  stage: WorkflowHumanAssistanceStage,
-  signal?: AbortSignal,
-) => Promise<HumanAssistanceCompletionStatus>;
-
-async function requestEinvoiceCaptchaAssistance(
-  stage: WorkflowHumanAssistanceStage,
-  request: (
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ) => Promise<HumanAssistanceCompletionStatus>,
-  signal: AbortSignal,
-): Promise<HumanAssistanceCompletionStatus> {
-  signal.throwIfAborted();
-  const contract = await emitHumanAssistanceStage(
-    stage,
-    (value) => value,
-  );
-  const status = await request(contract, signal);
-  signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    throw new Error(`E-Invoice human assistance ended with status ${status}.`);
-  }
-  return status;
-}
-
-export { requestEinvoiceCaptchaAssistance };
-
-export async function waitForEinvoiceLoginReady(
-  page: Page,
-  timeoutMs: number,
-): Promise<"form" | "session"> {
-  try {
-    return await Promise.any([
-      retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
-        .waitFor({ state: "visible", timeout: timeoutMs })).then(() => "form" as const),
-      page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
-        timeout: timeoutMs,
-      }).then(() => "session" as const),
-    ]);
-  } catch (error) {
-    // Surface the login-form wait itself so a stalled page stays a timeout.
-    throw error instanceof AggregateError ? error.errors[0] : error;
-  }
-}
-
-async function signInEinvoice(
-  page: Page,
-  credentials: EinvoiceCredentials,
-  requestHumanAssistance: EinvoiceHumanAssistanceRequest,
-  signal?: AbortSignal,
-  reportAccessChallenge?: () => Promise<void>,
-): Promise<void> {
-  signal?.throwIfAborted();
-
-  let loginStatus: number | undefined;
-  if (!page.url().startsWith(LOGIN_URL)) {
-    loginStatus = (await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }))?.status();
-  }
-  const externalChallenge = await page.locator(
-    'input[name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"]',
-  ).count() > 0;
-  if (loginStatus === 403 || externalChallenge) {
-    await reportAccessChallenge?.();
-    throw new SourceAccessChallengeError();
-  }
-  try {
-    const ready = await waitForEinvoiceLoginReady(page, 30_000);
-    if (ready === "session" || await isSignedIn(page)) return;
-    await retryEinvoiceLoginNavigation(() => page
-      .locator("#mobile_phone")
-      .fill(requireCredential(credentials, "einvoice_phone_number")));
-    await retryEinvoiceLoginNavigation(() => page
-      .locator("#password")
-      .fill(requireCredential(credentials, "einvoice_password")));
-    await retryEinvoiceLoginNavigation(() => page.locator("#captcha").focus());
-  } catch (error) {
-    if (await isSignedIn(page)) return;
-    throw error;
-  }
-  const assistanceStatus = await requestHumanAssistance(
-    einvoiceCaptchaAssistanceStage(page),
-    signal,
-  );
-  signal?.throwIfAborted();
-  if (assistanceStatus !== "entered" && assistanceStatus !== "verified") {
-    throw new Error(`E-Invoice human assistance ended with status ${assistanceStatus}.`);
-  }
-
-  if (await isSignedIn(page)) return;
-  if (!(await page.locator("#captcha").inputValue()).trim()) {
-    throw new Error(
-      "E-invoice CAPTCHA is empty. Enter it in the browser before resuming.",
-    );
-  }
-  await page.locator("#submitBtn").click();
-  const outcome = await waitForEinvoiceLoginOutcome(page, 120_000, signal);
-  if (outcome === "authenticated") return;
-  if (outcome === "captcha-rejected")
-    throw new CaptchaProviderRejectedError();
-  if (outcome === "credentials-rejected")
-    throw new Error("E-invoice sign-in credentials were rejected; no automatic resubmission was made.");
-  if (outcome === "form-rejected")
-    throw new Error("E-invoice sign-in form was rejected; no automatic resubmission was made.");
-  throw new Error(
-    page.url().startsWith(LOGIN_URL)
-      ? "E-invoice sign-in remained on the login page without a confirmed result."
-      : "E-invoice sign-in reached an unexpected page without a confirmed session.",
-  );
-}
-
-async function currentPickerMonth(page: Page): Promise<YearMonth> {
-  return parsePickerMonth(
-    await page.locator(".dp__month_year_wrap").first().innerText(),
-  );
-}
-
-async function clickPickerDay(page: Page, day: number): Promise<void> {
-  await page
-    .locator(".dp__calendar_item")
-    .filter({
-      has: page.locator(
-        ".dp__cell_inner:not(.dp__cell_offset):not(.dp__cell_disabled)",
-      ),
-      hasText: new RegExp(`^\\s*${day}\\s*$`),
-    })
-    .first()
-    .click();
-}
-
-async function selectDateRange(page: Page, month: YearMonth): Promise<void> {
-  await page.locator("#dp-input-searchInvoiceDate").click();
-
-  for (let visible = await currentPickerMonth(page); ; ) {
-    const comparison = compareYearMonth(visible, month);
-    if (comparison === 0) break;
-    await page.getByLabel(comparison > 0 ? "上個月" : "下個月").click();
-    visible = await currentPickerMonth(page);
-  }
-
-  await clickPickerDay(page, 1);
-  await clickPickerDay(page, monthEndDay(month));
-}
-
-export async function waitForListResponse(
-  page: Page,
-  text: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
-): Promise<InvoiceListResponse> {
-  const response = await waitWithAbort(page.waitForResponse(
-    (candidate) =>
-      candidate.url().includes(LIST_ENDPOINT) &&
-      candidate.request().method() === "POST",
-    { timeout: 60_000 },
-  ), signal);
-  if (response.status() === 204) {
-    return {
-      httpStatus: 204,
-      totalElements: 0,
-      totalPages: 0,
-      size: 0,
-      content: [],
-    };
-  }
-  if (response.status() !== 200)
-    throw new Error(`E-Invoice list request failed with HTTP ${response.status()}.`);
-  return {
-    ...await parseProviderJson(response, "E-Invoice list", invoiceListEnvelopeSchema, text),
-    httpStatus: 200,
-  };
-}
-
-async function waitForInvoiceResponses(
-  page: Page,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<{ header: InvoiceHeader; details: InvoiceDetailResponse }> {
-  const headerPromise = waitWithAbort(page.waitForResponse(
-    (candidate) =>
-      candidate.url().includes(HEADER_ENDPOINT) &&
-      candidate.request().method() === "POST",
-    { timeout: 60_000 },
-  ), signal);
-  const detailPromise = waitWithAbort(page.waitForResponse(
-    (candidate) =>
-      candidate.url().includes(ITEMS_ENDPOINT) &&
-      candidate.request().method() === "POST",
-    { timeout: 60_000 },
-  ), signal);
-
-  const [headerResponse, detailResponse] = await Promise.all([
-    headerPromise,
-    detailPromise,
-  ]);
-  if (headerResponse.status() !== 200 || detailResponse.status() !== 200)
-    throw new Error(`E-Invoice detail request failed with HTTP ${headerResponse.status()}/${detailResponse.status()}.`);
-  return {
-    header: await parseProviderJson(headerResponse, "E-Invoice invoice header", invoiceHeaderSchema, text),
-    details: await parseProviderJson(detailResponse, "E-Invoice invoice detail", invoiceDetailEnvelopeSchema, text),
-  };
-}
-
-async function waitForDetailResponse(
-  page: Page,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<InvoiceDetailResponse> {
-  const response = await waitWithAbort(page.waitForResponse(
-    (candidate) =>
-      candidate.url().includes(ITEMS_ENDPOINT) &&
-      candidate.request().method() === "POST",
-    { timeout: 60_000 },
-  ), signal);
-  if (response.status() !== 200)
-    throw new Error(`E-Invoice item page request failed with HTTP ${response.status()}.`);
-  return parseProviderJson(response, "E-Invoice item page", invoiceDetailEnvelopeSchema, text);
-}
-
-async function ensureSearchPage(page: Page): Promise<void> {
-  await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded" });
-  await page.locator("#dp-input-searchInvoiceDate").waitFor({ state: "visible" });
-}
-
-export async function retryEinvoiceReadQueryWithoutRequest<T>(
-  page: Page,
-  prepare: () => Promise<void>,
-  execute: () => Promise<T>,
-  matchesRequest: (request: Request) => boolean,
-): Promise<T> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await prepare();
-    let requestSent = false;
-    const onRequest = (request: Request): void => {
-      if (matchesRequest(request)) requestSent = true;
-    };
-    page.on("request", onRequest);
-    try {
-      return await execute();
-    } catch (error) {
-      if (attempt > 0 || !(error instanceof errors.TimeoutError) || requestSent) {
-        throw error;
-      }
-    } finally {
-      page.off("request", onRequest);
-    }
-  }
-  throw new Error("E-Invoice read query retry ended without a result.");
-}
-
-export class EInvoiceDetailRequestNotSentError extends Error {
-  constructor() {
-    super("E-Invoice detail view sent no header or item request.");
-  }
-}
-
-export async function retryEinvoiceMonthOnUnsentDetail<T>(attempt: () => Promise<T>): Promise<T> {
-  for (let index = 0; index < 2; index += 1) {
-    try {
-      return await attempt();
-    } catch (error) {
-      if (index > 0 || !(error instanceof EInvoiceDetailRequestNotSentError)) throw error;
-    }
-  }
-  throw new Error("E-Invoice month retry ended without a result.");
-}
-
-async function searchMonth(
-  page: Page,
-  month: YearMonth,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<InvoiceListResponse> {
-  signal?.throwIfAborted();
-  return retryEinvoiceReadQueryWithoutRequest(
-    page,
-    async () => {
-      signal?.throwIfAborted();
-      await ensureSearchPage(page);
-      await selectDateRange(page, month);
-      await page.locator("#carrier").selectOption("all");
-      await page.locator("#status").selectOption("all");
-      await page.locator("#buyerBan").fill("");
-      await page.locator("#productName").fill("");
-    },
-    async () => {
-      const listPromise = waitForListResponse(page, text, signal);
-      await page.locator('button[aria-label="查詢"], button[title="查詢"]').last().click();
-      return await listPromise;
-    },
-    (request) => request.url().includes(LIST_ENDPOINT) && request.method() === "POST",
-  );
-}
-
-async function setResultPageSize100(
-  page: Page,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<InvoiceListResponse> {
-  const listPromise = waitForListResponse(page, text, signal);
-  await page.locator("select#SelectSizes").first().selectOption("100");
-  await page.locator('button[title="執行"]').nth(1).click();
-  return await listPromise;
-}
-
-async function selectResultPage(
-  page: Page,
-  pageIndex: number,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<InvoiceListResponse> {
-  const listPromise = waitForListResponse(page, text, signal);
-  await page.locator("select#SelectPages").first().selectOption(String(pageIndex));
-  await page.locator('button[title="執行"]').first().click();
-  return await listPromise;
-}
-
-export async function closeInvoiceDetailModal(page: Page): Promise<void> {
-  const modal = page.locator(".modal_barcode_detail.show").first();
-  const backdrop = page.locator(".simple-modal-backdrop").first();
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!(await modal.isVisible())) {
-      await backdrop.waitFor({ state: "hidden", timeout: 2_000 });
-      return;
-    }
-    await modal.getByRole("button", { name: "關閉視窗" }).click();
-    try {
-      await modal.waitFor({ state: "hidden", timeout: 2_000 });
-      await backdrop.waitFor({ state: "hidden", timeout: 2_000 });
-      return;
-    } catch (error) {
-      if (attempt === 1) throw error;
-    }
-  }
-}
-
-async function readInvoiceRows(
-  page: Page,
-  entry: InvoiceListEntry,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<{ header: InvoiceHeader; items: readonly InvoiceItem[]; itemCompleteness: "complete" | "incomplete" }> {
-  signal?.throwIfAborted();
-  await closeInvoiceDetailModal(page);
-  let detailRequestSent = false;
-  const onRequest = (request: Request): void => {
-    if (request.method() === "POST" && (request.url().includes(HEADER_ENDPOINT) || request.url().includes(ITEMS_ENDPOINT))) {
-      detailRequestSent = true;
-    }
-  };
-  page.on("request", onRequest);
-  const responses = waitForInvoiceResponses(page, text, signal);
-  try {
-    await page.locator(`a[title="${entry.invoiceNumber}"]`).first().click();
-    let { header, details } = await responses;
-    validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail`, details);
-
-    if (details.totalElements > details.content.length) {
-      const visibleModal = page.locator(".modal.show .modal-content").first();
-      const detailPromise = waitForDetailResponse(page, text, signal);
-      await visibleModal.locator("select#SelectSizes").first().selectOption("100");
-      await visibleModal.locator('button[title="執行"]').nth(1).click();
-      details = await detailPromise;
-      validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail`, details);
-    }
-
-    const detailPages = [details];
-    const totalPages = Math.max(1, details.totalPages);
-    for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
-      const visibleModal = page.locator(".modal.show .modal-content").first();
-      const detailPromise = waitForDetailResponse(page, text, signal);
-      await visibleModal.locator("select#SelectPages").first().selectOption(String(pageIndex));
-      await visibleModal.locator('button[title="執行"]').first().click();
-      const detailPage = await detailPromise;
-      validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail page ${pageIndex}`, detailPage);
-      if (detailPage.totalElements !== details.totalElements || detailPage.totalPages !== details.totalPages)
-        throw new Error(`E-Invoice ${entry.invoiceNumber} detail pagination changed during collection.`);
-      detailPages.push(detailPage);
-    }
-    const items = detailPages.flatMap((pageResult) => pageResult.content);
-    if (items.length !== details.totalElements)
-      throw new Error(`E-Invoice ${entry.invoiceNumber} detail pagination was incomplete.`);
-    signal?.throwIfAborted();
-    const completeness = items.length === 0 || items.every((item, index) => {
-      try {
-        return canonicalItem(item, index).completeness === "complete";
-      } catch {
-        return false;
-      }
-    }) ? "complete" : "incomplete";
-    return { header, items, itemCompleteness: completeness };
-  } catch (error) {
-    if (error instanceof errors.TimeoutError && !detailRequestSent) {
-      throw new EInvoiceDetailRequestNotSentError();
-    }
-    throw error;
-  } finally {
-    page.off("request", onRequest);
-    await closeInvoiceDetailModal(page);
-  }
-}
-
-async function readVisibleListRows(
-  page: Page,
-  month: YearMonth,
-  listPageIndex: number,
-  list: InvoiceListResponse,
-  text: SourceTextPort,
-  signal?: AbortSignal,
-): Promise<InvoiceCaptureRecord[]> {
-  const rows: InvoiceCaptureRecord[] = [];
-  for (const entry of list.content) {
-    signal?.throwIfAborted();
-    const result = await readInvoiceRows(page, entry, text, signal);
-    rows.push({
-      month,
-      listPageIndex,
-      entry,
-      header: result.header,
-      items: result.items,
-      itemCompleteness: result.itemCompleteness,
-    });
-  }
-  return rows;
-}
-
-async function readAllInvoices(
-  page: Page,
-  text: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
-  onMonthComplete?: (completed: number, total: number) => Promise<void>,
-): Promise<InvoiceReadResult> {
-  const records: InvoiceCaptureRecord[] = [];
-  const pages: Array<{ month: YearMonth; pageIndex: number; list: InvoiceListResponse }> = [];
-  let invoiceCount = 0;
-  const months = availableInvoiceMonths();
-
-  for (const [monthIndex, month] of months.entries()) {
-    signal?.throwIfAborted();
-    await retryEinvoiceMonthOnUnsentDetail(async () => {
-      const initialRecords = records.length;
-      const initialPages = pages.length;
-      const initialInvoiceCount = invoiceCount;
-      try {
-        let list = await searchMonth(page, month, text, signal);
-        validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
-        if (list.totalElements > list.content.length) {
-          list = await setResultPageSize100(page, text, signal);
-          validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
-        }
-
-        const totalPages = Math.max(1, list.totalPages);
-        pages.push({ month, pageIndex: 0, list });
-        invoiceCount += list.totalElements;
-        records.push(...(await readVisibleListRows(page, month, 0, list, text, signal)));
-
-        let fetchedCount = list.content.length;
-        for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
-          const pageList = await selectResultPage(page, pageIndex, text, signal);
-          validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list page ${pageIndex}`, pageList);
-          if (pageList.totalElements !== list.totalElements || pageList.totalPages !== list.totalPages)
-            throw new Error(`E-Invoice ${monthLabel(month)} list pagination changed during collection.`);
-          pages.push({ month, pageIndex, list: pageList });
-          fetchedCount += pageList.content.length;
-          records.push(...(await readVisibleListRows(page, month, pageIndex, pageList, text, signal)));
-        }
-        if (fetchedCount !== list.totalElements)
-          throw new Error(`E-Invoice ${monthLabel(month)} list pagination was incomplete.`);
-        await onMonthComplete?.(monthIndex + 1, months.length);
-      } catch (error) {
-        records.length = initialRecords;
-        pages.length = initialPages;
-        invoiceCount = initialInvoiceCount;
-        throw error;
-      }
-    });
-  }
-
-  return { records, pages, months: months.map(monthLabel), invoiceCount };
-}
-
 function parseMonthLabel(value: string): YearMonth {
   const match = value.match(/^(\d{4})-(\d{2})$/u);
   if (!match) throw new Error(`Invalid E-Invoice month label: ${value}`);
@@ -1151,18 +429,151 @@ function parseMonthLabel(value: string): YearMonth {
   return { year: Number(match[1]), month };
 }
 
-export function buildCanonicalEInvoiceCapture(
+export type EinvoiceWorkflowInput = z.infer<typeof workflowInputSchema>;
+export type EinvoiceWorkflowOutput = z.infer<typeof outputSchema>;
+
+export function assertEinvoiceCaptureAdmissible(
+  capture: CanonicalEInvoiceCaptureInput,
+): void {
+  if (
+    capture.scope.completeness !== "complete-range" ||
+    capture.scope.invoiceCompleteness !== "complete" ||
+    capture.scope.itemCompleteness !== "complete"
+  ) {
+    throw new Error("E-Invoice source is incomplete; Canonical Financial Commit was skipped.");
+  }
+}
+
+function randomAppDeviceId(): string {
+  return randomBytes(8).toString("hex");
+}
+
+function appInvoiceDateIso(header: AppInvoiceHeader): string | null {
+  const d = header.invDate;
+  if (!d) return null;
+  const year = Number(d.year);
+  const month = Number(d.month);
+  const date = Number(d.date);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(date)) return null;
+  return `${year < 1911 ? year + 1911 : year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+}
+
+function appInvoiceApiDate(header: AppInvoiceHeader): string {
+  return (appInvoiceDateIso(header) ?? "").replaceAll("-", "/");
+}
+
+function appHeaderToInvoiceListEntry(header: AppInvoiceHeader): InvoiceListEntry {
+  return {
+    token: header.invNum ?? "",
+    invoiceNumber: header.invNum ?? "",
+    totalAmount: header.amount ?? null,
+    extStatus: header.invStatus ?? null,
+    invoiceStrStatus: header.invStatus ?? null,
+  };
+}
+
+function appHeaderToInvoiceHeader(header: AppInvoiceHeader): InvoiceHeader {
+  return {
+    invoiceDate: appInvoiceDateIso(header),
+    invoiceTime: header.invoiceTime ?? null,
+    totalAmount: header.amount ?? null,
+    sellerId: header.sellerBan ?? null,
+    sellerName: header.sellerName ?? null,
+    sellerAddress: header.sellerAddress ?? null,
+    invoiceStrStatus: header.invStatus ?? null,
+    extStatus: header.invStatus ?? null,
+  };
+}
+
+function appItemToInvoiceItem(item: AppInvoiceItem): InvoiceItem {
+  return {
+    sequenceNumber: item.rowNum ?? null,
+    item: item.description ?? null,
+    quantity: item.quantity ?? null,
+    unitPrice: item.unitPrice ?? null,
+    amount: item.amount ?? null,
+  };
+}
+
+function appInvoiceCaptureRecord(
+  header: AppInvoiceHeader,
+  items: readonly AppInvoiceItem[],
+  month: YearMonth,
+  listPageIndex: number,
+): InvoiceCaptureRecord {
+  const shimmedItems = items.map(appItemToInvoiceItem);
+  const completeness = shimmedItems.length === 0 || shimmedItems.every((item, index) => {
+    try {
+      return canonicalItem(item, index).completeness === "complete";
+    } catch {
+      return false;
+    }
+  }) ? "complete" : "incomplete";
+  return {
+    month,
+    listPageIndex,
+    entry: appHeaderToInvoiceListEntry(header),
+    header: appHeaderToInvoiceHeader(header),
+    items: shimmedItems,
+    itemCompleteness: completeness,
+  };
+}
+
+type AppInvoicePage = { month: YearMonth; pageIndex: number; rowCount: number };
+
+async function readAppProtocolInvoices(
+  client: EinvoiceAppClient,
+  session: EInvoiceAppSession,
+  signal: AbortSignal,
+  onMonthComplete: (completed: number, total: number) => Promise<void>,
+): Promise<{
+  records: InvoiceCaptureRecord[];
+  pages: AppInvoicePage[];
+  months: string[];
+  invoiceCount: number;
+}> {
+  const records: InvoiceCaptureRecord[] = [];
+  const pages: AppInvoicePage[] = [];
+  let invoiceCount = 0;
+  const months = availableInvoiceMonths();
+
+  for (const [monthIndex, month] of months.entries()) {
+    signal.throwIfAborted();
+    const startDate = `${monthLabel(month)}-01`;
+    const endDate = `${monthLabel(month)}-${String(monthEndDay(month)).padStart(2, "0")}`;
+    let pageIndex = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      const result = await client.queryHeaders(session, startDate, endDate, pageIndex + 1, signal);
+      pages.push({ month, pageIndex, rowCount: result.details.length });
+      for (const header of result.details) {
+        signal.throwIfAborted();
+        const detail = await client.queryDetail(
+          session,
+          header.invNum ?? "",
+          appInvoiceApiDate(header),
+          signal,
+        );
+        records.push(appInvoiceCaptureRecord(header, detail.details, month, pageIndex));
+      }
+      invoiceCount += result.details.length;
+      if (result.details.length === 0) break;
+      pageIndex += 1;
+    }
+    await onMonthComplete(monthIndex + 1, months.length);
+  }
+
+  return { records, pages, months: months.map(monthLabel), invoiceCount };
+}
+
+export function buildCanonicalEInvoiceCaptureFromApp(
   result: Readonly<{
     records: readonly InvoiceCaptureRecord[];
-    pages: readonly { month: YearMonth; pageIndex: number; list: InvoiceListResponse }[];
+    pages: readonly AppInvoicePage[];
     months: readonly string[];
   }>,
   credentials: EinvoiceCredentials,
-  options: Readonly<{
-    captureId?: string;
-    observedAt?: string;
-    today?: Date;
-  }> = {},
+  options: Readonly<{ captureId?: string; observedAt?: string; today?: Date }> = {},
 ): CanonicalEInvoiceCaptureInput {
   if (result.months.length === 0) throw new Error("E-Invoice capture requires at least one month.");
   const firstMonth = parseMonthLabel(result.months[0]!);
@@ -1170,17 +581,8 @@ export function buildCanonicalEInvoiceCapture(
   const sourceConnectionKey = deriveSourceConnectionIdentityKey("einvoice", {
     phone: requireCredential(credentials, "einvoice_phone_number"),
   });
-  const identityEpoch = opaqueDigest(
-    "einvoice-identity-epoch",
-    sourceConnectionKey,
-    "personal-invoices-v1",
-  );
-  const subjectDigest = opaqueDigest(
-    "einvoice-subject",
-    sourceConnectionKey,
-    identityEpoch,
-    "personal-invoices",
-  );
+  const identityEpoch = opaqueDigest("einvoice-identity-epoch", sourceConnectionKey, "personal-invoices-v1");
+  const subjectDigest = opaqueDigest("einvoice-subject", sourceConnectionKey, identityEpoch, "personal-invoices");
   const observedAt = options.observedAt ?? new Date().toISOString();
   const captureId = options.captureId ?? `einvoice-capture:${randomUUID()}`;
   const pageKey = (month: YearMonth, pageIndex: number): string => `${monthLabel(month)}:${pageIndex}`;
@@ -1205,17 +607,14 @@ export function buildCanonicalEInvoiceCapture(
   }
   const pages = result.pages.map((page, pageOrdinal) => ({
     pageOrdinal,
-    responseCode: String(page.list.httpStatus) as "200" | "204",
+    responseCode: "200" as "200" | "204",
     rowCount: admittedRowCounts.get(pageKey(page.month, page.pageIndex)) ?? 0,
     terminal: pageOrdinal === result.pages.length - 1,
     metadata: {
       provider: "einvoice.nat.gov.tw",
       month: monthLabel(page.month),
       pageIndex: page.pageIndex,
-      providerRowCount: page.list.content.length,
-      totalElements: page.list.totalElements,
-      totalPages: page.list.totalPages,
-      size: page.list.size,
+      providerRowCount: page.rowCount,
     },
   }));
   const itemCompleteness = invoices.every((invoice) =>
@@ -1241,43 +640,11 @@ export function buildCanonicalEInvoiceCapture(
   };
 }
 
-export type EinvoiceWorkflowInput = z.infer<typeof workflowInputSchema>;
-export type EinvoiceWorkflowOutput = z.infer<typeof outputSchema>;
-
-export function assertEinvoiceCaptureAdmissible(
-  capture: CanonicalEInvoiceCaptureInput,
-): void {
-  if (
-    capture.scope.completeness !== "complete-range" ||
-    capture.scope.invoiceCompleteness !== "complete" ||
-    capture.scope.itemCompleteness !== "complete"
-  ) {
-    throw new Error("E-Invoice source is incomplete; Canonical Financial Commit was skipped.");
-  }
-}
-
-async function collectCanonicalCapture(
-  page: Page,
-  credentials: EinvoiceCredentials,
-  text: SourceTextPort,
-  signal: AbortSignal,
-  onMonthComplete: (completed: number, total: number) => Promise<void>,
-): Promise<{ result: InvoiceReadResult; capture: CanonicalEInvoiceCaptureInput }> {
-  const result = await readAllInvoices(page, text, signal, onMonthComplete);
-  signal.throwIfAborted();
-  const observedRows = result.pages.reduce((total, item) => total + item.list.content.length, 0);
-  if (result.records.length !== result.invoiceCount || observedRows !== result.invoiceCount) {
-    throw new Error("E-Invoice source pagination was incomplete; Canonical Financial Commit was skipped.");
-  }
-  const capture = buildCanonicalEInvoiceCapture(result, credentials);
-  assertEinvoiceCaptureAdmissible(capture);
-  return { result, capture };
-}
-
 /** App-owned entry point for collecting and admitting E-Invoice statements. */
 export async function runEinvoiceProviderWorkflow(
   context: WorkflowContext,
   rawInput: unknown,
+  source: EinvoiceAppSource = liveEinvoiceAppSource,
 ): Promise<EinvoiceWorkflowOutput> {
   const parsed = workflowInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E-Invoice workflow credentials are missing or invalid.");
@@ -1288,72 +655,62 @@ export async function runEinvoiceProviderWorkflow(
   const credentials = parsed.data.credentials;
   return await context.browser.withPage(async (page) => {
     await context.event("authentication", "authentication-started");
-    const usedExistingSession = await isSignedIn(page);
-    if (!usedExistingSession) {
-      await signInEinvoice(
-        page,
-        credentials,
-        async (stage, signal) => {
-          if (!signal) throw new Error("E-Invoice human-assistance cancellation signal is missing.");
-          return requestEinvoiceCaptchaAssistance(
-            stage,
-            (contract, assistanceSignal) => context.humanAssistance.request(contract, assistanceSignal),
-            signal,
-          );
-        },
-        context.signal,
-        () => context.event("authentication", "source-access-challenged"),
-      );
-    }
-    context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
-
-    await context.event("collection", "collection-started");
-    await context.event("decoding", "source-decoding-started");
-    const { result, capture } = await collectCanonicalCapture(
-      page,
-      credentials,
-      context.text,
-      context.signal,
-      async (completed, total) => {
-        await context.event("collection", "month-completed", { completed, total });
-      },
-    );
-    const admittedInvoiceCount = capture.invoices.length;
-    await context.event("decoding", "source-decoding-completed");
-    await context.event("validation", "source-validation-completed", {
-      completed: admittedInvoiceCount,
-      total: admittedInvoiceCount,
-    });
-    context.signal.throwIfAborted();
-
-    await context.event("commit", "canonical-commit-started", {
-      completed: 0,
-      total: admittedInvoiceCount,
-    });
-    let commit: PGliteCanonicalEInvoiceCommitResult;
+    const { client, close } = await source.open(page);
     try {
-      commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
-    } catch (error) {
-      if (error instanceof EInvoiceCommitRejectedError) {
-        await context.event("commit", "canonical-commit-failed");
-      }
-      throw error;
-    }
-    await context.event("commit", "canonical-commit-completed", {
-      completed: commit.invoiceCount,
-      total: admittedInvoiceCount,
-    });
+      const session = await client.login(
+        requireCredential(credentials, "einvoice_phone_number"),
+        requireCredential(credentials, "einvoice_password"),
+        randomAppDeviceId(),
+        context.signal,
+      );
+      context.signal.throwIfAborted();
+      await context.event("authentication", "authentication-completed");
 
-    return outputSchema.parse({
-      usedExistingSession,
-      invoiceCount: admittedInvoiceCount,
-      itemCount: commit.itemCount,
-      months: result.months,
-      captureId: commit.captureId,
-      knowledgeAt: commit.knowledgeAt,
-      commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
-    });
+      await context.event("collection", "collection-started");
+      await context.event("decoding", "source-decoding-started");
+      const result = await readAppProtocolInvoices(client, session, context.signal, async (completed, total) => {
+        await context.event("collection", "month-completed", { completed, total });
+      });
+      const capture = buildCanonicalEInvoiceCaptureFromApp(result, credentials);
+      assertEinvoiceCaptureAdmissible(capture);
+      const admittedInvoiceCount = capture.invoices.length;
+      await context.event("decoding", "source-decoding-completed");
+      await context.event("validation", "source-validation-completed", {
+        completed: admittedInvoiceCount,
+        total: admittedInvoiceCount,
+      });
+      context.signal.throwIfAborted();
+
+      await context.event("commit", "canonical-commit-started", {
+        completed: 0,
+        total: admittedInvoiceCount,
+      });
+      let commit: PGliteCanonicalEInvoiceCommitResult;
+      try {
+        commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
+      } catch (error) {
+        if (error instanceof EInvoiceCommitRejectedError) {
+          await context.event("commit", "canonical-commit-failed");
+        }
+        throw error;
+      }
+      await context.event("commit", "canonical-commit-completed", {
+        completed: commit.invoiceCount,
+        total: admittedInvoiceCount,
+      });
+
+      return outputSchema.parse({
+        usedExistingSession: false,
+        invoiceCount: admittedInvoiceCount,
+        itemCount: commit.itemCount,
+        months: result.months,
+        captureId: commit.captureId,
+        knowledgeAt: commit.knowledgeAt,
+        commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
+      });
+    } finally {
+      await close();
+    }
   });
 }
 

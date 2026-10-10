@@ -1,118 +1,67 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
 import { einvoicePersonalInvoicesWorkflow } from "./einvoice-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import {
   assertEinvoiceCaptureAdmissible,
-  buildCanonicalEInvoiceCapture,
-  einvoiceCaptchaAssistanceStage,
-  requestEinvoiceCaptchaAssistance,
+  buildCanonicalEInvoiceCaptureFromApp,
+  runEinvoiceProviderWorkflow,
 } from "../../workflows/einvoice-personal-invoices.ts";
-import type { HumanAssistanceContractInput } from "./human-assistance.ts";
-import { classifyTypedWorkflowFailure } from "./server/typed-workflow-outcome.ts";
+import type {
+  EinvoiceAppSource,
+  EinvoiceAppClient,
+} from "../../workflows/einvoice-app-transport.ts";
+import type { EInvoiceAppSession } from "../../workflows/einvoice-app-protocol.ts";
 
-const loginUrl = "https://www.einvoice.nat.gov.tw/accounts/login";
-const homeUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/home";
-const listEndpoint = "https://www.einvoice.nat.gov.tw/btc/cloud/api/btc502w/searchCarrierInvoice";
+const workflowSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workflows", "einvoice-personal-invoices.ts"),
+  "utf8",
+);
+assert.doesNotMatch(workflowSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(/u);
+assert.doesNotMatch(workflowSource, /librettoAuthenticate|\bpause\(|npx libretto|emitAutomationProgress/u);
+assert.doesNotMatch(workflowSource, /node:fs|writeFile|appendFile|createWriteStream|process\.env|console\.(?:log|error)|logPath/u);
+assert.match(workflowSource, /runEinvoiceProviderWorkflow/u);
+assert.match(workflowSource, /financialCommit\.execute/u);
+
 const credentials = {
   einvoice_phone_number: "0900000000",
   einvoice_password: "test-only-secret",
 };
 
-const searchPage = () => `<!doctype html>
-<html><body>
-  <input id="dp-input-searchInvoiceDate" />
-  <div class="dp__month_year_wrap"></div>
-  <button aria-label="上個月" type="button">prev</button>
-  <button aria-label="下個月" type="button">next</button>
-  <div id="days"></div>
-  <select id="carrier"><option value="all">All</option></select>
-  <select id="status"><option value="all">All</option></select>
-  <input id="buyerBan" /><input id="productName" />
-  <button aria-label="查詢" type="button">查詢</button>
-  <script>
-    let month = new Date().getMonth();
-    let year = new Date().getFullYear();
-    const label = document.querySelector('.dp__month_year_wrap');
-    const render = () => {
-      label.textContent = (month + 1) + '月 ' + year + '年';
-      document.querySelector('#days').innerHTML = Array.from({ length: 31 }, (_, i) =>
-        '<div class="dp__calendar_item"><span class="dp__cell_inner">' + (i + 1) + '</span></div>'
-      ).join('');
-    };
-    document.querySelector('[aria-label="上個月"]').addEventListener('click', () => {
-      month -= 1; if (month < 0) { month = 11; year -= 1; } render();
-    });
-    document.querySelector('[aria-label="下個月"]').addEventListener('click', () => {
-      month += 1; if (month > 11) { month = 0; year += 1; } render();
-    });
-    document.querySelector('[aria-label="查詢"]').addEventListener('click', () => {
-      fetch('/btc/cloud/api/btc502w/searchCarrierInvoice', { method: 'POST' });
-    });
-    render();
-  </script>
-</body></html>`;
+const session: EInvoiceAppSession = {
+  sid: "s",
+  token: "t",
+  appid: "a",
+  ssme: "s",
+  liat: 1,
+  carrierCode: "/AB+123",
+};
 
-const loginPage = `<!doctype html>
-<html><body>
-  <input id="mobile_phone" /><input id="password" /><input id="captcha" />
-  <span class="input-group-text code_num"><img alt="圖形驗證碼" width="150" height="40"
-    src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" /></span>
-  <button id="submitBtn" type="button" onclick="location.href='/portal/btc/mobile/home'">登入</button>
-</body></html>`;
+const emptyHeaders = { code: "200", msg: "執行成功", details: [] as const };
+const emptyDetail = { code: "200", msg: "執行成功", details: [] as const };
 
-const browser = await chromium.launch();
-try {
-  const page = await browser.newPage();
-  let malformedList = false;
-  let loginRedirectOnLoad = false;
-  let loginRejection: "captcha" | "credentials" | undefined;
-  await page.route("https://www.einvoice.nat.gov.tw/**", async (route) => {
-    const url = route.request().url();
-    if (url === loginUrl) {
-      await route.fulfill({
-        status: 200,
-        contentType: "text/html; charset=utf-8",
-        body: loginRedirectOnLoad
-          ? '<html><body><script>setTimeout(() => location.href="/portal/btc/mobile/btc502w/search", 100)</script></body></html>'
-          : loginRejection
-            ? loginPage.replace("location.href='/portal/btc/mobile/home'", `this.dataset.submissions = String(Number(this.dataset.submissions ?? 0) + 1); document.querySelector('[role=alert]').textContent = '${loginRejection === "captcha" ? "圖形驗證碼錯誤" : "手機號碼或密碼錯誤"}'`).replace("</body>", '<div role="alert"></div></body>')
-            : loginPage,
-      });
-      return;
-    }
-    if (url === homeUrl) {
-      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: "<html><body>會員專區</body></html>" });
-      return;
-    }
-    if (url.includes("/portal/btc/mobile/btc502w/search")) {
-      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: searchPage() });
-      return;
-    }
-    if (url.includes("/btc/cloud/api/btc502w/searchCarrierInvoice")) {
-      if (malformedList) {
-        await route.fulfill({ status: 200, contentType: "application/json", body: Buffer.from([0xff, 0x80]) });
-      } else {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json; charset=utf-8",
-          body: JSON.stringify({ totalElements: 0, totalPages: 0, size: 0, content: [] }),
-        });
-      }
-      return;
-    }
-    await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: "<html></html>" });
-  });
+function sourceWith(overrides: Partial<EinvoiceAppClient>): EinvoiceAppSource {
+  return {
+    async open(_page: Page) {
+      return {
+        client: {
+          login: async () => session,
+          queryHeaders: async () => emptyHeaders,
+          queryDetail: async () => emptyDetail,
+          ...overrides,
+        },
+        close: async () => {},
+      };
+    },
+  };
+}
 
-  const opened = page;
-  await opened.goto(loginUrl);
-
-  const events: Array<{ stage: string; code: string; completed?: number; total?: number }> = [];
-  const commits: unknown[] = [];
-  const contractIds: string[] = [];
-  const financialCommit: WorkflowFinancialCommitPort = {
+function makeCommit(commits: unknown[]): WorkflowFinancialCommitPort {
+  return {
     async execute(items) {
       const received = [];
       for await (const item of items) received.push(item);
@@ -138,119 +87,88 @@ try {
       };
     },
   };
+}
 
+function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]; events?: Array<{ stage: string; code: string }> }): {
+  context: WorkflowContext;
+  commits: unknown[];
+  events: Array<{ stage: string; code: string }>;
+} {
+  const commits = overrides.commits ?? [];
+  const events: Array<{ stage: string; code: string }> = overrides.events ?? [];
   const context: WorkflowContext = {
     runId: "einvoice-test-run",
     signal: new AbortController().signal,
     now: () => new Date().toISOString(),
-    browser: { withPage: async (run) => await run(opened as Page) },
+    browser: { withPage: async (run) => await run({} as Page) },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract: HumanAssistanceContractInput) {
-        contractIds.push(contract.stageId);
-        await opened.locator("#captcha").fill("12345");
-        return "entered";
-      },
+    humanAssistance: { request: async () => { throw new Error("Unexpected human assistance request"); } },
+    financialCommit: makeCommit(commits),
+    event: async (stage, code) => {
+      events.push({ stage, code });
     },
-    financialCommit,
-    async event(stage, code, counts) {
-      events.push({ stage, code, ...counts });
-    },
+    ...overrides,
   };
+  return { context, commits, events };
+}
 
-  await opened.goto(loginUrl);
-  const output = await einvoicePersonalInvoicesWorkflow.run(context, { credentials });
+// A successful empty collection still commits with zero invoices.
+{
+  const { context, commits, events } = makeContext({});
+  const output = await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({}));
   assert.equal(output.usedExistingSession, false);
   assert.equal(output.invoiceCount, 0);
-  assert.deepEqual(contractIds, ["einvoice-login-captcha"]);
   assert.ok(events.some((event) => event.code === "authentication-completed"));
-  assert.ok(events.some((event) => event.code === "month-completed" && event.total && event.total > 1));
+  assert.ok(events.some((event) => event.code === "month-completed"));
   assert.ok(events.some((event) => event.code === "canonical-commit-completed"));
   assert.equal(commits.length, 1);
+}
 
-  for (const rejection of ["captcha", "credentials"] as const) {
-    loginRejection = rejection;
-    await opened.goto(loginUrl);
-    await assert.rejects(
-      einvoicePersonalInvoicesWorkflow.run(context, { credentials }),
-      (error: unknown) => classifyTypedWorkflowFailure(error, [])
-        === (rejection === "captcha" ? "captcha-provider-rejected" : "workflow-failed"),
-      "only an explicit CAPTCHA rejection is retryable",
-    );
-    assert.equal(await opened.locator("#submitBtn").getAttribute("data-submissions"), "1");
-    assert.equal(commits.length, 1, "login rejection cannot commit financial data");
-  }
-  loginRejection = undefined;
-  contractIds.splice(1);
-
-  loginRedirectOnLoad = true;
-  await opened.goto(loginUrl);
-  const resumedSession = await einvoicePersonalInvoicesWorkflow.run(context, { credentials });
-  assert.equal(resumedSession.invoiceCount, 0);
-  assert.deepEqual(contractIds, ["einvoice-login-captcha"], "a session redirect needs no CAPTCHA");
-  assert.equal(commits.length, 2);
-
-  malformedList = true;
-  const badPage = await browser.newPage();
-  await badPage.route("https://www.einvoice.nat.gov.tw/**", async (route) => {
-    const url = route.request().url();
-    if (url.includes("/portal/btc/mobile/btc502w/search")) {
-      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: searchPage() });
-      return;
-    }
-    if (url.includes("/btc/cloud/api/btc502w/searchCarrierInvoice")) {
-      await route.fulfill({ status: 200, contentType: "application/json", body: Buffer.from([0xff, 0x80]) });
-      return;
-    }
-    await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: "<html><body>會員專區</body></html>" });
-  });
-  await badPage.goto(homeUrl);
-  const malformedContext: WorkflowContext = {
-    ...context,
-    runId: "einvoice-malformed-run",
-    browser: { withPage: async (run) => await run(badPage) },
-    humanAssistance: { async request() { throw new Error("Unexpected human assistance request"); } },
-  };
+// A login rejection propagates and never reaches commit.
+{
+  const { context, commits } = makeContext({});
   await assert.rejects(
-    einvoicePersonalInvoicesWorkflow.run(malformedContext, { credentials }),
-    /Source text integrity failed: invalid-encoding/u,
+    runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+      login: async () => { throw new Error("E-Invoice App login rejected (result -151)."); },
+    })),
+    /login rejected \(result -151\)/,
   );
-  assert.equal(commits.length, 2, "malformed source must be rejected before Canonical Financial Commit");
+  assert.equal(commits.length, 0);
+}
 
-  const incompleteCapture = buildCanonicalEInvoiceCapture({
+// A cancelled run stops before opening the provider page.
+{
+  const aborted = new AbortController();
+  aborted.abort();
+  let opened = false;
+  const { context } = makeContext({
+    signal: aborted.signal,
+    browser: { withPage: async () => { opened = true; throw new Error("Page should not be opened"); } },
+  });
+  await assert.rejects(
+    runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({})),
+    /AbortError|aborted/,
+  );
+  assert.equal(opened, false);
+}
+
+// The admissible check still rejects an incomplete capture.
+{
+  const capture = buildCanonicalEInvoiceCaptureFromApp({
     records: [{
       month: { year: 2026, month: 9 },
       listPageIndex: 0,
-      entry: { token: "row", invoiceNumber: "AA00000001", invoiceStrStatus: "INVOICE0003S" },
-      header: { invoiceDate: "20260910", sellerId: "11112222", totalAmount: "10" },
+      entry: { token: "row", invoiceNumber: "AA00000001", invoiceStrStatus: "開立已確認" },
+      header: { invoiceDate: "2026-09-10", sellerId: "11112222", totalAmount: "10", invoiceStrStatus: "開立已確認" },
       items: [{ item: "item", quantity: "1", unitPrice: null, amount: "10" }],
       itemCompleteness: "incomplete",
     }],
-    pages: [{
-      month: { year: 2026, month: 9 },
-      pageIndex: 0,
-      list: { httpStatus: 200, totalElements: 1, totalPages: 1, size: 1, content: [] },
-    }],
+    pages: [{ month: { year: 2026, month: 9 }, pageIndex: 0, rowCount: 1 }],
     months: ["2026-09"],
   }, credentials, { captureId: "incomplete-capture" });
-  assert.throws(() => assertEinvoiceCaptureAdmissible(incompleteCapture), /source is incomplete/u);
-
-  const aborted = new AbortController();
-  aborted.abort();
-  let acquiredPage = false;
-  await assert.rejects(einvoicePersonalInvoicesWorkflow.run({
-    ...context,
-    signal: aborted.signal,
-    browser: { async withPage() { acquiredPage = true; throw new Error("Page should not be opened"); } },
-  }, { credentials }), /AbortError|aborted/u);
-  assert.equal(acquiredPage, false, "cancelled run must stop before accessing the provider page");
-
-  await opened.setContent(loginPage);
-  await assert.rejects(requestEinvoiceCaptchaAssistance(
-    einvoiceCaptchaAssistanceStage(opened as Page),
-    async () => "failed",
-    new AbortController().signal,
-  ), /ended with status failed/u);
-} finally {
-  await browser.close();
+  assert.throws(() => assertEinvoiceCaptureAdmissible(capture), /source is incomplete/u);
 }
+
+// The workflow definition still points at the entry point.
+assert.equal(einvoicePersonalInvoicesWorkflow.id, "einvoice-personal-invoices");
+assert.equal(einvoicePersonalInvoicesWorkflow.requiresFinancialCommit, true);

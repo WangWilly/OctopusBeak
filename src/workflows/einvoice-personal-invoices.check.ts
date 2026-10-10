@@ -2,25 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import type { Page } from "playwright";
-import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
-import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
-  buildCanonicalEInvoiceCapture,
+  buildCanonicalEInvoiceCaptureFromApp,
   canonicalOccurrence,
-  closeInvoiceDetailModal,
-  einvoiceCaptchaAssistanceStage,
   mapCanonicalEInvoiceRecord,
-  retryEinvoiceLoginNavigation,
-  runEinvoiceProviderWorkflow,
   type InvoiceCaptureRecord,
-  validatePaginationEnvelope,
-  waitForEinvoiceLoginOutcome,
-  waitForEinvoiceLoginReady,
-  waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
 
 const workflowSource = readFileSync(
@@ -33,248 +19,6 @@ assert.doesNotMatch(workflowSource, /requirePGliteChildRpcClientFromEnv|pglite-c
 assert.doesNotMatch(workflowSource, /node:fs|writeFile|appendFile|createWriteStream|process\.env|console\.(?:log|error)|logPath/u);
 assert.match(workflowSource, /runEinvoiceProviderWorkflow/u);
 assert.match(workflowSource, /financialCommit\.execute/u);
-
-let redirectAttempts = 0;
-assert.equal(await retryEinvoiceLoginNavigation(async () => {
-  redirectAttempts += 1;
-  if (redirectAttempts === 1) throw new Error("Execution context was destroyed");
-  return "login-form-ready";
-}), "login-form-ready");
-assert.equal(redirectAttempts, 2);
-let unrelatedAttempts = 0;
-await assert.rejects(retryEinvoiceLoginNavigation(async () => {
-  unrelatedAttempts += 1;
-  throw new Error("Invalid form field");
-}), /Invalid form field/);
-assert.equal(unrelatedAttempts, 1);
-
-const browser = await chromium.launch();
-try {
-  const blockedPage = await browser.newPage();
-  blockedPage.setDefaultTimeout(500);
-  await blockedPage.route("https://www.einvoice.nat.gov.tw/accounts/login", async (route) => {
-    await route.fulfill({
-      status: 403,
-      contentType: "text/html; charset=utf-8",
-      body: '<html><body>正在執行安全驗證<input type="hidden" name="cf-turnstile-response"></body></html>',
-    });
-  });
-  const blockedEvents: WorkflowRunEvent[] = [];
-  const blockedContext: WorkflowContext = {
-    runId: "blocked-login-fixture",
-    signal: new AbortController().signal,
-    now: () => "2026-09-26T00:00:00.000Z",
-    browser: { withPage: (run) => run(blockedPage) },
-    text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
-    financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
-    event: async (stage, code) => {
-      blockedEvents.push({ runId: "blocked-login-fixture", stage, code, occurredAt: "2026-09-26T00:00:00.000Z" });
-    },
-  };
-  let blockedError: unknown;
-  try {
-    await runEinvoiceProviderWorkflow(blockedContext, {
-      credentials: { einvoice_phone_number: "0900000000", einvoice_password: "fixture-only" },
-    });
-  } catch (error) {
-    blockedError = error;
-  }
-  assert.ok(blockedError);
-  assert.ok(blockedEvents.some((event) => event.code === "source-access-challenged"));
-  assert.equal(classifyTypedWorkflowFailure(blockedError, blockedEvents), "source-access-challenged");
-  await blockedPage.close();
-
-  const captchaPage = await browser.newPage();
-  await captchaPage.setContent(`
-    <input id="captcha" style="width: 120px; height: 32px" />
-    <span class="input-group-text code_num">
-      <img
-        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
-        style="width: 150px; height: 40px"
-        alt="圖形驗證碼"
-      />
-    </span>
-  `);
-  const captchaContract = await emitHumanAssistanceStage(
-    einvoiceCaptchaAssistanceStage(captchaPage),
-    (contract) => contract,
-  );
-  assert.equal(captchaContract.stageId, "einvoice-login-captcha");
-  assert.equal(captchaContract.challengeKind, "text-captcha");
-  assert.equal(captchaContract.charset, "digits");
-  assert.equal(captchaContract.imagePreprocessing, undefined);
-  assert.equal(captchaContract.ocrPageSegmentationMode, "single-word");
-  assert.deepEqual(captchaContract.ocrAttemptPlan, [
-    { imagePreprocessing: ["mask-bottom-interference-band"] },
-    { imagePreprocessing: ["suppress-horizontal-interference"] },
-  ]);
-  assert.deepEqual(captchaContract.solveAcceptancePolicy, {
-    mode: "agreement-only",
-  });
-  assert.equal(captchaContract.expectedAnswerLength, 5);
-  assert.equal(
-    captchaContract.targets[0]?.semanticId,
-    "einvoice.login.captcha-input",
-  );
-  assert.equal(
-    captchaContract.challengeImageRegion?.semanticId,
-    "einvoice.login.captcha-image",
-  );
-  assert.equal(captchaContract.challengeImageRegion?.rect?.width, 150);
-  assert.equal(captchaContract.challengeImageRegion?.rect?.height, 40);
-  await captchaPage.close();
-
-  const stalledLoginPage = await browser.newPage();
-  await stalledLoginPage.setContent("<div>載入中</div>");
-  let stalledLoginError: unknown;
-  try {
-    await waitForEinvoiceLoginReady(stalledLoginPage, 50);
-  } catch (error) {
-    stalledLoginError = error;
-  }
-  assert.equal(
-    classifyTypedWorkflowFailure(stalledLoginError, [
-      { runId: "stalled-login-fixture", stage: "authentication", code: "authentication-started", occurredAt: "2026-09-26T00:00:00.000Z" },
-    ]),
-    "authentication-timeout",
-  );
-  await stalledLoginPage.close();
-
-  const outcomePage = await browser.newPage();
-  await outcomePage.setContent('<div role="alert">圖形驗證碼錯誤，請重新輸入</div>');
-  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "captcha-rejected");
-  await outcomePage.setContent('<div role="alert">密碼不正確</div>');
-  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "credentials-rejected");
-  await outcomePage.setContent('<div>會員專區</div>');
-  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "authenticated");
-  await outcomePage.setContent('<div>登入中</div>');
-  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 25), "unconfirmed");
-  await outcomePage.close();
-} finally {
-  await browser.close();
-}
-
-const actions: string[] = [];
-let modalVisible = true;
-let closeClicks = 0;
-const closeButton = {
-  async click() {
-    actions.push("click-close");
-    closeClicks += 1;
-    if (closeClicks === 2) modalVisible = false;
-  },
-};
-const modal = {
-  first() {
-    return this;
-  },
-  async isVisible() {
-    actions.push("modal-visible");
-    return modalVisible;
-  },
-  getByRole(role: string, options: { name: string }) {
-    assert.equal(role, "button");
-    assert.equal(options.name, "關閉視窗");
-    return closeButton;
-  },
-  async waitFor(options: { state: string }) {
-    actions.push(`wait-modal-${options.state}`);
-    if (modalVisible) throw new Error("Modal is still visible");
-  },
-};
-const backdrop = {
-  first() {
-    return this;
-  },
-  async waitFor(options: { state: string }) {
-    actions.push(`wait-backdrop-${options.state}`);
-  },
-};
-const page = {
-  locator(selector: string) {
-    if (selector === ".modal_barcode_detail.show") return modal;
-    if (selector === ".simple-modal-backdrop") return backdrop;
-    throw new Error(`Unexpected selector: ${selector}`);
-  },
-};
-
-await closeInvoiceDetailModal(page as unknown as Page);
-
-assert.deepEqual(actions, [
-  "modal-visible",
-  "click-close",
-  "wait-modal-hidden",
-  "modal-visible",
-  "click-close",
-  "wait-modal-hidden",
-  "wait-backdrop-hidden",
-]);
-
-actions.length = 0;
-modalVisible = false;
-await closeInvoiceDetailModal(page as unknown as Page);
-assert.deepEqual(actions, [
-  "modal-visible",
-  "wait-backdrop-hidden",
-]);
-
-const noContentListResponse = await waitForListResponse({
-  async waitForResponse(
-    predicate: (response: {
-      url(): string;
-      request(): { method(): string };
-    }) => boolean,
-  ) {
-    const response = {
-      url: () =>
-        "https://www.einvoice.nat.gov.tw/btc/cloud/api/btc502w/searchCarrierInvoice",
-      request: () => ({ method: () => "POST" }),
-    };
-    assert.equal(predicate(response), true);
-    return {
-      status: () => 204,
-      json: async () => await new Response(null, { status: 204 }).json(),
-    };
-  },
-} as unknown as Page);
-
-assert.deepEqual(noContentListResponse, {
-  httpStatus: 204,
-  totalElements: 0,
-  totalPages: 0,
-  size: 0,
-  content: [],
-});
-assert.doesNotThrow(() => validatePaginationEnvelope("empty fixture", noContentListResponse));
-assert.throws(
-  () => validatePaginationEnvelope("truncated fixture", {
-    totalElements: 2,
-    totalPages: 0,
-    size: 0,
-    content: [],
-  }),
-  /pagination metadata is incomplete/,
-);
-
-const populatedListResponse = {
-  httpStatus: 200 as const,
-  totalElements: 1,
-  totalPages: 1,
-  size: 1,
-  content: [],
-};
-assert.deepEqual(
-  await waitForListResponse({
-    async waitForResponse() {
-      return {
-        status: () => 200,
-        body: async () => Buffer.from(JSON.stringify(populatedListResponse), "utf8"),
-      };
-    },
-  } as unknown as Page),
-  populatedListResponse,
-);
 
 const credentials = {
   einvoice_phone_number: "0900000000",
@@ -366,23 +110,21 @@ assert.throws(
   /seller tax ID is required/,
 );
 
+// The App protocol reports an issued invoice as 開立已確認.
+const appIssuedRecord = {
+  ...completeRecord,
+  entry: { ...completeRecord.entry, invoiceStrStatus: "開立已確認" },
+  header: { ...completeRecord.header, invoiceStrStatus: "開立已確認", extStatus: "開立已確認" },
+};
+assert.equal(mapCanonicalEInvoiceRecord(appIssuedRecord).revisionKind, "issued");
+
 const captureInput = (
   records: readonly InvoiceCaptureRecord[],
   captureId: string,
   observedAt: string,
-) => buildCanonicalEInvoiceCapture({
+) => buildCanonicalEInvoiceCaptureFromApp({
   records,
-  pages: [{
-    month,
-    pageIndex: 0,
-    list: {
-      httpStatus: 200,
-      totalElements: records.length,
-      totalPages: records.length === 0 ? 0 : 1,
-      size: records.length,
-      content: records.map((record) => record.entry),
-    },
-  }],
+  pages: [{ month, pageIndex: 0, rowCount: records.length }],
   months: ["2026-09"],
 }, credentials, { captureId, observedAt, today: new Date("2026-09-10T00:00:00Z") });
 
@@ -537,19 +279,12 @@ const duplicateCapture = captureInput(
 assert.equal(duplicateCapture.invoices.length, 1, "identical provider rows represent one invoice revision");
 assert.equal(duplicateCapture.pages[0]?.rowCount, 1, "source page row count tracks admitted unique records");
 assert.equal(duplicateCapture.pages[0]?.metadata.providerRowCount, 2, "raw provider row count remains auditable");
-const duplicateAcrossPages = buildCanonicalEInvoiceCapture({
+const duplicateAcrossPages = buildCanonicalEInvoiceCaptureFromApp({
   records: [completeRecord, { ...completeRecord, listPageIndex: 1 }],
-  pages: [0, 1].map((pageIndex) => ({
-    month,
-    pageIndex,
-    list: {
-      httpStatus: 200 as const,
-      totalElements: 2,
-      totalPages: 2,
-      size: 1,
-      content: [completeRecord.entry],
-    },
-  })),
+  pages: [
+    { month, pageIndex: 0, rowCount: 1 },
+    { month, pageIndex: 1, rowCount: 1 },
+  ],
   months: ["2026-09"],
 }, credentials, {
   captureId: "einvoice-workflow-identical-duplicate-pages",
@@ -569,3 +304,23 @@ assert.throws(() => captureInput(
 assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
 assert.match(firstCapture.subjectDigest, /^sha256:/u);
 assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
+
+// The App protocol capture builder marks the final (empty) page terminal.
+const appCapture = buildCanonicalEInvoiceCaptureFromApp({
+  records: [completeRecord],
+  pages: [
+    { month, pageIndex: 0, rowCount: 1 },
+    { month, pageIndex: 1, rowCount: 0 },
+  ],
+  months: ["2026-09"],
+}, credentials, {
+  captureId: "einvoice-app-protocol-capture",
+  observedAt: "2026-09-10T05:00:04Z",
+  today: new Date("2026-09-10T00:00:00Z"),
+});
+assert.equal(appCapture.invoices.length, 1);
+assert.equal(appCapture.scope.completeness, "complete-range");
+assert.deepEqual(appCapture.pages.map((page) => page.rowCount), [1, 0]);
+assert.deepEqual(appCapture.pages.map((page) => page.terminal), [false, true]);
+assert.deepEqual(appCapture.pages.map((page) => page.responseCode), ["200", "200"]);
+assert.equal(appCapture.pages[0]?.metadata.providerRowCount, 1);
