@@ -14,7 +14,6 @@ const providerWorkflows = [
   "fubon-loan-statements.ts",
   "sinopac-statements.ts",
   "hncb-statements.ts",
-  "einvoice-personal-invoices.ts",
   "post-statements.ts",
 ] as const;
 
@@ -38,7 +37,6 @@ const solverBackedCaptchaWorkflows = [
   { provider: "HNCB", source: "../workflows/hncb-statements.ts" },
   { provider: "Chunghwa Post", source: "../workflows/post-statements.ts" },
   { provider: "SinoPac", source: "../workflows/sinopac-statements.ts" },
-  { provider: "E-Invoice", source: "../workflows/einvoice-personal-invoices.ts" },
 ] as const;
 
 const solverBackedAudioCaptchaWorkflows = [
@@ -50,6 +48,11 @@ const explicitlyExcludedCaptchaWorkflows = [
     provider: "Cathay United Bank",
     source: "../workflows/cathay-statements.ts",
     reason: "Email OTP is retrieved through Gmail OAuth",
+  },
+  {
+    provider: "E-Invoice",
+    source: "../workflows/einvoice-personal-invoices.ts",
+    reason: "the App protocol signs in without a CAPTCHA (ADR 0043)",
   },
 ] as const;
 
@@ -124,7 +127,7 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
   );
   assert.deepEqual(
     solverSources.map(({ provider }) => provider),
-    ["Fubon", "Yuanta Bank", "HNCB", "Chunghwa Post", "SinoPac", "E-Invoice"],
+    ["Fubon", "Yuanta Bank", "HNCB", "Chunghwa Post", "SinoPac"],
   );
   for (const { provider, content } of solverSources) {
     assert.match(
@@ -195,6 +198,10 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
   assert.ok(cathay);
   assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
   assert.doesNotMatch(cathay.content, /emitHumanAssistanceStage/);
+  const einvoice = excludedSources.find(({ provider }) => provider === "E-Invoice");
+  assert.ok(einvoice);
+  assert.doesNotMatch(einvoice.content, /challengeKind:\s*["']text-captcha["']/);
+  assert.doesNotMatch(einvoice.content, /emitHumanAssistanceStage/);
 });
 
 test("provider verification focus keeps the challenge readable", async () => {
