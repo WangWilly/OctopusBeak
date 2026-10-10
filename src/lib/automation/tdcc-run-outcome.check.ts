@@ -10,6 +10,7 @@ test("TDCC exclusions read as plain counts and leave out what the run did not re
     excludedTimeDepositCount: 3,
     hiddenAccountCount: 1,
     excludedBankNotUpdatedCount: 1,
+    excludedEmptyNonIsoCurrencyCount: 1,
     rowCount: 40,
   };
   assert.deepEqual(tdccExclusionLines(counts, translations["zh-TW"]), [
@@ -17,12 +18,14 @@ test("TDCC exclusions read as plain counts and leave out what the run did not re
     "3 筆定期存款目前不匯入。",
     "1 個帳戶在集保e手掌握 App 中設為隱藏。",
     "1 家銀行這次未能從集保更新，它的交割帳戶沒有匯入，請稍後再同步。",
+    "1 個交割帳戶的幣別不明且餘額為 0，不匯入。",
   ]);
   assert.deepEqual(tdccExclusionLines(counts, translations.en), [
     "2 accounts are at a bank or broker code OctopusBeak does not know yet.",
     "3 time deposits are not imported yet.",
     "1 account is hidden in the TDCC e-Passbook phone App.",
     "TDCC could not update 1 bank this time, so its settlement accounts were not imported. Sync again later.",
+    "1 settlement account has no standard currency code and a zero balance, so it is not imported.",
   ]);
   assert.deepEqual(tdccExclusionLines({ rowCount: 40 }, translations.en), []);
   assert.deepEqual(countsOutsideTdccExclusions(counts), [["rowCount", 40]], "exclusions are not repeated as raw counts");

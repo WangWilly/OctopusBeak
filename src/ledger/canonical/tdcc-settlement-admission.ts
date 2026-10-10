@@ -45,7 +45,10 @@ export type TdccSettlementConnection = Readonly<{
 /** A TSP006 settlement account that can be admitted: a catalog bank and an ISO 4217 currency. */
 export type TdccSettlementAccount = Readonly<{
   bankId: string;
+  /** The account number TDCC reports and queries TSP007 with: digits, or a token for some digital accounts. */
   accountNo: string;
+  /** The depository account number, or null when TDCC reports only a token. */
+  depositoryAccountNo: string | null;
   currency: string;
   institutionKey: InstitutionKey;
   /** One TDCC account per bank, account number, and currency. */
@@ -56,7 +59,7 @@ export type TdccSettlementAccount = Readonly<{
 /** A reported account or holding that this contract does not admit. Nothing is dropped without one. */
 export type TdccSettlementExclusion =
   | Readonly<{
-    reason: "hidden-account" | "unknown-institution-code" | "non-iso-currency" | "non-numeric-account-number";
+    reason: "hidden-account" | "unknown-institution-code" | "non-iso-currency" | "empty-non-iso-currency" | "non-numeric-account-number";
     bankId: string;
     currency: string;
     accountNoSuffix: string;
@@ -122,6 +125,14 @@ function gregorianDate(value: unknown, label: string): string {
 
 const accountNoSuffix = (accountNo: string) => accountNo.slice(-4);
 
+const DEPOSITORY_ACCOUNT_NO = /^\d{6,24}$/u;
+/**
+ * TDCC reports a Cathay United Bank 數位存款帳戶 as a 16-character letter and
+ * digit token, stable across runs, which TSP007 accepts in place of the number.
+ */
+const ACCOUNT_TOKEN = /^(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{16}$/u;
+const ZERO_BALANCE = /^0+(?:\.0+)?$/u;
+
 /** The execStatue of a bank TDCC refreshed; any other status comes with null account lists. */
 const TSP006_BANK_UPDATED = "0000";
 
@@ -154,8 +165,8 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
         exclusions.push({ reason: "hidden-account", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
       }
-      // Some banks report a letter token instead of the depository account number.
-      if (!/^\d{6,24}$/u.test(accountNo)) {
+      const depositoryAccountNo = DEPOSITORY_ACCOUNT_NO.test(accountNo) ? accountNo : null;
+      if (!depositoryAccountNo && !ACCOUNT_TOKEN.test(accountNo)) {
         exclusions.push({ reason: "non-numeric-account-number", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
       }
@@ -164,7 +175,9 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
         continue;
       }
       if (!ISO_CURRENCIES.has(currency)) {
-        exclusions.push({ reason: "non-iso-currency", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
+        // An empty account in a currency TDCC cannot name, such as NAN, holds nothing to import.
+        const empty = ZERO_BALANCE.test(String(row.balanceAmt)) && ZERO_BALANCE.test(String(row.availableBalance));
+        exclusions.push({ reason: empty ? "empty-non-iso-currency" : "non-iso-currency", bankId, currency, accountNoSuffix: accountNoSuffix(accountNo) });
         continue;
       }
       const balances = {
@@ -174,7 +187,7 @@ export function readTdccSettlementSnapshot(body: unknown): TdccSettlementSnapsho
       const sourceAccountKey = `${bankId}-${accountNo}-${currency}`;
       if (keys.has(sourceAccountKey)) reject(`${label} repeats a settlement account.`);
       keys.add(sourceAccountKey);
-      accounts.push({ bankId, accountNo, currency, institutionKey, sourceAccountKey, balances });
+      accounts.push({ bankId, accountNo, depositoryAccountNo, currency, institutionKey, sourceAccountKey, balances });
     }
   }
   return { updateTime, effectiveAt, accounts, exclusions };
@@ -404,8 +417,8 @@ export function tdccSettlementTransactionCapture(
       subjectDigest: subject,
       accountNo: account.sourceAccountKey,
       sourceAccountKey: account.sourceAccountKey,
-      accountNumber: {
-        value: account.accountNo,
+      accountNumber: account.depositoryAccountNo === null ? null : {
+        value: account.depositoryAccountNo,
         kind: "depository-account",
         evidenceVersion: TDCC_SETTLEMENT_DEPOSIT_CONTRACT,
         sourceField: "accountNo",

@@ -24,6 +24,8 @@ const NAN_ACCOUNT = ["2001", "2345680"].join("");
 const UNKNOWN_BANK_ACCOUNT = ["3001", "2345678"].join("");
 const HIDDEN_ACCOUNT = ["1234", "5678", "909999"].join("");
 const DASHED_NAN_ACCOUNT = ["1234", "5678", "908888"].join("");
+// Shaped like the token TDCC reports for a Cathay United Bank 數位存款帳戶 instead of its account number.
+const TOKEN_ACCOUNT = ["ABCDe1fg", "H23I4567"].join("");
 const TWD_KEY = ["812", TWD_ACCOUNT, "TWD"].join("-");
 const USD_KEY = ["812", USD_ACCOUNT, "USD"].join("-");
 
@@ -106,7 +108,7 @@ test("TSP006 admits catalog banks in ISO currencies and reports every other acco
     ],
   );
   assert.deepEqual(snapshot.exclusions, [
-    { reason: "non-iso-currency", bankId: "812", currency: "NAN", accountNoSuffix: "5680" },
+    { reason: "empty-non-iso-currency", bankId: "812", currency: "NAN", accountNoSuffix: "5680" },
     { reason: "unknown-institution-code", bankId: "999", currency: "TWD", accountNoSuffix: "5678" },
   ]);
   assert.equal(snapshot.effectiveAt, "2026-10-09T02:30:00.000000000Z", "updateTime is Asia/Taipei local time");
@@ -158,14 +160,22 @@ test("TSP006 reports hidden accounts, and reads no balance of an account it does
   assert.ok(snapshot.exclusions.some((exclusion) => exclusion.reason === "non-iso-currency" && exclusion.accountNoSuffix === "8888"));
 });
 
-test("TSP006 reports an account whose number is not digits, and still admits the others", () => {
+test("TSP006 admits a 16-character account token, keyed by the token, and reports any other non-digit number", () => {
   const body = tsp006();
-  // Shaped like the account a catalog bank reported as a 16-character mostly-letter token.
-  body.tspAccountInfos[0]!.tspAccount.push(account("ABCDE1FxG23H4567", "TWD", "100", "100"));
+  body.tspAccountInfos[0]!.tspAccount.push(account(TOKEN_ACCOUNT, "TWD", "100", "100"), account("1234-5678", "TWD", "100", "100"));
   const snapshot = readTdccSettlementSnapshot(body);
-  assert.deepEqual(snapshot.accounts.map(({ sourceAccountKey }) => sourceAccountKey), [TWD_KEY, USD_KEY]);
+  assert.deepEqual(snapshot.accounts.map(({ sourceAccountKey }) => sourceAccountKey), [TWD_KEY, USD_KEY, `812-${TOKEN_ACCOUNT}-TWD`]);
   assert.deepEqual(snapshot.exclusions.filter(({ reason }) => reason === "non-numeric-account-number"), [
-    { reason: "non-numeric-account-number", bankId: "812", currency: "TWD", accountNoSuffix: "4567" },
+    { reason: "non-numeric-account-number", bankId: "812", currency: "TWD", accountNoSuffix: "5678" },
+  ]);
+});
+
+test("a non-ISO currency account reads as empty only when both balances are zero", () => {
+  const body = tsp006();
+  body.tspAccountInfos[0]!.tspAccount.push(account(DASHED_NAN_ACCOUNT, "NAN", "12.5", "0"));
+  assert.deepEqual(readTdccSettlementSnapshot(body).exclusions.filter((exclusion) => "currency" in exclusion && exclusion.currency === "NAN").map(({ reason }) => reason), [
+    "empty-non-iso-currency",
+    "non-iso-currency",
   ]);
 });
 
@@ -283,6 +293,28 @@ test("settlement accounts, balances, and transactions commit through PGlite, and
       "a later TSP006 updateTime is a new balance observation",
     );
     assert.equal((await ledgerState(store)).transactions, 2);
+  });
+});
+
+test("a token-keyed settlement account commits with its transactions and no account-number evidence", async () => {
+  await withStore(async (store) => {
+    const body = tsp006();
+    body.tspAccountInfos[0]!.tspAccount = [account(TOKEN_ACCOUNT, "TWD", "15200", "15000")];
+    const snapshot = readTdccSettlementSnapshot(body);
+    const [token] = snapshot.accounts;
+    assert.ok(token);
+    const capture = tdccSettlementTransactionCapture({ captureId: "run-1-tsp007-token", observedAt, connection, account: token, pages: tsp007(TOKEN_ACCOUNT, twdRows) });
+    assert.equal(capture.identity.accountNumber ?? null, null, "a token is not a depository account number");
+    await commitPGliteCanonicalDepositCapture(store, capture);
+    await commitPGliteCanonicalBalanceCapture(store, currentDepositBalanceCommandRequest(tdccSettlementBalanceCapture({
+      captureId: "run-1-tsp006-token", observedAt, connection, snapshot, account: token,
+    })));
+    const state = await ledgerState(store);
+    assert.deepEqual(state.accounts.map(({ source_account_key, institution_key }) => ({ source_account_key, institution_key })), [
+      { source_account_key: `812-${TOKEN_ACCOUNT}-TWD`, institution_key: "bank-812" },
+    ]);
+    assert.equal(state.transactions, 2);
+    assert.equal(state.balances.length, 2);
   });
 });
 

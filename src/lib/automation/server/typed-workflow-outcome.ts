@@ -34,6 +34,7 @@ type TypedWorkflowCountName =
   | "committedCount"
   | "count"
   | "excludedBankNotUpdatedCount"
+  | "excludedEmptyNonIsoCurrencyCount"
   | "excludedNonIsoCurrencyCount"
   | "excludedNonNumericAccountCount"
   | "excludedTimeDepositCount"
@@ -68,6 +69,7 @@ const SAFE_COUNT_NAMES = [
   "committedCount",
   "count",
   "excludedBankNotUpdatedCount",
+  "excludedEmptyNonIsoCurrencyCount",
   "excludedNonIsoCurrencyCount",
   "excludedNonNumericAccountCount",
   "excludedTimeDepositCount",
