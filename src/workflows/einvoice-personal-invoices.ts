@@ -20,6 +20,7 @@ import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteCanonicalEInvoiceCommitResult } from "../ledger/pglite/einvoice.ts";
+import { ProviderProtocolOutdatedError } from "../lib/automation/source-access.ts";
 import {
   liveEinvoiceAppSource,
   type AppInvoiceHeader,
@@ -521,6 +522,10 @@ function appInvoiceCaptureRecord(
 
 type AppInvoicePage = { month: YearMonth; pageIndex: number; rowCount: number };
 
+// Paging ends only at an empty page and carries no total. A month that has not
+// ended within this many pages means the server stopped honouring `page`.
+const MAX_HEADER_PAGES_PER_MONTH = 100;
+
 async function readAppProtocolInvoices(
   client: EinvoiceAppClient,
   session: EInvoiceAppSession,
@@ -544,6 +549,7 @@ async function readAppProtocolInvoices(
     let pageIndex = 0;
     for (;;) {
       signal.throwIfAborted();
+      if (pageIndex >= MAX_HEADER_PAGES_PER_MONTH) throw new ProviderProtocolOutdatedError();
       const result = await client.queryHeaders(session, startDate, endDate, pageIndex + 1, signal);
       pages.push({ month, pageIndex, rowCount: result.details.length });
       for (const header of result.details) {
