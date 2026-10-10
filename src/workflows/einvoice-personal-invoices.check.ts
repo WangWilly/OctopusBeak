@@ -29,28 +29,22 @@ const month = { year: 2026, month: 9 };
 const completeRecord = {
   month,
   listPageIndex: 0,
-  entry: {
-    token: "opaque-provider-row-a",
-    invoiceNumber: "AA00000001",
-    invoiceStrStatus: "INVOICE0003S",
-    totalAmount: "120",
-  },
   header: {
-    invoiceDate: "20260910",
+    invNum: "AA00000001",
+    invStatus: "開立已確認",
+    amount: "120",
     invoiceTime: "13:14:15",
-    totalAmount: "120",
-    invoiceStrStatus: "INVOICE0003S",
-    sellerId: "11112222",
+    invDate: { year: "115", month: "9", date: "10" },
+    sellerBan: "11112222",
     sellerName: "Deidentified Shop",
   },
   items: [{
-    sequenceNumber: "1",
-    item: "Deidentified item",
+    rowNum: "1",
+    description: "Deidentified item",
     quantity: "2",
     unitPrice: "60",
     amount: "120",
   }],
-  itemCompleteness: "complete" as const,
 };
 
 assert.deepEqual(canonicalOccurrence(completeRecord.header), {
@@ -97,8 +91,7 @@ assert.deepEqual(
 assert.throws(
   () => mapCanonicalEInvoiceRecord({
     ...completeRecord,
-    entry: { ...completeRecord.entry, invoiceStrStatus: "UNKNOWN" },
-    header: { ...completeRecord.header, invoiceStrStatus: "UNKNOWN" },
+    header: { ...completeRecord.header, invStatus: "UNKNOWN" },
   }),
   ProviderProtocolOutdatedError,
   "unknown provider lifecycle values must not be guessed as issued or revised",
@@ -106,18 +99,10 @@ assert.throws(
 assert.throws(
   () => mapCanonicalEInvoiceRecord({
     ...completeRecord,
-    header: { ...completeRecord.header, sellerId: null },
+    header: { ...completeRecord.header, sellerBan: "" },
   }),
   /seller tax ID is required/,
 );
-
-// The App protocol reports an issued invoice as 開立已確認.
-const appIssuedRecord = {
-  ...completeRecord,
-  entry: { ...completeRecord.entry, invoiceStrStatus: "開立已確認" },
-  header: { ...completeRecord.header, invoiceStrStatus: "開立已確認", extStatus: "開立已確認" },
-};
-assert.equal(mapCanonicalEInvoiceRecord(appIssuedRecord).revisionKind, "issued");
 
 const captureInput = (
   records: readonly InvoiceCaptureRecord[],
@@ -169,15 +154,11 @@ const captureWithItems = (
   items: InvoiceCaptureRecord["items"],
   captureId: string,
 ) => captureInput([
-  {
-    ...completeRecord,
-    items,
-    itemCompleteness: "complete",
-  },
+  { ...completeRecord, items },
 ], captureId, "2026-09-10T05:00:00Z");
 
 const zeroSequenceCapture = captureWithItems([
-  { ...completeRecord.items[0]!, sequenceNumber: "0" },
+  { ...completeRecord.items[0]!, rowNum: "0" },
 ], "einvoice-workflow-sequence-zero");
 assert.deepEqual(
   zeroSequenceCapture.invoices[0]?.items.map((item) => item.sequence),
@@ -191,7 +172,7 @@ assert.equal(
 );
 
 const malformedSequenceCapture = captureWithItems([
-  { ...completeRecord.items[0]!, sequenceNumber: "1.0" },
+  { ...completeRecord.items[0]!, rowNum: "1.0" },
 ], "einvoice-workflow-sequence-malformed");
 assert.deepEqual(
   malformedSequenceCapture.invoices[0]?.items.map((item) => item.sequence),
@@ -204,8 +185,8 @@ assert.equal(
 );
 
 const duplicateSequenceCapture = captureWithItems([
-  { ...completeRecord.items[0]!, sequenceNumber: "3", item: "First item", amount: "60" },
-  { ...completeRecord.items[0]!, sequenceNumber: "3", item: "Second item", amount: "60" },
+  { ...completeRecord.items[0]!, rowNum: "3", description: "First item", amount: "60" },
+  { ...completeRecord.items[0]!, rowNum: "3", description: "Second item", amount: "60" },
 ], "einvoice-workflow-sequence-duplicate");
 assert.deepEqual(
   duplicateSequenceCapture.invoices[0]?.items.map((item) => item.sequence),
@@ -218,7 +199,7 @@ assert.deepEqual(
 );
 
 const missingSequenceCapture = captureWithItems([
-  { ...completeRecord.items[0]!, sequenceNumber: undefined },
+  { ...completeRecord.items[0]!, rowNum: undefined },
 ], "einvoice-workflow-sequence-missing");
 assert.deepEqual(
   missingSequenceCapture.invoices[0]?.items.map((item) => item.sequence),
@@ -232,8 +213,8 @@ assert.equal(
 );
 
 const validNonContiguousCapture = captureWithItems([
-  { ...completeRecord.items[0]!, sequenceNumber: " 4 ", item: "Fourth item", amount: "60" },
-  { ...completeRecord.items[0]!, sequenceNumber: "9", item: "Ninth item", amount: "60" },
+  { ...completeRecord.items[0]!, rowNum: " 4 ", description: "Fourth item", amount: "60" },
+  { ...completeRecord.items[0]!, rowNum: "9", description: "Ninth item", amount: "60" },
 ], "einvoice-workflow-sequence-valid");
 assert.deepEqual(
   validNonContiguousCapture.invoices[0]?.items.map((item) => item.sequence),
@@ -251,10 +232,7 @@ const firstCapture = captureInput(
   "2026-09-10T05:00:00Z",
 );
 const duplicateCapture = captureInput(
-  [completeRecord, {
-    ...completeRecord,
-    entry: { ...completeRecord.entry, token: "another-provider-row-token" },
-  }],
+  [completeRecord, completeRecord],
   "einvoice-workflow-identical-duplicate",
   "2026-09-10T05:00:01Z",
 );
