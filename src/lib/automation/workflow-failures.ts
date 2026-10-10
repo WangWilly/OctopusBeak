@@ -55,6 +55,10 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
     zh: "來源資料收集失敗，未完成這次來源的資料驗證。",
     en: "Source collection failed before validation of this collection completed.",
   },
+  "source-validation-failed": {
+    zh: "來源回傳的資料格式與預期不符，這部分沒有匯入。需要更新 OctopusBeak 才能讀取。",
+    en: "The source returned data in a shape OctopusBeak does not expect, so this part was not imported. OctopusBeak needs an update to read it.",
+  },
   "workflow-failed": {
     zh: "執行失敗，現有紀錄不足以判定詳細原因。",
     en: "Execution failed; the available record does not establish the specific cause.",
