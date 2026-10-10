@@ -7,8 +7,6 @@ import { einvoicePersonalInvoicesWorkflow } from "./einvoice-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import {
-  assertEinvoiceCaptureAdmissible,
-  buildCanonicalEInvoiceCaptureFromApp,
   runEinvoiceProviderWorkflow,
 } from "../../workflows/einvoice-personal-invoices.ts";
 import type {
@@ -161,6 +159,77 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
   assert.equal(commits.length, 0);
 }
 
+type CommittedCapture = {
+  scope: { itemCompleteness: string };
+  invoices: Array<{ items: Array<{ completeness: string; unitPrice: unknown }> }>;
+};
+
+function committedCapture(commits: unknown[]): CommittedCapture {
+  return (commits[0] as { command: { request: CommittedCapture } }).command.request;
+}
+
+const issuedHeader = {
+  invNum: "AB12345678",
+  sellerBan: "12345678",
+  sellerName: "測試商店",
+  amount: "120",
+  invStatus: "開立已確認",
+  invoiceTime: "12:30:00",
+  invDate: { year: "2026", month: "9", date: "15" },
+};
+
+function oneInvoiceSource(
+  header: Record<string, unknown>,
+  items: ReadonlyArray<Record<string, unknown>>,
+): EinvoiceAppSource {
+  let served = false;
+  return sourceWith({
+    queryHeaders: async () => {
+      if (served) return emptyHeaders;
+      served = true;
+      return { ...emptyHeaders, details: [header] };
+    },
+    queryDetail: async () => ({ ...emptyDetail, details: items }),
+  });
+}
+
+// An invoice status outside the admitted vocabulary (the void string is not
+// yet observed) cannot be guessed and cannot be skipped, so the run fails as
+// an outdated protocol mapping and commits nothing.
+{
+  const { context, commits } = makeContext({});
+  await assert.rejects(
+    runEinvoiceProviderWorkflow(context, { credentials }, oneInvoiceSource(
+      { ...issuedHeader, invStatus: "未觀察過的狀態" },
+      [{ rowNum: "1", description: "咖啡", quantity: "1", unitPrice: "120", amount: "120" }],
+    )),
+    ProviderProtocolOutdatedError,
+  );
+  assert.equal(commits.length, 0);
+}
+
+// An item missing a fact is admitted as incomplete instead of failing the run.
+{
+  const { context, commits } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, oneInvoiceSource(issuedHeader, [
+    { rowNum: "1", description: "咖啡", quantity: "1", amount: "120" },
+  ]));
+  const capture = committedCapture(commits);
+  assert.equal(capture.scope.itemCompleteness, "incomplete");
+  assert.deepEqual(capture.invoices[0]!.items.map((item) => item.completeness), ["incomplete"]);
+}
+
+// An item number that is not a decimal is recorded as missing, not fatal.
+{
+  const { context, commits } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, oneInvoiceSource(issuedHeader, [
+    { rowNum: "1", description: "咖啡", quantity: "1", unitPrice: "—", amount: "120" },
+  ]));
+  const item = committedCapture(commits).invoices[0]!.items[0]!;
+  assert.equal(item.completeness, "incomplete");
+  assert.equal(item.unitPrice, null);
+}
+
 // A login rejection propagates and never reaches commit.
 {
   const { context, commits } = makeContext({});
@@ -187,23 +256,6 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
     /AbortError|aborted/,
   );
   assert.equal(opened, false);
-}
-
-// The admissible check still rejects an incomplete capture.
-{
-  const capture = buildCanonicalEInvoiceCaptureFromApp({
-    records: [{
-      month: { year: 2026, month: 9 },
-      listPageIndex: 0,
-      entry: { token: "row", invoiceNumber: "AA00000001", invoiceStrStatus: "開立已確認" },
-      header: { invoiceDate: "2026-09-10", sellerId: "11112222", totalAmount: "10", invoiceStrStatus: "開立已確認" },
-      items: [{ item: "item", quantity: "1", unitPrice: null, amount: "10" }],
-      itemCompleteness: "incomplete",
-    }],
-    pages: [{ month: { year: 2026, month: 9 }, pageIndex: 0, rowCount: 1 }],
-    months: ["2026-09"],
-  }, credentials, { captureId: "incomplete-capture" });
-  assert.throws(() => assertEinvoiceCaptureAdmissible(capture), /source is incomplete/u);
 }
 
 // The workflow definition still points at the entry point.

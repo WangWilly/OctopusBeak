@@ -8,6 +8,7 @@ import {
   mapCanonicalEInvoiceRecord,
   type InvoiceCaptureRecord,
 } from "./einvoice-personal-invoices.ts";
+import { ProviderProtocolOutdatedError } from "../lib/automation/source-access.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "einvoice-personal-invoices.ts"),
@@ -99,7 +100,7 @@ assert.throws(
     entry: { ...completeRecord.entry, invoiceStrStatus: "UNKNOWN" },
     header: { ...completeRecord.header, invoiceStrStatus: "UNKNOWN" },
   }),
-  /status UNKNOWN is not admitted/,
+  ProviderProtocolOutdatedError,
   "unknown provider lifecycle values must not be guessed as issued or revised",
 );
 assert.throws(
@@ -128,46 +129,27 @@ const captureInput = (
   months: ["2026-09"],
 }, credentials, { captureId, observedAt, today: new Date("2026-09-10T00:00:00Z") });
 
-const commaDecimalRecord = {
-  ...completeRecord,
-  items: [{ ...completeRecord.items[0]!, quantity: "1,5" }],
-};
-assert.throws(
-  () => captureInput(
-    [commaDecimalRecord],
-    "einvoice-workflow-comma-decimal",
-    "2026-09-10T04:59:00Z",
-  ),
-  /E-Invoice item 1 quantity is not an exact decimal/,
-  "comma-decimal quantities must not silently become fifteen",
-);
-for (const malformed of ["12,34", "1,23,456", "1,,000", "１,０００", "1，000", "1e3", "1 000"]) {
-  assert.throws(
-    () => captureInput(
-      [{ ...completeRecord, items: [{ ...completeRecord.items[0]!, quantity: malformed }] }],
-      `einvoice-workflow-invalid-decimal-${malformed}`,
-      "2026-09-10T04:59:01Z",
-    ),
-    /E-Invoice item 1 quantity is not an exact decimal/,
-    `malformed decimal ${malformed} must fail closed`,
-  );
+// A malformed item number never silently becomes a different number: it is
+// recorded as missing and the item is admitted as incomplete.
+function mappedItem(field: "quantity" | "unitPrice" | "amount", value: string) {
+  return mapCanonicalEInvoiceRecord({
+    ...completeRecord,
+    items: [{ ...completeRecord.items[0]!, [field]: value }],
+  }).items[0]!;
 }
-assert.throws(
-  () => captureInput(
-    [{ ...completeRecord, items: [{ ...completeRecord.items[0]!, unitPrice: "1,5" }] }],
-    "einvoice-workflow-invalid-unit-price",
-    "2026-09-10T04:59:02Z",
-  ),
-  /E-Invoice item 1 unit price is not an exact decimal/,
-);
-assert.throws(
-  () => captureInput(
-    [{ ...completeRecord, items: [{ ...completeRecord.items[0]!, amount: "1,5" }] }],
-    "einvoice-workflow-invalid-amount",
-    "2026-09-10T04:59:03Z",
-  ),
-  /E-Invoice item 1 amount is not an exact decimal/,
-);
+const commaDecimalQuantity = mappedItem("quantity", "1,5");
+assert.equal(commaDecimalQuantity.quantity, null, "comma-decimal quantities must not silently become fifteen");
+assert.equal(commaDecimalQuantity.completeness, "incomplete");
+for (const malformed of ["12,34", "1,23,456", "1,,000", "１,０００", "1，000", "1e3", "1 000"]) {
+  const item = mappedItem("quantity", malformed);
+  assert.equal(item.quantity, null, `malformed decimal ${malformed} must not become a number`);
+  assert.equal(item.completeness, "incomplete");
+}
+for (const field of ["unitPrice", "amount"] as const) {
+  const item = mappedItem(field, "1,5");
+  assert.equal(item[field], null, `malformed ${field} must not become a number`);
+  assert.equal(item.completeness, "incomplete");
+}
 const groupedDecimal = mapCanonicalEInvoiceRecord({
   ...completeRecord,
   items: [{
