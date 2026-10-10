@@ -166,7 +166,7 @@ assert.deepEqual(
   "a non-positive provider sequence falls back to the API response ordinal",
 );
 assert.equal(
-  zeroSequenceCapture.invoices[0]?.items[0]?.sourceFacts?.providerSequenceRaw,
+  zeroSequenceCapture.invoices[0]?.items[0]?.sourceFacts?.providerRowNum,
   "0",
   "the invalid provider sequence remains as compact source evidence",
 );
@@ -180,7 +180,7 @@ assert.deepEqual(
   "a malformed provider sequence falls back to the API response ordinal",
 );
 assert.equal(
-  malformedSequenceCapture.invoices[0]?.items[0]?.sourceFacts?.providerSequenceRaw,
+  malformedSequenceCapture.invoices[0]?.items[0]?.sourceFacts?.providerRowNum,
   "1.0",
 );
 
@@ -194,7 +194,7 @@ assert.deepEqual(
   "duplicate provider sequences fall back for every item",
 );
 assert.deepEqual(
-  duplicateSequenceCapture.invoices[0]?.items.map((item) => item.sourceFacts?.providerSequenceRaw),
+  duplicateSequenceCapture.invoices[0]?.items.map((item) => item.sourceFacts?.providerRowNum),
   ["3", "3"],
 );
 
@@ -207,7 +207,7 @@ assert.deepEqual(
   "a missing provider sequence falls back to the API response ordinal",
 );
 assert.equal(
-  "providerSequenceRaw" in (missingSequenceCapture.invoices[0]?.items[0]?.sourceFacts ?? {}),
+  "providerRowNum" in (missingSequenceCapture.invoices[0]?.items[0]?.sourceFacts ?? {}),
   false,
   "missing provider sequence does not create a fabricated raw value",
 );
@@ -222,7 +222,7 @@ assert.deepEqual(
   "unique positive provider sequences retain their source values after trimming",
 );
 assert.deepEqual(
-  validNonContiguousCapture.invoices[0]?.items.map((item) => item.sourceFacts?.providerSequenceRaw),
+  validNonContiguousCapture.invoices[0]?.items.map((item) => item.sourceFacts?.providerRowNum),
   ["4", "9"],
 );
 

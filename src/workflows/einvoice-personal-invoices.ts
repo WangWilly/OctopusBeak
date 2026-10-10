@@ -131,22 +131,18 @@ function monthEndDay(month: YearMonth, today = new Date()): number {
   return new Date(month.year, month.month, 0).getDate();
 }
 
-// Only App statuses actually observed are admitted. `revisionLabel` feeds the
-// source revision key, and every stored revision was keyed with "confirmed";
-// changing it re-keys admitted invoices.
-const APP_INVOICE_STATUSES: Readonly<Record<string, Readonly<{
-  kind: "issued" | "revoked";
-  revisionLabel: string;
-}>>> = {
-  "開立已確認": { kind: "issued", revisionLabel: "confirmed" },
+// Only App statuses actually observed are admitted.
+const APP_INVOICE_STATUS_KINDS: Readonly<Record<string, "issued" | "revoked">> = {
+  "開立已確認": "issued",
 };
 
-function appInvoiceStatus(header: AppInvoiceHeader): Readonly<{ kind: "issued" | "revoked"; revisionLabel: string }> {
-  const status = APP_INVOICE_STATUSES[cleanText(header.invStatus)];
+function appInvoiceStatus(header: AppInvoiceHeader): Readonly<{ value: string; kind: "issued" | "revoked" }> {
+  const value = cleanText(header.invStatus);
+  const kind = APP_INVOICE_STATUS_KINDS[value];
   // An unmapped status (the App's void string is not yet observed) cannot be
   // guessed, and the contract forbids admitting the range without it.
-  if (!status) throw new ProviderProtocolOutdatedError();
-  return status;
+  if (!kind) throw new ProviderProtocolOutdatedError();
+  return { value, kind };
 }
 
 function opaqueDigest(domain: string, ...parts: readonly string[]): `sha256:${string}` {
@@ -258,7 +254,7 @@ function canonicalItem(
   if (!name && !quantity && !unitPrice && !amount)
     throw new Error(`E-Invoice item ${index + 1} has no source facts.`);
   const completeness = name && quantity && unitPrice && amount ? "complete" : "incomplete";
-  const providerSequence = cleanText(source.rowNum) || null;
+  const providerRowNum = cleanText(source.rowNum) || null;
   return {
     sequence,
     completeness,
@@ -268,8 +264,8 @@ function canonicalItem(
     amount,
     sourceFacts: {
       providerItemOrdinal: index + 1,
-      ...(providerSequence === null ? {} : { providerSequenceRaw: providerSequence }),
-      ...(sequenceFallback ? { providerSequenceFallback: true } : {}),
+      ...(providerRowNum === null ? {} : { providerRowNum }),
+      ...(sequenceFallback ? { providerRowNumFallback: true } : {}),
     },
   };
 }
@@ -307,7 +303,7 @@ export function mapCanonicalEInvoiceRecord(
   const sourceRevisionKey = `provider-revision:${opaqueDigest(
     "einvoice-revision",
     stableInvoiceKey,
-    status.revisionLabel,
+    status.value,
     String(revisionNumber),
   )}`;
   const itemSequencePlan = canonicalItemSequences(record.items);
@@ -340,12 +336,10 @@ export function mapCanonicalEInvoiceRecord(
     provenance: {
       kind: revisionKind === "revoked" ? "provider-revocation" : "provider-record",
       reference,
-      // Named after the website field that carried the status. It is part of
-      // every stored revision's fact fingerprint, so it keeps that name.
-      sourceField: "invoiceStrStatus",
+      sourceField: "invStatus",
     },
     ...(revisionKind === "revoked"
-      ? { revocationReason: `provider-status:${status.revisionLabel}` }
+      ? { revocationReason: `provider-status:${status.value}` }
       : {}),
   };
 }

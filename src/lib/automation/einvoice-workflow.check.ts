@@ -237,9 +237,9 @@ function oneInvoiceSource(
 }
 
 // Revision fingerprints are computed over every mapped fact, and the ledger
-// rejects a stored revision whose facts change (revision-conflict). So the
-// mapping from App rows must stay byte-identical: if this digest moves, the
-// next real sync fails for every invoice already admitted.
+// rejects a stored revision whose facts change (revision-conflict). A change
+// to this digest therefore fails the next sync of every admitted invoice and
+// must ship together with a reset of the stored E-Invoice data.
 {
   const rows: Array<{ header: Record<string, unknown>; items: ReadonlyArray<Record<string, unknown>> }> = [
     { header: issuedHeader, items: [
@@ -270,7 +270,7 @@ function oneInvoiceSource(
   }));
   const invoices = (commits[0] as { command: { request: { invoices: unknown[] } } }).command.request.invoices;
   const digest = createHash("sha256").update(stableCanonicalSourceJson({ invoices })).digest("base64url");
-  assert.equal(digest, "t6mf3Jb2x-QxkCqPh8OVqSrsF--TC9tDtwO3RSyEHPo");
+  assert.equal(digest, "i3nXkHKMSwB2oOwR7VHDOt6ACZhj5cwUIfwR9SnGSKg");
 }
 
 // An invoice status outside the admitted vocabulary (the void string is not
