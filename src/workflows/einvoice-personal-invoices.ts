@@ -297,9 +297,13 @@ export function mapCanonicalEInvoiceRecord(
   const revisionNumber = revisionKind === "revoked" ? 2 : 1;
   const invoiceNumber = cleanText(header.invNum);
   const sellerTaxId = cleanText(header.sellerBan);
+  const period = cleanText(header.invPeriod);
   if (!invoiceNumber) throw new Error("E-Invoice invoice number is required.");
   if (!sellerTaxId) throw new Error(`E-Invoice ${invoiceNumber} seller tax ID is required.`);
-  const stableInvoiceKey = `provider:${invoiceNumber}:${sellerTaxId}`;
+  // Invoice numbers are allocated per two-month period (e.g. 11504), so a
+  // number identifies an invoice only together with its period.
+  if (!period) throw new Error(`E-Invoice ${invoiceNumber} period is required.`);
+  const stableInvoiceKey = `provider:${period}:${invoiceNumber}:${sellerTaxId}`;
   const sourceRevisionKey = `provider-revision:${opaqueDigest(
     "einvoice-revision",
     stableInvoiceKey,
