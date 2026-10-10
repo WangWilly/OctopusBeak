@@ -128,6 +128,14 @@ function bankRows(csv) {
 }
 
 /** A firm's branches share its head-office code up to the head office's trailing zeros (9800 -> 98xx, 1020 -> 102x). */
+/**
+ * Branch codes TDCC reports on broker accounts that TWSE OpenData_BRK02 does
+ * not list, each to its firm's head-office code.
+ */
+const UNLISTED_BROKER_BRANCHES = {
+  "8889": "8880", // 國泰證券敦南分公司, seen in TDCC TR001.
+};
+
 const firmPrefix = (code) => code.replace(/0+$/u, "");
 
 function brokerTables(firms, branches) {
@@ -146,6 +154,11 @@ function brokerTables(firms, branches) {
     const code = branch["證券商代號"].trim();
     if (branchFirms.has(code)) throw new Error(`Broker branch ${code} is listed twice.`);
     branchFirms.set(code, firmFor(code));
+  }
+  for (const [code, firm] of Object.entries(UNLISTED_BROKER_BRANCHES)) {
+    if (branchFirms.has(code)) throw new Error(`Unlisted broker branch ${code} is now listed by TWSE; remove it from the overlay.`);
+    if (!firmRows.some((row) => row.code === firm)) throw new Error(`Unlisted broker branch ${code} names firm ${firm}, which TWSE does not list.`);
+    branchFirms.set(code, firm);
   }
   const stale = Object.keys(BROKER_OVERLAY).filter((code) => !branchFirms.has(code));
   if (stale.length) throw new Error(`Broker overlay names firms TWSE does not list: ${stale.join(" ")}.`);
