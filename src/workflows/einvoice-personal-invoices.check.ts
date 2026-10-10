@@ -31,6 +31,7 @@ const completeRecord = {
   listPageIndex: 0,
   header: {
     invNum: "AA00000001",
+    invPeriod: "11510",
     invStatus: "開立已確認",
     amount: "120",
     invoiceTime: "13:14:15",

@@ -270,7 +270,41 @@ function oneInvoiceSource(
   }));
   const invoices = (commits[0] as { command: { request: { invoices: unknown[] } } }).command.request.invoices;
   const digest = createHash("sha256").update(stableCanonicalSourceJson({ invoices })).digest("base64url");
-  assert.equal(digest, "i3nXkHKMSwB2oOwR7VHDOt6ACZhj5cwUIfwR9SnGSKg");
+  assert.equal(digest, "yPrxyRNZPggz_EEAGOG8mlHIn40z4-GFmNO7MnAkV1Q");
+}
+
+// Invoice numbers are allocated per two-month period, so the same number
+// and seller in another period is a different invoice.
+{
+  const nextPeriod = {
+    ...issuedHeader,
+    invPeriod: "11506",
+    invDate: { ...issuedHeader.invDate, month: "5", time: "1777644466000" },
+  };
+  let served = false;
+  const { context, commits } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+    queryHeaders: async () => {
+      if (served) return emptyHeaders;
+      served = true;
+      return { ...emptyHeaders, details: [issuedHeader, nextPeriod] };
+    },
+    queryDetail: async () => ({ ...emptyDetail, details: [{ rowNum: "1", description: "咖啡", quantity: "1", unitPrice: "120", amount: "120" }] }),
+  }));
+  const keys = (commits[0] as { command: { request: { invoices: Array<{ stableInvoiceKey: string }> } } })
+    .command.request.invoices.map((invoice) => invoice.stableInvoiceKey);
+  assert.equal(new Set(keys).size, 2);
+}
+
+// The period is part of the invoice identity, so a row without one is rejected.
+{
+  const { invPeriod: _omitted, ...withoutPeriod } = issuedHeader;
+  const { context, commits } = makeContext({});
+  await assert.rejects(
+    runEinvoiceProviderWorkflow(context, { credentials }, oneInvoiceSource(withoutPeriod, [])),
+    /period is required/u,
+  );
+  assert.equal(commits.length, 0);
 }
 
 // An invoice status outside the admitted vocabulary (the void string is not
