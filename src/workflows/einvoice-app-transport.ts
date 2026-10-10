@@ -1,4 +1,5 @@
 import type { CDPSession, Page } from "playwright";
+import { BrowserRuntimeConfigurationError } from "../lib/automation/server/browser-runtime.ts";
 import {
   ProviderProtocolOutdatedError,
   SourceAccessChallengeError,
@@ -76,22 +77,35 @@ export type AppDetailQuery = {
   details: readonly AppInvoiceItem[];
 };
 
-/** Strips Origin/Referer from every einvoice request at the network layer. */
-export async function installEinvoiceOriginStripping(page: Page): Promise<CDPSession> {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Fetch.enable", {
-    patterns: [{ urlPattern: "*einvoice*", requestStage: "Request" }],
-  });
+type PausedRequestCdp = Readonly<{
+  on(event: "Fetch.requestPaused", handler: (event: any) => Promise<void>): unknown;
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}>;
+
+/** Continues each paused request without its Origin and Referer headers. */
+export function stripOriginOnPausedRequests(cdp: PausedRequestCdp, onRewriteFailed: () => void): void {
   cdp.on("Fetch.requestPaused", async (event) => {
-    const headers = Object.entries(event.request.headers ?? {})
+    const headers = Object.entries((event.request.headers ?? {}) as Record<string, string>)
       .filter(([name]) => !["origin", "referer"].includes(name.toLowerCase()))
       .map(([name, value]) => ({ name, value }));
     try {
       await cdp.send("Fetch.continueRequest", { requestId: event.requestId, headers });
     } catch {
-      await cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => undefined);
+      // Continuing with the original headers would send Origin, which the
+      // query host rejects; fail the request and report the rewrite instead.
+      onRewriteFailed();
+      await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "Aborted" }).catch(() => undefined);
     }
   });
+}
+
+/** Strips Origin/Referer from every einvoice request at the network layer. */
+export async function installEinvoiceOriginStripping(page: Page, onRewriteFailed: () => void): Promise<CDPSession> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Fetch.enable", {
+    patterns: [{ urlPattern: "*einvoice*", requestStage: "Request" }],
+  });
+  stripOriginOnPausedRequests(cdp as unknown as PausedRequestCdp, onRewriteFailed);
   return cdp;
 }
 
@@ -128,6 +142,9 @@ async function postAppJson(
   const response = await inPagePost(page, url, headers, body);
   if (response.status === 0 || response.status >= 500) throw new SourceUnavailableError();
   if (response.status === 403 && CLOUDFLARE_CHALLENGE.test(response.text)) throw new SourceAccessChallengeError();
+  // The query host's answer to a request that still carries Origin.
+  if (response.status === 403 && /Invalid CORS request/u.test(response.text))
+    throw new BrowserRuntimeConfigurationError("request-header-rewrite-failed");
   if (response.status !== 200)
     throw new Error(`E-Invoice App ${operation} failed with HTTP ${response.status}.`);
   const parsed = (() => {
@@ -331,7 +348,20 @@ export type EinvoiceAppSource = {
 /** The production source: a real browser that passes Cloudflare and strips Origin. */
 export const liveEinvoiceAppSource: EinvoiceAppSource = {
   async open(page: Page) {
-    const cdp = await installEinvoiceOriginStripping(page);
+    let rewriteFailed = false;
+    const cdp = await installEinvoiceOriginStripping(page, () => { rewriteFailed = true; });
+    // A request failed by the rewrite surfaces in the page as a network error;
+    // report it as the rewrite failure it is.
+    const guarded = async <T>(run: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await run();
+        if (rewriteFailed) throw new BrowserRuntimeConfigurationError("request-header-rewrite-failed");
+        return result;
+      } catch (error) {
+        if (rewriteFailed) throw new BrowserRuntimeConfigurationError("request-header-rewrite-failed");
+        throw error;
+      }
+    };
     await page.goto(EINVOICE_APP_MIDDLE_HOST, { waitUntil: "domcontentloaded" }).catch(() => undefined);
     let onBig = false;
     const ensureBig = async () => {
@@ -340,14 +370,15 @@ export const liveEinvoiceAppSource: EinvoiceAppSource = {
       onBig = true;
     };
     const client: EinvoiceAppClient = {
-      login: (phone, password, deviceId, signal) => loginEinvoiceApp(page, phone, password, deviceId, signal),
+      login: (phone, password, deviceId, signal) =>
+        guarded(() => loginEinvoiceApp(page, phone, password, deviceId, signal)),
       queryHeaders: async (session, startDate, endDate, pageNo, signal) => {
         await ensureBig();
-        return queryEinvoiceHeaders(page, session, startDate, endDate, pageNo, signal);
+        return guarded(() => queryEinvoiceHeaders(page, session, startDate, endDate, pageNo, signal));
       },
       queryDetail: async (session, invNum, invDate, signal) => {
         await ensureBig();
-        return queryEinvoiceDetail(page, session, invNum, invDate, signal);
+        return guarded(() => queryEinvoiceDetail(page, session, invNum, invDate, signal));
       },
     };
     return {
