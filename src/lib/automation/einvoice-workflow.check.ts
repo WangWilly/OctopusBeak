@@ -124,6 +124,24 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
   assert.equal(commits.length, 1);
 }
 
+// The header query takes YYYY/MM/DD dates; the live server answers dashed
+// dates with a top-level 903 參數錯誤.
+{
+  const ranges: Array<[string, string]> = [];
+  const { context } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+    queryHeaders: async (_session, startDate, endDate) => {
+      ranges.push([startDate, endDate]);
+      return emptyHeaders;
+    },
+  }));
+  assert.ok(ranges.length > 0);
+  for (const [startDate, endDate] of ranges) {
+    assert.match(startDate, /^\d{4}\/\d{2}\/01$/u);
+    assert.match(endDate, /^\d{4}\/\d{2}\/\d{2}$/u);
+  }
+}
+
 // A login rejection propagates and never reaches commit.
 {
   const { context, commits } = makeContext({});
