@@ -44,8 +44,9 @@ Each settlement account is one Financial Account per bank code, account number, 
 - `txnDateTime`, `startDate`, `endDate`, and `updateTime` are read as Gregorian Asia/Taipei times, as the all-set-tw reference reads them. The 14-digit and 8-digit shapes would also fit an ROC `0YYY` year, so a year outside 1900 to 2099 rejects the capture instead of being misread.
 - TSP007 has no reliable occurrence identifier. The reference client saw TDCC fill in `stan` after a row first appeared, so `stan` and `hcode` stay out of identity and content. Identical rows keep their multiplicity through occurrence groups ([ADR 0034](0034-workflow-semantic-occurrence-disambiguation.md)). Only the `hcode` values seen live, empty and `0`, are admitted.
 - TSP006 gives one current-balance capture per account: `balanceAmt` is the ledger balance and `availableBalance` is the available balance, both effective at the response's `updateTime`.
-- An account with an unknown bank code, a non-ISO currency, or an account number that is not 6 to 24 digits, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read.
+- An account with an unknown bank code, a non-ISO currency, or an account number that is neither 6 to 24 digits nor an account token, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read, except to tell an empty non-ISO currency account apart.
 - A bank whose TSP006 `execStatue` is not `0000` was not refreshed by TDCC. It reports `null` account lists and a message such as 「資料並未更新成功」, so the bank is reported as one typed exclusion and the other banks are still admitted.
+- For a Cathay United Bank 數位存款帳戶, TDCC reports a 16-character letter and digit token instead of the account number. TSP006 and TSP007 both use it, and it stayed the same across live runs, so the account is admitted with the token as its account number in the source account key. Its capture carries no account-number evidence, because a token is not a depository account number.
 
 ### Passbook movements
 
@@ -86,7 +87,7 @@ The holdings projections treated a collection run of an account as the set of ho
 
 ### Currency
 
-A settlement account whose currency is not an ISO 4217 code, such as TDCC's `NAN`, is not admitted, and the run reports it. The development probe records whether such an account has a non-zero balance or any transactions.
+A settlement account whose currency is not an ISO 4217 code, such as TDCC's `NAN`, is not admitted, and the run reports it. When both its balances are zero, the run reports it as an empty account instead. The `NAN` account seen live had zero balances and no TSP007 transactions, so nothing names its currency. The development probe records whether such an account has a non-zero balance or any transactions.
 
 ## Considered options
 
