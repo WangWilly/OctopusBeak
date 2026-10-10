@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
 import { einvoicePersonalInvoicesWorkflow } from "./einvoice-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
+import { stableCanonicalSourceJson } from "../../ledger/canonical/canonical-source-evidence.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import {
   runEinvoiceProviderWorkflow,
@@ -232,6 +234,43 @@ function oneInvoiceSource(
     timeZone: "Asia/Taipei",
     origin: "source-reported",
   });
+}
+
+// Revision fingerprints are computed over every mapped fact, and the ledger
+// rejects a stored revision whose facts change (revision-conflict). So the
+// mapping from App rows must stay byte-identical: if this digest moves, the
+// next real sync fails for every invoice already admitted.
+{
+  const rows: Array<{ header: Record<string, unknown>; items: ReadonlyArray<Record<string, unknown>> }> = [
+    { header: issuedHeader, items: [
+      { rowNum: "1", description: "咖啡", quantity: "1", unitPrice: "60", amount: "60" },
+      { rowNum: "2", description: "蛋糕", quantity: "2", unitPrice: "30", amount: "60" },
+    ] },
+    { header: { ...issuedHeader, invNum: "AB12345679", sellerName: "" }, items: [
+      { rowNum: "1", description: "午餐", quantity: "1", amount: "1,234" },
+    ] },
+    { header: { ...issuedHeader, invNum: "AB12345680", amount: "1,234.50" }, items: [
+      { rowNum: "3", description: "甲", quantity: "0.5", unitPrice: "-10", amount: "-5" },
+      { rowNum: "3", description: "乙", quantity: "1", unitPrice: "1,239.5", amount: "1,239.50" },
+    ] },
+    { header: { ...issuedHeader, invNum: "AB12345681", invoiceTime: "" }, items: [] },
+  ];
+  let served = false;
+  const { context, commits } = makeContext({});
+  await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+    queryHeaders: async () => {
+      if (served) return emptyHeaders;
+      served = true;
+      return { ...emptyHeaders, details: rows.map((row) => row.header) };
+    },
+    queryDetail: async (_session, invNum) => ({
+      ...emptyDetail,
+      details: rows.find((row) => row.header.invNum === invNum)!.items,
+    }),
+  }));
+  const invoices = (commits[0] as { command: { request: { invoices: unknown[] } } }).command.request.invoices;
+  const digest = createHash("sha256").update(stableCanonicalSourceJson({ invoices })).digest("base64url");
+  assert.equal(digest, "t6mf3Jb2x-QxkCqPh8OVqSrsF--TC9tDtwO3RSyEHPo");
 }
 
 // An invoice status outside the admitted vocabulary (the void string is not
