@@ -9,6 +9,7 @@ const EXCLUSION_COUNT_NAMES: ReadonlySet<string> = new Set([
   "excludedNonNumericAccountCount",
   "excludedTimeDepositCount",
   "hiddenAccountCount",
+  "excludedBankNotUpdatedCount",
 ]);
 
 /** The run's other counts, which the generic summary row still lists. */
@@ -25,6 +26,7 @@ export function tdccExclusionLines(counts: OutcomeCounts, dictionary: Translatio
     [counts.excludedNonNumericAccountCount, copy.nonNumericAccount],
     [counts.excludedTimeDepositCount, copy.timeDeposits],
     [counts.hiddenAccountCount, copy.hiddenAccounts],
+    [counts.excludedBankNotUpdatedCount, copy.bankNotUpdated],
   ];
   return lines.flatMap(([count, line]) => count !== undefined && count > 0 ? [line(count)] : []);
 }

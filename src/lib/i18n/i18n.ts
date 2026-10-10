@@ -858,6 +858,8 @@ const en = {
         `${count} time ${count === 1 ? "deposit is" : "deposits are"} not imported yet.`,
       hiddenAccounts: (count: number) =>
         `${count} ${count === 1 ? "account is" : "accounts are"} hidden in the TDCC e-Passbook phone App.`,
+      bankNotUpdated: (count: number) =>
+        `TDCC could not update ${count} ${count === 1 ? "bank" : "banks"} this time, so ${count === 1 ? "its" : "their"} settlement accounts were not imported. Sync again later.`,
     },
     credentialSearch: "Search banks or services",
     setupGuide: "Setup guide",
@@ -2047,6 +2049,7 @@ const zh: typeof en = {
       nonNumericAccount: (count) => `${count} 個交割帳戶的帳號不是純數字，目前不匯入。`,
       timeDeposits: (count) => `${count} 筆定期存款目前不匯入。`,
       hiddenAccounts: (count) => `${count} 個帳戶在集保e手掌握 App 中設為隱藏。`,
+      bankNotUpdated: (count) => `${count} 家銀行這次未能從集保更新，它的交割帳戶沒有匯入，請稍後再同步。`,
     },
     credentialSearch: "搜尋銀行或服務",
     setupGuide: "設定說明",

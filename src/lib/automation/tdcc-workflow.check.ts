@@ -125,10 +125,12 @@ function fakeTdcc(options: FakeOptions = {}) {
           tspAccountInfos: [
             {
               bankId: "812",
+              execStatue: "0000",
               tspAccount: [settlementRow(TWD_ACCOUNT, "TWD"), settlementRow(HIDDEN_ACCOUNT, "TWD", false), settlementRow(NAN_ACCOUNT, "NAN")],
               tspTimeAccounts: [{}],
             },
-            { bankId: "999", tspAccount: [settlementRow(UNKNOWN_BANK_ACCOUNT, "TWD")], tspTimeAccounts: [] },
+            { bankId: "999", execStatue: "0000", tspAccount: [settlementRow(UNKNOWN_BANK_ACCOUNT, "TWD")], tspTimeAccounts: [] },
+            { bankId: "808", execStatue: "9999", execMsg: "因系統關係，資料並未更新成功，請稍後再點選更新", tspAccount: null, tspTimeAccounts: null },
           ],
           updateTime: "20261009103000",
         });
@@ -250,6 +252,7 @@ test("a run reuses the saved session, commits every selected product, and report
     assert.equal(result.status, "financial-admitted");
     assert.deepEqual(summarizeTypedWorkflowOutput(result)?.counts, {
       committedCount: 5,
+      excludedBankNotUpdatedCount: 1,
       excludedNonIsoCurrencyCount: 1,
       excludedNonNumericAccountCount: 0,
       excludedTimeDepositCount: 1,
