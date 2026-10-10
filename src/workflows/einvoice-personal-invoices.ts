@@ -40,45 +40,11 @@ type YearMonth = {
   month: number;
 };
 
-type InvoiceListEntry = {
-  token: string;
-  invoiceNumber: string;
-  carrierName?: string | null;
-  totalAmount?: number | string | null;
-  extStatus?: string | null;
-  invoiceStrStatus?: string | null;
-  buyerId?: string | null;
-};
-
-type InvoiceHeader = {
-  invoiceDate?: string | null;
-  invoiceTime?: string | null;
-  invoiceInstantDate?: string | null;
-  totalAmount?: string | number | null;
-  extStatus?: string | null;
-  invoiceStrStatus?: string | null;
-  alwFlag?: string | null;
-  sellerId?: string | null;
-  sellerName?: string | null;
-  sellerAddress?: string | null;
-  buyerId?: string | null;
-};
-
-type InvoiceItem = {
-  sequenceNumber?: string | null;
-  item?: string | null;
-  quantity?: string | number | null;
-  unitPrice?: string | null;
-  amount?: string | null;
-};
-
 export type InvoiceCaptureRecord = Readonly<{
   month: YearMonth;
   listPageIndex: number;
-  entry: InvoiceListEntry;
-  header: InvoiceHeader;
-  items: readonly InvoiceItem[];
-  itemCompleteness: "complete" | "incomplete";
+  header: AppInvoiceHeader;
+  items: readonly AppInvoiceItem[];
 }>;
 
 const workflowInputSchema = z.object({
@@ -165,32 +131,22 @@ function monthEndDay(month: YearMonth, today = new Date()): number {
   return new Date(month.year, month.month, 0).getDate();
 }
 
-export function invoiceStatus(
-  entry: InvoiceListEntry,
-  header: InvoiceHeader,
-): string {
-  const labels: Record<string, string> = {
-    "2": "confirmed",
-    INVOICE0003S: "confirmed",
-    "已確認": "confirmed",
-    "開立已確認": "confirmed",
-    "4": "voided",
-    "已作廢": "voided",
-  };
-  const candidates = [
-    header.invoiceStrStatus,
-    entry.invoiceStrStatus,
-    header.extStatus,
-    entry.extStatus,
-  ]
-    .map(cleanText)
-    .filter(Boolean);
+// Only App statuses actually observed are admitted. `revisionLabel` feeds the
+// source revision key, and every stored revision was keyed with "confirmed";
+// changing it re-keys admitted invoices.
+const APP_INVOICE_STATUSES: Readonly<Record<string, Readonly<{
+  kind: "issued" | "revoked";
+  revisionLabel: string;
+}>>> = {
+  "開立已確認": { kind: "issued", revisionLabel: "confirmed" },
+};
 
-  for (const candidate of candidates) {
-    if (labels[candidate]) return labels[candidate];
-    if (!candidate.startsWith("INVOICE")) return candidate;
-  }
-  return candidates[0] ?? "";
+function appInvoiceStatus(header: AppInvoiceHeader): Readonly<{ kind: "issued" | "revoked"; revisionLabel: string }> {
+  const status = APP_INVOICE_STATUSES[cleanText(header.invStatus)];
+  // An unmapped status (the App's void string is not yet observed) cannot be
+  // guessed, and the contract forbids admitting the range without it.
+  if (!status) throw new ProviderProtocolOutdatedError();
+  return status;
 }
 
 function opaqueDigest(domain: string, ...parts: readonly string[]): `sha256:${string}` {
@@ -263,14 +219,11 @@ function canonicalDateParts(
 }
 
 export function canonicalOccurrence(
-  header: InvoiceHeader,
+  header: AppInvoiceHeader,
 ): CanonicalEInvoiceOccurrence {
-  const sourceValue = cleanText(header.invoiceInstantDate);
-  const dateValue = cleanText(header.invoiceDate);
+  const dateValue = appInvoiceDateIso(header) ?? "";
   const timeValue = cleanText(header.invoiceTime);
-  const sourceParts = sourceValue
-    ? canonicalDateParts(sourceValue)
-    : canonicalDateParts(`${dateValue}${timeValue ? `T${timeValue}` : ""}`);
+  const sourceParts = canonicalDateParts(`${dateValue}${timeValue ? `T${timeValue}` : ""}`);
   if (sourceParts) {
     return {
       value: sourceParts.time ? `${sourceParts.date}T${sourceParts.time}` : sourceParts.date,
@@ -282,21 +235,6 @@ export function canonicalOccurrence(
   throw new Error("E-Invoice source did not provide a valid purchase date.");
 }
 
-function statusKind(status: string): "issued" | "revised" | "revoked" {
-  const normalized = status.trim().toLocaleLowerCase("en-US");
-  if (
-    normalized === "voided" ||
-    normalized === "revoked" ||
-    normalized === "cancelled" ||
-    normalized === "canceled" ||
-    status === "已作廢"
-  ) return "revoked";
-  if (normalized === "confirmed") return "issued";
-  // An unmapped status (the App's void string is not yet observed) cannot be
-  // guessed, and the contract forbids admitting the range without it.
-  throw new ProviderProtocolOutdatedError();
-}
-
 function unlessMalformed<T>(parse: () => T | null): T | null {
   try {
     return parse();
@@ -306,12 +244,12 @@ function unlessMalformed<T>(parse: () => T | null): T | null {
 }
 
 function canonicalItem(
-  source: InvoiceItem,
+  source: AppInvoiceItem,
   index: number,
-  sequence: number = index + 1,
-  sequenceFallback = false,
-): { item: CanonicalEInvoiceItemInput; completeness: "complete" | "incomplete" } {
-  const name = cleanText(source.item) || null;
+  sequence: number,
+  sequenceFallback: boolean,
+): CanonicalEInvoiceItemInput {
+  const name = cleanText(source.description) || null;
   // A line number the provider did not send as a decimal is a missing fact:
   // the item becomes incomplete instead of failing the whole capture.
   const quantity = unlessMalformed(() => exactDecimal(source.quantity, `item ${index + 1} quantity`));
@@ -320,29 +258,26 @@ function canonicalItem(
   if (!name && !quantity && !unitPrice && !amount)
     throw new Error(`E-Invoice item ${index + 1} has no source facts.`);
   const completeness = name && quantity && unitPrice && amount ? "complete" : "incomplete";
-  const providerSequence = cleanText(source.sequenceNumber) || null;
+  const providerSequence = cleanText(source.rowNum) || null;
   return {
-    item: {
-      sequence,
-      completeness,
-      name,
-      quantity,
-      unitPrice,
-      amount,
-      sourceFacts: {
-        providerItemOrdinal: index + 1,
-        ...(providerSequence === null ? {} : { providerSequenceRaw: providerSequence }),
-        ...(sequenceFallback ? { providerSequenceFallback: true } : {}),
-      },
-    },
+    sequence,
     completeness,
+    name,
+    quantity,
+    unitPrice,
+    amount,
+    sourceFacts: {
+      providerItemOrdinal: index + 1,
+      ...(providerSequence === null ? {} : { providerSequenceRaw: providerSequence }),
+      ...(sequenceFallback ? { providerSequenceFallback: true } : {}),
+    },
   };
 }
 
 function canonicalItemSequences(
-  items: readonly InvoiceItem[],
+  items: readonly AppInvoiceItem[],
 ): { sequences: readonly number[]; usesProviderSequences: boolean } {
-  const providerSequences = items.map((item) => positiveInteger(item.sequenceNumber));
+  const providerSequences = items.map((item) => positiveInteger(item.rowNum));
   const allPositiveSafeIntegers = providerSequences.every(
     (sequence): sequence is number => sequence !== null,
   );
@@ -358,29 +293,23 @@ function canonicalItemSequences(
 export function mapCanonicalEInvoiceRecord(
   record: InvoiceCaptureRecord,
 ): CanonicalEInvoiceInput {
-  const entry = record.entry;
   const header = record.header;
-  const status = invoiceStatus(entry, header);
-  const revisionKind = statusKind(status);
-  // The three existing provider payloads expose a lifecycle status but no
-  // revision sequence. Confirmed and voided are therefore the only admitted
-  // lifecycle facts; voided is the one source-proven successor state.
+  const status = appInvoiceStatus(header);
+  const revisionKind = status.kind;
+  // The App exposes a lifecycle status but no revision sequence, so issued is
+  // revision 1 and a revocation, its one successor state, is revision 2.
   const revisionNumber = revisionKind === "revoked" ? 2 : 1;
-  const invoiceNumber = cleanText(entry.invoiceNumber);
-  const sellerTaxId = cleanText(header.sellerId);
+  const invoiceNumber = cleanText(header.invNum);
+  const sellerTaxId = cleanText(header.sellerBan);
   if (!invoiceNumber) throw new Error("E-Invoice invoice number is required.");
   if (!sellerTaxId) throw new Error(`E-Invoice ${invoiceNumber} seller tax ID is required.`);
-  const randomNumber = null;
   const stableInvoiceKey = `provider:${invoiceNumber}:${sellerTaxId}`;
-  const providerRowKey = cleanText(entry.token);
-  if (!providerRowKey) throw new Error(`E-Invoice ${invoiceNumber} provider row key is required.`);
   const sourceRevisionKey = `provider-revision:${opaqueDigest(
     "einvoice-revision",
     stableInvoiceKey,
-    status,
+    status.revisionLabel,
     String(revisionNumber),
   )}`;
-  const occurrence = canonicalOccurrence(header);
   const itemSequencePlan = canonicalItemSequences(record.items);
   const items = revisionKind === "revoked"
     ? []
@@ -389,22 +318,7 @@ export function mapCanonicalEInvoiceRecord(
       index,
       itemSequencePlan.sequences[index]!,
       !itemSequencePlan.usesProviderSequences,
-    ).item);
-  const itemCompleteness = items.length === 0
-    ? "complete"
-    : items.every((item) => item.completeness === "complete")
-      ? "complete"
-      : "incomplete";
-  if (
-    revisionKind !== "revoked" &&
-    record.itemCompleteness === "incomplete" &&
-    itemCompleteness === "complete"
-  ) {
-    throw new Error(`E-Invoice ${invoiceNumber} item completeness was overstated.`);
-  }
-  // The portal refreshes the list-row token between collections. Its presence
-  // establishes that the provider returned a row, but its value cannot
-  // identify immutable canonical occurrence or revision provenance.
+    ));
   const reference = `provider-record:${opaqueDigest(
     "einvoice-provider-record",
     stableInvoiceKey,
@@ -415,21 +329,23 @@ export function mapCanonicalEInvoiceRecord(
     sourceRevisionKey,
     revisionNumber,
     revisionKind,
-    sourceIdentifiers: { invoiceNumber, randomNumber },
+    sourceIdentifiers: { invoiceNumber, randomNumber: null },
     seller: { taxId: sellerTaxId, name: cleanText(header.sellerName) || null },
     total: revisionKind === "revoked"
       ? null
-      : money(header.totalAmount ?? entry.totalAmount, `invoice ${invoiceNumber} total`),
-    occurrence,
+      : money(header.amount, `invoice ${invoiceNumber} total`),
+    occurrence: canonicalOccurrence(header),
     items,
     authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
     provenance: {
       kind: revisionKind === "revoked" ? "provider-revocation" : "provider-record",
       reference,
-      sourceField: header.invoiceStrStatus ? "invoiceStrStatus" : entry.invoiceStrStatus ? "invoiceStrStatus" : "extStatus",
+      // Named after the website field that carried the status. It is part of
+      // every stored revision's fact fingerprint, so it keeps that name.
+      sourceField: "invoiceStrStatus",
     },
     ...(revisionKind === "revoked"
-      ? { revocationReason: `provider-status:${status || "voided"}` }
+      ? { revocationReason: `provider-status:${status.revisionLabel}` }
       : {}),
   };
 }
@@ -461,63 +377,6 @@ function appInvoiceDateIso(header: AppInvoiceHeader): string | null {
 
 function appInvoiceApiDate(header: AppInvoiceHeader): string {
   return (appInvoiceDateIso(header) ?? "").replaceAll("-", "/");
-}
-
-function appHeaderToInvoiceListEntry(header: AppInvoiceHeader): InvoiceListEntry {
-  return {
-    token: header.invNum ?? "",
-    invoiceNumber: header.invNum ?? "",
-    totalAmount: header.amount ?? null,
-    extStatus: header.invStatus ?? null,
-    invoiceStrStatus: header.invStatus ?? null,
-  };
-}
-
-function appHeaderToInvoiceHeader(header: AppInvoiceHeader): InvoiceHeader {
-  return {
-    invoiceDate: appInvoiceDateIso(header),
-    invoiceTime: header.invoiceTime ?? null,
-    totalAmount: header.amount ?? null,
-    sellerId: header.sellerBan ?? null,
-    sellerName: header.sellerName ?? null,
-    sellerAddress: header.sellerAddress ?? null,
-    invoiceStrStatus: header.invStatus ?? null,
-    extStatus: header.invStatus ?? null,
-  };
-}
-
-function appItemToInvoiceItem(item: AppInvoiceItem): InvoiceItem {
-  return {
-    sequenceNumber: item.rowNum ?? null,
-    item: item.description ?? null,
-    quantity: item.quantity ?? null,
-    unitPrice: item.unitPrice ?? null,
-    amount: item.amount ?? null,
-  };
-}
-
-function appInvoiceCaptureRecord(
-  header: AppInvoiceHeader,
-  items: readonly AppInvoiceItem[],
-  month: YearMonth,
-  listPageIndex: number,
-): InvoiceCaptureRecord {
-  const shimmedItems = items.map(appItemToInvoiceItem);
-  const completeness = shimmedItems.length === 0 || shimmedItems.every((item, index) => {
-    try {
-      return canonicalItem(item, index).completeness === "complete";
-    } catch {
-      return false;
-    }
-  }) ? "complete" : "incomplete";
-  return {
-    month,
-    listPageIndex,
-    entry: appHeaderToInvoiceListEntry(header),
-    header: appHeaderToInvoiceHeader(header),
-    items: shimmedItems,
-    itemCompleteness: completeness,
-  };
 }
 
 type AppInvoicePage = { month: YearMonth; pageIndex: number; rowCount: number };
@@ -560,7 +419,7 @@ async function readAppProtocolInvoices(
           appInvoiceApiDate(header),
           signal,
         );
-        records.push(appInvoiceCaptureRecord(header, detail.details, month, pageIndex));
+        records.push({ month, listPageIndex: pageIndex, header, items: detail.details });
       }
       invoiceCount += result.details.length;
       if (result.details.length === 0) break;
