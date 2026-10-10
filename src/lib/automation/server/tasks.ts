@@ -809,8 +809,8 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       ],
       setupGuide: {
         summary: localized(
-          "Use the mobile phone number and password registered with the Ministry of Finance E-Invoice Platform.",
-          "請使用已在財政部電子發票服務平台註冊的手機號碼與平台密碼。",
+          "Use the mobile phone number and password registered with the Ministry of Finance E-Invoice Platform. OctopusBeak signs in the way the E-Invoice phone App does, so syncing here signs the phone App out. Signing in on the phone again works as usual and needs no code.",
+          "請使用已在財政部電子發票服務平台註冊的手機號碼與平台密碼。OctopusBeak 以電子發票手機 App 的方式登入，在這裡同步會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
         ),
         requirements: [
           localized(
