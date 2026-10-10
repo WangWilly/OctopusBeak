@@ -1,5 +1,10 @@
 import type { CDPSession, Page } from "playwright";
 import {
+  ProviderProtocolOutdatedError,
+  SourceAccessChallengeError,
+  SourceUnavailableError,
+} from "../lib/automation/source-access.ts";
+import {
   decryptLoginData,
   EINVOICE_APP_BIG_HOST,
   EINVOICE_APP_BUILD,
@@ -83,6 +88,7 @@ export async function installEinvoiceOriginStripping(page: Page): Promise<CDPSes
   return cdp;
 }
 
+// Status 0 stands for a request that never got an HTTP response.
 async function inPagePost(
   page: Page,
   url: string,
@@ -91,14 +97,47 @@ async function inPagePost(
 ): Promise<{ status: number; text: string }> {
   return page.evaluate(
     async ({ url, headers, body }) => {
-      const response = await fetch(url, { method: "POST", headers, body });
-      return { status: response.status, text: await response.text() };
+      try {
+        const response = await fetch(url, { method: "POST", headers, body });
+        return { status: response.status, text: await response.text() };
+      } catch (error) {
+        return { status: 0, text: String(error) };
+      }
     },
     { url, headers, body },
   );
 }
 
+const CLOUDFLARE_CHALLENGE = /<title>Just a moment\.\.\.<\/title>|\/cdn-cgi\/challenge-platform\//u;
+
+/** Posts one App request and classifies transport-level failures as typed source errors. */
+async function postAppJson(
+  page: Page,
+  operation: string,
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+): Promise<Record<string, unknown>> {
+  const response = await inPagePost(page, url, headers, body);
+  if (response.status === 0 || response.status >= 500) throw new SourceUnavailableError();
+  if (response.status === 403 && CLOUDFLARE_CHALLENGE.test(response.text)) throw new SourceAccessChallengeError();
+  if (response.status !== 200)
+    throw new Error(`E-Invoice App ${operation} failed with HTTP ${response.status}.`);
+  const parsed = (() => {
+    try {
+      return JSON.parse(response.text) as unknown;
+    } catch {
+      return undefined;
+    }
+  })();
+  const record = asRecord(parsed);
+  if (!record) throw new ProviderProtocolOutdatedError();
+  return record;
+}
+
 const EINVOICE_APP_QUERY_SUCCESS_CODE = "200";
+// 參數錯誤: the server no longer accepts the request this workflow builds.
+const EINVOICE_APP_PARAMETER_REJECTED_CODE = "903";
 
 const jsonHeaders = {
   Accept: "application/json",
@@ -148,29 +187,26 @@ export async function loginEinvoiceApp(
     pdid: `a:${deviceId}`,
   };
   const { ldata, context } = encryptLoginData(inner);
-  const response = await inPagePost(
+  const body = await postAppJson(
     page,
+    "login",
     `${EINVOICE_APP_MIDDLE_HOST}/mid/v1/login`,
     jsonHeaders,
     JSON.stringify({ ldata }),
   );
-  if (response.status !== 200)
-    throw new Error(`E-Invoice App login failed with HTTP ${response.status}.`);
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(response.text) as Record<string, unknown>;
-  } catch {
-    throw new Error("E-Invoice App login response is not valid JSON.");
-  }
+  // A rejection's meaning (wrong password, locked account, busy server) is not
+  // established for any result code, so it stays an untyped sign-in failure.
   if (body.result !== 0)
     throw new Error(
       `E-Invoice App login rejected (result ${String(body.result)}).`,
     );
-  const payload = body.payload;
-  if (typeof payload !== "string") {
-    throw new Error("E-Invoice App login response has no encrypted payload.");
+  // An accepted login whose session cannot be opened means the envelope moved.
+  try {
+    if (typeof body.payload !== "string") throw new Error("missing payload");
+    return parseLoginSession(decryptLoginData(body.payload, context));
+  } catch {
+    throw new ProviderProtocolOutdatedError();
   }
-  return parseLoginSession(decryptLoginData(payload, context));
 }
 
 /** Queries one header page. Returns the envelope plus parsed rows. */
@@ -198,22 +234,16 @@ export async function queryEinvoiceHeaders(
     session,
     Math.floor(Date.now() / 1000) + serverTimeOffset(session) - 10,
   );
-  const response = await inPagePost(
+  const body = await postAppJson(
     page,
+    "header query",
     `${EINVOICE_APP_BIG_HOST}/einvoice/carriers/query-invoices-header`,
     formHeaders,
     new URLSearchParams({ einvoiceJwt: jwt }).toString(),
   );
-  if (response.status !== 200)
-    throw new Error(`E-Invoice App header query failed with HTTP ${response.status}.`);
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(response.text) as Record<string, unknown>;
-  } catch {
-    throw new Error("E-Invoice App header query response is not valid JSON.");
-  }
+  // Rejections come back as a top-level envelope without carrierQueryList.
   const carrierQueryList = asRecord(body.carrierQueryList);
-  const { code, msg } = requireSuccessEnvelope("header", carrierQueryList);
+  const { code, msg } = requireSuccessEnvelope("header", carrierQueryList ?? body);
   const details = Array.isArray(carrierQueryList?.details)
     ? (carrierQueryList.details as AppInvoiceHeader[])
     : [];
@@ -242,20 +272,13 @@ export async function queryEinvoiceDetail(
     session,
     Math.floor(Date.now() / 1000) + serverTimeOffset(session) - 10,
   );
-  const response = await inPagePost(
+  const body = await postAppJson(
     page,
+    "detail query",
     `${EINVOICE_APP_BIG_HOST}/einvoice/carriers/query-invoices-details`,
     formHeaders,
     new URLSearchParams({ einvoiceJwt: jwt }).toString(),
   );
-  if (response.status !== 200)
-    throw new Error(`E-Invoice App detail query failed with HTTP ${response.status}.`);
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(response.text) as Record<string, unknown>;
-  } catch {
-    throw new Error("E-Invoice App detail query response is not valid JSON.");
-  }
   const { code, msg } = requireSuccessEnvelope("detail", body);
   const details = Array.isArray(body.details) ? (body.details as AppInvoiceItem[]) : [];
   return { code, msg, details };
@@ -271,6 +294,7 @@ function requireSuccessEnvelope(
 ): { code: string; msg: string } {
   const code = stringValue(envelope?.code);
   const msg = stringValue(envelope?.msg);
+  if (code === EINVOICE_APP_PARAMETER_REJECTED_CODE) throw new ProviderProtocolOutdatedError();
   if (code !== EINVOICE_APP_QUERY_SUCCESS_CODE)
     throw new Error(`E-Invoice App ${query} query rejected (code ${code || "(missing)"}: ${msg}).`);
   return { code, msg };

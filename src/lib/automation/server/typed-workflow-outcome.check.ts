@@ -2,7 +2,7 @@ import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SourceTextIntegrityError } from "../source-text.ts";
-import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
+import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import {
   classifyTypedWorkflowFailure,
@@ -115,6 +115,15 @@ test("typed failures use stable privacy-safe categories", () => {
   assert.equal(
     classifyTypedWorkflowFailure(new SourceUnavailableError(), []),
     "source-unavailable",
+  );
+  assert.equal(
+    classifyTypedWorkflowFailure(new ProviderProtocolOutdatedError(), [{
+      runId: "run-1",
+      stage: "authentication",
+      code: "authentication-started",
+      occurredAt: "2026-10-10T00:00:00.000Z",
+    }]),
+    "provider-protocol-outdated",
   );
   assert.equal(classifyTypedWorkflowFailure(new Error("contains private account 123"), [{
     runId: "run-1",

@@ -13,3 +13,11 @@ export class SourceUnavailableError extends Error {
     this.name = "SourceUnavailableError";
   }
 }
+
+/** A provider's App protocol no longer accepts or matches what the workflow implements. */
+export class ProviderProtocolOutdatedError extends Error {
+  constructor() {
+    super("The provider's App protocol no longer matches this workflow.");
+    this.name = "ProviderProtocolOutdatedError";
+  }
+}
