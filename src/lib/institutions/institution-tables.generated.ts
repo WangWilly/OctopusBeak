@@ -537,6 +537,7 @@ export const BROKER_BRANCH_FIRMS: Readonly<Record<string, string>> = {
   "8886": "8880",
   "8887": "8880",
   "8888": "8880",
+  "8889": "8880",
   "888A": "8880",
   "888B": "8880",
   "888C": "8880",

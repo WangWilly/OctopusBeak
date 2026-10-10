@@ -123,6 +123,10 @@ test("a TWSE broker branch resolves to its firm, case-sensitively", () => {
   assert.equal(institutionForBrokerBranch("ZZZZ"), null);
 });
 
+test("a branch code TDCC reports but TWSE does not list resolves through the unlisted-branch overlay", () => {
+  assert.equal(institutionForBrokerBranch("8889"), "broker-8880", "國泰證券敦南, reported by TDCC TR001");
+});
+
 test("TDCC is an Intermediary source with no Institution of its own", () => {
   assert.equal(sourceInstitution("tdcc")?.kind, "intermediary");
   assert.deepEqual(sourceInstitution("cathay"), { kind: "direct", institution: "cathay", investmentStreams: {} });
