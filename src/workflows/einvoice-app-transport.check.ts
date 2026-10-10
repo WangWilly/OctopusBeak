@@ -6,8 +6,14 @@ import {
   SourceAccessChallengeError,
   SourceUnavailableError,
 } from "../lib/automation/source-access.ts";
+import { BrowserRuntimeConfigurationError } from "../lib/automation/server/browser-runtime.ts";
 import type { EInvoiceAppSession } from "./einvoice-app-protocol.ts";
-import { loginEinvoiceApp, queryEinvoiceDetail, queryEinvoiceHeaders } from "./einvoice-app-transport.ts";
+import {
+  loginEinvoiceApp,
+  queryEinvoiceDetail,
+  queryEinvoiceHeaders,
+  stripOriginOnPausedRequests,
+} from "./einvoice-app-transport.ts";
 
 const session: EInvoiceAppSession = {
   sid: "s",
@@ -106,4 +112,55 @@ test("a rejected login stays an untyped sign-in failure", async () => {
   for (const typed of [ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError]) {
     assert.ok(!(rejection instanceof typed));
   }
+});
+
+// The query host answers a request that still carries Origin with this 403.
+// It means the header rewrite was not in effect, not that the source refused.
+test("an Invalid CORS rejection means the Origin rewrite is not in effect", async () => {
+  const rejection = await query(pageAnswering("Invalid CORS request", 403)).then(() => null, (error: unknown) => error);
+  assert.ok(rejection instanceof BrowserRuntimeConfigurationError);
+  assert.equal(rejection.code, "request-header-rewrite-failed");
+});
+
+type Sent = { method: string; params: Record<string, unknown> };
+
+function fakeCdp(failContinueWithHeaders: boolean) {
+  const sent: Sent[] = [];
+  let paused: ((event: unknown) => Promise<void>) | undefined;
+  const cdp = {
+    on: (_event: string, handler: (event: unknown) => Promise<void>) => { paused = handler; },
+    send: async (method: string, params: Record<string, unknown> = {}) => {
+      sent.push({ method, params });
+      if (failContinueWithHeaders && method === "Fetch.continueRequest" && params.headers) throw new Error("Invalid InterceptionId");
+      return {};
+    },
+  };
+  return { cdp, sent, pause: (event: unknown) => paused!(event) };
+}
+
+const pausedRequest = {
+  requestId: "r1",
+  request: { headers: { Origin: "https://upi.einvoice.nat.gov.tw", Referer: "https://upi.einvoice.nat.gov.tw/", "Content-Type": "x" } },
+};
+
+test("a paused request continues without Origin and Referer", async () => {
+  const { cdp, sent, pause } = fakeCdp(false);
+  let failures = 0;
+  stripOriginOnPausedRequests(cdp, () => { failures += 1; });
+  await pause(pausedRequest);
+  assert.deepEqual(sent, [{
+    method: "Fetch.continueRequest",
+    params: { requestId: "r1", headers: [{ name: "Content-Type", value: "x" }] },
+  }]);
+  assert.equal(failures, 0);
+});
+
+test("a request whose headers cannot be rewritten is failed, never sent with Origin", async () => {
+  const { cdp, sent, pause } = fakeCdp(true);
+  let failures = 0;
+  stripOriginOnPausedRequests(cdp, () => { failures += 1; });
+  await pause(pausedRequest);
+  assert.ok(!sent.some((call) => call.method === "Fetch.continueRequest" && !call.params.headers));
+  assert.ok(sent.some((call) => call.method === "Fetch.failRequest"));
+  assert.equal(failures, 1);
 });
