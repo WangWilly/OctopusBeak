@@ -39,6 +39,10 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
     zh: "驗證步驟未成功完成，這次同步已停止。",
     en: "The verification step did not complete successfully, so this run stopped.",
   },
+  "browser-runtime-config-failed": {
+    zh: "內建瀏覽器無法完成這次同步所需的設定，同步已停止。這不是登入資料或來源服務的問題。",
+    en: "The built-in browser could not be set up the way this sync requires, so the run stopped. This is not a problem with your sign-in details or the source service.",
+  },
   "device-registration-required": {
     zh: "集保e手掌握不再信任這台裝置。請到登入設定重新註冊裝置，再執行同步。",
     en: "TDCC e-Passbook no longer trusts this device. Register the device again in sign-in settings, then run the sync.",
