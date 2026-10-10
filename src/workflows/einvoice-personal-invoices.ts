@@ -292,7 +292,17 @@ function statusKind(status: string): "issued" | "revised" | "revoked" {
     status === "已作廢"
   ) return "revoked";
   if (normalized === "confirmed") return "issued";
-  throw new Error(`E-Invoice source status ${status || "(missing)"} is not admitted by the current contract.`);
+  // An unmapped status (the App's void string is not yet observed) cannot be
+  // guessed, and the contract forbids admitting the range without it.
+  throw new ProviderProtocolOutdatedError();
+}
+
+function unlessMalformed<T>(parse: () => T | null): T | null {
+  try {
+    return parse();
+  } catch {
+    return null;
+  }
 }
 
 function canonicalItem(
@@ -302,9 +312,11 @@ function canonicalItem(
   sequenceFallback = false,
 ): { item: CanonicalEInvoiceItemInput; completeness: "complete" | "incomplete" } {
   const name = cleanText(source.item) || null;
-  const quantity = exactDecimal(source.quantity, `item ${index + 1} quantity`);
-  const unitPrice = money(source.unitPrice, `item ${index + 1} unit price`);
-  const amount = money(source.amount, `item ${index + 1} amount`);
+  // A line number the provider did not send as a decimal is a missing fact:
+  // the item becomes incomplete instead of failing the whole capture.
+  const quantity = unlessMalformed(() => exactDecimal(source.quantity, `item ${index + 1} quantity`));
+  const unitPrice = unlessMalformed(() => money(source.unitPrice, `item ${index + 1} unit price`));
+  const amount = unlessMalformed(() => money(source.amount, `item ${index + 1} amount`));
   if (!name && !quantity && !unitPrice && !amount)
     throw new Error(`E-Invoice item ${index + 1} has no source facts.`);
   const completeness = name && quantity && unitPrice && amount ? "complete" : "incomplete";
@@ -432,18 +444,6 @@ function parseMonthLabel(value: string): YearMonth {
 
 export type EinvoiceWorkflowInput = z.infer<typeof workflowInputSchema>;
 export type EinvoiceWorkflowOutput = z.infer<typeof outputSchema>;
-
-export function assertEinvoiceCaptureAdmissible(
-  capture: CanonicalEInvoiceCaptureInput,
-): void {
-  if (
-    capture.scope.completeness !== "complete-range" ||
-    capture.scope.invoiceCompleteness !== "complete" ||
-    capture.scope.itemCompleteness !== "complete"
-  ) {
-    throw new Error("E-Invoice source is incomplete; Canonical Financial Commit was skipped.");
-  }
-}
 
 function randomAppDeviceId(): string {
   return randomBytes(8).toString("hex");
@@ -678,7 +678,6 @@ export async function runEinvoiceProviderWorkflow(
         await context.event("collection", "month-completed", { completed, total });
       });
       const capture = buildCanonicalEInvoiceCaptureFromApp(result, credentials);
-      assertEinvoiceCaptureAdmissible(capture);
       const admittedInvoiceCount = capture.invoices.length;
       await context.event("decoding", "source-decoding-completed");
       await context.event("validation", "source-validation-completed", {
