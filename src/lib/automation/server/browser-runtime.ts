@@ -33,7 +33,8 @@ export type BrowserRuntime = Readonly<{
 export type BrowserRuntimeConfigurationErrorCode =
   | "unsupported-profile"
   | "chromium-version-unavailable"
-  | "unsupported-platform";
+  | "unsupported-platform"
+  | "request-header-rewrite-failed";
 
 export class BrowserRuntimeConfigurationError extends Error {
   readonly code: BrowserRuntimeConfigurationErrorCode;
