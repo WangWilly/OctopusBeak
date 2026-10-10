@@ -1785,6 +1785,10 @@ import type {
                                   </span>
                                 {/if}
                                 {#if product.errorCode}
+                                  {@const productFailure = workflowFailureExplanation(product.errorCode, $locale)}
+                                  {#if productFailure}
+                                    <span class="workflow-product-note">{productFailure}</span>
+                                  {/if}
                                   <code>{product.errorCode}</code>
                                 {/if}
                               </div>
