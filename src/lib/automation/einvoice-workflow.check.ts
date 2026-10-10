@@ -16,6 +16,7 @@ import type {
   EinvoiceAppClient,
 } from "../../workflows/einvoice-app-transport.ts";
 import type { EInvoiceAppSession } from "../../workflows/einvoice-app-protocol.ts";
+import { ProviderProtocolOutdatedError } from "./source-access.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workflows", "einvoice-personal-invoices.ts"),
@@ -140,6 +141,24 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
     assert.match(startDate, /^\d{4}\/\d{2}\/01$/u);
     assert.match(endDate, /^\d{4}\/\d{2}\/\d{2}$/u);
   }
+}
+
+// Paging ends only at an empty page. A server that never returns one (for
+// example by ignoring `page`) must fail the run, not loop or commit.
+{
+  let headerCalls = 0;
+  const { context, commits } = makeContext({});
+  await assert.rejects(
+    runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+      queryHeaders: async () => {
+        headerCalls += 1;
+        if (headerCalls > 1000) throw new Error("unbounded paging");
+        return { ...emptyHeaders, details: [{ invNum: "AB12345678" }] };
+      },
+    })),
+    ProviderProtocolOutdatedError,
+  );
+  assert.equal(commits.length, 0);
 }
 
 // A login rejection propagates and never reaches commit.
