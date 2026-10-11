@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  buildAccountDisplayMap,
-  containsInternalAccountIdentifier,
-  safeSourceGapLabel,
-  sourceGapCounts,
-} from "./account-display.ts";
+import { buildAccountDisplayMap } from "./account-display.ts";
 
 const opaqueAccounts = [
   {
@@ -171,51 +166,6 @@ test("missing MaiCoin identifiers remain human and distinct without exposing a s
   assert.doesNotMatch(`${displays.get("account-a")?.label} ${displays.get("account-b")?.label}`, /sha256:/iu);
 });
 
-test("source gap fallback never renders a source connection key or opaque account token", () => {
-  const label = safeSourceGapLabel({
-    label: "yuanta sha256:legacy-account",
-    integrationNamespace: "yuanta",
-    stream: "credit-card",
-    accountNo: "sha256:legacy-account",
-  });
-  assert.equal(label, "Yuanta Bank · Credit card account");
-  assert.doesNotMatch(label, /sha256:/iu);
-  assert.equal(
-    safeSourceGapLabel({
-      label: "yuanta sha256:legacy-portfolio-key",
-      integrationNamespace: "yuanta",
-      stream: "credit-card",
-      accountNo: "PORTFOLIO-00001234",
-    }),
-    "Yuanta Bank · Credit card account · PORTFOLIO-00001234",
-  );
-  assert.equal(safeSourceGapLabel({ label: "sha256:source-connection" }), "Source not identified");
-  assert.equal(
-    safeSourceGapLabel({
-      label: "yuanta 001234567",
-      integrationNamespace: "yuanta",
-      stream: "domestic-deposit",
-      accountNo: "001234567",
-    }),
-    "Yuanta Bank · Bank account · 001234567",
-  );
-  assert.equal(containsInternalAccountIdentifier("sha256:source-connection"), true);
-  assert.equal(containsInternalAccountIdentifier("Account 2026"), false);
-});
-
-test("source gap counts distinguish account values from uncollected sources", () => {
-  assert.deepEqual(sourceGapCounts([
-    { reason: "current-value-not-observed" },
-    { reason: "current-value-not-observed" },
-    { reason: "source-not-collected" },
-    { reason: "canonical-read-unavailable" },
-  ]), {
-    currentValue: 2,
-    sourceNotCollected: 1,
-    canonicalReadUnavailable: 1,
-  });
-});
-
 test("an Intermediary-source account shows its stored Institution, never the source namespace", () => {
   const displays = buildAccountDisplayMap([
     {
@@ -276,17 +226,4 @@ test("a covered Intermediary-source account leaves its direct-source twin's labe
   assert.deepEqual(withCovered.get("fubon-direct"), alone);
   assert.equal(alone?.label, "Taipei Fubon Bank · Bank account · 00112233");
   assert.equal(withCovered.get("fubon-via-tdcc")?.label, "Taipei Fubon Bank · Bank account · 00112233");
-});
-
-test("an Intermediary-source gap names the account's Institution, or the source when no account exists", () => {
-  assert.equal(
-    safeSourceGapLabel({ integrationNamespace: "tdcc", institutionKey: "bank-812", stream: "investment-fund" }),
-    "Taishin International Bank · Fund",
-  );
-  assert.equal(safeSourceGapLabel({ integrationNamespace: "tdcc", stream: "investment-fund" }), "TDCC e-Passbook · Fund");
-  assert.equal(
-    safeSourceGapLabel({ label: "TDCC e-Passbook · fund", integrationNamespace: "tdcc", stream: "investment-fund" }),
-    "TDCC e-Passbook · fund",
-  );
-  assert.equal(safeSourceGapLabel({ integrationNamespace: "unknown-source", stream: "domestic-deposit" }), "Source not identified");
 });

@@ -16,10 +16,6 @@
   import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
-  import {
-    safeSourceGapLabel,
-    sourceGapCounts,
-  } from "$lib/shared-ledger/account-display.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -79,16 +75,6 @@
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
   $: awaitingData = awaitingFirstData(overview);
-  $: gapCounts = sourceGapCounts(overview.sourceGaps);
-  $: currentStateLabel = overview.availability === "unavailable"
-    ? $t.overview.currentUnavailable
-    : overview.sourceGaps.length > 0
-      ? $t.overview.currentPartial(gapCounts.currentValue, gapCounts.sourceNotCollected)
-      : overview.availability === "awaiting"
-        ? $t.overview.currentAwaiting
-        : overview.availability === "empty"
-          ? $t.overview.currentEmpty
-          : $t.overview.currentUnavailable;
   $: holdsForeign = data.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
     key: slice.category,
@@ -153,7 +139,7 @@
         onboardingTargetId="overview.empty"
       />
     {/if}
-    {#if overview.coverage !== "complete" && !awaitingData}
+    {#if overview.coverage === "unavailable" && !awaitingData}
       <div
         class="projection-state"
         role="status"
@@ -163,14 +149,7 @@
           id: onboardingEmptyState ? "overview.empty" : null,
         }}
       >
-        <span>{currentStateLabel}</span>
-        {#if overview.sourceGaps.length > 0}
-          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
-            {#each overview.sourceGaps as gap}
-              <li>{safeSourceGapLabel(gap)}</li>
-            {/each}
-          </ul>
-        {/if}
+        <span>{$t.overview.currentUnavailable}</span>
       </div>
     {/if}
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
@@ -263,16 +242,5 @@
     border-radius: var(--radius);
     color: var(--muted);
     background: var(--surface-soft);
-  }
-
-  .projection-gap-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1) var(--space-3);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    color: var(--fg);
-    font-size: 12px;
   }
 </style>

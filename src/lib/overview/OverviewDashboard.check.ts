@@ -59,25 +59,17 @@ test("overview keeps its onboarding spotlight targets", () => {
     /href="#\/automation"[\s\S]*?registerOnboardingTarget=\{\{ registry: onboardingTargets, id: onboardingTargetId \}\}/,
     "the banner registers its automation link as the target",
   );
-  const coverageProjectionState = source.slice(
-    source.indexOf('overview.coverage !== "complete" && !awaitingData'),
-    source.indexOf("\n      </div>\n    {/if}", source.indexOf('overview.coverage !== "complete" && !awaitingData')),
+  const unavailableProjectionState = source.slice(
+    source.indexOf('overview.coverage === "unavailable" && !awaitingData'),
+    source.indexOf("\n      </div>\n    {/if}", source.indexOf('overview.coverage === "unavailable" && !awaitingData')),
   );
-  assert.match(coverageProjectionState, /id: onboardingEmptyState \? "overview\.empty" : null/);
-  assert.match(coverageProjectionState, /class="projection-gap-list"[\s\S]*safeSourceGapLabel\(gap\)/);
+  assert.match(unavailableProjectionState, /id: onboardingEmptyState \? "overview\.empty" : null/);
   assert.doesNotMatch(source, /data-onboarding/);
 });
 
-test("unavailable current state wins when source gaps are also present", () => {
-  const stateExpression = source.slice(
-    source.indexOf("$: currentStateLabel"),
-    source.indexOf(";", source.indexOf("$: currentStateLabel")),
-  );
-  assert.match(stateExpression, /overview\.availability === "unavailable"\s*\?\s*\$t\.overview\.currentUnavailable/);
-  assert.ok(
-    stateExpression.indexOf('overview.availability === "unavailable"') <
-      stateExpression.indexOf("overview.sourceGaps.length > 0"),
-  );
+test("overview leaves incomplete collection to the automation run details", () => {
+  assert.doesNotMatch(source, /sourceGaps|currentPartial|projection-gap-list|safeSourceGapLabel/);
+  assert.match(source, /\{#if overview\.coverage === "unavailable" && !awaitingData\}[\s\S]*?\$t\.overview\.currentUnavailable/);
 });
 
 test("overview does not render balance-basis notices", () => {

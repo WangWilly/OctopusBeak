@@ -52,14 +52,6 @@ assert.match(translations["zh-TW"].onboarding.restartConfirm, /來源選擇與�
 assert.equal(Object.hasOwn(translations.en.onboarding, "assistBody"), false);
 assert.equal(Object.hasOwn(translations["zh-TW"].onboarding, "assistBody"), false);
 assert.equal(
-  translations.en.overview.currentPartial(20, 2),
-  "20 accounts are still waiting for a current value. 2 sources are not collected yet. Totals are partial.",
-);
-assert.equal(
-  translations["zh-TW"].overview.currentPartial(20, 2),
-  "20 個帳戶的目前金額或價值尚未觀測。 2 個來源尚未採集。 總額僅供部分參考。",
-);
-assert.equal(
   translations.en.automation.discardCredentialChanges,
   "Discard unsaved changes to sign-in details?",
 );
