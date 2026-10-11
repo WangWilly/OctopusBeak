@@ -533,3 +533,14 @@ assert.match(source, /cathayGmailOtpConnectionErrorMessage/);
 assert.match(source, /result\.connectionError/);
 
 assert.doesNotMatch(source, /viewerImageUrl|screenshotUnavailable|floatingInput/);
+
+assert.match(
+  source,
+  /watchRunDetailsOverview\(expandedRunDetailsTaskId === null \? null : overviewLive\)/,
+  "run details read the current overview only while a panel is open",
+);
+assert.match(
+  source,
+  /unvaluedAccountLabels\(task\.id, runDetailsOverview, \$t\)[\s\S]*?class="unvalued-accounts"/,
+  "run details list the task's accounts without a current value",
+);

@@ -836,6 +836,10 @@ const en = {
     },
     tdccSyncBlockedByRegistration:
       "TDCC device registration is in progress. Finish or cancel it, then run the sync.",
+    unvaluedAccounts: {
+      title: "Accounts without a current value",
+      body: "These accounts were imported, but no balance or holding value was observed, so totals leave them out.",
+    },
     tdccExclusions: {
       title: "Not imported from TDCC",
       unknownInstitution: (count: number) =>
@@ -2025,6 +2029,10 @@ const zh: typeof en = {
       },
     },
     tdccSyncBlockedByRegistration: "集保裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    unvaluedAccounts: {
+      title: "沒有金額的帳戶",
+      body: "這些帳戶已匯入，但沒有觀測到餘額或持股價值，總額不含這些帳戶。",
+    },
     tdccExclusions: {
       title: "未從集保匯入",
       unknownInstitution: (count) => `${count} 個帳戶的銀行或券商代碼尚未收錄。`,
