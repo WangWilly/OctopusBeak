@@ -99,6 +99,10 @@ import type {
   } from "./types.ts";
   import { mergeAutomationRuntime } from "./runtime-sync.ts";
   import { workflowFailureExplanation } from "./workflow-failures.ts";
+  import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
+  import type { Readable } from "svelte/store";
+  import type { ViewState } from "$lib/data-views/client/view-stores.ts";
+  import type { OverviewPageDto } from "$lib/overview/types.ts";
   import {
     automationStageTasks,
     dispatchAutomationStageSync,
@@ -113,6 +117,8 @@ import type {
   export let appPendingActions: readonly AutomationActionToken[] = [];
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
+  /** The current overview, read only while run details are open to list accounts without a current value. */
+  export let overviewLive: Readable<ViewState<OverviewPageDto>> | null = null;
   export let onboardingSourceSelection = false;
   export let onboardingSingleSource = false;
   export let onboardingNodeId: OnboardingNodeId | null = null;
@@ -154,6 +160,22 @@ import type {
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
+  let runDetailsOverview: OverviewPageDto | null = null;
+  let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
+  let stopRunDetailsOverview: (() => void) | null = null;
+  $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
+  onDestroy(() => stopRunDetailsOverview?.());
+
+  function watchRunDetailsOverview(store: Readable<ViewState<OverviewPageDto>> | null) {
+    if (store === watchedOverview) return;
+    stopRunDetailsOverview?.();
+    stopRunDetailsOverview = null;
+    watchedOverview = store;
+    runDetailsOverview = null;
+    if (store) stopRunDetailsOverview = store.subscribe((state) => {
+      if (state.status === "ready") runDetailsOverview = state.data;
+    });
+  }
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
@@ -1796,6 +1818,18 @@ import type {
                           {/each}
                         </ul>
                       {/if}
+                      {#if runDetailsOverview}
+                        {@const unvalued = unvaluedAccountLabels(task.id, runDetailsOverview, $t)}
+                        {#if unvalued.length}
+                          <div class="unvalued-accounts" aria-label={$t.automation.unvaluedAccounts.title}>
+                            <strong>{$t.automation.unvaluedAccounts.title}</strong>
+                            <span>{$t.automation.unvaluedAccounts.body}</span>
+                            <ul>
+                              {#each unvalued as label}<li>{label}</li>{/each}
+                            </ul>
+                          </div>
+                        {/if}
+                      {/if}
                       {#if task.events.length}
                         <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
                           {#each task.events as event, index (index)}
@@ -3178,19 +3212,22 @@ import type {
     margin-top: var(--space-1);
   }
 
-  .tdcc-exclusions {
+  .tdcc-exclusions,
+  .unvalued-accounts {
     display: grid;
     gap: var(--space-1);
     color: var(--muted);
     font-size: 12px;
   }
 
-  .tdcc-exclusions strong {
+  .tdcc-exclusions strong,
+  .unvalued-accounts strong {
     color: var(--fg);
     font-weight: 680;
   }
 
-  .tdcc-exclusions ul {
+  .tdcc-exclusions ul,
+  .unvalued-accounts ul {
     margin: 0;
     padding-left: var(--space-4);
   }
