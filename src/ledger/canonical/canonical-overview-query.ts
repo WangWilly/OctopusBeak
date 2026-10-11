@@ -126,6 +126,8 @@ export type CanonicalOverviewAccount = Readonly<{
   label: string;
   institution: string;
   product: string;
+  /** The ordinal behind the "Account N" fallback when no identifier is displayable. */
+  unidentifiedOrdinal?: number;
   group: "asset" | "liability" | "investment";
   kind:
     | "bank"
