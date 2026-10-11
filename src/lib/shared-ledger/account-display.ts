@@ -33,6 +33,8 @@ export type AccountDisplay = Readonly<{
   label: string;
   institution: string;
   product: string;
+  /** The ordinal behind the "Account N" fallback when no identifier is displayable, so the interface can localize it. */
+  unidentifiedOrdinal?: number;
 }>;
 
 export type SourceGapForDisplay = Readonly<{
@@ -170,11 +172,16 @@ function formatAccountDisplay(
 ): AccountDisplay {
   const institution = INSTITUTION_NAMES[account.institutionKey];
   const product = productLabel(account);
-  const identifier = displayableAccountIdentifier(account)
-    ?? `Account ${ordinal}`;
-  const duplicateOrdinal = displayableAccountIdentifier(account) && duplicateCount > 1
-    ? ` · ${ordinal}`
-    : "";
+  const identifier = displayableAccountIdentifier(account);
+  if (!identifier) {
+    return {
+      label: `${institution} · ${product} · Account ${ordinal}`,
+      institution,
+      product,
+      unidentifiedOrdinal: ordinal,
+    };
+  }
+  const duplicateOrdinal = duplicateCount > 1 ? ` · ${ordinal}` : "";
   return {
     label: `${institution} · ${product} · ${identifier}${duplicateOrdinal}`,
     institution,

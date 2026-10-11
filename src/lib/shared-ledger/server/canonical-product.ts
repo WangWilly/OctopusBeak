@@ -125,6 +125,7 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
     institutionKey: account.institutionKey,
     ...(account.viaSource ? { viaSource: account.viaSource } : {}),
     product: account.product,
+    ...(account.unidentifiedOrdinal === undefined ? {} : { unidentifiedOrdinal: account.unidentifiedOrdinal }),
     group: account.group,
     kind: account.kind,
     typeLabel: account.typeLabel,

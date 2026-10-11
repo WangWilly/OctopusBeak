@@ -36,6 +36,20 @@ test("canonical account display hides opaque identity and numbers credit account
   assert.doesNotMatch(`${first} ${second}`, /sha256:/iu);
   assert.equal(displays.get("account-a")?.institution, "Yuanta Bank");
   assert.equal(displays.get("account-a")?.product, "Credit card account");
+  assert.equal(displays.get("account-a")?.unidentifiedOrdinal, 1, "the fallback ordinal travels as data for localization");
+  assert.equal(displays.get("account-b")?.unidentifiedOrdinal, 2);
+});
+
+test("an account with a displayable identifier carries no fallback ordinal", () => {
+  const displays = buildAccountDisplayMap([{
+    accountId: "account-a",
+    integrationNamespace: "cathay",
+    institutionKey: "cathay",
+    stream: "domestic",
+    accountNo: "0042",
+    accountType: "depository",
+  }]);
+  assert.equal(displays.get("account-a")?.unidentifiedOrdinal, undefined);
 });
 
 test("source-proven credit portfolio numbers remain complete without becoming card masks", () => {

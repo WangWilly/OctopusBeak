@@ -1198,6 +1198,7 @@ const en = {
     "Investment account": "Investment account",
     Account: "Account",
   },
+  unidentifiedAccount: (ordinal: number) => `Account ${ordinal}`,
   knownLabels: {
     "Net position": "Net position",
     "Asset value": "Asset value",
@@ -2375,6 +2376,7 @@ const zh: typeof en = {
     "Investment account": "投資帳戶",
     Account: "帳戶",
   },
+  unidentifiedAccount: (ordinal: number) => `帳戶 ${ordinal}`,
   knownLabels: {
     "Net position": "淨部位",
     "Asset value": "資產價值",

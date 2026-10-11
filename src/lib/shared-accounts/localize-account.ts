@@ -5,13 +5,16 @@ import type { AccountRowDto } from "../shared-ledger/types.ts";
 /**
  * Account labels arrive composed in English as "institution · product · id";
  * swap the first two parts for the interface language and keep the provider
- * identifier untouched.
+ * identifier untouched. An account without a displayable identifier carries
+ * its fallback ordinal, so its "Account N" part is localized too.
  */
 export function localizeAccount(account: AccountRowDto, dictionary: Translation): AccountRowDto {
   const institution = account.institutionKey ? dictionary.institutions[account.institutionKey] : account.institution;
   const product = (dictionary.accountProducts as Record<string, string>)[account.product] ?? account.product;
   const prefix = `${account.institution} · ${account.product}`;
-  const label = account.label.startsWith(prefix)
+  const label = account.unidentifiedOrdinal !== undefined
+    ? `${institution} · ${product} · ${dictionary.unidentifiedAccount(account.unidentifiedOrdinal)}`
+    : account.label.startsWith(prefix)
     ? `${institution} · ${product}${account.label.slice(prefix.length)}`
     : account.label.startsWith(account.institution)
       ? `${institution}${account.label.slice(account.institution.length)}`
