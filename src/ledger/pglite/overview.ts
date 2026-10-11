@@ -621,6 +621,7 @@ function mapProjection(
       label: display.label,
       institution: display.institution,
       product: display.product,
+      ...(display.unidentifiedOrdinal === undefined ? {} : { unidentifiedOrdinal: display.unidentifiedOrdinal }),
       ...classification,
       amounts: hasUnvaluedHolding ? [] : amounts,
       marginAmounts,

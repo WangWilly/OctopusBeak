@@ -85,6 +85,8 @@ export type AccountRowDto = {
   /** The Intermediary source that reports this account; absent for a direct source. */
   viaSource?: IntermediarySourceLogoKey;
   product: string;
+  /** The ordinal behind the "Account N" fallback when no identifier is displayable, localized by `localizeAccount`. */
+  unidentifiedOrdinal?: number;
   group: AccountGroup;
   kind: AccountKind;
   typeLabel: string;
