@@ -1207,6 +1207,7 @@
       appPendingActions={automationPendingActions}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
+      overviewLive={financialLiveEnabled && financialLiveStores ? financialLiveStores.overview() : null}
       onboardingSourceSelection={[
         "source-entry",
         "source-selection",

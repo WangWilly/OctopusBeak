@@ -182,6 +182,27 @@ const TASK_LOGOS: Readonly<Record<string, LogoKey>> = {
   "sync-tdcc": "tdcc",
 };
 
+const TASK_NAMESPACES: Readonly<Record<string, readonly string[]>> = {
+  "fubon-all-statements": ["fubon"],
+  "esun-credit-card-statements": ["esun"],
+  "yuanta-all-statements": ["yuanta", "yuanta-fund"],
+  "yuanta-trade-statements": ["yuanta-trade"],
+  "cathay-all-statements": ["cathay"],
+  "hncb-statements": ["hncb"],
+  "ctbc-statements": ["ctbc"],
+  "post-statements": ["post"],
+  "sinopac-statements": ["sinopac"],
+  "linebank-statements": ["linebank"],
+  "einvoice-personal-invoices": ["einvoice"],
+  "sync-maicoin": ["maicoin"],
+  "sync-tdcc": ["tdcc"],
+};
+
+/** The integration namespaces an automation task writes accounts under. */
+export function taskIntegrationNamespaces(taskId: string): readonly string[] {
+  return TASK_NAMESPACES[taskId] ?? [];
+}
+
 /** The Institution that operates a direct source; null for an Intermediary source or an unknown namespace. */
 export function institutionForNamespace(namespace: string | undefined): LogoInstitutionKey | null {
   const source = namespace === undefined ? null : sourceInstitution(namespace);
