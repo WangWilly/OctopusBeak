@@ -56,16 +56,6 @@ const en = {
     currentAwaiting: "Current balances have not been collected yet.",
     currentEmpty: "No financial accounts are available yet.",
     currentUnavailable: "Current balances are temporarily unavailable.",
-    currentPartial: (currentValueCount: number, sourceNotCollectedCount: number) => [
-      currentValueCount > 0
-        ? `${currentValueCount} account${currentValueCount === 1 ? " is" : "s are"} still waiting for a current value.`
-        : null,
-      sourceNotCollectedCount > 0
-        ? `${sourceNotCollectedCount} source${sourceNotCollectedCount === 1 ? " is" : "s are"} not collected yet.`
-        : null,
-      "Totals are partial.",
-    ].filter(Boolean).join(" "),
-    sourceGapsAria: "Current value or source collection gaps",
     creditCardEstimateBasis:
       "Estimated liability (including unbilled consumption)",
     emptyTitle: "No account data yet",
@@ -1277,16 +1267,6 @@ const zh: typeof en = {
     currentAwaiting: "目前尚未收集餘額。",
     currentEmpty: "尚無可用的財務帳戶。",
     currentUnavailable: "目前餘額暫時無法使用。",
-    currentPartial: (currentValueCount, sourceNotCollectedCount) => [
-      currentValueCount > 0
-        ? `${currentValueCount} 個帳戶的目前金額或價值尚未觀測。`
-        : null,
-      sourceNotCollectedCount > 0
-        ? `${sourceNotCollectedCount} 個來源尚未採集。`
-        : null,
-      "總額僅供部分參考。",
-    ].filter(Boolean).join(" "),
-    sourceGapsAria: "目前金額或來源採集缺口",
     creditCardEstimateBasis: "估算負債（含未請款消費）",
     emptyTitle: "還沒有任何帳戶資料",
     emptyBody:

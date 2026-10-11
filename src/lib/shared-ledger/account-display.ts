@@ -1,9 +1,5 @@
 import {
-  institutionForNamespace,
   institutionNames,
-  intermediarySource,
-  intermediarySourceName,
-  isInstitutionKey,
   type InstitutionKey,
 } from "../institutions/institutions.ts";
 
@@ -37,31 +33,11 @@ export type AccountDisplay = Readonly<{
   unidentifiedOrdinal?: number;
 }>;
 
-export type SourceGapForDisplay = Readonly<{
-  label?: string;
-  integrationNamespace?: string;
-  institutionKey?: string;
-  stream?: string;
-  accountNo?: string | null;
-  reason?: string;
-}>;
-
 type AccountDisplayBucket = {
   rows: AccountDisplayInput[];
 };
 
 const INSTITUTION_NAMES = institutionNames("en");
-
-/** The name a namespace shows on its own: its Institution for a direct source, the source itself for an Intermediary source. */
-function namespaceLabel(namespace: string): string | undefined {
-  const normalized = namespace.trim().toLowerCase();
-  const key = institutionForNamespace(normalized);
-  if (key) return INSTITUTION_NAMES[key];
-  const intermediary = intermediarySource(normalized);
-  return intermediary ? intermediarySourceName(intermediary, "en") : undefined;
-}
-
-const SOURCE_GAP_FALLBACK = "Source not identified";
 
 /**
  * Build stable, human-readable account labels. Provider account numbers are
@@ -97,52 +73,6 @@ export function buildAccountDisplayMap(
     });
   }
   return result;
-}
-
-export function safeSourceGapLabel(gap: SourceGapForDisplay): string {
-  const label = gap.label?.trim();
-  const namespace = gap.integrationNamespace?.trim();
-  if (
-    label
-    && !containsInternalAccountIdentifier(label)
-    && (!namespace || !looksLikeRawNamespaceLabel(label, namespace))
-  ) {
-    return label;
-  }
-
-  if (!namespace) return SOURCE_GAP_FALLBACK;
-  const institution = isInstitutionKey(gap.institutionKey)
-    ? INSTITUTION_NAMES[gap.institutionKey]
-    : namespaceLabel(namespace);
-  if (!institution) return SOURCE_GAP_FALLBACK;
-  const stream = gap.stream?.trim();
-  if (!stream) return institution;
-  const accountType = accountTypeForStream(stream);
-  const product = productLabel({
-    integrationNamespace: namespace,
-    stream,
-    accountType,
-  });
-  const identifier = displayableGapIdentifier(gap);
-  return identifier
-    ? `${institution} · ${product} · ${identifier}`
-    : `${institution} · ${product}`;
-}
-
-export function sourceGapCounts(gaps: readonly SourceGapForDisplay[]) {
-  return gaps.reduce(
-    (counts, gap) => {
-      if (gap.reason === "current-value-not-observed") counts.currentValue += 1;
-      else if (gap.reason === "source-not-collected") counts.sourceNotCollected += 1;
-      else if (gap.reason === "canonical-read-unavailable") counts.canonicalReadUnavailable += 1;
-      return counts;
-    },
-    { currentValue: 0, sourceNotCollected: 0, canonicalReadUnavailable: 0 },
-  );
-}
-
-export function containsInternalAccountIdentifier(value: string): boolean {
-  return /sha256:/iu.test(value);
 }
 
 export function productLabel(account: Pick<AccountDisplayInput, "integrationNamespace" | "stream" | "accountType" | "investmentSubtype">): string {
@@ -211,10 +141,6 @@ function displayableCardMasks(values: readonly string[] | undefined): string[] {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function displayableGapIdentifier(gap: SourceGapForDisplay): string | null {
-  return displayableIdentifier(gap.accountNo);
-}
-
 function displayableIdentifier(accountNo: string | null | undefined): string | null {
   const raw = accountNo?.trim() ?? "";
   if (!raw || containsOpaqueToken(raw)) return null;
@@ -225,24 +151,6 @@ function displayableIdentifier(accountNo: string | null | undefined): string | n
 
 function containsOpaqueToken(value: string): boolean {
   return /sha256:/iu.test(value);
-}
-
-function looksLikeRawNamespaceLabel(label: string, namespace: string): boolean {
-  const institution = namespaceLabel(namespace);
-  if (institution && label.toLocaleLowerCase().startsWith(institution.toLocaleLowerCase())) return false;
-  return new RegExp(`^${escapeRegExp(namespace)}(?:\\s|$)`, "iu").test(label);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function accountTypeForStream(stream: string): AccountDisplayAccountType {
-  const normalized = stream.toLowerCase();
-  if (normalized.includes("credit")) return "credit";
-  if (normalized.includes("loan")) return "loan";
-  if (normalized.includes("investment") || normalized.includes("fund") || normalized.includes("crypto")) return "investment";
-  return "depository";
 }
 
 function normalizeNamespace(value: string): string {
