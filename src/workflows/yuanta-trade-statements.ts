@@ -910,21 +910,19 @@ export async function decodeYuantaTradeReportResponse(
   }
 }
 
-export async function captureTypedReport(
+/** YuanTa redirects a report POST here when its backend query fails; the same query usually succeeds on resubmission. */
+const YUANTA_REPORT_ERROR_PATH = "/NexusWebTrade/AssetReport/Error";
+const YUANTA_REPORT_ATTEMPTS = 3;
+
+async function submitReportForm(
   page: Page,
-  reportType: string,
+  reportUrl: string,
   params: Record<string, string | number>,
-  context: WorkflowContext,
-): Promise<ReportPage> {
-  context.signal.throwIfAborted();
+): Promise<Response | null> {
   const navigation = page.waitForNavigation({
     waitUntil: "domcontentloaded",
     timeout: 60_000,
   });
-  const reportUrl = new URL(
-    `/NexusWebTrade/AssetReport/${reportType}`,
-    YUANTA_TRADE_LOGIN_URL,
-  ).href;
   await page.evaluate(
     ({ reportUrl, params }) => {
       const form = document.createElement("form");
@@ -942,8 +940,27 @@ export async function captureTypedReport(
     },
     { reportUrl, params },
   );
-  const response = await navigation;
-  context.signal.throwIfAborted();
+  return await navigation;
+}
+
+export async function captureTypedReport(
+  page: Page,
+  reportType: string,
+  params: Record<string, string | number>,
+  context: WorkflowContext,
+): Promise<ReportPage> {
+  const reportUrl = new URL(
+    `/NexusWebTrade/AssetReport/${reportType}`,
+    YUANTA_TRADE_LOGIN_URL,
+  ).href;
+  let response: Response | null = null;
+  for (let attempt = 1; attempt <= YUANTA_REPORT_ATTEMPTS; attempt += 1) {
+    context.signal.throwIfAborted();
+    response = await submitReportForm(page, reportUrl, params);
+    context.signal.throwIfAborted();
+    if (!response || new URL(response.url()).pathname !== YUANTA_REPORT_ERROR_PATH) break;
+    if (attempt < YUANTA_REPORT_ATTEMPTS) await page.waitForTimeout(2_000 * attempt);
+  }
   if (!response) {
     throw new Error("Yuanta Trade report navigation returned no source response.");
   }
