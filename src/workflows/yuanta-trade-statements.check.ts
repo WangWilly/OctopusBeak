@@ -13,6 +13,7 @@ import {
   isCompleteHoldingCapture,
   isCompleteTradeCapture,
   buildYuantaTradeFundingEvidence,
+  captureTypedReport,
   buildYuantaTradeCanonicalCaptures,
   deriveYuantaTradeAccountNumberEvidence,
   mapYuantaTradeCanonicalInvestmentRow,
@@ -805,4 +806,66 @@ test("records how many reports were collected when one report source fails", asy
   assert.equal(failure.completed, failingReport - 1);
   assert.equal(failure.total, 20);
   assert.equal(events.filter((event) => event.code === "report-collected").length, failingReport - 1);
+});
+
+function fakeReportPage(landings: readonly ("report" | "error")[]) {
+  let submissions = 0;
+  const response = (landing: "report" | "error", reportType: string) => {
+    const path = landing === "error" ? "Error" : reportType;
+    const html = `<html><head><title>${path}</title></head><body><script>var currTradeType = '${reportType}';</script></body></html>`;
+    return {
+      url: () => `https://global.yuanta.com.tw/NexusWebTrade/AssetReport/${path}`,
+      status: () => 200,
+      headers: () => ({ "content-type": "text/html; charset=utf-8" }),
+      body: async () => Buffer.from(html, "utf8"),
+      request: () => ({ method: () => (landing === "error" ? "GET" : "POST") }),
+    };
+  };
+  let pending: ((value: unknown) => void) | null = null;
+  const page = {
+    waitForNavigation: () => new Promise((resolve) => { pending = resolve; }),
+    async evaluate(_run: unknown, args: { reportUrl: string }) {
+      const reportType = new URL(args.reportUrl).pathname.split("/").at(-1) ?? "";
+      const landing = landings[submissions] ?? "error";
+      submissions += 1;
+      pending?.(response(landing, reportType));
+    },
+    async waitForTimeout() {},
+    context: () => ({ request: {} }),
+    locator: () => ({
+      isVisible: async () => false,
+      waitFor: async () => {},
+    }),
+  } as unknown as Page;
+  return { page, submissions: () => submissions };
+}
+
+function reportContext(): WorkflowContext {
+  return {
+    runId: "yuanta-trade-report-error-fixture",
+    signal: new AbortController().signal,
+    now: () => "2026-10-12T02:08:50.000Z",
+    browser: { withPage: async () => { throw new Error("unused"); } },
+    text: strictSourceText,
+    humanAssistance: { request: async () => { throw new Error("unused"); } },
+    event: async () => {},
+  };
+}
+
+test("resubmits a Yuanta report that the provider redirected to its error page", async () => {
+  const fake = fakeReportPage(["error", "report"]);
+  const page = await captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportContext());
+
+  assert.equal(fake.submissions(), 2);
+  assert.equal(page.url, "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/OverseaTrade");
+  assert.equal(page.currentTradeType, "OverseaTrade");
+});
+
+test("fails a Yuanta report that keeps redirecting to the provider error page", async () => {
+  const fake = fakeReportPage([]);
+  await assert.rejects(
+    captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportContext()),
+    /did not match the requested source/,
+  );
+  assert.equal(fake.submissions(), 3);
 });
