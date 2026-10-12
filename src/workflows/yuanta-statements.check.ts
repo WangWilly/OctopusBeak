@@ -19,6 +19,7 @@ import {
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
+import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
@@ -140,16 +141,7 @@ assert.equal(yuantaDuplicateFinancial.capture!.occurrenceGroupCoverage?.length, 
 
 // Sunday transactions are booked on the provider's next business day, after
 // the range ends on Sunday. The provider, not a local calendar, names that day.
-function admitSundayQueryRows(...accountingDates: string[]) {
-  const observedAt = "2026-10-11T16:00:00+08:00";
-  const rows = accountingDates.map((accountingDate, rowOrdinal) => ({
-    rowOrdinal,
-    values: [
-      "臺幣活期存款", "0012345678901234", accountingDate, "20261011",
-      `13:2${rowOrdinal}:00`, "轉帳", "", String(100 + rowOrdinal),
-      String(1100 + rowOrdinal), "", "",
-    ],
-  }));
+function admitYuantaRows(observedAt: string, rows: readonly string[][]) {
   const evidence = admitYuantaDomesticDepositCaptureEvidence(buildYuantaCapture(
     { value: "0012345678901234", label: "臺幣活期存款 0012345678901234" },
     deriveYuantaDomesticDepositQueryRange("three_months", observedAt),
@@ -162,7 +154,7 @@ function admitSundayQueryRows(...accountingDates: string[]) {
         byteLength: 0,
         contentDigest: `sha256:${"b".repeat(64)}` as const,
         columnNames: [...YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES],
-        rows,
+        rows: rows.map((values, rowOrdinal) => ({ rowOrdinal, values: [...values] })),
         terminal: true,
       },
     },
@@ -170,11 +162,21 @@ function admitSundayQueryRows(...accountingDates: string[]) {
   assert.equal(evidence.status, "admissible");
   return admitYuantaDomesticDepositFinancialCapture({
     capture: evidence.capture!,
-    captureId: `yuanta-domestic-next-business-day-${accountingDates.join("-")}`,
+    captureId: `yuanta-domestic-next-business-day-${observedAt}-${rows.length}`,
     humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
     sourceConnectionScope: stableConnectionScope,
     sourceConnectionKey: stableConnectionKey,
   });
+}
+function sundayRow(accountingDate: string, rowOrdinal: number): string[] {
+  return [
+    "臺幣活期存款", "0012345678901234", accountingDate, "20261011",
+    `13:2${rowOrdinal}:00`, "轉帳", "", String(100 + rowOrdinal),
+    String(1100 + rowOrdinal), "", "",
+  ];
+}
+function admitSundayQueryRows(...accountingDates: string[]) {
+  return admitYuantaRows("2026-10-11T16:00:00+08:00", accountingDates.map(sundayRow));
 }
 assert.deepEqual(
   admitSundayQueryRows("20261012").diagnostics,
@@ -194,6 +196,32 @@ assert.ok(
   admitSundayQueryRows("20261026").diagnostics.includes("row-outside-query-range"),
   "a row booked beyond any holiday stretch stays outside the query range",
 );
+
+// Monday's sync covers the booked-ahead day inside its range and must
+// recapture the Sunday row with the same identity.
+{
+  const sunday = admitSundayQueryRows("20261012").capture!;
+  const monday = admitYuantaRows("2026-10-12T16:00:00+08:00", [
+    sundayRow("20261012", 0),
+    ["臺幣活期存款", "0012345678901234", "20261012", "20261012",
+      "09:10:00", "薪資", "", "200", "1300", "", ""],
+  ]).capture!;
+  assert.equal(sunday.scope.endDate, "2026-10-12", "the Sunday capture covers the booked-ahead day");
+  const original = sunday.records[0]!;
+  const recaptured = monday.records.find(
+    (record) => record.occurrenceKey === original.occurrenceKey,
+  );
+  assert.ok(recaptured, "Monday's sync recaptures the Sunday row");
+  assert.equal(recaptured.contentHash, original.contentHash);
+  assert.deepEqual(recaptured.occurrenceGroup, original.occurrenceGroup);
+  assert.equal(
+    financialFactsFromCapture(monday).find(
+      (fact) => fact.sourceOccurrenceKey === original.occurrenceKey,
+    )?.sourceSequence,
+    financialFactsFromCapture(sunday)[0]?.sourceSequence,
+    "financial identity remains stable across the two syncs",
+  );
+}
 
 assert.deepEqual(
   yuantaLoanAccountEvidenceFromTransactionNote("0012345678901234", 7),
