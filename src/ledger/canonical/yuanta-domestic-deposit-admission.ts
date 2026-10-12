@@ -998,6 +998,16 @@ function rangeDate(value: string): string {
   return normalizedCell(value).replace(/\//g, "-");
 }
 
+// Longer than Taiwan's longest holiday stretch (Lunar New Year, about nine
+// days), so only an implausible booking date is rejected.
+const MAX_NEXT_BUSINESS_DAY_GAP_DAYS = 14;
+
+function addDays(date: string, days: number): string {
+  const next = new Date(`${date}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
 function financialRecord(
   identity: YuantaDomesticDepositAccountIdentity,
   row: YuantaDomesticDepositRawRow,
@@ -1253,6 +1263,8 @@ function financialDiagnosticsFor(
 
   const queryStart = rangeDate(input.capture.queryRange.startDate);
   const queryEnd = rangeDate(input.capture.queryRange.endDate);
+  const latestAccountingDate = addDays(queryEnd, MAX_NEXT_BUSINESS_DAY_GAP_DAYS);
+  const laterAccountingDates = new Set<string>();
   const records: CanonicalFinancialDepositRecord[] = [];
   const groupRows: Array<{
     record: CanonicalFinancialDepositRecord;
@@ -1261,13 +1273,20 @@ function financialDiagnosticsFor(
   for (const [pageOrdinal, download] of downloads.entries()) {
     for (const row of download.rows) {
       const time = sourceTransactionTime(row.values);
-      // Yuanta's selected query range bounds the provider accounting date.
-      // The transaction date remains the canonical financial effective date;
-      // it may precede the requested range when the provider books the row
-      // later.
+      // Yuanta's selected query range bounds the provider accounting date,
+      // except that a transaction made on a non-business day at the end of
+      // the range is booked on the provider's next business day. The range
+      // ends on the observation day, so any later accounting date is that
+      // single next business day. The transaction date remains the canonical
+      // financial effective date; it may precede the requested range when
+      // the provider books the row later.
+      if (time && time.accountingDate > queryEnd)
+        laterAccountingDates.add(time.accountingDate);
       if (
         time &&
-        (time.accountingDate < queryStart || time.accountingDate > queryEnd)
+        (time.accountingDate < queryStart ||
+          time.accountingDate > latestAccountingDate ||
+          (time.accountingDate > queryEnd && time.localDate > queryEnd))
       )
         diagnostics.push("row-outside-query-range");
       const result = financialRecord(identity, row, pageOrdinal, semantics);
@@ -1278,6 +1297,7 @@ function financialDiagnosticsFor(
         groupRows.push({ record: result.record, partitionDate: time.accountingDate });
     }
   }
+  if (laterAccountingDates.size > 1) diagnostics.push("row-outside-query-range");
   if (diagnostics.length > 0)
     return { diagnostics: [...new Set(diagnostics)], semantics };
 
@@ -1292,6 +1312,12 @@ function financialDiagnosticsFor(
     input.capture.queryRange.startDate,
     input.capture.queryRange.endDate,
   );
+  // A row booked on the next business day extends the covered accounting
+  // dates so its occurrence group stays inside the capture scope.
+  const coverageEnd = groupRows.reduce(
+    (latest, row) => (row.partitionDate > latest ? row.partitionDate : latest),
+    queryEnd,
+  );
   const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
     rows: groupRows,
     scopeKey: financialOpaque(
@@ -1301,7 +1327,7 @@ function financialDiagnosticsFor(
       YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     ),
     startDate: queryStart,
-    endDate: queryEnd,
+    endDate: coverageEnd,
     contractVersion: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     complete:
       downloads.length > 0 && downloads.every((download) => download.terminal),
@@ -1328,7 +1354,7 @@ function financialDiagnosticsFor(
     observedAt: input.capture.observedAt,
     scope: {
       startDate: queryStart,
-      endDate: queryEnd,
+      endDate: coverageEnd,
       scopeKind: "bounded-range",
       completeness: "complete-range",
       completenessBasis: semantics.completeness.basis,

@@ -138,6 +138,63 @@ assert.deepEqual(
 );
 assert.equal(yuantaDuplicateFinancial.capture!.occurrenceGroupCoverage?.length, 1);
 
+// Sunday transactions are booked on the provider's next business day, after
+// the range ends on Sunday. The provider, not a local calendar, names that day.
+function admitSundayQueryRows(...accountingDates: string[]) {
+  const observedAt = "2026-10-11T16:00:00+08:00";
+  const rows = accountingDates.map((accountingDate, rowOrdinal) => ({
+    rowOrdinal,
+    values: [
+      "臺幣活期存款", "0012345678901234", accountingDate, "20261011",
+      `13:2${rowOrdinal}:00`, "轉帳", "", String(100 + rowOrdinal),
+      String(1100 + rowOrdinal), "", "",
+    ],
+  }));
+  const evidence = admitYuantaDomesticDepositCaptureEvidence(buildYuantaCapture(
+    { value: "0012345678901234", label: "臺幣活期存款 0012345678901234" },
+    deriveYuantaDomesticDepositQueryRange("three_months", observedAt),
+    observedAt,
+    {
+      filename: "synthetic-yuanta.csv",
+      rows: [],
+      source: {
+        filename: "synthetic-yuanta.csv",
+        byteLength: 0,
+        contentDigest: `sha256:${"b".repeat(64)}` as const,
+        columnNames: [...YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES],
+        rows,
+        terminal: true,
+      },
+    },
+  ));
+  assert.equal(evidence.status, "admissible");
+  return admitYuantaDomesticDepositFinancialCapture({
+    capture: evidence.capture!,
+    captureId: `yuanta-domestic-next-business-day-${accountingDates.join("-")}`,
+    humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+    sourceConnectionScope: stableConnectionScope,
+    sourceConnectionKey: stableConnectionKey,
+  });
+}
+assert.deepEqual(
+  admitSundayQueryRows("20261012").diagnostics,
+  [],
+  "a row booked on the next business day after the query range is admitted",
+);
+assert.deepEqual(
+  admitSundayQueryRows("20261020", "20261020").diagnostics,
+  [],
+  "rows booked after a weekday holiday stretch are admitted",
+);
+assert.ok(
+  admitSundayQueryRows("20261012", "20261013").diagnostics.includes("row-outside-query-range"),
+  "rows booked on two different later days cannot share one next business day",
+);
+assert.ok(
+  admitSundayQueryRows("20261026").diagnostics.includes("row-outside-query-range"),
+  "a row booked beyond any holiday stretch stays outside the query range",
+);
+
 assert.deepEqual(
   yuantaLoanAccountEvidenceFromTransactionNote("0012345678901234", 7),
   {
