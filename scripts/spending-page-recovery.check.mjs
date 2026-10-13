@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
-import { createSpendingViteServer, spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
+import { acquireBrowserTestRuntime } from "./browser-test-runtime.mjs";
+import { spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
 import { record, singleCategory, view } from "./spending-canonical-fixture.mjs";
 
 const total = { currency: "TWD", coefficient: "100", scale: 0, count: 1 };
@@ -80,18 +80,16 @@ function installReads({ model, scenario }) {
 }
 
 test("Spending page reads stop failed retries, recover stale versions and preserve the last complete snapshot", async (t) => {
-  let server;
-  let browser;
+  let runtime;
   try {
-    server = await createSpendingViteServer();
-    browser = await chromium.launch({ headless: true });
+    runtime = await acquireBrowserTestRuntime();
     for (const scenario of ["failure", "stale", "candidate-stale", "retain", "pairing-live", "action-race"]) {
-      await t.test(scenario, async () => {
-        const page = await browser.newPage();
+      await t.test(scenario, async (t) => {
+        const page = await runtime.newPage(t);
         await page.clock.setFixedTime(new Date("2026-10-05T12:00:00+08:00"));
         try {
           await page.addInitScript(spendingDesktopApiInitScript(model) + `;(${installReads.toString()})(${JSON.stringify({ model, scenario })});`);
-          await page.goto(server.resolvedUrls.local[0] + "#/spending");
+          await page.goto(runtime.url + "#/spending");
           if (scenario === "failure") {
             await page.getByRole("alert").filter({ hasText: "Synthetic query failure" }).waitFor();
             await page.waitForTimeout(200);
@@ -146,7 +144,6 @@ test("Spending page reads stop failed retries, recover stale versions and preser
       });
     }
   } finally {
-    await browser?.close();
-    await server?.close();
+    await runtime?.close();
   }
 });

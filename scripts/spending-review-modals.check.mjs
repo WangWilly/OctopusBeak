@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
-import { createSpendingViteServer, spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
+import { acquireBrowserTestRuntime } from "./browser-test-runtime.mjs";
+import { spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
 
 const TWD = (value) => ({ currency: "TWD", coefficient: String(value), scale: 0 });
 const total = { ...TWD(3150), count: 3 };
@@ -68,8 +68,8 @@ function installReads({ records, pair }) {
   };
 }
 
-async function openPage(browser, server, { hidden = false } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+async function openPage(t, runtime, { hidden = false } = {}) {
+  const page = await runtime.newPage(t, { viewport: { width: 1280, height: 900 } });
   await page.clock.setFixedTime(new Date("2026-10-05T12:00:00+08:00"));
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -78,7 +78,7 @@ async function openPage(browser, server, { hidden = false } = {}) {
     localStorage.setItem("octopusbeak-locale", "zh-TW");
     localStorage.setItem("octopusbeak-values-visible", valuesVisible);
   }, hidden ? "0" : "1");
-  await page.goto(server.resolvedUrls.local[0] + "#/spending");
+  await page.goto(runtime.url + "#/spending");
   await page.locator("[data-purchase-record]").first().waitFor();
   return { page, errors };
 }
@@ -103,11 +103,10 @@ async function visibleUnblurredAmounts(page) {
 }
 
 test("the 帳目合併 and 消費明細 modals act on the pairs and purchase they show", async (t) => {
-  const server = await createSpendingViteServer();
-  const browser = await chromium.launch({ headless: true });
+  const runtime = await acquireBrowserTestRuntime();
   try {
-    await t.test("merge modal", async () => {
-      const { page, errors } = await openPage(browser, server);
+    await t.test("merge modal", async (t) => {
+      const { page, errors } = await openPage(t, runtime);
       await page.locator("[data-pending-overview-count]").filter({ hasText: "4" }).waitFor();
       await page.locator("[data-open-merge]").click();
       await page.locator("[data-merge-modal] [data-pair-id='cand-1']").waitFor();
@@ -132,11 +131,10 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
         action: "confirm", kind: "candidate", candidateId: "cand-1", invoiceIdentityId: "inv-1", transactionIdentityId: "tx-1", dataVersion: 7,
       });
       assert.deepEqual(errors, []);
-      await page.close();
     });
 
-    await t.test("purchase modal", async () => {
-      const { page, errors } = await openPage(browser, server);
+    await t.test("purchase modal", async (t) => {
+      const { page, errors } = await openPage(t, runtime);
       await page.waitForTimeout(1400);
       await page.locator("[data-purchase-record][data-basis='bank-transaction']").first().click();
       const modal = page.locator("[data-purchase-modal]");
@@ -158,11 +156,10 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
       await page.locator("[data-merge-modal]").waitFor();
       assert.equal(await page.locator("[data-purchase-modal]").count(), 0);
       assert.deepEqual(errors, []);
-      await page.close();
     });
 
-    await t.test("values hidden", async () => {
-      const { page } = await openPage(browser, server, { hidden: true });
+    await t.test("values hidden", async (t) => {
+      const { page } = await openPage(t, runtime, { hidden: true });
       await page.waitForTimeout(1400);
       assert.deepEqual(await visibleUnblurredAmounts(page), [], "page amounts blur");
       await page.locator("[data-open-merge]").click();
@@ -172,10 +169,8 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
       await page.locator("[data-purchase-record]").first().click();
       await page.locator("[data-purchase-modal] [data-pending-match]").waitFor();
       assert.deepEqual(await visibleUnblurredAmounts(page), [], "purchase modal amounts blur");
-      await page.close();
     });
   } finally {
-    await browser.close();
-    await server.close();
+    await runtime.close();
   }
 });

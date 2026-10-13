@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
-import { createSpendingViteServer, spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
+import { acquireBrowserTestRuntime } from "./browser-test-runtime.mjs";
+import { spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
 
 const model = {
   canonical: { availability: "empty", knowledgePoint: 3, totalsByCurrency: [], totalStatus: "complete" },
@@ -58,8 +58,8 @@ function installSeptemberPage(purchase) {
 const taipeiMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit" }).format(new Date());
 const [year, monthNumber] = taipeiMonth.split("-").map(Number);
 
-async function openPage(browser, server, locale, { pageModel = model, now = null } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+async function openPage(t, runtime, locale, { pageModel = model, now = null } = {}) {
+  const page = await runtime.newPage(t, { viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   if (now) await page.clock.setFixedTime(now);
@@ -68,7 +68,7 @@ async function openPage(browser, server, locale, { pageModel = model, now = null
     localStorage.setItem("octopusbeak-locale", value);
     localStorage.setItem("octopusbeak-values-visible", "1");
   }, locale);
-  await page.goto(server.resolvedUrls.local[0] + "#/spending");
+  await page.goto(runtime.url + "#/spending");
   await page.locator("[data-records-empty]").waitFor();
   return { page, errors };
 }
@@ -76,11 +76,10 @@ async function openPage(browser, server, locale, { pageModel = model, now = null
 const text = async (locator) => (await locator.innerText()).replace(/\s+/gu, " ").trim();
 
 test("a Spending page with no purchases teaches every card instead of showing the legacy ledger", async (t) => {
-  const server = await createSpendingViteServer();
-  const browser = await chromium.launch({ headless: true });
+  const runtime = await acquireBrowserTestRuntime();
   try {
-    await t.test("zh-TW", async () => {
-      const { page, errors } = await openPage(browser, server, "zh-TW");
+    await t.test("zh-TW", async (t) => {
+      const { page, errors } = await openPage(t, runtime, "zh-TW");
       const body = await text(page.locator("body"));
       assert.doesNotMatch(body, /已入帳流出總額/u, "the legacy canonical dashboard is gone");
       assert.equal(await text(page.locator("#spending-month-title")), `${year}年${monthNumber}月`, "today's Taipei month");
@@ -115,11 +114,10 @@ test("a Spending page with no purchases teaches every card instead of showing th
       await page.locator("[data-go-automation]").click();
       await page.waitForFunction(() => location.hash === "#/automation");
       assert.deepEqual(errors, []);
-      await page.close();
     });
 
-    await t.test("today's quiet month opens first while history stays one step back", async () => {
-      const { page, errors } = await openPage(browser, server, "zh-TW", { pageModel: historyModel, now: new Date("2026-10-05T12:00:00+08:00") });
+    await t.test("today's quiet month opens first while history stays one step back", async (t) => {
+      const { page, errors } = await openPage(t, runtime, "zh-TW", { pageModel: historyModel, now: new Date("2026-10-05T12:00:00+08:00") });
       assert.equal(await text(page.locator("#spending-month-title")), "2026年10月");
       assert.equal(await text(page.locator("[data-month-empty]")), "尚無資料");
       assert.equal(await page.locator("[data-trend-empty]").count(), 0, "the 12-month trend draws the history");
@@ -139,11 +137,10 @@ test("a Spending page with no purchases teaches every card instead of showing th
       assert.equal(await text(page.locator("#spending-month-title")), "2026年10月");
       assert.equal(await page.getByRole("alert").count(), 0);
       assert.deepEqual(errors, []);
-      await page.close();
     });
 
-    await t.test("en", async () => {
-      const { page, errors } = await openPage(browser, server, "en");
+    await t.test("en", async (t) => {
+      const { page, errors } = await openPage(t, runtime, "en");
       assert.equal(await text(page.locator("[data-month-empty]")), "No data yet");
       assert.equal(await text(page.locator("[data-month-facts-empty] .pending-fact")), "Pending merges 0 pairs No pending merges");
       assert.match(await text(page.locator("[data-pace-empty]")), /^No month-to-date trend yet /u);
@@ -152,10 +149,8 @@ test("a Spending page with no purchases teaches every card instead of showing th
       assert.match(await text(page.locator("[data-records-empty]")), /^No purchases this month yet .+ Set up sources in Automation How spending is counted$/u);
       assert.match(await text(page.locator("body")), /No spending data yet/u);
       assert.deepEqual(errors, []);
-      await page.close();
     });
   } finally {
-    await browser.close();
-    await server.close();
+    await runtime.close();
   }
 });
