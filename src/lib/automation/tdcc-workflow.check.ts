@@ -195,6 +195,7 @@ type Harness = Readonly<{
   run(input: unknown, fake: ReturnType<typeof fakeTdcc>, options?: Readonly<{
     signal?: AbortSignal;
     onEvent?: (event: WorkflowRunEvent) => void;
+    loseCommitReplyFor?: "settlement";
   }>): Promise<Record<string, unknown>>;
   secrets: ReturnType<typeof createTdccSecretStore>;
   pgliteRpc: Readonly<{ endpoint: string; token: string }>;
@@ -242,7 +243,15 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
           browser: { withPage: async () => { throw new Error("TDCC does not use a browser."); } },
           text: strictSourceText,
           humanAssistance: { request: async () => { throw new Error("TDCC never requests assistance."); } },
-          financialCommit: createWorkflowFinancialCommitPort(childRpc.workflow),
+          financialCommit: {
+            async execute(items, options) {
+              const result = await createWorkflowFinancialCommitPort(childRpc.workflow).execute(items, options);
+              if (runOptions.loseCommitReplyFor !== undefined && runOptions.loseCommitReplyFor === options?.product) {
+                throw new Error("synthetic lost commit reply");
+              }
+              return result;
+            },
+          },
           tdcc: {
             session: {
               open: async () => host.open(),
@@ -523,6 +532,28 @@ test("a later product failure retains earlier durable receipts and exclusion evi
     assert.equal(error.summary.products.find(({ typeId }) => typeId === "securities")?.committedCount, 2);
     assert.equal(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection?.status, "incomplete");
     assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+  });
+});
+
+test("a lost commit reply retains collection evidence and only previously acknowledged receipts", async () => {
+  await withHarness(async ({ run, count, events }) => {
+    const error = await interruption(run({ statementTypes: ["securities", "settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+    }), { loseCommitReplyFor: "settlement" }));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "commit-outcome-unknown");
+    assert.equal(error.summary.committedCount, 2, "only the earlier securities receipts are known");
+    const settlement = error.summary.products.find(({ typeId }) => typeId === "settlement");
+    assert.equal(settlement?.committedCount, 0, "a lost reply never establishes a receipt");
+    assert.deepEqual(settlement?.collection, {
+      status: "incomplete", exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+    assert.equal(await count(`SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'domestic-deposit' AND source_account_key = '812-${MIXED_VALID_ACCOUNT}-TWD'`), 1,
+      "the store committed even though the caller cannot know it from a reply");
+    assert.equal(classifyTypedWorkflowFailure(error, events), "commit-outcome-unknown");
+    const summary = summarizeInterruptedProductCollection(error);
+    assert.equal(summary?.counts.committedCount, 2);
+    assert.equal(summary?.counts.excludedUnknownInstitutionCount, 2, "securities and settlement each reported one exclusion");
   });
 });
 
