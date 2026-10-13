@@ -783,6 +783,10 @@ _Avoid_: All-products success assumption, partial financial evidence, failure th
 A non-failure collection outcome established by explicit source evidence, distinguishing a product the person does not hold from a product with no data in the queried scope. Neither outcome changes Statement Selection or establishes account closure, while navigation, authentication, timeout, and parsing failures establish neither kind of absence.
 _Avoid_: Missing-page ownership inference, empty-statement product absence, automatic deselection
 
+**Product collection exclusion**:
+A validated observation that a reported account or product entry is outside the admitted collection, with an explicit reason; intentional exclusions such as hidden accounts or unsupported time deposits permit collection to complete with exclusions, while unknown Institution mappings, failed bank updates, nonstandard currencies (including unidentified zero-balance accounts), or unsupported account identifiers mean collection is incomplete. Validated exclusion counts remain part of the Statement Run Summary after handled failures or cooperative cancellation, without proving complete coverage, Product Collection Absence, or successful financial admission.
+_Avoid_: Exclusion as product absence, excluded account as admitted account, exclusion count as complete coverage
+
 **Statement collection rerun**:
 A new synchronization attempt covering every statement type in the person's current Statement Selection, including after a partially completed run. It relies on existing admission identity and deduplication semantics rather than restricting collection to the preceding run's failed products.
 _Avoid_: Failed-products-only retry, resume of an incomplete Source Capture

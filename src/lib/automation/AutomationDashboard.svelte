@@ -565,9 +565,13 @@ import type {
     if (products.length) {
       return products.map((product) => {
         const label = dictionary.automation.statementTypeLabels[product.typeId] ?? product.typeId;
-        return product.status === "success"
+        const summary = product.status === "success"
           ? dictionary.automation.productCommittedSummary(label, product.committedCount)
           : dictionary.automation.productStatusSummary(label, dictionary.automation.productOutcomeStatuses[product.status]);
+        const collectionStatus = product.collection?.status;
+        return collectionStatus && collectionStatus !== "complete"
+          ? `${summary}${dictionary.automation.summarySeparator}${dictionary.automation.tdccCollectionStatuses[collectionStatus]}`
+          : summary;
       }).join(dictionary.automation.summarySeparator);
     }
     if (outcome?.errorCode) return workflowFailureExplanation(outcome.errorCode, $locale) ?? outcome.errorCode;
@@ -578,7 +582,13 @@ import type {
     const product = task?.appWorkflowOutcome?.summary?.products?.find((candidate) => candidate.typeId === typeId);
     if (!product || product.status === "skipped") return null;
     if (product.status === "success") {
-      return { tone: "good", text: dictionary.automation.statementLastSuccess(product.committedCount) };
+      const text = dictionary.automation.statementLastSuccess(product.committedCount);
+      return {
+        tone: product.collection?.status === "incomplete" ? "warn" : "good",
+        text: product.collection?.status && product.collection.status !== "complete"
+          ? `${text} · ${dictionary.automation.tdccCollectionStatuses[product.collection.status]}`
+          : text,
+      };
     }
     if (product.status === "failed") return { tone: "bad", text: dictionary.automation.statementLastFailed };
     return { tone: "muted", text: dictionary.automation.productOutcomeStatuses[product.status] };
@@ -1799,6 +1809,11 @@ import type {
                                 {#if product.status === "skipped" && product.skipReason}
                                   <span class="workflow-product-note">
                                     {$t.automation.productSkipReasons[product.skipReason]}
+                                  </span>
+                                {/if}
+                                {#if task.id === "sync-tdcc" && product.collection}
+                                  <span class="workflow-product-note">
+                                    {$t.automation.tdccCollectionStatuses[product.collection.status]}
                                   </span>
                                 {/if}
                                 {#if product.status === "failed" && product.committedCount > 0}

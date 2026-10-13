@@ -4,6 +4,7 @@ import type {
   TypedWorkflowErrorCode,
   TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
+import { tdccIncompleteCollectionHasDurableReceipts } from "./typed-workflow-outcome.ts";
 import {
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
@@ -122,8 +123,10 @@ export async function finalizeAutomationTaskRun(
     || result.signal === "SIGTERM"
     || result.error?.message === "Automation task cancelled."
     || outcome?.errorCode === "cancelled");
+  const tdccPartial = tdccIncompleteCollectionHasDurableReceipts(outcome?.summary, outcome?.errorCode);
   const partial = outcome?.summary?.status === "partial"
-    || result.statementSummary?.status === "partial";
+    || result.statementSummary?.status === "partial"
+    || tdccPartial;
   const typedFailureCode = outcome?.errorCode
     ?? (result.error || (result.exitCode !== 0 && !partial)
       ? "workflow-failed"
@@ -131,6 +134,8 @@ export async function finalizeAutomationTaskRun(
   let status: AutomationTaskStatus;
   if (cancelled) {
     status = "cancelled";
+  } else if (tdccPartial) {
+    status = "partial";
   } else if (typedFailureCode !== null || outcome?.summary?.status === "failed") {
     status = "failed";
   } else if (partial) {

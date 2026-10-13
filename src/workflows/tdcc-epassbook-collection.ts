@@ -6,14 +6,12 @@ import {
   tdccSecuritiesHoldingCapture,
   TdccInvestmentContractError,
   type TdccAdmittedFundAccount,
-  type TdccInvestmentExclusion,
 } from "../ledger/canonical/tdcc-investment-admission.ts";
 import {
   readTdccSettlementSnapshot,
   tdccSettlementBalanceCapture,
   tdccSettlementTransactionCapture,
   TdccSettlementContractError,
-  type TdccSettlementExclusion,
 } from "../ledger/canonical/tdcc-settlement-admission.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -23,6 +21,10 @@ import {
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
+import {
+  TdccCollectionSummaryInvariantError,
+  type TdccValidatedExclusion,
+} from "../lib/automation/tdcc-collection-summary.ts";
 import {
   TdccClient,
   TdccError,
@@ -107,6 +109,7 @@ export class TdccRunSession {
 
 /** Failures that end the whole run: every later product would fail the same way. */
 export function tdccFatalCode(error: unknown): TypedWorkflowErrorCode | undefined {
+  if (error instanceof TdccCollectionSummaryInvariantError) return "workflow-failed";
   if (error instanceof TdccDeviceRegistrationRequiredError) return "device-registration-required";
   if (!(error instanceof TdccError)) return undefined;
   switch (error.failure.reason) {
@@ -133,35 +136,6 @@ export function tdccProductFailureCode(error: unknown): TypedWorkflowErrorCode |
   return undefined;
 }
 
-/** Reported accounts the contract does not admit, as counts. No account number leaves the run. */
-export type TdccExclusionCounts = {
-  excludedUnknownInstitutionCount: number;
-  excludedNonIsoCurrencyCount: number;
-  excludedNonNumericAccountCount: number;
-  excludedTimeDepositCount: number;
-  hiddenAccountCount: number;
-  excludedBankNotUpdatedCount: number;
-  excludedEmptyNonIsoCurrencyCount: number;
-};
-
-export function emptyTdccExclusionCounts(): TdccExclusionCounts {
-  return { excludedUnknownInstitutionCount: 0, excludedNonIsoCurrencyCount: 0, excludedNonNumericAccountCount: 0, excludedTimeDepositCount: 0, hiddenAccountCount: 0, excludedBankNotUpdatedCount: 0, excludedEmptyNonIsoCurrencyCount: 0 };
-}
-
-function countExclusions(counts: TdccExclusionCounts, exclusions: readonly (TdccSettlementExclusion | TdccInvestmentExclusion)[]) {
-  for (const exclusion of exclusions) {
-    switch (exclusion.reason) {
-      case "unknown-institution-code": counts.excludedUnknownInstitutionCount += 1; break;
-      case "non-iso-currency": counts.excludedNonIsoCurrencyCount += 1; break;
-      case "non-numeric-account-number": counts.excludedNonNumericAccountCount += 1; break;
-      case "time-deposits-not-admitted": counts.excludedTimeDepositCount += exclusion.count; break;
-      case "hidden-account": counts.hiddenAccountCount += 1; break;
-      case "bank-not-updated": counts.excludedBankNotUpdatedCount += 1; break;
-      case "empty-non-iso-currency": counts.excludedEmptyNonIsoCurrencyCount += 1; break;
-    }
-  }
-}
-
 export type TdccProductCollection = Readonly<{
   items: readonly PGliteWorkflowRunItem[];
   sourceCaptureCount: number;
@@ -172,7 +146,8 @@ export type TdccCollectionContext = Readonly<{
   session: TdccRunSession;
   runId: string;
   observedAt: string;
-  exclusions: TdccExclusionCounts;
+  /** Bound by the workflow to the product whose validated response is being read. */
+  recordValidatedExclusions(exclusions: readonly TdccValidatedExclusion[]): void;
   admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
 }>;
 
@@ -187,7 +162,7 @@ const investmentItem = (product: TdccProductId, itemKey: string, capture: Return
 async function collectSecurities(context: TdccCollectionContext): Promise<TdccProductCollection> {
   const { session, runId, observedAt } = context;
   const positions = readTdccPositions(await session.call((client) => client.positions()));
-  countExclusions(context.exclusions, positions.exclusions);
+  context.recordValidatedExclusions(positions.exclusions);
   const items: PGliteWorkflowRunItem[] = [];
   let rowCount = 0;
   for (const [index, account] of positions.accounts.entries()) {
@@ -207,7 +182,7 @@ async function collectSecurities(context: TdccCollectionContext): Promise<TdccPr
 async function collectFunds(context: TdccCollectionContext): Promise<TdccProductCollection> {
   const { session, runId, observedAt } = context;
   const funds = readTdccFunds(await session.call((client) => client.fundPositions()));
-  countExclusions(context.exclusions, funds.exclusions);
+  context.recordValidatedExclusions(funds.exclusions);
   const accounts = new Map<string, TdccAdmittedFundAccount>();
   for (const account of [...funds.accounts, ...await context.admittedFundAccounts(session.connection)])
     if (!accounts.has(account.accountKey)) accounts.set(account.accountKey, { accountKey: account.accountKey, institutionKey: account.institutionKey });
@@ -229,7 +204,7 @@ async function collectFunds(context: TdccCollectionContext): Promise<TdccProduct
 async function collectSettlement(context: TdccCollectionContext): Promise<TdccProductCollection> {
   const { session, runId, observedAt } = context;
   const snapshot = readTdccSettlementSnapshot(await session.call((client) => client.bankBalances()));
-  countExclusions(context.exclusions, snapshot.exclusions);
+  context.recordValidatedExclusions(snapshot.exclusions);
   const items: PGliteWorkflowRunItem[] = [];
   let rowCount = 0;
   for (const [index, account] of snapshot.accounts.entries()) {

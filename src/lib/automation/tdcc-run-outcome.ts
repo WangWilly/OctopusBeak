@@ -1,17 +1,10 @@
 import type { Translation } from "../i18n/i18n.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
+import { TDCC_EXCLUSION_COUNT_NAMES } from "./tdcc-collection-summary.ts";
 
 type OutcomeCounts = NonNullable<TypedWorkflowOutcome["summary"]>["counts"];
 
-const EXCLUSION_COUNT_NAMES: ReadonlySet<string> = new Set([
-  "excludedUnknownInstitutionCount",
-  "excludedNonIsoCurrencyCount",
-  "excludedNonNumericAccountCount",
-  "excludedTimeDepositCount",
-  "hiddenAccountCount",
-  "excludedBankNotUpdatedCount",
-  "excludedEmptyNonIsoCurrencyCount",
-]);
+const EXCLUSION_COUNT_NAMES: ReadonlySet<string> = new Set(TDCC_EXCLUSION_COUNT_NAMES);
 
 /** The run's other counts, which the generic summary row still lists. */
 export function countsOutsideTdccExclusions(counts: OutcomeCounts): [string, number | undefined][] {

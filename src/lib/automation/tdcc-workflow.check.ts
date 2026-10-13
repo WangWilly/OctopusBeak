@@ -12,7 +12,11 @@ import { TDCC_BASE_URL } from "../../workflows/tdcc-epassbook-client.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { createTdccSecretStore } from "./server/tdcc-secret-store.ts";
 import { createTdccSessionHost } from "./server/tdcc-session-host.ts";
-import { classifyTypedWorkflowFailure, summarizeTypedWorkflowOutput } from "./server/typed-workflow-outcome.ts";
+import {
+  classifyTypedWorkflowFailure,
+  summarizeInterruptedProductCollection,
+  summarizeTypedWorkflowOutput,
+} from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "./workflow-executor.ts";
@@ -31,6 +35,9 @@ const TWD_ACCOUNT = ["2001", "2345678"].join("");
 const HIDDEN_ACCOUNT = ["2001", "2345611"].join("");
 const NAN_ACCOUNT = ["2001", "2345680"].join("");
 const UNKNOWN_BANK_ACCOUNT = ["3001", "2345678"].join("");
+const INTENTIONAL_HIDDEN_ACCOUNT = ["4001", "2345681"].join("");
+const MIXED_VALID_ACCOUNT = ["5001", "2345682"].join("");
+const MIXED_UNKNOWN_ACCOUNT = ["6001", "2345683"].join("");
 const NOW = "2026-10-09T02:31:00.000Z";
 const SAVED_TOKEN = "saved-session-token";
 
@@ -65,6 +72,27 @@ const fundRow = (saleOrgCode: string, fundNo: string) => ({
   currAlias: "USD", fundCHName: "測試全球股票基金", fundNo, fundSHR: "120.5", refORIValue: "1500.25", refTWDValue: "48230", saleOrgCode,
 });
 
+function settlementSnapshot(infos: readonly unknown[]) {
+  return { tspAccountInfos: infos, updateTime: "20261009103000" };
+}
+
+function updatedBank(bankId: string, accounts: readonly unknown[], timeAccounts: readonly unknown[] = []) {
+  return { bankId, execStatue: "0000", tspAccount: accounts, tspTimeAccounts: timeAccounts };
+}
+
+function problematicSettlementSnapshot() {
+  return settlementSnapshot([
+    updatedBank("999", [settlementRow(UNKNOWN_BANK_ACCOUNT, "TWD")]),
+  ]);
+}
+
+function mixedSettlementSnapshot() {
+  return settlementSnapshot([
+    updatedBank("812", [settlementRow(MIXED_VALID_ACCOUNT, "TWD")]),
+    updatedBank("999", [settlementRow(MIXED_UNKNOWN_ACCOUNT, "TWD")]),
+  ]);
+}
+
 type FakeOptions = {
   /** The token TDCC still accepts before any sign-in; null means the saved session has expired. */
   acceptedToken?: string | null;
@@ -74,6 +102,11 @@ type FakeOptions = {
   protocolOutdatedAt?: string;
   /** Endpoint path that answers HTTP 500. */
   httpFailureAt?: string;
+  /** Explicit TSP006 response fixture. */
+  settlementSnapshot?: Record<string, unknown>;
+  /** Cooperative cancellation trigger for a synthetic in-flight endpoint. */
+  abortAt?: string;
+  abortController?: AbortController;
 };
 
 function fakeTdcc(options: FakeOptions = {}) {
@@ -88,6 +121,10 @@ function fakeTdcc(options: FakeOptions = {}) {
   const fetch = async (url: string, init: RequestInit) => {
     const path = url.slice(TDCC_BASE_URL.length);
     calls.push(path);
+    if (path === options.abortAt) {
+      options.abortController?.abort(new Error("synthetic cooperative cancellation"));
+      throw new Error("synthetic in-flight request cancellation");
+    }
     const request = JSON.parse(String(init.body)) as { requestHeader: { tokenID: string | null }; requestBody: Record<string, unknown> };
     if (path === options.httpFailureAt) return new Response("", { status: 500 });
     if (path === options.protocolOutdatedAt) {
@@ -121,7 +158,7 @@ function fakeTdcc(options: FakeOptions = {}) {
       case "TR051V1":
         return reply({ fundDetails: options.funds ?? [fundRow("004", "ABC123"), fundRow("QQ", "XYZ999")], updateTime: "20261009103000" });
       case "tsp/TSP006":
-        return reply({
+        return reply(options.settlementSnapshot ?? {
           tspAccountInfos: [
             {
               bankId: "812",
@@ -155,7 +192,10 @@ function fakeTdcc(options: FakeOptions = {}) {
 }
 
 type Harness = Readonly<{
-  run(input: unknown, fake: ReturnType<typeof fakeTdcc>): Promise<Record<string, unknown>>;
+  run(input: unknown, fake: ReturnType<typeof fakeTdcc>, options?: Readonly<{
+    signal?: AbortSignal;
+    onEvent?: (event: WorkflowRunEvent) => void;
+  }>): Promise<Record<string, unknown>>;
   secrets: ReturnType<typeof createTdccSecretStore>;
   pgliteRpc: Readonly<{ endpoint: string; token: string }>;
   count(sql: string): Promise<number>;
@@ -195,7 +235,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
       async count(sql) {
         return (await store.query<{ count: number }>(sql)).rows[0]!.count;
       },
-      async run(input, fake) {
+      async run(input, fake, runOptions = {}) {
         runs += 1;
         const host = createTdccSessionHost(secrets);
         const executor = createWorkflowExecutor([createTdccWorkflow({ fetch: fake.fetch })], {
@@ -211,10 +251,10 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
             },
             admittedFundAccounts: (connection) => childRpc.financial.listTdccFundAccounts(connection),
           },
-          events: { append: async (event) => { events.push(event); } },
+          events: { append: async (event) => { events.push(event); runOptions.onEvent?.(event); } },
           now: () => NOW,
         });
-        return await executor.run("sync-tdcc", `tdcc-run-${runs}`, input, new AbortController().signal) as Record<string, unknown>;
+        return await executor.run("sync-tdcc", `tdcc-run-${runs}`, input, runOptions.signal ?? new AbortController().signal) as Record<string, unknown>;
       },
     });
   } finally {
@@ -249,7 +289,7 @@ test("a run reuses the saved session, commits every selected product, and report
     const result = await run(ALL, fake);
     assert.equal(fake.calls.includes("AU001"), false, "a valid saved session needs no sign-in");
     assert.deepEqual(products(result), { securities: "success", fund: "success", settlement: "success" });
-    assert.equal(result.status, "financial-admitted");
+    assert.equal(result.status, "partial", "problematic TDCC exclusions make a run partial even when all admitted groups commit");
     assert.deepEqual(summarizeTypedWorkflowOutput(result)?.counts, {
       committedCount: 5,
       excludedBankNotUpdatedCount: 1,
@@ -263,6 +303,10 @@ test("a run reuses the saved session, commits every selected product, and report
       rowCount: 4,
       sourceCaptureCount: 5,
     });
+    assert.deepEqual((result.products as { typeId: string; collection?: { status: string } }[])
+      .map(({ typeId, collection }) => [typeId, collection?.status]), [
+      ["securities", "incomplete"], ["fund", "incomplete"], ["settlement", "incomplete"],
+    ]);
     const reported = JSON.stringify(result);
     for (const accountNumber of [BROKER_ACCOUNT, UNKNOWN_BROKER_ACCOUNT, TWD_ACCOUNT, HIDDEN_ACCOUNT, NAN_ACCOUNT, UNKNOWN_BANK_ACCOUNT])
       assert.equal(reported.includes(accountNumber), false, "the run result carries no account number");
@@ -271,6 +315,236 @@ test("a run reuses the saved session, commits every selected product, and report
     assert.equal(await count("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'domestic-deposit'"), 1);
     assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_passbook_movements"), 1);
     assert.equal(secrets.read().session?.tokenId, `rotated-${fake.calls.length}`, "the last rotated token is saved");
+  });
+});
+
+test("intentional hidden-account and time-deposit exclusions complete without implying absence", async () => {
+  await withHarness(async ({ run }) => {
+    const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: settlementSnapshot([
+        updatedBank("812", [settlementRow(INTENTIONAL_HIDDEN_ACCOUNT, "TWD", false)], [{}]),
+      ]),
+    }));
+    const settlement = (result.products as {
+      typeId: string; status: string; itemCount: number; committedCount: number;
+      collection?: { status: string; exclusionCounts: Record<string, number> };
+    }[]).find(({ typeId }) => typeId === "settlement");
+    assert.equal(result.status, "completed");
+    assert.equal(settlement?.status, "success");
+    assert.equal(settlement?.itemCount, 0);
+    assert.equal(settlement?.committedCount, 0);
+    assert.deepEqual(settlement?.collection, {
+      status: "complete_with_exclusions",
+      exclusionCounts: { excludedTimeDepositCount: 1, hiddenAccountCount: 1 },
+    });
+    assert.notEqual(result.status, "no-data");
+  });
+});
+
+test("problematic exclusions with zero admitted items fail without claiming absence", async () => {
+  await withHarness(async ({ run, count }) => {
+    const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: problematicSettlementSnapshot(),
+    }));
+    const settlement = (result.products as {
+      typeId: string; status: string; committedCount: number; collection?: { status: string; exclusionCounts: Record<string, number> };
+    }[]).find(({ typeId }) => typeId === "settlement");
+    assert.equal(result.status, "failed");
+    assert.equal(settlement?.status, "failed");
+    assert.equal(settlement?.committedCount, 0);
+    assert.deepEqual(settlement?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+    assert.notEqual(result.status, "no-data");
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'domestic-deposit'"), 0);
+  });
+});
+
+test("each problematic settlement exclusion reason with zero admitted items remains incomplete", async () => {
+  await withHarness(async ({ run, secrets }) => {
+    const nonIsoCurrencyAccount = settlementRow(["7001", "2345684"].join(""), "NAN");
+    const emptyNonIsoCurrencyAccount = {
+      ...settlementRow(["7001", "2345685"].join(""), "NAN"),
+      balanceAmt: "0",
+      availableBalance: "0",
+    };
+    const cases = [
+      {
+        name: "unknown institution",
+        snapshot: problematicSettlementSnapshot(),
+        countName: "excludedUnknownInstitutionCount",
+      },
+      {
+        name: "non-ISO currency",
+        snapshot: settlementSnapshot([updatedBank("812", [nonIsoCurrencyAccount])]),
+        countName: "excludedNonIsoCurrencyCount",
+      },
+      {
+        name: "unsupported account identifier",
+        snapshot: settlementSnapshot([updatedBank("812", [settlementRow("ACCOUNT-TOKEN", "TWD")])]),
+        countName: "excludedNonNumericAccountCount",
+      },
+      {
+        name: "bank not updated",
+        snapshot: settlementSnapshot([{
+          bankId: "812", execStatue: "9999", tspAccount: null, tspTimeAccounts: null,
+        }]),
+        countName: "excludedBankNotUpdatedCount",
+      },
+      {
+        name: "empty non-ISO currency",
+        snapshot: settlementSnapshot([updatedBank("812", [emptyNonIsoCurrencyAccount])]),
+        countName: "excludedEmptyNonIsoCurrencyCount",
+      },
+    ] as const;
+    for (const scenario of cases) {
+      const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+        acceptedToken: secrets.read().session?.tokenId,
+        settlementSnapshot: scenario.snapshot,
+      }));
+      const settlement = (result.products as {
+        typeId: string; status: string; committedCount: number;
+        collection?: { status: string; exclusionCounts: Record<string, number> };
+      }[]).find(({ typeId }) => typeId === "settlement");
+      assert.equal(result.status, "failed", `${scenario.name} must not be reported as absence`);
+      assert.equal(settlement?.status, "failed", `${scenario.name} leaves no complete collection evidence`);
+      assert.equal(settlement?.committedCount, 0, `${scenario.name} admits no commit items`);
+      assert.deepEqual(settlement?.collection, {
+        status: "incomplete",
+        exclusionCounts: { [scenario.countName]: 1 },
+      }, `${scenario.name} count survives on the product result`);
+    }
+  });
+});
+
+test("a completed provider response with no reported settlement accounts remains explicit not-held evidence", async () => {
+  await withHarness(async ({ run }) => {
+    const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: settlementSnapshot([updatedBank("812", [])]),
+    }));
+    const settlement = (result.products as {
+      typeId: string; status: string; collection?: { status: string };
+    }[]).find(({ typeId }) => typeId === "settlement");
+    assert.equal(result.status, "no-data");
+    assert.equal(settlement?.status, "not_held");
+    assert.equal(settlement?.collection?.status, "complete");
+  });
+});
+
+test("valid settlement accounts commit intact beside problematic exclusions and mark the run partial", async () => {
+  await withHarness(async ({ run, count }) => {
+    const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+    }));
+    const settlement = (result.products as {
+      typeId: string; status: string; itemCount: number; committedCount: number;
+      collection?: { status: string; exclusionCounts: Record<string, number> };
+    }[]).find(({ typeId }) => typeId === "settlement");
+    assert.equal(result.status, "partial");
+    assert.equal(settlement?.status, "success");
+    assert.equal(settlement?.itemCount, 2);
+    assert.equal(settlement?.committedCount, 2);
+    assert.deepEqual(settlement?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+    assert.equal(await count("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'domestic-deposit'"), 1);
+  });
+});
+
+test("validated exclusions survive a later request failure in the typed interrupted summary", async () => {
+  await withHarness(async ({ run, events }) => {
+    const error = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+      httpFailureAt: "tsp/TSP007",
+    })));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "source-unavailable");
+    const settlement = error.summary.products.find(({ typeId }) => typeId === "settlement");
+    assert.deepEqual(settlement?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+    assert.equal(summarizeInterruptedProductCollection(error)?.counts.excludedUnknownInstitutionCount, 1);
+    assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+  });
+});
+
+test("cooperative cancellation during a later account request retains validated exclusions", async () => {
+  await withHarness(async ({ run }) => {
+    const controller = new AbortController();
+    const error = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+      abortAt: "tsp/TSP007",
+      abortController: controller,
+    }), { signal: controller.signal }));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "cancelled");
+    assert.equal(error.summary.committedCount, 0);
+    assert.deepEqual(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+  });
+});
+
+test("cooperative cancellation at commit start retains collection exclusions and any receipts", async () => {
+  await withHarness(async ({ run }) => {
+    const controller = new AbortController();
+    const error = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+    }), {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (event.stage === "commit" && event.code === "settlement-canonical-commit-started") controller.abort();
+      },
+    }));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "cancelled");
+    assert.equal(error.summary.committedCount, 0, "the commit did not return a durable receipt");
+    assert.deepEqual(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
+  });
+});
+
+test("a later product failure retains earlier durable receipts and exclusion evidence", async () => {
+  await withHarness(async ({ run, events }) => {
+    const error = await interruption(run({ statementTypes: ["securities", "settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+      httpFailureAt: "tsp/TSP007",
+    })));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "source-unavailable");
+    assert.equal(error.summary.committedCount, 2, "the prior securities group remains durably committed");
+    assert.equal(error.summary.status, "partial");
+    assert.equal(error.summary.products.find(({ typeId }) => typeId === "securities")?.committedCount, 2);
+    assert.equal(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection?.status, "incomplete");
+    assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+  });
+});
+
+test("late cooperative cancellation retains TDCC exclusion observations and receipts", async () => {
+  await withHarness(async ({ run }) => {
+    const controller = new AbortController();
+    const error = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
+      settlementSnapshot: mixedSettlementSnapshot(),
+    }), {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (event.stage === "finalization" && event.code === "run-completed") controller.abort();
+      },
+    }));
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "cancelled");
+    assert.equal(error.summary.committedCount, 2);
+    assert.equal(error.summary.status, "partial");
+    assert.deepEqual(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection, {
+      status: "incomplete",
+      exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+    });
   });
 });
 
@@ -385,8 +659,21 @@ test("through the supervised worker frames, a rotated token is saved when the ru
     });
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");
+    assert.equal(outcome.summary?.counts.excludedUnknownInstitutionCount, 1);
+    assert.deepEqual(outcome.summary?.products?.find(({ typeId }) => typeId === "settlement")?.collection, {
+      status: "incomplete",
+      exclusionCounts: {
+        excludedBankNotUpdatedCount: 1,
+        excludedNonIsoCurrencyCount: 1,
+        excludedTimeDepositCount: 1,
+        excludedUnknownInstitutionCount: 1,
+        hiddenAccountCount: 1,
+      },
+    });
     assert.deepEqual(fake.calls, ["tsp/TSP006", "CM001", "AU001", "tsp/TSP006", "tsp/TSP007"]);
     assert.equal(secrets.read().session?.tokenId, "rotated-3", "the token TSP006 rotated reached credentials.json through the worker frames");
     assert.equal(JSON.stringify(outcome).includes("fixture-password"), false);
+    for (const accountNumber of [TWD_ACCOUNT, HIDDEN_ACCOUNT, NAN_ACCOUNT, UNKNOWN_BANK_ACCOUNT])
+      assert.equal(JSON.stringify(outcome).includes(accountNumber), false, "worker transport retains counts but no account identifiers");
   });
 });

@@ -13,6 +13,8 @@ import type {
   WorkflowProgressActivity,
   WorkflowStage,
 } from "./workflow-executor.ts";
+import { TDCC_EXCLUSION_COUNT_NAMES, TDCC_MAX_SUMMARY_COUNT } from "./tdcc-collection-summary.ts";
+import type { TdccExclusionCountName, TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -39,6 +41,8 @@ export type CollectionProductOutcome = Readonly<{
   committedCount: number;
   errorCode?: TypedWorkflowErrorCode;
   skipReason?: CollectionProductSkipReason;
+  /** TDCC's validated source coverage evidence; absent for other providers. */
+  collection?: TdccProductCollectionEvidence;
 }>;
 
 const supportedProductTypeIds = new Set<string>(COLLECTION_PRODUCT_TYPE_IDS);
@@ -55,7 +59,7 @@ export function sanitizeCollectionProductOutcomes(
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const candidate = entry as Record<string, unknown>;
     if (Object.keys(candidate).some((key) => ![
-      "typeId", "status", "itemCount", "committedCount", "errorCode", "skipReason",
+      "typeId", "status", "itemCount", "committedCount", "errorCode", "skipReason", "collection",
     ].includes(key))) return null;
     if (typeof candidate.typeId !== "string" || !supportedProductTypeIds.has(candidate.typeId)
       || seen.has(candidate.typeId)) return null;
@@ -68,10 +72,35 @@ export function sanitizeCollectionProductOutcomes(
     if (candidate.skipReason !== undefined
       && candidate.skipReason !== "not_selected" && candidate.skipReason !== "not_attempted") return null;
 
+    let collection: TdccProductCollectionEvidence | undefined;
+    if (candidate.collection !== undefined) {
+      if (!["securities", "fund", "settlement"].includes(candidate.typeId)
+        || !candidate.collection || typeof candidate.collection !== "object" || Array.isArray(candidate.collection)) return null;
+      const evidence = candidate.collection as Record<string, unknown>;
+      if (Object.keys(evidence).some((key) => !["status", "exclusionCounts"].includes(key))
+        || !["complete", "complete_with_exclusions", "incomplete"].includes(String(evidence.status))
+        || !evidence.exclusionCounts || typeof evidence.exclusionCounts !== "object" || Array.isArray(evidence.exclusionCounts)) return null;
+      const sourceCounts = evidence.exclusionCounts as Record<string, unknown>;
+      if (Object.keys(sourceCounts).some((key) => !(TDCC_EXCLUSION_COUNT_NAMES as readonly string[]).includes(key))) return null;
+      const exclusionCounts: Partial<Record<TdccExclusionCountName, number>> = {};
+      for (const [name, count] of Object.entries(sourceCounts)) {
+        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > TDCC_MAX_SUMMARY_COUNT) return null;
+        if (count > 0) exclusionCounts[name as TdccExclusionCountName] = count;
+      }
+      const collectionStatus = evidence.status as TdccProductCollectionEvidence["status"];
+      const hasCounts = Object.values(exclusionCounts).some((count) => count !== undefined && count > 0);
+      const hasProblematicCounts = Object.entries(exclusionCounts).some(([name, count]) => count! > 0
+        && name !== "hiddenAccountCount" && name !== "excludedTimeDepositCount");
+      if ((collectionStatus === "complete" && hasCounts)
+        || (collectionStatus === "complete_with_exclusions" && (!hasCounts || hasProblematicCounts))
+        || ((candidate.status === "no_data" || candidate.status === "not_held") && collectionStatus !== "complete")) return null;
+      collection = Object.freeze({ status: collectionStatus, exclusionCounts: Object.freeze(exclusionCounts) });
+    }
+
     const status = candidate.status as CollectionProductStatus;
     if (status === "skipped") {
       if (candidate.skipReason === undefined || candidate.errorCode !== undefined
-        || candidate.itemCount !== 0 || candidate.committedCount !== 0) return null;
+        || candidate.itemCount !== 0 || candidate.committedCount !== 0 || collection !== undefined) return null;
     } else if (candidate.skipReason !== undefined) {
       return null;
     }
@@ -79,8 +108,8 @@ export function sanitizeCollectionProductOutcomes(
     if (status !== "failed" && candidate.errorCode !== undefined) return null;
     if ((status === "no_data" || status === "not_held")
       && (candidate.itemCount !== 0 || candidate.committedCount !== 0)) return null;
-    if (status === "success" && (candidate.itemCount === 0
-      || candidate.committedCount !== candidate.itemCount)) return null;
+    if (status === "success" && (candidate.committedCount !== candidate.itemCount
+      || (candidate.itemCount === 0 && collection?.status !== "complete_with_exclusions"))) return null;
 
     seen.add(candidate.typeId);
     outcomes.push(Object.freeze({
@@ -90,6 +119,7 @@ export function sanitizeCollectionProductOutcomes(
       committedCount: Number(candidate.committedCount),
       ...(candidate.errorCode === undefined ? {} : { errorCode: candidate.errorCode as TypedWorkflowErrorCode }),
       ...(candidate.skipReason === undefined ? {} : { skipReason: candidate.skipReason as CollectionProductSkipReason }),
+      ...(collection === undefined ? {} : { collection }),
     }));
   }
   return Object.freeze(outcomes);
@@ -102,6 +132,8 @@ export type ProductCollectionSummary = Readonly<{
   itemCount: number;
   /** Use only when the completed source response explicitly proves no data. */
   noDataEvidence?: boolean;
+  /** The source completed with intentional exclusions and no admitted items. */
+  completeWithExclusions?: boolean;
 }>;
 
 export type ProductCollectionRunSummary = Readonly<{
@@ -177,13 +209,16 @@ export function interruptedProductCollectionFromOutput(
   const itemCount = readCount("itemCount");
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
   const hasFailure = products.some((product) => product.status === "failed");
+  const hasIncompleteCollection = products.some((product) => product.collection?.status === "incomplete");
   return new ProductCollectionInterruptedError(errorCode, Object.freeze({
     products,
     sourceCaptureCount,
     rowCount,
     itemCount,
     committedCount,
-    status: hasFailure ? committedCount > 0 ? "partial" : "failed" : "completed",
+    status: hasIncompleteCollection || hasFailure
+      ? committedCount > 0 ? "partial" : "failed"
+      : "completed",
   }));
 }
 
@@ -393,6 +428,9 @@ export async function collectSelectedProducts<
         || !isSafeCount(collected.rowCount)
         || !isSafeCount(collected.itemCount)
         || (collected.noDataEvidence !== undefined && typeof collected.noDataEvidence !== "boolean")
+        || (collected.completeWithExclusions !== undefined && typeof collected.completeWithExclusions !== "boolean")
+        || (collected.completeWithExclusions === true
+          && (collected.itemCount !== 0 || collected.noDataEvidence === true))
         || stagedItems.length !== collected.itemCount) {
         throw new ProductCollectionFatalError("workflow-failed");
       }
@@ -406,7 +444,20 @@ export async function collectSelectedProducts<
       signal.throwIfAborted();
 
       if (stagedItems.length === 0) {
-        if (collected.noDataEvidence === true) {
+        if (collected.completeWithExclusions === true) {
+          sourceCaptureCount += sourceCountForProduct;
+          rowCount += rowsForProduct;
+          completedByType.set(typeId, createOutcome(typeId, "success"));
+          await emitProductEvent("collection", `${codePrefix}-collection-completed-with-exclusions`, {
+            completed: sourceCountForProduct,
+            total: sourceCountForProduct,
+          });
+          if (signal.aborted) {
+            throw new ProductCollectionInterruptedError("cancelled", summarize(
+              orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+            ));
+          }
+        } else if (collected.noDataEvidence === true) {
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
           completedByType.set(typeId, createOutcome(typeId, "no_data"));

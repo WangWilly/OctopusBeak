@@ -130,6 +130,59 @@ test("cancelled typed outcome retains product receipts and invalidates fresh dat
   }
 });
 
+test("TDCC incomplete receipt outcomes finalize partial, with cancellation and unknown-commit precedence", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const summary = {
+      status: "partial" as const,
+      counts: { committedCount: 1, itemCount: 1, excludedUnknownInstitutionCount: 1 },
+      products: [{
+        typeId: "settlement" as const,
+        status: "success" as const,
+        itemCount: 1,
+        committedCount: 1,
+        collection: {
+          status: "incomplete" as const,
+          exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+        },
+      }],
+    };
+    const scenarios = [
+      { errorCode: "source-unavailable" as const, expectedStatus: "partial" as const },
+      { errorCode: "cancelled" as const, expectedStatus: "cancelled" as const },
+      { errorCode: "commit-outcome-unknown" as const, expectedStatus: "failed" as const },
+    ];
+    for (const [index, scenario] of scenarios.entries()) {
+      const created = await provider.automation.createTaskRun({
+        taskId: "sync-tdcc",
+        kind: "sync",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+      });
+      assert.deepEqual(await finalizeAutomationTaskRun({
+        provider,
+        taskId: "sync-tdcc",
+        taskKind: "sync",
+        taskRunId: created.taskRunId,
+      }, result({
+        exitCode: 1,
+        error: new Error("handled typed interruption"),
+        appWorkflowOutcome: { errorCode: scenario.errorCode, summary },
+      })), { status: scenario.expectedStatus });
+      const saved = await provider.automation.taskRunById(created.taskRunId);
+      assert.equal(saved?.status, scenario.expectedStatus, `scenario ${index + 1} persists its agreed terminal status`);
+      assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: scenario.errorCode, summary });
+    }
+  } finally {
+    await store.close();
+  }
+});
+
 test("persisted product commit event invalidates freshness when a later worker crash has no summary", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);

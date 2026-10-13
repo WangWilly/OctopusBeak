@@ -35,6 +35,7 @@ import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
+  tdccIncompleteCollectionHasDurableReceipts,
 } from "./typed-workflow-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,
@@ -939,6 +940,10 @@ export function automationTaskExecutionStatus(
     || result.error?.message === "Automation task cancelled."
     || result.appWorkflowOutcome?.errorCode === "cancelled";
   if (cancelled) return "cancelled" as const;
+  if (tdccIncompleteCollectionHasDurableReceipts(
+    result.appWorkflowOutcome?.summary,
+    result.appWorkflowOutcome?.errorCode,
+  )) return "partial" as const;
   if (result.error || result.appWorkflowOutcome?.errorCode) return "failed" as const;
   const summaryStatus = result.appWorkflowOutcome?.summary?.status
     ?? result.statementSummary?.status;
