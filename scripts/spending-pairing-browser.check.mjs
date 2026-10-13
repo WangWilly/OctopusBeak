@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import test from "node:test";
+import { acquireBrowserTestRuntime } from "./browser-test-runtime.mjs";
 import { record, singleCategory, view } from "./spending-canonical-fixture.mjs";
 import {
-  createSpendingViteServer,
   spendingDesktopApiInitScript,
 } from "./spending-browser-harness.mjs";
 
@@ -109,13 +109,10 @@ const canonicalRecord = record({
 const canonical = view([canonicalRecord], { selectedMonth: "2026-07" });
 const model = { canonical, purchaseReport, invoices: [] };
 
-const server = await createSpendingViteServer();
-const address = server.httpServer?.address();
-assert.ok(address && typeof address === "object");
-const browser = await chromium.launch({ headless: true });
-
-try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+test("Spending pairing preserves candidate order while recovering stale pagination", async (t) => {
+  const runtime = await acquireBrowserTestRuntime();
+  t.after(() => runtime.close());
+  const page = await runtime.newPage(t, { viewport: { width: 1440, height: 1000 } });
   await page.clock.setFixedTime(new Date("2026-07-20T12:00:00+08:00"));
   const errors = [];
   page.on("console", (message) => {
@@ -145,7 +142,7 @@ try {
   await page.addInitScript(() => {
     localStorage.setItem("octopusbeak-locale", "en");
   });
-  await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
+  await page.goto(`${runtime.url}#/spending`);
 
   await page.locator("[data-purchase-report]").waitFor();
   await page.locator("[data-purchase-record][data-basis='invoice']").first().click();
@@ -184,7 +181,4 @@ try {
   assert.equal(rankCallCount, 4, "stale pagination restarts, then the current page can be fetched");
   console.log(JSON.stringify({ rankCallCount, candidateCount: renderedTransactionIds.length }));
   assert.deepEqual(errors, []);
-} finally {
-  await browser.close();
-  await server.close();
-}
+});

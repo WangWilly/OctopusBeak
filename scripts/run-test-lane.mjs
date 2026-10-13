@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, relative, resolve } from "node:path";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-/** Browser checks own Chromium/Vite resources and must not share a worker lane. */
+/** Browser checks run serially; renderer checks share a lane-owned runtime. */
 export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/app-browser-host.check.ts",
   "src/lib/automation/server/captcha-source-loading.check.ts",
@@ -110,7 +110,7 @@ function runNodeTests(files, options = {}) {
   return new Promise((resolveResult) => {
     const child = spawn(process.execPath, args, {
       cwd: ROOT,
-      env: process.env,
+      env: { ...process.env, ...options.env },
       stdio: "inherit",
     });
     child.once("error", () => resolveResult(1));
@@ -156,11 +156,27 @@ async function runLane(lane, options = {}) {
         : lane === "performance"
           ? discoverPerformanceTestFiles()
           : discoverUnitTestFiles();
-  return runNodeTests(files, {
-    ...options,
-    serial: lane === "browser" || lane === "electron-cdp" || lane === "performance",
-    forceExit: lane === "electron-cdp",
-  });
+  // Keep heavy browser dependencies out of non-browser lanes. File processes
+  // retain Node's isolation while borrowing one renderer server and browser.
+  const startedAt = performance.now();
+  const runtime = lane === "browser"
+    ? await (await import("./browser-test-runtime.mjs")).startBrowserTestRuntime()
+    : null;
+  try {
+    return await runNodeTests(files, {
+      ...options,
+      env: runtime?.env,
+      serial: lane === "browser" || lane === "electron-cdp" || lane === "performance",
+      forceExit: lane === "electron-cdp",
+    });
+  } finally {
+    await runtime?.close();
+    const timing = `Lane ${lane} wall time: ${(performance.now() - startedAt).toFixed(3)} ms (including runtime startup and cleanup)\n`;
+    console.log(timing.trimEnd());
+    if (options.reportPrefix) {
+      appendFileSync(join(ROOT, `reports/test-summary-${options.reportPrefix}.txt`), timing);
+    }
+  }
 }
 
 async function main() {

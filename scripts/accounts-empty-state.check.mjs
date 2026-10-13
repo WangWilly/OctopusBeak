@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { chromium } from "playwright";
-import { createSpendingViteServer, spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
+import test, { after, before } from "node:test";
+import { acquireBrowserTestRuntime } from "./browser-test-runtime.mjs";
+import { spendingDesktopApiInitScript } from "./spending-browser-harness.mjs";
 
 const PAGES = {
   assets: {
@@ -49,24 +49,28 @@ function installAwaitingLedger(gaps) {
 
 const text = async (locator) => (await locator.innerText()).replace(/\s+/gu, " ").trim();
 
-for (const [ledger, gaps] of [["empty", null], ["awaiting", [gap("fubon", "deposit"), gap("esun", "credit_card")]]]) test(`Assets and Liabilities explain an ${ledger} ledger and point to Automation`, async (t) => {
-  const server = await createSpendingViteServer();
-  const browser = await chromium.launch();
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
+// Share expensive startup within this file; each scenario owns a fresh context.
+let runtime;
 
+before(async () => {
+  runtime = await acquireBrowserTestRuntime();
+});
+
+after(async () => {
+  await runtime?.close();
+});
+
+for (const [ledger, gaps] of [["empty", null], ["awaiting", [gap("fubon", "deposit"), gap("esun", "credit_card")]]]) test(`Assets and Liabilities explain an ${ledger} ledger and point to Automation`, async (t) => {
   for (const [route, expected] of Object.entries(PAGES)) {
-    await t.test(route, async () => {
-      const page = await browser.newPage({ viewport: { width: 1425, height: 1200 } });
+    await t.test(route, async (t) => {
+      const page = await runtime.newPage(t, { viewport: { width: 1425, height: 1200 } });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
       await page.addInitScript(spendingDesktopApiInitScript({ canonical: { availability: "empty" } }));
       if (gaps) await page.addInitScript(`(${installAwaitingLedger.toString()})(${JSON.stringify(gaps)})`);
       await page.addInitScript(() => localStorage.setItem("octopusbeak-locale", "zh-TW"));
-      await page.goto(`${server.resolvedUrls.local[0]}#/${route}`);
+      await page.goto(`${runtime.url}#/${route}`);
 
       const banner = page.locator(".empty-source-banner");
       await banner.waitFor();
@@ -86,23 +90,16 @@ for (const [ledger, gaps] of [["empty", null], ["awaiting", [gap("fubon", "depos
       await banner.locator("[data-go-automation]").click();
       await page.waitForFunction(() => location.hash === "#/automation");
       assert.deepEqual(errors, []);
-      await page.close();
     });
   }
 });
 
 test("Overview hides the source-gap notice while configured sources await their first collection", async (t) => {
-  const server = await createSpendingViteServer();
-  const browser = await chromium.launch();
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
-  const page = await browser.newPage({ viewport: { width: 1425, height: 1200 } });
+  const page = await runtime.newPage(t, { viewport: { width: 1425, height: 1200 } });
   await page.addInitScript(spendingDesktopApiInitScript({ canonical: { availability: "empty" } }));
   await page.addInitScript(`(${installAwaitingLedger.toString()})(${JSON.stringify([gap("fubon", "deposit")])})`);
   await page.addInitScript(() => localStorage.setItem("octopusbeak-locale", "zh-TW"));
-  await page.goto(`${server.resolvedUrls.local[0]}#/overview`);
+  await page.goto(`${runtime.url}#/overview`);
   await page.locator('[data-overview-state="empty"]').waitFor();
   assert.equal(await page.locator(".projection-state").count(), 0);
   assert.doesNotMatch(await text(page.locator("body")), /尚未採集|總額僅供部分參考/u);
