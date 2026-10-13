@@ -94,6 +94,8 @@ npm run desktop:dev
 
 桌面介面僅支援 Electron，並從 `#/overview` 載入靜態渲染器。
 
+開發啟動器會監督該次 Electron 程序群組；關閉、外接磁碟失聯與錄影後清理方式請見[桌面開發生命週期](docs/runbooks/desktop-development.md)。
+
 建立未簽署的本機應用程式：
 
 ```bash
