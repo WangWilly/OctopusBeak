@@ -1,3 +1,4 @@
+import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import { randomUUID } from "node:crypto";
 import {
   AUTOMATION_CREDENTIALS_PATH,
@@ -35,7 +36,6 @@ import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
-  tdccIncompleteCollectionHasDurableReceipts,
 } from "./typed-workflow-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,

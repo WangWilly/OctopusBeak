@@ -4,7 +4,7 @@ import type {
   TypedWorkflowErrorCode,
   TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
-import { tdccIncompleteCollectionHasDurableReceipts } from "./typed-workflow-outcome.ts";
+import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import {
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
