@@ -13,7 +13,7 @@ OCTOPUSBEAK_USER_DATA=/tmp/octopusbeak-spending-demo OCTOPUSBEAK_CDP_PORT=9333 n
 Use `--lang=en-US` for the English cut on a freshly seeded profile. A merge cannot be redone, so
 stop the app with Ctrl+C in its launch terminal and re-seed before every take. See the
 [development lifecycle](../../docs/runbooks/desktop-development.md) for supervised cleanup;
-closing the recording's CDP connection does not quit the App.
+closing the recording's CDP connection does not quit the app.
 
 Then, in this directory:
 

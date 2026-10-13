@@ -19,7 +19,7 @@ Keep the three `--disable-*` flags: without them a background window renders no 
 English cut, set `localStorage["octopusbeak-locale"] = "en"` and reload (the profile remembers
 the last locale). After recording, stop the demo app with Ctrl+C in its launch terminal.
 The [development supervisor](../../docs/runbooks/desktop-development.md) cleans only that
-launch's process group; closing the recording's CDP connection does not quit the App.
+launch's process group; closing the recording's CDP connection does not quit the app.
 
 Then, in this directory (`TOUR_LANG=en` / `CAPTION_LANG=en` for English):
 
