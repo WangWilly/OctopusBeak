@@ -773,6 +773,11 @@ const en = {
     statementLastFailed: "Last run failed",
     productCommittedSummary: (label: string, count: number) => `${label}: ${count} saved`,
     productStatusSummary: (label: string, status: string) => `${label}: ${status}`,
+    tdccCollectionStatuses: {
+      complete: "Collection complete.",
+      complete_with_exclusions: "Collection complete with intentional exclusions.",
+      incomplete: "Collection incomplete. Review the exclusions and retry after the source issue is resolved.",
+    },
     summarySeparator: "; ",
     changeListSeparator: ", ",
     cathayGmailOtpTitle: "Cathay Gmail OTP",
@@ -1968,6 +1973,11 @@ const zh: typeof en = {
     statementLastFailed: "上次失敗",
     productCommittedSummary: (label, count) => `${label}已更新 ${count} 筆`,
     productStatusSummary: (label, status) => `${label}：${status}`,
+    tdccCollectionStatuses: {
+      complete: "資料收集完成。",
+      complete_with_exclusions: "資料收集完成，並略過不支援匯入的項目。",
+      incomplete: "資料收集不完整。請查看未匯入項目，待來源資料更新後再同步。",
+    },
     summarySeparator: "；",
     changeListSeparator: "、",
     cathayGmailOtpTitle: "國泰 Gmail 驗證碼",
