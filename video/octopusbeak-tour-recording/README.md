@@ -17,7 +17,9 @@ OCTOPUSBEAK_USER_DATA=/tmp/octopusbeak-spending-demo OCTOPUSBEAK_CDP_PORT=9333 n
 
 Keep the three `--disable-*` flags: without them a background window renders no frames. For the
 English cut, set `localStorage["octopusbeak-locale"] = "en"` and reload (the profile remembers
-the last locale). Quit the demo app by its own PID, not by pattern, so a real instance survives.
+the last locale). After recording, stop the demo app with Ctrl+C in its launch terminal.
+The [development supervisor](../../docs/runbooks/desktop-development.md) cleans only that
+launch's process group; closing the recording's CDP connection does not quit the App.
 
 Then, in this directory (`TOUR_LANG=en` / `CAPTION_LANG=en` for English):
 

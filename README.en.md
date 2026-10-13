@@ -94,6 +94,8 @@ npm run desktop:dev
 
 The UI is Electron-only and loads the static renderer at `#/overview`.
 
+The development launcher supervises its Electron process group. See [Desktop development lifecycle](docs/runbooks/desktop-development.md) for shutdown, external-volume loss, and recording cleanup.
+
 Build an unsigned local app:
 
 ```bash
