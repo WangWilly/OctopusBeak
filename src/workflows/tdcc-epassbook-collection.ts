@@ -23,6 +23,7 @@ import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 import {
   TdccCollectionSummaryInvariantError,
+  type TdccProductId,
   type TdccValidatedExclusion,
 } from "../lib/automation/tdcc-collection-summary.ts";
 import {
@@ -33,8 +34,7 @@ import {
 } from "./tdcc-epassbook-client.ts";
 import type { TdccConnection, TdccIssuedSession, TdccSessionLease, TdccSessionPort } from "./tdcc-session.ts";
 
-export const TDCC_PRODUCT_IDS = ["securities", "fund", "settlement"] as const;
-export type TdccProductId = typeof TDCC_PRODUCT_IDS[number];
+export { TDCC_PRODUCT_IDS, type TdccProductId } from "../lib/automation/tdcc-collection-summary.ts";
 
 /** The data endpoints a run may call. Sign-in and OTP calls stay inside TdccRunSession. */
 export type TdccDataClient = Pick<TdccClient, "positions" | "fundPositions" | "bankBalances" | "bankTransactions" | "tradeDetails">;
@@ -140,6 +140,8 @@ export type TdccProductCollection = Readonly<{
   items: readonly PGliteWorkflowRunItem[];
   sourceCaptureCount: number;
   rowCount: number;
+  /** Only a fully validated source response with no accounts or exclusions proves absence. */
+  absence?: "not_held";
 }>;
 
 export type TdccCollectionContext = Readonly<{
@@ -175,7 +177,10 @@ async function collectSecurities(context: TdccCollectionContext): Promise<TdccPr
     items.push(investmentItem("securities", `passbook-movements:${index}`, movements));
     rowCount += account.holdings.length + (movements.passbookMovements?.length ?? 0);
   }
-  return { items, sourceCaptureCount: 1 + positions.accounts.length, rowCount };
+  return {
+    items, sourceCaptureCount: 1 + positions.accounts.length, rowCount,
+    ...(positions.accounts.length === 0 && positions.exclusions.length === 0 ? { absence: "not_held" as const } : {}),
+  };
 }
 
 /** TR051V1 holdings, with an empty snapshot for every admitted fund account TDCC no longer lists. */
@@ -197,6 +202,7 @@ async function collectFunds(context: TdccCollectionContext): Promise<TdccProduct
     items,
     sourceCaptureCount: 1,
     rowCount: funds.accounts.reduce((total, account) => total + account.holdings.length, 0),
+    ...(items.length === 0 && funds.accounts.length === 0 && funds.exclusions.length === 0 ? { absence: "not_held" as const } : {}),
   };
 }
 
@@ -230,7 +236,10 @@ async function collectSettlement(context: TdccCollectionContext): Promise<TdccPr
     });
     rowCount += transactions.records.length;
   }
-  return { items, sourceCaptureCount: 1 + snapshot.accounts.length, rowCount };
+  return {
+    items, sourceCaptureCount: 1 + snapshot.accounts.length, rowCount,
+    ...(snapshot.accounts.length === 0 && snapshot.exclusions.length === 0 ? { absence: "not_held" as const } : {}),
+  };
 }
 
 export const TDCC_PRODUCT_COLLECTORS: Readonly<Record<TdccProductId, (context: TdccCollectionContext) => Promise<TdccProductCollection>>> = {

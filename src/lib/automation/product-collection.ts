@@ -13,8 +13,8 @@ import type {
   WorkflowProgressActivity,
   WorkflowStage,
 } from "./workflow-executor.ts";
-import { TDCC_EXCLUSION_COUNT_NAMES, TDCC_MAX_SUMMARY_COUNT } from "./tdcc-collection-summary.ts";
-import type { TdccExclusionCountName, TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
+import { sanitizeTdccProductEvidence, tdccCollectionRunStatus, TDCC_MAX_SUMMARY_COUNT } from "./tdcc-collection-summary.ts";
+import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -74,27 +74,9 @@ export function sanitizeCollectionProductOutcomes(
 
     let collection: TdccProductCollectionEvidence | undefined;
     if (candidate.collection !== undefined) {
-      if (!["securities", "fund", "settlement"].includes(candidate.typeId)
-        || !candidate.collection || typeof candidate.collection !== "object" || Array.isArray(candidate.collection)) return null;
-      const evidence = candidate.collection as Record<string, unknown>;
-      if (Object.keys(evidence).some((key) => !["status", "exclusionCounts"].includes(key))
-        || !["complete", "complete_with_exclusions", "incomplete"].includes(String(evidence.status))
-        || !evidence.exclusionCounts || typeof evidence.exclusionCounts !== "object" || Array.isArray(evidence.exclusionCounts)) return null;
-      const sourceCounts = evidence.exclusionCounts as Record<string, unknown>;
-      if (Object.keys(sourceCounts).some((key) => !(TDCC_EXCLUSION_COUNT_NAMES as readonly string[]).includes(key))) return null;
-      const exclusionCounts: Partial<Record<TdccExclusionCountName, number>> = {};
-      for (const [name, count] of Object.entries(sourceCounts)) {
-        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > TDCC_MAX_SUMMARY_COUNT) return null;
-        if (count > 0) exclusionCounts[name as TdccExclusionCountName] = count;
-      }
-      const collectionStatus = evidence.status as TdccProductCollectionEvidence["status"];
-      const hasCounts = Object.values(exclusionCounts).some((count) => count !== undefined && count > 0);
-      const hasProblematicCounts = Object.entries(exclusionCounts).some(([name, count]) => count! > 0
-        && name !== "hiddenAccountCount" && name !== "excludedTimeDepositCount");
-      if ((collectionStatus === "complete" && hasCounts)
-        || (collectionStatus === "complete_with_exclusions" && (!hasCounts || hasProblematicCounts))
-        || ((candidate.status === "no_data" || candidate.status === "not_held") && collectionStatus !== "complete")) return null;
-      collection = Object.freeze({ status: collectionStatus, exclusionCounts: Object.freeze(exclusionCounts) });
+      const evidence = sanitizeTdccProductEvidence(candidate.typeId, candidate.status, Number(candidate.itemCount), candidate.collection);
+      if (!evidence) return null;
+      collection = evidence;
     }
 
     const status = candidate.status as CollectionProductStatus;
@@ -109,7 +91,7 @@ export function sanitizeCollectionProductOutcomes(
     if ((status === "no_data" || status === "not_held")
       && (candidate.itemCount !== 0 || candidate.committedCount !== 0)) return null;
     if (status === "success" && (candidate.committedCount !== candidate.itemCount
-      || (candidate.itemCount === 0 && collection?.status !== "complete_with_exclusions"))) return null;
+      || (candidate.itemCount === 0 && collection === undefined))) return null;
 
     seen.add(candidate.typeId);
     outcomes.push(Object.freeze({
@@ -209,16 +191,15 @@ export function interruptedProductCollectionFromOutput(
   const itemCount = readCount("itemCount");
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
   const hasFailure = products.some((product) => product.status === "failed");
-  const hasIncompleteCollection = products.some((product) => product.collection?.status === "incomplete");
   return new ProductCollectionInterruptedError(errorCode, Object.freeze({
     products,
     sourceCaptureCount,
     rowCount,
     itemCount,
     committedCount,
-    status: hasIncompleteCollection || hasFailure
+    status: tdccCollectionRunStatus(products, committedCount, hasFailure
       ? committedCount > 0 ? "partial" : "failed"
-      : "completed",
+      : "completed"),
   }));
 }
 

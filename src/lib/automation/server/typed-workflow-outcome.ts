@@ -11,6 +11,7 @@ import {
 } from "../product-collection.ts";
 import {
   aggregateTdccExclusionCounts,
+  tdccSummaryMatchesEvidence,
   TDCC_EXCLUSION_COUNT_NAMES,
   TDCC_MAX_SUMMARY_COUNT,
 } from "../tdcc-collection-summary.ts";
@@ -33,22 +34,6 @@ export type TypedWorkflowOutcomeSummary = Readonly<{
   counts: Readonly<Partial<Record<TypedWorkflowCountName, number>>>;
   products?: readonly CollectionProductOutcome[];
 }>;
-
-/** A TDCC collection gap with known durable receipts remains a partial run. */
-export function tdccIncompleteCollectionHasDurableReceipts(
-  summary: TypedWorkflowOutcomeSummary | null | undefined,
-  errorCode?: TypedWorkflowErrorCode | null,
-): boolean {
-  if (!summary || errorCode === "commit-outcome-unknown") return false;
-  const productReceipts = summary.products?.reduce((total, product) => total + product.committedCount, 0);
-  if (summary.products?.some((product) => product.collection !== undefined)
-    && productReceipts !== undefined
-    && (!Number.isSafeInteger(productReceipts)
-      || productReceipts > TDCC_MAX_SUMMARY_COUNT
-      || (summary.counts.committedCount !== undefined && summary.counts.committedCount !== productReceipts))) return false;
-  const receipts = summary.counts.committedCount ?? productReceipts ?? 0;
-  return receipts > 0 && summary.products?.some((product) => product.collection?.status === "incomplete") === true;
-}
 
 type TypedWorkflowCountName =
   | "accountCount"
@@ -104,70 +89,6 @@ const MAX_COUNT = TDCC_MAX_SUMMARY_COUNT;
 const MAX_SUMMARY_BYTES = 4_096;
 const ERROR_CODES = new Set<TypedWorkflowErrorCode>(TYPED_WORKFLOW_ERROR_CODES);
 
-function tdccEvidenceMatchesCounts(
-  products: readonly CollectionProductOutcome[] | undefined,
-  counts: Readonly<Partial<Record<TypedWorkflowCountName, number>>>,
-): boolean {
-  const evidence = products?.flatMap((product) => product.collection ? [product.collection.exclusionCounts] : []) ?? [];
-  if (evidence.length === 0) return true;
-  let aggregate: ReturnType<typeof aggregateTdccExclusionCounts>;
-  try {
-    aggregate = aggregateTdccExclusionCounts(evidence);
-  } catch {
-    return false;
-  }
-  if (!TDCC_EXCLUSION_COUNT_NAMES.every((name) => (counts[name] ?? 0) === aggregate[name])) return false;
-  if (products) {
-    const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
-    const itemCount = products.reduce((total, product) => total + product.itemCount, 0);
-    if (!Number.isSafeInteger(committedCount) || committedCount > MAX_COUNT
-      || !Number.isSafeInteger(itemCount) || itemCount > MAX_COUNT
-      || (counts.committedCount !== undefined && counts.committedCount !== committedCount)
-      || (counts.itemCount !== undefined && counts.itemCount !== itemCount)) return false;
-  }
-  return true;
-}
-
-/** Keep TDCC's top-level result label truthful when product evidence is present. */
-function tdccStatusMatchesEvidence(
-  status: TypedWorkflowOutcomeSummary["status"] | undefined,
-  products: readonly CollectionProductOutcome[] | undefined,
-): boolean {
-  const evidencedProducts = products?.filter((product) => product.collection !== undefined) ?? [];
-  if (evidencedProducts.length === 0) return true;
-  if (status === undefined) return false;
-
-  const receipts = products!.reduce((total, product) => total + product.committedCount, 0);
-  const hasIncompleteCollection = evidencedProducts.some((product) => product.collection!.status === "incomplete");
-  const hasIntentionalExclusions = evidencedProducts.some((product) =>
-    product.collection!.status === "complete_with_exclusions");
-  const hasExplicitAbsence = products!.some((product) => product.status === "no_data" || product.status === "not_held");
-  const hasFailedProduct = products!.some((product) => product.status === "failed");
-  const hasAnyExclusions = evidencedProducts.some((product) =>
-    Object.values(product.collection!.exclusionCounts).some((count) => count > 0));
-
-  switch (status) {
-    case "financial-admitted":
-      return receipts > 0 && !hasIncompleteCollection && !hasFailedProduct;
-    case "no-data":
-      return receipts === 0 && hasExplicitAbsence && !hasIncompleteCollection
-        && !hasIntentionalExclusions && !hasAnyExclusions && !hasFailedProduct;
-    case "completed":
-      // A late cooperative cancellation can preserve a complete collection
-      // snapshot as "completed" even when it had receipts or explicit absence.
-      return !hasIncompleteCollection && !hasFailedProduct;
-    case "partial":
-      // A commit may fail after collection completed, so partial does not
-      // require an incomplete-collection marker. It always requires receipts.
-      return receipts > 0;
-    case "failed":
-      return receipts === 0;
-    case "source-only":
-    default:
-      return false;
-  }
-}
-
 /** Keep only known aggregate fields; provider output may contain financial data. */
 export function summarizeTypedWorkflowOutput(
   output: unknown,
@@ -192,8 +113,7 @@ export function summarizeTypedWorkflowOutput(
     if (!sanitized) return null;
     products = sanitized;
   }
-  if (!tdccEvidenceMatchesCounts(products, counts)) return null;
-  if (!tdccStatusMatchesEvidence(status, products)) return null;
+  if (!tdccSummaryMatchesEvidence({ products, counts, status })) return null;
   if (status === undefined && Object.keys(counts).length === 0 && products === undefined) return null;
   const summary: TypedWorkflowOutcomeSummary = {
     ...(status === undefined ? {} : { status }),
@@ -270,9 +190,8 @@ export function isTypedWorkflowOutcomeSummary(value: unknown): value is TypedWor
     if (!sanitized) return false;
     products = sanitized;
   }
-  if (!tdccEvidenceMatchesCounts(products, counts)) return false;
   const status = candidate.status as TypedWorkflowOutcomeSummary["status"] | undefined;
-  if (!tdccStatusMatchesEvidence(status, products)) return false;
+  if (!tdccSummaryMatchesEvidence({ products, counts, status })) return false;
   const summary: TypedWorkflowOutcomeSummary = {
     ...(status === undefined ? {} : { status }),
     counts: counts as Partial<Record<TypedWorkflowCountName, number>>,
