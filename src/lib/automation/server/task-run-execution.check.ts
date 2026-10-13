@@ -18,6 +18,7 @@ import {
   interruptActiveAppWorkflows,
   runAutomationTaskExecution,
   abortActiveAppWorkflowExecutions,
+  automationTaskExecutionStatus,
 } from "./task-run-execution.ts";
 import {
   registerAppWorkflowHumanAssistanceRequestHandler,
@@ -759,4 +760,47 @@ test("supervised product invariant failures retain the worker code instead of gu
   } finally {
     await store.close();
   }
+});
+
+test("TDCC incomplete collection receipts are partial except for cancellation and uncertain commits", () => {
+  const summary = {
+    status: "partial" as const,
+    counts: { committedCount: 1, excludedUnknownInstitutionCount: 1 },
+    products: [{
+      typeId: "settlement" as const,
+      status: "success" as const,
+      itemCount: 1,
+      committedCount: 1,
+      collection: {
+        status: "incomplete" as const,
+        exclusionCounts: { excludedUnknownInstitutionCount: 1 },
+      },
+    }],
+  };
+  const base = {
+    exitCode: 1,
+    signal: null,
+    error: new Error("handled source interruption"),
+    statementSummary: null,
+    outputPersistenceWarnings: [],
+    externalPrerequisiteIds: [],
+    appWorkflowOutcome: { errorCode: "source-unavailable" as const, summary },
+  };
+  assert.equal(automationTaskExecutionStatus(base), "partial");
+  assert.equal(automationTaskExecutionStatus({
+    ...base,
+    appWorkflowOutcome: { errorCode: "cancelled", summary },
+  }), "cancelled");
+  assert.equal(automationTaskExecutionStatus({
+    ...base,
+    appWorkflowOutcome: { errorCode: "commit-outcome-unknown", summary },
+  }), "failed", "uncertain current commits remain fail-closed");
+  assert.equal(automationTaskExecutionStatus({
+    ...base,
+    appWorkflowOutcome: { errorCode: "source-unavailable", summary: {
+      status: "partial",
+      counts: { committedCount: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+    } },
+  }), "failed", "legacy providers keep fatal-error precedence");
 });

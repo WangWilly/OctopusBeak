@@ -46,6 +46,7 @@ Each settlement account is one Financial Account per bank code, account number, 
 - TSP006 gives one current-balance capture per account: `balanceAmt` is the ledger balance and `availableBalance` is the available balance, both effective at the response's `updateTime`.
 - An account with an unknown bank code, a non-ISO currency, or an account number that is neither 6 to 24 digits nor an account token, an account the person hid in the TDCC App (`isShow: false`), and every TSP006 time deposit, is reported as a typed exclusion rather than dropped. The balances of an excluded account are not read, except to tell an empty non-ISO currency account apart.
 - A bank whose TSP006 `execStatue` is not `0000` was not refreshed by TDCC. It reports `null` account lists and a message such as 「資料並未更新成功」, so the bank is reported as one typed exclusion and the other banks are still admitted.
+- The Statement Run Summary classifies a hidden account and each unsupported time deposit as intentional exclusions. A reported account with an unknown bank code, a bank that did not refresh, an invalid account identifier, or a non-ISO currency (including an empty `NAN` account) makes settlement collection incomplete. The product records only bounded counts by exclusion category; account numbers, provider messages, and raw exclusion objects stay out of the summary.
 - For a Cathay United Bank 數位存款帳戶, TDCC reports a 16-character letter and digit token instead of the account number. TSP006 and TSP007 both use it, and it stayed the same across live runs, so the account is admitted with the token as its account number in the source account key. Its capture carries no account-number evidence, because a token is not a depository account number.
 
 ### Passbook movements
@@ -80,6 +81,12 @@ Slot 17 and the fund fields are taken from the TedLin1993/all-set-tw reference. 
 - A securities holding's Security is item slot 0, named by slot 1, typed by slot 6 through the same table as TR002, and priced in the slot 19 currency, which must be an ISO 4217 code. A broker account repeating one Security rejects the Capture.
 - Each fund account holds the funds of one sale organisation. Its Institution is the catalog bank (3-digit code) or broker (4-character code) for `saleOrgCode`, and any other code is reported as a typed exclusion with its holding count. A fund Security is `fundNo`, named by `fundCHName`. Its own pricing currency is not admitted, because only the TWD value is.
 - Every TDCC investment account reports in TWD.
+
+### Collection completeness and exclusions
+
+Each TDCC product records exclusions immediately after its provider response passes the product's admission contract, before making another request. Securities and fund exclusions for unknown broker, bank, or sale-organisation codes make that product incomplete, as do settlement exclusions for unknown institutions, failed bank updates, nonstandard currencies, and unsupported account identifiers. Hidden accounts and unsupported time deposits are intentional exclusions, so a fully collected response with only those reasons is `complete_with_exclusions`. The run summary keeps counts by reason on the matching product and exposes no account identifier or raw provider detail.
+
+An empty admitted-item list never proves absence by itself. When TDCC returns a completed response with no accounts and no exclusions, the existing explicit `not_held` result remains; exclusions that make collection incomplete cannot be converted to `no_data` or `not_held`.
 
 ### Empty holding snapshots
 
