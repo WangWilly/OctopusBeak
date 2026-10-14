@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
+import { assertCollectionScopeCurrent } from "../src/lib/automation/server/collection-scope.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
 import type { PGliteFinancialRegistry } from "./pglite-financial-registry.ts";
@@ -60,6 +61,7 @@ export function createPGliteOperationalRuntime(
       operational: worker.operationalProvider,
       financial: worker.financial.registry,
     },
+    assertCommitAdmissible: ({ taskRunId }) => assertCollectionScopeCurrent(taskRunId),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
     ...worker.operationalProvider,

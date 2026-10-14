@@ -17,6 +17,7 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
   "source-collection-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
+  "collection-scope-changed",
   "workflow-failed",
 ] as const;
 
@@ -58,6 +59,10 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
   "source-validation-failed": {
     zh: "來源回傳的資料格式與預期不符，這部分沒有匯入。需要更新 OctopusBeak 才能讀取。",
     en: "The source returned data in a shape OctopusBeak does not expect, so this part was not imported. OctopusBeak needs an update to read it.",
+  },
+  "collection-scope-changed": {
+    zh: "同步進行中，這個來源的勾選項目、啟用狀態或登入身分已變更，之後的資料沒有寫入。變更前已完成的部分仍保留。請重新執行同步。",
+    en: "This source's selected statements, enabled state, or sign-in identity changed during the sync, so later data was not saved. Parts saved before the change are kept. Run the sync again.",
   },
   "workflow-failed": {
     zh: "執行失敗，現有紀錄不足以判定詳細原因。",

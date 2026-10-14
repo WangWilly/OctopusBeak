@@ -18,6 +18,7 @@ import {
   isTerminalTaskRunStatus,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
@@ -258,12 +259,45 @@ async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  // Explicit port overrides are an inline composition seam. Production browser
-  // workflows, including E-Invoice, use the supervised App worker.
-  if (options.workflowPorts !== undefined) {
-    return await executeInlineAppWorkflow(execution, options);
+  const scope = registerCollectionScope(
+    execution.run.taskRunId,
+    execution.task,
+    options.launchEnv ?? automationProcessEnv(),
+  );
+  try {
+    // Explicit port overrides are an inline composition seam. Production browser
+    // workflows, including E-Invoice, use the supervised App worker.
+    const result = options.workflowPorts !== undefined
+      ? await executeInlineAppWorkflow(execution, options)
+      : await executeSupervisedAppWorkflow(execution, options);
+    return scope.refused() ? collectionScopeChangedResult(result) : result;
+  } finally {
+    scope.release();
   }
-  return await executeSupervisedAppWorkflow(execution, options);
+}
+
+function collectionScopeChangedResult(
+  result: AutomationTaskExecutionResult,
+): AutomationTaskExecutionResult {
+  const summary = result.appWorkflowOutcome?.summary ?? null;
+  return {
+    ...result,
+    exitCode: 1,
+    signal: null,
+    error: new Error("App workflow failed (collection-scope-changed)."),
+    appWorkflowOutcome: {
+      errorCode: "collection-scope-changed",
+      summary: summary?.products
+        ? {
+          ...summary,
+          products: summary.products.map((product) =>
+            product.errorCode === "commit-outcome-unknown"
+              ? { ...product, errorCode: "collection-scope-changed" }
+              : product),
+        }
+        : summary,
+    },
+  };
 }
 
 async function executeInlineAppWorkflow(
