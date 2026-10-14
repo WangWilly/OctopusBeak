@@ -147,6 +147,10 @@ _Avoid_: Logged-in-user assumption, all-cards-at-bank merge, card-list account i
 A source-supported activation, suspension, closure, or comparable operational state of a Financial Account that requires a contract-established effective time because it changes synchronization and historical financial scope. Absence from a Capture or a state lacking its effective time cannot establish a lifecycle revision and instead fails admission when the contract requires that fact.
 _Avoid_: Account identity status, missing-account inference, collection-time closure
 
+**Time-deposit financial account**:
+A `depository` Financial Account for one fixed-term deposit, collected only when the person's Statement Selection includes the source's time-deposit statement type rather than as part of demand deposits. Its maturity or early redemption is an Account Lifecycle Fact, established only from a complete time-deposit Capture, never from the deposit's absence alone.
+_Avoid_: Demand-deposit balance line, product collection exclusion, closure by absence
+
 **Crypto financial account**:
 An `investment` financial account with evidence-supported subtype `crypto_exchange` or `non_custodial_wallet`. Provider wallet labels create separate financial accounts only when the source establishes independent ledger, balance, transaction-scope, or wallet identity.
 _Avoid_: Crypto holding observation, token, UI wallet label
@@ -817,6 +821,18 @@ A reusable unit of automation that can be started manually, in a batch, or by it
 **Automation task run**:
 One execution attempt of an automation task, including its status, bounded operational events, and any verification stage it waits on. A solver completing that stage continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
+**Scheduled collection**:
+The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings.
+_Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
+
+**User-action failure**:
+An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. It is the only failure class that raises an operating-system notification; transient failures remain in run history.
+_Avoid_: Transient failure, retryable failure, human assistance
+
+**Session takeover**:
+A provider sign-in that ends the person's other session with that provider, such as its phone App, either because the provider allows one session or because the workflow confirms the provider's duplicate-login prompt. Manual and scheduled runs may cause it; sign-in settings disclose it for each source that does.
+_Avoid_: Silent sign-out, account lock, device registration
+
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
 _Avoid_: Log file, raw stdout, source record, financial fact
@@ -910,11 +926,15 @@ One invocation of a distinct provider-declared OCR strategy against the image be
 _Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
 
 **CAPTCHA challenge round**:
-The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
+The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction, and use the same fixed limit of three rounds with no provider or user override. A round submits at most one answer; a provider with In-page CAPTCHA Refresh evidence may replace an unaccepted challenge up to five times within the round without submitting. A rejected submitted answer, or exhausting the round's challenges without an accepted candidate, restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
 _Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
 
+**In-page CAPTCHA refresh**:
+Loading a new challenge through the provider's own refresh control on the same login page, without submitting an answer or restarting the workflow, when no candidate satisfies the Solve Acceptance Policy. A provider may use it only with evidence that the refresh yields a new challenge without resetting the entered Sign-in Details; it never counts as a submitted sign-in.
+_Avoid_: Workflow restart, Solve Attempt, submitted retry
+
 **CAPTCHA retry campaign**:
-The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed. `npm run workflow:dev` runs no campaign, so a retryable outcome ends a development run. Only a new explicit user operation starts a new campaign with a fresh budget.
+The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, three consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed. `npm run workflow:dev` runs no campaign, so a retryable outcome ends a development run. Only a new explicit user operation starts a new campaign with a fresh budget.
 _Avoid_: Independent failed history item per round, per-process retry counter, automatically renewed retry budget
 
 **CAPTCHA campaign launch snapshot**:
