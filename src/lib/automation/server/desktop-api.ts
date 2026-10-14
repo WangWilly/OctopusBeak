@@ -29,6 +29,7 @@ import {
   forceTerminateAutomationTask,
   hasActiveAutomationTask,
   startAutomationTask,
+  type StartAutomationTaskOptions,
 } from "./runner.ts";
 import {
   type AutomationPersistenceProvider,
@@ -477,6 +478,7 @@ export async function automationRun(
 export async function automationRunMany(
   taskIds: string[],
   provider: AutomationPersistenceProvider,
+  options: StartAutomationTaskOptions = {},
 ): Promise<AutomationRunManyResult> {
   if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
     throw new TypeError("Task IDs must be an array of strings.");
@@ -494,7 +496,7 @@ export async function automationRunMany(
         continue;
       }
       const task = assertAutomationTaskCanStartInModel(taskId, model);
-      const run = await startAutomationTask(task.id, provider);
+      const run = await startAutomationTask(task.id, provider, options);
       started.push(task.id);
       results[task.id] = { status: "started", runId: run.runId };
     } catch (error) {

@@ -142,6 +142,7 @@
       credentialGroupId: string | null,
     ): Promise<void>;
   } | undefined;
+  let signInSettingsGroupId: string | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
   let overviewReloading = false;
@@ -1080,6 +1081,17 @@
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
       ? automationApi.onRuntimeChanged(acceptAutomationRuntimeSnapshot)
       : () => {};
+    const takeSignInSettingsRequest = () => {
+      void automationApi.takeSignInSettingsRequest?.().then((credentialGroupId) => {
+        if (!credentialGroupId) return;
+        signInSettingsGroupId = credentialGroupId;
+        navigateToRoute("automation");
+      });
+    };
+    const unsubscribeSignInSettingsRequests = typeof automationApi.onSignInSettingsRequested === "function"
+      ? automationApi.onSignInSettingsRequested(takeSignInSettingsRequest)
+      : () => {};
+    takeSignInSettingsRequest();
     if (typeof automationApi.runtimeSnapshot === "function") {
       void automationApi.runtimeSnapshot()
         .then(acceptAutomationRuntimeSnapshot)
@@ -1114,6 +1126,7 @@
       stopActiveFinancialLive();
       financialLiveStores = null;
       unsubscribeAutomationRuntime();
+      unsubscribeSignInSettingsRequests();
       unsubscribeAutomationController();
       removeEventListener("focus", onAutomationRuntimeResync);
       document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
@@ -1226,6 +1239,8 @@
       onOnboardingWorkflowStarting={workflowStarting}
       onOnboardingWorkflowStarted={workflowStarted}
       onOnboardingWorkflowStartFailed={workflowStartFailed}
+      {signInSettingsGroupId}
+      onSignInSettingsOpened={() => (signInSettingsGroupId = null)}
     />
     <RouteLoadNotice state={automation} retry={() => void loadRoute("automation", { force: true })} />
   {:else}

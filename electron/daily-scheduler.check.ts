@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SystemSettingsDto } from "../src/lib/settings/system-settings.ts";
 import {
+  createScheduledCollectionScheduler,
   createExchangeRateScheduler,
   exchangeRateSchedule,
-} from "./exchange-rate-scheduler.ts";
+} from "./daily-scheduler.ts";
+
+type SystemSettingsDto = Parameters<typeof exchangeRateSchedule>[1];
 
 const taipei: SystemSettingsDto = {
   systemTimezone: "Asia/Taipei",
@@ -429,4 +431,90 @@ test("reschedule settings errors preserve the in-flight attempt and timer", asyn
     "2026-07-15T22:00:00.000Z",
   ]);
   assert.equal(h.timers.length, 2);
+});
+
+function collectionHarness(initial: { enabled: boolean; now: string }) {
+  let currentNow = new Date(initial.now);
+  let settings = {
+    systemTimezone: "Asia/Taipei",
+    scheduledCollectionEnabled: initial.enabled,
+    scheduledCollectionTime: "07:00",
+  };
+  const timers: Timer[] = [];
+  const starts: string[] = [];
+  const errors: unknown[] = [];
+  const scheduler = createScheduledCollectionScheduler({
+    now: () => currentNow,
+    setTimer: (callback, ms) => {
+      const timer = { callback, ms };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: () => undefined,
+    readSettings: () => settings,
+    startCollection: (occurrenceUtc) => { starts.push(occurrenceUtc); },
+    reportError: (error) => errors.push(error),
+  });
+  return {
+    scheduler,
+    timers,
+    starts,
+    errors,
+    advanceToNextTimer: () => {
+      const timer = timers.at(-1)!;
+      currentNow = new Date(currentNow.getTime() + timer.ms);
+      timer.callback();
+    },
+    update: (next: Partial<typeof settings>) => { settings = { ...settings, ...next }; },
+  };
+}
+
+test("scheduled collection starts once at the daily time on each following day", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T23:30:00Z" });
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-14T23:00:00.000Z"], "launch after today's 07:00 catches it up");
+  h.advanceToNextTimer();
+  await settle();
+  h.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(h.starts, [
+    "2026-07-14T23:00:00.000Z",
+    "2026-07-15T23:00:00.000Z",
+    "2026-07-16T23:00:00.000Z",
+  ]);
+  assert.equal(h.timers.at(-1)!.ms, 24 * 60 * 60 * 1000, "the next run is armed one day later");
+  assert.deepEqual(h.errors, []);
+});
+
+test("scheduled collection catches up only the latest occurrence missed while the App was closed", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-18T02:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-17T23:00:00.000Z"]);
+});
+
+test("scheduled collection does nothing while disabled", async () => {
+  const h = collectionHarness({ enabled: false, now: "2026-07-14T23:30:00Z" });
+  h.scheduler.start();
+  await settle();
+  h.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(h.starts, []);
+});
+
+test("turning scheduled collection on or moving its time does not run a time that already passed", async () => {
+  const h = collectionHarness({ enabled: false, now: "2026-07-15T07:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  h.update({ scheduledCollectionEnabled: true });
+  h.scheduler.reschedule();
+  await settle();
+  h.update({ scheduledCollectionTime: "09:00" });
+  h.scheduler.reschedule();
+  await settle();
+  assert.deepEqual(h.starts, [], "15:00 local is after both 07:00 and 09:00");
+  h.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-16T01:00:00.000Z"], "the next 09:00 runs");
 });

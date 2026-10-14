@@ -2,7 +2,7 @@ import path from "node:path";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, Notification } from "electron";
 import {
   activeAutomationTaskIds,
   hydrateAutomationRuntimeState,
@@ -18,7 +18,13 @@ import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
-import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
+import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
+import { requestSignInSettings } from "./sign-in-settings-request.ts";
+import {
+  scheduledRunNotification,
+  startScheduledCollection,
+} from "../src/lib/automation/server/scheduled-collection.ts";
+import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
@@ -73,6 +79,7 @@ let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
+let collectionScheduler: ReturnType<typeof createScheduledCollectionScheduler> | null = null;
 let stopBrowserStateCleanup: (() => void) | null = null;
 let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
@@ -111,6 +118,7 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
     scheduler?.stop();
+    collectionScheduler?.stop();
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
@@ -126,6 +134,24 @@ const handleBeforeQuit = createBeforeQuitHandler({
 });
 app.on("before-quit", handleBeforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
+
+function notifyScheduledRun(run: AutomationTaskRun) {
+  const notice = scheduledRunNotification(run, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+  if (!notice || !Notification.isSupported()) return;
+  const notification = new Notification({ title: notice.title, body: notice.body });
+  notification.on("click", () => {
+    requestSignInSettings(notice.credentialGroupId);
+    if (!currentRendererUrl || !currentPreloadPath) return;
+    void createWindow(currentRendererUrl, currentPreloadPath)
+      .then((window) => {
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+      })
+      .catch(showStartupError);
+  });
+  notification.show();
+}
 
 function projectRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, "app");
@@ -390,9 +416,22 @@ async function start() {
       },
       reportError: (error) => console.error("exchange-rate-scheduler-error", error),
     });
+    collectionScheduler = createScheduledCollectionScheduler({
+      now: () => new Date(),
+      setTimer: (callback, ms) => setTimeout(callback, ms),
+      clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
+      readSettings: () => systemSettings(readAutomationSettings()),
+      startCollection: (occurrenceUtc) =>
+        startScheduledCollection(operationalRuntime.provider, occurrenceUtc, notifyScheduledRun)
+          .then(() => undefined),
+      reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
+    });
   }
   ipcRegistration = registerOctopusBeakIpc({
-    onSystemSettingsChanged: () => scheduler?.reschedule(),
+    onSystemSettingsChanged: () => {
+      scheduler?.reschedule();
+      collectionScheduler?.reschedule();
+    },
     onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
     pgliteViews: {
@@ -418,6 +457,7 @@ async function start() {
       { onError: () => console.error("workflow-run-event-cleanup-failed") },
     );
     scheduler?.start();
+    collectionScheduler?.start();
   }).catch(() => {
     // The shared readiness rejection already reports the fatal runtime error.
   });

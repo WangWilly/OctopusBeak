@@ -804,6 +804,7 @@ const en = {
       "Google authorization could not be stored securely on this device.",
     confirmCathayGmailOtpDisconnect:
       "Disconnect Google account? Cathay verification will require Gmail authorization again.",
+    sessionTakeoverTitle: "Syncing signs out your other session",
     tdccDevice: {
       title: "Device registration",
       description:
@@ -822,9 +823,6 @@ const en = {
       registeredMessage: "This device is registered. TDCC sync can sign in now.",
       saveFirst: "Save your ID number and password first, then register this device.",
       openSettings: "Register this device",
-      conflictTitle: "TDCC trusts one device at a time",
-      conflictBody:
-        "Syncing here signs the TDCC e-Passbook phone App out, and the phone App asks for a code the next time you sign in there. If you use the phone App again, register this device again before the next sync.",
       failures: {
         "sign-in-details-missing": "Save your ID number and password first, then register this device.",
         "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
@@ -1149,9 +1147,15 @@ const en = {
       `Last ${when} ${succeeded ? "succeeded" : "failed"}`,
     exchangeRateNextRun: (when: string) => `Next ${when}`,
     systemSettingsDescription:
-      "Set the timezone used for timestamps and the daily exchange-rate update time.",
+      "Set the timezone used for timestamps, the daily exchange-rate update time, and daily scheduled collection.",
     systemTimezone: "System timezone",
     exchangeRateUpdateTime: "Exchange-rate update time",
+    scheduledCollection: "Daily scheduled collection",
+    scheduledCollectionHint:
+      "While OctopusBeak is open, sync every enabled source once a day at this time. A source that needs you sends a notification.",
+    scheduledCollectionToggle: "Daily",
+    scheduledCollectionNextRun: (when: string) => `Next ${when}`,
+    scheduledCollectionOff: "Off. Sources sync only when you start them.",
     saving: "Saving...",
     settingsSaved: "Settings saved.",
     allChangesSaved: "All changes saved",
@@ -2003,6 +2007,7 @@ const zh: typeof en = {
       "無法在這台裝置上安全保存 Google 授權。",
     confirmCathayGmailOtpDisconnect:
       "要解除 Google 帳號連結嗎？下次國泰驗證前需要重新授權 Gmail。",
+    sessionTakeoverTitle: "同步會登出你在其他地方的登入",
     tdccDevice: {
       title: "裝置註冊",
       description:
@@ -2021,9 +2026,6 @@ const zh: typeof en = {
       registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
       saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
       openSettings: "註冊此裝置",
-      conflictTitle: "集保一次只信任一台裝置",
-      conflictBody:
-        "在這裡同步會讓集保e手掌握 App 登出，下次在手機登入時需要輸入驗證碼。如果之後又使用手機 App，下次同步前請在這裡重新註冊這台裝置。",
       failures: {
         "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
         "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
@@ -2329,9 +2331,14 @@ const zh: typeof en = {
     exchangeRateHint: "每天更新一次外幣與加密資產匯率",
     exchangeRateLastRun: (when, succeeded) => `上次 ${when} ${succeeded ? "成功" : "失敗"}`,
     exchangeRateNextRun: (when) => `下次 ${when}`,
-    systemSettingsDescription: "設定時間戳記使用的時區，以及每日匯率更新時間。",
+    systemSettingsDescription: "設定時間戳記使用的時區、每日匯率更新時間，以及每日排程收集。",
     systemTimezone: "系統時區",
     exchangeRateUpdateTime: "匯率更新時間",
+    scheduledCollection: "每日排程收集",
+    scheduledCollectionHint: "OctopusBeak 開啟時，每天在這個時間同步所有已啟用的來源。需要你處理的來源會發送通知。",
+    scheduledCollectionToggle: "每日",
+    scheduledCollectionNextRun: (when) => `下次 ${when}`,
+    scheduledCollectionOff: "已關閉。只有在你手動開始時才會同步。",
     saving: "儲存中...",
     settingsSaved: "設定已儲存。",
     allChangesSaved: "所有變更已儲存",
