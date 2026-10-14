@@ -147,8 +147,7 @@ export type AutomationCredentialGroup = {
   credentialKeys: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
-  /** Disclosed in sign-in settings when signing in here ends the person's other session with the provider. */
-  sessionTakeover?: AutomationLocalizedText;
+  sessionTakeoverNotice?: AutomationLocalizedText;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];
 };

@@ -38,7 +38,6 @@ export function systemSettings(settings: AutomationSettingsFile = {}): SystemSet
   });
 }
 
-/** The settings-file entries that persist a validated value. */
 export function systemSettingsFileEntries(value: SystemSettingsDto) {
   return {
     SYSTEM_TIMEZONE: value.systemTimezone,

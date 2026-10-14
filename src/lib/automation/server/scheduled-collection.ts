@@ -10,12 +10,12 @@ export type ScheduledRunNotification = {
   body: string;
 };
 
-/** The Sync all selection limited to sources; exchange rates keep their own schedule. */
+const isSourceTask = (taskId: string) => Boolean(taskById(taskId)?.credentialGroupId);
+
 export function scheduledCollectionTaskIds(model: Pick<AutomationPageModel, "parallelRunnableTaskIds">) {
-  return model.parallelRunnableTaskIds.filter((taskId) => taskById(taskId)?.credentialGroupId);
+  return model.parallelRunnableTaskIds.filter(isSourceTask);
 }
 
-/** Enqueue each eligible source once per occurrence through the Sync all path. */
 export async function startScheduledCollection(
   provider: AutomationPersistenceProvider,
   occurrenceUtc: string,
@@ -33,7 +33,6 @@ export async function startScheduledCollection(
   return automationRunMany(due, provider, { scheduledAtUtc: occurrenceUtc, onFinished });
 }
 
-/** Only a scheduled source run that ended in a User-action Failure notifies. */
 export function scheduledRunNotification(
   run: AutomationTaskRun,
   locale: string,

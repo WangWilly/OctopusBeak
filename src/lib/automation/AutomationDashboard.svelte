@@ -127,7 +127,6 @@ import type {
   export let onboardingTrackedTaskId: string | null = null;
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
-  /** A scheduled-collection notification asked to open this source's sign-in settings. */
   export let signInSettingsGroupId: string | null = null;
   export let onSignInSettingsOpened: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
@@ -2278,12 +2277,12 @@ import type {
               </section>
             {/if}
 
-            {#if group.sessionTakeover}
+            {#if group.sessionTakeoverNotice}
               <div class="session-takeover" role="note">
                 <Smartphone size={16} aria-hidden="true" />
                 <p>
                   <strong>{$t.automation.sessionTakeoverTitle}</strong>
-                  <span>{localizedText(group.sessionTakeover)}</span>
+                  <span>{localizedText(group.sessionTakeoverNotice)}</span>
                 </p>
               </div>
             {/if}

@@ -2,7 +2,6 @@ import { BrowserWindow } from "electron";
 
 let pendingCredentialGroupId: string | null = null;
 
-/** Held until the renderer takes it, so a window that is still loading opens it once mounted. */
 export function requestSignInSettings(credentialGroupId: string) {
   pendingCredentialGroupId = credentialGroupId;
   for (const window of BrowserWindow.getAllWindows()) {

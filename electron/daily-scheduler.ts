@@ -3,33 +3,29 @@ import { zonedDateTimeToUtc } from "../src/lib/time/timezone.ts";
 
 type Awaitable<T> = T | Promise<T>;
 
-/** One local time of day in one time zone. */
 export type DailySchedule = { time: string; timeZone: string };
 
 type ExchangeRateSettings = Pick<SystemSettingsDto, "systemTimezone" | "exchangeRateUpdateTime">;
 
-export type DailySchedulerDependencies = {
+type ClockDependencies = {
   now(): Date;
   setTimer(callback: () => void, ms: number): unknown;
   clearTimer(timer: unknown): void;
-  readSchedule(): DailySchedule;
-  /** Called at most once per occurrence; `isCurrent` turns false once a stop or a changed schedule supersedes it. */
-  fire(occurrenceUtc: string, isCurrent: () => boolean): Awaitable<void>;
-  /** False keeps a settings change from running the occurrence that already passed; catch-up then happens only at start. */
-  catchUpOnReschedule: boolean;
   reportError(error: unknown): void;
 };
 
-export type ExchangeRateSchedulerDependencies = {
-  now(): Date;
-  setTimer(callback: () => void, ms: number): unknown;
-  clearTimer(timer: unknown): void;
+type DailySchedulerDependencies = ClockDependencies & {
+  readSchedule(): DailySchedule;
+  fire(occurrenceUtc: string, isCurrent: () => boolean): Awaitable<void>;
+  onReschedule: "catch-up" | "skip-passed-occurrence";
+};
+
+export type ExchangeRateSchedulerDependencies = ClockDependencies & {
   readSettings(): ExchangeRateSettings;
   hasOccurrenceBeenAttempted(occurrenceUtc: string): Awaitable<boolean>;
   hasSuccessSince(occurrenceUtc: string): Awaitable<boolean>;
   isTaskActive(): Awaitable<boolean>;
   startTask(scheduledAtUtc: string): Awaitable<void>;
-  reportError(error: unknown): void;
 };
 
 function localDate(value: Date, timeZone: string) {
@@ -100,12 +96,9 @@ export function exchangeRateSchedule(now: Date, settings: ExchangeRateSettings) 
 
 export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependencies) {
   return createDailyScheduler({
-    now: deps.now,
-    setTimer: deps.setTimer,
-    clearTimer: deps.clearTimer,
+    ...deps,
     readSchedule: () => exchangeRateDailySchedule(deps.readSettings()),
-    catchUpOnReschedule: true,
-    reportError: deps.reportError,
+    onReschedule: "catch-up",
     async fire(occurrenceUtc, isCurrent) {
       const [attempted, successful] = await Promise.all([
         deps.hasOccurrenceBeenAttempted(occurrenceUtc),
@@ -119,27 +112,19 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
   });
 }
 
-export type ScheduledCollectionSchedulerDependencies = {
-  now(): Date;
-  setTimer(callback: () => void, ms: number): unknown;
-  clearTimer(timer: unknown): void;
+export type ScheduledCollectionSchedulerDependencies = ClockDependencies & {
   readSettings(): Pick<SystemSettingsDto, "systemTimezone" | "scheduledCollectionEnabled" | "scheduledCollectionTime">;
   startCollection(occurrenceUtc: string): Awaitable<void>;
-  reportError(error: unknown): void;
 };
 
-/** Turning the setting on or moving the time never starts a run on the spot; only launch catches up. */
 export function createScheduledCollectionScheduler(deps: ScheduledCollectionSchedulerDependencies) {
   return createDailyScheduler({
-    now: deps.now,
-    setTimer: deps.setTimer,
-    clearTimer: deps.clearTimer,
+    ...deps,
     readSchedule: () => {
       const settings = deps.readSettings();
       return { time: settings.scheduledCollectionTime, timeZone: settings.systemTimezone };
     },
-    catchUpOnReschedule: false,
-    reportError: deps.reportError,
+    onReschedule: "skip-passed-occurrence",
     async fire(occurrenceUtc, isCurrent) {
       if (!isCurrent() || !deps.readSettings().scheduledCollectionEnabled) return;
       await deps.startCollection(occurrenceUtc);
@@ -147,7 +132,7 @@ export function createScheduledCollectionScheduler(deps: ScheduledCollectionSche
   });
 }
 
-export function createDailyScheduler(deps: DailySchedulerDependencies) {
+function createDailyScheduler(deps: DailySchedulerDependencies) {
   let timer: unknown;
   let running = false;
   let generation = 0;
@@ -217,7 +202,7 @@ export function createDailyScheduler(deps: DailySchedulerDependencies) {
         const { latestOccurrenceUtc } = selected.schedule;
         if (latestOccurrenceUtc !== lastConsideredOccurrenceUtc) generation += 1;
         const expectedGeneration = generation;
-        if (deps.catchUpOnReschedule) consider(latestOccurrenceUtc, expectedGeneration);
+        if (deps.onReschedule === "catch-up") consider(latestOccurrenceUtc, expectedGeneration);
         else lastConsideredOccurrenceUtc = latestOccurrenceUtc;
         if (timer !== undefined) deps.clearTimer(timer);
         timer = undefined;
