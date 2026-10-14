@@ -1183,7 +1183,7 @@ export function classifyEsunPostLoginPage(text: string): EsunPostLoginState[] {
   return states.length > 0 ? states : ["unrecognized"];
 }
 
-async function authenticateEsunPage(
+export async function authenticateEsunPage(
   page: Page,
   credentials: EsunCredentials,
   context: WorkflowContext,

@@ -38,9 +38,12 @@ test("Forge keeps only the exact Desktop OAuth file under packaged app/data", ()
   );
 });
 
-test("Forge leaves the development TDCC probe and local reports out of the installer", () => {
+test("Forge leaves the development probes and local reports out of the installer", () => {
   for (const path of [
     "/scripts/tdcc-probe.mjs",
+    "/scripts/esun-deposit-probe.ts",
+    "/scripts/esun-deposit-probe",
+    "/scripts/esun-deposit-probe/probe.ts",
     "/scripts/tdcc-probe",
     "/scripts/tdcc-probe/probe.ts",
     "/reports",

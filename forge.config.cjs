@@ -46,6 +46,7 @@ module.exports = {
       /^\/out($|\/)/,
       /^\/reports($|\/)/,
       /^\/scripts\/tdcc-probe(?:\.mjs$|$|\/)/,
+      /^\/scripts\/esun-deposit-probe(?:\.ts$|$|\/)/,
     ],
     ...(shouldSign
       ? {
