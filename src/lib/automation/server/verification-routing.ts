@@ -32,6 +32,8 @@ import {
   isProviderVerificationImageCurrent,
   probeProviderVerificationPostSubmit,
   providerVerificationHandlesChallengeImage,
+  providerVerificationRefreshesChallengeImage,
+  refreshProviderVerificationImage,
 } from "./provider-verification.ts";
 import { appWorkflowPageForSession } from "./app-browser-host.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
@@ -74,16 +76,49 @@ export type VerificationRoutingDependencies = {
   finalizeFailed: (message: string) => void | Promise<void>;
   /** Called once after a non-empty challenge image has been captured. */
   onChallengeCaptured?: () => void | Promise<void>;
+  /**
+   * Present only for a provider-owned image whose owner declares an in-page
+   * refresh control. Its presence widens the round to MAX_CHALLENGES_PER_ROUND.
+   */
+  refreshChallenge?: (
+    taskRunId: string,
+    contract: HumanAssistanceContract,
+  ) => Promise<boolean>;
 };
+
+export const MAX_CHALLENGES_PER_ROUND = 5;
+
+/**
+ * Solve up to `budget` challenges within one round, refreshing between them.
+ * The first solved or absent outcome ends the round so the caller submits at
+ * most once; a refresh that reports no new challenge exhausts the round.
+ */
+export async function solveChallengeRound(input: {
+  budget: number;
+  solveOnce: () => Promise<SolveOutcome>;
+  refresh?: () => Promise<boolean>;
+}): Promise<SolveOutcome> {
+  for (let challenge = 1; challenge <= input.budget; challenge += 1) {
+    const outcome = await input.solveOnce();
+    if (outcome.status !== "exhausted") return outcome;
+    if (challenge === input.budget || !input.refresh || !await input.refresh()) break;
+  }
+  return { status: "exhausted" };
+}
 
 export type VerificationChallengeImageProvider = Pick<
   ProviderVerificationHost,
-  "handlesChallengeImage" | "captureChallengeImage" | "isChallengeImageCurrent"
+  | "handlesChallengeImage"
+  | "captureChallengeImage"
+  | "isChallengeImageCurrent"
+  | "refreshesChallengeImage"
+  | "refreshChallengeImage"
 >;
 
 export type VerificationChallengeImageSelection = {
   captureChallengeImage: VerificationRoutingDependencies["captureChallengeImage"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
+  refreshChallenge?: VerificationRoutingDependencies["refreshChallenge"];
   /** A registered source owner treats a null capture as a hard failure. */
   providerOwned: boolean;
 };
@@ -114,6 +149,12 @@ export function selectVerificationChallengeImage(
         options.provider.captureChallengeImage(viewerKey, currentContract),
       validateChallengeImage: (viewerKey, currentContract) =>
         options.provider.isChallengeImageCurrent(viewerKey, currentContract),
+      ...(options.provider.refreshesChallengeImage(contract)
+        ? {
+            refreshChallenge: (viewerKey: string, currentContract: HumanAssistanceContract) =>
+              options.provider.refreshChallengeImage(viewerKey, currentContract),
+          }
+        : {}),
       providerOwned: true,
     };
   }
@@ -211,7 +252,7 @@ export async function routeVerificationActor(input: {
       solveAcceptancePolicy: input.solveAcceptancePolicy,
       expectedAnswerLength: input.expectedAnswerLength,
     });
-    outcome = await solveVerificationChallenge({
+    const solveDependencies: Parameters<typeof solveVerificationChallenge>[0] = {
       challengeKind: plan.challengeKind,
       confidenceThreshold:
         contract?.solverConfidenceThreshold
@@ -226,16 +267,16 @@ export async function routeVerificationActor(input: {
         }
         return image;
       },
-    captureChallengeAudio: deps.captureChallengeAudio
-      ? async () => {
-          const audio = await deps.captureChallengeAudio!(input.taskRunId, contract!);
-          if (audio !== null && !challengeCaptured) {
-            challengeCaptured = true;
-            await deps.onChallengeCaptured?.();
+      captureChallengeAudio: deps.captureChallengeAudio
+        ? async () => {
+            const audio = await deps.captureChallengeAudio!(input.taskRunId, contract!);
+            if (audio !== null && !challengeCaptured) {
+              challengeCaptured = true;
+              await deps.onChallengeCaptured?.();
+            }
+            return audio;
           }
-          return audio;
-        }
-      : undefined,
+        : undefined,
       injectAnswer: (answer) =>
         deps.injectAnswer(input.taskRunId, contract!, answer),
       injectSelections: (selections) =>
@@ -244,6 +285,14 @@ export async function routeVerificationActor(input: {
         ? () => deps.validateChallengeImage!(input.taskRunId, contract!)
         : undefined,
       ...solverMetadata,
+    };
+    const refreshChallenge = deps.refreshChallenge;
+    outcome = await solveChallengeRound({
+      budget: refreshChallenge ? MAX_CHALLENGES_PER_ROUND : 1,
+      solveOnce: () => solveVerificationChallenge(solveDependencies),
+      refresh: refreshChallenge
+        ? () => refreshChallenge(input.taskRunId, contract!)
+        : undefined,
     });
   } catch (error) {
     await deps.finalizeFailed(
@@ -281,6 +330,7 @@ export type VerificationRoutingSeams = {
   captureChallengeAudio?: VerificationRoutingDependencies["captureChallengeAudio"];
   providerCaptureChallengeAudio?: ProviderVerificationHost["captureChallengeAudio"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
+  refreshChallenge?: VerificationRoutingDependencies["refreshChallenge"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
   providerProbePostSubmit: ProviderVerificationHost["probePostSubmit"];
   providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
@@ -311,6 +361,8 @@ export function verificationRoutingDependencies(
     handlesChallengeImage: providerVerificationHandlesChallengeImage,
     captureChallengeImage: captureProviderVerificationImage,
     isChallengeImageCurrent: isProviderVerificationImageCurrent,
+    refreshesChallengeImage: providerVerificationRefreshesChallengeImage,
+    refreshChallengeImage: refreshProviderVerificationImage,
   };
   const imageSelection = selectVerificationChallengeImage(contract, {
     provider: providerVerification,
@@ -333,6 +385,7 @@ export function verificationRoutingDependencies(
       ?? captureProviderVerificationAudio,
     validateChallengeImage: input.validateChallengeImage
       ?? imageSelection.validateChallengeImage,
+    refreshChallenge: input.refreshChallenge ?? imageSelection.refreshChallenge,
     injectAnswer: input.injectAnswer
       ?? input.providerInjectAnswer
       ?? injectProviderVerificationAnswer,
