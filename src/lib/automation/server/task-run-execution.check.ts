@@ -417,15 +417,21 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
 
-    const runScenario = async (scenario: WorkerScenario) => {
+    const runScenario = async (
+      scenario: WorkerScenario,
+      options: { deferFinalization?: boolean; forceTerminated?: boolean } = {},
+    ) => {
       let taskRunId = "";
       let startData: AppWorkflowWorkerStart | undefined;
       let worker: TaskExecutionFakeWorker | undefined;
       let cancellationRequested = false;
+      let forceTerminationRequested = false;
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
       const execution = runAutomationTaskExecution(task, provider.automation, {
         launchEnv,
+        deferFinalization: options.deferFinalization,
+        isForceTerminationRequested: () => forceTerminationRequested,
         isCancellationRequested: () => cancellationRequested,
         workflowBrowserPortFactory: () => ({
           async withPage(run) { return await run({} as never); },
@@ -442,6 +448,9 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
             scenario,
             () => persistedEvents.has(`${startData?.taskRunId}:worker-check-started`),
           );
+          // Race force termination with a worker's interrupted commit, after
+          // startup. A pre-start cancellation would never create the worker.
+          worker.once("exit", () => { forceTerminationRequested = options.forceTerminated === true; });
           return worker;
         },
       }, async (id) => { taskRunId = id; });
@@ -499,6 +508,19 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
 
       const result = await execution;
       assert.equal(worker?.eventAckAfterPersistence, true);
+      if (options.deferFinalization) {
+        assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
+        assert.ok("result" in result);
+        assert.ok(result.result);
+        const finalized = await finalizeAutomationTaskRun({
+          provider,
+          taskId: task.id,
+          taskKind: task.kind,
+          taskRunId,
+          forceTerminated: options.forceTerminated,
+        }, result.result);
+        assert.equal(result.status, finalized.status, "deferred and persisted decisions agree");
+      }
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
 
@@ -521,6 +543,14 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(cancelled.run?.status, "failed");
     assert.equal(cancelled.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.equal(cancelled.run?.signal, null, "cancelling during commit preserves the unknown outcome");
+
+    for (const deferFinalization of [false, true]) {
+      const forced = await runScenario("commit-crash", { deferFinalization, forceTerminated: true });
+      assert.equal(forced.result.status, "failed", "force termination cannot mask an unknown commit");
+      assert.equal(forced.run?.status, "failed");
+      assert.equal(forced.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+      assert.notEqual(forced.run?.terminationMode, "forced", "the run was not finalized as cancellation");
+    }
   } finally {
     unregisterRoute?.();
     await store.close();
