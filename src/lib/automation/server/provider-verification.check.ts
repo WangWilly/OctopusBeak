@@ -12,6 +12,8 @@ import {
 import {
   createProviderVerificationHost,
   FUBON_CAPTCHA_IMAGE_SELECTOR,
+  providerVerificationRefreshesChallengeImage,
+  refreshProviderVerificationImage,
   type ProviderVerificationPageRunner,
 } from "./provider-verification.ts";
 import {
@@ -1182,6 +1184,27 @@ test("only adapters with calibrated source capture own challenge images", () => 
     false,
   );
   assert.equal(host.handlesChallengeImage(contract("cathay.login.email-otp-input")), false);
+});
+
+test("no provider declares an in-page CAPTCHA refresh control yet", async () => {
+  const providerContracts = {
+    fubon: fubonCaptchaContract(),
+    sinopac: sinopacCaptchaContract(),
+    "yuanta-bank": yuantaBankCaptchaContract(),
+    post: contract("post.login.captcha-input", { stageId: "ipost-login-captcha" }),
+  };
+  for (const [provider, verification] of Object.entries(providerContracts)) {
+    assert.equal(
+      providerVerificationRefreshesChallengeImage(verification),
+      false,
+      `${provider} declares a CAPTCHA refresh control. ADR 0046 requires fixture or live evidence `
+        + "that the control yields a new challenge without resetting the sign-in details, and the "
+        + "workflow's post-assistance CAPTCHA identity guard must accept the refreshed image first: "
+        + "snapshotChangeReason in src/workflows/fubon-auth.ts and postCaptchaGenerationUnchanged "
+        + "in src/workflows/post-statements.ts reject a changed CAPTCHA.",
+    );
+    assert.equal(await refreshProviderVerificationImage(`${provider}-session`, verification), false);
+  }
 });
 
 function yuantaPage(options: {

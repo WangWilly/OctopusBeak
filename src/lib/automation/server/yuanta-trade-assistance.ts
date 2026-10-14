@@ -109,6 +109,11 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
       signal.throwIfAborted();
       return host.handlesChallengeImage(contract);
     },
+    refreshesChallengeImage(contract) {
+      signal.throwIfAborted();
+      return host.refreshesChallengeImage(contract);
+    },
+    refreshChallengeImage: guardedAsync(signal, host.refreshChallengeImage),
     handlesChallengeAudio(contract) {
       signal.throwIfAborted();
       return host.handlesChallengeAudio(contract);
