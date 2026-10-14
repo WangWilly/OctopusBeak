@@ -117,6 +117,7 @@ import {
   isWorkflowFailureCorrelation,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+  type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
@@ -810,10 +811,26 @@ async function invoke(
   }
 }
 
+const CANONICAL_COMMIT_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
+  "financial.source.commit",
+  "financial.source.commitBatch",
+  "financial.deposit.commit",
+  "financial.mixed.commit",
+  "financial.balance.capture",
+  "financial.einvoice.commit",
+  "financial.creditCard.commit",
+  "financial.creditCard.balance",
+  "financial.loan.commit",
+  "financial.investment.commit",
+]);
+
+export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
+
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
   registry: PGliteFinancialRegistry,
+  assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
 ): PGliteFinancialRpcServer {
   let closed = false;
   let sequence = Promise.resolve();
@@ -846,6 +863,9 @@ export function createPGliteFinancialRpcServer(
     controllers.set(value.id, controller);
     const work = sequence.then(() => {
       if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+      if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
+        assertCommitAdmissible(value.diagnosticContext);
+      }
       return invoke(registry, operation, value.args, controller.signal);
     }).then(
       (result) => {
