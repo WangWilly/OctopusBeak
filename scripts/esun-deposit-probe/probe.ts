@@ -6,7 +6,6 @@ export type PortalReply =
   | Readonly<{ kind: "network-error" }>
   | Readonly<{ kind: "portal-session-missing" }>;
 
-/** Posts one `/esb/<path>` envelope from inside the signed-in page. */
 export type PortalTransport = (
   path: string,
   requestBody: Readonly<Record<string, unknown>>,
@@ -124,79 +123,58 @@ async function callStep(transport: PortalTransport, call: StepCall): Promise<{ r
   };
 }
 
-/**
- * Walks E.SUN's deposit task for TWD then foreign-currency accounts: reset the
- * flow, pre-query the default account, then search its recent transactions.
- * The first failure stops every later call. Account numbers pass from the
- * pre-query to the search in memory and never enter the report.
- */
+const DEPOSIT_KINDS = ["tw", "fr"] as const;
+const PLANNED_STEPS = DEPOSIT_KINDS.flatMap((kind) => [
+  { step: `${kind}-init`, path: DEPOSIT_INIT_PATH },
+  { step: `${kind}-prequery`, path: PREQUERY_PATHS[kind] },
+  { step: `${kind}-search`, path: SEARCH_PATHS[kind] },
+]);
+
+async function probeKind(transport: PortalTransport, kind: DepositKind, now: Date, steps: StepReport[]): Promise<"continue" | "stop"> {
+  const searchStep = `${kind}-search`;
+  const init = await callStep(transport, { step: `${kind}-init`, path: DEPOSIT_INIT_PATH, requestBody: {}, resetFlow: true, kind });
+  steps.push(init.report);
+  if (init.report.outcome.status !== "ok") return "stop";
+  const prequery = await callStep(transport, {
+    step: `${kind}-prequery`, path: PREQUERY_PATHS[kind], requestBody: { account: null }, resetFlow: false, kind,
+  });
+  steps.push(prequery.report);
+  if (prequery.report.outcome.status === "not-held") {
+    steps.push({ step: searchStep, path: SEARCH_PATHS[kind], outcome: { status: "skipped", reason: "not-held" } });
+    return "continue";
+  }
+  if (prequery.report.outcome.status !== "ok") return "stop";
+  const account = defaultAccount(prequery.json);
+  if (!account) {
+    steps.push({ step: searchStep, path: SEARCH_PATHS[kind], outcome: { status: "skipped", reason: "no-default-account" } });
+    return "continue";
+  }
+  const search = await callStep(transport, {
+    step: searchStep,
+    path: SEARCH_PATHS[kind],
+    requestBody: { account, ...searchRange(now), startIndex: 1, count: SEARCH_PAGE_SIZE, customerInputHashtag: [] },
+    resetFlow: false,
+    kind,
+  });
+  steps.push(search.report);
+  return search.report.outcome.status === "ok" ? "continue" : "stop";
+}
+
 export async function runDepositProbe(
   transport: PortalTransport,
   options: Readonly<{ now: Date; observedRequests: () => readonly string[] }>,
 ): Promise<ProbeReport> {
   const steps: StepReport[] = [];
-  let stopped = false;
-  const skip = (step: string, path: string, reason: "earlier-step-failed" | "not-held" | "no-default-account") => {
-    steps.push({ step, path, outcome: { status: "skipped", reason } });
-  };
-
-  for (const kind of ["tw", "fr"] as const) {
-    const initStep = `${kind}-init`;
-    const prequeryStep = `${kind}-prequery`;
-    const searchStep = `${kind}-search`;
-    if (stopped) {
-      skip(initStep, DEPOSIT_INIT_PATH, "earlier-step-failed");
-      skip(prequeryStep, PREQUERY_PATHS[kind], "earlier-step-failed");
-      skip(searchStep, SEARCH_PATHS[kind], "earlier-step-failed");
-      continue;
-    }
-    const init = await callStep(transport, { step: initStep, path: DEPOSIT_INIT_PATH, requestBody: {}, resetFlow: true, kind });
-    steps.push(init.report);
-    if (init.report.outcome.status !== "ok") {
-      stopped = true;
-      skip(prequeryStep, PREQUERY_PATHS[kind], "earlier-step-failed");
-      skip(searchStep, SEARCH_PATHS[kind], "earlier-step-failed");
-      continue;
-    }
-    const prequery = await callStep(transport, {
-      step: prequeryStep, path: PREQUERY_PATHS[kind], requestBody: { account: null }, resetFlow: false, kind,
-    });
-    steps.push(prequery.report);
-    if (prequery.report.outcome.status === "not-held") {
-      skip(searchStep, SEARCH_PATHS[kind], "not-held");
-      continue;
-    }
-    if (prequery.report.outcome.status !== "ok") {
-      stopped = true;
-      skip(searchStep, SEARCH_PATHS[kind], "earlier-step-failed");
-      continue;
-    }
-    const account = defaultAccount(prequery.json);
-    if (!account) {
-      skip(searchStep, SEARCH_PATHS[kind], "no-default-account");
-      continue;
-    }
-    const search = await callStep(transport, {
-      step: searchStep,
-      path: SEARCH_PATHS[kind],
-      requestBody: {
-        account,
-        ...searchRange(options.now),
-        startIndex: 1,
-        count: SEARCH_PAGE_SIZE,
-        customerInputHashtag: [],
-      },
-      resetFlow: false,
-      kind,
-    });
-    steps.push(search.report);
-    if (search.report.outcome.status !== "ok") stopped = true;
+  for (const kind of DEPOSIT_KINDS) {
+    if (await probeKind(transport, kind, options.now, steps) === "stop") break;
   }
-
+  for (const { step, path } of PLANNED_STEPS.slice(steps.length)) {
+    steps.push({ step, path, outcome: { status: "skipped", reason: "earlier-step-failed" } });
+  }
   return {
     probe: "esun-deposit",
     reportVersion: 1,
-    complete: !stopped,
+    complete: !steps.some((step) => step.outcome.status === "failed"),
     steps,
     observedRequests: options.observedRequests(),
   };
