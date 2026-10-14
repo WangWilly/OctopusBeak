@@ -1,4 +1,3 @@
-import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import { randomUUID } from "node:crypto";
 import {
   AUTOMATION_CREDENTIALS_PATH,
@@ -9,6 +8,7 @@ import {
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
 import {
+  decideAutomationTaskRunOutcome,
   finalizeAutomationTaskRun,
   type AutomationTaskExecutionResult,
   type AutomationTaskRunExecution,
@@ -888,9 +888,9 @@ export async function runAutomationTaskExecution(
     const provider = { automation: persistence };
     if (options.deferFinalization) {
       return {
-        status: automationTaskExecutionStatus(result, {
+        status: decideAutomationTaskRunOutcome(result, {
           forceTerminated: options.isForceTerminationRequested?.() === true,
-        }),
+        }).status,
         taskRunId: execution.run.taskRunId,
         executionId: execution.executionId,
         result,
@@ -919,28 +919,6 @@ export async function runAutomationTaskExecution(
     };
   }
   throw new Error("App workflow definition is unavailable.");
-}
-
-export function automationTaskExecutionStatus(
-  result: AutomationTaskExecutionResult,
-  options: {
-    forceTerminated?: boolean;
-  } = {},
-) {
-  const cancelled = options.forceTerminated === true
-    || result.signal === "SIGTERM"
-    || result.error?.message === "Automation task cancelled."
-    || result.appWorkflowOutcome?.errorCode === "cancelled";
-  if (cancelled) return "cancelled" as const;
-  if (tdccIncompleteCollectionHasDurableReceipts(
-    result.appWorkflowOutcome?.summary,
-    result.appWorkflowOutcome?.errorCode,
-  )) return "partial" as const;
-  if (result.error || result.appWorkflowOutcome?.errorCode) return "failed" as const;
-  const summaryStatus = result.appWorkflowOutcome?.summary?.status;
-  if (summaryStatus === "partial") return "partial" as const;
-  if (summaryStatus === "failed") return "failed" as const;
-  return result.exitCode === 0 ? "completed" as const : "failed" as const;
 }
 
 /** Abort live App workflows and persist interruption before startup recovery. */
