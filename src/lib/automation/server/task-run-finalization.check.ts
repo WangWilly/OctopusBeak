@@ -8,6 +8,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createDataVersionStore } from "../../shared-shell/data-version.ts";
+import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
 import {
   finalizeAutomationTaskRun,
   finalizePersistedActiveRuns,
@@ -442,6 +443,72 @@ test("terminal provider transition is idempotent under a stale finalizer", async
       (await provider.automation.taskRunById(created.taskRunId))?.appWorkflowOutcome,
       { errorCode: null, summary: null },
     );
+  } finally {
+    await store.close();
+  }
+});
+
+test("competing finalizers persist one decision and apply freshness and notices only once", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const upsertNotice = provider.automation.upsertTaskPrerequisiteNotice.bind(provider.automation);
+    const resolveNotices = provider.automation.resolveTaskPrerequisiteNotices.bind(provider.automation);
+    let noticesUpserted = 0;
+    let noticesResolved = 0;
+    provider.automation.upsertTaskPrerequisiteNotice = async (input) => {
+      noticesUpserted += 1;
+      return upsertNotice(input);
+    };
+    provider.automation.resolveTaskPrerequisiteNotices = async (...args) => {
+      noticesResolved += 1;
+      return resolveNotices(...args);
+    };
+    const summary = { status: "completed", counts: { committedCount: 1, itemCount: 1 } } as const;
+    for (const status of ["completed", "failed", "cancelled"] as const) {
+      noticesUpserted = 0;
+      noticesResolved = 0;
+      const created = await provider.automation.createTaskRun({
+        taskId: "yuanta-trade-statements", kind: "crawler", status: "running",
+        attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
+      });
+      const invalidations = createDataVersionStore();
+      const context = {
+        provider, taskId: "yuanta-trade-statements", taskKind: "crawler" as const,
+        taskRunId: created.taskRunId, dataVersionStore: invalidations,
+        forceTerminated: status !== "completed",
+      };
+      const errorCode = status === "failed" ? "commit-outcome-unknown" : null;
+      const execution = result({
+        exitCode: status === "completed" ? 0 : null,
+        signal: status === "completed" ? null : "SIGTERM",
+        appWorkflowOutcome: { errorCode, summary },
+        externalPrerequisiteIds: [YUANTA_SERVISIGN_PREREQUISITE.id],
+      });
+      const outcomes = await Promise.all([
+        finalizeAutomationTaskRun(context, execution),
+        finalizeAutomationTaskRun(context, execution),
+      ]);
+      assert.deepEqual(outcomes, [{ status }, { status }]);
+      // A later caller with a conflicting decision must also preserve the winner.
+      assert.deepEqual(await finalizeAutomationTaskRun(context, result({
+        exitCode: 1,
+        appWorkflowOutcome: { errorCode: "source-unavailable", summary: null },
+        externalPrerequisiteIds: [YUANTA_SERVISIGN_PREREQUISITE.id],
+      })), { status });
+      const saved = await provider.automation.taskRunById(created.taskRunId);
+      assert.equal(saved?.status, status);
+      assert.deepEqual(saved?.appWorkflowOutcome, {
+        errorCode: status === "cancelled" ? "cancelled" : errorCode,
+        summary,
+      });
+      assert.equal(saved?.terminationMode === "forced", status === "cancelled");
+      assert.equal(invalidations.snapshot().version, 1, "durable receipts invalidate once for every terminal status");
+      assert.equal(noticesResolved, status === "completed" ? 1 : 0);
+      assert.equal(noticesUpserted, status === "failed" ? 1 : 0);
+    }
   } finally {
     await store.close();
   }
