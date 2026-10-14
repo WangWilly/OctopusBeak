@@ -110,14 +110,19 @@ export async function finalizeTaskRunTransition(
   return { status: persisted.status, skipped: false } as const;
 }
 
-/** Persist typed outcome codes and bounded summaries through the operational port. */
-export async function finalizeAutomationTaskRun(
-  context: AutomationTaskRunFinalizationContext,
+/** Decide the terminal status and safe code together, before any persistence.
+ * Deferred execution and persisted finalization must use the same precedence.
+ */
+export function decideAutomationTaskRunOutcome(
   result: AutomationTaskExecutionResult,
-) {
+  options: { forceTerminated?: boolean } = {},
+): Readonly<{
+  status: Extract<AutomationTaskStatus, "completed" | "partial" | "failed" | "cancelled">;
+  errorCode: TypedWorkflowErrorCode | null;
+}> {
   const outcome = result.appWorkflowOutcome;
   const commitOutcomeUnknown = outcome?.errorCode === "commit-outcome-unknown";
-  const cancelled = !commitOutcomeUnknown && (context.forceTerminated === true
+  const cancelled = !commitOutcomeUnknown && (options.forceTerminated === true
     || result.signal === "SIGTERM"
     || result.error?.message === "Automation task cancelled."
     || outcome?.errorCode === "cancelled");
@@ -128,7 +133,7 @@ export async function finalizeAutomationTaskRun(
     ?? (result.error || (result.exitCode !== 0 && !partial)
       ? "workflow-failed"
       : null);
-  let status: AutomationTaskStatus;
+  let status: "completed" | "partial" | "failed" | "cancelled";
   if (cancelled) {
     status = "cancelled";
   } else if (tdccPartial) {
@@ -140,17 +145,30 @@ export async function finalizeAutomationTaskRun(
   } else {
     status = result.exitCode === 0 ? "completed" : "failed";
   }
-  const appWorkflowOutcome = {
+  return {
+    status,
     errorCode: cancelled ? "cancelled" as const : typedFailureCode,
+  };
+}
+
+/** Persist typed outcome codes and bounded summaries through the operational port. */
+export async function finalizeAutomationTaskRun(
+  context: AutomationTaskRunFinalizationContext,
+  result: AutomationTaskExecutionResult,
+) {
+  const { status, errorCode } = decideAutomationTaskRunOutcome(result, context);
+  const outcome = result.appWorkflowOutcome;
+  const appWorkflowOutcome = {
+    errorCode,
     summary: outcome?.summary ?? null,
   };
   const committedProductCount = outcome?.summary?.counts.committedCount
     ?? outcome?.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
     ?? 0;
-  const prerequisiteError = cancelled
+  const prerequisiteError = status === "cancelled"
     ? "Workflow cancelled."
     : status === "failed"
-      ? `Workflow failed (${typedFailureCode ?? "workflow-failed"}).`
+      ? `Workflow failed (${errorCode ?? "workflow-failed"}).`
       : null;
   const persistence = context.provider.automation;
   const currentRun = await persistence.taskRunById(context.taskRunId);
