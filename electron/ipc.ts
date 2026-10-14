@@ -46,8 +46,10 @@ import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
 import {
   systemSettings,
+  systemSettingsFileEntries,
   validateSystemSettings,
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
@@ -180,8 +182,7 @@ export function registerOctopusBeakIpc({
     const value = validateSystemSettings(input);
     writeAutomationSettings({
       ...readAutomationSettings(),
-      SYSTEM_TIMEZONE: value.systemTimezone,
-      EXCHANGE_RATE_UPDATE_TIME: value.exchangeRateUpdateTime,
+      ...systemSettingsFileEntries(value),
     });
     await onSystemSettingsChanged?.(value);
     return value;
@@ -484,6 +485,7 @@ export function registerOctopusBeakIpc({
     automationForceTerminate(taskId, operationalProvider, expectedRunId),
   );
   ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
+  ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
   ipcMain.handle(
     "automation:openExternalPrerequisite",
     async (_event, prerequisiteId: string) => {

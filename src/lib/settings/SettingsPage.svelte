@@ -31,6 +31,7 @@
   import {
     applySystemSettings,
     exchangeRateUpdateTime,
+    scheduledCollection,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
@@ -68,6 +69,8 @@
   let selectedUpdateTime = $exchangeRateUpdateTime;
   let selectedHour = "06";
   let selectedMinute = "00";
+  let collectionEnabled = $scheduledCollection.enabled;
+  let [collectionHour, collectionMinute] = $scheduledCollection.time.split(":");
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -80,6 +83,7 @@
   };
   $: timezoneName = zoneName(selectedTimezone, $locale);
   $: nextRun = nextDailyRun(selectedUpdateTime, selectedTimezone, now);
+  $: nextCollectionRun = nextDailyRun(`${collectionHour}:${collectionMinute}`, selectedTimezone, now);
   $: scaleTickLabels = SCALE_TICKS.map((value) => ({
     value,
     offset: (value - DISPLAY_SCALE_MIN) / (DISPLAY_SCALE_MAX - DISPLAY_SCALE_MIN),
@@ -172,6 +176,8 @@
     const input = {
       systemTimezone: selectedTimezone,
       exchangeRateUpdateTime: selectedUpdateTime,
+      scheduledCollectionEnabled: collectionEnabled,
+      scheduledCollectionTime: `${collectionHour}:${collectionMinute}`,
     };
     saveStatus = "pending";
     saveError = "";
@@ -182,6 +188,8 @@
         applySystemSettings(value);
         selectedTimezone = value.systemTimezone;
         setSelectedUpdateTime(value.exchangeRateUpdateTime);
+        collectionEnabled = value.scheduledCollectionEnabled;
+        [collectionHour, collectionMinute] = value.scheduledCollectionTime.split(":");
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
@@ -193,6 +201,11 @@
 
   function updateScheduledTime() {
     selectedUpdateTime = `${selectedHour}:${selectedMinute}`;
+    saveSystemSettings();
+  }
+
+  function toggleScheduledCollection() {
+    collectionEnabled = !collectionEnabled;
     saveSystemSettings();
   }
 
@@ -311,6 +324,43 @@
                   {$t.settings.exchangeRateLastRun(scheduleTime(exchangeRateLastRun.finishedAt, selectedTimezone), exchangeRateLastRun.succeeded)} ·
                 {/if}
                 {$t.settings.exchangeRateNextRun(scheduleTime(nextRun, selectedTimezone))}
+              </p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="collection-time-label">{$t.settings.scheduledCollection}</span>
+              <small class="setting-hint">{$t.settings.scheduledCollectionHint}</small>
+            </div>
+            <div class="setting-control">
+              <div class="collection-control">
+                <button
+                  id="scheduled-collection-toggle"
+                  class="switch collection-switch"
+                  type="button"
+                  aria-pressed={collectionEnabled}
+                  aria-labelledby="collection-time-label"
+                  onclick={toggleScheduledCollection}
+                >
+                  <span>{$t.settings.scheduledCollectionToggle}</span>
+                  <span class="switch-track" aria-hidden="true"></span>
+                </button>
+                <div class="field time-field" class:disabled={!collectionEnabled} role="group" aria-labelledby="collection-time-label">
+                  <Clock size={16} strokeWidth={2} aria-hidden="true" />
+                  <select id="collection-hour" class="num" aria-label={$t.settings.hour} disabled={!collectionEnabled} bind:value={collectionHour} onchange={saveSystemSettings}>
+                    {#each hours as hour}<option value={hour}>{hour}</option>{/each}
+                  </select>
+                  <span class="time-colon num" aria-hidden="true">:</span>
+                  <select id="collection-minute" class="num" aria-label={$t.settings.minute} disabled={!collectionEnabled} bind:value={collectionMinute} onchange={saveSystemSettings}>
+                    {#each minutes as minute}<option value={minute}>{minute}</option>{/each}
+                  </select>
+                  <span class="field-note">{timezoneName}</span>
+                </div>
+              </div>
+              <p class="rate-status" data-collection-status>
+                {collectionEnabled
+                  ? $t.settings.scheduledCollectionNextRun(scheduleTime(nextCollectionRun, selectedTimezone))
+                  : $t.settings.scheduledCollectionOff}
               </p>
             </div>
           </div>
@@ -626,6 +676,40 @@
     color: var(--muted);
     font-size: 11px;
   }
+
+  .collection-control {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .collection-switch {
+    width: auto;
+    min-width: 0;
+    min-height: 40px;
+    gap: var(--space-3);
+    padding: 0 10px 0 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 680;
+    cursor: pointer;
+  }
+
+  .collection-switch .switch-track {
+    background: var(--border);
+    transition: background 180ms ease;
+  }
+
+  .collection-switch .switch-track::after {
+    right: auto;
+    left: 3px;
+  }
+
+  .collection-switch[aria-pressed="true"] .switch-track { background: var(--fg); }
+  .collection-switch[aria-pressed="true"] .switch-track::after { transform: translateX(12px); }
+  .time-field.disabled { opacity: 0.55; }
+  .time-field select:disabled { cursor: default; }
 
   .rate-status :global(svg) { flex: none; color: var(--success); }
   .rate-status.failed :global(svg) { color: var(--danger); }

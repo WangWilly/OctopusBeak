@@ -68,7 +68,7 @@ App 以 typed WorkflowDefinition 執行供應商流程，注入 browser、text�
 | 正規化與去重 | source ID upsert，餘額快照、staging promotion、cursor 與設定 CAS | Source Capture + 經註冊的 source contract／rule tuple；共同 admission 處理 identity、occurrence、revision、幣別與有效時間 |
 | 原始資料 | 共用 transaction mapper 保留 raw_payload | 正式流程不保留原始匯出檔、CSV/JSON、raw response body 或 Libretto telemetry 檔；持久化已驗證財務資料與必要 evidence／sanitized outcome |
 
-本地 runtime／認證／solver／排程比較的依據：[正式合約](../specs/app-owned-workflow-runtime.md#source-files-and-failure-rules)、[queue](../../src/lib/automation/server/workflow-run-queue.ts#L1)、[scheduler](../../electron/exchange-rate-scheduler.ts#L80)、[browser host](../../src/lib/automation/server/app-browser-host.ts#L372)。Source Contract／幣別與時間規則依據：[ADR 0035](../adr/0035-source-contract-catalog-and-rule-admission.md)、[money/currency/time](../adr/0006-canonical-transaction-money-currency-and-time.md)、[strict admission](../adr/0008-source-scoped-lineage-and-strict-canonical-admission.md)。外部比較依據見前述 pinned source links。
+本地 runtime／認證／solver／排程比較的依據：[正式合約](../specs/app-owned-workflow-runtime.md#source-files-and-failure-rules)、[queue](../../src/lib/automation/server/workflow-run-queue.ts#L1)、[scheduler](../../electron/daily-scheduler.ts#L80)、[browser host](../../src/lib/automation/server/app-browser-host.ts#L372)。Source Contract／幣別與時間規則依據：[ADR 0035](../adr/0035-source-contract-catalog-and-rule-admission.md)、[money/currency/time](../adr/0006-canonical-transaction-money-currency-and-time.md)、[strict admission](../adr/0008-source-scoped-lineage-and-strict-canonical-admission.md)。外部比較依據見前述 pinned source links。
 
 最具體的 admission 差異是 ALL SET 共用 mapper 可把缺少 currency/status 的交易設為 TWD/posted；本地要求來源契約成立並有足夠證據，缺乏必要識別、幣別、日期或完整性資訊時拒絕該 capture。這是邊界政策差異，不表示外部每個 adapter 都缺乏驗證，也不表示本地沒有依已審查 source contract 使用常數。
 
