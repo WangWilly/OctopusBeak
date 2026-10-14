@@ -47,7 +47,8 @@ import { SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR } from "../src/lib/spending/mod
  *   OCTOPUSBEAK_USER_DATA=/tmp/octopusbeak-spending-demo npm run desktop:dev
  */
 
-const TODAY = "2026-10-11";
+/** The demo's "today". Purchases dated after it are left out, so a later date simply adds the next days. */
+const TODAY = process.env.DEMO_TODAY ?? "2026-10-11";
 const MONTHS = ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"] as const;
 /** Inert placeholders: they only seed opaque identity digests, never a login. */
 const DEMO_EINVOICE_CREDENTIALS = { einvoice_phone_number: "0900000000", einvoice_password: "demo-only" };
@@ -60,7 +61,7 @@ const CREDIT_LIMIT = 200_000;
 export const SNAPSHOT_DATES: readonly string[] = (() => {
   const dates: string[] = [];
   const dailyFrom = Date.UTC(2026, 8, 20);
-  for (let day = Date.UTC(2026, 5, 5); day <= Date.UTC(2026, 9, 11); day += (day >= dailyFrom ? 1 : 3) * 86_400_000)
+  for (let day = Date.UTC(2026, 5, 5); day <= Date.parse(`${TODAY}T00:00:00Z`); day += (day >= dailyFrom ? 1 : 3) * 86_400_000)
     dates.push(new Date(day).toISOString().slice(0, 10));
   return dates.at(-1) === TODAY ? dates : [...dates, TODAY];
 })();
@@ -149,6 +150,10 @@ const OCTOBER_INVOICES: readonly Invoice[] = [
   invoice("CM83620174", "2026-10-08T17:35", "cosmed", "personal_and_family_care", [["維他命 C 60錠", 399], ["隱形眼鏡藥水", 230]]),
   invoice("FM31760573", "2026-10-08T21:09", "family", "food_and_groceries", [["冷凍水餃", 89], ["優格", 42], ["香蕉牛奶", 35]]),
   invoice("LS27419055", "2026-10-09T09:40", "louisa", "dining", [["經典拿鐵 大", 90], ["火腿起司帕尼尼", 95]]),
+  invoice("UN20530417", "2026-10-10T08:10", "seven", "food_and_groceries", [["鮭魚飯糰", 39], ["美式咖啡 中杯", 45]]),
+  invoice("FM31771208", "2026-10-11T19:30", "family", "food_and_groceries", [["咖哩雞飯", 89], ["無糖綠茶", 25]]),
+  invoice("LS27431560", "2026-10-12T09:05", "louisa", "dining", [["燕麥拿鐵 中", 85], ["可頌", 55]]),
+  invoice("BF18322941", "2026-10-13T12:20", "bafang", "dining", [["招牌鍋貼 10顆", 65], ["玉米濃湯", 40]]),
 ];
 
 const OCTOBER_CARD: readonly CardCharge[] = [
@@ -168,6 +173,9 @@ const OCTOBER_CARD: readonly CardCharge[] = [
   { date: "2026-10-08", description: "威秀影城－信義", amount: 640, category: "recreation_sports_and_culture" },
   { date: "2026-10-08", description: "UNIQLO 微風南山", amount: 1780, category: "clothing_and_footwear" },
   { date: "2026-10-09", description: "台北市停車管理工程處", amount: 120, category: "transportation" },
+  { date: "2026-10-11", description: "誠品生活－松菸店", amount: 860, category: "recreation_sports_and_culture" },
+  { date: "2026-10-12", description: "台灣大車隊", amount: 245, category: "transportation" },
+  { date: "2026-10-13", description: "UBER EATS", amount: 356, category: "dining" },
 ];
 
 /** The September pair merged up front, so 已合併 starts at 1 and becomes 2 after the demo merge. */
@@ -344,8 +352,8 @@ export async function seedSpendingDemo(userData: string) {
   });
 
   const history = MONTHS.slice(0, 4).map((month, index) => historyFor(month, 7_919 * (index + 3)));
-  const invoices = [...history.flatMap((entry) => entry.invoices), SEPTEMBER_MERGED_INVOICE, ...OCTOBER_INVOICES];
-  const charges = [...history.flatMap((entry) => entry.card), SEPTEMBER_MERGED_CARD, ...OCTOBER_CARD];
+  const invoices = [...history.flatMap((entry) => entry.invoices), SEPTEMBER_MERGED_INVOICE, ...OCTOBER_INVOICES.filter((entry) => entry.at.slice(0, 10) <= TODAY)];
+  const charges = [...history.flatMap((entry) => entry.card), SEPTEMBER_MERGED_CARD, ...OCTOBER_CARD.filter((entry) => entry.date <= TODAY)];
 
   const dataDir = join(root, "data", "pglite");
   const database = await PGlite.create({ dataDir });
