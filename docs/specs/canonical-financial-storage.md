@@ -33,6 +33,8 @@ Keep the following in operational configuration or operational audit storage, ou
 
 Operational configuration links to a canonical Source Connection through an opaque configuration reference. The canonical store retains a sanitized, versioned Collection Scope Version and fingerprint, never credentials. Because no cross-database transaction or foreign key exists, admission rechecks the scope version immediately before its canonical commit; a semantic change cancels and retries the attempt.
 
+> Discrepancy for review (issue #213): the implementation keeps the launch fingerprint in main-process memory for the life of the Automation Task Run instead of retaining it in the canonical store. The main-thread financial RPC server compares it with the current configuration files before each canonical commit operation, outside the commit transaction. A semantic change refuses that commit and every later one in the run, and the run ends with the `collection-scope-changed` outcome. The attempt is not retried automatically; the person, or the next scheduled run, starts a new attempt under the new scope.
+
 ## 2. Physical conventions
 
 ### 2.1 Identifiers
