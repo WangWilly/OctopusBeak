@@ -276,7 +276,6 @@ try {
         exitCode: 0,
         signal: null,
         error: null,
-        statementSummary: null,
         outputPersistenceWarnings: [],
         externalPrerequisiteIds: [],
       },

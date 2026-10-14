@@ -20,7 +20,6 @@ function result(overrides: Partial<AutomationTaskExecutionResult> = {}): Automat
     exitCode: 0,
     signal: null,
     error: null,
-    statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
     ...overrides,
@@ -69,9 +68,10 @@ test("provider partial status invalidates once without retaining log output", as
     const invalidations = createDataVersionStore();
     const summary = {
       status: "partial" as const,
-      results: [
-        { typeId: "deposit", status: "success" as const },
-        { typeId: "loan", status: "failed" as const, error: "missing account" },
+      counts: { itemCount: 1, committedCount: 1 },
+      products: [
+        { typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 },
+        { typeId: "loan" as const, status: "failed" as const, itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" as const },
       ],
     };
     assert.deepEqual(await finalizeAutomationTaskRun({
@@ -80,10 +80,10 @@ test("provider partial status invalidates once without retaining log output", as
       taskKind: "crawler",
       taskRunId: created.taskRunId,
       dataVersionStore: invalidations,
-    }, result({ statementSummary: summary })), { status: "partial" });
+    }, result({ appWorkflowOutcome: { errorCode: null, summary } })), { status: "partial" });
     const saved = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(saved?.status, "partial");
-    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: null, summary: null });
+    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: null, summary });
     assert.equal(invalidations.snapshot().version, 1);
   } finally {
     await store.close();
@@ -108,7 +108,7 @@ test("cancelled typed outcome retains product receipts and invalidates fresh dat
     const summary = {
       status: "completed" as const,
       counts: { itemCount: 1, committedCount: 1 },
-      products: [{ typeId: "deposit", status: "success" as const, itemCount: 1, committedCount: 1 }],
+      products: [{ typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 }],
     } as const;
     assert.deepEqual(await finalizeAutomationTaskRun({
       provider,

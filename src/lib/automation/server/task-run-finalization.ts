@@ -1,5 +1,4 @@
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
-import type { StatementRunSummary } from "../statement-run-summary.ts";
 import type {
   TypedWorkflowErrorCode,
   TypedWorkflowOutcomeSummary,
@@ -41,7 +40,6 @@ export type AutomationTaskExecutionResult = {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   error: Error | null;
-  statementSummary: StatementRunSummary | null;
   appWorkflowOutcome?: Readonly<{
     errorCode: TypedWorkflowErrorCode | null;
     summary: TypedWorkflowOutcomeSummary | null;
@@ -125,7 +123,6 @@ export async function finalizeAutomationTaskRun(
     || outcome?.errorCode === "cancelled");
   const tdccPartial = tdccIncompleteCollectionHasDurableReceipts(outcome?.summary, outcome?.errorCode);
   const partial = outcome?.summary?.status === "partial"
-    || result.statementSummary?.status === "partial"
     || tdccPartial;
   const typedFailureCode = outcome?.errorCode
     ?? (result.error || (result.exitCode !== 0 && !partial)

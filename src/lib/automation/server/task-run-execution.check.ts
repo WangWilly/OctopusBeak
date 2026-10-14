@@ -781,7 +781,6 @@ test("TDCC incomplete collection receipts are partial except for cancellation an
     exitCode: 1,
     signal: null,
     error: new Error("handled source interruption"),
-    statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
     appWorkflowOutcome: { errorCode: "source-unavailable" as const, summary },
