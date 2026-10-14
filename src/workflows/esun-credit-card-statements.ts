@@ -1163,6 +1163,26 @@ const typedInputSchema = z.object({
   endDate: dateSchema.optional(),
 });
 
+const ESUN_POST_LOGIN_STATES = [
+  ["captcha", /驗證碼|圖形驗證/u],
+  ["otp", /OTP|簡訊|動態密碼|一次性密碼/iu],
+  ["device", /裝置|設備|綁定/u],
+  ["duplicate-login", /重複登入|已在其他/u],
+  ["password-change", /變更密碼|修改密碼|密碼到期|更新密碼/u],
+  ["credentials-rejected", /密碼錯誤|代號錯誤|輸入錯誤|身分證.*錯誤/u],
+  ["locked", /鎖定|暫停使用|停用/u],
+] as const;
+
+export type EsunPostLoginState = (typeof ESUN_POST_LOGIN_STATES)[number][0] | "unrecognized";
+
+/** Classifies an unexpected post-login page without retaining any of its text. */
+export function classifyEsunPostLoginPage(text: string): EsunPostLoginState[] {
+  const states = ESUN_POST_LOGIN_STATES
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([state]) => state);
+  return states.length > 0 ? states : ["unrecognized"];
+}
+
 async function authenticateEsunPage(
   page: Page,
   credentials: EsunCredentials,
@@ -1190,6 +1210,12 @@ async function authenticateEsunPage(
     }
   }
 
+  const pageText = await Promise.all(
+    page.frames().map((frame) => frame.locator("body").innerText({ timeout: 2_000 }).catch(() => "")),
+  );
+  for (const state of classifyEsunPostLoginPage(pageText.join("\n"))) {
+    await context.event("authentication", `esun-post-login-${state}`);
+  }
   // E.SUN's provider verification has no solver; the App classifies this event
   // as a verification configuration failure.
   await context.event("authentication", "solver-challenge-unsupported");
