@@ -7,7 +7,6 @@ const MAX_OBSERVED_REQUESTS = 80;
 
 type PortalState = { uuid?: string; txnFlowToken?: string };
 
-/** Runs inside the page: the portal SPA keeps its session key and flow token on `window.mibApiService`. */
 async function postPortalInPage(
   input: Readonly<{ path: string; requestBody: Readonly<Record<string, unknown>>; resetFlow: boolean }>,
 ): Promise<PortalReply> {
@@ -56,7 +55,6 @@ export function createPageTransport(page: Page, signal: AbortSignal): PortalTran
   };
 }
 
-/** Records `METHOD path status` for the portal's own XHR and fetch calls; never query strings or bodies. */
 export function observePortalRequests(page: Page) {
   const seen = new Set<string>();
   page.on("response", (response) => {

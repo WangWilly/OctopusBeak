@@ -3,7 +3,6 @@ import test from "node:test";
 import { DEPOSIT_INIT_PATH, PREQUERY_PATHS, SEARCH_PATHS, runDepositProbe } from "./probe.ts";
 import { MASKED_KEY, WITHHELD, inventoryFields, safeRequestPath, safeResultCode } from "./report.ts";
 
-// Built at runtime so the repository privacy hook does not see ID-shaped literals.
 const SENSITIVE = {
   twAccount: ["0808", "9765", "43210"].join(""),
   frAccount: ["0808", "1234", "56789"].join(""),

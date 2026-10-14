@@ -1,6 +1,5 @@
 export type FieldValueType = "string" | "number" | "boolean" | "null" | "object" | "array";
 
-/** Fixed labels that describe a primitive's form without carrying any of its characters. */
 export type ValueForm =
   | "empty" | "code" | "digits" | "decimal" | "decimal-grouped" | "masked"
   | "date-slash" | "date-dash" | "date-time" | "clock" | "han-text" | "text"
@@ -23,7 +22,6 @@ const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 const LONG_DIGIT_RUN = /\d{4,}/u;
 export const MASKED_KEY = "{key}";
 
-/** Short upper-case codes such as TWD, S001, or 01. Nothing lower-case, spaced, or non-ASCII. */
 const CODE_VALUE = /^[A-Z0-9][A-Z0-9_-]{0,11}$/u;
 const RESULT_CODE = /^(?:[A-Z]{0,2}\d{1,4}|[A-Z]{1,4})$/u;
 export const WITHHELD = "withheld";
@@ -48,7 +46,6 @@ function keyWords(key: string) {
     .filter(Boolean);
 }
 
-/** `accountType` may list codes although `account` alone may not. */
 function enumerableKey(key: string) {
   if (key === MASKED_KEY) return false;
   const words = keyWords(key);
@@ -65,10 +62,13 @@ export function safeResultCode(value: unknown): string | null {
   return typeof value === "string" && RESULT_CODE.test(value) ? value : WITHHELD;
 }
 
-/** Portal module codes such as `ctw01002` keep their five digits; account numbers and dates do not survive. */
+const PATH_SEGMENT_CHARACTERS = /^[A-Za-z0-9._-]{1,64}$/u;
+const IDENTIFIER_DIGIT_RUN = /\d{6,}/u;
+const DIGITS_ONLY = /^\d{4,}$/u;
+
 function safePathSegment(segment: string) {
   if (segment === "") return true;
-  return /^[A-Za-z0-9._-]{1,64}$/u.test(segment) && !/\d{6,}/u.test(segment) && !/^\d{4,}$/u.test(segment);
+  return PATH_SEGMENT_CHARACTERS.test(segment) && !IDENTIFIER_DIGIT_RUN.test(segment) && !DIGITS_ONLY.test(segment);
 }
 
 export function safeRequestPath(pathname: string) {
@@ -116,12 +116,6 @@ function widen(range: [number, number] | null, size: number): [number, number] {
   return range ? [Math.min(range[0], size), Math.max(range[1], size)] : [size, size];
 }
 
-/**
- * Describes every JSON path in `root` by type, form, length, and array size.
- * Keys that are not plain identifiers collapse to `{key}`, array elements
- * collapse to `[]`, and distinct values appear only for code-named keys whose
- * every value is a short upper-case code without a four-digit run.
- */
 export function inventoryFields(root: unknown): FieldInventory {
   const fields = new Map<string, Accumulator>();
   const containers = new Map<string, number>();
