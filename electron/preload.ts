@@ -131,6 +131,12 @@ const api: OctopusBeakApi = {
       ipcRenderer.on("automation:runtime-changed", handler);
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
     },
+    takeSignInSettingsRequest: () => ipcRenderer.invoke("automation:takeSignInSettingsRequest"),
+    onSignInSettingsRequested(listener) {
+      const handler = () => listener();
+      ipcRenderer.on("automation:sign-in-settings-requested", handler);
+      return () => ipcRenderer.removeListener("automation:sign-in-settings-requested", handler);
+    },
   },
   data: {
     getVersion: () => ipcRenderer.invoke("data:getVersion"),

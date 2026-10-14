@@ -287,6 +287,9 @@ export type OctopusBeakApi = {
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
+    /** The credential group a scheduled-collection notification asked to open, taken once. */
+    takeSignInSettingsRequest(): Promise<string | null>;
+    onSignInSettingsRequested(listener: () => void): () => void;
   };
   data: {
     getVersion(): Promise<DataVersionSnapshot>;
@@ -343,6 +346,8 @@ export const octopusBeakApiChannels = [
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",
+  "automation:takeSignInSettingsRequest",
+  "automation:sign-in-settings-requested",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

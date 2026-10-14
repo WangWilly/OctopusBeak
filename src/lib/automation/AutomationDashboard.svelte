@@ -20,6 +20,7 @@
     Plus,
     RefreshCw,
     Search,
+    Smartphone,
     X,
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
@@ -126,6 +127,9 @@ import type {
   export let onboardingTrackedTaskId: string | null = null;
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
+  /** A scheduled-collection notification asked to open this source's sign-in settings. */
+  export let signInSettingsGroupId: string | null = null;
+  export let onSignInSettingsOpened: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
     credentialGroupId: string | null,
@@ -709,6 +713,13 @@ import type {
       (candidate) => candidate.credentialGroupId === onboardingSelectedCredentialGroupId,
     );
     if (task) await runTask(task);
+  }
+
+  $: if (signInSettingsGroupId && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
+    const groupId = signInSettingsGroupId;
+    onSignInSettingsOpened();
+    openCredentials();
+    selectCredentialGroup(groupId);
   }
 
   async function openTdccDeviceRegistration() {
@@ -2267,12 +2278,21 @@ import type {
               </section>
             {/if}
 
+            {#if group.sessionTakeover}
+              <div class="session-takeover" role="note">
+                <Smartphone size={16} aria-hidden="true" />
+                <p>
+                  <strong>{$t.automation.sessionTakeoverTitle}</strong>
+                  <span>{localizedText(group.sessionTakeover)}</span>
+                </p>
+              </div>
+            {/if}
+
             {#if group.id === "tdcc"}
               <TdccDeviceRegistration
                 signInDetailsSaved={group.credentialFields.every((credentialField) =>
                   credentialState(credentialField.key) === "ready" && !credentialChanges.credentials[credentialField.key])}
                 syncActive={Boolean(selectedGroupTask?.isActive)}
-                sourceEnabled={groupOn}
                 bind:registering={tdccRegistering}
               />
             {/if}
@@ -3778,6 +3798,35 @@ import type {
     margin: 2px 0 0;
     color: var(--muted);
     font-size: 13px;
+  }
+
+  .session-takeover {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid color-mix(in oklch, var(--warn) 34%, var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .session-takeover :global(svg) {
+    flex: none;
+    margin-top: 2px;
+    color: var(--warn);
+  }
+
+  .session-takeover p {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+  }
+
+  .session-takeover span {
+    color: var(--muted);
   }
 
   .credential-switch {

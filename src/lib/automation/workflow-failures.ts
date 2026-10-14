@@ -23,6 +23,67 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
 
 export type TypedWorkflowErrorCode = typeof TYPED_WORKFLOW_ERROR_CODES[number];
 
+/** What the person must do to end a User-action Failure (ADR 0045). */
+export type UserAction =
+  | "register-device"
+  | "check-sign-in-details"
+  | "check-verification-settings"
+  | "update-app";
+
+/** A User-action Failure recurs on every run until the person acts, so it is
+ * the only class that raises an operating-system notification. Every other
+ * code is transient and stays in run history. */
+export const WORKFLOW_FAILURE_USER_ACTIONS = {
+  "captcha-provider-rejected": null,
+  cancelled: null,
+  "source-integrity-failed": null,
+  "source-validation-failed": null,
+  "source-access-challenged": null,
+  "source-unavailable": null,
+  "browser-runtime-config-failed": null,
+  "verification-configuration-failed": "check-verification-settings",
+  "authentication-timeout": null,
+  "authentication-dialog-interrupted": null,
+  "authentication-failed": "check-sign-in-details",
+  "verification-failed": null,
+  "device-registration-required": "register-device",
+  "provider-protocol-outdated": "update-app",
+  "source-collection-failed": null,
+  "canonical-commit-failed": null,
+  "commit-outcome-unknown": null,
+  "collection-scope-changed": null,
+  "workflow-failed": null,
+} as const satisfies Record<TypedWorkflowErrorCode, UserAction | null>;
+
+export function userActionForFailure(code: string | null | undefined): UserAction | null {
+  if (code == null || !Object.hasOwn(WORKFLOW_FAILURE_USER_ACTIONS, code)) return null;
+  return WORKFLOW_FAILURE_USER_ACTIONS[code as TypedWorkflowErrorCode];
+}
+
+const userActionMessages: Record<UserAction, Readonly<{ zh: string; en: string }>> = {
+  "register-device": {
+    zh: "這個來源不再信任這台裝置。請到登入設定重新註冊裝置。",
+    en: "This source no longer trusts this device. Register the device again in sign-in settings.",
+  },
+  "check-sign-in-details": {
+    zh: "登入沒有成功。請到登入設定確認帳號密碼，並確認帳戶沒有被鎖定。",
+    en: "Sign-in did not succeed. Check the sign-in details in sign-in settings and make sure the account is not locked.",
+  },
+  "check-verification-settings": {
+    zh: "驗證設定尚未完成或需要重新授權。請到登入設定檢查驗證設定。",
+    en: "Verification is not set up or needs authorization again. Check the verification settings in sign-in settings.",
+  },
+  "update-app": {
+    zh: "來源服務的介面已變更。請更新 OctopusBeak 後再同步。",
+    en: "The source service changed its interface. Update OctopusBeak, then sync again.",
+  },
+};
+
+export function userActionMessage(action: UserAction, locale: string): string {
+  const message = userActionMessages[action];
+  return locale === "zh-TW" ? message.zh : message.en;
+}
+
 const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }>>> = {
   "authentication-timeout": {
     zh: "登入步驟等待逾時，尚未確認登入成功。",
