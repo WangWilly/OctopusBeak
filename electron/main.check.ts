@@ -15,11 +15,11 @@ assert.match(source, /abortActiveAppWorkflowExecutions\(\)/u);
 assert.match(source, /shutdownAppAutomationWorkflows\(pgliteOperationalRuntime\.provider\)/u);
 assert.match(
   source,
-  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*\}\)/,
+  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);\s*\}\)/,
 );
 assert.match(
   source,
-  /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*scheduler\?\.stop\(\);/,
+  /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*scheduler\?\.stop\(\);\s*collectionScheduler\?\.stop\(\);/,
 );
 assert.match(source, /app\.on\("before-quit", handleBeforeQuit\)/);
 assert.match(

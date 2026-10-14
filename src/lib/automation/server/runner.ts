@@ -61,6 +61,7 @@ function assertAppExecutorTask(
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
   taskRunId?: string;
+  onFinished?: (run: AutomationTaskRun) => void;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
@@ -263,7 +264,9 @@ async function startPreparedTaskWithPersistence(
     runExecution: options.runExecution,
   }).then(async () => {
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
-    if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    if (!finalRun) return;
+    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    options.onFinished?.(finalRun);
   }).catch(async () => {
     console.error("automation-task-run-failed");
     const failed = await provider.automation.taskRunById(run.taskRunId);

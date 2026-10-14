@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Smartphone } from "@lucide/svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import type {
     TdccRegistrationChannel,
@@ -12,8 +11,6 @@
   export let signInDetailsSaved: boolean;
   /** A sync-tdcc run is active; the host refuses to register until it ends. */
   export let syncActive: boolean;
-  /** TDCC is enabled for sync, so the phone App conflict applies. */
-  export let sourceEnabled: boolean;
   /** True from the moment registration starts until it ends, for the dashboard to hold back a TDCC sync. */
   export let registering = false;
 
@@ -32,7 +29,6 @@
   let statusRequest = 0;
 
   $: registering = registration.step === "starting" || registration.step === "code";
-  $: showConflict = sourceEnabled || registration.step !== "idle";
   $: void refreshStatus(signInDetailsSaved);
 
   async function refreshStatus(_saved: boolean) {
@@ -113,16 +109,6 @@
       <span class="chip">{$t.automation.tdccDevice.notRegistered}</span>
     {/if}
   </div>
-
-  {#if showConflict}
-    <div class="tdcc-device-conflict" role="note">
-      <Smartphone size={16} aria-hidden="true" />
-      <p>
-        <strong>{$t.automation.tdccDevice.conflictTitle}</strong>
-        <span>{$t.automation.tdccDevice.conflictBody}</span>
-      </p>
-    </div>
-  {/if}
 
   {#if registration.step === "code"}
     {@const channel = registration.channel}
@@ -214,35 +200,6 @@
 
   .tdcc-device-head .chip {
     flex: none;
-  }
-
-  .tdcc-device-conflict {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid color-mix(in oklch, var(--warn) 34%, var(--border));
-    border-radius: var(--radius);
-    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
-    color: var(--fg);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  .tdcc-device-conflict :global(svg) {
-    flex: none;
-    margin-top: 2px;
-    color: var(--warn);
-  }
-
-  .tdcc-device-conflict p {
-    display: grid;
-    gap: 2px;
-    margin: 0;
-  }
-
-  .tdcc-device-conflict span {
-    color: var(--muted);
   }
 
   .tdcc-device-actions {
