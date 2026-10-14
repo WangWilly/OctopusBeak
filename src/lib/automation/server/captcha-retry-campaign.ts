@@ -7,7 +7,7 @@
  * decide whether it may launch another workflow execution.
  */
 
-export const MAX_CAPTCHA_RETRY_ROUNDS = 10 as const;
+export const MAX_CAPTCHA_RETRY_ROUNDS = 3 as const;
 export const CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS = MAX_CAPTCHA_RETRY_ROUNDS;
 
 export type CaptchaRetryReason =
@@ -508,7 +508,7 @@ function terminalCampaign(
     || campaign.status === "exhausted";
 }
 
-/** Construct a new campaign with the non-configurable ten-round bound. */
+/** Construct a new campaign with the non-configurable three-round bound. */
 export function createCaptchaRetryCampaign(): CaptchaRetryCampaignReady {
   return {
     status: "ready",

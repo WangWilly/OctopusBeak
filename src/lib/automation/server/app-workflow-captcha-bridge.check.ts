@@ -12,7 +12,6 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
-import { MAX_CAPTCHA_RETRY_ROUNDS } from "./captcha-retry-campaign.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
@@ -413,7 +412,7 @@ test("exhausted App solver retries finalize with a typed verification failure an
       },
     });
     assert.deepEqual(result, { status: "failed" });
-    assert.equal(attempts.length, MAX_CAPTCHA_RETRY_ROUNDS);
+    assert.deepEqual(attempts, [1, 2, 3]);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "failed");
     assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "verification-failed");

@@ -45,11 +45,11 @@ function retryableCampaign(rounds = 1): CaptchaRetryCampaign {
   return campaign;
 }
 
-test("starts empty with the fixed ten-round limit", () => {
+test("starts empty with the fixed three-round limit", () => {
   assert.deepEqual(createCaptchaRetryCampaign(), {
     status: "ready",
     consumedRounds: 0,
-    maxRounds: CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+    maxRounds: 3,
   });
 });
 
@@ -163,24 +163,23 @@ test("cancellation completes as a terminal campaign state", () => {
   assert.equal(campaign.consumedRounds, 1);
 });
 
-test("the tenth retryable round is exhausted and cannot start round eleven", () => {
-  const campaign = retryableCampaign(CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS - 1);
-  const tenthExecution = `execution-${CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS}`;
+test("the third retryable round is exhausted and cannot start round four", () => {
+  const campaign = retryableCampaign(2);
   const captured = transitionCaptchaRetryCampaign(
     campaign,
-    capture(tenthExecution),
+    capture("execution-3"),
   );
   const exhausted = transitionCaptchaRetryCampaign(
     captured,
-    outcome(tenthExecution, {
+    outcome("execution-3", {
       kind: "retryable",
       reason: "solver-exhausted",
     }),
   );
   assert.equal(exhausted.status, "exhausted");
-  assert.equal(exhausted.consumedRounds, CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS);
+  assert.equal(exhausted.consumedRounds, 3);
   assert.throws(
-    () => transitionCaptchaRetryCampaign(exhausted, capture("execution-11")),
+    () => transitionCaptchaRetryCampaign(exhausted, capture("execution-4")),
     /terminal/i,
   );
 });
