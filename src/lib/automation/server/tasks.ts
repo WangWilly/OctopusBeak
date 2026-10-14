@@ -682,7 +682,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
-      sessionTakeover: localized(
+      sessionTakeoverNotice: localized(
         "SinoPac allows one online banking sign-in at a time. Every sync, including daily scheduled collection, confirms SinoPac's duplicate sign-in prompt, which signs you out of SinoPac online banking or its phone App elsewhere.",
         "永豐同一時間只允許一處網路銀行登入。每次同步（包括每日排程收集）都會確認永豐的重複登入提示，讓你在其他地方的永豐網路銀行或手機 App 登出。",
       ),
@@ -811,7 +811,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
-      sessionTakeover: localized(
+      sessionTakeoverNotice: localized(
         "OctopusBeak signs in the way the E-Invoice phone App does, so every sync, including daily scheduled collection, signs the phone App out. Signing in on the phone again needs no code.",
         "OctopusBeak 以電子發票手機 App 的方式登入，每次同步（包括每日排程收集）都會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
       ),
@@ -970,7 +970,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
-      sessionTakeover: localized(
+      sessionTakeoverNotice: localized(
         "TDCC trusts one device at a time, so every sync, including daily scheduled collection, signs the TDCC e-Passbook phone App out. If you sign in to the phone App again, register this device again before the next sync.",
         "集保一次只信任一台裝置，每次同步（包括每日排程收集）都會讓集保e手掌握手機 App 登出。如果之後又登入手機 App，下次同步前請在這裡重新註冊裝置。",
       ),

@@ -61,7 +61,6 @@ function assertAppExecutorTask(
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
   taskRunId?: string;
-  /** Receives the terminal run once, after any CAPTCHA retry rounds. */
   onFinished?: (run: AutomationTaskRun) => void;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;

@@ -23,16 +23,12 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
 
 export type TypedWorkflowErrorCode = typeof TYPED_WORKFLOW_ERROR_CODES[number];
 
-/** What the person must do to end a User-action Failure (ADR 0045). */
 export type UserAction =
   | "register-device"
   | "check-sign-in-details"
   | "check-verification-settings"
   | "update-app";
 
-/** A User-action Failure recurs on every run until the person acts, so it is
- * the only class that raises an operating-system notification. Every other
- * code is transient and stays in run history. */
 export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "captcha-provider-rejected": null,
   cancelled: null,
