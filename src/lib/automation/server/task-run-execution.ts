@@ -281,7 +281,6 @@ async function executeInlineAppWorkflow(
       exitCode: 1,
       signal: null,
       error: new Error("App workflow definition is unavailable."),
-      statementSummary: null,
       appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
@@ -391,7 +390,6 @@ async function executeInlineAppWorkflow(
       exitCode: 0,
       signal: null,
       error: null,
-      statementSummary: null,
       appWorkflowOutcome: {
         errorCode: null,
         summary: summarizeTypedWorkflowOutput(workflowOutput),
@@ -421,7 +419,6 @@ async function executeInlineAppWorkflow(
       error: cancelled
         ? new Error("Automation task cancelled.")
         : new Error("App workflow failed (workflow-failed)."),
-      statementSummary: null,
       appWorkflowOutcome: {
         errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
         summary: summarizeInterruptedProductCollection(error)
@@ -474,7 +471,6 @@ function sanitizedWorkerResult(
       exitCode: null,
       signal: "SIGTERM",
       error: new Error("Automation task cancelled."),
-      statementSummary: null,
       appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
@@ -485,7 +481,6 @@ function sanitizedWorkerResult(
       exitCode: 0,
       signal: null,
       error: null,
-      statementSummary: null,
       appWorkflowOutcome: {
         errorCode: null,
         summary: outcome.summary,
@@ -500,7 +495,6 @@ function sanitizedWorkerResult(
       exitCode: null,
       signal: "SIGTERM",
       error: new Error("Automation task cancelled."),
-      statementSummary: null,
       appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
@@ -513,7 +507,6 @@ function sanitizedWorkerResult(
     exitCode: 1,
     signal: null,
     error: new Error(`App workflow failed (${errorCode}).`),
-    statementSummary: null,
     appWorkflowOutcome: { errorCode, summary: outcome.summary },
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
@@ -859,7 +852,6 @@ export async function runAutomationTaskExecution(
       exitCode: null,
       signal: "SIGTERM",
       error: new Error("Automation task cancelled."),
-      statementSummary: null,
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
@@ -945,8 +937,7 @@ export function automationTaskExecutionStatus(
     result.appWorkflowOutcome?.errorCode,
   )) return "partial" as const;
   if (result.error || result.appWorkflowOutcome?.errorCode) return "failed" as const;
-  const summaryStatus = result.appWorkflowOutcome?.summary?.status
-    ?? result.statementSummary?.status;
+  const summaryStatus = result.appWorkflowOutcome?.summary?.status;
   if (summaryStatus === "partial") return "partial" as const;
   if (summaryStatus === "failed") return "failed" as const;
   return result.exitCode === 0 ? "completed" as const : "failed" as const;
