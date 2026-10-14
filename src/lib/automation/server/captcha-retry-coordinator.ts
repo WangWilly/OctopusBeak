@@ -125,7 +125,6 @@ async function finalizeCaptchaRetryExecution(
     exitCode: 1,
     signal: null,
     error: new Error("Automation task execution failed."),
-    statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
   };
