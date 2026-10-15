@@ -1,0 +1,123 @@
+# How to calibrate a preview source CAPTCHA
+
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Mega, Taishin, Next Bank, and Rakuten preview sources have no calibrated family, so every production run stops at sign-in. `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+
+You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
+
+## Run the four steps for a bank
+
+Replace `mega` with `taishin`, `nextbank`, or `rakuten` for the other banks.
+
+1. Collect the images. The browser window opens on your screen. Add `--headless` to hide it.
+
+   ```sh
+   npm run calibrate:captcha -- collect mega --allow-live-source
+   ```
+
+2. Add OCR suggestions. This step runs Tesseract on your machine.
+
+   ```sh
+   npm run calibrate:captcha -- prelabel mega
+   ```
+
+3. Label the images. The command prints a `http://127.0.0.1:<port>/` URL. Open it in your browser, label every image, then press Ctrl-C in the terminal.
+
+   ```sh
+   npm run calibrate:captcha -- label mega
+   ```
+
+4. Evaluate the labels.
+
+   ```sh
+   npm run calibrate:captcha -- evaluate mega
+   ```
+
+Every subcommand takes `--corpus DIR` to use another corpus directory. `evaluate` also takes `--json` to print the full result as JSON. `--help` prints the usage and exits.
+
+To collect more images, run `collect` again. It appends to the corpus. Run `prelabel` again after it. Prelabel replaces suggestions and keeps your confirmed labels.
+
+## Understand what collect sends
+
+`collect` opens the same non-persistent development browser as `npm run workflow:dev`. For each image, it runs the steps below and stops before any sign-in request.
+
+| Bank | Method | Requests before the image |
+| --- | --- | --- |
+| `mega` | Preview source | OAuth client credentials, `/main/init`, the App initialize call, then `/fco/fco00001/captcha`. The image comes back as base64 in the JSON response. |
+| `nextbank` | Preview source | One `POST /ap2/open/common/v1.0/Captcha`. The response binds the image to a `uuid`. |
+| `rakuten` | Preview source page driver | The login page. The image is a data URI in `div.pic_veri captcha-image img`. |
+| `taishin` | Calibration-only reader | The RWD login page. The reader takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
+
+Two guards keep `collect` from signing in:
+
+- The preview sources run with a solver that records the image and then throws. The source never reaches its login request. The Taishin reader never fills or submits the form.
+- Each bank in `scripts/captcha-calibration/banks.ts` lists deny rules for its login requests. The browser aborts any request that matches a rule, and the whole collection stops with an error.
+
+The browser check `scripts/captcha-calibration/collect.check.mjs` runs all four captures against fake bank hosts. It asserts that no request matches a deny rule or a login path.
+
+## Stay within the politeness limits
+
+- `--count` defaults to 60. The CLI rejects a value above 200.
+- `--delay-ms` defaults to 3000. The CLI rejects a value below 2000. The delay applies between captures.
+- After three failed captures in a row, `collect` stops. The log shows only the error class, never page content.
+- Ctrl-C stops the run. Captures written so far stay in the corpus.
+
+## Find the corpus
+
+The corpus defaults to `~/OctopusBeakCalibration/<bank>`. The CLI refuses a directory inside the repository, including one reached through a symlink.
+
+- `images/<id>.png` holds each image as PNG. `collect` converts JPEG, GIF, BMP, and WebP images to PNG in the browser.
+- `captures.jsonl` has one line per image: `id`, `file`, `capturedAt`, `width`, `height`, `sourceMediaType`, `method`, and `declaredLength` when the page declared one.
+- `labels.json` holds the OCR suggestion (`suggested`) and your label (`confirmed`) per image.
+- `evaluation.json` holds the last `evaluate` result.
+
+## Keep the corpus private
+
+- A CAPTCHA image is public challenge media. It contains no personal data, and `collect` sends no credentials.
+- Keep the corpus outside the repository. Never commit an image, `labels.json`, or `evaluation.json`.
+- Tesseract may download its English model on first use, as ADR 0013 describes. It stores the model outside the repository.
+
+## Label with the keyboard
+
+The page shows each image at six times its size with `image-rendering: pixelated`. The answer box starts with the OCR suggestion selected, so typing replaces it.
+
+| Key | Action |
+| --- | --- |
+| Enter | Save the text in the box as the confirmed answer, then go to the next unconfirmed image. |
+| Esc | Mark the image unreadable, then go to the next unconfirmed image. |
+| PageUp, PageDown | Go to the previous or next image to fix a label. |
+| Left arrow, right arrow | Do the same when the box is empty. |
+
+The **Previous** and **Next** buttons also move between images. The server stores the answer after the production normalization: digits only for a digit bank, and uppercase letters and digits for an alphanumeric bank. The page shows how many OCR strategies agree with the suggestion and how many images you have confirmed.
+
+Mark an image unreadable when you cannot read it with confidence. Evaluate counts any answer the solver would submit for an unreadable image as a false accept.
+
+## Read the evaluate output
+
+`evaluate` uses only confirmed labels and the stored OCR candidates. It does not run OCR again. For each configuration, it calls the production `solveVerificationChallenge` with the cached candidates.
+
+It tries each of the 18 strategies alone with confidence only. It tries every pair and triple of strategies with confidence only, with agreement only, and with confidence or agreement that rejects conflicts. Thresholds run from 0.50 to 0.95 in steps of 0.05, plus 0.97 and 0.99. Agreement only ignores the threshold, so it appears once with threshold `n/a`.
+
+- Coverage is accepted images divided by confirmed images.
+- FAR (false-accept rate) is wrong accepted answers divided by accepted images. The output also shows wrong answers divided by all confirmed images.
+- Single strategy exact accuracy counts the images where the strategy read the right answer, at any confidence.
+- The agreement pairs show how often two strategies gave the same answer, and how often that answer was right.
+- Geometry and answer shape show the image sizes, the answer lengths, and the character classes in your labels.
+
+The expected answer length comes from the source when `banks.ts` declares it there. Otherwise it is the most common `maxlength` the page declared, or else the most common length of your labels.
+
+The recommendation is the configuration with the highest coverage among those with a FAR of at most 2% over at least 20 accepted images. Ties go to fewer strategies, then to the higher threshold. With fewer than 20 accepts, a FAR of zero still has a Wilson upper bound above 16%. Evaluate refuses to recommend with fewer than 30 confirmed labels, or when no configuration qualifies, and says which. The recommendation prints:
+
+- A TypeScript family declaration with `charset`, `ocrAttemptPlan`, `solveAcceptancePolicy`, `solverConfidenceThreshold`, and `expectedAnswerLength`.
+- A separate constant with `geometry` and `answerPattern`.
+- A `CONTEXT.md` family entry.
+- The Wilson 95% upper bound of the FAR. Treat it as the worst rate your sample size cannot rule out.
+
+## Use the result in phase 2
+
+Phase 2 turns a recommendation into a production solver for one preview source:
+
+1. Copy the recommended declaration into a production solver family that the source receives through its `PreviewCaptchaSolver` seam.
+2. Add the family entry to `CONTEXT.md`.
+3. Replace the source's `refuseUnsupportedVerification` call with the calibrated solver.
+
+ADR 0039 still applies. A source without a calibrated family must not submit a CAPTCHA answer.
