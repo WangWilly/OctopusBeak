@@ -480,6 +480,24 @@ const en = {
       `${dates.length === 1 ? "Rate date" : "Rate dates"}: ${dates.join(", ")}`,
     missingExchangeRate: "Missing exchange rate; showing native currencies",
   },
+  preview: {
+    marker: "Includes preview data",
+    markerTooltip:
+      "This total counts balances from a Preview source. Preview sources are not verified against live data, so their figures may be incomplete or wrong.",
+    groupHeading: "Preview",
+    groupNote:
+      "Collected by Preview sources, which are not verified against live data. Their balances count toward totals; their transactions appear only in each account's own view.",
+    collectedAt: (time: string) => `Collected ${time}`,
+    balanceTimeReported: "Reported by source",
+    balanceTimeCollected: "Collection time",
+    balanceTime: (time: string, basis: string) => `Balance as of ${time} · ${basis}`,
+    transactionsEyebrow: "Preview transactions",
+    transactionsNote: "As the Preview source reported them. They are not part of Spending.",
+    amount: "Amount",
+    direction: "Direction",
+    directions: { inflow: "In", outflow: "Out", unknown: "Unknown" },
+    noTransactions: "No transactions collected for this account.",
+  },
   chart: {
     trendAria: (label: string, currency: string) =>
       `${label} trend ${currency}`,
@@ -1710,6 +1728,22 @@ const zh: typeof en = {
     next: "下一頁",
     rateDates: (dates) => `匯率日期：${dates.join("、")}`,
     missingExchangeRate: "缺少匯率，顯示原幣金額",
+  },
+  preview: {
+    marker: "含預覽資料",
+    markerTooltip: "這個總額包含預覽來源的餘額。預覽來源尚未經實際資料驗證，數字可能不完整或有誤。",
+    groupHeading: "預覽",
+    groupNote: "由尚未經實際資料驗證的預覽來源收集。餘額計入總額，交易只在各帳戶自己的明細中顯示。",
+    collectedAt: (time) => `收集於 ${time}`,
+    balanceTimeReported: "來源回報時間",
+    balanceTimeCollected: "收集時間",
+    balanceTime: (time, basis) => `餘額時間 ${time} · ${basis}`,
+    transactionsEyebrow: "預覽交易",
+    transactionsNote: "依預覽來源回報的內容顯示，不計入消費。",
+    amount: "金額",
+    direction: "方向",
+    directions: { inflow: "存入", outflow: "支出", unknown: "未知" },
+    noTransactions: "這個帳戶尚未收集到交易。",
   },
   chart: {
     trendAria: (label, currency) => `${label} 趨勢 ${currency}`,

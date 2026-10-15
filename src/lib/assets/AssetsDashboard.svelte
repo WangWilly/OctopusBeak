@@ -23,6 +23,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -111,6 +112,7 @@
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
+  sideIncludesPreview={!isEmpty && summary.state === "ready" && summary.includesPreview}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
@@ -128,6 +130,7 @@
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
+        includesPreview={summary.state === "ready" && summary.includesPreview}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
           : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
@@ -184,6 +187,7 @@
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
+        {#if stackedChart.includesPreview}<PreviewMarker />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}

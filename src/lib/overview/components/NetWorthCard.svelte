@@ -3,6 +3,7 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import NetWorthChart from "$lib/overview/components/NetWorthChart.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import {
     seriesInRange,
     type NetWorth,
@@ -33,11 +34,15 @@
 <article class="card net-worth-card" data-net-worth>
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
+    {#if netWorth.includesPreview}<PreviewMarker />{/if}
   </p>
   {#if netWorth.value === null}
     <p class="net-worth-figure empty" aria-label={$t.overview.noDataYet}>—</p>
   {:else}
     <p class="net-worth-figure money" data-sensitive>{formatTwd(netWorth.value, $locale)}</p>
+  {/if}
+  {#if netWorth.unconvertedCurrencies.length > 0}
+    <p class="net-worth-note">{$t.overview.unconverted(netWorth.unconvertedCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
     <ul class="chips" aria-label={$t.overview.netWorth}>
@@ -70,7 +75,10 @@
   </div>
   {#if hasTrend}
     <NetWorthChart points={visible} label={$t.overview.chartAria} />
-    <p class="caption">{$t.overview.chartCaption}</p>
+    <p class="caption">
+      {$t.overview.chartCaption}
+      {#if visible.some((point) => point.includesPreview)}<PreviewMarker placement="above" />{/if}
+    </p>
   {:else}
     <CardPlaceholder state="net-worth" title={$t.overview.chartEmptyTitle} body={$t.overview.chartEmptyBody}>
       <ChartLine size={18} strokeWidth={2} />
@@ -86,10 +94,20 @@
   }
 
   .net-worth-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
     margin: 0;
     color: var(--muted);
     font-size: 12px;
     font-weight: 680;
+  }
+
+  .net-worth-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .net-worth-figure {
@@ -161,6 +179,10 @@
   }
 
   .caption {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
     margin: 0;
     color: var(--muted);
     font-size: 12px;

@@ -2,6 +2,7 @@
   import { Activity } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import type { ChangeReason, TodayChange } from "$lib/overview/overview-model.ts";
   import { formatPct, formatShortDate, formatTwdNumber } from "$lib/overview/overview-format.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
@@ -39,6 +40,7 @@
     <p class="total" data-direction={ready.total < 0 ? "down" : "up"}>
       <strong class="money" data-sensitive>{formatTwdNumber(ready.total, $locale, true)}</strong>
       {#if ready.pct !== null}<span data-sensitive>{formatPct(ready.pct, $locale)}</span>{/if}
+      {#if ready.includesPreview}<PreviewMarker />{/if}
     </p>
     {#if rows.length > 0}
       <ul class="contributions">
