@@ -22,7 +22,6 @@
   /** Liabilities / assets; omitted on the asset card. */
   export let ratio: number | null | undefined = undefined;
   export let rateNote = "";
-  /** The total counts a Preview source balance. */
   export let includesPreview = false;
   export let note = "";
   export let href: string;

@@ -44,7 +44,6 @@ export type SummaryMetricDto = {
   label: string;
   amounts: CurrencyAmountDto[];
   breakdown: string[];
-  /** `amounts` counts a Preview source balance. */
   includesPreview?: boolean;
 };
 
@@ -60,7 +59,6 @@ export type DailyHistoryRowDto = {
   exchangeRateMissing?: boolean;
   accountChanges: string[];
   positionCount: number;
-  /** A Preview source balance is counted in this row's totals. */
   includesPreview?: boolean;
 };
 
@@ -104,7 +102,6 @@ export type AccountRowDto = {
   creditCard?: CreditCardAccountDto;
   /** The direct source that counts this Intermediary-source account, which no total includes. */
   coveredBy?: Readonly<{ namespace: string; institutionKey: string; product: InstitutionProduct }>;
-  /** A Preview source account: counted in totals with a marker, its transactions shown only in its own view. */
   preview?: PreviewAccountDto;
 };
 
@@ -115,11 +112,9 @@ export type PreviewAccountDto = Readonly<{
   transactions: readonly PreviewTransactionRowDto[];
 }>;
 
-/** Deliberately not a TransactionRowDto, so no canonical transaction consumer accepts it. */
 export type PreviewTransactionRowDto = Readonly<{
   amount: string;
   currency: string;
-  /** As the source reported it; never inferred from the amount's sign. */
   direction: "inflow" | "outflow" | "unknown";
   postedAt: Readonly<{ precision: "day" | "minute" | "second"; value: string }>;
   description: string | null;

@@ -1,6 +1,7 @@
 import { institutionNames } from "../../lib/institutions/institutions.ts";
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
 import { addExact, decimalToExact, type ExactAmount } from "../../lib/shared-money/exact.ts";
+import { indexExchangeRates, rateOnOrBefore } from "../../lib/shared-money/exchange-rates.ts";
 import type { ExchangeRateRecord } from "../exchange-rates.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
 import { exactAmountToNumber } from "./overview-amount.ts";
@@ -12,14 +13,12 @@ import type {
 
 export type PreviewBalancePoint = Readonly<{ date: string; currency: string; exact: ExactAmount }>;
 
-/** One preview account's balance on each date it was observed, oldest first. */
 export type PreviewBalanceSeries = Readonly<{
   accountId: string;
   label: string;
   points: readonly PreviewBalancePoint[];
 }>;
 
-/** Whether a currency amount can be valued in TWD on a date; an uncountable preview balance is left out. */
 export type PreviewCountable = (currency: string, date: string) => boolean;
 
 const INSTITUTION_NAMES = institutionNames("en");
@@ -38,7 +37,6 @@ function amountLine(currency: string, exact: ExactAmount): CurrencyAmountDto {
   return { currency, value: exactAmountToNumber(exact), exact: { ...exact } };
 }
 
-/** Mirrors how the canonical overview classifies a depository account by its currency. */
 export function previewAccountRow(
   view: PreviewAccountView,
   transactions: readonly PreviewTransactionView[],
@@ -74,10 +72,6 @@ export function previewAccountRow(
   };
 }
 
-/**
- * Prefers current balances over available ones, as the account's own balance
- * does, and keeps the newest observation of each date.
- */
 export function previewBalanceSeries(histories: readonly PreviewBalanceHistory[]): PreviewBalanceSeries[] {
   return histories.map((history) => {
     const current = history.observations.filter((observation) => observation.kind === "current");
@@ -96,14 +90,9 @@ export function previewBalanceSeries(histories: readonly PreviewBalanceHistory[]
   });
 }
 
-/** A currency counts on a date when it is TWD or has a rate on or before that date, as the renderer converts. */
 export function countableWithRates(rates: readonly ExchangeRateRecord[]): PreviewCountable {
-  const earliest = new Map<string, string>();
-  for (const rate of rates) {
-    const known = earliest.get(rate.currency);
-    if (!known || rate.rateDate < known) earliest.set(rate.currency, rate.rateDate);
-  }
-  return (currency, date) => currency === "TWD" || (earliest.get(currency) ?? "￿") <= date;
+  const index = indexExchangeRates(rates);
+  return (currency, date) => rateOnOrBefore(index, currency, date) !== null;
 }
 
 type Buckets = Map<string, ExactAmount>;
@@ -144,11 +133,6 @@ function latestOnOrBefore(points: readonly PreviewBalancePoint[], date: string):
   return points.findLast((point) => point.date <= date);
 }
 
-/**
- * Canonical rows are point-in-time totals, so each date carries the newest
- * canonical row forward and adds each preview account's newest countable
- * balance on or before it.
- */
 export function withPreviewHistory(
   history: PGliteDailyHistory,
   series: readonly PreviewBalanceSeries[],

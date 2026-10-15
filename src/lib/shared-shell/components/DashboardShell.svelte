@@ -33,7 +33,6 @@
   export let titleHidden = false;
   export let sideSub = "";
   export let sideSubSensitive = false;
-  /** The side value counts a Preview source balance. */
   export let sideIncludesPreview = false;
   export let search = "";
   export let searchPlaceholder: string | null = null;

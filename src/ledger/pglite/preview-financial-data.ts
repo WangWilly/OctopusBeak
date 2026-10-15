@@ -383,7 +383,6 @@ export async function readPreviewTransactions(
   }));
 }
 
-/** Every balance observation of each visible account, oldest first. */
 export async function readPreviewBalanceHistory(
   reader: PreviewReader,
   visibility: PreviewVisibility,

@@ -15,7 +15,6 @@ export type StackedBalanceSeries = {
   label: string;
   color: string;
   data: StackedBalancePoint[];
-  /** A Preview source account adds to this series. */
   includesPreview: boolean;
 };
 

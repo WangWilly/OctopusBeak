@@ -185,9 +185,8 @@ export function registerOctopusBeakIpc({
     const result = write();
     if (currentPreviewVisibility().sourceIds.join(",") !== before) {
       dataVersionStore.markStale("preview-data-changed");
-      void financialPages.previewVisibilityChanged().catch(() => {
-        // The next canonical or preview write recomputes the live views anyway.
-      });
+      void financialPages.previewVisibilityChanged()
+        .catch((error) => console.error("preview-visibility-refresh-failed", error));
     }
     return result;
   }

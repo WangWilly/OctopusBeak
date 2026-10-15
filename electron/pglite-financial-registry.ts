@@ -1050,8 +1050,7 @@ export function createPGliteFinancialPageClient(
   return page as PGliteFinancialPageClient & { subscribe?: typeof subscribe };
 }
 
-/** One bounded row that changes whenever a preview collection or delete-all lands. */
-const PREVIEW_DATA_DEPENDENCY = `SELECT
+const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
   (SELECT COUNT(*) FROM preview_accounts) AS accounts,
   (SELECT MAX(last_collected_at) FROM preview_accounts) AS account_collected_at,
   (SELECT COUNT(*) FROM preview_balance_observations) AS balances,
@@ -1243,7 +1242,7 @@ export function createPGliteFinancialLiveViews(
           ...(view === "financial.overview.current"
             ? [db.live.query("SELECT rate_date, currency, twd_per_unit, source, fetched_at FROM exchange_rates", [], trigger)]
             : []),
-          ...(showsPreview ? [db.live.query(PREVIEW_DATA_DEPENDENCY, [], trigger)] : []),
+          ...(showsPreview ? [db.live.query(PREVIEW_DATA_FINGERPRINT_SQL, [], trigger)] : []),
         ];
         const stop = async () => {
           if (stopped) return;
