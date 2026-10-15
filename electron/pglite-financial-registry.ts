@@ -766,13 +766,7 @@ export function createPGliteFinancialRegistry(
       return () => previewVisibilityListeners.delete(listener);
     },
     async previewVisibilityChanged() {
-      for (const listener of previewVisibilityListeners) {
-        try {
-          listener();
-        } catch {
-          // One live view cannot stop the others from recomputing.
-        }
-      }
+      for (const listener of previewVisibilityListeners) listener();
     },
     confirmCandidate(input) {
       const tagged = input as SpendingConfirmActionInput & Readonly<{
