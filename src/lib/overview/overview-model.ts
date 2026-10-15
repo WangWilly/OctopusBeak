@@ -13,6 +13,7 @@ import {
   accountLedger,
   addDays,
   carriedNet,
+  convertAccount,
   readAssetAllocation,
   readLiabilityAllocation,
   TRAILING_DAYS,
@@ -44,7 +45,7 @@ export type Ticker =
   | { state: "rates-pending" }
   | { state: "domestic-only" };
 
-export type NetWorthPoint = { date: string; value: number };
+export type NetWorthPoint = { date: string; value: number; includesPreview: boolean };
 
 export type NetWorthChip =
   | ({ kind: "latest"; date: string; previousDate: string; isToday: boolean } & Change)
@@ -58,10 +59,14 @@ export type NetWorth = {
   asOf: string | null;
   valuationDate: string | null;
   chips: NetWorthChip[];
+  /** Preview currencies left out of `value` for want of a rate; a canonical one blanks `value` instead. */
+  unconvertedCurrencies: string[];
+  /** `value` or a chip counts a Preview source balance. */
+  includesPreview: boolean;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
-export type DailyBar = { date: string; change: number | null };
+export type DailyBar = { date: string; change: number | null; includesPreview: boolean };
 
 export type ChangeReason =
   | { kind: "fx"; currency: string; pct: number }
@@ -87,6 +92,7 @@ export type TodayChange =
     newAccountCount: number;
     /** |crypto contributions| / Σ|contributions|; null when crypto did not move. */
     cryptoShare: number | null;
+    includesPreview: boolean;
   };
 
 export type OverviewModel = {
@@ -115,13 +121,17 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
   const valuationDate = valuationDateFor(history, dto.accounts, options.today);
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
   const liabilityAllocation = readLiabilityAllocation(dto.accounts, rates, valuationDate, assetAllocation.total);
+  const current = currentNetWorth(dto.accounts, rates, valuationDate);
+  const chips = netWorthChips(series, ledger, options.today);
   return {
     ticker: readTicker(dto.accounts, rates, dto.holdingPrices),
     netWorth: {
-      value: currentNetWorth(dto.accounts, rates, valuationDate),
+      value: current.value,
       asOf: dto.importedAt,
       valuationDate,
-      chips: netWorthChips(series, ledger, options.today),
+      chips: chips.chips,
+      unconvertedCurrencies: current.unconvertedCurrencies,
+      includesPreview: current.includesPreview || chips.includesPreview,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
@@ -190,23 +200,38 @@ function readTicker(
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {
   return history.flatMap((row) => {
     const converted = convertToTwd(row.netAssets, row.date, rates);
-    return converted ? [{ date: row.date, value: converted.value }] : [];
+    return converted ? [{ date: row.date, value: converted.value, includesPreview: row.includesPreview === true }] : [];
   });
 }
 
+/**
+ * A canonical account without a rate blanks net worth, as before; a preview
+ * one is left out and listed instead, so unverified data never hides the
+ * verified total.
+ */
 function currentNetWorth(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string | null,
-): number | null {
-  if (!valuationDate || accounts.length === 0) return null;
+): { value: number | null; unconvertedCurrencies: string[]; includesPreview: boolean } {
+  const unconverted = new Set<string>();
+  const blank = { value: null, unconvertedCurrencies: [], includesPreview: false };
+  if (!valuationDate || accounts.length === 0) return blank;
   let total = 0;
+  let includesPreview = false;
   for (const account of accounts) {
-    const converted = convertToTwd(account.amountLines, valuationDate, rates);
-    if (!converted) return null;
-    total += account.group === "liability" ? -converted.value : converted.value;
+    if (!account.preview) {
+      const converted = convertToTwd(account.amountLines, valuationDate, rates);
+      if (!converted) return blank;
+      total += account.group === "liability" ? -converted.value : converted.value;
+      continue;
+    }
+    const value = convertAccount(account, rates, valuationDate, unconverted);
+    if (value === null) continue;
+    total += value;
+    if (account.amountLines.length > 0) includesPreview = true;
   }
-  return total;
+  return { value: total, unconvertedCurrencies: [...unconverted].sort(), includesPreview };
 }
 
 function changeOf(ledger: AccountLedger, from: string, to: string): Change {
@@ -214,10 +239,16 @@ function changeOf(ledger: AccountLedger, from: string, to: string): Change {
   return { change, pct };
 }
 
-function netWorthChips(series: readonly NetWorthPoint[], ledger: AccountLedger, today: string): NetWorthChip[] {
+function netWorthChips(
+  series: readonly NetWorthPoint[],
+  ledger: AccountLedger,
+  today: string,
+): { chips: NetWorthChip[]; includesPreview: boolean } {
   const latest = series.at(-1);
   const previous = series.at(-2);
-  if (!latest || !previous) return [];
+  if (!latest || !previous) return { chips: [], includesPreview: false };
+  const first = series[0]!;
+  const spans = [ledger.change(previous.date, latest.date), ledger.change(first.date, latest.date)];
   const chips: NetWorthChip[] = [{
     kind: "latest",
     date: latest.date,
@@ -225,12 +256,13 @@ function netWorthChips(series: readonly NetWorthPoint[], ledger: AccountLedger, 
     isToday: latest.date === today,
     ...changeOf(ledger, previous.date, latest.date),
   }];
-  const first = series[0]!;
   const trailing = trailingChange(series.map((point) => point.date), ledger, TRAILING_DAYS);
-  if (trailing && trailing.from !== first.date)
+  if (trailing && trailing.from !== first.date) {
     chips.push({ kind: "trailing-30", change: trailing.change, pct: trailing.pct });
+    spans.push(trailing);
+  }
   chips.push({ kind: "since-start", since: first.date, ...changeOf(ledger, first.date, latest.date) });
-  return chips;
+  return { chips, includesPreview: spans.some((span) => span.includesPreview) };
 }
 
 function readDailyBars(series: readonly NetWorthPoint[], ledger: AccountLedger, today: string): DailyBar[] {
@@ -238,10 +270,9 @@ function readDailyBars(series: readonly NetWorthPoint[], ledger: AccountLedger, 
   return Array.from({ length: DAILY_BAR_DAYS }, (_, offset) => {
     const date = addDays(today, offset - DAILY_BAR_DAYS + 1);
     const index = byDate.get(date);
-    const change = index === undefined || index === 0
-      ? null
-      : ledger.change(series[index - 1]!.date, date).change;
-    return { date, change };
+    if (index === undefined || index === 0) return { date, change: null, includesPreview: false };
+    const { change, includesPreview } = ledger.change(series[index - 1]!.date, date);
+    return { date, change, includesPreview };
   });
 }
 
@@ -286,6 +317,7 @@ function readTodayChange(
     rows,
     newAccountCount: total.newAccounts.length,
     cryptoShare: cryptoMoved > 0 && moved > 0 ? cryptoMoved / moved : null,
+    includesPreview: total.includesPreview,
   };
 }
 

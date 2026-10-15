@@ -4,7 +4,7 @@ import type { AccountKind, AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto 
 export type Change = { change: number; pct: number | null };
 
 /** A change between two history dates over the accounts recorded on both. */
-export type SpanChange = Change & { from: string; to: string; newAccounts: string[] };
+export type SpanChange = Change & { from: string; to: string; newAccounts: string[]; includesPreview: boolean };
 
 export type AccountLedger = Readonly<{
   /** The account's carried-forward TWD value at `date`, or null before its first record. */
@@ -14,7 +14,7 @@ export type AccountLedger = Readonly<{
    * dates. An account first recorded inside the span is not a change in
    * wealth, only new coverage, so it is counted in `newAccounts` instead.
    */
-  change(from: string, to: string): Change & { newAccounts: string[] };
+  change(from: string, to: string): Change & { newAccounts: string[]; includesPreview: boolean };
 }>;
 
 export const TRAILING_DAYS = 30;
@@ -26,6 +26,8 @@ export type AssetAllocation = {
   valuationDate: string | null;
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
+  /** A converted Preview source balance is counted in `total`. */
+  includesPreview: boolean;
 };
 
 export type LiabilityAllocation = {
@@ -83,6 +85,9 @@ export function accountLedger(
     accountId,
     [...rows].sort((left, right) => left.date.localeCompare(right.date)),
   ]));
+  const previewAccounts = new Set([...rowsByAccount]
+    .filter(([, rows]) => rows.some((row) => row.includesPreview === true))
+    .map(([accountId]) => accountId));
   const valueAt = (accountId: string, date: string): number | null => {
     const rows = rowsByAccount.get(accountId) ?? [];
     if (!rows[0] || rows[0].date > date) return null;
@@ -93,6 +98,7 @@ export function accountLedger(
     change(from, to) {
       let change = 0;
       let base = 0;
+      let includesPreview = false;
       const newAccounts: string[] = [];
       for (const accountId of rowsByAccount.keys()) {
         const before = valueAt(accountId, from);
@@ -104,8 +110,9 @@ export function accountLedger(
         }
         change += after - before;
         base += before;
+        if (previewAccounts.has(accountId)) includesPreview = true;
       }
-      return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts };
+      return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts, includesPreview };
     },
   };
 }
@@ -139,10 +146,12 @@ export function readAssetAllocation(
 ): AssetAllocation {
   const byCategory = new Map<AssetCategory, number>();
   const unconverted = new Set<string>();
+  let includesPreview = false;
   for (const account of accounts) {
     if (account.group === "liability" || !valuationDate) continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
+    if (account.preview) includesPreview = true;
     const category = ASSET_CATEGORY[account.kind];
     byCategory.set(category, (byCategory.get(category) ?? 0) + value);
   }
@@ -155,6 +164,7 @@ export function readAssetAllocation(
       .map(([category, value]) => ({ category, value, share: value / total }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
+    includesPreview,
   };
 }
 

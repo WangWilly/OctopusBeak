@@ -32,6 +32,8 @@ export type AssetsSummary =
     shares: ReadonlyMap<string, number>;
     /** Each account's converted value, for its positions. */
     twdValues: ReadonlyMap<string, number>;
+    /** The total or its trailing change counts a Preview source balance. */
+    includesPreview: boolean;
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
@@ -48,14 +50,16 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     .filter((row) => convertToTwd(row.assets, row.date, rates))
     .map((row) => row.date)
     .sort();
+  const trailing = trailingChange(dates, ledger, TRAILING_DAYS);
   return {
     state: "ready",
     total: allocation.total,
     valuationDate,
-    trailing: trailingChange(dates, ledger, TRAILING_DAYS),
+    trailing,
     slices: allocation.slices,
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
+    includesPreview: allocation.includesPreview || (trailing?.includesPreview ?? false),
   };
 }
