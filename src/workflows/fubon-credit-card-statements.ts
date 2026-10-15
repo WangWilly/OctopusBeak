@@ -7,6 +7,7 @@ import {
 } from "../ledger/pglite/credit-card-adapters.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { fubonIsoCurrency } from "./fubon-currency.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
@@ -1576,8 +1577,11 @@ function fubonForeignEvidenceForRow(row: CsvRow): FubonForeignEvidence {
     throw new Error("Fubon foreign currency and amount evidence must be complete together.");
   if (!presence.currencyPresent)
     return { foreignCurrency: null, foreignAmount: null };
+  const foreignCurrency = fubonIsoCurrency(cleanText(row.foreign_currency));
+  if (foreignCurrency === null)
+    throw new Error("Fubon foreign currency label is not an ISO currency.");
   return {
-    foreignCurrency: cleanText(row.foreign_currency).toUpperCase(),
+    foreignCurrency,
     foreignAmount: exactFubonAmount(row.foreign_amount ?? "", "foreign amount"),
   };
 }
