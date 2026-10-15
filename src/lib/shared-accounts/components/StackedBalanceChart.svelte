@@ -12,7 +12,7 @@
     type StackedBalanceChartData,
   } from "./stacked-balance-chart-data.ts";
 
-  export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "" };
+  export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "", includesPreview: false };
   export let currency = "TWD";
   export let label = "";
 

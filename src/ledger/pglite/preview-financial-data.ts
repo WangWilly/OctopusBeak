@@ -302,6 +302,116 @@ type TransactionRow = {
   posted_at_precision: PreviewLocalDate["precision"]; description: string | null;
 };
 
+type BalanceHistoryRow = {
+  preview_account_id: string; display_label: string; balance_kind: PreviewBalanceObservation["kind"];
+  amount: string; currency: string; observed_at: string; observed_at_reported: boolean;
+};
+
+export type PreviewBalanceHistory = Readonly<{
+  previewAccountId: string;
+  displayLabel: string;
+  observations: readonly PreviewBalanceObservation[];
+}>;
+
+type PreviewReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
+
+const observedAt = (at: string, reported: boolean): PreviewObservedAt =>
+  ({ at, source: reported ? "reported" : "collection-time" });
+
+export async function readPreviewAccounts(
+  reader: PreviewReader,
+  visibility: PreviewVisibility,
+): Promise<readonly PreviewAccountView[]> {
+  if (visibility.sourceIds.length === 0) return [];
+  const result = await reader.query<AccountRow>(
+    `SELECT account.preview_account_id, account.source_id, account.institution_key, account.product,
+            account.display_label, account.currency, account.last_collected_at, latest.balance_kind, latest.amount,
+            latest.currency AS balance_currency, latest.observed_at, latest.observed_at_reported
+       FROM preview_accounts account
+       LEFT JOIN LATERAL (
+         SELECT balance_kind, amount, currency, observed_at, observed_at_reported
+           FROM preview_balance_observations balance
+          WHERE balance.preview_account_id = account.preview_account_id
+          ORDER BY balance_kind = 'current' DESC, observed_at DESC
+          LIMIT 1
+       ) latest ON TRUE
+      WHERE account.source_id = ANY($1::text[])
+      ORDER BY account.source_id, account.display_label, account.preview_account_id`,
+    [visibility.sourceIds],
+  );
+  return result.rows.map((row) => ({
+    previewAccountId: row.preview_account_id,
+    sourceId: row.source_id,
+    institution: row.institution_key,
+    product: row.product,
+    displayLabel: row.display_label,
+    currency: row.currency,
+    type: "depository" as const,
+    lastCollectedAt: row.last_collected_at,
+    latestBalance: row.balance_kind === null ? null : {
+      kind: row.balance_kind,
+      amount: row.amount!,
+      currency: row.balance_currency!,
+      observedAt: observedAt(row.observed_at!, row.observed_at_reported === true),
+    },
+  }));
+}
+
+export async function readPreviewTransactions(
+  reader: PreviewReader,
+  visibility: PreviewVisibility,
+  previewAccountId: string,
+): Promise<readonly PreviewTransactionView[]> {
+  if (visibility.sourceIds.length === 0) return [];
+  const result = await reader.query<TransactionRow>(
+    `SELECT row.preview_account_id, row.source_row_key, row.amount, row.currency, row.direction,
+            row.posted_at, row.posted_at_precision, row.description
+       FROM preview_transactions row
+       JOIN preview_accounts account ON account.preview_account_id = row.preview_account_id
+      WHERE account.source_id = ANY($1::text[]) AND row.preview_account_id = $2
+      ORDER BY row.posted_at DESC, row.source_row_key`,
+    [visibility.sourceIds, previewAccountId],
+  );
+  return result.rows.map((row) => ({
+    previewAccountId: row.preview_account_id,
+    sourceRowKey: row.source_row_key,
+    amount: row.amount,
+    currency: row.currency,
+    direction: row.direction,
+    postedAt: { precision: row.posted_at_precision, value: row.posted_at },
+    description: row.description,
+  }));
+}
+
+export async function readPreviewBalanceHistory(
+  reader: PreviewReader,
+  visibility: PreviewVisibility,
+): Promise<readonly PreviewBalanceHistory[]> {
+  if (visibility.sourceIds.length === 0) return [];
+  const result = await reader.query<BalanceHistoryRow>(
+    `SELECT account.preview_account_id, account.display_label, balance.balance_kind, balance.amount,
+            balance.currency, balance.observed_at, balance.observed_at_reported
+       FROM preview_accounts account
+       JOIN preview_balance_observations balance ON balance.preview_account_id = account.preview_account_id
+      WHERE account.source_id = ANY($1::text[])
+      ORDER BY account.preview_account_id, balance.observed_at, balance.balance_kind`,
+    [visibility.sourceIds],
+  );
+  const byAccount = new Map<string, { previewAccountId: string; displayLabel: string; observations: PreviewBalanceObservation[] }>();
+  for (const row of result.rows) {
+    const entry = byAccount.get(row.preview_account_id)
+      ?? { previewAccountId: row.preview_account_id, displayLabel: row.display_label, observations: [] };
+    entry.observations.push({
+      kind: row.balance_kind,
+      amount: row.amount,
+      currency: row.currency,
+      observedAt: observedAt(row.observed_at, row.observed_at_reported),
+    });
+    byAccount.set(row.preview_account_id, entry);
+  }
+  return [...byAccount.values()];
+}
+
 export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePreviewFinancialDataPort {
   return Object.freeze({
     async write(input) {
@@ -318,59 +428,7 @@ export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePrev
     async deleteAll() {
       await store.query("DELETE FROM preview_accounts");
     },
-    async accounts(visibility) {
-      const result = await store.query<AccountRow>(
-        `SELECT account.preview_account_id, account.source_id, account.institution_key, account.product,
-                account.display_label, account.currency, account.last_collected_at, latest.balance_kind, latest.amount,
-                latest.currency AS balance_currency, latest.observed_at, latest.observed_at_reported
-           FROM preview_accounts account
-           LEFT JOIN LATERAL (
-             SELECT balance_kind, amount, currency, observed_at, observed_at_reported
-               FROM preview_balance_observations balance
-              WHERE balance.preview_account_id = account.preview_account_id
-              ORDER BY balance_kind = 'current' DESC, observed_at DESC
-              LIMIT 1
-           ) latest ON TRUE
-          WHERE account.source_id = ANY($1::text[])
-          ORDER BY account.source_id, account.display_label, account.preview_account_id`,
-        [visibility.sourceIds],
-      );
-      return result.rows.map((row) => ({
-        previewAccountId: row.preview_account_id,
-        sourceId: row.source_id,
-        institution: row.institution_key,
-        product: row.product,
-        displayLabel: row.display_label,
-        currency: row.currency,
-        type: "depository" as const,
-        lastCollectedAt: row.last_collected_at,
-        latestBalance: row.balance_kind === null ? null : {
-          kind: row.balance_kind,
-          amount: row.amount!,
-          currency: row.balance_currency!,
-          observedAt: { at: row.observed_at!, source: row.observed_at_reported ? "reported" as const : "collection-time" as const },
-        },
-      }));
-    },
-    async transactions(visibility, previewAccountId) {
-      const result = await store.query<TransactionRow>(
-        `SELECT row.preview_account_id, row.source_row_key, row.amount, row.currency, row.direction,
-                row.posted_at, row.posted_at_precision, row.description
-           FROM preview_transactions row
-           JOIN preview_accounts account ON account.preview_account_id = row.preview_account_id
-          WHERE account.source_id = ANY($1::text[]) AND row.preview_account_id = $2
-          ORDER BY row.posted_at DESC, row.source_row_key`,
-        [visibility.sourceIds, previewAccountId],
-      );
-      return result.rows.map((row) => ({
-        previewAccountId: row.preview_account_id,
-        sourceRowKey: row.source_row_key,
-        amount: row.amount,
-        currency: row.currency,
-        direction: row.direction,
-        postedAt: { precision: row.posted_at_precision, value: row.posted_at },
-        description: row.description,
-      }));
-    },
+    accounts: (visibility) => readPreviewAccounts(store, visibility),
+    transactions: (visibility, previewAccountId) => readPreviewTransactions(store, visibility, previewAccountId),
   });
 }

@@ -17,7 +17,10 @@
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
+  import PreviewTransactionsModal from "./PreviewTransactionsModal.svelte";
   import TransactionModal from "./TransactionModal.svelte";
+  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
 
   type Filter = {
@@ -32,6 +35,7 @@
   type SortKey = "label" | "institution" | "type" | "balance" | "allocation";
   type SortDirection = "asc" | "desc";
   type SortColumn = { key: SortKey; label: string; right?: boolean };
+  type RowGroup = "counted" | "preview" | "covered";
 
   export let accounts: AccountRowDto[] = [];
   /** Accounts a direct source already counts: listed after the counted ones, in no total and with no share. */
@@ -51,6 +55,7 @@
   let selectedAccountId: string | null = null;
   let handledFocusAccountId: string | null = null;
   let transactionsOpen = false;
+  let previewTransactionsOpen = false;
   let positionsOpen = false;
   let historyOpen = false;
   let statementsOpen = false;
@@ -90,15 +95,17 @@
   $: emptyCopy = mode === "asset" ? $t.assets.empty : $t.liabilities.empty;
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
-  $: filtered = matchingAccounts(accounts, filter, query, $t);
+  $: filtered = matchingAccounts(accounts.filter((account) => !account.preview), filter, query, $t);
+  $: filteredPreview = matchingAccounts(accounts.filter((account) => account.preview), filter, query, $t);
   $: filteredCovered = matchingAccounts(coveredAccounts, filter, query, $t);
   $: latestUpdated = [...accounts, ...coveredAccounts].reduce<string | null>(
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
   $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares);
+  $: sortedPreview = sortAccounts(filteredPreview, sortKey, sortDirection, shares);
   $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares);
-  $: listed = [...sorted, ...sortedCovered];
+  $: listed = [...sorted, ...sortedPreview, ...sortedCovered];
   $: if (listed.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
   }
@@ -232,12 +239,22 @@
     });
   }
 
+  function formatTime(value: string) {
+    return formatUtcDateTime(value, $systemTimezone, $locale).replace(/:\d{2}$/, "");
+  }
+
+  function openTransactions() {
+    if (selectedAccount?.preview) previewTransactionsOpen = true;
+    else transactionsOpen = true;
+  }
+
   function translateKnownLabel(value: string, dictionary: Translation) {
     return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
   }
 </script>
 
-{#snippet accountRow(account: AccountRowDto, covered: boolean)}
+{#snippet accountRow(account: AccountRowDto, group: RowGroup)}
+  {@const covered = group === "covered"}
   {@const share = covered ? undefined : shares.get(account.id)}
   {@const availableBalanceBasis = account.amountLines.some((amount) =>
     amount.traces?.some((trace) => trace.balanceKind === "available"),
@@ -248,6 +265,7 @@
   <tr
     class:selected={account.id === selectedAccountId}
     class:covered
+    class:preview={group === "preview"}
     class="account-card"
     data-account-id={account.id}
     data-covered-by={account.coveredBy?.namespace}
@@ -261,6 +279,8 @@
       </span>
       {#if covered}
         <span class="account-meta covered-by">{$t.accounts.coveredBy(coveredByName(account, $t))}</span>
+      {:else if account.preview}
+        <span class="account-meta">{translateKnownLabel(account.product, $t)} / {$t.preview.collectedAt(formatTime(account.preview.lastCollectedAt))}</span>
       {:else}
         <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
       {/if}
@@ -287,7 +307,12 @@
       {#if availableBalanceBasis}
         <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
       {/if}
-      {#if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
+      {#if account.preview?.balanceTime}
+        <span class="account-meta" data-balance-time={account.preview.balanceTime.source}>{$t.preview.balanceTime(
+          formatTime(account.preview.balanceTime.at),
+          account.preview.balanceTime.source === "reported" ? $t.preview.balanceTimeReported : $t.preview.balanceTimeCollected,
+        )}</span>
+      {:else if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
         <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
       {/if}
     </td>
@@ -317,8 +342,10 @@
         <strong>{selectedAccount.label}</strong>
       </div>
       <div class="action-group">
-        <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
-        <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        <button class="button secondary" type="button" on:click={openTransactions}>{$t.accounts.tx}</button>
+        {#if !selectedAccount.preview}
+          <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        {/if}
         {#if selectedAccount.creditCard}
           <button class="button secondary" type="button" on:click={() => (statementsOpen = true)}>{$t.accounts.statements}</button>
         {/if}
@@ -374,12 +401,24 @@
             </thead>
             <tbody>
               {#each sorted as account (account.id)}
-                {@render accountRow(account, false)}
-              {:else}
+                {@render accountRow(account, "counted")}
+              {/each}
+              {#if listed.length === 0}
                 <tr>
                   <td colspan="5">{mode === "asset" ? $t.accounts.noAssetMatches : $t.accounts.noLiabilityMatches}</td>
                 </tr>
-              {/each}
+              {/if}
+              {#if sortedPreview.length}
+                <tr class="covered-heading preview-heading" data-preview-group>
+                  <td colspan="5">
+                    <strong>{$t.preview.groupHeading}</strong>
+                    <span class="account-meta">{$t.preview.groupNote}</span>
+                  </td>
+                </tr>
+                {#each sortedPreview as account (account.id)}
+                  {@render accountRow(account, "preview")}
+                {/each}
+              {/if}
               {#if sortedCovered.length}
                 <tr class="covered-heading">
                   <td colspan="5">
@@ -388,7 +427,7 @@
                   </td>
                 </tr>
                 {#each sortedCovered as account (account.id)}
-                  {@render accountRow(account, true)}
+                  {@render accountRow(account, "covered")}
                 {/each}
               {/if}
             </tbody>
@@ -403,6 +442,7 @@
 </section>
 
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
+<PreviewTransactionsModal bind:open={previewTransactionsOpen} account={selectedAccount} />
 <AssetModal
   bind:open={positionsOpen}
   account={selectedAccount}

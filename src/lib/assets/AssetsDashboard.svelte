@@ -23,6 +23,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -60,13 +61,15 @@
       : undefined;
   }
 
-  function settledSummaryBlock(states: typeof blocks) {
-    const state = states.summary;
-    return assetsBlockData("summary", state && "data" in state ? state.data : undefined);
+  function settledBlock<Key extends keyof DashboardBlockValueMap["assets"]>(states: typeof blocks, key: Key) {
+    const state = states[key];
+    return assetsBlockData(key, state && "data" in state ? state.data : undefined);
   }
 
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledSummaryBlock(blocks)), { today });
+  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledBlock(blocks, "summary")), { today });
+  $: chartBlock = settledBlock(blocks, "chart");
+  $: listBlock = settledBlock(blocks, "list");
   $: assetAccounts = assets.accounts;
   $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
@@ -111,6 +114,7 @@
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
+  sideIncludesPreview={!isEmpty && summary.state === "ready" && summary.includesPreview}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
@@ -128,6 +132,7 @@
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
+        includesPreview={summary.state === "ready" && summary.includesPreview}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
           : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
@@ -153,8 +158,7 @@
       </PageTotalCard>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
-      {@const chartBlock = assetsBlockData("chart", data)}
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
       {@const chartDataBlock = resolveAssetsChart(assets, chartBlock)}
       {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
         accounts: localizeAccounts(chartDataBlock.accounts, $t),
@@ -184,6 +188,7 @@
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
+        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}
@@ -199,8 +204,7 @@
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
-      {@const listBlock = assetsBlockData("list", data)}
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
       {@const listDataBlock = resolveAssetsList(assets, listBlock)}
       <AccountTable
         accounts={listDataBlock.accounts}

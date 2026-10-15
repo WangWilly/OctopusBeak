@@ -81,6 +81,7 @@ test("the 30-day change counts only accounts recorded on both dates, each at its
     change: 100,
     pct: 100 / 3000,
     newAccounts: ["bank"],
+    includesPreview: false,
   });
 });
 
