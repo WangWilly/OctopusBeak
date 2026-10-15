@@ -109,3 +109,21 @@ Every source below has never run against a live account. Each was built from the
   - The row key is the Taipei date of `txnDateTime` plus `tradeID`, because all-set-tw observed `tradeID` repeating across months.
   - The session-takeover notice is a precaution. The `OTHER_DEVICE_LOGIN` error code suggests one session at a time, which is unconfirmed.
 
+
+### SKBank (新光銀行), `skbank-deposit`
+
+- Transport: SKBank's mobile banking App API at `https://mbanking.skbank.com.tw`, sent as in-page `fetch` from a page opened on that same origin, with the App's `App-Version`, `Device-Info`, and `Device-Id` headers. Origin and Referer are stripped, because the native App sends neither. The responses are plain JSON envelopes (`ReturnCode`, `ReturnMessage`, `Data`); no response encryption is documented.
+- Sign-in: national ID, user ID, and online banking password. `GetAppConfig` returns the RSA public key (`PublicKey.Module`, `PublicKey.Exponent`). The user ID and password are each encrypted with it (PKCS#1 v1.5, hex), and the `{"Payload":...}` text is signed with HMAC-SHA256 keyed by the hex SHA-256 of the national ID. The national ID itself is sent in the payload, as the App does. No CAPTCHA and no OTP are documented. `ReturnCode` `MB433` (App version rejected) fails as `source-validation-failed`, every other non-`0000` login code as `authentication-failed`, and HTTP 401 or 403 as `session-conflict`.
+- Device: the preview context has no persistence port, so the `Device-Id` is a UUID-shaped SHA-256 of a fixed salt, the national ID, and the user ID. Every run presents the same device without stored state.
+- Collected: `GetAccountSummary` (TWD details) and `GetForeignCurrencyAccountSummary` (non-TWD details), one account per account number and currency, with the current balance (`AccountBalance`, or `TimeDepositBalance` for a time deposit) and `AvailableBalance` when present. Transactions for every non-time-deposit account come from `FetchTransactionDetails` or `FetchForeignCurrencyTransactionDetails` over three Taipei calendar months, 100 rows per page. The balance as-of time is the HTTP `Date` header of the summary response.
+- Fail-closed: a summary detail without an ISO `CurrencyCode` fails `missing-currency`. Transaction paging fails `incomplete-data` when `Paging.TotalCount` or `Paging.Page` is not an integer, when the server answers another page than requested, when `TotalCount` changes between pages, when collected rows exceed `TotalCount`, when an empty page or a `查無資料` answer arrives before `TotalCount` is reached, or after 100 pages. An account number and currency that repeat across the summaries fail.
+- Assumptions:
+  - Transaction currency is the account detail's `CurrencyCode`, the same value sent as the request's `CurrencyCode` for a foreign account. Rows carry no currency field. No currency is defaulted.
+  - `Amount` is kept as its source lexeme, possibly signed. The direction is always `unknown`, because all-set-tw documents no per-row direction field; `Summary.Deposit` and `Summary.Withdrawal` are page totals only.
+  - `TransactionDate` may use the ROC year (`115/10/03`) and unpadded parts, and is read as Taipei local time.
+  - Rows have no transaction id. The row key is the date, a hash of date, amount, balance, `Memo`, `Remark`, and `Summary`, and an occurrence counter for identical rows in one account.
+  - A time deposit is a detail with `DisplayGroup` `TimeDeposit` or product code `F500001`. Its transactions are not queried.
+  - A foreign summary without `AccountList` means no foreign accounts, as all-set-tw treats it. A first-page `查無資料` answer means no transactions.
+  - No OTP device binding is documented: all-set-tw signs in from a freshly generated device id. If SKBank requires one, the run currently fails as `authentication-failed`; detecting that code and calling `requireDeviceRegistration` is a follow-up once a structure report shows it.
+  - `GetUserInformation` and `GetMegaMenuStatus` are called before the summaries because the App flow calls them. Their content is not used.
+  - The session-takeover notice is a precaution. Whether a sign-in ends the phone App session is unconfirmed.
