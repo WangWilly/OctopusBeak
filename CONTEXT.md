@@ -119,6 +119,26 @@ _Avoid_: Account matching, cross-source deduplication, identity merge, user-sele
 The many-to-many mapping that records which Institutions and products a supported source can collect or import. Coverage does not make a supported-source identifier the canonical identity of an Institution.
 _Avoid_: Source connection, Institution identity, account ownership
 
+**Preview features**:
+The person's opt-in setting, labelled 「預覽測試功能」 in the Traditional Chinese UI, that makes Preview Sources available. Turning it off hides every Preview Source, stops its collection, and removes Preview Financial Data from every view and total while retaining that data until the person explicitly deletes it.
+_Avoid_: Beta mode, experimental flag, unverified mode
+
+**Preview source**:
+A supported source, shown as 「預覽來源」, whose collection has no live-verified source contract and is offered only while Preview Features are on. It writes only Preview Financial Data, never a Source Capture or any canonical fact, and is hidden and not collected while a verified source covers the same Institution and product.
+_Avoid_: Unverified source, beta connector, provisional canonical source
+
+**Preview financial data**:
+Account balances and transactions collected by a Preview Source and kept apart from canonical financial data. Its balances count toward assets, liabilities, and net worth with a visible preview marker; its transactions appear only in their own account view, outside spending, classification, transfer pairing, and deduplication. It still refuses missing currencies and keeps source amounts exactly rather than filling defaults.
+_Avoid_: Canonical assertion, verified data, low-confidence canonical record
+
+**Preview source promotion**:
+The replacement of a Preview Source by a verified source contract for one Institution and product. Its Preview Financial Data is deleted and the data is recollected through canonical admission; preview records are never migrated into the canonical model.
+_Avoid_: Record migration, trust upgrade in place, merge
+
+**Preview structure report**:
+A sanitized description of a Preview Source's responses, listing endpoints, statuses, field names, types, and bounded codes but never identifiers, names, amounts, dates, or free text. The person reviews it in full and sends it only by pasting it into a prefilled public issue; the App transmits nothing itself.
+_Avoid_: Crash report, telemetry, raw response upload
+
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
