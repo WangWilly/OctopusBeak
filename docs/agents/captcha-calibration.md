@@ -1,6 +1,6 @@
 # How to calibrate a preview source CAPTCHA
 
-ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Mega, Taishin, Next Bank, and Rakuten preview sources have no calibrated family, so every production run stops at sign-in. `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin and Mega preview sources have calibrated families. The Next Bank and Rakuten sources have none, so their production runs stop at sign-in. The measured results are in [the calibration record](../research/2026-10-15-preview-captcha-calibration.md). `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
 
 You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
 
@@ -45,11 +45,11 @@ To collect more images, run `collect` again. It appends to the corpus. Run `prel
 | `mega` | Preview source | OAuth client credentials, `/main/init`, the App initialize call, then `/fco/fco00001/captcha`. The image comes back as base64 in the JSON response. |
 | `nextbank` | Preview source | One `POST /ap2/open/common/v1.0/Captcha`. The response binds the image to a `uuid`. |
 | `rakuten` | Preview source page driver | The login page. The image is a data URI in `div.pic_veri captcha-image img`. |
-| `taishin` | Calibration-only reader | The RWD login page. The reader takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
+| `taishin` | Preview source login form | The RWD login page. `form.captcha()` takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
 
 Two guards keep `collect` from signing in:
 
-- The preview sources run with a solver that records the image and then throws. The source never reaches its login request. The Taishin reader never fills or submits the form.
+- The preview sources run with a solver that records the image and then throws. The source never reaches its login request. The Taishin capture calls only `form.captcha()`, so it never fills or submits the form.
 - Each bank in `scripts/captcha-calibration/banks.ts` lists deny rules for its login requests. The browser aborts any request that matches a rule, and the whole collection stops with an error.
 
 The browser check `scripts/captcha-calibration/collect.check.mjs` runs all four captures against fake bank hosts. It asserts that no request matches a deny rule or a login path.
@@ -114,10 +114,10 @@ The recommendation is the configuration with the highest coverage among those wi
 
 ## Use the result in phase 2
 
-Phase 2 turns a recommendation into a production solver for one preview source:
+Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY` and `MEGA_CAPTCHA_FAMILY` show the result.
 
-1. Copy the recommended declaration into a production solver family that the source receives through its `PreviewCaptchaSolver` seam.
-2. Add the family entry to `CONTEXT.md`.
-3. Replace the source's `refuseUnsupportedVerification` call with the calibrated solver.
+1. Copy the recommended declaration, or a configuration you choose from the evaluate output, into a `PreviewCaptchaFamily` in `src/lib/preview-sources/preview-captcha.ts`.
+2. Add the family entry to `CONTEXT.md`, and record the measured numbers under `docs/research/`.
+3. Pass `calibratedCaptchaSolver(family)` as the source's default `solveCaptcha`, and get the answer through `solveChallengeRound`.
 
 ADR 0039 still applies. A source without a calibrated family must not submit a CAPTCHA answer.

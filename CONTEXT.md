@@ -950,7 +950,7 @@ The CAPTCHA image or audio successfully captured by one workflow execution, the 
 _Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
 
 **In-page CAPTCHA refresh**:
-Loading a new challenge through the provider's own refresh control on the same login page, without submitting an answer or restarting the workflow, when no candidate satisfies the Solve Acceptance Policy. A provider may use it only with evidence that the refresh yields a new challenge without resetting the entered Sign-in Details; it never counts as a submitted sign-in.
+Loading a new challenge through the provider's own refresh control on the same login page, without submitting an answer or restarting the workflow, when no candidate satisfies the Solve Acceptance Policy. A provider may use it only with evidence that the refresh yields a new challenge without resetting the entered Sign-in Details; it never counts as a submitted sign-in. A source that fetches its challenge from the provider's pre-login API refreshes by requesting a new challenge from that API in the same session.
 _Avoid_: Workflow restart, Solve Attempt, submitted retry
 
 **CAPTCHA retry campaign**:
@@ -988,6 +988,14 @@ _Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
 **Taipei Fubon login CAPTCHA**:
 The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflow: a 158-by-30-pixel white-background image whose answer is exactly six decimal digits rendered as colored, variably tilted glyphs without an interference-line requirement. Automatic submission requires OCR Agreement from at least two distinct provider-declared preprocessing strategies; missing agreement fails closed. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
 _Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
+
+**Taishin Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Taishin Bank preview source: a 120-by-36-pixel image whose answer is exactly six decimal digits. Automatic submission requires confidence at or above 0.5 from the best of two declared strategies. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Taishin CAPTCHA, mixed-layout Taishin CAPTCHA corpus
+
+**Mega Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Mega Bank preview source: a 100-by-49-pixel image whose answer is exactly five decimal digits. Automatic submission requires confidence at or above 0.99 from the best of three declared strategies; an unaccepted challenge may be replaced by an In-page CAPTCHA Refresh. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Mega CAPTCHA, lowered Mega confidence threshold, mixed-layout Mega CAPTCHA corpus
 
 **Cathay login Email OTP**:
 The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Automatic verification ends the attempt with an actionable reason when authorization or an eligible answer is unavailable, rejected, or uncertain, and never persists the message or answer. When the Cathay send button is not visible, the workflow fails with `challenge-unavailable`. There is no manual Email OTP entry (ADR 0039).
