@@ -61,13 +61,15 @@
       : undefined;
   }
 
-  function settledSummaryBlock(states: typeof blocks) {
-    const state = states.summary;
-    return assetsBlockData("summary", state && "data" in state ? state.data : undefined);
+  function settledBlock<Key extends keyof DashboardBlockValueMap["assets"]>(states: typeof blocks, key: Key) {
+    const state = states[key];
+    return assetsBlockData(key, state && "data" in state ? state.data : undefined);
   }
 
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledSummaryBlock(blocks)), { today });
+  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledBlock(blocks, "summary")), { today });
+  $: chartBlock = settledBlock(blocks, "chart");
+  $: listBlock = settledBlock(blocks, "list");
   $: assetAccounts = assets.accounts;
   $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
@@ -156,8 +158,7 @@
       </PageTotalCard>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
-      {@const chartBlock = assetsBlockData("chart", data)}
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
       {@const chartDataBlock = resolveAssetsChart(assets, chartBlock)}
       {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
         accounts: localizeAccounts(chartDataBlock.accounts, $t),
@@ -187,7 +188,7 @@
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
-        {#if stackedChart.includesPreview}<PreviewMarker />{/if}
+        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}
@@ -203,8 +204,7 @@
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
-      {@const listBlock = assetsBlockData("list", data)}
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
       {@const listDataBlock = resolveAssetsList(assets, listBlock)}
       <AccountTable
         accounts={listDataBlock.accounts}

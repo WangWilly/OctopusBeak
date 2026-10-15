@@ -6,12 +6,14 @@
   import { t } from "$lib/i18n/i18n.ts";
 
   export let placement: "below" | "above" = "below";
+  /** Anchor the tooltip to the marker's end when the marker sits at a right edge. */
+  export let align: "start" | "end" = "start";
 
   const tooltipId = `preview-marker-${(nextId += 1)}`;
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<span class="preview-marker" class:above={placement === "above"} tabindex="0" aria-describedby={tooltipId} data-preview-marker>
+<span class="preview-marker" class:above={placement === "above"} class:end={align === "end"} tabindex="0" aria-describedby={tooltipId} data-preview-marker>
   {$t.preview.marker}
   <span class="preview-tooltip" role="tooltip" id={tooltipId}>{$t.preview.markerTooltip}</span>
 </span>
@@ -58,10 +60,8 @@
     line-height: 1.45;
     white-space: normal;
     text-transform: none;
-    opacity: 0;
-    visibility: hidden;
+    display: none;
     pointer-events: none;
-    transition: opacity 140ms ease;
   }
 
   .above .preview-tooltip {
@@ -69,15 +69,13 @@
     bottom: calc(100% + 6px);
   }
 
-  .preview-marker:hover .preview-tooltip,
-  .preview-marker:focus-visible .preview-tooltip {
-    opacity: 1;
-    visibility: visible;
+  .end .preview-tooltip {
+    left: auto;
+    right: 0;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .preview-tooltip {
-      transition: none;
-    }
+  .preview-marker:hover .preview-tooltip,
+  .preview-marker:focus-visible .preview-tooltip {
+    display: block;
   }
 </style>
