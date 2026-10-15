@@ -808,6 +808,21 @@ const en = {
     previewSourceTitle: "Preview source: not verified against live data",
     previewSourceBody:
       "OctopusBeak has not run this source against a real account yet. Its balances and transactions may be incomplete or wrong. They are kept apart from verified data and marked as preview wherever they appear.",
+    structureReport: {
+      share: "Share structure report",
+      title: "Structure report",
+      intro:
+        "This preview source failed. The report below describes the shape of the responses it received, so the source can be fixed. Read it in full before you share it.",
+      contains: "It contains endpoint paths, HTTP statuses, field names, value types and formats, and short codes such as currency.",
+      neverContains: "It never contains account numbers, names, amounts, balances, dates, remarks, or other free text.",
+      sending:
+        "OctopusBeak does not send this report anywhere. Open GitHub issue opens a prefilled issue in your browser; paste the report there and submit it only if you want to.",
+      copy: "Copy",
+      copied: "Copied",
+      copyFailed: "Copy failed. Select the text and copy it manually.",
+      openIssue: "Open GitHub issue",
+      openIssueFailed: "Could not open the browser.",
+    },
     tdccDevice: {
       title: "Device registration",
       description:
@@ -2027,6 +2042,19 @@ const zh: typeof en = {
     previewSourceTitle: "預覽來源：尚未以實際資料驗證",
     previewSourceBody:
       "OctopusBeak 尚未用真實帳戶執行過這個來源，餘額與交易可能不完整或有誤。這些資料與已驗證的資料分開保存，出現的地方都會標示為預覽。",
+    structureReport: {
+      share: "分享結構報告",
+      title: "結構報告",
+      intro: "這個預覽來源執行失敗。下方報告描述它收到的回應格式，可用來修正這個來源。分享前請完整閱讀。",
+      contains: "報告包含端點路徑、HTTP 狀態碼、欄位名稱、值的型別與格式，以及幣別等簡短代碼。",
+      neverContains: "報告絕不包含帳號、姓名、金額、餘額、日期、備註或其他自由文字。",
+      sending: "OctopusBeak 不會自行傳送這份報告。「開啟 GitHub issue」會在瀏覽器開啟預填的 issue；請自行貼上報告，並由你決定是否送出。",
+      copy: "複製",
+      copied: "已複製",
+      copyFailed: "複製失敗，請選取文字後手動複製。",
+      openIssue: "開啟 GitHub issue",
+      openIssueFailed: "無法開啟瀏覽器。",
+    },
     tdccDevice: {
       title: "裝置註冊",
       description:

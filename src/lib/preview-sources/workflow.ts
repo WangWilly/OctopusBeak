@@ -20,8 +20,11 @@ export type PreviewSourceWriter = Readonly<{
 const MAX_OBSERVATIONS = 50;
 const failureObservations = new WeakMap<object, readonly PreviewResponseObservation[]>();
 
-export function previewObservationsFor(error: unknown): readonly PreviewResponseObservation[] {
-  return typeof error === "object" && error !== null ? failureObservations.get(error) ?? [] : [];
+export function takePreviewObservations(error: unknown): readonly PreviewResponseObservation[] {
+  if (typeof error !== "object" || error === null) return [];
+  const observations = failureObservations.get(error) ?? [];
+  failureObservations.delete(error);
+  return observations;
 }
 
 export type PreviewWorkflowContext = Omit<

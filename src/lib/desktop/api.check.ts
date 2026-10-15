@@ -54,6 +54,8 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:runtime-changed",
   "automation:takeSignInSettingsRequest",
   "automation:sign-in-settings-requested",
+  "automation:previewStructureReport",
+  "automation:openPreviewStructureReportIssue",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

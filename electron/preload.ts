@@ -133,6 +133,8 @@ const api: OctopusBeakApi = {
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
     },
     takeSignInSettingsRequest: () => ipcRenderer.invoke("automation:takeSignInSettingsRequest"),
+    previewStructureReport: (taskId) => ipcRenderer.invoke("automation:previewStructureReport", taskId),
+    openPreviewStructureReportIssue: (taskId) => ipcRenderer.invoke("automation:openPreviewStructureReportIssue", taskId),
     onSignInSettingsRequested(listener) {
       const handler = () => listener();
       ipcRenderer.on("automation:sign-in-settings-requested", handler);

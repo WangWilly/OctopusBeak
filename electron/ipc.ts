@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -48,6 +49,12 @@ import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automat
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
 import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
+import {
+  previewSourceForTask,
+  previewStructureReportIssueUrl,
+  previewStructureReports,
+  renderPreviewStructureReport,
+} from "../src/lib/preview-sources/structure-report.ts";
 import type { PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   systemSettings,
@@ -500,6 +507,16 @@ export function registerOctopusBeakIpc({
   );
   ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
   ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
+  ipcMain.handle("automation:previewStructureReport", (_event, taskId: string) => {
+    const report = previewStructureReports.get(taskId);
+    return report ? { taskRunId: report.taskRunId, text: renderPreviewStructureReport(report, app.getVersion()) } : null;
+  });
+  ipcMain.handle("automation:openPreviewStructureReportIssue", async (_event, taskId: string) => {
+    const source = previewSourceForTask(taskId);
+    if (!source || !previewStructureReports.get(taskId)) throw new Error("No preview structure report for this task.");
+    await shell.openExternal(previewStructureReportIssueUrl(source));
+    return { ok: true as const };
+  });
   ipcMain.handle(
     "automation:openExternalPrerequisite",
     async (_event, prerequisiteId: string) => {

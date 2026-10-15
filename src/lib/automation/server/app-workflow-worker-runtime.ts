@@ -47,6 +47,8 @@ import {
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
 import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rpc-client.ts";
 import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
+import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
+import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
@@ -80,6 +82,8 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
+  /** Test seam; production uses the authenticated PGlite RPC preview port. */
+  previewWrite?: WorkflowPreviewWritePort;
   now?: WorkflowExecutorPorts["now"];
 }>;
 
@@ -357,6 +361,7 @@ export async function runAppWorkflowWorker(
   };
 
   let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
+  let previewWorkflow = false;
   let progressQueue = Promise.resolve();
   let acknowledgedEventQueue = Promise.resolve();
   const sendAcknowledgedEvent = (
@@ -406,6 +411,7 @@ export async function runAppWorkflowWorker(
     };
     const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
+    previewWorkflow = definition.requiresPreviewWrite === true;
     let financialCommit = options.financialCommit;
     if (definition.requiresFinancialCommit && !financialCommit) {
       if (!childRpc && start.pgliteRpc) {
@@ -419,7 +425,8 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    if (definition.requiresPreviewWrite && !childRpc && start.pgliteRpc) {
+    const previewWrite = definition.requiresPreviewWrite ? options.previewWrite : undefined;
+    if (definition.requiresPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
         token: start.pgliteRpc.token,
@@ -427,7 +434,7 @@ export async function runAppWorkflowWorker(
       });
       await abortable(childRpc.ready, controller.signal);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresPreviewWrite) && !childRpc) throw new Error("worker-start-failed");
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
@@ -475,7 +482,7 @@ export async function runAppWorkflowWorker(
       ...(financialCommit ? { financialCommit } : {}),
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
-      ...(definition.requiresPreviewWrite ? { previewWrite: childRpc!.operationalProvider.preview } : {}),
+      ...(definition.requiresPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,
@@ -519,6 +526,7 @@ export async function runAppWorkflowWorker(
     }
   } catch (error) {
     terminal = true;
+    const previewResponses = previewWorkflow ? previewResponseShapes(takePreviewObservations(error)) : null;
     const summary = summarizeInterruptedProductCollection(error);
     const errorCode = protocolFailure
       ? "protocol-invalid"
@@ -540,6 +548,7 @@ export async function runAppWorkflowWorker(
           taskRunId: start.taskRunId,
           errorCode,
           ...(summary ? { summary } : {}),
+          ...(previewResponses ? { previewResponses } : {}),
           diagnostic: captureSafeWorkflowFailureError(
             protocolFailure ? new AppWorkflowWorkerProtocolError() : error,
             workflowFailureDiagnosticRepoRoot(),

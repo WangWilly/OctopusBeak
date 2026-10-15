@@ -3,6 +3,7 @@ import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type {
   AutomationCredentialGroup,
   AutomationPageModel,
+  AutomationPreviewStructureReport,
   AutomationTaskHistoryRow,
   AutomationTaskProgress,
   TypedWorkflowOutcome,
@@ -290,6 +291,8 @@ export type OctopusBeakApi = {
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
     takeSignInSettingsRequest(): Promise<string | null>;
     onSignInSettingsRequested(listener: () => void): () => void;
+    previewStructureReport(taskId: string): Promise<AutomationPreviewStructureReport | null>;
+    openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
   };
   data: {
     getVersion(): Promise<DataVersionSnapshot>;
@@ -349,6 +352,8 @@ export const octopusBeakApiChannels = [
   "automation:runtime-changed",
   "automation:takeSignInSettingsRequest",
   "automation:sign-in-settings-requested",
+  "automation:previewStructureReport",
+  "automation:openPreviewStructureReportIssue",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

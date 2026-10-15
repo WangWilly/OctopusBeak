@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEPOSIT_INIT_PATH, PREQUERY_PATHS, SEARCH_PATHS, runDepositProbe } from "./probe.ts";
-import { MASKED_KEY, WITHHELD, inventoryFields, safeRequestPath, safeResultCode } from "./report.ts";
+import { MASKED_KEY, WITHHELD, inventoryFields, safeRequestPath, safeResultCode } from "../../src/lib/preview-sources/response-shape.ts";
 
 const SENSITIVE = {
   twAccount: ["0808", "9765", "43210"].join(""),

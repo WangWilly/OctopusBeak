@@ -20,7 +20,7 @@ const { createWorkflowExecutor } = await import("../automation/workflow-executor
 const { assertPreviewRegistry } = await import("./registry.ts");
 const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewVisibility } = await import("./visibility.ts");
-const { previewObservationsFor, previewWorkflowDefinition } = await import("./workflow.ts");
+const { takePreviewObservations, previewWorkflowDefinition } = await import("./workflow.ts");
 const { deleteAllPreviewData } = await import("./delete-preview-data.ts");
 
 const SINOPAC_ENABLED = "LIBRETTO_CLOUD_SINOPAC_ENABLED";
@@ -168,6 +168,7 @@ test("a failed preview run keeps the responses it observed for a structure repor
   });
   const thrown = await executor.run("preview-synthetic", "run-3", {}, new AbortController().signal).catch((error) => error);
   assert.equal(thrown, failure, "the original error reaches the runner unchanged");
-  assert.deepEqual(previewObservationsFor(thrown), [{ endpoint: "/accounts", status: 200, body: { list: [] } }]);
-  assert.deepEqual(previewObservationsFor(new Error("other")), []);
+  assert.deepEqual(takePreviewObservations(thrown), [{ endpoint: "/accounts", status: 200, body: { list: [] } }]);
+  assert.deepEqual(takePreviewObservations(thrown), [], "raw bodies are released after the first take");
+  assert.deepEqual(takePreviewObservations(new Error("other")), []);
 });

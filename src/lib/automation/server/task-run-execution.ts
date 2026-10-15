@@ -65,6 +65,7 @@ import {
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
+import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
@@ -579,6 +580,21 @@ async function executeSupervisedAppWorkflow(
     }, "workflow-failed");
   }
 
+  previewStructureReports.clear(execution.task.id);
+  const recordPreviewFailure = (
+    errorCode: string,
+    events: readonly WorkflowRunEvent[],
+    shapes: PreviewResponseShapes = { responses: [], omittedResponses: 0 },
+  ) => {
+    if (!definition.requiresPreviewWrite) return;
+    previewStructureReports.recordFailure(execution.task.id, {
+      taskRunId: execution.run.taskRunId,
+      stage: lastWorkflowStage(events) ?? null,
+      errorCode,
+      shapes,
+    });
+  };
+
   const controller = new AbortController();
   const cancellationPoll = setInterval(() => {
     if (
@@ -740,6 +756,7 @@ async function executeSupervisedAppWorkflow(
           stage: lastWorkflowStage(eventsForExecution),
           safeError: outcome.diagnostic,
         });
+        recordPreviewFailure(errorCode, eventsForExecution, outcome.previewResponses);
       }
     }
   } catch (error) {
@@ -788,6 +805,7 @@ async function executeSupervisedAppWorkflow(
         stage: lastWorkflowStage(eventsForExecution),
         error,
       });
+      recordPreviewFailure(errorCode, eventsForExecution);
     }
   } finally {
     unregisterHumanAssistance?.();

@@ -1,4 +1,4 @@
-import { inventoryFields, safeResultCode, type FieldInventory } from "./report.ts";
+import { inventoryFields, safeResultCode, type FieldInventory } from "../../src/lib/preview-sources/response-shape.ts";
 
 export type PortalReply =
   | Readonly<{ kind: "json"; httpStatus: number; json: unknown }>
