@@ -155,3 +155,17 @@ Every source below has never run against a live account. Each was built from the
   - The row key is the date, `DRCR`, amount, and `paymentItem` plus an occurrence count, because all-set-tw observed `serialNo` and `seq` renumbering within a day.
   - The balance is as of the HTTP `Date` header when the same-origin page can read it, else the collection time.
   - The session-takeover notice is a precaution. The login's `resultType` `1` (duplicate login) suggests one session at a time, which is unconfirmed.
+### Taishin (台新銀行), `taishin-deposit`
+
+- Transport: the online-banking JSON endpoints under `https://my.taishinbank.com.tw/TIBNetBank/svc/`, sent as same-origin in-page `fetch` from the RWD page `https://my.taishinbank.com.tw/TIBNetBank/svc/rwd/index.html`. The web origin is kept. A call without parameters sends an empty form body, as the official axios helper does.
+- Sign-in: national ID, user code, and password, plus an image CAPTCHA. The page script builds the login request, so sign-in works only by driving the login form. That step is the `TaishinLoginForm` seam: it reads the CAPTCHA and submits the form, then the source classifies the page dialog and confirms the session with `web/common/sessioncheck`. No solver is calibrated and no production form driver exists, so every production run ends with `verification-configuration-failed` before any request. No device OTP step is documented for the website login.
+- Collected: each NT-dollar demand account from `web1/rb0100/query` (current and available balance from `web1/rb0101/query`, three months of `web1/rb0102/query`), and each foreign-currency sub-account from `web2/rb0800/getRB08000100Data` (balance from `getRB08000100QueryRealtimeBalance`, three months of `web2/rb0802/getRB08020100ForeignTranDetail`). Time deposits, loans, and investments are not collected.
+- Fail-closed: an RB0102 list shorter than `inNo + outNo` is split into smaller date ranges and requeried, and fails when a single day is still short. A row whose in and out columns are both set or both empty fails. A foreign-currency row, real-time balance, or non-empty overview balance without a recognizable currency fails. A `procSeq` that repeats on the same date with different content fails. An account missing from the transaction-query account list fails.
+- Assumptions:
+  - Currency is fixed to TWD for the `web1` (RB01xx) endpoints, because they are the NT-dollar account pages and carry no currency field. A `currency` field, if present, is used instead. Foreign-currency rows take `CCY_CODE`, and a code or Chinese name such as `美元` maps to its ISO code.
+  - The direction comes from `txnamtIn`/`txnamtOut` and `DEPAMT`/`DRWAMT`. A side counts as empty when it is `-`, blank, or zero. The amount is the lexeme of the set side.
+  - The NT-dollar row key is the Taipei date of `sysdate` plus `procSeq` padded to seven digits. A row without `procSeq` fails. Foreign-currency rows carry no sequence number, so their key is the transaction time, direction, amount, and `ACCT_BAL`.
+  - RB0802 shows no server paging or count, so its `TRANS_DETAILS` is taken as complete, and an empty object means no transactions.
+  - `RESULT` `EBF0015` on `web1/rb0101/query` marks an account online banking cannot query. Its `rb0100` balance is kept and its transactions are skipped.
+  - No logout endpoint is documented, so the session is left to expire.
+  - The session-takeover notice is a precaution. The login dialog `USER 正在線上，無法登入` suggests one web session at a time. The effect on the phone App is unconfirmed.
