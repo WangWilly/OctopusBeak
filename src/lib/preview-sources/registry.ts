@@ -18,6 +18,7 @@ export type PreviewSource = Readonly<{
   searchAliases: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
+  sessionTakeoverNotice?: AutomationLocalizedText;
   startUrl: string;
   run: PreviewWorkflowRun;
 }>;
@@ -48,6 +49,7 @@ export function previewCredentialGroup(source: PreviewSource): AutomationCredent
     credentialKeys: source.credentialFields.map((field) => field.key),
     credentialFields: source.credentialFields,
     setupGuide: source.setupGuide,
+    ...(source.sessionTakeoverNotice ? { sessionTakeoverNotice: source.sessionTakeoverNotice } : {}),
     preview: true,
   };
 }
