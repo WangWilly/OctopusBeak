@@ -12,6 +12,7 @@ import { PREVIEW_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-s
 import { NEXTBANK_PREVIEW_SOURCE } from "./nextbank-source.ts";
 import { SKBANK_PREVIEW_SOURCE } from "./skbank-source.ts";
 import { RAKUTEN_PREVIEW_SOURCE } from "./rakuten-source.ts";
+import { MEGA_PREVIEW_SOURCE } from "./mega-source.ts";
 
 export type PreviewSource = Readonly<{
   id: string;
@@ -26,7 +27,7 @@ export type PreviewSource = Readonly<{
   run: PreviewWorkflowRun;
 }>;
 
-const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE, SKBANK_PREVIEW_SOURCE, RAKUTEN_PREVIEW_SOURCE];
+const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE, SKBANK_PREVIEW_SOURCE, RAKUTEN_PREVIEW_SOURCE, MEGA_PREVIEW_SOURCE];
 
 function previewSourcesForEnvironment(environment: NodeJS.ProcessEnv = process.env): readonly PreviewSource[] {
   return previewSourceFixtureEnabled(environment)
