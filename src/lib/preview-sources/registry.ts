@@ -9,6 +9,7 @@ import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.
 import { PREVIEW_SOURCE_ID } from "./source-id.ts";
 import type { PreviewWorkflowRun } from "./workflow.ts";
 import { PREVIEW_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-source.ts";
+import { NEXTBANK_PREVIEW_SOURCE } from "./nextbank-source.ts";
 
 export type PreviewSource = Readonly<{
   id: string;
@@ -23,7 +24,7 @@ export type PreviewSource = Readonly<{
   run: PreviewWorkflowRun;
 }>;
 
-const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [];
+const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE];
 
 function previewSourcesForEnvironment(environment: NodeJS.ProcessEnv = process.env): readonly PreviewSource[] {
   return previewSourceFixtureEnabled(environment)

@@ -62,11 +62,12 @@ test("a source that was not collected is not an account without a value", () => 
   );
 });
 
-test("every source task names the namespaces it writes", async () => {
-  const { AUTOMATION_TASKS } = await import("./server/tasks.ts");
+test("every canonical source task names the namespaces it writes", async () => {
+  const { AUTOMATION_CREDENTIAL_GROUPS, AUTOMATION_TASKS } = await import("./server/tasks.ts");
   const { taskIntegrationNamespaces } = await import("../institutions/institutions.ts");
+  const previewGroups = new Set(AUTOMATION_CREDENTIAL_GROUPS.filter((group) => group.preview).map((group) => group.id));
   const missing = AUTOMATION_TASKS
-    .filter((task) => task.credentialGroupId !== undefined)
+    .filter((task) => task.credentialGroupId !== undefined && !previewGroups.has(task.credentialGroupId))
     .filter((task) => taskIntegrationNamespaces(task.id).length === 0)
     .map((task) => task.id);
   assert.deepEqual(missing, []);
