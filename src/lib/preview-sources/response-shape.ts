@@ -196,3 +196,56 @@ export function inventoryFields(root: unknown): FieldInventory {
   }
   return inventory;
 }
+
+const FIELD_VALUE_TYPES: ReadonlySet<string> = new Set<FieldValueType>(["string", "number", "boolean", "null", "object", "array"]);
+const VALUE_FORMS: ReadonlySet<string> = new Set<ValueForm>([
+  "empty", "code", "digits", "decimal", "decimal-grouped", "masked",
+  "date-slash", "date-dash", "date-time", "clock", "han-text", "text",
+  "integer", "integer-negative", "fraction", "fraction-negative", "boolean",
+]);
+const FIELD_PATH = /^\$(?:\.(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\{key\})|\[\])*$/u;
+const FIELD_SHAPE_KEYS: ReadonlySet<string> = new Set(["types", "present", "of", "forms", "length", "items", "values"]);
+
+function invalidInventory(): never {
+  throw new Error("Field inventory is not a sanitized shape.");
+}
+
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+function parseRange(value: unknown): readonly [number, number] {
+  if (!Array.isArray(value) || value.length !== 2 || !isCount(value[0]) || !isCount(value[1]) || value[0] > value[1]) invalidInventory();
+  return [value[0], value[1]];
+}
+
+function parseLabels<T extends string>(value: unknown, allowed: (label: string) => boolean, max: number): readonly T[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) invalidInventory();
+  for (const label of value) if (typeof label !== "string" || !allowed(label)) invalidInventory();
+  return value as T[];
+}
+
+const safeValue = (value: string) =>
+  value === "true" || value === "false" || (CODE_VALUE.test(value) && !LONG_DIGIT_RUN.test(value));
+
+export function parseFieldInventory(value: unknown, maxFields: number): FieldInventory {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) invalidInventory();
+  const entries = Object.entries(value);
+  if (entries.length > maxFields) invalidInventory();
+  const inventory: Record<string, FieldShape> = {};
+  for (const [path, shape] of entries) {
+    if (path.length > 2048 || !FIELD_PATH.test(path) || LONG_DIGIT_RUN.test(path)) invalidInventory();
+    if (typeof shape !== "object" || shape === null || Array.isArray(shape)) invalidInventory();
+    const field = shape as Record<string, unknown>;
+    if (Object.keys(field).some((key) => !FIELD_SHAPE_KEYS.has(key))) invalidInventory();
+    if (!isCount(field.present) || !isCount(field.of)) invalidInventory();
+    inventory[path] = {
+      types: parseLabels<FieldValueType>(field.types, (label) => FIELD_VALUE_TYPES.has(label), FIELD_VALUE_TYPES.size),
+      present: field.present,
+      of: field.of,
+      ...(field.forms !== undefined ? { forms: parseLabels<ValueForm>(field.forms, (label) => VALUE_FORMS.has(label), VALUE_FORMS.size) } : {}),
+      ...(field.length !== undefined ? { length: parseRange(field.length) } : {}),
+      ...(field.items !== undefined ? { items: parseRange(field.items) } : {}),
+      ...(field.values !== undefined ? { values: parseLabels<string>(field.values, safeValue, MAX_DISTINCT_VALUES) } : {}),
+    };
+  }
+  return inventory;
+}

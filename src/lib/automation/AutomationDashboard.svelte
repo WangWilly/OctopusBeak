@@ -95,6 +95,7 @@ import type {
   import type {
     AutomationPageModel,
     AutomationCredentialRedaction,
+    AutomationPreviewStructureReport,
     AutomationTaskHistoryRow,
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
@@ -168,6 +169,50 @@ import type {
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
   $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
+  let structureReport: (AutomationPreviewStructureReport & { taskId: string }) | null = null;
+  let structureReportKey: string | null = null;
+  let structureReportOpen = false;
+  let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
+  $: expandedFailedTask = automation.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
+  $: void loadStructureReport(expandedFailedTask);
+
+  async function loadStructureReport(task: AutomationTaskRow | null) {
+    const key = task ? `${task.id}:${task.latestFinishedAt ?? ""}` : null;
+    if (key === structureReportKey) return;
+    structureReportKey = key;
+    structureReport = null;
+    if (!task || !key) return;
+    try {
+      const report = await window.octopusBeak.automation.previewStructureReport(task.id);
+      if (structureReportKey === key && report) structureReport = { ...report, taskId: task.id };
+    } catch {
+      if (structureReportKey === key) structureReport = null;
+    }
+  }
+
+  function openStructureReport() {
+    structureReportNotice = null;
+    structureReportOpen = true;
+  }
+
+  async function copyStructureReport() {
+    if (!structureReport) return;
+    try {
+      await navigator.clipboard.writeText(structureReport.text);
+      structureReportNotice = "copied";
+    } catch {
+      structureReportNotice = "copyFailed";
+    }
+  }
+
+  async function openStructureReportIssue() {
+    if (!structureReport) return;
+    try {
+      await window.octopusBeak.automation.openPreviewStructureReportIssue(structureReport.taskId);
+    } catch {
+      structureReportNotice = "openIssueFailed";
+    }
+  }
   onDestroy(() => stopRunDetailsOverview?.());
 
   function watchRunDetailsOverview(store: Readable<ViewState<OverviewPageDto>> | null) {
@@ -1783,6 +1828,11 @@ import type {
                           {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                           {/if}
+                          {#if structureReport?.taskId === task.id}
+                            <button class="button secondary structure-report-action" type="button" onclick={openStructureReport}>
+                              {$t.automation.structureReport.share}
+                            </button>
+                          {/if}
                         </div>
                       {/if}
                       {#if task.appWorkflowOutcome?.summary}
@@ -2446,6 +2496,36 @@ import type {
         >{$t.automation.saveChanges}</button>
       </div>
     </form>
+  </div>
+{/if}
+
+{#if structureReportOpen && structureReport}
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="structure-report-title">
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}></button>
+    <div class="modal-panel structure-report-modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="structure-report-title">{$t.automation.structureReport.title}</h2>
+          <p>{$t.automation.structureReport.intro}</p>
+        </div>
+        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}><X size={20} /></button>
+      </div>
+      <div class="modal-body structure-report-body">
+        <ul class="structure-report-scope">
+          <li>{$t.automation.structureReport.contains}</li>
+          <li>{$t.automation.structureReport.neverContains}</li>
+          <li>{$t.automation.structureReport.sending}</li>
+        </ul>
+        <pre class="structure-report-text">{structureReport.text}</pre>
+        <div class="structure-report-actions">
+          {#if structureReportNotice}
+            <span class="structure-report-notice" role="status">{$t.automation.structureReport[structureReportNotice]}</span>
+          {/if}
+          <button class="button secondary" type="button" onclick={() => void copyStructureReport()}>{$t.automation.structureReport.copy}</button>
+          <button class="button" type="button" onclick={() => void openStructureReportIssue()}>{$t.automation.structureReport.openIssue}</button>
+        </div>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -3434,6 +3514,61 @@ import type {
   .history-modal {
     width: min(1180px, 100%);
     height: min(760px, calc(100vh - 40px));
+  }
+
+  .structure-report-modal {
+    width: min(760px, 100%);
+  }
+
+  .structure-report-modal .modal-head p {
+    margin: var(--space-2) 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .structure-report-body {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .structure-report-scope {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding-left: var(--space-5);
+    font-size: 13px;
+  }
+
+  .structure-report-text {
+    max-height: 360px;
+    margin: 0;
+    padding: var(--space-3);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted, var(--bg));
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: pre;
+    user-select: text;
+  }
+
+  .structure-report-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
+  .structure-report-notice {
+    margin-right: auto;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .structure-report-action {
+    min-height: 32px;
   }
 
   .history-head-actions {

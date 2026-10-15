@@ -24,6 +24,7 @@ import {
   type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
 import type { TdccSessionHost } from "./tdcc-session-host.ts";
+import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
 
 export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-start-failed" | "protocol-invalid";
@@ -37,6 +38,7 @@ export type AppWorkflowWorkerOutcome =
     summary: TypedWorkflowOutcomeSummary | null;
     failureKind: "worker-start" | "worker-crash" | "workflow" | "unexpected-exit" | "protocol";
     diagnostic?: SafeWorkflowFailureError;
+    previewResponses?: PreviewResponseShapes;
   }>;
 
 type WorkerDataStream = {
@@ -121,6 +123,7 @@ function failed(
   failureKind: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>['failureKind'],
   diagnostic: SafeWorkflowFailureError | null = null,
   summary: TypedWorkflowOutcomeSummary | null = null,
+  previewResponses?: PreviewResponseShapes,
 ): AppWorkflowWorkerOutcome {
   return {
     status: "failed",
@@ -128,6 +131,7 @@ function failed(
     summary,
     failureKind,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(previewResponses ? { previewResponses } : {}),
   };
 }
 
@@ -642,6 +646,7 @@ export async function runSupervisedAppWorkflow(
           "workflow",
           frame.diagnostic ?? null,
           frame.summary ?? null,
+          frame.previewResponses,
         ));
       }
     };

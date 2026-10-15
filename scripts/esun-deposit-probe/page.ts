@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import type { PortalReply, PortalTransport } from "./probe.ts";
-import { safeRequestPath } from "./report.ts";
+import { safeRequestPath } from "../../src/lib/preview-sources/response-shape.ts";
 
 export const PORTAL_HOST = "ebank.esunbank.com.tw";
 const MAX_OBSERVED_REQUESTS = 80;

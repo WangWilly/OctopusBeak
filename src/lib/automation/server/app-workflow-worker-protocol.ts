@@ -18,6 +18,7 @@ import {
   workflowFailureDiagnosticRepoRoot,
   type SafeWorkflowFailureError,
 } from "./workflow-failure-diagnostics.ts";
+import { parsePreviewResponseShapes, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
 export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 2 as const;
 export const APP_WORKFLOW_WORKER_MAX_FRAME_BYTES = 1_048_576;
@@ -208,6 +209,7 @@ export type AppWorkflowWorkerOutboundFrame =
     errorCode: string;
     diagnostic?: SafeWorkflowFailureError;
     summary?: TypedWorkflowOutcomeSummary | null;
+    previewResponses?: PreviewResponseShapes;
   }>
   | Readonly<{
     protocolVersion: 2;
@@ -225,6 +227,14 @@ export class AppWorkflowWorkerProtocolError extends Error {
   constructor() {
     super("App workflow worker protocol rejected a frame.");
     this.name = "AppWorkflowWorkerProtocolError";
+  }
+}
+
+function parsedPreviewResponses(value: unknown): PreviewResponseShapes {
+  try {
+    return parsePreviewResponseShapes(value);
+  } catch {
+    invalid();
   }
 }
 
@@ -561,7 +571,7 @@ export function parseAppWorkflowWorkerOutboundFrame(
     if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId) || !validSummary(value.summary)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
-  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic", "summary"])) {
+  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic", "summary", "previewResponses"])) {
     if (
       (value.taskRunId !== null && (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)))
       || typeof value.errorCode !== "string"
@@ -576,6 +586,9 @@ export function parseAppWorkflowWorkerOutboundFrame(
       ...(Object.hasOwn(value, "summary") ? { summary: value.summary as TypedWorkflowOutcomeSummary | null } : {}),
       ...(Object.hasOwn(value, "diagnostic")
         ? { diagnostic: sanitizeSafeWorkflowFailureError(value.diagnostic, diagnosticRepoRoot) }
+        : {}),
+      ...(Object.hasOwn(value, "previewResponses")
+        ? { previewResponses: parsedPreviewResponses(value.previewResponses) }
         : {}),
     };
   }
