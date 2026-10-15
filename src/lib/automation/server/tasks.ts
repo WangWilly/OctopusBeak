@@ -7,6 +7,12 @@ import type {
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.ts";
 import {
+  assertPreviewRegistry,
+  PREVIEW_SOURCES,
+  previewCredentialGroup,
+  previewTaskId,
+} from "../../preview-sources/registry.ts";
+import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureEnabled,
 } from "./packaged-browser-fixture.ts";
@@ -67,7 +73,7 @@ function credentialGroup(
   };
 }
 
-export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] =
+const VERIFIED_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] =
   [
     credentialGroup({
       ...BANK_STATEMENT_CAPABILITIES.fubon,
@@ -1013,6 +1019,27 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     }),
   ];
 
+const PREVIEW_SOURCE_REGISTRY = assertPreviewRegistry(
+  PREVIEW_SOURCES,
+  VERIFIED_CREDENTIAL_GROUPS.map((group) => group.id),
+);
+
+export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
+  ...VERIFIED_CREDENTIAL_GROUPS,
+  ...PREVIEW_SOURCE_REGISTRY.map(previewCredentialGroup),
+];
+
+const previewTasks: readonly AutomationTask[] = PREVIEW_SOURCE_REGISTRY.map((source) => ({
+  id: previewTaskId(source),
+  label: source.displayName.en,
+  workflowId: previewTaskId(source),
+  kind: "crawler",
+  credentialGroupId: source.id,
+  credentialKeys: source.credentialFields.map((field) => field.key),
+  dependencies: [],
+  maxAttempts: 1,
+}));
+
 const coreAutomationTasks: readonly AutomationTask[] = [
   {
     id: "fubon-all-statements",
@@ -1173,7 +1200,7 @@ export function automationTasksForEnvironment(
       maxAttempts: 1,
     }))
     : [];
-  return [...coreAutomationTasks, ...packagedBrowserFixtureTasks];
+  return [...coreAutomationTasks, ...previewTasks, ...packagedBrowserFixtureTasks];
 }
 
 export const AUTOMATION_TASKS: readonly AutomationTask[] = automationTasksForEnvironment();
@@ -1207,6 +1234,7 @@ export const AUTOMATION_NON_SECRET_KEYS = [
   "EXCHANGE_RATE_UPDATE_TIME",
   "SCHEDULED_COLLECTION_ENABLED",
   "SCHEDULED_COLLECTION_TIME",
+  "PREVIEW_FEATURES_ENABLED",
   "AUTOMATION_BUSINESS_TIMEZONE",
   "MAX_SUB_ACCOUNT",
   ...AUTOMATION_ENABLED_KEYS,

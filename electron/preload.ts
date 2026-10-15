@@ -71,6 +71,7 @@ const api: OctopusBeakApi = {
   settings: {
     load: () => ipcRenderer.invoke("settings:load"),
     save: (input) => ipcRenderer.invoke("settings:save", input),
+    deletePreviewData: () => ipcRenderer.invoke("settings:deletePreviewData"),
   },
   overview: {
     load: (options) => ipcRenderer.invoke("overview:load", options),

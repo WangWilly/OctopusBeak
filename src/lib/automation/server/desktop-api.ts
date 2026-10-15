@@ -19,7 +19,7 @@ import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import {
   automationBusinessTimezone,
-  automationGroupEnabledStatus,
+  offeredAutomationSources,
   readAutomationSettings,
 } from "./settings.ts";
 import {
@@ -229,7 +229,7 @@ export async function loadAutomationCoreSnapshot(
   credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
 ): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
-  const enabledGroups = automationGroupEnabledStatus(settings);
+  const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
   const activeTaskIds = activeAutomationTaskIds();
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
@@ -237,7 +237,7 @@ export async function loadAutomationCoreSnapshot(
     provider.automation.todayTaskRunIds({ startUtc: range.startUtc, endUtc: range.endUtc }),
     provider.automation.activeTaskPrerequisiteNotices(),
   ]);
-  const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
+  const credentialGroups = offeredGroups.map((group) => {
     const enabled = enabledGroups[group.id] !== false;
     const selectionSettings = { ...settings, [group.enabledKey]: enabled };
     const selection = isStatementSelectionGroup(group)

@@ -11,10 +11,8 @@ import {
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
+  type PGliteOperationalDomains,
 } from "./pglite-operational-rpc.ts";
-import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
-import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
-import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
@@ -83,10 +81,7 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
     automation: {},
     exchangeRates: {},
     maicoin: { finishRun: async () => { throw operationalError; } },
-  } as unknown as AutomationPersistenceProvider & {
-    exchangeRates: ExchangeRatePersistencePort;
-    maicoin: PGliteMaicoinPersistencePort;
-  };
+  } as unknown as PGliteOperationalDomains;
   const operationalServer = createPGliteOperationalRpcServer(operationalPorts[1], operationalProvider);
   const operationalClient = createPGliteOperationalRpcClient(operationalPorts[0], undefined, correlation);
 

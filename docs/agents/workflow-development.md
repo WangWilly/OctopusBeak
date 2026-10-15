@@ -58,6 +58,8 @@ Provider code uses only the ports supplied by `WorkflowContext`:
 - `humanAssistance.request(contract, signal)` declares a verification stage for the solver. Despite its name, no person completes it ([ADR 0039](../adr/0039-solver-only-verification.md)). The stage needs a registered solver route, or the run fails closed. The workflow must resume only after the provider's completion check succeeds.
 - Financial definitions set `requiresFinancialCommit: true` and call `context.financialCommit.execute(...)` only after source validation. Do not open a financial database or write an alternate output.
 
+A Preview Source does not use `financialCommit`. Follow [Building on Preview Sources](preview-sources.md) instead.
+
 Add a focused `*.check.ts` test alongside the provider. Exercise success, malformed or incomplete input before commit, cancellation, event reporting, and that the injected commit port receives the expected items.
 
 ## Run a workflow locally

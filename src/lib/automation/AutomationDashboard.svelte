@@ -20,6 +20,7 @@
     Plus,
     RefreshCw,
     Search,
+    FlaskConical,
     Smartphone,
     X,
   } from "@lucide/svelte";
@@ -2277,8 +2278,18 @@ import type {
               </section>
             {/if}
 
+            {#if group.preview}
+              <div class="source-notice" role="note" data-preview-disclosure>
+                <FlaskConical size={16} aria-hidden="true" />
+                <p>
+                  <strong>{$t.automation.previewSourceTitle}</strong>
+                  <span>{$t.automation.previewSourceBody}</span>
+                </p>
+              </div>
+            {/if}
+
             {#if group.sessionTakeoverNotice}
-              <div class="session-takeover" role="note">
+              <div class="source-notice" role="note">
                 <Smartphone size={16} aria-hidden="true" />
                 <p>
                   <strong>{$t.automation.sessionTakeoverTitle}</strong>
@@ -3799,7 +3810,7 @@ import type {
     font-size: 13px;
   }
 
-  .session-takeover {
+  .source-notice {
     display: flex;
     align-items: flex-start;
     gap: var(--space-2);
@@ -3812,19 +3823,19 @@ import type {
     line-height: 1.55;
   }
 
-  .session-takeover :global(svg) {
+  .source-notice :global(svg) {
     flex: none;
     margin-top: 2px;
     color: var(--warn);
   }
 
-  .session-takeover p {
+  .source-notice p {
     display: grid;
     gap: 2px;
     margin: 0;
   }
 
-  .session-takeover span {
+  .source-notice span {
     color: var(--muted);
   }
 

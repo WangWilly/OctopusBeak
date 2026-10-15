@@ -11,6 +11,8 @@ import { createTdccWorkflow } from "../tdcc-workflow.ts";
 import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
+import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
+import { previewWorkflowDefinition, previewWorkflowInput } from "../../preview-sources/workflow.ts";
 import type {
   FubonAllWorkflowInput,
   FubonAllWorkflowOutput,
@@ -374,7 +376,12 @@ export function appWorkflowCatalogForEnvironment(
       inputFromEnvironment() { return null; },
     }))
     : [];
-  return [...appWorkflowCatalog, ...packagedBrowserFixtureRegistrations];
+  const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
+    definition: previewWorkflowDefinition(source) as WorkflowDefinition,
+    runtime: browser(source.startUrl),
+    inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
+  }));
+  return [...appWorkflowCatalog, ...previewRegistrations, ...packagedBrowserFixtureRegistrations];
 }
 
 /** Test-only local workflow registrations are absent during ordinary App startup. */

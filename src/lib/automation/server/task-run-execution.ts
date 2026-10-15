@@ -351,6 +351,15 @@ async function executeInlineAppWorkflow(
       await childRpc.ready;
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
+    let previewWrite = injectedPorts.previewWrite;
+    if (definition.requiresPreviewWrite && !previewWrite) {
+      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
+        workflowId: execution.task.workflowId,
+        taskRunId: execution.run.taskRunId,
+      });
+      await childRpc.ready;
+      previewWrite = childRpc.operationalProvider.preview;
+    }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const input = workflowInputForTask(execution.task.workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
@@ -390,6 +399,7 @@ async function executeInlineAppWorkflow(
         }),
       ...(financialCommit ? { financialCommit } : {}),
       ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
+      ...(previewWrite ? { previewWrite } : {}),
       events: injectedPorts.events ?? {
         async append(event) {
           await progressReporter.appendEvent(event);
@@ -603,7 +613,7 @@ async function executeSupervisedAppWorkflow(
     const input = workflowInputForTask(workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const runtime = workflowRuntimeForTask(workflowId);
-    const pgliteRpc = (definition.requiresFinancialCommit || runtime.kind === "nonbrowser")
+    const pgliteRpc = (definition.requiresFinancialCommit || definition.requiresPreviewWrite || runtime.kind === "nonbrowser")
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();

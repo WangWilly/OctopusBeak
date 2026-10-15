@@ -7,6 +7,7 @@ import {
 assert.deepEqual([...octopusBeakApiChannels], [
   "settings:load",
   "settings:save",
+  "settings:deletePreviewData",
   "overview:load",
   "overview:block",
   "assets:load",
@@ -51,6 +52,8 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",
+  "automation:takeSignInSettingsRequest",
+  "automation:sign-in-settings-requested",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

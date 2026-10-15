@@ -43,10 +43,12 @@ import {
 } from "./pglite-ipc.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
-import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { currentPreviewVisibility, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
+import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
+import type { PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   systemSettings,
   systemSettingsFileEntries,
@@ -103,7 +105,10 @@ export function registerOctopusBeakIpc({
     workerPath?: string;
   };
   pgliteOperational: {
-    provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort };
+    provider: AutomationPersistenceProvider & {
+      exchangeRates: ExchangeRatePersistencePort;
+      preview: Pick<PGlitePreviewFinancialDataPort, "deleteAll">;
+    };
     worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
     dataDir?: string;
     workerPath?: string;
@@ -175,18 +180,27 @@ export function registerOctopusBeakIpc({
       trafficLightPositionForScale(percent),
     );
   });
+  function markStaleWhenPreviewVisibilityChanges<T>(write: () => T): T {
+    const before = currentPreviewVisibility().sourceIds.join(",");
+    const result = write();
+    if (currentPreviewVisibility().sourceIds.join(",") !== before) dataVersionStore.markStale("preview-data-changed");
+    return result;
+  }
   ipcMain.handle("settings:load", () =>
     systemSettings(readAutomationSettings()),
   );
   ipcMain.handle("settings:save", async (_event, input: SystemSettingsDto) => {
     const value = validateSystemSettings(input);
-    writeAutomationSettings({
+    markStaleWhenPreviewVisibilityChanges(() => writeAutomationSettings({
       ...readAutomationSettings(),
       ...systemSettingsFileEntries(value),
-    });
+    }));
     await onSystemSettingsChanged?.(value);
     return value;
   });
+  ipcMain.handle("settings:deletePreviewData", () =>
+    deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
+  );
   ipcMain.handle(
     "overview:load",
     (_event, options: DataReadOptions | undefined) =>
@@ -381,7 +395,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:saveCredentials",
     async (_event, updates: Record<string, string>) => {
-      const result = automationSaveCredentials(updates);
+      const result = markStaleWhenPreviewVisibilityChanges(() => automationSaveCredentials(updates));
       if (result.saved) await automationCredentials.refresh();
       return result;
     },
