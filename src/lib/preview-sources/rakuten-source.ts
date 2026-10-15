@@ -14,6 +14,7 @@ import {
   records,
   refuseUnsupportedVerification,
   requireDeviceRegistration,
+  solveChallengeRound,
   text,
   type PreviewCaptchaSolver,
   type SourceRecord,
@@ -323,7 +324,8 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
       const solve = options.solveCaptcha;
       if (!solve) return refuseUnsupportedVerification(context, "rakuten-image-captcha");
       return open(context, input.startUrl, async (page) => {
-        const captcha = await solve(context, { image: await page.captchaImage(), charset: "alphanumeric", expectedLength: CAPTCHA_LENGTH });
+        const captcha = await solveChallengeRound(context, solve, async () =>
+          ({ image: await page.captchaImage(), charset: "alphanumeric", expectedLength: CAPTCHA_LENGTH }), 1);
         const outcome = await page.signIn({
           idNumber: input.credentials[KEY.idNumber] ?? "",
           userId: input.credentials[KEY.userId] ?? "",

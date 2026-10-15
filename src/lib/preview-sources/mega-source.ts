@@ -1,19 +1,21 @@
 import { constants, createCipheriv, createHash, publicEncrypt, randomUUID } from "node:crypto";
 import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
-import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
+import { browserHttp, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
+import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewSource } from "./registry.ts";
 import {
   currencyCode,
   exactDecimal,
   fail,
   localDate,
+  MAX_CHALLENGES_PER_ROUND,
   observedAt,
   optionalText,
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
   requireDeviceRegistration,
+  solveChallengeRound,
   taipeiMonthWindow,
   text,
   type PreviewCaptchaSolver,
@@ -208,14 +210,25 @@ type Client = ReturnType<typeof client>;
 
 const LOGIN_PAGE = { pageId: "fco02003", pageNo: "login" } as const;
 
-async function signIn(context: PreviewWorkflowContext, api: Client, solve: PreviewCaptchaSolver, idNumber: string, userCode: string, password: string) {
+async function signIn(
+  context: PreviewWorkflowContext,
+  api: Client,
+  decodeImage: PreviewImageDecoder,
+  solve: PreviewCaptchaSolver,
+  idNumber: string,
+  userCode: string,
+  password: string,
+) {
   await api.oauth();
   await api.init();
   await api.resource("ixtein-pmbinit", "/fco/fco00001/initialize", {}, null);
-  const captcha = rsData((await api.resource("prelogin", "/fco/fco00001/captcha", {}, LOGIN_PAGE)).body, "captcha");
-  const image = text(captcha.image, "captcha.image").replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/u, "");
-  if (!/^[A-Za-z0-9+/=]+$/u.test(image)) return fail("unexpected-response", "captcha.image is not base64");
-  const answer = await solve(context, { image: Buffer.from(image, "base64"), charset: "digits", expectedLength: 5 });
+  const answer = await solveChallengeRound(context, solve, async () => {
+    const captcha = rsData((await api.resource("prelogin", "/fco/fco00001/captcha", {}, LOGIN_PAGE)).body, "captcha");
+    const image = text(captcha.image, "captcha.image").replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/u, "");
+    if (!/^[A-Za-z0-9+/=]+$/u.test(image)) return fail("unexpected-response", "captcha.image is not base64");
+    const png = await decodeImage(Buffer.from(image, "base64")).catch(() => fail("unexpected-response", "captcha.image is not a decodable image"));
+    return { image: png, charset: "digits", expectedLength: 5 };
+  }, MAX_CHALLENGES_PER_ROUND);
   if (!/^\d{5}$/u.test(answer)) return fail("verification-rejected", "the CAPTCHA answer is not five digits");
 
   const e2ee = rsData((await api.resource("prelogin", "/fco/fco00001/e2ee", {}, LOGIN_PAGE)).body, "e2ee");
@@ -346,6 +359,7 @@ async function collect(api: Client, now: string): Promise<PreviewAccount[]> {
 
 export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; solveCaptcha?: PreviewCaptchaSolver }> = {}): PreviewSource {
   const open = options.http ?? browserHttp;
+  const solve = options.solveCaptcha ?? calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY);
   return {
     id: "mega-deposit",
     institution: "bank-017",
@@ -359,8 +373,8 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Mega Bank account. Its data may be incomplete or wrong. Mega Bank's sign-in needs a numeric image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的兆豐銀行帳戶執行過，資料可能不完整或有誤。兆豐銀行登入需要數字圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live Mega Bank account. Its data may be incomplete or wrong. An on-device solver reads Mega Bank's numeric image CAPTCHA. When it cannot read five images in a row, the run stops before signing in.",
+        "zh-TW": "預覽來源，從未以真實的兆豐銀行帳戶執行過，資料可能不完整或有誤。兆豐銀行的數字圖形驗證碼由裝置上的解題器辨識；連續五張都無法辨識時，執行會在登入前停止。",
       },
       requirements: [{ en: "A Mega Bank account with mobile banking sign-in.", "zh-TW": "可登入兆豐行動銀行的帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Mega Bank mobile banking.", "zh-TW": "輸入登入兆豐行動銀行使用的身分證字號、使用者代號與登入密碼。" }],
@@ -378,15 +392,13 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
     startUrl: START_URL,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "mega-numeric-captcha");
       const idNumber = (input.credentials[KEY.idNumber] ?? "").trim().toUpperCase();
       const userCode = (input.credentials[KEY.userCode] ?? "").trim().toUpperCase();
       const password = input.credentials[KEY.password] ?? "";
       const device = megaVirtualDevice(idNumber, userCode);
-      return open(context, { pageUrl: input.startUrl, stripOriginFor: "https://mobile.megabank.com.tw/*" }, async (http) => {
+      return open(context, { pageUrl: input.startUrl, stripOriginFor: "https://mobile.megabank.com.tw/*" }, async (http, decodeImage) => {
         const api = client(context, http, device);
-        const gate = await signIn(context, api, solve, idNumber, userCode, password);
+        const gate = await signIn(context, api, decodeImage, solve, idNumber, userCode, password);
         try {
           await api.adapterLogin();
           if (gate.secondFactor) return await requireDeviceRegistration(context, "Mega login requires a second factor (secondFactorFlag Y)");

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import test from "node:test";
 import { createMegaSource, encryptMegaLogin, megaVirtualDevice } from "./mega-source.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 
@@ -132,12 +133,51 @@ test("the virtual device is stable per sign-in identifier and sent on every reso
   assert.ok(bodies.every((body) => body.deviceIxd === device.deviceCode && body.deviceUKey === device.deviceUKey && body.seed === device.seed));
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before any request", async () => {
-  const http = fakeHttpOpener(routes());
+const captchaImage = (png: Buffer): ResourceRoute => () => ok(JSON.stringify({ image: `data:image/png;base64,${png.toString("base64")}` }));
+const unsure = { text: "12345", confidence: 0.9 };
+
+async function runCalibrated(results: readonly { text: string; confidence: number }[], image = blankPng(100, 49)) {
+  const engine = scriptedOcrEngine(results);
+  const http = fakeHttpOpener(routes({ "/fco/fco00001/captcha": captchaImage(image) }));
+  const result = await runPreviewSource(createMegaSource({ http, solveCaptcha: calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY, engine) }), credentials);
+  const resources = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body).resource : undefined);
+  return { ...result, http, engine, resources };
+}
+
+const SIGN_IN_RESOURCES = new Set(["/fco/fco00001/captcha", "/fco/fco00001/e2ee", "/fco/fco02003/login"]);
+const signInResources = (resources: readonly unknown[]) => resources.filter((resource) => SIGN_IN_RESOURCES.has(resource as string));
+
+test("an unaccepted CAPTCHA is refreshed through the captcha API without a login, and e2ee follows the accepted one", async () => {
+  const { receipt, engine, resources, http } = await runCalibrated([
+    unsure, unsure, unsure,
+    unsure, unsure, unsure,
+    { text: "24680", confidence: 0.995 }, unsure, unsure,
+  ]);
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3 });
+  assert.equal(engine.calls.length, 9, "three strategies on each of three challenges");
+  assert.deepEqual(signInResources(resources), [
+    "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/e2ee", "/fco/fco02003/login",
+  ], "no login between refreshes, and the cipherToken is fetched after the last challenge");
+  const login = JSON.parse(http.requests.find((request) => request.body?.includes("/fco/fco02003/login"))!.body!);
+  assert.equal(login.rqData.captchaCode, "24680");
+});
+
+test("five unaccepted challenges end the round as verification-failed without a login", async () => {
+  const { errorCode, events, resources, writes, engine } = await runCalibrated(Array.from({ length: 15 }, () => unsure));
+  assert.equal(errorCode, "verification-failed");
+  assert.ok(events.some((event) => event.code === "verification-solver-exhausted"));
+  assert.deepEqual(signInResources(resources), Array.from({ length: 5 }, () => "/fco/fco00001/captcha"), "no e2ee and no login");
+  assert.equal(engine.calls.length, 15);
+  assert.equal(writes.length, 0);
+});
+
+test("a CAPTCHA outside the Mega family is refused after the captcha request and before any login", async () => {
+  const http = fakeHttpOpener(routes({ "/fco/fco00001/captcha": captchaImage(blankPng(120, 40)) }));
   const result = await runPreviewSource(createMegaSource({ http }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(http.requests.length, 0);
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+  const resources = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body).resource : undefined);
+  assert.deepEqual(signInResources(resources), ["/fco/fco00001/captcha"], "the production factory solves instead of refusing up front");
 });
 
 test("a rejected sign-in and a rejected CAPTCHA are typed", async () => {

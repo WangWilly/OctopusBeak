@@ -1,5 +1,7 @@
 import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
-import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
+import type { PreviewHttp } from "./browser-http.ts";
+import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import { taishinBrowserSession } from "./taishin-login-form.ts";
 import type { PreviewSource } from "./registry.ts";
 import {
   currencyCode,
@@ -12,7 +14,7 @@ import {
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
+  solveChallengeRound,
   taipeiMonthWindow,
   text,
   type PreviewCaptchaChallenge,
@@ -49,12 +51,18 @@ export type TaishinCredentials = Readonly<{ idNumber: string; userCode: string; 
  * Taishin's website builds the login request in its own page script, so sign-in
  * only works by driving the RWD login form. This seam is that form: it reads the
  * CAPTCHA image the page shows and submits the filled form, returning the text of
- * any dialog the page raised (null when none). No production driver exists yet.
+ * any dialog the page raised (null when none).
  */
 export type TaishinLoginForm = Readonly<{
   captcha(): Promise<PreviewCaptchaChallenge>;
   submit(credentials: TaishinCredentials, captcha: string): Promise<string | null>;
 }>;
+
+export type TaishinSessionOpener = <T>(
+  context: PreviewWorkflowContext,
+  startUrl: string,
+  use: (session: Readonly<{ http: PreviewHttp; form: TaishinLoginForm }>) => Promise<T>,
+) => Promise<T>;
 
 const CREDENTIAL_FIELD = "(?:密碼|使用者代(?:號|碼)|身分證(?:字號)?|統一編號)";
 const FAILURE = "(?:錯誤|有誤|不正確|無效)";
@@ -328,7 +336,7 @@ async function fxAccounts(api: Client, now: string): Promise<PreviewAccount[]> {
 }
 
 async function signIn(api: Client, form: TaishinLoginForm, solve: PreviewCaptchaSolver, context: PreviewWorkflowContext, credentials: TaishinCredentials) {
-  const answer = await solve(context, await form.captcha());
+  const answer = await solveChallengeRound(context, solve, () => form.captcha(), 1);
   const dialog = await form.submit(credentials, answer);
   if (dialog !== null) classifyLoginDialog(dialog);
   const path = "/web/common/sessioncheck";
@@ -337,11 +345,11 @@ async function signIn(api: Client, form: TaishinLoginForm, solve: PreviewCaptcha
 }
 
 export function createTaishinSource(options: Readonly<{
-  http?: PreviewHttpOpener;
+  open?: TaishinSessionOpener;
   solveCaptcha?: PreviewCaptchaSolver;
-  loginForm?: TaishinLoginForm;
 }> = {}): PreviewSource {
-  const open = options.http ?? browserHttp;
+  const open = options.open ?? taishinBrowserSession;
+  const solve = options.solveCaptcha ?? calibratedCaptchaSolver(TAISHIN_CAPTCHA_FAMILY);
   return {
     id: "taishin-deposit",
     institution: "bank-812",
@@ -355,8 +363,8 @@ export function createTaishinSource(options: Readonly<{
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Taishin account. Its data may be incomplete or wrong. Taishin's online-banking sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的台新銀行帳戶執行過，資料可能不完整或有誤。台新網路銀行登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live Taishin account. Its data may be incomplete or wrong. An on-device solver reads Taishin's image CAPTCHA. When it cannot read the image, the run stops before signing in.",
+        "zh-TW": "預覽來源，從未以真實的台新銀行帳戶執行過，資料可能不完整或有誤。台新網路銀行的圖形驗證碼由裝置上的解題器辨識；無法辨識時，執行會在登入前停止。",
       },
       requirements: [{ en: "A Taishin online-banking (網路銀行) login.", "zh-TW": "可登入台新網路銀行的帳號。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Taishin online banking.", "zh-TW": "輸入登入台新網路銀行使用的身分證字號、使用者代碼與使用者密碼。" }],
@@ -374,9 +382,7 @@ export function createTaishinSource(options: Readonly<{
     startUrl: RWD_URL,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const { solveCaptcha: solve, loginForm: form } = options;
-      if (!solve || !form) return refuseUnsupportedVerification(context, "taishin-image-captcha");
-      return open(context, { pageUrl: input.startUrl }, async (http) => {
+      return open(context, input.startUrl, async ({ http, form }) => {
         const api = client(context, http);
         await signIn(api, form, solve, context, {
           idNumber: input.credentials[KEY.idNumber] ?? "",

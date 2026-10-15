@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BrowserContextOptions, Frame, Page } from "playwright";
+import type { BrowserContextOptions } from "playwright";
 import type { ChallengeCharacterSet } from "../../src/lib/automation/human-assistance.ts";
 import { strictSourceText } from "../../src/lib/automation/source-text.ts";
 import type { WorkflowBrowserPort } from "../../src/lib/automation/workflow-executor.ts";
@@ -8,6 +8,8 @@ import { createNextBankSource } from "../../src/lib/preview-sources/nextbank-sou
 import { createRakutenSource } from "../../src/lib/preview-sources/rakuten-source.ts";
 import type { PreviewSource } from "../../src/lib/preview-sources/registry.ts";
 import type { PreviewCaptchaSolver } from "../../src/lib/preview-sources/source-kit.ts";
+import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-login-form.ts";
+import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
 
 export const CALIBRATION_BANKS = ["mega", "taishin", "nextbank", "rakuten"] as const;
@@ -97,55 +99,10 @@ async function captureThroughSource(
   throw new Error(`${source.id} finished without presenting a CAPTCHA.`);
 }
 
-const TAISHIN_RWD_URL = "https://my.taishinbank.com.tw/TIBNetBank/svc/rwd/index.html";
-const TAISHIN_IMAGE_SELECTOR = "img._field_item__verify-code";
-const TAISHIN_IMAGE_PATH = "/TIBNetBank/svc/web/shuffle/NonSessionShuffle";
-const TAISHIN_WAIT_MS = 30_000;
-
-async function frameWith(page: Page, selector: string, deadline: number): Promise<Frame> {
-  while (Date.now() < deadline) {
-    for (const frame of page.frames()) {
-      if (await frame.$(selector).catch(() => null)) return frame;
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`No frame shows ${selector}.`);
-}
-
-/**
- * Taishin's source has no production login-form driver, so this reader opens
- * the RWD login page, waits for the CAPTCHA image, and takes the bytes of the
- * NonSessionShuffle response the image loaded from. It never fills or submits
- * the form. Unverified against the live site: selector and paths follow
- * all-set-tw's Taishin connector.
- */
 async function captureTaishin(browser: WorkflowBrowserPort, signal: AbortSignal): Promise<CapturedChallenge> {
-  return browser.withPage(async (page) => {
-    const bodies = new Map<string, Promise<Buffer | null>>();
-    page.on("response", (response) => {
-      if (new URL(response.url()).pathname !== TAISHIN_IMAGE_PATH || response.status() !== 200) return;
-      bodies.set(response.url(), response.body().catch(() => null));
-    });
-    await page.goto(TAISHIN_RWD_URL, { waitUntil: "domcontentloaded" });
-    signal.throwIfAborted();
-    const deadline = Date.now() + TAISHIN_WAIT_MS;
-    const frame = await frameWith(page, TAISHIN_IMAGE_SELECTOR, deadline);
-    const handle = await frame.waitForFunction(({ selector, path }) => {
-      const image = document.querySelector<HTMLImageElement>(selector);
-      if (!image?.complete || image.naturalWidth <= 0) return null;
-      const source = new URL(image.currentSrc || image.src, document.baseURI);
-      return source.pathname === path ? source.href : null;
-    }, { selector: TAISHIN_IMAGE_SELECTOR, path: TAISHIN_IMAGE_PATH }, { timeout: Math.max(1, deadline - Date.now()) });
-    const source = await handle.jsonValue() as string;
-    await handle.dispose();
-    const image = await bodies.get(source);
-    if (!image) throw new Error("The Taishin CAPTCHA image response was not observed.");
-    const declaredLength = await frame.evaluate(() => {
-      const input = [...document.querySelectorAll("input")].find((candidate) =>
-        /驗證碼|captcha|verify/iu.test([candidate.name, candidate.id, candidate.placeholder, candidate.getAttribute("aria-label")].join(" ")));
-      return input && input.maxLength >= 4 && input.maxLength <= 8 ? input.maxLength : null;
-    });
-    return declaredLength === null ? { image } : { image, declaredLength };
+  return taishinBrowserSession(calibrationContext(browser, signal), TAISHIN_PREVIEW_SOURCE.startUrl, async ({ form }) => {
+    const { image, expectedLength } = await form.captcha();
+    return expectedLength === undefined ? { image } : { image, declaredLength: expectedLength };
   });
 }
 
@@ -169,7 +126,7 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     charset: "digits",
     // all-set-tw's default when the CAPTCHA input declares no usable maxLength.
     declaredLength: { value: 6, authority: "hint" },
-    method: "calibration-reader",
+    method: "preview-source",
     contextOptions: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },
     denyRules: [{ name: "taishin-login", method: "POST", path: /^\/TIBNetBank\/svc\/web\/login\/login$/u }],
     capture: captureTaishin,

@@ -7,6 +7,7 @@ const FAILURE_CODES = {
   "sign-in-rejected": "authentication-failed",
   "session-conflict": "authentication-failed",
   "verification-rejected": "verification-failed",
+  "verification-exhausted": "verification-failed",
   "verification-unsupported": "verification-configuration-failed",
   "device-registration-required": "device-registration-required",
   "unexpected-response": "source-validation-failed",
@@ -38,12 +39,23 @@ export type PreviewCaptchaChallenge = Readonly<{
   expectedLength?: number;
 }>;
 
-/**
- * Answers an image CAPTCHA a source fetched over its API. No preview source
- * ships one: no solver family is calibrated against these images, so
- * production runs end in `refuseUnsupportedVerification` before any request.
- */
-export type PreviewCaptchaSolver = (context: PreviewWorkflowContext, challenge: PreviewCaptchaChallenge) => Promise<string>;
+export type PreviewCaptchaSolver = (context: PreviewWorkflowContext, challenge: PreviewCaptchaChallenge) => Promise<string | null>;
+
+export const MAX_CHALLENGES_PER_ROUND = 5;
+
+export async function solveChallengeRound(
+  context: PreviewWorkflowContext,
+  solve: PreviewCaptchaSolver,
+  nextChallenge: () => Promise<PreviewCaptchaChallenge>,
+  maxChallenges: number,
+): Promise<string> {
+  for (let index = 0; index < maxChallenges; index += 1) {
+    const answer = await solve(context, await nextChallenge());
+    if (answer !== null) return answer;
+  }
+  await context.event("authentication", "verification-solver-exhausted");
+  return fail("verification-exhausted", `no answer accepted in ${maxChallenges} CAPTCHA challenge(s)`);
+}
 
 /** ADR 0039: a challenge without a calibrated solver route ends the run. */
 export async function refuseUnsupportedVerification(context: PreviewWorkflowContext, challenge: string): Promise<never> {

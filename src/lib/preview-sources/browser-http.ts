@@ -30,10 +30,12 @@ export type PreviewHttpSession = Readonly<{
   stripOriginFor?: string;
 }>;
 
+export type PreviewImageDecoder = (image: Buffer) => Promise<Buffer>;
+
 export type PreviewHttpOpener = <T>(
   context: PreviewWorkflowContext,
   session: PreviewHttpSession,
-  use: (http: PreviewHttp) => Promise<T>,
+  use: (http: PreviewHttp, decodeImage: PreviewImageDecoder) => Promise<T>,
 ) => Promise<T>;
 
 const CLOUDFLARE_CHALLENGE = /<title>Just a moment\.\.\.<\/title>|\/cdn-cgi\/challenge-platform\//u;
@@ -64,6 +66,43 @@ async function inPageFetch(page: Page, request: PreviewHttpRequest): Promise<Pre
   });
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+export function sniffImageType(bytes: Buffer): string | null {
+  if (bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.subarray(0, 4).toString("latin1") === "GIF8") return "image/gif";
+  if (bytes.subarray(0, 2).toString("latin1") === "BM") return "image/bmp";
+  if (bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
+}
+
+export async function decodeImageToPng(page: Page, bytes: Buffer): Promise<Buffer> {
+  const mediaType = sniffImageType(bytes);
+  if (mediaType === "image/png") return bytes;
+  if (!mediaType) throw new Error("The CAPTCHA image is not a PNG, JPEG, GIF, BMP, or WebP image.");
+  const dataUrl = await page.evaluate(async (source) => {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext("2d")!.drawImage(image, 0, 0);
+    return canvas.toDataURL("image/png");
+  }, `data:${mediaType};base64,${bytes.toString("base64")}`);
+  return Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
+}
+
+export function pageHttp(context: PreviewWorkflowContext, page: Page, rewriteFailed: () => boolean = () => false): PreviewHttp {
+  return async (request) => {
+    context.signal.throwIfAborted();
+    const response = await inPageFetch(page, request);
+    if (rewriteFailed()) throw new BrowserRuntimeConfigurationError("request-header-rewrite-failed");
+    return classifyTransport(response);
+  };
+}
+
 export const browserHttp: PreviewHttpOpener = (context, session, use) =>
   context.browser.withPage(async (page) => {
     let rewriteFailed = false;
@@ -74,12 +113,7 @@ export const browserHttp: PreviewHttpOpener = (context, session, use) =>
     }
     try {
       await page.goto(session.pageUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
-      return await use(async (request) => {
-        context.signal.throwIfAborted();
-        const response = await inPageFetch(page, request);
-        if (rewriteFailed) throw new BrowserRuntimeConfigurationError("request-header-rewrite-failed");
-        return classifyTransport(response);
-      });
+      return await use(pageHttp(context, page, () => rewriteFailed), (image) => decodeImageToPng(page, image));
     } finally {
       await cdp?.detach().catch(() => undefined);
     }
