@@ -80,7 +80,7 @@ Rules every source follows:
 - Take the direction from a source field, such as separate in and out columns or a debit/credit code. Otherwise use `unknown`. Do not infer it from keywords, balance differences, or the sign.
 - Fail the run when a paging or truncation flag says data is incomplete. Never write a partial page set.
 - Report a balance as of a source timestamp or the HTTP `Date` header when one is readable, else mark it `collection-time`.
-- A CAPTCHA needs a calibrated on-device solver (ADR 0039). Until one exists for the bank, the source calls `refuseUnsupportedVerification` before sending any request. A source accepts a `PreviewCaptchaSolver` only so that checks can exercise the rest of the flow.
+- A CAPTCHA needs a calibrated on-device solver (ADR 0039). Until one exists for the bank, the source calls `refuseUnsupportedVerification` before sending any request. A source accepts a `PreviewCaptchaSolver` only so that checks can exercise the rest of the flow. To measure a family for a bank, see [How to calibrate a preview source CAPTCHA](captcha-calibration.md).
 
 `assertPreviewRegistry` runs when `tasks.ts` loads. It rejects a duplicate id, a credential key outside the source's prefix, and a non-https start URL.
 
