@@ -20,6 +20,7 @@
     readStoredDisplayScale,
     supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
+  import PreviewMarker from "./PreviewMarker.svelte";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
@@ -32,6 +33,7 @@
   export let titleHidden = false;
   export let sideSub = "";
   export let sideSubSensitive = false;
+  export let sideIncludesPreview = false;
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
@@ -291,6 +293,9 @@
       <p class="label">{sideLabel}</p>
       <p class="side-value" class:money={sideValueSensitive}>{sideValue}</p>
       <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
+      {#if sideIncludesPreview}
+        <p class="side-preview"><PreviewMarker placement="above" /></p>
+      {/if}
     </div>
   </aside>
 

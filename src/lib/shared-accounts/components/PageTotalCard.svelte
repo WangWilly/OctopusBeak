@@ -2,6 +2,7 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatPct, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
   import type { SpanChange } from "$lib/shared-ledger/twd-valuation.ts";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
 
   export let label: string;
   export let total: number | null;
@@ -10,6 +11,7 @@
   export let goodWhen: "up" | "down" = "up";
   export let notes: string[] = [];
   export let ariaLabel = label;
+  export let includesPreview = false;
 
   $: tone = trailing === null || Math.round(trailing.change) === 0
     ? "flat"
@@ -18,7 +20,10 @@
 
 <section class="card page-total" aria-label={ariaLabel} data-page-total>
   <div class="headline">
-    <p class="total-label">{label}</p>
+    <p class="total-label">
+      {label}
+      {#if includesPreview}<PreviewMarker />{/if}
+    </p>
     {#if total === null}
       <p class="figure empty">—</p>
     {:else}
@@ -66,6 +71,10 @@
   }
 
   .total-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
     color: var(--muted);
     font-size: 12px;
     font-weight: 680;
