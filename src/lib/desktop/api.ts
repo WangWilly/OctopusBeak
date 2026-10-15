@@ -233,6 +233,7 @@ export type OctopusBeakApi = {
   settings: {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
+    deletePreviewData(): Promise<void>;
   };
   overview: {
     load(options?: DataReadOptions): Promise<OverviewPageDto>;
@@ -301,6 +302,7 @@ export type OctopusBeakApi = {
 export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
+  "settings:deletePreviewData",
   "overview:load",
   "overview:block",
   "assets:load",

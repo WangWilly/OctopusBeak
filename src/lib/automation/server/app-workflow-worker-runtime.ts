@@ -419,7 +419,15 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc) && !childRpc) throw new Error("worker-start-failed");
+    if (definition.requiresPreviewWrite && !childRpc && start.pgliteRpc) {
+      childRpc = createPGliteChildRpcClient({
+        endpoint: start.pgliteRpc.endpoint,
+        token: start.pgliteRpc.token,
+        diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
+      });
+      await abortable(childRpc.ready, controller.signal);
+    }
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresPreviewWrite) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
@@ -467,6 +475,7 @@ export async function runAppWorkflowWorker(
       ...(financialCommit ? { financialCommit } : {}),
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
+      ...(definition.requiresPreviewWrite ? { previewWrite: childRpc!.operationalProvider.preview } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,

@@ -7,6 +7,7 @@ export type SystemSettingsDto = {
   exchangeRateUpdateTime: string;
   scheduledCollectionEnabled: boolean;
   scheduledCollectionTime: string;
+  previewFeaturesEnabled: boolean;
 };
 
 const DAILY_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -24,6 +25,9 @@ export function validateSystemSettings(input: SystemSettingsDto): SystemSettings
   if (!DAILY_TIME.test(input.scheduledCollectionTime)) {
     throw new RangeError(`Invalid scheduled collection time: ${input.scheduledCollectionTime}`);
   }
+  if (typeof input.previewFeaturesEnabled !== "boolean") {
+    throw new TypeError("Preview features enabled must be a boolean.");
+  }
   return input;
 }
 
@@ -35,6 +39,7 @@ export function systemSettings(settings: AutomationSettingsFile = {}): SystemSet
     exchangeRateUpdateTime: String(settings.EXCHANGE_RATE_UPDATE_TIME ?? "06:00"),
     scheduledCollectionEnabled: automationFlagEnabled(settings.SCHEDULED_COLLECTION_ENABLED),
     scheduledCollectionTime: String(settings.SCHEDULED_COLLECTION_TIME ?? "07:00"),
+    previewFeaturesEnabled: automationFlagEnabled(settings.PREVIEW_FEATURES_ENABLED),
   });
 }
 
@@ -44,5 +49,6 @@ export function systemSettingsFileEntries(value: SystemSettingsDto) {
     EXCHANGE_RATE_UPDATE_TIME: value.exchangeRateUpdateTime,
     SCHEDULED_COLLECTION_ENABLED: value.scheduledCollectionEnabled ? "true" : "false",
     SCHEDULED_COLLECTION_TIME: value.scheduledCollectionTime,
+    PREVIEW_FEATURES_ENABLED: value.previewFeaturesEnabled ? "true" : "false",
   };
 }

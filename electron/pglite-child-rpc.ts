@@ -4,16 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { StringDecoder } from "node:string_decoder";
-import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
+import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAssertion,
   type PGliteFinancialRegistry,
 } from "./pglite-financial-registry.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../src/ledger/pglite/workflow-client.ts";
-import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
-import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
-import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
@@ -28,10 +25,7 @@ const AUTH_TIMEOUT_MS = 10_000;
 
 /** Environment values propagated to Libretto and other workflow children. */
 export type PGliteChildProvider = {
-  readonly operational: AutomationPersistenceProvider & {
-    exchangeRates: ExchangeRatePersistencePort;
-    maicoin: PGliteMaicoinPersistencePort;
-  };
+  readonly operational: PGliteOperationalDomains;
   readonly financial: PGliteFinancialRegistry;
 };
 

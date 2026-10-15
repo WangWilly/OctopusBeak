@@ -148,6 +148,7 @@ export type AutomationCredentialGroup = {
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
   sessionTakeoverNotice?: AutomationLocalizedText;
+  preview?: true;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];
 };

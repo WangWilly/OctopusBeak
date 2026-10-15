@@ -805,6 +805,9 @@ const en = {
     confirmCathayGmailOtpDisconnect:
       "Disconnect Google account? Cathay verification will require Gmail authorization again.",
     sessionTakeoverTitle: "Syncing signs out your other session",
+    previewSourceTitle: "Preview source: not verified against live data",
+    previewSourceBody:
+      "OctopusBeak has not run this source against a real account yet. Its balances and transactions may be incomplete or wrong. They are kept apart from verified data and marked as preview wherever they appear.",
     tdccDevice: {
       title: "Device registration",
       description:
@@ -1156,6 +1159,19 @@ const en = {
     scheduledCollectionToggle: "Daily",
     scheduledCollectionNextRun: (when: string) => `Next ${when}`,
     scheduledCollectionOff: "Off. Sources sync only when you start them.",
+    previewFeatures: "Preview features",
+    previewFeaturesDescription:
+      "Connect banks that OctopusBeak has not yet verified against live data. Preview data stays separate from verified data.",
+    previewFeaturesHint:
+      "Shows preview sources in sign-in settings and includes them in syncing. Turning this off hides them and their data but keeps the data.",
+    previewFeaturesOn: "On",
+    previewFeaturesOff: "Off",
+    deletePreviewData: "Delete all preview data",
+    deletePreviewDataHint: "Removes every balance and transaction collected by preview sources. Verified data is not affected.",
+    deletePreviewDataConfirm: "Delete all preview data? This cannot be undone. Preview sources collect again on their next sync.",
+    deletePreviewDataAction: "Delete",
+    previewDataDeleted: "Preview data deleted",
+    deletePreviewDataFailed: "Preview data could not be deleted. Try again.",
     saving: "Saving...",
     settingsSaved: "Settings saved.",
     allChangesSaved: "All changes saved",
@@ -2008,6 +2024,9 @@ const zh: typeof en = {
     confirmCathayGmailOtpDisconnect:
       "要解除 Google 帳號連結嗎？下次國泰驗證前需要重新授權 Gmail。",
     sessionTakeoverTitle: "同步會登出你在其他地方的登入",
+    previewSourceTitle: "預覽來源：尚未以實際資料驗證",
+    previewSourceBody:
+      "OctopusBeak 尚未用真實帳戶執行過這個來源，餘額與交易可能不完整或有誤。這些資料與已驗證的資料分開保存，出現的地方都會標示為預覽。",
     tdccDevice: {
       title: "裝置註冊",
       description:
@@ -2339,6 +2358,17 @@ const zh: typeof en = {
     scheduledCollectionToggle: "每日",
     scheduledCollectionNextRun: (when) => `下次 ${when}`,
     scheduledCollectionOff: "已關閉。只有在你手動開始時才會同步。",
+    previewFeatures: "預覽測試功能",
+    previewFeaturesDescription: "連接 OctopusBeak 尚未以實際資料驗證的銀行。預覽資料與已驗證的資料分開保存。",
+    previewFeaturesHint: "在登入設定顯示預覽來源，並納入同步。關閉後會隱藏預覽來源與其資料，但資料仍會保留。",
+    previewFeaturesOn: "開啟",
+    previewFeaturesOff: "關閉",
+    deletePreviewData: "刪除所有預覽資料",
+    deletePreviewDataHint: "移除預覽來源收集的所有餘額與交易，不影響已驗證的資料。",
+    deletePreviewDataConfirm: "要刪除所有預覽資料嗎？此動作無法復原。預覽來源下次同步時會重新收集。",
+    deletePreviewDataAction: "刪除",
+    previewDataDeleted: "已刪除預覽資料",
+    deletePreviewDataFailed: "無法刪除預覽資料，請再試一次。",
     saving: "儲存中...",
     settingsSaved: "設定已儲存。",
     allChangesSaved: "所有變更已儲存",

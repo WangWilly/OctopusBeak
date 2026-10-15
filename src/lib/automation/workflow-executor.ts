@@ -10,6 +10,7 @@ import type {
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import type { WorkflowPreviewWritePort } from "../preview-sources/workflow.ts";
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
 import type { TdccConnection, TdccSessionPort } from "../../workflows/tdcc-session.ts";
 import {
@@ -101,6 +102,7 @@ export type WorkflowContext = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  previewWrite?: WorkflowPreviewWritePort;
   event(
     stage: WorkflowStage,
     code: string,
@@ -114,6 +116,7 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
   requiresTdcc?: boolean;
+  requiresPreviewWrite?: boolean;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -124,6 +127,7 @@ export type WorkflowExecutorPorts = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  previewWrite?: WorkflowPreviewWritePort;
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
@@ -161,6 +165,9 @@ export function createWorkflowExecutor(
       }
       if (definition.requiresTdcc && !ports.tdcc) {
         throw new Error("TDCC session port is unavailable.");
+      }
+      if (definition.requiresPreviewWrite && !ports.previewWrite) {
+        throw new Error("Preview write port is unavailable.");
       }
       const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
@@ -209,6 +216,7 @@ export function createWorkflowExecutor(
           ? { maicoinPersistence: ports.maicoinPersistence }
           : {}),
         ...(definition.requiresTdcc ? { tdcc: ports.tdcc } : {}),
+        ...(definition.requiresPreviewWrite ? { previewWrite: ports.previewWrite } : {}),
         event,
         productFailure,
       };
