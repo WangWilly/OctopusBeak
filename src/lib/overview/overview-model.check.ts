@@ -51,7 +51,7 @@ test("each history date converts at that date's rate, so an FX-only move shows o
     ...only(account("usd", "foreign", usd(100)), [row("2026-10-02", usd(100)), row("2026-10-01", usd(100))]),
     exchangeRates: [rate("2026-10-01", "USD", 30), rate("2026-10-02", "USD", 31)],
   }), { today: "2026-10-02" });
-  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000 }, { date: "2026-10-02", value: 3100 }]);
+  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, includesPreview: false }, { date: "2026-10-02", value: 3100, includesPreview: false }]);
   assert.deepEqual(model.netWorth.chips[0], {
     kind: "latest", date: "2026-10-02", previousDate: "2026-10-01", isToday: true, change: 100, pct: 100 / 3000,
   });
@@ -65,7 +65,7 @@ test("a date with no rate yet is left off the chart instead of plotted as zero",
     ...only(account("usd", "foreign", usd(100)), [row("2026-09-01", usd(100)), row("2026-10-01", usd(100))]),
     exchangeRates: [rate("2026-09-20", "USD", 30)],
   }), { today: "2026-10-01" });
-  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000 }]);
+  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, includesPreview: false }]);
   assert.equal(model.historyRows[0]?.exchangeRateMissing, true);
   assert.deepEqual(model.netWorth.chips, [], "one point has nothing to compare against");
 });
@@ -90,16 +90,16 @@ test("daily bars cover 14 calendar days ending today and leave days without a re
   assert.equal(model.dailyBars[0]?.date, "2026-09-22");
   assert.equal(model.dailyBars.at(-1)?.date, "2026-10-05");
   assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null), [
-    { date: "2026-10-03", change: 100 },
-    { date: "2026-10-05", change: 100 },
+    { date: "2026-10-03", change: 100, includesPreview: false },
+    { date: "2026-10-05", change: 100, includesPreview: false },
   ]);
   const later = readOverview(input({
     ...only(account("bank", "bank", twd(1100)), [row("2026-10-03", twd(1000)), row("2026-10-05", twd(1100))]),
   }), { today: "2026-10-08" });
   assert.deepEqual(later.dailyBars.slice(-3), [
-    { date: "2026-10-06", change: null },
-    { date: "2026-10-07", change: null },
-    { date: "2026-10-08", change: null },
+    { date: "2026-10-06", change: null, includesPreview: false },
+    { date: "2026-10-07", change: null, includesPreview: false },
+    { date: "2026-10-08", change: null, includesPreview: false },
   ], "days after the last sync stay empty rather than shifting the window");
 });
 
@@ -211,10 +211,10 @@ test("allocations group assets by kind, list each debt, and relate them", () => 
 
 test("a range keeps the points inside that many days of the newest point", () => {
   const series = [
-    { date: "2026-06-01", value: 1 },
-    { date: "2026-09-04", value: 2 },
-    { date: "2026-09-05", value: 3 },
-    { date: "2026-10-05", value: 4 },
+    { date: "2026-06-01", value: 1, includesPreview: false },
+    { date: "2026-09-04", value: 2, includesPreview: false },
+    { date: "2026-09-05", value: 3, includesPreview: false },
+    { date: "2026-10-05", value: 4, includesPreview: false },
   ];
   assert.deepEqual(seriesInRange(series, "30d").map((point) => point.date), ["2026-09-05", "2026-10-05"]);
   assert.deepEqual(seriesInRange(series, "90d").map((point) => point.date), ["2026-09-04", "2026-09-05", "2026-10-05"]);
@@ -240,8 +240,8 @@ test("an account recorded for the first time is new coverage, not a change in ne
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.value), [1000, 6050, 806300], "the chart still plots recorded net worth");
   assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null), [
-    { date: "2026-09-30", change: 50 },
-    { date: "2026-10-05", change: 250 },
+    { date: "2026-09-30", change: 50, includesPreview: false },
+    { date: "2026-10-05", change: 250, includesPreview: false },
   ], "a bar never counts a newly recorded balance");
   assert.equal(model.todayChange.state, "ready");
   if (model.todayChange.state !== "ready") return;
@@ -253,4 +253,74 @@ test("an account recorded for the first time is new coverage, not a change in ne
   assert.deepEqual(since && { change: since.change, pct: since.pct }, { change: 100, pct: 0.1 }, "since-start compares only accounts recorded at the start");
   const detail = model.historyRows.find((history) => history.date === "2026-10-05");
   assert.deepEqual(detail?.dailyChange, [{ currency: "TWD", value: 250 }]);
+});
+
+function previewAccount(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {
+  return {
+    ...account(id, amountLines[0]?.currency === "TWD" ? "bank" : "foreign", amountLines),
+    preview: { sourceId: "synthetic", lastCollectedAt: "2026-10-05T00:00:00Z", balanceTime: null, transactions: [] },
+  };
+}
+
+test("a preview balance without a rate never blanks verified net worth", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:usd", usd(10))],
+    dailyHistory: [row("2026-10-05", twd(1000))],
+  }), { today: "2026-10-05" });
+  assert.equal(model.netWorth.value, 1000);
+  assert.equal(model.netWorth.includesPreview, false);
+  assert.deepEqual(model.netWorth.unconvertedCurrencies, ["USD"]);
+});
+
+test("a preview balance with a rate is converted into net worth and marked", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:usd", usd(10))],
+    dailyHistory: [row("2026-10-05", twd(1000))],
+    exchangeRates: [rate("2026-10-01", "USD", 32)],
+  }), { today: "2026-10-05" });
+  assert.equal(model.netWorth.value, 1320);
+  assert.equal(model.netWorth.includesPreview, true);
+  assert.deepEqual(model.netWorth.unconvertedCurrencies, []);
+});
+
+test("a counted TWD preview balance marks net worth beside a rateless preview one", () => {
+  const model = readOverview(input({
+    accounts: [previewAccount("preview:twd", twd(500)), previewAccount("preview:usd", usd(10))],
+    dailyHistory: [row("2026-10-05", twd(500))],
+  }), { today: "2026-10-05" });
+  assert.equal(model.netWorth.value, 500);
+  assert.equal(model.netWorth.includesPreview, true);
+  assert.deepEqual(model.netWorth.unconvertedCurrencies, ["USD"]);
+});
+
+test("a canonical account without a rate still blanks net worth", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), account("fx", "foreign", usd(10))],
+    dailyHistory: [row("2026-10-05", twd(1000))],
+  }), { today: "2026-10-05" });
+  assert.equal(model.netWorth.value, null);
+});
+
+test("history-driven totals carry the preview flag only where a preview row is counted", () => {
+  const previewRows = [
+    { ...row("2026-10-03", twd(100)), includesPreview: true },
+    { ...row("2026-10-05", twd(300)), includesPreview: true },
+  ];
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:twd", twd(300))],
+    dailyHistory: [
+      row("2026-10-01", twd(1000)),
+      { ...row("2026-10-03", twd(1100)), includesPreview: true },
+      { ...row("2026-10-05", twd(1300)), includesPreview: true },
+    ],
+    dailyHistoryByAccount: { bank: [row("2026-10-01", twd(1000))], "preview:twd": previewRows },
+  }), { today: "2026-10-05" });
+  assert.deepEqual(model.series.map((point) => point.includesPreview), [false, true, true]);
+  assert.equal(model.todayChange.state === "ready" && model.todayChange.includesPreview, true);
+  assert.equal(model.todayChange.state === "ready" && model.todayChange.total, 200);
+  assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null).map((bar) => [bar.date, bar.includesPreview]), [
+    ["2026-10-03", false],
+    ["2026-10-05", true],
+  ]);
+  assert.equal(model.historyRows.at(-1)!.includesPreview, true);
 });

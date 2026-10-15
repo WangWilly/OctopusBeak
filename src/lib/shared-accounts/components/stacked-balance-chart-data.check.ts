@@ -128,6 +128,23 @@ assert.equal(
   "empty",
 );
 
+{
+  const previewBank: AccountRowDto = {
+    ...account("preview:a", "Preview bank", "bank", 50),
+    preview: { sourceId: "synthetic", lastCollectedAt: "2026-06-25T00:00:00Z", balanceTime: null, transactions: [] },
+  };
+  const withPreview = { ...dailyHistoryByAccount, "preview:a": [row("2026-06-25", 50, 0)] };
+  const chart = buildStackedBalanceChartData({
+    accounts: [...accounts, previewBank], dailyHistoryByAccount: withPreview, filter: "all", currency: "TWD", mode: "asset",
+  });
+  assert.equal(allAssets.includesPreview, false);
+  assert.equal(chart.includesPreview, true, "a preview balance in the stacked total marks the chart");
+  assert.equal(selectStackedBalanceChartSeries(chart, ["fund"]).includesPreview, false, "hiding its series drops the mark");
+  assert.equal(buildStackedBalanceChartData({
+    accounts: [...accounts, previewBank], dailyHistoryByAccount: withPreview, filter: "all", currency: "USD", mode: "asset",
+  }).includesPreview, false, "another currency's chart holds no preview balance");
+}
+
 function account(id: string, label: string, kind: AccountKind, value: number): AccountRowDto {
   const group =
     kind === "credit-card" || kind === "loan" || kind === "other"
