@@ -179,7 +179,7 @@ const parsed = parseFubonCurrentDepositBalanceSnapshot({
   },
 });
 assert.equal(parsed.length, 2);
-assert.equal(parsed[0]?.accountNumber, "00123456789012");
+assert.equal(parsed[0]?.accountNumber, visibleRows[0]![0]);
 assert.equal(parsed[0]?.currency, "TWD");
 assert.equal(parsed[0]?.currencySourceLexeme, "臺幣");
 assert.deepEqual(parsed[0]?.instantBalance, {
@@ -216,7 +216,7 @@ const parsedTable = await parseFubonCurrentDepositBalanceTable(
   { response: response(), observedAt },
 );
 assert.equal(parsedTable.length, 2);
-assert.equal(parsedTable[0]?.accountNumber, "00123456789012");
+assert.equal(parsedTable[0]?.accountNumber, visibleRows[0]![0]);
 assert.equal(parsedTable[1]?.availableBalance.coefficient, "195025");
 
 const headerWithHiddenCellsTable = tableLocator([
@@ -228,7 +228,7 @@ const parsedHeaderWithHiddenCells = await parseFubonCurrentDepositBalanceTable(
   { response: response(), observedAt },
 );
 assert.equal(parsedHeaderWithHiddenCells.length, 1);
-assert.equal(parsedHeaderWithHiddenCells[0]?.accountNumber, "00123456789012");
+assert.equal(parsedHeaderWithHiddenCells[0]?.accountNumber, visibleRows[0]![0]);
 
 const malformedHeaderTable = tableLocator([
   header(["帳號", "錯誤標題", ...FUBON_CURRENT_DEPOSIT_HEADERS.slice(2)]),
@@ -373,6 +373,44 @@ assert.throws(
       ]],
     }),
   /not an exact decimal/u,
+);
+
+const twdRow = visibleRows[0]!;
+const usdHoldingRow = [
+  twdRow[0], twdRow[1], "外幣活存", twdRow[3], "美金", "12.34", "12.34", "", "", "快速功能",
+] as const;
+const multiCurrencyRows = parseFubonCurrentDepositBalanceSnapshot({
+  ...snapshotInput,
+  response: response(),
+  rows: [twdRow, usdHoldingRow],
+});
+assert.deepEqual(
+  multiCurrencyRows.map((row) => [row.accountNumber, row.currency, row.currencySourceLexeme]),
+  [
+    ["00123456789012", "TWD", "臺幣"],
+    ["00123456789012", "USD", "美金"],
+  ],
+  "one account may hold a TWD and a USD balance in the same snapshot",
+);
+assert.throws(
+  () =>
+    parseFubonCurrentDepositBalanceSnapshot({
+      ...snapshotInput,
+      response: response(),
+      rows: [twdRow, [...twdRow]],
+    }),
+  /duplicate account/u,
+  "the same account and currency twice is still a duplicate",
+);
+assert.throws(
+  () =>
+    parseFubonCurrentDepositBalanceSnapshot({
+      ...snapshotInput,
+      response: response(),
+      rows: [[...twdRow.slice(0, 4), "火星幣", ...twdRow.slice(5)]],
+    }),
+  /currency is invalid/u,
+  "an unmapped currency label fails closed",
 );
 
 const source = await readFile(new URL("./fubon-current-deposit-balances.ts", import.meta.url), "utf8");
