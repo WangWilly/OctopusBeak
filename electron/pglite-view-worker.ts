@@ -24,6 +24,7 @@ import {
   createPGliteFinancialRpcServer,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
+import { currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 
 type HealthRow = { ready: boolean };
 
@@ -68,7 +69,11 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const financialRegistry = createPGliteFinancialRegistry(database, operationalProvider.exchangeRates);
+  const financialRegistry = createPGliteFinancialRegistry(
+    database,
+    operationalProvider.exchangeRates,
+    () => currentPreviewVisibility(),
+  );
   const financialViews = createPGliteFinancialLiveViews(
     db,
     financialRegistry,
