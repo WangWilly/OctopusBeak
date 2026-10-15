@@ -410,6 +410,126 @@ try {
     "the USD holding must not leak into the TWD balance capture",
   );
 
+  const secondAccountNumber = "00987654321098";
+  const unlinkableAccount = {
+    value: "SYNTHETIC-MULTI-B",
+    label: `${secondAccountNumber} (013)`,
+    branchName: "013",
+  };
+  assert.equal(deriveFubonDomesticDepositAccountNumberEvidence(unlinkableAccount), null);
+  const statementFor = (account: typeof unlinkableAccount): FubonParsedDepositStatement => ({
+    ...statement,
+    account: account.label,
+    accountId: account.value,
+    branchName: account.branchName,
+    pages: statement.pages.map((page) => ({ ...page, selectedAccount: account })),
+    accountOption: account,
+  });
+  const secondTwdRow: FubonCurrentDepositBalanceRow = {
+    ...currentBalanceRow,
+    accountNumber: secondAccountNumber,
+    branchName: "013",
+    instantBalance: { coefficient: "5000", scale: 2, sourceLexeme: "50.00" },
+    availableBalance: { coefficient: "5000", scale: 2, sourceLexeme: "50.00" },
+  };
+  const secondUsdRow: FubonCurrentDepositBalanceRow = {
+    ...secondTwdRow,
+    depositType: "外幣活存",
+    currency: "USD",
+    currencySourceLexeme: "美金",
+  };
+  const unlinkableItems: PGliteWorkflowRunItem[] = [];
+  const unlinkableResult = await runFubonStatements(
+    {} as never,
+    collectionInput,
+    {
+      ...collectorOverrides(unlinkableItems, async (_page, _range, account) =>
+        account.value === unlinkableAccount.value ? statementFor(unlinkableAccount) : statement,
+      ),
+      readDepositAccountOptions: async () => [selectedAccount, unlinkableAccount],
+      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdRow],
+    },
+  );
+  assert.equal(
+    unlinkableItems.filter((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND).length,
+    2,
+    "both accounts' statements admit when only the second lacks account-number evidence",
+  );
+  const unlinkableBalanceItems = unlinkableItems.filter((item) =>
+    item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  );
+  assert.equal(unlinkableBalanceItems.length, 1, "only the unlinkable account's balance is excluded");
+  assert.ok(unlinkableBalanceItems[0]!.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND);
+  assert.equal(unlinkableBalanceItems[0]!.command.request.account.accountNumber?.value, accountNumber);
+  assert.equal(unlinkableResult.itemCount, unlinkableItems.length);
+  assert.deepEqual(unlinkableResult.currentBalanceExclusions, [
+    { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
+  ]);
+
+  const noRecordAccount = {
+    value: secondAccountNumber,
+    label: `${secondAccountNumber} (013)`,
+    branchName: "013",
+    accountNumber: deriveFubonDomesticDepositAccountNumberEvidence({
+      value: secondAccountNumber,
+      label: `${secondAccountNumber} (013)`,
+    })!,
+  };
+  const noRecordStatement: FubonParsedDepositStatement = {
+    account: noRecordAccount.label,
+    accountId: noRecordAccount.value,
+    queryPeriod: statement.queryPeriod,
+    branchName: noRecordAccount.branchName,
+    rows: [],
+    pages: [{
+      pageOrdinal: 0,
+      responseSequence: 1,
+      terminal: true,
+      nextPage: null,
+      pageFieldName: null,
+      paginationEvidence: "terminal-no-next",
+      queryRange: { ...statement.pages[0]!.queryRange },
+      selectedAccount: noRecordAccount,
+      rows: [],
+      zeroObservation: "empty-page",
+      responseMetadata: {
+        fieldNames: [],
+        fields: [],
+        candidateProviderKeyNames: [],
+        candidateProviderKeyDigests: [],
+        statusFieldNames: ["provider-no-data-message"],
+        correctionFieldNames: [],
+        transactionTimeFieldNames: [],
+        accountScopeFieldNames: [],
+        pagination: [],
+      },
+    }],
+    accountOption: noRecordAccount,
+  };
+  const noRecordItems: PGliteWorkflowRunItem[] = [];
+  const noRecordResult = await runFubonStatements(
+    {} as never,
+    collectionInput,
+    {
+      ...collectorOverrides(noRecordItems, async (_page, _range, account) =>
+        account.value === noRecordAccount.value ? noRecordStatement : statement,
+      ),
+      readDepositAccountOptions: async () => [selectedAccount, noRecordAccount],
+      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdRow],
+    },
+  );
+  assert.deepEqual(noRecordResult.currentBalanceExclusions, []);
+  assert.deepEqual(
+    noRecordItems
+      .filter((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND)
+      .map((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND
+        ? item.command.request.account.accountNumber?.value
+        : undefined)
+      .sort(),
+    [accountNumber, secondAccountNumber].sort(),
+    "a no-record statement range still establishes the account for its balance",
+  );
+
   const malformedStatement: FubonParsedDepositStatement = {
     ...statement,
     rows: statement.rows.map((row, index) =>
