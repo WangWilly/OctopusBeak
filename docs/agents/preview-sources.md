@@ -139,3 +139,19 @@ Every source below has never run against a live account. Each was built from the
   - The row key is the 17-digit `pk`, inside the account.
   - A month without rows may report `dataEnd` `false`, as all-set-tw observed, so it does not count as truncated.
   - The session-takeover notice is a precaution. all-set-tw saw a "signed in on another device" refusal, which suggests one session at a time; this is unconfirmed.
+### Mega (兆豐銀行), `mega-deposit`
+
+- Transport: the MobileFirst API of Mega's Android App 2.5.19 at `https://mobile.megabank.com.tw/ixtein`, sent as in-page `fetch` from `https://mobile.megabank.com.tw/`. Origin and Referer are stripped, because the native App sends neither. The browser keeps the session cookies; the source sends the OAuth bearer token, the `x-auth-token` header, the MD5 `checksum` header, and the App's public client settings. Request and response bodies are plain JSON.
+- Sign-in: OAuth client credentials, `/main/init`, App initialize, a 5-digit numeric image CAPTCHA, then the E2EE login. The login encrypts the space-padded password with 3DES-CBC (zero IV) under the per-login `SessionKey`, prefixes `ID|USERCODE/`, and wraps the result with the RSA key from the `e2ee` response (PKCS#1 v1.5). No solver is calibrated for the CAPTCHA, so every production run ends with `verification-configuration-failed` before any request.
+- Virtual device: `deviceCode`, `deviceUKey`, and `seed` are UUID-shaped SHA-256 digests of a fixed salt and the upper-cased ID number and user code. The preview context has no persistence port, so the device is derived instead of stored. It is a device identity only, not an App device binding: the login always sends `isDeviceBinded: false`.
+- Second factor: a login with `secondFactorFlag` `Y`, or a query that returns `SYS014` after a login flagged `isHighIpFar`, ends with `device-registration-required` after logout. The source does not request or accept an SMS code. Supporting Mega's SMS verification is follow-up work.
+- Collected: every row of the deposit overview (`/fco/fco10001/home`) as one account per account number and currency, with its `AVLBA` as the available balance. NT-dollar accounts also get three months of history from `/fao/fao01001/query`.
+- Fail-closed: history paging fails when `tsqName` repeats, is not text, or after 20 pages. A `DRCR` other than `D` or `C`, a signed amount, or two overview rows with the same account and currency but different content fail.
+- Assumptions:
+  - Currency comes from each overview row's `DRCUR` and is never defaulted. History rows use their account's currency, which the query also sends; a row `currency` field, if present, is used instead.
+  - `D` is an outflow and `C` an inflow. Amounts are kept as unsigned source lexemes.
+  - Foreign-currency accounts are balance-only, because all-set-tw queries history for NT-dollar accounts only.
+  - all-set-tw sums repeated account and currency rows and treats a repeated `tsqName` as the last page. Both meanings are unconfirmed, so this source fails instead.
+  - The row key is the date, `DRCR`, amount, and `paymentItem` plus an occurrence count, because all-set-tw observed `serialNo` and `seq` renumbering within a day.
+  - The balance is as of the HTTP `Date` header when the same-origin page can read it, else the collection time.
+  - The session-takeover notice is a precaution. The login's `resultType` `1` (duplicate login) suggests one session at a time, which is unconfirmed.
