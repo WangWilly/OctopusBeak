@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContextOptions, type Page } from "playwright";
 import {
   browserRuntime,
   type BrowserRuntime,
@@ -199,6 +199,7 @@ export function createDevelopmentBrowserPort(
     runtime?: BrowserRuntime;
     /** Registers the page where the App's solver seams resolve it. */
     sessionKey?: string;
+    contextOptions?: BrowserContextOptions;
   }> = {},
 ): WorkflowExecutorPorts["browser"] {
   const runtime = options.runtime ?? browserRuntime;
@@ -219,6 +220,7 @@ export function createDevelopmentBrowserPort(
           acceptDownloads: false,
           locale: "zh-TW",
           userAgent: profile.userAgent,
+          ...options.contextOptions,
         });
         const page = await context.newPage();
         if (options.sessionKey) unregister = registerAppWorkflowPage(options.sessionKey, page);
