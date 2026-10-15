@@ -13,6 +13,7 @@ import {
   record,
   records,
   refuseUnsupportedVerification,
+  solveChallengeRound,
   taipeiMonthWindow,
   text,
   type PreviewCaptchaSolver,
@@ -274,10 +275,10 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
       return open(context, { pageUrl: input.startUrl }, async (http) => {
         const api = client(context, http);
         const challenge = await api.post("/ap2/open/common/v1.0/Captcha", { isAudio: false });
-        const answer = await solve(context, {
+        const answer = await solveChallengeRound(context, solve, async () => ({
           image: Buffer.from(text(challenge.data.captchaImage, "Captcha.captchaImage"), "base64"),
           charset: "alphanumeric",
-        });
+        }), 1);
         const login = await api.post("/ap2/api/v1.1/membership/CaptchaLogin", {
           identity: input.credentials[KEY.idNumber] ?? "",
           userId: Buffer.from(input.credentials[KEY.userId] ?? "", "utf8").toString("base64"),

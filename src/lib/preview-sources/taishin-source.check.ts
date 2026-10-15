@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
-import { createTaishinSource, type TaishinCredentials, type TaishinLoginForm } from "./taishin-source.ts";
+import type { PreviewHttpOpener } from "./browser-http.ts";
+import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { createTaishinSource, type TaishinCredentials, type TaishinLoginForm, type TaishinSessionOpener } from "./taishin-source.ts";
 
 const credentials = {
   PREVIEW_TAISHIN_DEPOSIT_ID_NUMBER: "A000000001",
@@ -35,20 +37,24 @@ function routes(overrides: Record<string, FakeRoute> = {}): Record<string, FakeR
   };
 }
 
-function loginForm(dialog: string | null = null): TaishinLoginForm & { submitted: { credentials: TaishinCredentials; captcha: string }[] } {
+function loginForm(dialog: string | null = null, image: Buffer = Buffer.from("jpeg")): TaishinLoginForm & { submitted: { credentials: TaishinCredentials; captcha: string }[] } {
   const submitted: { credentials: TaishinCredentials; captcha: string }[] = [];
   return {
     submitted,
-    captcha: async () => ({ image: Buffer.from("jpeg"), charset: "digits", expectedLength: 6 }),
+    captcha: async () => ({ image, charset: "digits", expectedLength: 6 }),
     submit: async (filled, captcha) => { submitted.push({ credentials: filled, captcha }); return dialog; },
   };
+}
+
+function session(http: PreviewHttpOpener, form: TaishinLoginForm): TaishinSessionOpener {
+  return (context, startUrl, use) => http(context, { pageUrl: startUrl }, (transport) => use({ http: transport, form }));
 }
 
 const solveCaptcha = async () => "123456";
 
 async function run(overrides: Record<string, FakeRoute> = {}, form = loginForm()) {
   const http = fakeHttpOpener(routes(overrides));
-  const result = await runPreviewSource(createTaishinSource({ http, solveCaptcha, loginForm: form }), credentials);
+  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha }), credentials);
   return { ...result, http, form };
 }
 
@@ -87,14 +93,33 @@ test("a Taishin run writes NT-dollar and foreign-currency accounts with exact am
   assert.ok(observations.some((entry) => entry.endpoint === "/web1/rb0102/query" && entry.status === 200));
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before any request", async () => {
+async function runCalibrated(results: readonly { text: string; confidence: number }[], image = blankPng(120, 36)) {
   const http = fakeHttpOpener(routes());
-  const result = await runPreviewSource(createTaishinSource({ http, loginForm: loginForm() }), credentials);
+  const form = loginForm(null, image);
+  const engine = scriptedOcrEngine(results);
+  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha: calibratedCaptchaSolver(TAISHIN_CAPTCHA_FAMILY, engine) }), credentials);
+  return { ...result, http, form, engine };
+}
+
+test("the calibrated solver submits an accepted answer once and nothing when no candidate is accepted", async () => {
+  const accepted = await runCalibrated([{ text: "135790", confidence: 0.81 }, { text: "135799", confidence: 0.62 }]);
+  assert.equal(accepted.writes.length, 1);
+  assert.deepEqual(accepted.form.submitted.map(({ captcha }) => captcha), ["135790"]);
+
+  const unsure = await runCalibrated([{ text: "135790", confidence: 0.49 }, { text: "13579", confidence: 0.99 }]);
+  assert.equal(unsure.errorCode, "verification-failed");
+  assert.ok(unsure.events.some((event) => event.code === "verification-solver-exhausted"));
+  assert.deepEqual(unsure.form.submitted, [], "Taishin has no refresh evidence, so one unaccepted challenge ends the round");
+  assert.equal(unsure.http.requests.length, 0);
+});
+
+test("the production factory reads the CAPTCHA and refuses one outside the Taishin family without submitting", async () => {
+  const http = fakeHttpOpener(routes());
+  const form = loginForm(null, blankPng(120, 40));
+  const result = await runPreviewSource(createTaishinSource({ open: session(http, form) }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(http.requests.length, 0);
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
-  const production = await runPreviewSource(createTaishinSource({ http }), credentials);
-  assert.equal(production.errorCode, "verification-configuration-failed");
+  assert.deepEqual(form.submitted, []);
   assert.equal(http.requests.length, 0);
 });
 

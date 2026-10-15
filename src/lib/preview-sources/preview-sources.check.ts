@@ -172,3 +172,21 @@ test("a failed preview run keeps the responses it observed for a structure repor
   assert.deepEqual(takePreviewObservations(thrown), [], "raw bodies are released after the first take");
   assert.deepEqual(takePreviewObservations(new Error("other")), []);
 });
+
+test("production Mega and Taishin solve their calibrated CAPTCHA, while NextBank and Rakuten still refuse before opening a page", async () => {
+  const { runPreviewSource } = await import("./preview-source-harness.ts");
+  const { MEGA_PREVIEW_SOURCE } = await import("./mega-source.ts");
+  const { TAISHIN_PREVIEW_SOURCE } = await import("./taishin-source.ts");
+  const { NEXTBANK_PREVIEW_SOURCE } = await import("./nextbank-source.ts");
+  const { RAKUTEN_PREVIEW_SOURCE } = await import("./rakuten-source.ts");
+  const refused = (result: Awaited<ReturnType<typeof runPreviewSource>>) =>
+    result.errorCode === "verification-configuration-failed" && result.events.some((event) => event.code === "solver-challenge-unsupported");
+  for (const source of [NEXTBANK_PREVIEW_SOURCE, RAKUTEN_PREVIEW_SOURCE]) {
+    assert.ok(refused(await runPreviewSource(source, {})), `${source.id} has no calibrated family`);
+  }
+  for (const source of [MEGA_PREVIEW_SOURCE, TAISHIN_PREVIEW_SOURCE]) {
+    const result = await runPreviewSource(source, {});
+    assert.ok(!refused(result), `${source.id} goes on to open its page`);
+    assert.match(String(result.error), /preview source checks open no page/u);
+  }
+});

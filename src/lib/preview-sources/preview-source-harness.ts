@@ -1,4 +1,6 @@
+import { PNG } from "pngjs";
 import type { PreviewWrite, PreviewWriteReceipt } from "../../ledger/pglite/preview-financial-data.ts";
+import type { TextRecognitionEngine } from "../automation/server/text-captcha-solver.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "../automation/workflow-executor.ts";
 import { classifyTypedWorkflowFailure } from "../automation/server/typed-workflow-outcome.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
@@ -8,6 +10,27 @@ import type { PreviewSource } from "./registry.ts";
 import { previewWorkflowDefinition, type PreviewResponseObservation } from "./workflow.ts";
 
 export type FakeRoute = (request: PreviewHttpRequest, call: number) => PreviewHttpResponse | Promise<PreviewHttpResponse>;
+
+export function blankPng(width: number, height: number): Buffer {
+  const png = new PNG({ width, height });
+  png.data.fill(255);
+  return PNG.sync.write(png);
+}
+
+export type OcrCall = Readonly<{ imagePreprocessing: readonly string[]; ocrPageSegmentationMode: string | undefined }>;
+
+export function scriptedOcrEngine(results: readonly Readonly<{ text: string; confidence: number }>[]): TextRecognitionEngine & { calls: OcrCall[] } {
+  const calls: OcrCall[] = [];
+  return {
+    calls,
+    async recognize(_image, _charset, imagePreprocessing, ocrPageSegmentationMode) {
+      const result = results[calls.length];
+      calls.push({ imagePreprocessing: imagePreprocessing ?? [], ocrPageSegmentationMode });
+      if (!result) throw new Error(`OCR call ${calls.length} has no scripted result`);
+      return result;
+    },
+  };
+}
 
 export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): PreviewHttpResponse =>
   ({ status: 200, headers, text: typeof body === "string" ? body : JSON.stringify(body) });
@@ -29,7 +52,7 @@ export function fakeHttpOpener(routes: Readonly<Record<string, FakeRoute>>): Pre
     calls.set(key, call + 1);
     return classifyTransport(await route(request, call));
   };
-  const opener = (async (_context, _session, use) => use(http)) as PreviewHttpOpener & { requests: PreviewHttpRequest[] };
+  const opener = (async (_context, _session, use) => use(http, async (image) => image)) as PreviewHttpOpener & { requests: PreviewHttpRequest[] };
   opener.requests = requests;
   return opener;
 }
