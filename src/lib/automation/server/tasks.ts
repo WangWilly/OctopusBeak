@@ -10,8 +10,8 @@ import {
   assertPreviewRegistry,
   PREVIEW_SOURCES,
   previewCredentialGroup,
-  previewTaskId,
 } from "../../preview-sources/registry.ts";
+import { previewTaskId } from "../../preview-sources/source-id.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureEnabled,

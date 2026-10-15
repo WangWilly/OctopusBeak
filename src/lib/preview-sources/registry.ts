@@ -42,8 +42,6 @@ const envId = (id: string) => id.toUpperCase().replaceAll("-", "_");
 
 const previewEnabledKey = (source: Pick<PreviewSource, "id">) => `PREVIEW_${envId(source.id)}_ENABLED`;
 
-export const previewTaskId = (source: Pick<PreviewSource, "id">) => `preview-${source.id}`;
-
 export function previewCredentialGroup(source: PreviewSource): AutomationCredentialGroup {
   return {
     id: source.id,

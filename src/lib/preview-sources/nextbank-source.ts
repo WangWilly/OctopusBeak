@@ -2,6 +2,7 @@ import { constants, publicEncrypt } from "node:crypto";
 import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
   exactDecimal,
@@ -240,7 +241,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
   const open = options.http ?? browserHttp;
   return {
     id: "nextbank-deposit",
-    institution: "bank-823",
+    institution: PREVIEW_SOURCE_INSTITUTIONS["nextbank-deposit"],
     product: "deposit",
     displayName: { en: "Next Bank deposits (preview)", "zh-TW": "將來銀行存款（預覽）" },
     searchAliases: ["Next Bank", "NextBank", "將來", "將來銀行"],

@@ -3,6 +3,7 @@ import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/pre
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
   exactDecimal,
@@ -362,7 +363,7 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
   const solve = options.solveCaptcha ?? calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY);
   return {
     id: "mega-deposit",
-    institution: "bank-017",
+    institution: PREVIEW_SOURCE_INSTITUTIONS["mega-deposit"],
     product: "deposit",
     displayName: { en: "Mega Bank deposits (preview)", "zh-TW": "兆豐銀行存款（預覽）" },
     searchAliases: ["Mega Bank", "Mega International Commercial Bank", "MegaBank", "兆豐", "兆豐銀行", "兆豐國際商業銀行"],
