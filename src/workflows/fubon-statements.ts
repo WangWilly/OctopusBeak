@@ -275,6 +275,12 @@ function fubonCurrentDepositOpaqueKey(
     .digest("base64url")}`;
 }
 
+export function selectFubonDomesticCurrentDepositRows(
+  rows: readonly FubonCurrentDepositBalanceRow[],
+): readonly FubonCurrentDepositBalanceRow[] {
+  return rows.filter((row) => row.currency === "TWD");
+}
+
 /** Preserve the provider's full account-number evidence while joining the
  * current snapshot to the existing hashed canonical account identity. */
 export function buildFubonCurrentDepositBalanceCapture(
@@ -2969,7 +2975,7 @@ export async function runFubonStatements(
       const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
         financialCaptures,
       );
-      currentBalanceCaptures = currentRows.map((unadjustedRow) => {
+      currentBalanceCaptures = selectFubonDomesticCurrentDepositRows(currentRows).map((unadjustedRow) => {
         const row = { ...unadjustedRow, observedAt: currentObservedAt };
         const matching = existingByAccountNumber.get(row.accountNumber);
         if (!matching)

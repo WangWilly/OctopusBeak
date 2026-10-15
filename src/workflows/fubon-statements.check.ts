@@ -404,7 +404,11 @@ try {
   const usdHoldingBalanceItem = usdHoldingBalanceItems[0]!;
   assert.ok(usdHoldingBalanceItem.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND);
   assert.equal(usdHoldingBalanceItem.command.request.account.currency, "TWD");
-  assert.doesNotMatch(JSON.stringify(usdHoldingBalanceItem.command.request), /USD|美金|1234|12\.34/u);
+  assert.doesNotMatch(
+    JSON.stringify(usdHoldingBalanceItem.command.request),
+    /"currency":"USD"|美金|外幣活存|"coefficient":"1234"/u,
+    "the USD holding must not leak into the TWD balance capture",
+  );
 
   const malformedStatement: FubonParsedDepositStatement = {
     ...statement,

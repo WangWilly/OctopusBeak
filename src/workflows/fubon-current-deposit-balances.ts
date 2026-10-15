@@ -1,5 +1,7 @@
 import type { Locator, Page, Response } from "playwright";
 
+import { fubonIsoCurrency } from "./fubon-currency.ts";
+
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
  * The query is a provider snapshot and does not represent transaction rows.
@@ -210,15 +212,8 @@ function parseCurrency(value: string, rowIndex: number): {
   sourceLexeme: string;
 } {
   const sourceLexeme = cleanText(value);
-  const normalized = sourceLexeme.toUpperCase();
-  const mapped = new Map([
-    ["臺幣", "TWD"],
-    ["台幣", "TWD"],
-    ["新臺幣", "TWD"],
-    ["新台幣", "TWD"],
-  ]).get(normalized);
-  const currency = mapped ?? normalized;
-  if (!/^[A-Z]{3}$/u.test(currency)) {
+  const currency = fubonIsoCurrency(sourceLexeme);
+  if (currency === null) {
     throw new Error(`Fubon current deposit row ${rowIndex} currency is invalid.`);
   }
   return { value: currency, sourceLexeme };
@@ -247,7 +242,7 @@ export function parseFubonCurrentDepositBalanceSnapshot(
     throw new Error("Fubon current deposit table has no account rows.");
   }
 
-  const seenAccounts = new Set<string>();
+  const seenAccountCurrencies = new Set<string>();
   const rows: FubonCurrentDepositBalanceRow[] = [];
   for (let rowIndex = 0; rowIndex < input.rows.length; rowIndex += 1) {
     const values = input.rows[rowIndex]!;
@@ -257,11 +252,12 @@ export function parseFubonCurrentDepositBalanceSnapshot(
       );
     }
     const accountNumber = parseAccount(values[0] ?? "");
-    if (seenAccounts.has(accountNumber)) {
+    const parsedCurrency = parseCurrency(values[4] ?? "", rowIndex);
+    const accountCurrency = `${accountNumber}\0${parsedCurrency.value}`;
+    if (seenAccountCurrencies.has(accountCurrency)) {
       throw new Error(`Fubon current deposit has duplicate account row ${rowIndex}.`);
     }
-    seenAccounts.add(accountNumber);
-    const parsedCurrency = parseCurrency(values[4] ?? "", rowIndex);
+    seenAccountCurrencies.add(accountCurrency);
     rows.push({
       source: "fubon",
       accountNumber,
