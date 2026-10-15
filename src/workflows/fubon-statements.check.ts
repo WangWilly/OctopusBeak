@@ -380,6 +380,32 @@ try {
   assert.equal(depositItem.command.request.capture.occurrenceGroupCoverage?.length, 1);
   assert.deepEqual(await readdir(typedOutputDir), [], "Fubon collection must not create source, output, or log files");
 
+  const usdHoldingRow: FubonCurrentDepositBalanceRow = {
+    ...currentBalanceRow,
+    depositType: "外幣活存",
+    currency: "USD",
+    currencySourceLexeme: "美金",
+    instantBalance: { coefficient: "1234", scale: 2, sourceLexeme: "12.34" },
+    availableBalance: { coefficient: "1234", scale: 2, sourceLexeme: "12.34" },
+  };
+  const usdHoldingItems: PGliteWorkflowRunItem[] = [];
+  await runFubonStatements(
+    {} as never,
+    collectionInput,
+    {
+      ...collectorOverrides(usdHoldingItems),
+      readCurrentDepositBalances: async () => [currentBalanceRow, usdHoldingRow],
+    },
+  );
+  const usdHoldingBalanceItems = usdHoldingItems.filter((item) =>
+    item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  );
+  assert.equal(usdHoldingBalanceItems.length, 1, "a USD holding on the TWD account adds no second balance capture");
+  const usdHoldingBalanceItem = usdHoldingBalanceItems[0]!;
+  assert.ok(usdHoldingBalanceItem.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND);
+  assert.equal(usdHoldingBalanceItem.command.request.account.currency, "TWD");
+  assert.doesNotMatch(JSON.stringify(usdHoldingBalanceItem.command.request), /USD|美金|1234|12\.34/u);
+
   const malformedStatement: FubonParsedDepositStatement = {
     ...statement,
     rows: statement.rows.map((row, index) =>

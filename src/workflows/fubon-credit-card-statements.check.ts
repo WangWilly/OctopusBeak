@@ -1802,6 +1802,74 @@ assert.throws(
   "two distinct full card numbers sharing a last four must fail closed instead of becoming two instruments",
 );
 
+const chineseLabeledUsdUnbilledRows = panLabeledUnbilledRows.map((row) => ({
+  ...row,
+  foreign_currency: "美金",
+  foreign_amount: "12.34",
+}));
+const isoLabeledUsdUnbilledRows = chineseLabeledUsdUnbilledRows.map((row) => ({
+  ...row,
+  foreign_currency: "USD",
+}));
+const usdUnbilledCapture = (captureId: string, unbilledRows: typeof chineseLabeledUsdUnbilledRows) =>
+  buildFubonCanonicalCreditCardCaptures({
+    ...canonicalBuildOptions,
+    captureId,
+    unbilledRows,
+    gridStates: panLabeledGridStates,
+    panFingerprintKey: panVisibilityFingerprintKey,
+  })[0]!;
+const chineseLabeledUsdCapture = usdUnbilledCapture("capture-unbilled-usd-chinese-label", chineseLabeledUsdUnbilledRows);
+const isoLabeledUsdCapture = usdUnbilledCapture("capture-unbilled-usd-iso-label", isoLabeledUsdUnbilledRows);
+const unbilledForeignIdentity = (capture: typeof chineseLabeledUsdCapture) => capture.transactions
+  .filter((transaction) => transaction.billingStatus === "unbilled")
+  .map((transaction) => [
+    transaction.description,
+    transaction.foreignCurrency,
+    transaction.foreignAmount,
+    transaction.sourceKey,
+    transaction.occurrenceGroup?.fingerprint,
+  ])
+  .sort();
+assert.deepEqual(
+  unbilledForeignIdentity(chineseLabeledUsdCapture).map(([description, foreignCurrency, foreignAmount]) =>
+    [description, foreignCurrency, foreignAmount]),
+  [
+    ["SYNTHETIC UNBILLED 1234", "USD", "12.34"],
+    ["SYNTHETIC UNBILLED 5678", "USD", "12.34"],
+  ],
+  "an unbilled row labelled 美金 admits as USD",
+);
+assert.deepEqual(
+  unbilledForeignIdentity(chineseLabeledUsdCapture),
+  unbilledForeignIdentity(isoLabeledUsdCapture),
+  "the source currency label spelling must not change a purchase's source key or occurrence fingerprint",
+);
+assert.equal(JSON.stringify(chineseLabeledUsdCapture).includes("美金"), false);
+const billedUsdCapture = buildFubonCanonicalCreditCardCaptures({
+  ...canonicalBuildOptions,
+  captureId: "capture-billed-usd-iso",
+  statementRows: [{ ...canonicalStatementRows[0]!, foreign_currency: "USD", foreign_amount: "12.34" }],
+  unbilledRows: [],
+  gridStates: canonicalGridStates.map((state, index) => ({
+    ...state,
+    sourceDeclaredRowCount: index === 0 ? 1 : 0,
+  })),
+})[0]!;
+assert.deepEqual(
+  billedUsdCapture.transactions.map((transaction) => [transaction.foreignCurrency, transaction.foreignAmount]),
+  [["USD", "12.34"]],
+  "a billed row that already carries the ISO code is unchanged",
+);
+assert.throws(
+  () => usdUnbilledCapture(
+    "capture-unbilled-unknown-label",
+    chineseLabeledUsdUnbilledRows.map((row) => ({ ...row, foreign_currency: "火星幣" })),
+  ),
+  /ISO currency/u,
+  "an unmapped currency label still fails closed",
+);
+
 test("losing PAN visibility between captures does not re-admit billed transactions as new ones", async () => {
   const collect = async (snapshot: {
     unbilledRows: typeof panLabeledUnbilledRows;
@@ -1946,6 +2014,104 @@ test("unbilled purchases seen with PAN labels hand off to a new billed period wi
         ["SYNTHETIC UNBILLED 5678", "billed"],
       ],
       "each unbilled purchase must become exactly one billed current transaction",
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+test("unbilled purchases labelled 美金 hand off to a billed USD period without duplicates", async () => {
+  const collect = async (snapshot: {
+    statementRows: typeof canonicalStatementRows;
+    unbilledRows: typeof chineseLabeledUsdUnbilledRows;
+    summaries: typeof summaries;
+    gridStates: typeof providerNoRecordGridStates;
+    observedAt: string;
+  }) => {
+    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    await runFubonCreditCardStatements(
+      {} as Page,
+      canonicalInput,
+      {
+        deferredCommitItems,
+        signal: new AbortController().signal,
+        observedAt: () => snapshot.observedAt,
+        sourceText: strictSourceText,
+        panFingerprintKey: panVisibilityFingerprintKey,
+        readSourceSnapshot: async () => ({
+          statementRows: snapshot.statementRows,
+          statementPeriods: snapshot.summaries.map((summary) => summary.period),
+          summaries: snapshot.summaries,
+          gridStates: snapshot.gridStates,
+          unavailablePeriodOffsets: [],
+          unbilledRows: snapshot.unbilledRows,
+        }),
+      },
+    );
+    const item = deferredCommitItems[0]!;
+    assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
+    return item.command.request;
+  };
+  const newestSummaries = [
+    {
+      period: "period-0",
+      issueDate: "2026-08-28",
+      dueDate: "2026-09-15",
+      balance: "2.00",
+      minimumPayment: "1.00",
+    },
+    ...summaries.slice(0, 5),
+  ];
+  const nowBilledRows = isoLabeledUsdUnbilledRows.map((row) => ({
+    ...row,
+    statement_period: "period-0",
+    card_number: row.card_number.slice(-4),
+    card_label: `正卡 ${row.card_number.slice(-4)}`,
+  }));
+  const unbilledSeenRequest = await collect({
+    statementRows: canonicalStatementRows,
+    unbilledRows: chineseLabeledUsdUnbilledRows,
+    summaries,
+    gridStates: panLabeledGridStates,
+    observedAt: "2026-10-06T00:00:00.000Z",
+  });
+  const nowBilledRequest = await collect({
+    statementRows: [...nowBilledRows, ...canonicalStatementRows],
+    unbilledRows: [],
+    summaries: newestSummaries,
+    gridStates: [
+      { ...canonicalGridStates[0]!, sourceDeclaredRowCount: nowBilledRows.length },
+      ...canonicalGridStates.slice(0, 5),
+      { providerNoRecord: true as const },
+    ],
+    observedAt: "2026-10-07T00:00:00.000Z",
+  });
+  const database = await createBaselinePGlite();
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, unbilledSeenRequest);
+    await commitPGliteCanonicalCreditCardCapture(store, nowBilledRequest);
+    const lifecycle = await database.query<{ transaction_id: string; billing_status: string; description: string }>(`
+      SELECT encode(lifecycle.transaction_id, 'hex') AS transaction_id,
+             lifecycle.billing_status,
+             detail.description
+      FROM canonical_credit_card_transaction_lifecycle lifecycle
+      JOIN source_captures capture ON capture.capture_id = lifecycle.capture_id
+      JOIN canonical_commits commit_row ON commit_row.commit_id = capture.commit_id
+      JOIN transaction_revisions detail ON detail.revision_id = lifecycle.revision_id
+      ORDER BY commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`);
+    const latestByTransaction = new Map<string, { billing_status: string; description: string }>();
+    for (const row of lifecycle.rows)
+      if (!latestByTransaction.has(row.transaction_id)) latestByTransaction.set(row.transaction_id, row);
+    assert.deepEqual(
+      [...latestByTransaction.values()].map((row) => [row.description, row.billing_status]).sort(),
+      [
+        ["SYNTHETIC A", "billed"],
+        ["SYNTHETIC B", "billed"],
+        ["SYNTHETIC UNBILLED 1234", "billed"],
+        ["SYNTHETIC UNBILLED 5678", "billed"],
+      ],
+      "each 美金-labelled unbilled purchase must become exactly one billed USD transaction",
     );
   } finally {
     await store.close();
