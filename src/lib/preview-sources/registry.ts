@@ -9,6 +9,7 @@ import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.
 import { PREVIEW_SOURCE_ID } from "./source-id.ts";
 import type { PreviewWorkflowRun } from "./workflow.ts";
 import { PREVIEW_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-source.ts";
+import { NEXTBANK_PREVIEW_SOURCE } from "./nextbank-source.ts";
 
 export type PreviewSource = Readonly<{
   id: string;
@@ -18,11 +19,12 @@ export type PreviewSource = Readonly<{
   searchAliases: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
+  sessionTakeoverNotice?: AutomationLocalizedText;
   startUrl: string;
   run: PreviewWorkflowRun;
 }>;
 
-const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [];
+const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE];
 
 function previewSourcesForEnvironment(environment: NodeJS.ProcessEnv = process.env): readonly PreviewSource[] {
   return previewSourceFixtureEnabled(environment)
@@ -48,6 +50,7 @@ export function previewCredentialGroup(source: PreviewSource): AutomationCredent
     credentialKeys: source.credentialFields.map((field) => field.key),
     credentialFields: source.credentialFields,
     setupGuide: source.setupGuide,
+    ...(source.sessionTakeoverNotice ? { sessionTakeoverNotice: source.sessionTakeoverNotice } : {}),
     preview: true,
   };
 }

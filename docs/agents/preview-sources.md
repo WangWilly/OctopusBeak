@@ -51,7 +51,36 @@ The run details show 「分享結構報告」 for a failed preview run. The dial
    - `run(context, input)` signs in with `input.credentials[<key>]`, collects, validates, and returns `await context.preview.write(collection)`.
 2. Add the source to `PRODUCTION_PREVIEW_SOURCES` in `registry.ts`. The App derives the sign-in group, the task, the workflow registration, and the Sync all and Scheduled Collection membership from this entry.
 3. If a verified source for the same Institution and product exists, confirm that `VERIFIED_SOURCE_COVERAGE` lists it. Otherwise the preview source stays visible beside it.
-4. Add a `<bank>-source.check.ts` that runs `previewWorkflowDefinition(source)` through `createWorkflowExecutor` with a fake `previewWrite` port and fixture responses. Assert the written collection, and that a missing currency or malformed amount fails before `write`.
+4. Add a `<bank>-source.check.ts` that runs the source through `runPreviewSource` from `preview-source-harness.ts`, with `fakeHttpOpener` routes built from the bank's documented response shapes. Assert the written collection, that `observe()` saw each response, and that a missing currency, a malformed amount, or an incomplete page fails before `write`.
+5. Give the setup guide at least one official link, and add a section for the bank under [Sources](#sources).
+
+### Building blocks
+
+| Need | Use | File |
+| --- | --- | --- |
+| Send requests through the App-owned browser (ADR 0044) | `browserHttp`, or a fake `PreviewHttpOpener` in checks | `src/lib/preview-sources/browser-http.ts` |
+| Parse JSON without losing number lexemes | `parseSourceJson` returns every JSON number as its source text | `src/lib/preview-sources/source-kit.ts` |
+| Exact amounts, ISO currency, local dates, as-of time | `exactDecimal`, `currencyCode`, `localDate`, `observedAt` | `src/lib/preview-sources/source-kit.ts` |
+| Typed failures | `fail(reason, detail)`, `refuseUnsupportedVerification`, `requireDeviceRegistration` | `src/lib/preview-sources/source-kit.ts` |
+
+`fail` throws a `PreviewSourceFailure` whose reason maps to one typed outcome:
+
+| Reason | Outcome |
+| --- | --- |
+| `sign-in-rejected`, `session-conflict` | `authentication-failed` |
+| `verification-unsupported` | `verification-configuration-failed` |
+| `verification-rejected` | `verification-failed` |
+| `device-registration-required` | `device-registration-required` |
+| `unexpected-response`, `missing-currency`, `malformed-amount` | `source-validation-failed` |
+| `incomplete-data` | `source-collection-failed` |
+
+Rules every source follows:
+
+- Read the currency from the source. Fix it per endpoint only when the source's product cannot hold another currency, say why in the bank's section, and let a currency the source does send win.
+- Take the direction from a source field, such as separate in and out columns or a debit/credit code. Otherwise use `unknown`. Do not infer it from keywords, balance differences, or the sign.
+- Fail the run when a paging or truncation flag says data is incomplete. Never write a partial page set.
+- Report a balance as of a source timestamp or the HTTP `Date` header when one is readable, else mark it `collection-time`.
+- A CAPTCHA needs a calibrated on-device solver (ADR 0039). Until one exists for the bank, the source calls `refuseUnsupportedVerification` before sending any request. A source accepts a `PreviewCaptchaSolver` only so that checks can exercise the rest of the flow.
 
 `assertPreviewRegistry` runs when `tasks.ts` loads. It rejects a duplicate id, a credential key outside the source's prefix, and a non-https start URL.
 
@@ -62,3 +91,21 @@ Set `OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE=1` to register the synthetic source in `
 ## Promotion
 
 When a verified contract replaces a preview source, delete that source's preview data and recollect through canonical admission. Do not migrate preview rows into canonical tables.
+
+## Sources
+
+Every source below has never run against a live account. Each was built from the response shapes that the TedLin1993/all-set-tw reference (MIT, commit `d217135`) documents, and was checked only against synthetic fixtures. Expect failures until structure reports arrive.
+
+### NextBank (將來銀行), `nextbank-deposit`
+
+- Transport: NextBank's web API at `https://api.nextbank.com.tw`, sent as in-page `fetch` from `https://www.nextbank.com.tw/` with the web channel headers. The web origin is kept, because the web login sends it.
+- Sign-in: national ID, user code (base64), and the password encrypted with NextBank's RSA public key (PKCS#1 v1.5), plus an image CAPTCHA. No solver is calibrated for that CAPTCHA, so every production run ends with `verification-configuration-failed` before any request.
+- Collected: the main account (current and available balance, three months of `CurrentDepositDetail`), each demand pocket (balance and every `GetPocketTxDetail` page), and each term-deposit pocket (balance only).
+- Fail-closed: pocket paging fails when `pageInfo.hasNext` is not a boolean, when more pages follow an empty page, when a cursor repeats, or after 1000 pages. A `CurrentDepositDetail` response that carries `pageInfo.hasNext` other than `false` fails. A `tradeID` that repeats on the same date with different content fails.
+- Assumptions:
+  - Currency is fixed to TWD for `AllInOne` and `PocketInfo`, because NextBank offers NT-dollar deposits only and those endpoints carry no currency field. A `currency` field, if present, is used instead.
+  - `tradeAmount` is kept as a signed lexeme. The direction is always `unknown`, because no direction field is documented.
+  - Rows with `tradeChannel` `UNBILLED` are treated as pending and skipped.
+  - The row key is the Taipei date of `txnDateTime` plus `tradeID`, because all-set-tw observed `tradeID` repeating across months.
+  - The session-takeover notice is a precaution. The `OTHER_DEVICE_LOGIN` error code suggests one session at a time, which is unconfirmed.
+
