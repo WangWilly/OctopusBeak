@@ -58,6 +58,7 @@
     letter-spacing: 0;
     line-height: 1.45;
     white-space: normal;
+    text-align: left;
     text-transform: none;
     display: none;
     pointer-events: none;
