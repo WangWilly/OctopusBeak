@@ -39,20 +39,15 @@ function observe(request: Request): ObservedRequest {
   return { method: request.method(), url: request.url(), body: request.postData() };
 }
 
-/**
- * The route aborts a denied request; the request listener also sees requests
- * a route cannot intercept (such as one already paused by another CDP client),
- * so a denial is recorded even when the abort did not happen.
- */
 async function guardContext(context: BrowserContext, rules: readonly DenyRule[], record: (denied: DeniedRequest) => void) {
-  const check = (request: ObservedRequest) => {
+  const recordIfDenied = (request: ObservedRequest) => {
     const rule = deniedBy(rules, request);
     if (rule) record({ rule: rule.name, method: request.method, path: new URL(request.url).pathname });
     return rule;
   };
-  context.on("request", (request) => { check(observe(request)); });
+  context.on("request", (request) => { recordIfDenied(observe(request)); });
   await context.route("**/*", async (route) => {
-    if (check(observe(route.request()))) await route.abort("blockedbyclient");
+    if (recordIfDenied(observe(route.request()))) await route.abort("blockedbyclient");
     else await route.fallback();
   });
 }

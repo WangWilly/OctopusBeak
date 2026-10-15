@@ -100,7 +100,6 @@ function taishinSite(image, { beforeImage = "Promise.resolve()" } = {}) {
   };
 }
 
-/** A WorkflowBrowserPort over fake bank hosts: a fresh context per page, every unknown request aborted and kept. */
 function fakeBrowserPort(site, contextOptions = {}) {
   const sent = [];
   const served = [];

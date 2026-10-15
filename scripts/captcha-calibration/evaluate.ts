@@ -11,7 +11,6 @@ export const THRESHOLDS: readonly number[] = [
   0.99,
 ];
 export const MAX_FALSE_ACCEPT_RATE = 0.02;
-/** Below this many accepted challenges a 0% false-accept rate says little (its Wilson upper bound stays above 16%). */
 export const MIN_ACCEPTED_SAMPLES = 20;
 export const MIN_CONFIRMED_LABELS = 30;
 
@@ -25,18 +24,15 @@ export type PolicyName = keyof typeof POLICIES;
 export type Configuration = Readonly<{
   policy: PolicyName;
   strategies: readonly CalibrationStrategy[];
-  /** null for agreement-only, which ignores confidence. */
   threshold: number | null;
 }>;
 
-/** A confirmed capture; `truth` is null when the maintainer marked it unreadable, so any accepted answer is wrong. */
 export type LabelledItem = Readonly<{
   id: string;
   truth: string | null;
   candidates: ReadonlyMap<string, StrategyCandidate>;
 }>;
 
-/** A configuration as results report it, naming strategies by grid label. */
 export type ConfigurationSummary = Readonly<{ policy: PolicyName; strategies: readonly string[]; threshold: number | null }>;
 
 export type ConfigurationResult = Readonly<{
@@ -107,8 +103,7 @@ function histogram(values: readonly (string | number)[]): Record<string, number>
   return counts;
 }
 
-/** The most frequent value; ties go to the smaller one. */
-function mode(values: readonly number[]): number | null {
+function smallestMostFrequent(values: readonly number[]): number | null {
   const counts = histogram(values);
   let best: number | null = null;
   for (const value of values) {
@@ -123,15 +118,14 @@ export function expectedAnswerLength(
   items: readonly LabelledItem[],
 ): ExpectedLength | null {
   if (bank.declaredLength?.authority === "source") return { value: bank.declaredLength.value, basis: "source" };
-  const page = mode(captures.flatMap(({ declaredLength }) => declaredLength === undefined ? [] : [declaredLength]));
+  const page = smallestMostFrequent(captures.flatMap(({ declaredLength }) => declaredLength === undefined ? [] : [declaredLength]));
   if (page !== null) return { value: page, basis: "page" };
-  const labels = mode(items.flatMap(({ truth }) => truth === null ? [] : [truth.length]));
+  const labels = smallestMostFrequent(items.flatMap(({ truth }) => truth === null ? [] : [truth.length]));
   return labels === null ? null : { value: labels, basis: "labels" };
 }
 
 const DUMMY_IMAGE = Buffer.alloc(1);
 
-/** Runs the production solver over the cached OCR candidates and returns the answer it would type, if any. */
 async function acceptedAnswer(
   item: LabelledItem,
   configuration: Configuration,
@@ -203,7 +197,6 @@ export function pairAgreement(items: readonly LabelledItem[], grid: readonly Cal
   });
 }
 
-/** Wilson score interval upper bound at 95% confidence. */
 export function wilsonUpperBound(failures: number, trials: number): number {
   if (trials === 0) return 1;
   const z = 1.959964;
@@ -295,22 +288,18 @@ export function familySentence(
     + "A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.";
 }
 
-function strategyThreshold(configuration: ConfigurationSummary): number {
+function strictness(configuration: ConfigurationSummary): number {
   return configuration.threshold ?? Number.POSITIVE_INFINITY;
 }
 
-/**
- * Highest coverage among configurations whose false-accept rate is at most
- * MAX_FALSE_ACCEPT_RATE over at least MIN_ACCEPTED_SAMPLES accepts; ties go to
- * fewer strategies, then the higher threshold (agreement-only counts as the
- * strictest), then the earlier configuration.
- */
+const qualifies = (result: ConfigurationResult) =>
+  result.accepted >= MIN_ACCEPTED_SAMPLES && result.falseAcceptRate <= MAX_FALSE_ACCEPT_RATE;
+
 export function chooseConfiguration(results: readonly ConfigurationResult[], confirmed: number): ConfigurationResult | string {
   if (confirmed < MIN_CONFIRMED_LABELS) {
     return `Only ${confirmed} confirmed labels; a recommendation needs at least ${MIN_CONFIRMED_LABELS}.`;
   }
-  const qualifying = results.filter((result) =>
-    result.accepted >= MIN_ACCEPTED_SAMPLES && result.falseAcceptRate <= MAX_FALSE_ACCEPT_RATE);
+  const qualifying = results.filter(qualifies);
   if (qualifying.length === 0) {
     return `No configuration accepts at least ${MIN_ACCEPTED_SAMPLES} challenges with a false-accept rate at or below ${MAX_FALSE_ACCEPT_RATE * 100}%.`;
   }
@@ -318,7 +307,7 @@ export function chooseConfiguration(results: readonly ConfigurationResult[], con
     if (current.coverage !== best.coverage) return current.coverage > best.coverage ? current : best;
     const sizes = current.configuration.strategies.length - best.configuration.strategies.length;
     if (sizes !== 0) return sizes < 0 ? current : best;
-    return strategyThreshold(current.configuration) > strategyThreshold(best.configuration) ? current : best;
+    return strictness(current.configuration) > strictness(best.configuration) ? current : best;
   });
 }
 
@@ -419,7 +408,7 @@ export function formatEvaluation(evaluation: Evaluation, top = 15): string {
     `Top configurations with FAR <= ${percent(MAX_FALSE_ACCEPT_RATE)} and >= ${MIN_ACCEPTED_SAMPLES} accepts, by coverage:`,
   ];
   const qualifying = evaluation.results
-    .filter((result) => result.accepted >= MIN_ACCEPTED_SAMPLES && result.falseAcceptRate <= MAX_FALSE_ACCEPT_RATE)
+    .filter(qualifies)
     .sort((a, b) => b.coverage - a.coverage)
     .slice(0, top);
   lines.push(...(qualifying.length > 0 ? qualifying.map(resultLine) : ["  none"]));

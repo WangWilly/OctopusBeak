@@ -74,7 +74,6 @@ async function main(args: readonly string[]): Promise<number> {
   if (command.kind === "prelabel") {
     const result = await prelabelCorpus({ corpusDirectory, bank, engine: tesseractTextRecognitionEngine, log });
     await print(`Prelabelled ${result.labelled} captures. Suggestions stay unconfirmed until you label them.\n`);
-    // The shared Tesseract worker has no exported terminate and would keep the process alive.
     process.exit(0);
   }
 
