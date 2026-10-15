@@ -14,7 +14,6 @@ const [A, B, C] = STRATEGY_GRID;
 const GRID = [A, B, C];
 const mega = CALIBRATION_BANK_SPECS.mega;
 
-/** rows: [truth or null for unreadable, [answer, confidence] for A, B, C] */
 function corpus(rows) {
   const captures = [];
   const entries = {};
