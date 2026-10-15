@@ -3,6 +3,7 @@ import type { PreviewHttp } from "./browser-http.ts";
 import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import { taishinBrowserSession } from "./taishin-login-form.ts";
 import type { PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
   exactDecimal,
@@ -352,7 +353,7 @@ export function createTaishinSource(options: Readonly<{
   const solve = options.solveCaptcha ?? calibratedCaptchaSolver(TAISHIN_CAPTCHA_FAMILY);
   return {
     id: "taishin-deposit",
-    institution: "bank-812",
+    institution: PREVIEW_SOURCE_INSTITUTIONS["taishin-deposit"],
     product: "deposit",
     displayName: { en: "Taishin Bank deposits (preview)", "zh-TW": "台新銀行存款（預覽）" },
     searchAliases: ["Taishin", "Taishin Bank", "台新", "台新銀行", "Richart"],

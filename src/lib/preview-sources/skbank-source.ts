@@ -2,6 +2,7 @@ import { constants, createHash, createHmac, publicEncrypt } from "node:crypto";
 import type { PreviewAccount, PreviewLocalDate, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
   exactDecimal,
@@ -302,7 +303,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
   const open = options.http ?? browserHttp;
   return {
     id: "skbank-deposit",
-    institution: "bank-103",
+    institution: PREVIEW_SOURCE_INSTITUTIONS["skbank-deposit"],
     product: "deposit",
     displayName: { en: "Shin Kong Bank deposits (preview)", "zh-TW": "新光銀行存款（預覽）" },
     searchAliases: ["Shin Kong Bank", "SKBank", "新光", "新光銀行"],

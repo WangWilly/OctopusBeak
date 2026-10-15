@@ -1,5 +1,6 @@
 import { inventoryFields, parseFieldInventory, safeRequestPath, type FieldInventory } from "./response-shape.ts";
-import { PREVIEW_SOURCES, previewTaskId, type PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCES, type PreviewSource } from "./registry.ts";
+import { previewTaskId } from "./source-id.ts";
 import type { PreviewResponseObservation } from "./workflow.ts";
 
 export type PreviewResponseShape = Readonly<{ endpoint: string; status: number; fields: FieldInventory }>;

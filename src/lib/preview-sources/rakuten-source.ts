@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
 import type { PreviewSource } from "./registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
   exactDecimal,
@@ -291,7 +292,7 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
   const open = options.page ?? playwrightRakutenPage;
   return {
     id: "rakuten-deposit",
-    institution: "bank-826",
+    institution: PREVIEW_SOURCE_INSTITUTIONS["rakuten-deposit"],
     product: "deposit",
     displayName: { en: "Rakuten International Commercial Bank deposits (preview)", "zh-TW": "樂天國際銀行存款（預覽）" },
     searchAliases: ["Rakuten", "Rakuten Bank", "樂天", "樂天銀行", "樂天國際銀行"],

@@ -4,7 +4,8 @@ import type {
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import type { WorkflowContext, WorkflowDefinition } from "../automation/workflow-executor.ts";
-import { previewTaskId, type PreviewSource } from "./registry.ts";
+import type { PreviewSource } from "./registry.ts";
+import { previewTaskId } from "./source-id.ts";
 
 export type WorkflowPreviewWritePort = Readonly<{
   write(input: PreviewWrite): Promise<PreviewWriteReceipt>;
