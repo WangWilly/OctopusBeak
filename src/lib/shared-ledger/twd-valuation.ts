@@ -150,7 +150,7 @@ export function readAssetAllocation(
     if (account.group === "liability" || !valuationDate) continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
-    if (account.preview) includesPreview = true;
+    if (account.preview && account.amountLines.length > 0) includesPreview = true;
     const category = ASSET_CATEGORY[account.kind];
     byCategory.set(category, (byCategory.get(category) ?? 0) + value);
   }

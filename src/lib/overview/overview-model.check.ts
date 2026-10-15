@@ -293,6 +293,18 @@ test("a counted TWD preview balance marks net worth beside a rateless preview on
   assert.deepEqual(model.netWorth.unconvertedPreviewCurrencies, ["USD"]);
 });
 
+test("a rateless or balance-less preview account leaves the allocation unmarked", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:usd", usd(10)), previewAccount("preview:empty", [])],
+    dailyHistory: [row("2026-10-05", twd(1000))],
+  }), { today: "2026-10-05" });
+  assert.equal(model.assetAllocation.total, 1000);
+  assert.equal(model.assetAllocation.includesPreview, false);
+  assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["USD"]);
+  assert.equal(model.netWorth.value, 1000);
+  assert.equal(model.netWorth.includesPreview, false);
+});
+
 test("a canonical account without a rate still blanks net worth", () => {
   const model = readOverview(input({
     accounts: [account("bank", "bank", twd(1000)), account("fx", "foreign", usd(10))],
