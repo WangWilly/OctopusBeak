@@ -59,9 +59,7 @@ export type NetWorth = {
   asOf: string | null;
   valuationDate: string | null;
   chips: NetWorthChip[];
-  /** Preview currencies left out of `value` for want of a rate; a canonical one blanks `value` instead. */
-  unconvertedCurrencies: string[];
-  /** `value` or a chip counts a Preview source balance. */
+  unconvertedPreviewCurrencies: string[];
   includesPreview: boolean;
 };
 
@@ -130,7 +128,7 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
       asOf: dto.importedAt,
       valuationDate,
       chips: chips.chips,
-      unconvertedCurrencies: current.unconvertedCurrencies,
+      unconvertedPreviewCurrencies: current.unconvertedPreviewCurrencies,
       includesPreview: current.includesPreview || chips.includesPreview,
     },
     series,
@@ -204,18 +202,13 @@ function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeR
   });
 }
 
-/**
- * A canonical account without a rate blanks net worth, as before; a preview
- * one is left out and listed instead, so unverified data never hides the
- * verified total.
- */
 function currentNetWorth(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string | null,
-): { value: number | null; unconvertedCurrencies: string[]; includesPreview: boolean } {
+): { value: number | null; unconvertedPreviewCurrencies: string[]; includesPreview: boolean } {
   const unconverted = new Set<string>();
-  const blank = { value: null, unconvertedCurrencies: [], includesPreview: false };
+  const blank = { value: null, unconvertedPreviewCurrencies: [], includesPreview: false };
   if (!valuationDate || accounts.length === 0) return blank;
   let total = 0;
   let includesPreview = false;
@@ -231,7 +224,7 @@ function currentNetWorth(
     total += value;
     if (account.amountLines.length > 0) includesPreview = true;
   }
-  return { value: total, unconvertedCurrencies: [...unconverted].sort(), includesPreview };
+  return { value: total, unconvertedPreviewCurrencies: [...unconverted].sort(), includesPreview };
 }
 
 function changeOf(ledger: AccountLedger, from: string, to: string): Change {

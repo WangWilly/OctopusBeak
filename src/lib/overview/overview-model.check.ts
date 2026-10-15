@@ -269,7 +269,7 @@ test("a preview balance without a rate never blanks verified net worth", () => {
   }), { today: "2026-10-05" });
   assert.equal(model.netWorth.value, 1000);
   assert.equal(model.netWorth.includesPreview, false);
-  assert.deepEqual(model.netWorth.unconvertedCurrencies, ["USD"]);
+  assert.deepEqual(model.netWorth.unconvertedPreviewCurrencies, ["USD"]);
 });
 
 test("a preview balance with a rate is converted into net worth and marked", () => {
@@ -280,7 +280,7 @@ test("a preview balance with a rate is converted into net worth and marked", () 
   }), { today: "2026-10-05" });
   assert.equal(model.netWorth.value, 1320);
   assert.equal(model.netWorth.includesPreview, true);
-  assert.deepEqual(model.netWorth.unconvertedCurrencies, []);
+  assert.deepEqual(model.netWorth.unconvertedPreviewCurrencies, []);
 });
 
 test("a counted TWD preview balance marks net worth beside a rateless preview one", () => {
@@ -290,7 +290,7 @@ test("a counted TWD preview balance marks net worth beside a rateless preview on
   }), { today: "2026-10-05" });
   assert.equal(model.netWorth.value, 500);
   assert.equal(model.netWorth.includesPreview, true);
-  assert.deepEqual(model.netWorth.unconvertedCurrencies, ["USD"]);
+  assert.deepEqual(model.netWorth.unconvertedPreviewCurrencies, ["USD"]);
 });
 
 test("a canonical account without a rate still blanks net worth", () => {

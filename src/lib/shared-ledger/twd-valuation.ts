@@ -26,7 +26,6 @@ export type AssetAllocation = {
   valuationDate: string | null;
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
-  /** A converted Preview source balance is counted in `total`. */
   includesPreview: boolean;
 };
 

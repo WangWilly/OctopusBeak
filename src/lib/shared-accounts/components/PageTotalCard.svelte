@@ -11,7 +11,6 @@
   export let goodWhen: "up" | "down" = "up";
   export let notes: string[] = [];
   export let ariaLabel = label;
-  /** The total or its trailing change counts a Preview source balance. */
   export let includesPreview = false;
 
   $: tone = trailing === null || Math.round(trailing.change) === 0

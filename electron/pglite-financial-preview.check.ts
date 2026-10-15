@@ -86,8 +86,7 @@ function depositCommit(): PGliteCanonicalFinancialCommitRequest {
   };
 }
 
-/** 100.1 TWD, so a float sum with a preview balance would drift. */
-function depositBalance(): PGliteCanonicalBalanceCaptureRequest {
+function canonicalBalanceOf100Point1Twd(): PGliteCanonicalBalanceCaptureRequest {
   const occurrenceKey = token("balance-occurrence");
   const effectiveAt = "2026-10-01T04:00:00.000Z";
   return {
@@ -174,7 +173,7 @@ async function withLedger(run: (input: {
     const operational = createPgliteOperationalProvider(store);
     const canonical = createPGliteFinancialRegistry(store, operational.exchangeRates);
     await canonical.sourceCommit(depositCommit());
-    await canonical.balanceCapture(depositBalance());
+    await canonical.balanceCapture(canonicalBalanceOf100Point1Twd());
     const preview = createPGlitePreviewFinancialData(store);
     await run({
       store,
@@ -271,7 +270,7 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     const shown = registry(() => VISIBLE);
     const rateless = readOverview(await shown.overviewCurrent(), { today: TODAY });
     assert.equal(rateless.netWorth.value, 100.1, "verified net worth stays when preview data has no rate");
-    assert.deepEqual(rateless.netWorth.unconvertedCurrencies, ["USD"]);
+    assert.deepEqual(rateless.netWorth.unconvertedPreviewCurrencies, ["USD"]);
     assert.equal(rateless.netWorth.includesPreview, false);
     assert.equal(rateless.assetAllocation.total, 100.1);
     assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);

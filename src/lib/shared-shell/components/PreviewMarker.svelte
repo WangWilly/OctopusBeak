@@ -6,17 +6,15 @@
   import { t } from "$lib/i18n/i18n.ts";
 
   export let placement: "below" | "above" = "below";
-  /** Anchor the tooltip to the marker's end when the marker sits at a right edge. */
   export let align: "start" | "end" = "start";
 
   const tooltipId = `preview-marker-${(nextId += 1)}`;
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<span class="preview-marker" class:above={placement === "above"} class:end={align === "end"} tabindex="0" aria-describedby={tooltipId} data-preview-marker>
+<button type="button" class="preview-marker" class:above={placement === "above"} class:end={align === "end"} aria-describedby={tooltipId} data-preview-marker>
   {$t.preview.marker}
   <span class="preview-tooltip" role="tooltip" id={tooltipId}>{$t.preview.markerTooltip}</span>
-</span>
+</button>
 
 <style>
   .preview-marker {
@@ -29,6 +27,7 @@
     border-radius: var(--radius);
     background: color-mix(in oklch, var(--warn) 10%, white);
     color: var(--warn);
+    font: inherit;
     font-size: 11px;
     font-weight: 680;
     letter-spacing: 0.02em;

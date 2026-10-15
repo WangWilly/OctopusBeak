@@ -41,8 +41,8 @@
   {:else}
     <p class="net-worth-figure money" data-sensitive>{formatTwd(netWorth.value, $locale)}</p>
   {/if}
-  {#if netWorth.unconvertedCurrencies.length > 0}
-    <p class="net-worth-note">{$t.overview.unconverted(netWorth.unconvertedCurrencies.join(", "))}</p>
+  {#if netWorth.unconvertedPreviewCurrencies.length > 0}
+    <p class="net-worth-note">{$t.overview.unconverted(netWorth.unconvertedPreviewCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
     <ul class="chips" aria-label={$t.overview.netWorth}>

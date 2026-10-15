@@ -161,7 +161,6 @@ export type PGliteFinancialRegistry = Readonly<{
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
   spendingVersion(): Promise<number>;
-  /** Preview visibility lives in settings, not in a table, so live views need this nudge to recompute. */
   previewVisibilityChanged(): Promise<void>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;

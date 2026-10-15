@@ -32,7 +32,6 @@ export type AssetsSummary =
     shares: ReadonlyMap<string, number>;
     /** Each account's converted value, for its positions. */
     twdValues: ReadonlyMap<string, number>;
-    /** The total or its trailing change counts a Preview source balance. */
     includesPreview: boolean;
   };
 
