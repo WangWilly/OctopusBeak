@@ -505,9 +505,12 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
   const assetValue = new Map<string, AggregatedAmount>();
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
+  const preview = assets.some((account) => account.preview && account.amountLines.length > 0)
+    ? { includesPreview: true }
+    : {};
   return [
-    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`] },
-    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display) },
+    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview },
+    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview },
     { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display) },
   ];
 }

@@ -246,6 +246,10 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   font-size: 12px;
 }
 
+.side-status .side-preview {
+  margin: var(--space-3) 0 0;
+}
+
 .shell-page.sidebar-collapsed .sidebar {
   align-items: center;
   padding: var(--space-5) var(--space-4);

@@ -74,6 +74,9 @@
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
+  $: sideIncludesPreview = convertedNet === null
+    ? overview.summary[0]?.includesPreview === true
+    : model.netWorth.includesPreview;
   $: awaitingData = awaitingFirstData(overview);
   $: holdsForeign = data.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
@@ -123,6 +126,7 @@
   {sideValue}
   {sideSub}
   {sideSubSensitive}
+  {sideIncludesPreview}
   syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
   <div class="content overview-content">
@@ -182,6 +186,7 @@
           total={model.assetAllocation.slices.length > 0 ? model.assetAllocation.total : null}
           rateNote={rateNote(model, holdsForeign, $t)}
           note={unconvertedNote(model.assetAllocation.unconvertedCurrencies)}
+          includesPreview={model.assetAllocation.includesPreview}
           href="#/assets"
           linkLabel={$t.nav.assets}
           tiles={assetTiles}

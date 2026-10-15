@@ -44,6 +44,8 @@ export type SummaryMetricDto = {
   label: string;
   amounts: CurrencyAmountDto[];
   breakdown: string[];
+  /** `amounts` counts a Preview source balance. */
+  includesPreview?: boolean;
 };
 
 export type DailyHistoryRowDto = {

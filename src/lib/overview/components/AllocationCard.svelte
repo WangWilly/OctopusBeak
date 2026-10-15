@@ -12,6 +12,7 @@
   import { ArrowRight, LayoutGrid } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import { formatShare, formatTwd } from "$lib/overview/overview-format.ts";
   import { squarify } from "$lib/overview/treemap-layout.ts";
 
@@ -21,6 +22,8 @@
   /** Liabilities / assets; omitted on the asset card. */
   export let ratio: number | null | undefined = undefined;
   export let rateNote = "";
+  /** The total counts a Preview source balance. */
+  export let includesPreview = false;
   export let note = "";
   export let href: string;
   export let linkLabel: string;
@@ -49,6 +52,7 @@
           {#if ratio === null}—{:else}<span class="num" data-sensitive>{formatShare(ratio, $locale)}</span>{/if}
         {/if}
         {#if rateNote}<span aria-hidden="true">·</span> {rateNote}{/if}
+        {#if includesPreview}<PreviewMarker />{/if}
       </p>
     </div>
     <a class="link" {href}>{linkLabel}<ArrowRight size={14} strokeWidth={2} aria-hidden="true" /></a>
