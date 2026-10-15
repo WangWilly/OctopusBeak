@@ -26,10 +26,20 @@ This guide describes the seam that display, structure-report, and connector work
 | Read preview data | `preview.accounts(visibility)` and `preview.transactions(visibility, previewAccountId)` on the operational provider | `electron/pglite-operational-rpc.ts` |
 | Verified coverage | `VERIFIED_SOURCE_COVERAGE`, keyed by verified credential group | `src/lib/preview-sources/visibility.ts` |
 | Delete all preview data | `settings.deletePreviewData()` in the renderer, `deleteAllPreviewData` in main | `src/lib/preview-sources/delete-preview-data.ts` |
+| Record a response for a structure report | `context.preview.observe({ endpoint, status, body })` inside `PreviewSource.run` | `src/lib/preview-sources/workflow.ts` |
+| Sanitize, bound, and share a report | `previewResponseShapes`, `previewStructureReports`, `previewStructureReportIssueUrl` | `src/lib/preview-sources/structure-report.ts` |
 
 `PreviewVisibility` is the single query-level predicate: `{ sourceIds }`. A read returns rows only for the listed sources, and an empty list returns nothing. Always compute it with `currentPreviewVisibility()` at read time, then pass it to the read. Do not cache it across a settings change; the App marks data stale (`preview-data-changed`) when the toggle changes or preview data is deleted.
 
 The main process reaches the port as `pgliteOperational.provider.preview`. A workflow child reaches the same port through the authenticated child RPC, and the runtime injects it only into definitions with `requiresPreviewWrite: true`.
+
+## Structure reports
+
+When a preview run fails, the workflow worker takes the observed responses with `takePreviewObservations(error)` and turns them into shape-only inventories with the E.SUN deposit probe's sanitizer (`src/lib/preview-sources/response-shape.ts`). Raw bodies never leave the worker. The failed frame carries only the inventories, and the main process validates them again before it accepts them.
+
+The main process keeps one report per preview task, in memory, for the latest run of that task. A new run of the task drops the previous report, and a restart drops all of them. Reports are not written to the database. The report holds at most 50 responses and at most 48,000 characters of inventories, so it fits in a GitHub issue body; older responses are dropped first and counted in `omittedResponses`.
+
+The run details show 「分享結構報告」 for a failed preview run. The dialog shows the full report, copies it, and opens a prefilled issue in the system browser. The issue URL carries a fixed title and template only, never the report. The App never sends the report itself.
 
 ## Add a bank
 

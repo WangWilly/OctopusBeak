@@ -85,7 +85,6 @@ test("the report reuses the probe's field inventory and carries no identifiers, 
   assert.deepEqual(shapes.responses[0]?.fields, inventoryFields(syntheticBody), "one sanitizer serves the probe and the App");
   assert.equal(shapes.responses[0]?.endpoint, "/api/v1/accounts/{segment}/detail");
   const text = renderPreviewStructureReport({
-    taskRunId: "run-1",
     previewSource: "synthetic",
     institution: "bank-009",
     product: "deposit",
@@ -98,7 +97,6 @@ test("the report reuses the probe's field inventory and carries no identifiers, 
   assert.equal(report.appVersion, "0.8.2");
   assert.equal(report.previewSource, "synthetic");
   assert.deepEqual(report.failure, { stage: "collection", errorCode: "source-validation-failed" });
-  assert.equal(text.includes("run-1"), false, "the run id stays out of the shared text");
   assert.match(text, /"\$\.accountList\[\]\.currency"/u);
   assert.match(text, /"TWD"/u);
 });
@@ -247,7 +245,6 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
     assert.equal(previewFailure.result.status, "failed");
     const report = previewStructureReports.get("preview-synthetic");
     assert.deepEqual(report, {
-      taskRunId: previewFailure.taskRunId,
       previewSource: "synthetic",
       institution: "bank-009",
       product: "deposit",

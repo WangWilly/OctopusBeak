@@ -509,7 +509,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
   ipcMain.handle("automation:previewStructureReport", (_event, taskId: string) => {
     const report = previewStructureReports.get(taskId);
-    return report ? { taskRunId: report.taskRunId, text: renderPreviewStructureReport(report, app.getVersion()) } : null;
+    return report ? renderPreviewStructureReport(report, app.getVersion()) : null;
   });
   ipcMain.handle("automation:openPreviewStructureReportIssue", async (_event, taskId: string) => {
     const source = previewSourceForTask(taskId);

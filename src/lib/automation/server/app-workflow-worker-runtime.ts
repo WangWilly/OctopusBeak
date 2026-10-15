@@ -82,7 +82,6 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
-  /** Test seam; production uses the authenticated PGlite RPC preview port. */
   previewWrite?: WorkflowPreviewWritePort;
   now?: WorkflowExecutorPorts["now"];
 }>;
