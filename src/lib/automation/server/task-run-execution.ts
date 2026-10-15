@@ -586,9 +586,7 @@ async function executeSupervisedAppWorkflow(
     events: readonly WorkflowRunEvent[],
     shapes: PreviewResponseShapes = { responses: [], omittedResponses: 0 },
   ) => {
-    if (!definition.requiresPreviewWrite) return;
     previewStructureReports.recordFailure(execution.task.id, {
-      taskRunId: execution.run.taskRunId,
       stage: lastWorkflowStage(events) ?? null,
       errorCode,
       shapes,

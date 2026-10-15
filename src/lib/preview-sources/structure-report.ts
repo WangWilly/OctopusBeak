@@ -10,15 +10,14 @@ export type PreviewResponseShapes = Readonly<{
 }>;
 
 export type PreviewStructureReport = Readonly<{
-  taskRunId: string;
   previewSource: string;
   institution: string;
   product: string;
   failure: Readonly<{ stage: string | null; errorCode: string }>;
 }> & PreviewResponseShapes;
 
-export const PREVIEW_STRUCTURE_REPORT_FORMAT = "octopusbeak-preview-structure-report/1";
-export const MAX_PREVIEW_RESPONSES = 50;
+const PREVIEW_STRUCTURE_REPORT_FORMAT = "octopusbeak-preview-structure-report/1";
+const MAX_PREVIEW_RESPONSES = 50;
 export const MAX_PREVIEW_RESPONSE_SHAPES_CHARS = 48_000;
 const MAX_FIELDS_PER_RESPONSE = 1_000;
 const MAX_ENDPOINT_CHARS = 512;
@@ -105,8 +104,8 @@ export function previewStructureReportIssueUrl(source: PreviewSource): string {
   return url.toString();
 }
 
-export function previewSourceForTask(taskId: string, sources: readonly PreviewSource[] = PREVIEW_SOURCES): PreviewSource | null {
-  return sources.find((source) => previewTaskId(source) === taskId) ?? null;
+export function previewSourceForTask(taskId: string): PreviewSource | null {
+  return PREVIEW_SOURCES.find((source) => previewTaskId(source) === taskId) ?? null;
 }
 
 const reports = new Map<string, PreviewStructureReport>();
@@ -117,12 +116,11 @@ export const previewStructureReports = {
   },
   recordFailure(
     taskId: string,
-    failure: Readonly<{ taskRunId: string; stage: string | null; errorCode: string; shapes: PreviewResponseShapes }>,
+    failure: Readonly<{ stage: string | null; errorCode: string; shapes: PreviewResponseShapes }>,
   ) {
     const source = previewSourceForTask(taskId);
     if (!source) return;
     reports.set(taskId, {
-      taskRunId: failure.taskRunId,
       previewSource: source.id,
       institution: source.institution,
       product: source.product,

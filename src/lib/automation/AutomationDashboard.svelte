@@ -95,7 +95,6 @@ import type {
   import type {
     AutomationPageModel,
     AutomationCredentialRedaction,
-    AutomationPreviewStructureReport,
     AutomationTaskHistoryRow,
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
@@ -169,7 +168,7 @@ import type {
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
   $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
-  let structureReport: (AutomationPreviewStructureReport & { taskId: string }) | null = null;
+  let structureReport: { taskId: string; text: string } | null = null;
   let structureReportKey: string | null = null;
   let structureReportOpen = false;
   let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
@@ -182,12 +181,8 @@ import type {
     structureReportKey = key;
     structureReport = null;
     if (!task || !key) return;
-    try {
-      const report = await window.octopusBeak.automation.previewStructureReport(task.id);
-      if (structureReportKey === key && report) structureReport = { ...report, taskId: task.id };
-    } catch {
-      if (structureReportKey === key) structureReport = null;
-    }
+    const text = await window.octopusBeak.automation.previewStructureReport(task.id).catch(() => null);
+    if (structureReportKey === key && text) structureReport = { taskId: task.id, text };
   }
 
   function openStructureReport() {
@@ -3547,7 +3542,7 @@ import type {
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface-muted, var(--bg));
+    background: var(--bg);
     font-family: var(--font-mono);
     font-size: 12px;
     white-space: pre;

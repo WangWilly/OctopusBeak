@@ -167,11 +167,6 @@ export type AutomationTaskHistoryRow = {
   appWorkflowOutcome: TypedWorkflowOutcome | null;
 };
 
-export type AutomationPreviewStructureReport = {
-  taskRunId: string;
-  text: string;
-};
-
 export type AutomationTaskPrerequisiteNotice = {
   noticeId: string;
   taskId: string;
