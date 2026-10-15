@@ -127,3 +127,15 @@ Every source below has never run against a live account. Each was built from the
   - No OTP device binding is documented: all-set-tw signs in from a freshly generated device id. If SKBank requires one, the run currently fails as `authentication-failed`; detecting that code and calling `requireDeviceRegistration` is a follow-up once a structure report shows it.
   - `GetUserInformation` and `GetMegaMenuStatus` are called before the summaries because the App flow calls them. Their content is not used.
   - The session-takeover notice is a precaution. Whether a sign-in ends the phone App session is unconfirmed.
+### Rakuten (樂天國際銀行), `rakuten-deposit`
+
+- Transport: Rakuten's web banking page at `https://www.rakuten-bank.com.tw/ebank/`, driven in the App-owned Playwright page. Rakuten encrypts every API response with a session key and decrypts it in the page, so an init script wraps `JSON.parse` and keeps the plaintext `{ statusCode, rsData }` text with the XHR path, status, and `Date` header. The source reads that text through the `RakutenPage` port (`playwrightRakutenPage`), and checks use a fake port. The live page code is unverified.
+- Sign-in: national ID, user code, and password typed into the login form, plus a 4-character image CAPTCHA. No solver is calibrated for that CAPTCHA, so every production run ends with `verification-configuration-failed` before the page opens. A login message about SMS, OTP, or device binding fails with `device-registration-required`; OTP and device registration are a follow-up. Native confirm dialogs, such as signing out another device, are always dismissed.
+- Collected: the NT-dollar demand deposit account that the 臺幣存款 page queries (`queryAccountNo`), its current balance from `CTWQU0001` `accounts`, and three months of `txDetails`: the current month from `CTWQU0001/010` and two earlier months chosen in the page's month dropdown (`CTWQU0001/011`). Other NT-dollar accounts, foreign-currency accounts, and loans are not collected.
+- Fail-closed: a month with `display.dataLimit` `true` fails, and a month with rows whose `display.dataEnd` is not `true` fails. A `statusCode` other than `0000`, a month that queries a different account, or a `pk` that repeats with different content fails. There is no paging, so no cursor applies.
+- Assumptions:
+  - Currency is fixed to TWD for `CTWQU0001`, because it is the 臺幣存款 page's query and carries no currency field. A `currency`, `cur`, `curr`, or `ccy` field on the account or the row, if present, is used instead.
+  - `amt` is unsigned. The direction is always `unknown`, because all-set-tw could not confirm what `amtSign` means.
+  - The row key is the 17-digit `pk`, inside the account.
+  - A month without rows may report `dataEnd` `false`, as all-set-tw observed, so it does not count as truncated.
+  - The session-takeover notice is a precaution. all-set-tw saw a "signed in on another device" refusal, which suggests one session at a time; this is unconfirmed.
