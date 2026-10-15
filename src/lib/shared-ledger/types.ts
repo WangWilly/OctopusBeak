@@ -58,6 +58,8 @@ export type DailyHistoryRowDto = {
   exchangeRateMissing?: boolean;
   accountChanges: string[];
   positionCount: number;
+  /** A Preview source balance is counted in this row's totals. */
+  includesPreview?: boolean;
 };
 
 export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">) {
@@ -100,7 +102,26 @@ export type AccountRowDto = {
   creditCard?: CreditCardAccountDto;
   /** The direct source that counts this Intermediary-source account, which no total includes. */
   coveredBy?: Readonly<{ namespace: string; institutionKey: string; product: InstitutionProduct }>;
+  /** A Preview source account: counted in totals with a marker, its transactions shown only in its own view. */
+  preview?: PreviewAccountDto;
 };
+
+export type PreviewAccountDto = Readonly<{
+  sourceId: string;
+  lastCollectedAt: string;
+  balanceTime: Readonly<{ at: string; source: "reported" | "collection-time" }> | null;
+  transactions: readonly PreviewTransactionRowDto[];
+}>;
+
+/** Deliberately not a TransactionRowDto, so no canonical transaction consumer accepts it. */
+export type PreviewTransactionRowDto = Readonly<{
+  amount: string;
+  currency: string;
+  /** As the source reported it; never inferred from the amount's sign. */
+  direction: "inflow" | "outflow" | "unknown";
+  postedAt: Readonly<{ precision: "day" | "minute" | "second"; value: string }>;
+  description: string | null;
+}>;
 
 export type CreditCardStatementMembershipDto = {
   transactionId: string;
