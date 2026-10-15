@@ -183,7 +183,12 @@ export function registerOctopusBeakIpc({
   function markStaleWhenPreviewVisibilityChanges<T>(write: () => T): T {
     const before = currentPreviewVisibility().sourceIds.join(",");
     const result = write();
-    if (currentPreviewVisibility().sourceIds.join(",") !== before) dataVersionStore.markStale("preview-data-changed");
+    if (currentPreviewVisibility().sourceIds.join(",") !== before) {
+      dataVersionStore.markStale("preview-data-changed");
+      void financialPages.previewVisibilityChanged().catch(() => {
+        // The next canonical or preview write recomputes the live views anyway.
+      });
+    }
     return result;
   }
   ipcMain.handle("settings:load", () =>

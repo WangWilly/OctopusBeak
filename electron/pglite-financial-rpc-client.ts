@@ -70,6 +70,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.liabilities.current",
   "financial.spending.current",
   "financial.spending.version",
+  "financial.preview.visibilityChanged",
   "financial.spending.pairing",
   "financial.spending.confirmCandidate",
   "financial.spending.denyCandidate",
@@ -160,6 +161,8 @@ export type PGliteFinancialRegistry = Readonly<{
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
   spendingVersion(): Promise<number>;
+  /** Preview visibility lives in settings, not in a table, so live views need this nudge to recompute. */
+  previewVisibilityChanged(): Promise<void>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -326,6 +329,7 @@ export function createPGliteFinancialRpcClient(
     liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
     spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
     spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
+    previewVisibilityChanged: () => call("financial.preview.visibilityChanged", []).then(() => undefined),
     spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,
     confirmCandidate: (input) => call("financial.spending.confirmCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
     denyCandidate: (input) => call("financial.spending.denyCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
