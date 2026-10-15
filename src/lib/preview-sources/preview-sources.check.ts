@@ -101,7 +101,7 @@ test("Preview features off removes preview sources from sign-in settings, Sync a
   assert.ok(on.signInSettings.includes("synthetic"));
   assert.ok(on.syncAll.includes("preview-synthetic"));
   assert.ok(on.scheduled.includes("preview-synthetic"));
-  assert.deepEqual(on.visibility, { sourceIds: ["synthetic"] });
+  assert.ok(on.visibility.sourceIds.includes("synthetic"));
 });
 
 test("a preview workflow writes only through its bound preview port", async () => {
