@@ -1210,9 +1210,11 @@ export async function authenticateEsunPage(
     }
   }
 
-  const pageText = await Promise.all(
-    page.frames().map((frame) => frame.locator("body").innerText({ timeout: 2_000 }).catch(() => "")),
-  );
+  const pageText = await Promise.resolve()
+    .then(() => Promise.all(
+      page.frames().map((frame) => frame.locator("body").innerText({ timeout: 2_000 }).catch(() => "")),
+    ))
+    .catch(() => []);
   for (const state of classifyEsunPostLoginPage(pageText.join("\n"))) {
     await context.event("authentication", `esun-post-login-${state}`);
   }
