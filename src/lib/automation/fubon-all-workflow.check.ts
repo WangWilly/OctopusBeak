@@ -150,6 +150,9 @@ try {
           currentBalanceExclusions: [
             { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
           ],
+          statementExclusions: [
+            { reason: "account-currency-unproven", accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-") },
+          ],
         };
       },
       collectCreditCard: async (_page, _input, _context, _identity, items) => {
@@ -196,6 +199,11 @@ try {
       calls.indexOf("event:collection:deposit-current-balance-excluded-account-number-evidence-missing")
         > calls.indexOf("deposit-collected"),
       "an excluded balance row is reported as an operational event",
+    );
+    assert.ok(
+      calls.indexOf("event:collection:deposit-statement-excluded-account-currency-unproven")
+        > calls.indexOf("deposit-collected"),
+      "a statement account excluded for unproven currency is reported as an operational event",
     );
     assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
     assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));

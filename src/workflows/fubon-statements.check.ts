@@ -473,6 +473,82 @@ try {
   assert.deepEqual(unlinkableResult.currentBalanceExclusions, [
     { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
   ]);
+  assert.deepEqual(unlinkableResult.statementExclusions, []);
+
+  const usdCodedAccount = {
+    value: `999-00${secondAccountNumber}-USD-02`,
+    label: `${secondAccountNumber} (013)`,
+    branchName: "013",
+  };
+  const usdCodedAmount = "777.77";
+  const usdCodedShape = ["999", "9".repeat(16), "AAA", "99"].join("-");
+  const usdCodedStatement = statementFor(usdCodedAccount);
+  const withUsdCodedAmounts = (cells: readonly string[]) =>
+    cells.map((cell, index) => (index === 4 || index === 5 ? usdCodedAmount : cell)) as [string, string, string, string, string, string, string];
+  const usdCodedPages = usdCodedStatement.pages.map((page) => ({
+    ...page,
+    rows: page.rows.map((row) => ({ ...row, cells: withUsdCodedAmounts(row.cells) })),
+  }));
+  const usdCodedItems: PGliteWorkflowRunItem[] = [];
+  const usdCodedResult = await runFubonStatements(
+    {} as never,
+    collectionInput,
+    {
+      ...collectorOverrides(usdCodedItems, async (_page, _range, account) =>
+        account.value === usdCodedAccount.value
+          ? {
+              ...usdCodedStatement,
+              rows: usdCodedPages.flatMap((page) => page.rows.map((row) => [...row.cells])),
+              pages: usdCodedPages,
+            }
+          : statement,
+      ),
+      readDepositAccountOptions: async () => [selectedAccount, usdCodedAccount],
+      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
+    },
+  );
+  const usdCodedDeposits = depositAccountKeys(usdCodedItems);
+  assert.deepEqual(
+    usdCodedDeposits.map(([number]) => number),
+    [accountNumber],
+    "only the TWD-coded account's statements commit as financial deposits",
+  );
+  const usdCodedSourceItems = usdCodedItems.filter((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
+  assert.equal(usdCodedSourceItems.length, 1, "the USD-coded account's statement lands as source-only evidence");
+  const usdCodedSource = usdCodedSourceItems[0]!.command;
+  assert.ok(usdCodedSource.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
+  assert.equal(
+    usdCodedSource.request.pages.reduce((count, page) => count + page.rowCount, 0),
+    usdCodedPages.reduce((count, page) => count + page.rows.length, 0),
+    "the source-only evidence carries the USD-coded account's rows",
+  );
+  const usdCodedFinancialSubjects = usdCodedItems.flatMap((item) =>
+    item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND ? [item.command.request.capture.identity.subjectDigest] : [],
+  );
+  assert.equal(
+    usdCodedFinancialSubjects.includes(usdCodedSource.request.subjectDigest),
+    false,
+    "the source-only evidence belongs to the USD-coded account, not the TWD one",
+  );
+  for (const item of usdCodedItems) {
+    if (item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND) continue;
+    assert.doesNotMatch(
+      JSON.stringify(item.command),
+      /777\.77|77777/u,
+      `the USD-coded account's amounts must not reach a ${item.command.kind} command`,
+    );
+  }
+  assert.deepEqual(
+    balanceAccountKeys(usdCodedItems),
+    usdCodedDeposits.map(([, key]) => key),
+    "only the TWD-coded account's balance is captured",
+  );
+  assert.deepEqual(usdCodedResult.currentBalanceExclusions, [
+    { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: [usdCodedShape] },
+  ]);
+  assert.deepEqual(usdCodedResult.statementExclusions, [
+    { reason: "account-currency-unproven", accountShape: usdCodedShape },
+  ]);
 
   const noRecordAccount = {
     value: secondAccountNumber,

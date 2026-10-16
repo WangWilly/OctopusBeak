@@ -635,6 +635,30 @@ const rawEvidence = module.buildFubonDepositStatementEvidence(
 );
 assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
+assert.equal(rawEvidence[0].providerRouteEvidence?.currency, "TWD");
+
+assert.equal(module.fubonDepositOptionRouteCurrency(usdCodedSelectorValue), "unknown");
+assert.equal(module.fubonDepositOptionRouteCurrency(`987-00${nonLeadingZeroAccount}-TWD-02`), "TWD");
+assert.equal(module.fubonDepositOptionRouteCurrency(accountValue), "TWD");
+const routeEvidenceCurrencyFor = (value: string) => {
+  const option = { value, label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`, branchName: "SYNTHETIC-BRANCH" };
+  return module.buildFubonDepositStatementEvidence(
+    [{
+      ...statement,
+      account: option.label,
+      accountId: value,
+      pages: statement.pages.map((page) => ({ ...page, selectedAccount: option })),
+      accountOption: option,
+    }],
+    "2026-02-01T00:00:00.000Z",
+  )[0]?.providerRouteEvidence?.currency;
+};
+assert.equal(
+  routeEvidenceCurrencyFor(usdCodedSelectorValue),
+  "unknown",
+  "a USD-coded option's capture must not claim TWD route evidence",
+);
+assert.equal(routeEvidenceCurrencyFor(`987-00${nonLeadingZeroAccount}-TWD-02`), "TWD");
 assert.deepEqual(rawEvidence[0].account.accountNumber, {
   value: accountValue,
   kind: "depository-account",

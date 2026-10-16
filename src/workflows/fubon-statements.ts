@@ -248,13 +248,21 @@ export type FubonStatementsRunDependencies = Readonly<{
 }>;
 
 /** A TWD current-balance row whose account has no full account-number
- * evidence among this run's statement captures. Every account's statements
- * still admit; only this balance line stays out of the product. */
+ * evidence among this run's financial statement captures. Only this balance
+ * line stays out of the product. */
 export type FubonCurrentBalanceExclusion = Readonly<{
   reason: "account-number-evidence-missing";
   /** Selector option values of statement captures that carry no
    * account-number evidence, with digits as 9 and letters as A. */
   unlinkedStatementAccountShapes: readonly string[];
+}>;
+
+/** An account whose statements stay source-only because its selector option
+ * is coded with a currency other than TWD. */
+export type FubonStatementExclusion = Readonly<{
+  reason: "account-currency-unproven";
+  /** Selector option value with digits as 9 and letters as A. */
+  accountShape: string;
 }>;
 
 export type FubonDepositWorkflowCollection = Readonly<{
@@ -264,10 +272,18 @@ export type FubonDepositWorkflowCollection = Readonly<{
   financialAdmissionCount: number;
   noDataEvidence?: boolean;
   currentBalanceExclusions?: readonly FubonCurrentBalanceExclusion[];
+  statementExclusions?: readonly FubonStatementExclusion[];
 }>;
 
 export function fubonAccountOptionShape(value: string): string {
   return value.replace(/\d/gu, "9").replace(/\p{L}/gu, "A");
+}
+
+/** The result table has no currency column, so only the selector option can
+ * tell a non-TWD account apart; its rows are never claimed as TWD. */
+export function fubonDepositOptionRouteCurrency(value: string): "TWD" | "unknown" {
+  const option = parseFubonCompositeAccountOption(value);
+  return option === null || option.currencyCode === "TWD" ? "TWD" : "unknown";
 }
 
 type ExistingFubonFinancialCapture = Readonly<{
@@ -931,7 +947,7 @@ export function buildFubonDepositStatementEvidence(
     providerRouteEvidence: {
       endpointPath: FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_PATH,
       contract: FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
-      currency: "TWD",
+      currency: fubonDepositOptionRouteCurrency(statement.accountOption.value),
     },
     provenance: {
       source: "fubon-ebank-domestic-deposit-form-postback",
@@ -2843,6 +2859,7 @@ export async function runFubonStatements(
   const currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
   const currentBalanceExclusions: FubonCurrentBalanceExclusion[] = [];
   const unlinkedStatementAccountShapes = new Set<string>();
+  const statementExclusions: FubonStatementExclusion[] = [];
 
   {
     await overrides.reportActivity?.("query");
@@ -2870,6 +2887,11 @@ export async function runFubonStatements(
       }
       sourceCount += accountStatements.length;
       rowCount += accountStatements.reduce((count, statement) => count + statement.rows.length, 0);
+      if (fubonDepositOptionRouteCurrency(account.value) === "unknown") {
+        const accountShape = fubonAccountOptionShape(account.value);
+        statementExclusions.push({ reason: "account-currency-unproven", accountShape });
+        unlinkedStatementAccountShapes.add(accountShape);
+      }
 
       const admittedEvidence = buildFubonDepositStatementEvidence(
         accountStatements,
@@ -3056,6 +3078,7 @@ export async function runFubonStatements(
       itemCount: items.length,
       financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
       currentBalanceExclusions,
+      statementExclusions,
     };
   }
 }

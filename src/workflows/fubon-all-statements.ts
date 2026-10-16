@@ -363,6 +363,8 @@ export async function runFubonAllStatementsWorkflow(
             const deposit = await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity);
             for (const exclusion of deposit.currentBalanceExclusions ?? [])
               await context.event("collection", `deposit-current-balance-excluded-${exclusion.reason}`);
+            for (const exclusion of deposit.statementExclusions ?? [])
+              await context.event("collection", `deposit-statement-excluded-${exclusion.reason}`);
             return deposit;
           };
           const result = typeId === "deposit"
