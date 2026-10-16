@@ -361,6 +361,16 @@ async function executeInlineAppWorkflow(
       await childRpc.ready;
       previewWrite = childRpc.operationalProvider.preview;
     }
+    let accountIdentity = injectedPorts.accountIdentity;
+    if (definition.requiresAccountIdentity && !accountIdentity) {
+      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
+        workflowId: execution.task.workflowId,
+        taskRunId: execution.run.taskRunId,
+      });
+      await childRpc.ready;
+      const { financial } = childRpc;
+      accountIdentity = { continuity: (request) => financial.accountIdentityContinuity(request) };
+    }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const input = workflowInputForTask(execution.task.workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
@@ -400,6 +410,7 @@ async function executeInlineAppWorkflow(
         }),
       ...(financialCommit ? { financialCommit } : {}),
       ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
+      ...(accountIdentity ? { accountIdentity } : {}),
       ...(previewWrite ? { previewWrite } : {}),
       events: injectedPorts.events ?? {
         async append(event) {

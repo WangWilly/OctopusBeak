@@ -121,6 +121,7 @@ const fubonAllStatementsWorkflow: WorkflowDefinition<
 > = {
   id: "fubon-all-statements",
   requiresFinancialCommit: true,
+  requiresAccountIdentity: true,
   async run(context, input) {
     const { fubonAllStatementsWorkflow: definition } = await import(
       "../fubon-all-workflow.ts"
