@@ -102,8 +102,8 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
     en: "The built-in browser could not be set up the way this sync requires, so the run stopped. This is not a problem with your sign-in details or the source service.",
   },
   "device-registration-required": {
-    zh: "集保e手掌握不再信任這台裝置。請到登入設定重新註冊裝置，再執行同步。",
-    en: "TDCC e-Passbook no longer trusts this device. Register the device again in sign-in settings, then run the sync.",
+    zh: "這個來源尚未信任或不再信任這台裝置，因此需要驗證碼。請到登入設定註冊這台裝置，再執行同步。",
+    en: "This source does not trust this device, or no longer does, so it asked for a code. Register this device in sign-in settings, then run the sync.",
   },
   "provider-protocol-outdated": {
     zh: "來源服務的 App 介面已變更，需要更新 OctopusBeak 才能繼續同步。",

@@ -1,6 +1,6 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import TdccDeviceRegistration from "$lib/automation/TdccDeviceRegistration.svelte";
+  import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
   import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
   import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
@@ -32,9 +32,11 @@
     AutomationActionToken,
     createAutomationRuntimeController,
   } from "$lib/automation/runtime-controller.ts";
-  import type {
-    CathayGmailOtpConnectionError,
-    CathayGmailOtpStatus,
+  import {
+    deviceRegistrationSource,
+    type CathayGmailOtpConnectionError,
+    type CathayGmailOtpStatus,
+    type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
 import {
@@ -240,7 +242,7 @@ import type {
   let credentialFileErrors: Record<string, string> = {};
   let focusedCredentialKey: string | null = null;
   let cathayGmailOtpBusy = false;
-  let tdccRegistering = false;
+  let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
   let cathayGmailOtpError = "";
   let statementSelectionConfirmed = false;
   let selectedCredentialGroupId = "";
@@ -762,16 +764,23 @@ import type {
     selectCredentialGroup(groupId);
   }
 
-  async function openTdccDeviceRegistration() {
+  function registrationBlocksRun(task: Pick<AutomationTaskRow, "credentialGroupId">) {
+    const source = deviceRegistrationSource(task.credentialGroupId);
+    return source !== null && deviceRegistering[source];
+  }
+
+  async function openDeviceRegistration(groupId: string | null | undefined) {
+    const source = deviceRegistrationSource(groupId);
+    if (!source) return;
     openCredentials();
-    selectCredentialGroup("tdcc");
+    selectCredentialGroup(source);
     await tick();
-    document.getElementById("tdcc-device-title")?.focus();
+    document.getElementById(`${source}-device-title`)?.focus();
   }
 
   function runStartErrorMessage(message: string) {
-    return message.includes("TDCC device registration is in progress")
-      ? $t.automation.tdccSyncBlockedByRegistration
+    return message.includes("Device registration is in progress")
+      ? $t.automation.deviceRegistrationBlocksSync
       : message;
   }
 
@@ -982,8 +991,8 @@ import type {
 
   async function runTask(task: AutomationTaskRow) {
     if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
-    if (task.id === "sync-tdcc" && tdccRegistering) {
-      actionError = $t.automation.tdccSyncBlockedByRegistration;
+    if (registrationBlocksRun(task)) {
+      actionError = $t.automation.deviceRegistrationBlocksSync;
       return;
     }
     const token = beginActionToken(task.id, "run");
@@ -1722,9 +1731,9 @@ import type {
                         {#if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                           <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                         {/if}
-                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
-                          <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
-                            {$t.automation.tdccDevice.openSettings}
+                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required" && deviceRegistrationSource(task.credentialGroupId)}
+                          <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
+                            {$t.automation.deviceRegistrationOpenSettings}
                           </button>
                         {/if}
                       </div>
@@ -1807,9 +1816,11 @@ import type {
                             {/if}
                           {:else if task.appWorkflowOutcome.errorCode === "device-registration-required"}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
-                            <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
-                              {$t.automation.tdccDevice.openSettings}
-                            </button>
+                            {#if deviceRegistrationSource(task.credentialGroupId)}
+                              <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
+                                {$t.automation.deviceRegistrationOpenSettings}
+                              </button>
+                            {/if}
                           {:else if solverExhausted}
                             <span>{$t.automation.verificationSolverExhausted}</span>
                           {:else if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
@@ -2131,7 +2142,7 @@ import type {
                   <button
                     class="button"
                     type="button"
-                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || (syncTask.id === "sync-tdcc" && tdccRegistering)}
+                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || registrationBlocksRun(syncTask)}
                     onclick={() => void runTask(syncTask)}
                   ><RefreshCw size={14} />{$t.automation.resync}</button>
                 {/if}
@@ -2343,12 +2354,14 @@ import type {
               </div>
             {/if}
 
-            {#if group.id === "tdcc"}
-              <TdccDeviceRegistration
+            {#if deviceRegistrationSource(group.id)}
+              {@const source = deviceRegistrationSource(group.id)!}
+              <SourceDeviceRegistration
+                {source}
                 signInDetailsSaved={group.credentialFields.every((credentialField) =>
                   credentialState(credentialField.key) === "ready" && !credentialChanges.credentials[credentialField.key])}
                 syncActive={Boolean(selectedGroupTask?.isActive)}
-                bind:registering={tdccRegistering}
+                bind:registering={deviceRegistering[source]}
               />
             {/if}
 
@@ -3323,11 +3336,11 @@ import type {
   }
 
   .cathay-gmail-settings-action,
-  .tdcc-registration-action {
+  .device-registration-action {
     min-height: 32px;
   }
 
-  .workflow-failure-summary .tdcc-registration-action {
+  .workflow-failure-summary .device-registration-action {
     width: fit-content;
     margin-top: var(--space-1);
   }

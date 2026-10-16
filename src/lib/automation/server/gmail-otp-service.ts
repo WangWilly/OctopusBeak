@@ -1009,7 +1009,10 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     const credentials = this.credentials();
     const refreshToken = credentials[CATHAY_GMAIL_REFRESH_TOKEN_KEY]?.trim();
     if (!refreshToken && !(this.accessToken && this.accessTokenExpiresAt - this.now() > ACCESS_TOKEN_SKEW_MS)) {
-      return { status: "fallback", reason: "needs-authorization" };
+      return {
+        status: "fallback",
+        reason: nonEmpty(credentials[CATHAY_GMAIL_CONNECTED_EMAIL_KEY]) ? "needs-authorization" : "not-configured",
+      };
     }
     try {
       if (this.accessToken && this.accessTokenExpiresAt - this.now() > ACCESS_TOKEN_SKEW_MS)
