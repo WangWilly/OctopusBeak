@@ -1403,14 +1403,11 @@ function hasExplicitFxAccountMarker(
   );
 }
 
-// The result table has no currency column and the TWD attestation is not
-// provider-guaranteed, so a non-TWD-coded option fails closed even when the
-// route evidence claims TWD.
-function hasNonTwdCompositeAccountOption(
-  account: FubonDomesticDepositCaptureEvidence["account"],
-): boolean {
-  const option = parseFubonCompositeAccountOption(account.value);
-  return option !== null && option.currencyCode !== "TWD";
+export function fubonDepositOptionRouteCurrency(
+  value: string,
+): "TWD" | "unknown" {
+  const option = parseFubonCompositeAccountOption(value);
+  return option === null || option.currencyCode === "TWD" ? "TWD" : "unknown";
 }
 
 function hasSharedAccountMarker(
@@ -1563,7 +1560,9 @@ function normalizeFubonDomesticDepositFinancialCapture(
     diagnostics.push("authority-shared-account");
   if (hasExplicitFxAccountMarker(input.capture.account)) {
     diagnostics.push("unsupported-currency");
-  } else if (hasNonTwdCompositeAccountOption(input.capture.account)) {
+  } else if (
+    fubonDepositOptionRouteCurrency(input.capture.account.value) === "unknown"
+  ) {
     diagnostics.push("currency-unproven");
   } else if (!hasPositiveTwdDomesticRouteEvidence(input.capture)) {
     if (routeEvidence?.currency === "FX")
