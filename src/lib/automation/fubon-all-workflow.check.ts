@@ -151,7 +151,13 @@ try {
             { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
           ],
           statementExclusions: [
-            { reason: "account-currency-unproven", accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-") },
+            {
+              reason: "account-currency-unproven",
+              accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-"),
+              currencyEvidenceByPage: [
+                { kind: "active-tab", label: "外幣活期存款", labels: ["臺幣活期存款", "外幣活期存款"] },
+              ],
+            },
           ],
         };
       },

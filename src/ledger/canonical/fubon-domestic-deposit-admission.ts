@@ -119,12 +119,17 @@ export const FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
   "fubon/domestic-deposit/account-number-v1" as const;
 export const FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2 =
   "fubon/domestic-deposit/account-number-v2" as const;
+export const FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V3 =
+  "fubon/domestic-deposit/account-number-v3" as const;
+type FubonCompositeAccountNumberEvidenceVersion =
+  | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2
+  | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V3;
 export type FubonDomesticDepositAccountNumberEvidence = Readonly<{
   value: string;
   kind: "depository-account";
   evidenceVersion:
     | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION
-    | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2;
+    | FubonCompositeAccountNumberEvidenceVersion;
   sourceField:
     | "form1:comboAccount option.value"
     | "form1:comboAccount option.value + option.text";
@@ -171,6 +176,7 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
           },
         ],
         zeroObservation: "non-empty-page",
+        currencyEvidence: { kind: "no-currency-tabs" },
       },
       {
         pageOrdinal: 1,
@@ -187,6 +193,7 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
         providerPageSize: 10,
         rows: [],
         zeroObservation: "empty-page",
+        currencyEvidence: { kind: "no-currency-tabs" },
       },
     ],
     zeroObservation: "non-empty-range",
@@ -220,6 +227,7 @@ export type FubonDomesticDepositCaptureDiagnostic =
   | "page-shape-invalid"
   | "page-rows-invalid"
   | "page-metadata-invalid"
+  | "page-currency-evidence-invalid"
   | "page-ordinal-invalid"
   | "page-ordinal-gap"
   | "page-order-invalid"
@@ -325,21 +333,55 @@ export function parseFubonCompositeAccountOption(
   return { accountSegment: match[1]!, currencyCode: match[2]! };
 }
 
-function fubonCompositeAccountNumberMatches(
-  value: string,
-  label: string,
-  accountNumber: string,
-): boolean {
-  const option = parseFubonCompositeAccountOption(value);
-  const displayLabel = clean(label).match(
-    /^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u,
-  );
+const FUBON_COMPOSITE_ACCOUNT_NUMBER_EVIDENCE_VERSION_BY_CODE: ReadonlyMap<
+  string,
+  FubonCompositeAccountNumberEvidenceVersion
+> = new Map([
+  ["TWD", FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2],
+  ["USD", FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V3],
+]);
+
+function fubonCompositeLabelAccountNumber(label: string): string | null {
   return (
-    option !== null &&
-    option.currencyCode === "TWD" &&
-    displayLabel !== null &&
-    accountNumber === displayLabel[1] &&
-    option.accountSegment === `00${displayLabel[1]}`
+    clean(label).match(/^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u)?.[1] ??
+    null
+  );
+}
+
+export function deriveFubonCompositeAccountNumberEvidence(
+  option: Readonly<{ value: string; label: string }>,
+): FubonDomesticDepositAccountNumberEvidence | null {
+  const composite = parseFubonCompositeAccountOption(option.value);
+  const labelAccountNumber = fubonCompositeLabelAccountNumber(option.label);
+  if (
+    composite === null ||
+    labelAccountNumber === null ||
+    composite.accountSegment !== `00${labelAccountNumber}`
+  )
+    return null;
+  const evidenceVersion =
+    FUBON_COMPOSITE_ACCOUNT_NUMBER_EVIDENCE_VERSION_BY_CODE.get(
+      composite.currencyCode,
+    );
+  if (evidenceVersion === undefined) return null;
+  return {
+    value: labelAccountNumber,
+    kind: "depository-account",
+    evidenceVersion,
+    sourceField: "form1:comboAccount option.value + option.text",
+  };
+}
+
+function compositeAccountNumberEvidenceMatches(
+  account: Readonly<{ value: string; label: string }>,
+  evidence: FubonDomesticDepositAccountNumberEvidence,
+): boolean {
+  const derived = deriveFubonCompositeAccountNumberEvidence(account);
+  return (
+    derived !== null &&
+    derived.value === evidence.value &&
+    derived.evidenceVersion === evidence.evidenceVersion &&
+    derived.sourceField === evidence.sourceField
   );
 }
 
@@ -407,6 +449,29 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
+function validResultCurrencyEvidence(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const evidence = value as Record<string, unknown>;
+  const validLabels =
+    Array.isArray(evidence.labels) &&
+    evidence.labels.every((label) => typeof label === "string");
+  switch (evidence.kind) {
+    case "no-currency-tabs":
+      return true;
+    case "active-tab":
+      return typeof evidence.label === "string" && validLabels;
+    case "ambiguous":
+      return (
+        (evidence.reason === "no-active-tab" ||
+          evidence.reason === "multiple-active-tabs" ||
+          evidence.reason === "currency-column-present") &&
+        validLabels
+      );
+    default:
+      return false;
+  }
+}
+
 /**
  * Validate and brand one parser-produced evidence object.  This is a
  * structural admission only; it intentionally never produces a canonical
@@ -452,15 +517,10 @@ export function admitFubonDomesticDepositCaptureEvidence(
             accountNumber.value !== account.value ||
             !accountNumberLabelMatches(accountNumber.value, account.label)
           : accountNumber.evidenceVersion ===
-              FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2
-            ? accountNumber.sourceField !==
-                "form1:comboAccount option.value + option.text" ||
-              !/^\d{14}$/.test(accountNumber.value) ||
-              !fubonCompositeAccountNumberMatches(
-                account.value,
-                account.label,
-                accountNumber.value,
-              )
+                FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2 ||
+              accountNumber.evidenceVersion ===
+                FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V3
+            ? !compositeAccountNumberEvidenceMatches(account, accountNumber)
             : true))
     )
       diagnostic(diagnostics, "account-number-evidence-invalid");
@@ -513,6 +573,8 @@ export function admitFubonDomesticDepositCaptureEvidence(
       (page.pageFieldName !== null && typeof page.pageFieldName !== "string")
     )
       diagnostic(diagnostics, "page-metadata-invalid");
+    if (!validResultCurrencyEvidence(page.currencyEvidence))
+      diagnostic(diagnostics, "page-currency-evidence-invalid");
     if (page.queryRange === null || typeof page.queryRange !== "object") {
       diagnostic(diagnostics, "query-range-shape-invalid");
     } else if (
@@ -1403,11 +1465,64 @@ function hasExplicitFxAccountMarker(
   );
 }
 
-export function fubonDepositOptionRouteCurrency(
-  value: string,
+export type FubonDepositResultCurrencyEvidence =
+  | Readonly<{ kind: "no-currency-tabs" }>
+  | Readonly<{ kind: "active-tab"; label: string; labels: readonly string[] }>
+  | Readonly<{
+      kind: "ambiguous";
+      reason: "no-active-tab" | "multiple-active-tabs" | "currency-column-present";
+      labels: readonly string[];
+    }>;
+
+export const FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL = "臺幣活期存款" as const;
+
+type FubonDepositResultCurrencyPage = Readonly<{
+  currencyEvidence: FubonDepositResultCurrencyEvidence;
+}>;
+
+export function fubonDepositPageShowsActiveTwdTab(
+  page: FubonDepositResultCurrencyPage,
+): boolean {
+  return (
+    page.currencyEvidence.kind === "active-tab" &&
+    page.currencyEvidence.label === FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL
+  );
+}
+
+function isUsdCodedCompositeOfOwnLabel(
+  account: Readonly<{ value: string; label: string }>,
+): boolean {
+  const composite = parseFubonCompositeAccountOption(account.value);
+  const labelAccountNumber = fubonCompositeLabelAccountNumber(account.label);
+  return (
+    composite !== null &&
+    composite.currencyCode === "USD" &&
+    labelAccountNumber !== null &&
+    composite.accountSegment === `00${labelAccountNumber}`
+  );
+}
+
+export function fubonDepositRouteCurrency(
+  account: Readonly<{ value: string; label: string }>,
+  pages: readonly FubonDepositResultCurrencyPage[],
 ): "TWD" | "unknown" {
-  const option = parseFubonCompositeAccountOption(value);
-  return option === null || option.currencyCode === "TWD" ? "TWD" : "unknown";
+  const evidence = pages.map((page) => page.currencyEvidence);
+  if (evidence.some((entry) => entry.kind === "ambiguous")) return "unknown";
+  if (
+    evidence.some(
+      (entry) =>
+        entry.kind === "active-tab" &&
+        entry.label !== FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
+    )
+  )
+    return "unknown";
+  const composite = parseFubonCompositeAccountOption(account.value);
+  if (composite === null || composite.currencyCode === "TWD") return "TWD";
+  return pages.length > 0 &&
+    pages.every(fubonDepositPageShowsActiveTwdTab) &&
+    isUsdCodedCompositeOfOwnLabel(account)
+    ? "TWD"
+    : "unknown";
 }
 
 function hasSharedAccountMarker(
@@ -1561,7 +1676,8 @@ function normalizeFubonDomesticDepositFinancialCapture(
   if (hasExplicitFxAccountMarker(input.capture.account)) {
     diagnostics.push("unsupported-currency");
   } else if (
-    fubonDepositOptionRouteCurrency(input.capture.account.value) === "unknown"
+    fubonDepositRouteCurrency(input.capture.account, input.capture.pages) ===
+    "unknown"
   ) {
     diagnostics.push("currency-unproven");
   } else if (!hasPositiveTwdDomesticRouteEvidence(input.capture)) {
