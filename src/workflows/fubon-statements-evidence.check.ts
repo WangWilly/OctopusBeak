@@ -637,9 +637,6 @@ assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
 assert.equal(rawEvidence[0].providerRouteEvidence?.currency, "TWD");
 
-assert.equal(module.fubonDepositOptionRouteCurrency(usdCodedSelectorValue), "unknown");
-assert.equal(module.fubonDepositOptionRouteCurrency(`987-00${nonLeadingZeroAccount}-TWD-02`), "TWD");
-assert.equal(module.fubonDepositOptionRouteCurrency(accountValue), "TWD");
 const routeEvidenceCurrencyFor = (value: string) => {
   const option = { value, label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`, branchName: "SYNTHETIC-BRANCH" };
   return module.buildFubonDepositStatementEvidence(

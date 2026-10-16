@@ -39,6 +39,7 @@ import {
   isFubonHumanAttestedV1Active,
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
+  fubonDepositOptionRouteCurrency,
   parseFubonCompositeAccountOption,
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
@@ -277,13 +278,6 @@ export type FubonDepositWorkflowCollection = Readonly<{
 
 export function fubonAccountOptionShape(value: string): string {
   return value.replace(/\d/gu, "9").replace(/\p{L}/gu, "A");
-}
-
-/** The result table has no currency column, so only the selector option can
- * tell a non-TWD account apart; its rows are never claimed as TWD. */
-export function fubonDepositOptionRouteCurrency(value: string): "TWD" | "unknown" {
-  const option = parseFubonCompositeAccountOption(value);
-  return option === null || option.currencyCode === "TWD" ? "TWD" : "unknown";
 }
 
 type ExistingFubonFinancialCapture = Readonly<{

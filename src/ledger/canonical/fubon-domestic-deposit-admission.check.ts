@@ -82,6 +82,12 @@ test("parses the composite selector option into its account segment and currency
   );
 });
 
+test("route currency is TWD for a TWD-coded or codeless option and unknown otherwise", () => {
+  assert.equal(fubon.fubonDepositOptionRouteCurrency(`123-00${accountDigits}-USD-02`), "unknown");
+  assert.equal(fubon.fubonDepositOptionRouteCurrency(`123-00${accountDigits}-TWD-01`), "TWD");
+  assert.equal(fubon.fubonDepositOptionRouteCurrency(accountDigits), "TWD");
+});
+
 test("a non-TWD-coded composite option stays out of financial admission even when route evidence says TWD", () => {
   const result = admitWithAccountValue(`123-00${accountDigits}-USD-02`);
   assert.equal(result.capture, null, "USD-coded option must not admit as TWD");
