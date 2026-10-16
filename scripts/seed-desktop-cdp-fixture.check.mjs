@@ -152,8 +152,9 @@ assert.equal(tdccRun.status, "failed");
 assert.equal(JSON.parse(tdccRun.record_json).appWorkflowOutcome.errorCode, "device-registration-required");
 const institutions = (await tdccDb.query("SELECT institution_key FROM financial_accounts ORDER BY institution_key")).rows
   .map((row) => row.institution_key);
-assert.equal(institutions.length, 5, "Cathay, Yuanta Trade, and three TDCC accounts");
+assert.equal(institutions.length, 8, "Cathay, Fubon, Yuanta Trade, and five TDCC accounts");
 assert.equal(institutions.filter((key) => key === "cathay").length, 2, "a direct Cathay account and the TDCC account it covers");
+assert.equal(institutions.filter((key) => key === "fubon").length, 3, "a direct Fubon account and TDCC's TWD and USD Fubon accounts");
 await tdccDb.close();
 } finally {
   removeDesktopCdpFixture(root);

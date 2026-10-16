@@ -9,6 +9,7 @@ import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import type { TypedWorkflowOutcome } from "../src/lib/automation/server/typed-workflow-outcome.ts";
 import {
   commitCathay,
+  commitFubon,
   commitTdccSettlement,
   commitTdccYuantaBroker,
   commitYuantaTrade,
@@ -66,8 +67,9 @@ export type DesktopCdpFixtureOptions = Readonly<{
   includeCathayVerificationFailure?: boolean;
   /**
    * Enable TDCC with inert sign-in details and no registered device, seed
-   * one sync-tdcc run with this outcome, and commit Cathay, Yuanta Trade,
-   * and TDCC accounts so Assets lists covered TDCC accounts.
+   * one sync-tdcc run with this outcome, and commit Cathay, Fubon, Yuanta
+   * Trade, and TDCC accounts so Assets lists covered TDCC accounts beside a
+   * counted TDCC USD account that the TWD-only Fubon source does not cover.
    */
   tdccOutcome?: DesktopCdpTdccOutcome;
 }>;
@@ -176,6 +178,9 @@ export async function seedDesktopCdpFixture(
       await commitCathay(store);
       await commitTdccSettlement(store, "013");
       await commitTdccSettlement(store, "812");
+      await commitFubon(store);
+      await commitTdccSettlement(store, "012");
+      await commitTdccSettlement(store, "012", { currency: "USD" });
       await commitYuantaTrade(store);
       await commitTdccYuantaBroker(store);
     }

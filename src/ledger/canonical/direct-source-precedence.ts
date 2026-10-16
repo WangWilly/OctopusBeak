@@ -11,6 +11,8 @@ export type CoverageAccount = Readonly<{
   stream: string;
   accountType: string;
   institutionKey: string;
+  /** Its denomination, or for a multi-currency account every currency of its balances and transactions. */
+  currencies: readonly string[];
 }>;
 
 /** The direct source that counts an Intermediary-source account's Institution and product. */
@@ -20,29 +22,36 @@ export type CoveredBy = Readonly<{
   product: InstitutionProduct;
 }>;
 
-const coverageKey = (institutionKey: string, product: InstitutionProduct) => `${institutionKey}\u0000${product}`;
+const coverageKey = (institutionKey: string, product: InstitutionProduct, currency: string) =>
+  `${institutionKey}\u0000${product}\u0000${currency}`;
 
 /**
- * Direct source precedence (ADR 0042): an Intermediary-source account is
- * covered while any direct-source account exists for its Institution and
- * product. The accounts given are the ones current at the reader's
- * knowledge point; nothing else, such as settings, decides coverage.
+ * Direct source precedence (ADR 0042, amended by ADR 0048): an
+ * Intermediary-source account is covered while every currency it holds is
+ * held by a direct-source account for the same Institution and product. The
+ * accounts given are the ones current at the reader's knowledge point;
+ * nothing else, such as settings, decides coverage.
  */
 export function directSourceCoverage(accounts: readonly CoverageAccount[]): ReadonlyMap<string, CoveredBy> {
   const direct = new Map<string, string>();
   for (const account of accounts) {
     const product = accountProduct(account);
     if (product === null || sourceInstitution(account.integrationNamespace)?.kind !== "direct") continue;
-    const key = coverageKey(account.institutionKey, product);
-    const namespace = direct.get(key);
-    if (namespace === undefined || account.integrationNamespace < namespace) direct.set(key, account.integrationNamespace);
+    for (const currency of account.currencies) {
+      const key = coverageKey(account.institutionKey, product, currency);
+      const namespace = direct.get(key);
+      if (namespace === undefined || account.integrationNamespace < namespace) direct.set(key, account.integrationNamespace);
+    }
   }
   const covered = new Map<string, CoveredBy>();
   for (const account of accounts) {
     const product = accountProduct(account);
     if (product === null || sourceInstitution(account.integrationNamespace)?.kind !== "intermediary") continue;
-    const namespace = direct.get(coverageKey(account.institutionKey, product));
-    if (namespace !== undefined) covered.set(account.accountId, { namespace, institutionKey: account.institutionKey, product });
+    const namespaces = account.currencies
+      .flatMap((currency) => direct.get(coverageKey(account.institutionKey, product, currency)) ?? [])
+      .sort();
+    if (namespaces.length === 0 || namespaces.length < account.currencies.length) continue;
+    covered.set(account.accountId, { namespace: namespaces[0]!, institutionKey: account.institutionKey, product });
   }
   return covered;
 }

@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { commitPGliteCanonicalBalanceCapture, type PGliteCanonicalBalanceCaptureRequest } from "./balance.ts";
+import { commitPGliteCanonicalFinancialCapture } from "./canonical-source-store.ts";
 import { currentDepositBalanceCommandRequest } from "./current-deposit-balance-command.ts";
 import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
 import type { PGliteStore } from "./transaction.ts";
+import { createForeignCurrencyDepositCapture } from "../canonical/foreign-currency-deposit-admission.ts";
+import { YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../canonical/foreign-currency-deposit.fixtures.ts";
 import type { InvestmentCaptureInput } from "../canonical/investment-financial-admission.ts";
 import {
   readTdccFunds,
@@ -28,41 +31,46 @@ export const observedAt = "2026-10-09T02:31:00.000Z";
 const SETTLEMENT_ACCOUNT = ["2001", "2345678"].join("");
 const BROKER_ACCOUNT = ["98", "76543"].join("");
 const CATHAY_ACCOUNT = ["1234", "56"].join("");
+const FUBON_ACCOUNT = ["6543", "21"].join("");
 
-const settlementRow = (txnDateTime: string, transferInAmount: string, transferOutAmount: string, balance: string, summary: string) => ({
-  balance, currency: "TWD", hcode: "", memo: "", stan: "000000123456", summary,
+const settlementRow = (currency: string, txnDateTime: string, transferInAmount: string, transferOutAmount: string, balance: string, summary: string) => ({
+  balance, currency, hcode: "", memo: "", stan: "000000123456", summary,
   transferInAccountNo: "", transferInAmount, transferInBankId: "",
   transferOutAccountNo: "", transferOutAmount, transferOutBankId: "", txnDateTime,
 });
 
-/** One TDCC settlement account at `bankId` holding 15200 TWD, with a 16700 inflow and a 1500 card-shop outflow. */
-export async function commitTdccSettlement(store: PGliteStore, bankId: string, withBalance = true) {
+/** One TDCC settlement account at `bankId` holding 15200 in `currency`, with a 16700 inflow and a 1500 card-shop outflow. */
+export async function commitTdccSettlement(
+  store: PGliteStore,
+  bankId: string,
+  { withBalance = true, currency = "TWD" }: Readonly<{ withBalance?: boolean; currency?: string }> = {},
+) {
   const snapshot = readTdccSettlementSnapshot({
     tspAccountInfos: [{
       bankId,
       execMsg: "交易成功。",
       execStatue: "0000",
-      tspAccount: [{ accountNo: SETTLEMENT_ACCOUNT, accountType: "活期存款", availableBalance: "15200", balanceAmt: "15200", currency: "TWD", isShow: true, remark: "" }],
+      tspAccount: [{ accountNo: SETTLEMENT_ACCOUNT, accountType: "活期存款", availableBalance: "15200", balanceAmt: "15200", currency, isShow: true, remark: "" }],
       tspTimeAccounts: [],
     }],
     updateTime: "20261009103000",
   });
   const account = snapshot.accounts[0]!;
   await commitPGliteCanonicalDepositCapture(store, tdccSettlementTransactionCapture({
-    captureId: `tsp007-${bankId}`,
+    captureId: `tsp007-${bankId}-${currency}`,
     observedAt,
     connection: tdcc,
     account,
     pages: [{
       accountNo: SETTLEMENT_ACCOUNT, startDate: "20260710", endDate: "20261009", isComplete: true,
       transactionDetails: [
-        settlementRow("20260801090000", "16700.0", "0.0", "16700.0", "薪資"),
-        settlementRow("20260802101500", "0.0", "1500.0", "15200.0", "全家便利商店"),
+        settlementRow(currency, "20260801090000", "16700.0", "0.0", "16700.0", "薪資"),
+        settlementRow(currency, "20260802101500", "0.0", "1500.0", "15200.0", "全家便利商店"),
       ],
     }],
   }));
   if (withBalance) await commitPGliteCanonicalBalanceCapture(store, currentDepositBalanceCommandRequest(tdccSettlementBalanceCapture({
-    captureId: `tsp006-${bankId}`, observedAt, connection: tdcc, snapshot, account,
+    captureId: `tsp006-${bankId}-${currency}`, observedAt, connection: tdcc, snapshot, account,
   })));
 }
 
@@ -109,29 +117,31 @@ export async function commitCathay(store: PGliteStore) {
       records: [],
     },
   });
-  await commitPGliteCanonicalBalanceCapture(store, cathayBalance("cathay-balance"));
+  await commitPGliteCanonicalBalanceCapture(store, directTwdBalance("cathay", CATHAY_ACCOUNT, "1000"));
 }
 
-function cathayBalance(captureId: string): PGliteCanonicalBalanceCaptureRequest {
+function directTwdBalance(namespace: string, sourceAccountKey: string, balance: string): PGliteCanonicalBalanceCaptureRequest {
+  const captureId = `${namespace}-balance`;
+  const contractVersion = `${namespace}/current-deposit-balance-v1`;
   const occurrenceKey = token(`${captureId}:occurrence`);
   const effectiveAt = "2026-10-09T08:00:00+08:00";
   return {
     capture: {
       captureId,
-      integrationNamespace: "cathay",
-      sourceConnectionKey: token("cathay-connection"),
-      identityEpoch: token("cathay-epoch"),
+      integrationNamespace: namespace,
+      sourceConnectionKey: token(`${namespace}-connection`),
+      identityEpoch: token(`${namespace}-epoch`),
       stream: "domestic-deposit",
       recordKind: "synthetic-balance",
-      routeKey: "cathay/domestic-deposit/current-balance-v1",
-      contractVersion: "cathay/current-deposit-balance-v1",
+      routeKey: `${namespace}/domestic-deposit/current-balance-v1`,
+      contractVersion,
       subjectDigest: token(`${captureId}:subject`),
       observedAt: "2026-10-09T00:01:00.000Z",
       accountNumber: null,
       scope: {
         startDate: "2026-10-09", endDate: "2026-10-09", dateFormat: "YYYY-MM-DD", kind: "point-in-time",
-        completeness: "single-page", ruleVersion: "cathay/current-deposit-balance-v1",
-        sourceAccountKey: CATHAY_ACCOUNT, accountNo: CATHAY_ACCOUNT,
+        completeness: "single-page", ruleVersion: contractVersion,
+        sourceAccountKey, accountNo: sourceAccountKey,
       },
       pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, metadata: { provider: "synthetic" } }],
       records: [{
@@ -139,25 +149,60 @@ function cathayBalance(captureId: string): PGliteCanonicalBalanceCaptureRequest 
         collisionKey: token(`${captureId}:collision`),
         providerKey: token(`${captureId}:provider`),
         contentHash: token(`${captureId}:content`),
-        compact: { balance: { coefficient: "1000", scale: 0 }, effectiveAt },
+        compact: { balance: { coefficient: balance, scale: 0 }, effectiveAt },
       }],
     },
-    account: { sourceAccountKey: CATHAY_ACCOUNT, accountType: "depository", currency: "TWD" },
+    account: { sourceAccountKey, accountType: "depository", currency: "TWD" },
     observations: [{
       observationKey: token(`${captureId}:ledger`),
       balanceKind: "ledger",
-      balance: { coefficient: "1000", scale: 0 },
+      balance: { coefficient: balance, scale: 0 },
       currency: "TWD",
       effectiveAt,
       effectiveTimeBasis: "provider-system-time",
-      effectiveTimeRuleVersion: "cathay/current-deposit-balance-v1",
+      effectiveTimeRuleVersion: contractVersion,
       evidenceSourceRecordKey: occurrenceKey,
       evidenceSourceField: "balance",
-      evidenceSourceValue: "1000",
-      evidenceContractVersion: "cathay/current-deposit-balance-v1",
+      evidenceSourceValue: balance,
+      evidenceContractVersion: contractVersion,
       sourceOccurrenceKey: occurrenceKey,
     }],
   };
+}
+
+export async function commitFubon(store: PGliteStore) {
+  const routeKey = "fubon/domestic-deposit/human-attested-v1";
+  const contractVersion = "human-attested-v1";
+  await commitPGliteCanonicalFinancialCapture(store, {
+    capture: {
+      captureId: "fubon-history",
+      integrationNamespace: "fubon",
+      sourceConnectionKey: token("fubon-connection"),
+      identityEpoch: token("fubon-epoch"),
+      stream: "domestic-deposit",
+      recordKind: "fubon-domestic-deposit",
+      routeKey,
+      contractVersion,
+      subjectDigest: token("fubon-subject"),
+      observedAt: "2026-10-09T00:00:00.000Z",
+      accountNumber: { value: FUBON_ACCOUNT, kind: "depository-account", evidenceVersion: "synthetic-v1", sourceField: "accountNumber" },
+      scope: {
+        startDate: "2026-10-01", endDate: "2026-10-09", dateFormat: "YYYY-MM-DD", kind: "bounded-range",
+        completeness: "complete-range", completenessBasis: "full-bounded-range", ruleVersion: routeKey,
+        sourceAccountKey: FUBON_ACCOUNT,
+      },
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 0, terminal: true, metadata: { pageCount: 1 } }],
+      records: [],
+      occurrenceGroupCoverage: [{ scopeKey: token("fubon-scope"), startDate: "2026-10-01", endDate: "2026-10-09", contractVersion }],
+    },
+    account: { sourceAccountKey: FUBON_ACCOUNT, accountNo: FUBON_ACCOUNT, accountType: "depository", currency: "TWD" },
+    transactions: [],
+  });
+  await commitPGliteCanonicalBalanceCapture(store, directTwdBalance("fubon", FUBON_ACCOUNT, "3000"));
+}
+
+export async function commitYuantaUsdDeposit(store: PGliteStore) {
+  await commitPGliteCanonicalDepositCapture(store, createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1));
 }
 
 const tr001Item = (symbol: string, quantity: string, price: string) => {
