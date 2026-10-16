@@ -142,7 +142,15 @@ try {
       collectDeposit: async (_page, _input, _context, _identity, items) => {
         calls.push("deposit-collected");
         items.push(item("deposit"));
-        return { sourceCount: 1, rowCount: 2, itemCount: 1, financialAdmissionCount: 1 };
+        return {
+          sourceCount: 1,
+          rowCount: 2,
+          itemCount: 1,
+          financialAdmissionCount: 1,
+          currentBalanceExclusions: [
+            { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
+          ],
+        };
       },
       collectCreditCard: async (_page, _input, _context, _identity, items) => {
         calls.push("card-collected");
@@ -184,6 +192,11 @@ try {
     assert.ok(calls.includes("event:authentication:authentication-started"));
     assert.ok(calls.includes("event:authentication:authentication-completed"));
     assert.ok(calls.includes("event:commit:deposit-canonical-commit-completed"));
+    assert.ok(
+      calls.indexOf("event:collection:deposit-current-balance-excluded-account-number-evidence-missing")
+        > calls.indexOf("deposit-collected"),
+      "an excluded balance row is reported as an operational event",
+    );
     assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
     assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));
     assert.deepEqual(await readdir(temp), [], "typed provider path must not write source or log files");
