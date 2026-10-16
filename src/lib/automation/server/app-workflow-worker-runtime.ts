@@ -6,6 +6,7 @@ import type {
   WorkflowExecutorPorts,
   WorkflowFinancialCommitPort,
   WorkflowRunEvent,
+  WorkflowAccountIdentityPort,
   WorkflowTdccPort,
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
@@ -433,12 +434,15 @@ export async function runAppWorkflowWorker(
       });
       await abortable(childRpc.ready, controller.signal);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
         admittedFundAccounts: (connection) => childRpc!.financial.listTdccFundAccounts(connection),
       }
+      : undefined;
+    const accountIdentity: WorkflowAccountIdentityPort | undefined = definition.requiresAccountIdentity
+      ? { continuity: (request) => childRpc!.financial.accountIdentityContinuity(request) }
       : undefined;
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
@@ -481,6 +485,7 @@ export async function runAppWorkflowWorker(
       ...(financialCommit ? { financialCommit } : {}),
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
+      ...(accountIdentity ? { accountIdentity } : {}),
       ...(definition.requiresPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),

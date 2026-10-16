@@ -10,7 +10,7 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import type { WorkflowAccountIdentityPort, WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 
 registerHooks({
@@ -53,6 +53,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "fubon-all-statements");
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
+  assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresAccountIdentity, true);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     managedIdentitySecret: "synthetic-fubon-managed-secret",
@@ -89,6 +90,13 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
       throw new Error("source collection should precede commit");
     },
   };
+  let continuityCalls = 0;
+  const accountIdentity: WorkflowAccountIdentityPort = {
+    async continuity() {
+      continuityCalls += 1;
+      throw new Error("source collection should precede the continuity read");
+    },
+  };
   try {
     process.chdir(root);
     await applyPgliteOperationalBaseline(store);
@@ -104,7 +112,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     const result = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit },
+      workflowPorts: { financialCommit, accountIdentity },
       workflowBrowserPortFactory: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
@@ -115,6 +123,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
+    assert.equal(continuityCalls, 0);
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no source or log files");

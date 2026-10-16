@@ -111,6 +111,10 @@ import {
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
 import {
+  resolvePGliteAccountIdentityContinuity,
+  type AccountIdentityContinuityRequest,
+} from "../src/ledger/pglite/account-identity-continuity.ts";
+import {
   executePGliteCanonicalLoanRelationCommand,
   executePGliteCanonicalInvestmentRelationCommand,
   queryPGliteCurrentLoanRepaymentRelations,
@@ -290,6 +294,19 @@ function stringField(value: unknown, key: string): boolean {
   return typeof field === "string" && field.length > 0;
 }
 
+function accountIdentityContinuityRequestShape(value: unknown): boolean {
+  return plainRecord(value)
+    && Object.keys(value).length === 5
+    && stringField(value, "integrationNamespace")
+    && stringField(value, "sourceConnectionKey")
+    && stringField(value, "identityEpochKey")
+    && stringField(value, "stream")
+    && plainRecord(value.identifier)
+    && Object.keys(value.identifier).length === 2
+    && stringField(value.identifier, "kind")
+    && stringField(value.identifier, "value");
+}
+
 function sourceEvidenceShape(value: unknown): boolean {
   return plainRecord(value)
     && [
@@ -414,6 +431,8 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
       return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"));
     case "financial.tdccFundAccounts.list":
       return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
+    case "financial.accountIdentity.continuity":
+      return args.length === 1 && accountIdentityContinuityRequestShape(args[0]);
     case "financial.exchangeRates.upsert":
       return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
     default:
@@ -826,6 +845,7 @@ export function createPGliteFinancialRegistry(
     readExchangeRates: (currencies) => exchangeRates.readExchangeRates(currencies),
     upsertExchangeRates: (rows) => exchangeRates.upsertExchangeRates(rows),
     listTdccFundAccounts: (connection) => listPGliteTdccFundAccounts(store, connection),
+    accountIdentityContinuity: (request) => resolvePGliteAccountIdentityContinuity(store, request),
   });
 }
 
@@ -867,6 +887,7 @@ async function invoke(
     case "financial.investmentRelations.current": return registry.currentInvestmentRelations(args[0] as string | undefined);
     case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
     case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
+    case "financial.accountIdentity.continuity": return registry.accountIdentityContinuity(args[0] as AccountIdentityContinuityRequest);
     case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
   }
 }
