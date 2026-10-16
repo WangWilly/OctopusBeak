@@ -8,6 +8,8 @@ Phase 1 of [ADR 0041](0041-tdcc-epassbook-app-protocol-source.md) admits four TD
 
 ### Direct source precedence
 
+[ADR 0048](0048-direct-source-precedence-per-currency.md) amends this section: coverage is decided per Institution, product, and currency.
+
 TDCC reports accounts maintained by banks and brokers that may also have their own supported source, such as Cathay United Bank or Yuanta Trade. [ADR 0008](0008-source-scoped-lineage-and-strict-canonical-admission.md) keeps those identities separate, and the overview would count both. Direct source precedence resolves this for each Institution and product. While a direct source holds at least one current account for that Institution and product, every TDCC account there is covered. A covered account stays visible in its own account view, labelled with the direct source that counts it, and is excluded from totals, net worth, activity, and spending. Coverage is evaluated from data, not settings, so a direct source that is enabled but has never synced leaves TDCC counting.
 
 Coverage is computed in one place. `directSourceCoverage` maps each Intermediary-source account to the first direct namespace that holds an account for the same Institution and product, and `readPGliteDirectSourceCoverage` runs it over the accounts that exist at the reader's knowledge point. The canonical store records no account lifecycle fact, so a current account is one created at or before that knowledge point. When account lifecycle facts are admitted, that query is the one place that must also drop a closed direct account.
