@@ -112,7 +112,7 @@ A supported source that reports Financial Accounts maintained by other Instituti
 _Avoid_: TDCC as Institution, aggregator account, depository-owned account
 
 **Direct source precedence**:
-The rule that, for one Institution and product, a Financial Account collected from a source operated by that Institution counts toward totals ahead of any account an Intermediary source reports there. Coverage exists while the direct source holds at least one current account for that Institution and product. A covered intermediary account stays visible in its own account view but is excluded from totals, net worth, activity, and spending; nothing compares account numbers, and no identities merge.
+The rule that, for one Institution, product, and currency, a Financial Account collected from a source operated by that Institution counts toward totals ahead of any account an Intermediary source reports there. An intermediary account is covered while, for every currency it holds, the direct source holds at least one current account for that Institution and product in that currency; a currency the direct source does not collect, such as USD at a bank whose direct source collects only TWD, leaves the intermediary account counting. A covered intermediary account stays visible in its own account view but is excluded from totals, net worth, activity, and spending; nothing compares account numbers, and no identities merge.
 _Avoid_: Account matching, cross-source deduplication, identity merge, user-selected authority
 
 **Institution source coverage**:
