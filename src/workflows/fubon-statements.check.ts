@@ -450,17 +450,25 @@ try {
       readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdRow],
     },
   );
-  assert.equal(
-    unlinkableItems.filter((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND).length,
-    2,
+  const depositAccountKeys = (items: PGliteWorkflowRunItem[]) =>
+    items.flatMap((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND
+      ? [[item.command.request.capture.identity.accountNumber?.value ?? null, item.command.request.capture.identity.sourceAccountKey] as const]
+      : []);
+  const balanceAccountKeys = (items: PGliteWorkflowRunItem[]) =>
+    items.flatMap((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND
+      ? [item.command.request.account.sourceAccountKey]
+      : []);
+  const unlinkableDeposits = depositAccountKeys(unlinkableItems);
+  assert.deepEqual(
+    unlinkableDeposits.map(([number]) => number).sort(),
+    [accountNumber, null].sort(),
     "both accounts' statements admit when only the second lacks account-number evidence",
   );
-  const unlinkableBalanceItems = unlinkableItems.filter((item) =>
-    item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  assert.deepEqual(
+    balanceAccountKeys(unlinkableItems),
+    unlinkableDeposits.flatMap(([number, key]) => (number === accountNumber ? [key] : [])),
+    "only the unlinkable account's balance is excluded",
   );
-  assert.equal(unlinkableBalanceItems.length, 1, "only the unlinkable account's balance is excluded");
-  assert.ok(unlinkableBalanceItems[0]!.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND);
-  assert.equal(unlinkableBalanceItems[0]!.command.request.account.accountNumber?.value, accountNumber);
   assert.equal(unlinkableResult.itemCount, unlinkableItems.length);
   assert.deepEqual(unlinkableResult.currentBalanceExclusions, [
     { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
@@ -519,14 +527,14 @@ try {
     },
   );
   assert.deepEqual(noRecordResult.currentBalanceExclusions, []);
+  const noRecordDeposits = depositAccountKeys(noRecordItems);
   assert.deepEqual(
-    noRecordItems
-      .filter((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND)
-      .map((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND
-        ? item.command.request.account.accountNumber?.value
-        : undefined)
-      .sort(),
+    noRecordDeposits.map(([number]) => number).sort(),
     [accountNumber, secondAccountNumber].sort(),
+  );
+  assert.deepEqual(
+    balanceAccountKeys(noRecordItems).sort(),
+    noRecordDeposits.map(([, key]) => key).sort(),
     "a no-record statement range still establishes the account for its balance",
   );
 

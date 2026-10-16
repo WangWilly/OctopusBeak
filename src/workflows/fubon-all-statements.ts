@@ -359,8 +359,14 @@ export async function runFubonAllStatementsWorkflow(
         signal: context.signal,
         assertSession: () => assertSession(page),
         collect: async (typeId, stagedItems, reportActivity) => {
+          const collectDepositWithExclusionEvents = async () => {
+            const deposit = await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity);
+            for (const exclusion of deposit.currentBalanceExclusions ?? [])
+              await context.event("collection", `deposit-current-balance-excluded-${exclusion.reason}`);
+            return deposit;
+          };
           const result = typeId === "deposit"
-            ? await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity)
+            ? await collectDepositWithExclusionEvents()
             : typeId === "credit_card"
               ? await collectCreditCard(page, parsed.data.creditCards, context, identity, stagedItems, reportActivity)
               : await collectLoan(page, parsed.data.loans, context, identity, stagedItems, reportActivity);

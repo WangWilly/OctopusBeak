@@ -246,13 +246,28 @@ export type FubonStatementsRunDependencies = Readonly<{
   readCurrentDepositBalances?: typeof readFubonCurrentDepositBalances;
 }>;
 
+/** A TWD current-balance row whose account has no full account-number
+ * evidence among this run's statement captures. Every account's statements
+ * still admit; only this balance line stays out of the product. */
+export type FubonCurrentBalanceExclusion = Readonly<{
+  reason: "account-number-evidence-missing";
+  /** Selector option values of statement captures that carry no
+   * account-number evidence, with digits as 9 and letters as A. */
+  unlinkedStatementAccountShapes: readonly string[];
+}>;
+
 export type FubonDepositWorkflowCollection = Readonly<{
   sourceCount: number;
   rowCount: number;
   itemCount: number;
   financialAdmissionCount: number;
   noDataEvidence?: boolean;
+  currentBalanceExclusions?: readonly FubonCurrentBalanceExclusion[];
 }>;
+
+export function fubonAccountOptionShape(value: string): string {
+  return value.replace(/\d/gu, "9").replace(/\p{L}/gu, "A");
+}
 
 type ExistingFubonFinancialCapture = Readonly<{
   identity: Readonly<{
@@ -2826,7 +2841,9 @@ export async function runFubonStatements(
     sourceCapture: FubonDomesticDepositValidatedEvidence;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
   }> = [];
-  let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
+  const currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
+  const currentBalanceExclusions: FubonCurrentBalanceExclusion[] = [];
+  const unlinkedStatementAccountShapes = new Set<string>();
 
   {
     await overrides.reportActivity?.("query");
@@ -2945,6 +2962,8 @@ export async function runFubonStatements(
           );
         financialCaptures.push(financialCapture);
         financialDepositCaptures.push(financialCapture);
+        if (!capture.account.accountNumber)
+          unlinkedStatementAccountShapes.add(fubonAccountOptionShape(capture.account.value));
         relationInputs.push({
           captureId: financialInput.captureId,
           sourceCapture: capture,
@@ -2975,17 +2994,22 @@ export async function runFubonStatements(
       const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
         financialCaptures,
       );
-      currentBalanceCaptures = selectFubonDomesticCurrentDepositRows(currentRows).map((unadjustedRow) => {
+      for (const unadjustedRow of selectFubonDomesticCurrentDepositRows(currentRows)) {
         const row = { ...unadjustedRow, observedAt: currentObservedAt };
         const matching = existingByAccountNumber.get(row.accountNumber);
-        if (!matching)
-          throw new Error(
-            "Fubon current deposit snapshot contains an account without existing full account-number evidence.",
-          );
-        return admitCurrentDepositBalanceCapture(
-          buildFubonCurrentDepositBalanceCapture(row, matching),
+        if (!matching) {
+          currentBalanceExclusions.push({
+            reason: "account-number-evidence-missing",
+            unlinkedStatementAccountShapes: [...unlinkedStatementAccountShapes].sort(),
+          });
+          continue;
+        }
+        currentBalanceCaptures.push(
+          admitCurrentDepositBalanceCapture(
+            buildFubonCurrentDepositBalanceCapture(row, matching),
+          ),
         );
-      });
+      }
     }
 
     overrides.signal.throwIfAborted();
@@ -3032,6 +3056,7 @@ export async function runFubonStatements(
       rowCount,
       itemCount: items.length,
       financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
+      currentBalanceExclusions,
     };
   }
 }
