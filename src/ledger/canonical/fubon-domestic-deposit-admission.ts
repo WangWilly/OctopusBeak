@@ -311,22 +311,35 @@ function accountNumberLabelMatches(value: string, label: string): boolean {
   return new RegExp(`(?:^|\\D)${value}(?=\\D|$)`).test(clean(label));
 }
 
+export type FubonCompositeAccountOption = Readonly<{
+  accountSegment: string;
+  currencyCode: string;
+}>;
+
+/** Parses the domestic selector's `branch-account16-CCY-seq` option value. */
+export function parseFubonCompositeAccountOption(
+  value: string,
+): FubonCompositeAccountOption | null {
+  const match = clean(value).match(/^\d{3}-(\d{16})-([A-Z]{3})-\d{2}$/u);
+  if (!match) return null;
+  return { accountSegment: match[1]!, currencyCode: match[2]! };
+}
+
 function fubonCompositeAccountNumberMatches(
   value: string,
   label: string,
   accountNumber: string,
 ): boolean {
-  const selectorValue = clean(value).match(
-    /^(?:\d{3})-(\d{16})-TWD-(?:\d{2})$/u,
-  );
+  const option = parseFubonCompositeAccountOption(value);
   const displayLabel = clean(label).match(
     /^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u,
   );
   return (
-    selectorValue !== null &&
+    option !== null &&
+    option.currencyCode === "TWD" &&
     displayLabel !== null &&
     accountNumber === displayLabel[1] &&
-    selectorValue[1] === `00${displayLabel[1]}`
+    option.accountSegment === `00${displayLabel[1]}`
   );
 }
 
@@ -1390,6 +1403,16 @@ function hasExplicitFxAccountMarker(
   );
 }
 
+// The result table has no currency column and the TWD attestation is not
+// provider-guaranteed, so a non-TWD-coded option fails closed even when the
+// route evidence claims TWD.
+function hasNonTwdCompositeAccountOption(
+  account: FubonDomesticDepositCaptureEvidence["account"],
+): boolean {
+  const option = parseFubonCompositeAccountOption(account.value);
+  return option !== null && option.currencyCode !== "TWD";
+}
+
 function hasSharedAccountMarker(
   account: FubonDomesticDepositCaptureEvidence["account"],
 ): boolean {
@@ -1540,6 +1563,8 @@ function normalizeFubonDomesticDepositFinancialCapture(
     diagnostics.push("authority-shared-account");
   if (hasExplicitFxAccountMarker(input.capture.account)) {
     diagnostics.push("unsupported-currency");
+  } else if (hasNonTwdCompositeAccountOption(input.capture.account)) {
+    diagnostics.push("currency-unproven");
   } else if (!hasPositiveTwdDomesticRouteEvidence(input.capture)) {
     if (routeEvidence?.currency === "FX")
       diagnostics.push("unsupported-currency");

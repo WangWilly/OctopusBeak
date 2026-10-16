@@ -569,6 +569,15 @@ assert.equal(
   }),
   null,
 );
+const usdCodedSelectorValue = `987-00${nonLeadingZeroAccount}-USD-02`;
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: usdCodedSelectorValue,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  null,
+  "a USD-coded selector option must not yield TWD account-number evidence",
+);
 const statement = {
   account: accountLabel,
   accountId: accountValue,
