@@ -50,6 +50,13 @@ import { writeAutomationSettings } from "../src/lib/automation/server/config-fil
 import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
 import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
 import {
+  fubonDepositPurgeRequest,
+  isListedSupersededAccountIdentity,
+  latestFubonSupersededAccountIdentities,
+  supersededAccountPurgeOutcomeDto,
+  supersededAccountPurgePreviewDto,
+} from "../src/lib/settings/superseded-account-purge.ts";
+import {
   previewSourceForTask,
   previewStructureReportIssueUrl,
   previewStructureReports,
@@ -212,6 +219,28 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("settings:deletePreviewData", () =>
     deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
   );
+  async function listedSupersededAccountIdentity(candidate: unknown) {
+    const listed = latestFubonSupersededAccountIdentities(
+      await automationRunHistory(operationalProvider),
+    );
+    if (!isListedSupersededAccountIdentity(listed, candidate))
+      throw new Error("Superseded account identity is not listed by the latest Fubon run.");
+    return candidate;
+  }
+  ipcMain.handle("settings:previewSupersededAccountPurge", async (_event, candidate: unknown) => {
+    const identity = await listedSupersededAccountIdentity(candidate);
+    return supersededAccountPurgePreviewDto(
+      await financialPages.previewSupersededAccountPurge(fubonDepositPurgeRequest(identity)),
+    );
+  });
+  ipcMain.handle("settings:purgeSupersededAccount", async (_event, candidate: unknown) => {
+    const identity = await listedSupersededAccountIdentity(candidate);
+    const outcome = supersededAccountPurgeOutcomeDto(
+      await financialPages.purgeSupersededAccount(fubonDepositPurgeRequest(identity)),
+    );
+    if (outcome.status === "purged") dataVersionStore.markStale("canonical-account-purged");
+    return outcome;
+  });
   ipcMain.handle(
     "overview:load",
     (_event, options: DataReadOptions | undefined) =>
