@@ -93,7 +93,6 @@ export type WorkflowTdccPort = Readonly<{
   admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
 }>;
 
-/** The admitted account an evidenced account identifier already belongs to. */
 export type WorkflowAccountIdentityPort = Readonly<{
   continuity(request: AccountIdentityContinuityRequest): Promise<AccountIdentityContinuity>;
 }>;

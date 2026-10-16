@@ -15,9 +15,8 @@ export type AccountIdentityContinuity =
   | Readonly<{ status: "ambiguous"; accountCount: number }>;
 
 /**
- * The admitted account that already carries this evidenced identifier in one
- * connection, epoch, and stream. A provider may rewrite the value its source
- * account key hashes; the identifier is what stays fixed (ADR 0049).
+ * A provider may rewrite the value its source account key hashes; the
+ * identifier is what stays fixed (ADR 0049).
  */
 export async function resolvePGliteAccountIdentityContinuity(
   store: Pick<PGliteStore, "query">,

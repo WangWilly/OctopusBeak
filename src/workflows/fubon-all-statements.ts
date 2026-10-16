@@ -252,12 +252,15 @@ async function collectFubonDepositForApp(
   items: PGliteWorkflowRunItem[],
   reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonDepositWorkflowCollection> {
+  const accountIdentity = context.accountIdentity;
+  if (!accountIdentity) throw new Error("Account identity port is unavailable.");
   return await runFubonStatements(page, input, {
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,
+    accountIdentityContinuity: (request) => accountIdentity.continuity(request),
     reportActivity,
   });
 }

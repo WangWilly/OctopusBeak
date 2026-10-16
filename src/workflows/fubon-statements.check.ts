@@ -10,6 +10,7 @@ import {
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
   runFubonStatements,
+  type FubonDepositAccountOption,
   type FubonStatementsRunDependencies,
   type FubonDepositStatementEvidence,
   type FubonParsedDepositStatement,
@@ -26,6 +27,10 @@ import {
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type {
+  AccountIdentityContinuity,
+  AccountIdentityContinuityRequest,
+} from "../ledger/pglite/account-identity-continuity.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -344,6 +349,7 @@ function collectorOverrides(
     deferredCommitItems,
     sourceText: strictSourceText,
     signal: new AbortController().signal,
+    accountIdentityContinuity: async () => ({ status: "unseen" as const }),
     readCurrentDepositBalances: async () => [currentBalanceRow],
     openTransactionDetailForAccountIndex: async () => "****0000",
     readDepositAccountOptions: async () => [selectedAccount],
@@ -651,6 +657,112 @@ try {
     false,
     "a USD-coded account without statement rows stays out of financial admission",
   );
+
+  const continuedKey = `sha256:${"K".repeat(43)}`;
+  const rewrittenOption = {
+    value: `222-00${secondAccountNumber}-TWD-03`,
+    label: `${secondAccountNumber} (013)`,
+  };
+  const rewrittenAccount = {
+    ...rewrittenOption,
+    branchName: "013",
+    accountNumber: deriveFubonDomesticDepositAccountNumberEvidence(rewrittenOption)!,
+  };
+  const rewrittenShape = ["999", "9".repeat(16), "AAA", "99"].join("-");
+  const runWithContinuity = async (
+    continuityByNumber: ReadonlyMap<string, AccountIdentityContinuity>,
+    options: readonly (FubonDepositAccountOption & { branchName: string })[] = [selectedAccount, rewrittenAccount],
+  ) => {
+    const items: PGliteWorkflowRunItem[] = [];
+    const requests: AccountIdentityContinuityRequest[] = [];
+    const result = await runFubonStatements(
+      {} as never,
+      twoRangeInput,
+      {
+        ...collectorOverrides(items, async (_page, range, selected) => {
+          const account = options.find((option) => option.value === selected.value)!;
+          if (account.value === selectedAccount.value) return range === "30" ? statement : olderStatementFor(selectedAccount);
+          return range === "30" ? statementFor(account) : olderStatementFor(account);
+        }),
+        accountIdentityContinuity: async (request) => {
+          requests.push(request);
+          return continuityByNumber.get(request.identifier.value) ?? { status: "unseen" };
+        },
+        readDepositAccountOptions: async () => [...options],
+        readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
+      },
+    );
+    return { items, requests, result };
+  };
+  const financialCapturesOf = (items: PGliteWorkflowRunItem[]) =>
+    items.flatMap((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND ? [item.command.request.capture] : []);
+
+  const continuedRun = await runWithContinuity(new Map([[secondAccountNumber, { status: "continued", sourceAccountKey: continuedKey }]]));
+  assert.deepEqual(
+    depositIdentityFor(continuedRun.items, secondAccountNumber).map(({ subjectDigest }) => subjectDigest),
+    [continuedKey, continuedKey],
+    "both ranges of a rewritten option commit under the admitted account's key",
+  );
+  assert.deepEqual(
+    depositAccountKeys(continuedRun.items).filter(([number]) => number === secondAccountNumber).map(([, key]) => key),
+    [continuedKey, continuedKey],
+  );
+  assert.ok(balanceAccountKeys(continuedRun.items).includes(continuedKey), "the current balance links to the continued account");
+  assert.doesNotThrow(() => indexFubonCurrentDepositFinancialCaptures(financialCapturesOf(continuedRun.items)));
+  assert.deepEqual(continuedRun.result.statementExclusions, []);
+  assert.deepEqual(
+    continuedRun.requests.map((request) => request.identifier.value).sort(),
+    [accountNumber, secondAccountNumber].sort(),
+    "one lookup per evidenced account number across both date ranges",
+  );
+  assert.deepEqual(
+    continuedRun.requests.map(({ integrationNamespace, sourceConnectionKey: key, stream, identifier }) =>
+      ({ integrationNamespace, key, stream, kind: identifier.kind })),
+    continuedRun.requests.map(() => ({ integrationNamespace: "fubon", key: sourceConnectionKey, stream: "domestic-deposit", kind: "depository-account" })),
+  );
+  assert.equal(new Set(continuedRun.requests.map((request) => request.identityEpochKey)).size, 1);
+
+  const ambiguousRun = await runWithContinuity(new Map([[secondAccountNumber, { status: "ambiguous", accountCount: 2 }]]));
+  assert.deepEqual(
+    ambiguousRun.result.statementExclusions,
+    [{ reason: "account-identity-ambiguous", accountShape: rewrittenShape, accountCount: 2 }],
+    "an ambiguous account is excluded once, by shape and count only",
+  );
+  assert.deepEqual(
+    [...new Set(depositAccountKeys(ambiguousRun.items).map(([number]) => number))],
+    [accountNumber],
+    "the ambiguous account stays out of financial admission while the other account admits",
+  );
+  assert.equal(
+    ambiguousRun.items.filter((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND).length,
+    2,
+    "both of the ambiguous account's ranges land as source-only evidence",
+  );
+  assert.deepEqual(
+    balanceAccountKeys(ambiguousRun.items),
+    [...new Set(depositAccountKeys(ambiguousRun.items).map(([, key]) => key))],
+    "only the unambiguous account's balance is captured",
+  );
+  assert.deepEqual(ambiguousRun.result.currentBalanceExclusions, []);
+  assert.doesNotMatch(JSON.stringify(ambiguousRun.result), new RegExp(secondAccountNumber), "the exclusion carries no account number");
+
+  const unevidencedRun = await runWithContinuity(new Map(), [unlinkableAccount]);
+  assert.deepEqual(unevidencedRun.requests, [], "an option without account-number evidence never reads continuity");
+  assert.equal(depositAccountKeys(unevidencedRun.items).length, 2);
+
+  const twdCodedSecondOption = { value: `999-00${secondAccountNumber}-TWD-02`, label: `${secondAccountNumber} (013)` };
+  const twdCodedSecond = {
+    ...twdCodedSecondOption,
+    branchName: "013",
+    accountNumber: deriveFubonDomesticDepositAccountNumberEvidence(twdCodedSecondOption)!,
+  };
+  const sameRunRewrite = await runWithContinuity(new Map(), [selectedAccount, twdCodedSecond, rewrittenAccount]);
+  assert.deepEqual(
+    [...new Set(depositAccountKeys(sameRunRewrite.items).filter(([number]) => number === secondAccountNumber).map(([, key]) => key))].length,
+    1,
+    "two options for one unseen account number in one run admit under one key",
+  );
+  assert.equal(sameRunRewrite.requests.filter((request) => request.identifier.value === secondAccountNumber).length, 1);
 
   const jpyCodedAccount = {
     value: `999-00${secondAccountNumber}-JPY-02`,
