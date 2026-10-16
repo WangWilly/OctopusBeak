@@ -61,6 +61,12 @@ import type {
   PGliteCanonicalInvestmentRelationResolutionResult,
 } from "../src/ledger/pglite/relations.ts";
 import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import type {
+  SupersededAccountPurgePreview,
+  SupersededAccountPurgeRefusal,
+  SupersededAccountPurgeRequest,
+  SupersededAccountPurgeResult,
+} from "../src/ledger/pglite/superseded-account-purge.ts";
 import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 /** Stable named query/command registry identifiers. */
@@ -96,7 +102,14 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.exchangeRates.read",
   "financial.tdccFundAccounts.list",
   "financial.exchangeRates.upsert",
+  "financial.supersededAccount.previewPurge",
+  "financial.supersededAccount.purge",
 ] as const;
+
+export const PGLITE_FINANCIAL_OWNER_OPERATIONS: ReadonlySet<string> = new Set([
+  "financial.supersededAccount.previewPurge",
+  "financial.supersededAccount.purge",
+]);
 
 export type PGliteFinancialOperation = typeof PGLITE_FINANCIAL_OPERATIONS[number];
 
@@ -187,6 +200,8 @@ export type PGliteFinancialRegistry = Readonly<{
   readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
   listTdccFundAccounts(connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>): Promise<readonly TdccAdmittedFundAccount[]>;
   upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
+  previewSupersededAccountPurge(request: SupersededAccountPurgeRequest): Promise<SupersededAccountPurgePreview | SupersededAccountPurgeRefusal>;
+  purgeSupersededAccount(request: SupersededAccountPurgeRequest): Promise<SupersededAccountPurgeResult | SupersededAccountPurgeRefusal>;
 }>;
 
 export type PGliteFinancialRpcClient = Readonly<{
@@ -354,6 +369,8 @@ export function createPGliteFinancialRpcClient(
     readExchangeRates: (currencies) => call("financial.exchangeRates.read", currencies === undefined ? [] : [currencies]) as Promise<ExchangeRateRecord[]>,
     upsertExchangeRates: (rows) => call("financial.exchangeRates.upsert", [rows]).then(() => undefined),
     listTdccFundAccounts: (connection) => call("financial.tdccFundAccounts.list", [connection]) as Promise<readonly TdccAdmittedFundAccount[]>,
+    previewSupersededAccountPurge: (request) => call("financial.supersededAccount.previewPurge", [request]) as Promise<SupersededAccountPurgePreview | SupersededAccountPurgeRefusal>,
+    purgeSupersededAccount: (request) => call("financial.supersededAccount.purge", [request]) as Promise<SupersededAccountPurgeResult | SupersededAccountPurgeRefusal>,
   };
   const close = (error = new PGliteFinancialError("worker-closed")): void => {
     if (closed) return;

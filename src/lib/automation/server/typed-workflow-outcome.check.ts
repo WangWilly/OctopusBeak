@@ -50,6 +50,53 @@ test("typed workflow summary ignores unsupported and invalid count fields", () =
   assert.equal(summarizeTypedWorkflowOutput("raw provider output"), null);
 });
 
+test("superseded account identities keep only bounded opaque key pairs through every boundary", () => {
+  const key = (letter: string) => `sha256:${letter.repeat(43)}`;
+  const valid = { supersededSourceAccountKey: key("S"), successorSourceAccountKey: key("T") };
+  const summary = summarizeTypedWorkflowOutput({
+    status: "financial-admitted",
+    itemCount: 2,
+    supersededAccountIdentities: [
+      valid,
+      { supersededSourceAccountKey: `${key("A")}=`, successorSourceAccountKey: key("B") },
+      { supersededSourceAccountKey: "sha256:short", successorSourceAccountKey: key("B") },
+      { supersededSourceAccountKey: ["999", "9".repeat(16), "USD", "99"].join("-"), successorSourceAccountKey: key("B") },
+      { supersededSourceAccountKey: key("C") },
+      { supersededSourceAccountKey: key("D"), successorSourceAccountKey: key("D") },
+      "not-an-entry",
+    ],
+  });
+  assert.deepEqual(summary, {
+    status: "financial-admitted",
+    counts: { itemCount: 2 },
+    supersededAccountIdentities: [valid],
+  });
+  assert.deepEqual(sanitizeTypedWorkflowOutcome({ errorCode: null, summary }), { errorCode: null, summary });
+  assert.equal(isTypedWorkflowOutcomeSummary(summary), true);
+
+  const many = Array.from({ length: 12 }, (_, index) => ({
+    supersededSourceAccountKey: key(String.fromCharCode(65 + index)),
+    successorSourceAccountKey: key(String.fromCharCode(97 + index)),
+  }));
+  const capped = summarizeTypedWorkflowOutput({ status: "financial-admitted", supersededAccountIdentities: many });
+  assert.deepEqual(capped?.supersededAccountIdentities, many.slice(0, 8));
+  assert.ok(Buffer.byteLength(JSON.stringify(capped), "utf8") <= 4_096);
+
+  assert.equal(
+    summarizeTypedWorkflowOutput({ status: "no-data", supersededAccountIdentities: [] })?.supersededAccountIdentities,
+    undefined,
+  );
+  assert.equal(isTypedWorkflowOutcomeSummary({ counts: {}, supersededAccountIdentities: many }), false);
+  assert.equal(isTypedWorkflowOutcomeSummary({
+    counts: {},
+    supersededAccountIdentities: [{ ...valid, accountNumber: "leak" }],
+  }), false);
+  assert.equal(isTypedWorkflowOutcomeSummary({
+    counts: {},
+    supersededAccountIdentities: [{ ...valid, successorSourceAccountKey: "sha256:short" }],
+  }), false);
+});
+
 test("product outcomes survive typed sanitization and persisted outcome round-trip", () => {
   const products = [
     { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
