@@ -9,8 +9,6 @@ import {
 } from "./cathay-statements.ts";
 import { CATHAY_BANK_ENTRY_URL, CATHAY_TRUSTED_DEVICE_COOKIE } from "./cathay-login.ts";
 
-export const CATHAY_TRUSTED_DEVICE_NAME = "OctopusBeak";
-
 export type CathayOtpChannel = "email" | "sms";
 
 export type CathayDeviceRegistrationFailure =
@@ -154,7 +152,7 @@ async function advance(
         ["shown", () => visible(cathayTrustDevicePrompt(page))],
       ] as const);
       if (prompt) {
-        await answerCathayTrustDevicePrompt(page, { trustAs: CATHAY_TRUSTED_DEVICE_NAME });
+        await answerCathayTrustDevicePrompt(page, "trust");
       }
       if (!(await hasTrustedDeviceCookie(page))) throw new CathayDeviceRegistrationError("not-trusted");
       return { step: "done", result: { kind: "registered", channel: state.channel } };

@@ -591,12 +591,22 @@ export async function clickFirstVisible(locator: Locator): Promise<boolean> {
   return false;
 }
 
+function startupAnnouncement(page: Page): Locator {
+  return page.locator(".modal.show").filter({ hasText: /系統維護公告/ }).first();
+}
+
 async function hasStartupAnnouncement(page: Page): Promise<boolean> {
-  return await page
-    .getByText(/系統維護公告/)
-    .first()
-    .isVisible()
-    .catch(() => false);
+  return await startupAnnouncement(page).isVisible().catch(() => false);
+}
+
+async function dismissAnnouncementModal(page: Page): Promise<boolean> {
+  const modal = startupAnnouncement(page);
+  if (!(await modal.isVisible().catch(() => false))) return false;
+  return await clickFirstVisible(
+    modal.locator(
+      '[data-dismiss="modal"], [data-bs-dismiss="modal"], .close, .btn-close, button[aria-label="Close"], button[aria-label*="關閉"]',
+    ).or(modal.locator("button").filter({ hasText: /^\s*(關閉|我知道了|OK)\s*$/ })),
+  );
 }
 
 async function dismissStartupAnnouncements(
@@ -607,7 +617,7 @@ async function dismissStartupAnnouncements(
   let lastActionAt = Date.now();
 
   while (Date.now() < deadline) {
-    const clicked = await clickFirstVisible(
+    const clicked = await dismissAnnouncementModal(page) || await clickFirstVisible(
       page.locator("button").filter({
         hasText: /^\s*(下一則|我知道了|OK)\s*$/,
       }),
@@ -622,6 +632,7 @@ async function dismissStartupAnnouncements(
     if (!announcementVisible && Date.now() - lastActionAt >= 1_000) {
       return;
     }
+    if (announcementVisible) await page.keyboard.press("Escape").catch(() => undefined);
 
     await page.waitForTimeout(250);
   }
@@ -638,6 +649,19 @@ export async function isCathaySignedIn(page: Page): Promise<boolean> {
     .first()
     .isVisible()
     .catch(() => false);
+}
+
+async function clickLoginPastLateAnnouncements(page: Page): Promise<void> {
+  const login = page.locator("button.js-login");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await login.click({ timeout: 4_000 });
+      return;
+    } catch (error) {
+      if (attempt === 2 || !(await hasStartupAnnouncement(page))) throw error;
+      await dismissStartupAnnouncements(page, 10_000);
+    }
+  }
 }
 
 export async function fillLoginForm(
@@ -680,7 +704,7 @@ export async function fillLoginForm(
     }
 
     await event?.("authentication-login-submit-started");
-    await page.locator("button.js-login").click();
+    await clickLoginPastLateAnnouncements(page);
     await event?.("authentication-login-submitted");
     return;
   }
@@ -710,23 +734,17 @@ export function cathayTrustDevicePrompt(page: Page): Locator {
 
 export async function answerCathayTrustDevicePrompt(
   page: Page,
-  answer: "skip" | Readonly<{ trustAs: string }>,
+  answer: "skip" | "trust",
 ): Promise<void> {
-  if (answer === "skip") {
-    if (!(await clickFirstVisible(page.getByText("暫時不用加入信任裝置")))) {
-      throw new Error("Could not click Cathay trusted-device opt-out.");
-    }
-  } else {
-    if (!(await clickFirstVisible(page.getByText(/^信任這台裝置$/)))) {
-      throw new Error("Could not click Cathay trusted-device opt-in.");
-    }
-    const deviceName = page
-      .locator('input[placeholder*="裝置"], input[name*="device" i], input[id*="device" i]')
-      .filter({ visible: true })
-      .first();
-    if (await deviceName.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) {
-      await deviceName.fill(answer.trustAs);
-    }
+  const prompt = page
+    .locator(".chakra-modal__content, .modal.show, [role=dialog]")
+    .filter({ hasText: "信任這台裝置？" })
+    .last();
+  const choice = answer === "trust"
+    ? prompt.getByRole("button", { name: "加入信任裝置", exact: true })
+    : prompt.getByRole("button", { name: /^暫時不用(加入信任裝置)?$/u });
+  if (!(await clickFirstVisible(choice))) {
+    throw new Error(`Could not click Cathay trusted-device ${answer === "trust" ? "opt-in" : "opt-out"}.`);
   }
 
   const confirm = page

@@ -34,7 +34,7 @@ type FixtureLog = {
   trustedLogins: number;
   sends: string[];
   submits: string[];
-  trustedNames: string[];
+  trusted: number;
 };
 
 function loginPage(view: NonNullable<FixtureOptions["view"]>) {
@@ -56,9 +56,8 @@ function loginPage(view: NonNullable<FixtureOptions["view"]>) {
 </section>
 <div id="trust" role="dialog" hidden>
   <p>信任這台裝置？</p>
-  <button id="trust-yes" type="button">信任這台裝置</button>
-  <button id="trust-no" type="button">暫時不用加入信任裝置</button>
-  <div id="trust-name" hidden><input placeholder="請輸入裝置名稱"><button aria-label="確定" type="button">確定</button></div>
+  <button id="trust-no" type="button" aria-label="暫時不用">暫時不用</button>
+  <button id="trust-yes" type="button" aria-label="加入信任裝置">加入信任裝置</button>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -78,9 +77,8 @@ $("btnConfirm").onclick = async () => {
   if (outcome === "accepted") { $("otp").hidden = true; $("trust").hidden = false; }
   else $("otp-message").textContent = outcome === "expired" ? "驗證碼已逾時，請重新取得" : "驗證碼錯誤，請重新輸入";
 };
-$("trust-yes").onclick = () => { $("trust-name").hidden = false; };
-$("trust-name").querySelector("button").onclick = async () => {
-  await post("/fixture/trust?name=" + encodeURIComponent($("trust-name").querySelector("input").value));
+$("trust-yes").onclick = async () => {
+  await post("/fixture/trust");
   home();
 };
 $("trust-no").onclick = home;
@@ -109,7 +107,7 @@ async function installCathayFixture(context: BrowserContext, options: FixtureOpt
         return await route.fulfill({ json: { outcome } });
       }
       case "/fixture/trust":
-        log.trustedNames.push(url.searchParams.get("name") ?? "");
+        log.trusted += 1;
         return await route.fulfill({
           json: {},
           headers: {
@@ -145,7 +143,7 @@ async function withFixture(
       : Object.fromEntries(Object.entries(SIGN_IN).map(([key, value]) => [`LIBRETTO_CLOUD_${key.toUpperCase()}`, value])),
     codec,
   );
-  const log: FixtureLog = { logins: 0, trustedLogins: 0, sends: [], submits: [], trustedNames: [] };
+  const log: FixtureLog = { logins: 0, trustedLogins: 0, sends: [], submits: [], trusted: 0 };
   const lock = createSourceDeviceLock();
   let runs = 0;
   const openPage = <T>(signal: AbortSignal, run: (page: Page) => Promise<T>) =>
@@ -197,7 +195,7 @@ function signInAsRun(page: Page, events: string[]) {
   });
 }
 
-test("registering sends one code, adds the device as OctopusBeak, and a later run signs in without a code", async () => {
+test("registering sends one code, adds the trusted device, and a later run signs in without a code", async () => {
   await withFixture({}, async ({ service, log, lock, credentialsText, cookieJarText, openRunPage }) => {
     assert.deepEqual(service.status(), { registered: false });
     const sms = await service.start();
@@ -209,7 +207,7 @@ test("registering sends one code, adds the device as OctopusBeak, and a later ru
 
     assert.deepEqual(await service.submitCode(registrationId, CODE), { status: "registered", channels: ["sms"] });
     assert.deepEqual(log.submits, [CODE]);
-    assert.deepEqual(log.trustedNames, ["OctopusBeak"]);
+    assert.equal(log.trusted, 1);
     assert.deepEqual(service.status(), { registered: true });
     assert.equal(lock.holder(), null);
     assert.equal((await credentialsText()).includes(CODE), false, "no one-time code is written");
@@ -254,7 +252,7 @@ test("a rejected or expired code ends the registration without trusting or recor
       const registrationId = sms.status === "code-required" ? sms.registrationId : "";
       assert.deepEqual(await service.submitCode(registrationId, "135791"), { status: "failed", reason });
       assert.deepEqual(log.sends, ["sms"], "a failed code is never followed by another send");
-      assert.deepEqual(log.trustedNames, []);
+      assert.equal(log.trusted, 0);
       assert.deepEqual(service.status(), { registered: false });
       assert.equal(lock.holder(), null);
       assert.equal((await credentialsText()).includes("CATHAY_TRUSTED_DEVICE_USER_ID"), false);
