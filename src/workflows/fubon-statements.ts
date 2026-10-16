@@ -42,7 +42,6 @@ import {
   fubonDepositLatestStatementRow,
   fubonDepositRouteCurrency,
   fubonExactDecimalEquals,
-  fubonDomesticDepositSupersededSourceAccountKey,
   isUsdCodedCompositeOfOwnLabel,
   type FubonDepositBalanceReconciliation,
   type FubonDomesticDepositSourceOnlyEvidence,
@@ -276,11 +275,6 @@ export type FubonDepositReconciliationFailure =
   | "running-balance-mismatch"
   | "matches-non-twd-balance";
 
-export type FubonSupersededAccountIdentity = Readonly<{
-  supersededSourceAccountKey: `sha256:${string}`;
-  successorSourceAccountKey: string;
-}>;
-
 export type FubonDepositWorkflowCollection = Readonly<{
   sourceCount: number;
   rowCount: number;
@@ -289,7 +283,6 @@ export type FubonDepositWorkflowCollection = Readonly<{
   noDataEvidence?: boolean;
   currentBalanceExclusions?: readonly FubonCurrentBalanceExclusion[];
   statementExclusions?: readonly FubonStatementExclusion[];
-  supersededAccountIdentities?: readonly FubonSupersededAccountIdentity[];
 }>;
 
 export function fubonAccountOptionShape(value: string): string {
@@ -2900,7 +2893,6 @@ export async function runFubonStatements(
   const currentBalanceExclusions: FubonCurrentBalanceExclusion[] = [];
   const unlinkedStatementAccountShapes = new Set<string>();
   const statementExclusions: FubonStatementExclusion[] = [];
-  const successorBySupersededKey = new Map<`sha256:${string}`, string>();
 
   {
     await overrides.reportActivity?.("query");
@@ -3012,10 +3004,6 @@ export async function runFubonStatements(
           );
         financialCaptures.push(financialCapture);
         financialDepositCaptures.push(financialCapture);
-        const supersededSourceAccountKey =
-          fubonDomesticDepositSupersededSourceAccountKey(account);
-        if (supersededSourceAccountKey)
-          successorBySupersededKey.set(supersededSourceAccountKey, financialCapture.identity.accountNo);
         if (!capture.account.accountNumber)
           unlinkedStatementAccountShapes.add(fubonAccountOptionShape(capture.account.value));
         relationInputs.push({
@@ -3168,12 +3156,6 @@ export async function runFubonStatements(
       financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
       currentBalanceExclusions,
       statementExclusions,
-      supersededAccountIdentities: [...successorBySupersededKey].map(
-        ([supersededSourceAccountKey, successorSourceAccountKey]) => ({
-          supersededSourceAccountKey,
-          successorSourceAccountKey,
-        }),
-      ),
     };
   }
 }

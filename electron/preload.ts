@@ -72,8 +72,6 @@ const api: OctopusBeakApi = {
     load: () => ipcRenderer.invoke("settings:load"),
     save: (input) => ipcRenderer.invoke("settings:save", input),
     deletePreviewData: () => ipcRenderer.invoke("settings:deletePreviewData"),
-    previewSupersededAccountPurge: (identity) => ipcRenderer.invoke("settings:previewSupersededAccountPurge", identity),
-    purgeSupersededAccount: (identity) => ipcRenderer.invoke("settings:purgeSupersededAccount", identity),
   },
   overview: {
     load: (options) => ipcRenderer.invoke("overview:load", options),

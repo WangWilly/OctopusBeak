@@ -21,21 +21,6 @@ for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
 assert.match(source, /ipcMain\.handle\("settings:save"/);
-assert.match(
-  source,
-  /ipcMain\.handle\("settings:previewSupersededAccountPurge",[\s\S]*?listedSupersededAccountIdentity\(candidate\)[\s\S]*?financialPages\.previewSupersededAccountPurge\(/,
-  "the purge preview runs only for a pair the latest Fubon run listed",
-);
-assert.match(
-  source,
-  /ipcMain\.handle\("settings:purgeSupersededAccount",[\s\S]*?listedSupersededAccountIdentity\(candidate\)[\s\S]*?financialPages\.purgeSupersededAccount\([\s\S]*?markStale\("canonical-account-purged"\)/,
-  "the purge runs only for a listed pair and refreshes data views afterwards",
-);
-assert.equal(
-  [...source.matchAll(/financialPages\.purgeSupersededAccount\(/g)].length,
-  1,
-  "the destructive purge has exactly one caller, the confirmation-gated IPC",
-);
 assert.match(source, /ipcMain\.handle\("spending:confirmCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:pairing-candidates"/);
 assert.match(source, /ipcMain\.handle\("spending:pairing-prewarm"/);

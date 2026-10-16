@@ -37,13 +37,6 @@
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
-  import {
-    latestFubonSupersededAccountIdentities,
-    rowIsVisible,
-    rowStateAfterPreview,
-    type SupersededAccountIdentity,
-    type SupersededAccountPurgeRowState,
-  } from "$lib/settings/superseded-account-purge.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
@@ -84,12 +77,6 @@
   let previewEnabled = $previewFeaturesEnabled;
   let previewDeleteConfirming = false;
   let previewDeleteStatus: "idle" | "pending" | "deleted" | "error" = "idle";
-  type SupersededAccountRow = {
-    identity: SupersededAccountIdentity;
-    state: SupersededAccountPurgeRowState;
-    purgedThisSession: boolean;
-  };
-  let supersededAccountRows: SupersededAccountRow[] = [];
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -101,7 +88,6 @@
     "settings-preview": $t.settings.previewFeatures,
     "settings-onboarding": $t.settings.onboardingSection,
   };
-  $: visibleSupersededAccountRows = supersededAccountRows.filter((row) => rowIsVisible(row.state));
   $: timezoneName = zoneName(selectedTimezone, $locale);
   $: nextRun = nextDailyRun(selectedUpdateTime, selectedTimezone, now);
   $: nextCollectionRun = nextDailyRun(`${collectionHour}:${collectionMinute}`, selectedTimezone, now);
@@ -124,7 +110,6 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
-    void loadSupersededAccountRows();
     const observer = new IntersectionObserver((entries) => {
       const visible = entries.filter((entry) => entry.isIntersecting)
         .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
@@ -249,70 +234,6 @@
     }
   }
 
-  async function loadSupersededAccountRows() {
-    let identities: readonly SupersededAccountIdentity[];
-    try {
-      identities = latestFubonSupersededAccountIdentities(await window.octopusBeak.automation.runHistory());
-    } catch {
-      return;
-    }
-    supersededAccountRows = identities.map((identity) => ({
-      identity,
-      state: { kind: "loading" },
-      purgedThisSession: false,
-    }));
-    await Promise.all(identities.map(previewSupersededAccount));
-  }
-
-  function updateSupersededAccountRow(
-    identity: SupersededAccountIdentity,
-    update: (row: SupersededAccountRow) => SupersededAccountRow,
-  ) {
-    supersededAccountRows = supersededAccountRows.map((row) =>
-      row.identity.supersededSourceAccountKey === identity.supersededSourceAccountKey ? update(row) : row);
-  }
-
-  async function previewSupersededAccount(identity: SupersededAccountIdentity) {
-    try {
-      const preview = await window.octopusBeak.settings.previewSupersededAccountPurge(identity);
-      updateSupersededAccountRow(identity, (row) => ({
-        ...row,
-        state: rowStateAfterPreview(preview, row.purgedThisSession),
-      }));
-    } catch {
-      updateSupersededAccountRow(identity, (row) => ({ ...row, state: { kind: "failed" } }));
-    }
-  }
-
-  function setSupersededAccountConfirming(row: SupersededAccountRow, confirming: boolean) {
-    if (row.state.kind !== "ready") return;
-    const preview = row.state.preview;
-    updateSupersededAccountRow(row.identity, (current) => ({
-      ...current,
-      state: { kind: "ready", preview, confirming },
-    }));
-  }
-
-  async function purgeSupersededAccount(row: SupersededAccountRow) {
-    if (row.state.kind !== "ready") return;
-    const preview = row.state.preview;
-    updateSupersededAccountRow(row.identity, (current) => ({ ...current, state: { kind: "purging", preview } }));
-    try {
-      const outcome = await window.octopusBeak.settings.purgeSupersededAccount(row.identity);
-      if (outcome.status === "refused") {
-        updateSupersededAccountRow(row.identity, (current) => ({
-          ...current,
-          state: rowStateAfterPreview(outcome, current.purgedThisSession),
-        }));
-        return;
-      }
-      updateSupersededAccountRow(row.identity, (current) => ({ ...current, purgedThisSession: true }));
-      await previewSupersededAccount(row.identity);
-    } catch {
-      updateSupersededAccountRow(row.identity, (current) => ({ ...current, state: { kind: "failed" } }));
-    }
-  }
-
   function changeDisplayScale(value: number) {
     applyDisplayScale(value);
   }
@@ -380,69 +301,6 @@
     </nav>
 
     <div class="settings-sections">
-      {#if visibleSupersededAccountRows.length > 0}
-        <section id="settings-data-repair" class="settings-section" aria-labelledby="settings-data-repair-title">
-          <header>
-            <h2 id="settings-data-repair-title">{$t.settings.dataRepair}</h2>
-            <p>{$t.settings.dataRepairDescription}</p>
-          </header>
-          <div class="card settings-card">
-            {#each visibleSupersededAccountRows as row (row.identity.supersededSourceAccountKey)}
-              {@const preview = row.state.kind === "ready" || row.state.kind === "purging" ? row.state.preview : null}
-              <div class="setting-row" data-superseded-account-row>
-                <div class="setting-label-group">
-                  <span class="setting-label">{$t.settings.supersededAccount}</span>
-                  {#if preview}
-                    <small class="setting-hint">
-                      {$t.settings.supersededAccountCounts(preview.transactionCount, preview.captureCount, preview.balanceObservationCount)}
-                    </small>
-                  {/if}
-                </div>
-                <div class="onboarding-setting-actions">
-                  {#if row.state.kind === "purged"}
-                    <span class="chip status-chip good" role="status">
-                      <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                      {$t.settings.supersededAccountDeleted}
-                    </span>
-                  {:else if row.state.kind === "refused"}
-                    <span class="chip status-chip" role="status" data-superseded-account-refusal={row.state.reason}>
-                      <CircleStop size={13} strokeWidth={2.25} aria-hidden="true" />
-                      {$t.settings.supersededAccountRefused($t.settings.supersededAccountRefusal[row.state.reason])}
-                    </span>
-                  {:else if row.state.kind === "failed"}
-                    <button class="button" type="button" onclick={() => previewSupersededAccount(row.identity)}>{$t.common.retry}</button>
-                  {:else if (row.state.kind === "ready" && !row.state.confirming) || row.state.kind === "purging"}
-                    <button
-                      class="button"
-                      type="button"
-                      disabled={row.state.kind === "purging"}
-                      aria-busy={row.state.kind === "purging"}
-                      onclick={() => setSupersededAccountConfirming(row, true)}
-                    >{$t.settings.supersededAccountDelete}</button>
-                  {/if}
-                </div>
-              </div>
-              {#if row.state.kind === "ready" && row.state.confirming}
-                <div class="restart-confirm" role="group" aria-labelledby={`superseded-account-confirm-${row.identity.supersededSourceAccountKey}`}>
-                  <p id={`superseded-account-confirm-${row.identity.supersededSourceAccountKey}`}>
-                    {$t.settings.supersededAccountConfirm(row.state.preview.transactionCount)}
-                  </p>
-                  <div class="onboarding-setting-actions">
-                    <button class="button" type="button" onclick={() => setSupersededAccountConfirming(row, false)}>{$t.common.cancel}</button>
-                    <button class="button danger" type="button" onclick={() => purgeSupersededAccount(row)}>{$t.settings.supersededAccountDeleteAction}</button>
-                  </div>
-                </div>
-              {/if}
-              {#if row.state.kind === "failed"}
-                <div class="settings-error" role="alert">
-                  <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-                  <span>{$t.settings.supersededAccountFailed}</span>
-                </div>
-              {/if}
-            {/each}
-          </div>
-        </section>
-      {/if}
       <section id="settings-schedule" class="settings-section" aria-labelledby="settings-schedule-title">
         <header>
           <h2 id="settings-schedule-title">{$t.settings.scheduleSettings}</h2>
