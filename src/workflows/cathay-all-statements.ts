@@ -74,7 +74,6 @@ const typedCathayInputSchema = z.object({
   domesticAccountFilters: z.array(z.string()).optional(),
   foreignAccountFilters: z.array(z.string()).optional(),
   currencyFilters: z.array(z.string()).default([]),
-  trustDevice: z.boolean().default(false),
 });
 
 export type CathayAllProviderWorkflowInput = z.infer<
@@ -284,7 +283,7 @@ export async function runCathayAllProviderWorkflow(
     };
     await context.event("authentication", "authentication-started");
     const authenticate = dependencies.signIn ?? signInCathayForApp;
-    await authenticate(page, input.credentials, input.trustDevice, {
+    await authenticate(page, input.credentials, {
       otp: dependencies.otp,
       signal: context.signal,
       event: async (code) => context.event("authentication", code),

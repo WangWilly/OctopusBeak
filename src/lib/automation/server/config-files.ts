@@ -50,7 +50,13 @@ export const TDCC_HOST_KEYS = [
   TDCC_SESSION_KEY,
 ] as const;
 
-const HOST_ONLY_SECRET_KEYS = new Set<string>([...CATHAY_GMAIL_HOST_KEYS, ...TDCC_HOST_KEYS]);
+export const CATHAY_TRUSTED_DEVICE_USER_ID_KEY = "CATHAY_TRUSTED_DEVICE_USER_ID";
+
+const HOST_ONLY_SECRET_KEYS = new Set<string>([
+  ...CATHAY_GMAIL_HOST_KEYS,
+  ...TDCC_HOST_KEYS,
+  CATHAY_TRUSTED_DEVICE_USER_ID_KEY,
+]);
 
 export type AutomationCredentialCodec = {
   encrypt(text: string): string;

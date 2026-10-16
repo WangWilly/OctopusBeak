@@ -587,7 +587,14 @@ test("automatic Gmail access never starts interactive OAuth when no grant exists
   });
 
   try {
-    assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "needs-authorization" });
+    assert.deepEqual(await service.ensureAccess(), { status: "fallback", reason: "not-configured" });
+    writeAutomationCredentialsFile(credentialsPath, { [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com" });
+    assert.deepEqual(
+      await service.ensureAccess(),
+      { status: "fallback", reason: "needs-authorization" },
+      "a connected mailbox that lost its grant stays on the Gmail route",
+    );
+    writeAutomationCredentialsFile(credentialsPath, {});
     assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], undefined);
     assert.equal(authorizationCalls, 0);
     assert.deepEqual(await service.enable(), { enabled: true, connectedEmail: "test@gmail.com", needsAuthorization: false });

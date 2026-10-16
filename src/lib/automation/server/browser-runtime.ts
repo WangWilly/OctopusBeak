@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { CATHAY_TRUSTED_DEVICE_COOKIE } from "../../../workflows/cathay-login.ts";
 
 export type BrowserRuntimeProfileId =
   | "default"
@@ -14,7 +15,6 @@ export type BrowserRuntimeIdentity = Readonly<{
   chromiumVersion: string;
 }>;
 
-/** Retained cookies for `domain` are dropped before a run, except the named ones. */
 export type BrowserCookieReset = Readonly<{
   domain: string;
   retainedNames: readonly string[];
@@ -72,8 +72,7 @@ const profileSettings: Readonly<Record<BrowserRuntimeProfileId, ProfileSettings>
   "cathay-login": {
     revision: 2,
     compatibilityArgs: [],
-    // The trusted-device cookie is what lets a registered device skip Cathay's OTP.
-    cookieReset: { domain: "cathaybk.com.tw", retainedNames: ["CUB.eBank.DeviceId"] },
+    cookieReset: { domain: "cathaybk.com.tw", retainedNames: [CATHAY_TRUSTED_DEVICE_COOKIE] },
   },
   "esun-login": {
     revision: 1,

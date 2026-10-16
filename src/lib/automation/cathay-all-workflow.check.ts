@@ -33,7 +33,7 @@ import type {
   CathayCredentials,
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -116,6 +116,9 @@ function otpPage() {
   const link = { isVisible: async () => true, click: async () => undefined };
   const send = {
     isVisible: async () => sendVisible,
+    waitFor: async () => {
+      if (!sendVisible) throw new Error("synthetic send control timeout");
+    },
     click: async () => {
       sendClicks += 1;
       if (sendError) throw sendError;
@@ -208,7 +211,6 @@ test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response
 test("Cathay App Gmail OTP defaults to solver and never falls back to manual assistance", async () => {
   for (const reason of [
     "disabled",
-    "not-configured",
     "needs-authorization",
     "authorization-cancelled",
     "authorization-failed",
@@ -349,6 +351,28 @@ test("Cathay solver stops before sending when Gmail retrieval cannot be prepared
   });
 });
 
+test("a Cathay OTP challenge without connected Gmail ends the run asking for device registration", async () => {
+  const fixture = otpPage();
+  const events: string[] = [];
+  await assert.rejects(
+    completeCathayEmailOtpForApp(fixture.page, {
+      otp: otpPort({
+        ensureAccess: async () => ({ status: "fallback", reason: "not-configured" }),
+        prepareRetrieval: async () => assert.fail("no Gmail retrieval without a Gmail grant"),
+      }),
+      signal: new AbortController().signal,
+      event: async (code) => {
+        events.push(code);
+      },
+    }),
+    (error: unknown) =>
+      error instanceof ProductCollectionFatalError &&
+      error.errorCode === "device-registration-required",
+  );
+  assert.deepEqual(fixture.read(), { fieldValue: "", sendClicks: 0, confirmClicks: 0 });
+  assert.deepEqual(events, ["device-registration-required"]);
+});
+
 test("Cathay solver stops with a setup reason when the OTP send control is unsupported", async () => {
   const fixture = otpPage();
   fixture.setSendVisible(false);
@@ -370,7 +394,7 @@ test("Cathay solver stops with a setup reason when the OTP send control is unsup
       "reason" in error &&
       error.reason === "challenge-unavailable",
   );
-  assert.equal(ensureCalls, 0);
+  assert.equal(ensureCalls, 1);
   assert.deepEqual(fixture.read(), {
     fieldValue: "",
     sendClicks: 0,
@@ -508,7 +532,6 @@ function collectionDependencies(
     signIn: (
       page: Page,
       credentials: CathayCredentials,
-      trustDevice: boolean,
       dependencies: CathayAppLoginDependencies,
     ) => Promise<{ usedExistingSession: boolean }>;
     domestic: CathayDomesticFinancialCollection;

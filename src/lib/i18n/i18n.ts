@@ -1,6 +1,27 @@
 import { derived, writable } from "svelte/store";
 import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
-import type { TdccRegistrationChannel, TdccRegistrationFailure } from "../automation/types.ts";
+import type {
+  DeviceRegistrationChannel,
+  DeviceRegistrationFailure,
+  DeviceRegistrationSource,
+} from "../automation/types.ts";
+
+type DeviceRegistrationCopy = Readonly<{
+  title: string;
+  description: string;
+  disclosure: string | null;
+  registered: string;
+  notRegistered: string;
+  register: string;
+  registerAgain: string;
+  starting: string;
+  codeLabel: Readonly<Record<DeviceRegistrationChannel, string>>;
+  codeHelp: string;
+  submit: string;
+  registeredMessage: string;
+  saveFirst: string;
+  failures: Readonly<Record<DeviceRegistrationFailure, string>>;
+}>;
 
 export const locales = ["en", "zh-TW"] as const;
 export type Locale = (typeof locales)[number];
@@ -841,40 +862,76 @@ const en = {
       openIssue: "Open GitHub issue",
       openIssueFailed: "Could not open the browser.",
     },
-    tdccDevice: {
-      title: "Device registration",
-      description:
-        "TDCC asks for one-time codes the first time this device signs in. Register here once, and again whenever TDCC stops trusting this device.",
-      registered: "Registered",
-      notRegistered: "Not registered",
-      register: "Register this device",
-      registerAgain: "Register again",
-      starting: "Signing in to TDCC…",
-      codeLabel: {
-        email: "Enter the code TDCC sent to your email",
-        sms: "Enter the code TDCC sent by text message",
-      } as Record<TdccRegistrationChannel, string>,
-      codeHelp: "The code goes straight to TDCC. OctopusBeak does not save it.",
-      submit: "Submit code",
-      registeredMessage: "This device is registered. TDCC sync can sign in now.",
-      saveFirst: "Save your ID number and password first, then register this device.",
-      openSettings: "Register this device",
-      failures: {
-        "sign-in-details-missing": "Save your ID number and password first, then register this device.",
-        "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
-        "code-rejected": "TDCC did not accept that code. Register again to get a new code.",
-        "code-expired": "That code has expired. Register again to get a new code.",
-        "not-trusted": "TDCC accepted the codes but still does not trust this device. Register again.",
-        "protocol-outdated": "TDCC changed its App interface. Update OctopusBeak to register this device.",
-        unavailable: "TDCC could not be reached. Try again later.",
-        expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
-        cancelled: "Registration cancelled.",
-        "not-found": "This registration has ended. Register again.",
-        "sync-running": "A TDCC sync is running. Register this device after it finishes.",
-      } as Record<TdccRegistrationFailure, string>,
-    },
-    tdccSyncBlockedByRegistration:
-      "TDCC device registration is in progress. Finish or cancel it, then run the sync.",
+    deviceRegistration: {
+      tdcc: {
+        title: "Device registration",
+        description:
+          "TDCC asks for one-time codes the first time this device signs in. Register here once, and again whenever TDCC stops trusting this device.",
+        disclosure: null,
+        registered: "Registered",
+        notRegistered: "Not registered",
+        register: "Register this device",
+        registerAgain: "Register again",
+        starting: "Signing in to TDCC…",
+        codeLabel: {
+          email: "Enter the code TDCC sent to your email",
+          sms: "Enter the code TDCC sent by text message",
+        },
+        codeHelp: "The code goes straight to TDCC. OctopusBeak does not save it.",
+        submit: "Submit code",
+        registeredMessage: "This device is registered. TDCC sync can sign in now.",
+        saveFirst: "Save your ID number and password first, then register this device.",
+        failures: {
+          "sign-in-details-missing": "Save your ID number and password first, then register this device.",
+          "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
+          "code-rejected": "TDCC did not accept that code. Register again to get a new code.",
+          "code-expired": "That code has expired. Register again to get a new code.",
+          "not-trusted": "TDCC accepted the codes but still does not trust this device. Register again.",
+          "protocol-outdated": "TDCC changed its App interface. Update OctopusBeak to register this device.",
+          unavailable: "TDCC could not be reached. Try again later.",
+          expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
+          cancelled: "Registration cancelled.",
+          "not-found": "This registration has ended. Register again.",
+          "sync-running": "A TDCC sync is running. Register this device after it finishes.",
+        },
+      },
+      cathay: {
+        title: "Trusted device",
+        description:
+          "Cathay asks for a one-time code when a device it does not trust signs in. Register here once so syncs can sign in without a code, and again whenever Cathay stops trusting this device.",
+        disclosure:
+          "Registering adds a trusted device named “OctopusBeak” to your Cathay United Bank online banking account. You can see or remove it in Cathay online banking under Device management (裝置管理). If you later set up a trusted device somewhere else, Cathay may remove this one, and syncs then ask you to register again.",
+        registered: "Registered",
+        notRegistered: "Not registered",
+        register: "Register this device",
+        registerAgain: "Register again",
+        starting: "Signing in to Cathay…",
+        codeLabel: {
+          email: "Enter the code Cathay sent to your email",
+          sms: "Enter the code Cathay sent by text message",
+        },
+        codeHelp: "Enter the digits; you can leave out any letter prefix. The code goes straight to Cathay. OctopusBeak does not save it.",
+        submit: "Submit code",
+        registeredMessage: "This device is registered. Cathay sync can sign in without a code now.",
+        saveFirst: "Save your ID number, online banking code, and password first, then register this device.",
+        failures: {
+          "sign-in-details-missing": "Save your ID number, online banking code, and password first, then register this device.",
+          "sign-in-rejected": "Cathay did not accept these sign-in details. Check them and try again.",
+          "code-rejected": "Cathay did not accept that code. Register again to get a new code.",
+          "code-expired": "That code has expired. Register again to get a new code.",
+          "not-trusted": "Cathay accepted the code but did not add this device as trusted. Register again.",
+          "protocol-outdated": "Cathay changed its sign-in page. Update OctopusBeak to register this device.",
+          unavailable: "Cathay did not show the expected sign-in step. Check your sign-in details, or try again later.",
+          expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
+          cancelled: "Registration cancelled.",
+          "not-found": "This registration has ended. Register again.",
+          "sync-running": "A Cathay sync is running. Register this device after it finishes.",
+        },
+      },
+    } as Record<DeviceRegistrationSource, DeviceRegistrationCopy>,
+    deviceRegistrationBlocksSync:
+      "Device registration is in progress for this source. Finish or cancel it, then run the sync.",
+    deviceRegistrationOpenSettings: "Register this device",
     unvaluedAccounts: {
       title: "Accounts without a current value",
       body: "These accounts were imported, but no balance or holding value was observed, so totals leave them out.",
@@ -2089,39 +2146,75 @@ const zh: typeof en = {
       openIssue: "開啟 GitHub issue",
       openIssueFailed: "無法開啟瀏覽器。",
     },
-    tdccDevice: {
-      title: "裝置註冊",
-      description:
-        "這台裝置第一次登入集保時，集保會要求輸入一次性驗證碼。請在這裡註冊；之後集保不再信任這台裝置時，再註冊一次。",
-      registered: "已註冊",
-      notRegistered: "尚未註冊",
-      register: "註冊此裝置",
-      registerAgain: "重新註冊",
-      starting: "正在登入集保…",
-      codeLabel: {
-        email: "輸入集保寄到你電子郵件的驗證碼",
-        sms: "輸入集保以簡訊寄送的驗證碼",
+    deviceRegistration: {
+      tdcc: {
+        title: "裝置註冊",
+        description:
+          "這台裝置第一次登入集保時，集保會要求輸入一次性驗證碼。請在這裡註冊；之後集保不再信任這台裝置時，再註冊一次。",
+        disclosure: null,
+        registered: "已註冊",
+        notRegistered: "尚未註冊",
+        register: "註冊此裝置",
+        registerAgain: "重新註冊",
+        starting: "正在登入集保…",
+        codeLabel: {
+          email: "輸入集保寄到你電子郵件的驗證碼",
+          sms: "輸入集保以簡訊寄送的驗證碼",
+        },
+        codeHelp: "驗證碼會直接送給集保，OctopusBeak 不會保存。",
+        submit: "送出驗證碼",
+        registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
+        saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
+        failures: {
+          "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
+          "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
+          "code-rejected": "集保不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
+          "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
+          "not-trusted": "集保已接受驗證碼，但仍不信任這台裝置。請再註冊一次。",
+          "protocol-outdated": "集保e手掌握的 App 介面已變更，需要更新 OctopusBeak 才能註冊裝置。",
+          unavailable: "目前無法連線到集保，請稍後再試。",
+          expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
+          cancelled: "已取消註冊。",
+          "not-found": "這次註冊已結束，請重新註冊。",
+          "sync-running": "集保同步進行中，同步結束後再註冊這台裝置。",
+        },
       },
-      codeHelp: "驗證碼會直接送給集保，OctopusBeak 不會保存。",
-      submit: "送出驗證碼",
-      registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
-      saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
-      openSettings: "註冊此裝置",
-      failures: {
-        "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
-        "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
-        "code-rejected": "集保不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
-        "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
-        "not-trusted": "集保已接受驗證碼，但仍不信任這台裝置。請再註冊一次。",
-        "protocol-outdated": "集保e手掌握的 App 介面已變更，需要更新 OctopusBeak 才能註冊裝置。",
-        unavailable: "目前無法連線到集保，請稍後再試。",
-        expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
-        cancelled: "已取消註冊。",
-        "not-found": "這次註冊已結束，請重新註冊。",
-        "sync-running": "集保同步進行中，同步結束後再註冊這台裝置。",
+      cathay: {
+        title: "信任裝置",
+        description:
+          "國泰世華遇到尚未信任的裝置登入時，會要求輸入一次性驗證碼。請在這裡註冊一次，之後同步就能免驗證碼登入；國泰不再信任這台裝置時，再註冊一次。",
+        disclosure:
+          "註冊後，你的國泰世華網路銀行帳戶會新增一台名為「OctopusBeak」的信任裝置。你可以在國泰世華網路銀行的「裝置管理」查看或移除它。之後若你在其他地方設定信任裝置，國泰可能會移除這一台，屆時同步會請你重新註冊。",
+        registered: "已註冊",
+        notRegistered: "尚未註冊",
+        register: "註冊此裝置",
+        registerAgain: "重新註冊",
+        starting: "正在登入國泰世華…",
+        codeLabel: {
+          email: "輸入國泰寄到你電子郵件的驗證碼",
+          sms: "輸入國泰以簡訊寄送的驗證碼",
+        },
+        codeHelp: "輸入數字即可，英文前綴可省略。驗證碼會直接送給國泰，OctopusBeak 不會保存。",
+        submit: "送出驗證碼",
+        registeredMessage: "已註冊這台裝置，國泰同步現在可以免驗證碼登入。",
+        saveFirst: "請先儲存身分證字號、網路銀行代碼與密碼，再註冊這台裝置。",
+        failures: {
+          "sign-in-details-missing": "請先儲存身分證字號、網路銀行代碼與密碼，再註冊這台裝置。",
+          "sign-in-rejected": "國泰不接受這組登入資料，請確認後再試一次。",
+          "code-rejected": "國泰不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
+          "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
+          "not-trusted": "國泰已接受驗證碼，但沒有把這台裝置加入信任裝置。請再註冊一次。",
+          "protocol-outdated": "國泰的登入頁面已變更，需要更新 OctopusBeak 才能註冊裝置。",
+          unavailable: "國泰沒有顯示預期的登入步驟。請確認登入資料，或稍後再試。",
+          expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
+          cancelled: "已取消註冊。",
+          "not-found": "這次註冊已結束，請重新註冊。",
+          "sync-running": "國泰同步進行中，同步結束後再註冊這台裝置。",
+        },
       },
     },
-    tdccSyncBlockedByRegistration: "集保裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    deviceRegistrationBlocksSync: "這個來源的裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    deviceRegistrationOpenSettings: "註冊此裝置",
     unvaluedAccounts: {
       title: "沒有金額的帳戶",
       body: "這些帳戶已匯入，但沒有觀測到餘額或持股價值，總額不含這些帳戶。",

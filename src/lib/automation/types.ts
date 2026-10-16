@@ -101,9 +101,18 @@ export type CathayGmailOtpConnectionError =
   | "gmail-profile-failed"
   | "credential-storage-failed";
 
-export type TdccRegistrationChannel = "email" | "sms";
+export const DEVICE_REGISTRATION_SOURCES = ["tdcc", "cathay"] as const;
+export type DeviceRegistrationSource = typeof DEVICE_REGISTRATION_SOURCES[number];
 
-export type TdccRegistrationFailure =
+export function deviceRegistrationSource(groupId: string | null | undefined): DeviceRegistrationSource | null {
+  return (DEVICE_REGISTRATION_SOURCES as readonly (string | null | undefined)[]).includes(groupId)
+    ? groupId as DeviceRegistrationSource
+    : null;
+}
+
+export type DeviceRegistrationChannel = "email" | "sms";
+
+export type DeviceRegistrationFailure =
   | "sign-in-details-missing"
   | "sign-in-rejected"
   | "code-rejected"
@@ -116,17 +125,12 @@ export type TdccRegistrationFailure =
   | "not-found"
   | "sync-running";
 
-/**
- * One step of TDCC Source device registration (ADR 0041), as the renderer
- * sees it. It carries no code, token, or sign-in identifier.
- */
-export type TdccRegistrationStep =
-  | Readonly<{ status: "code-required"; registrationId: string; channel: TdccRegistrationChannel }>
-  | Readonly<{ status: "registered"; channels: readonly TdccRegistrationChannel[] }>
-  | Readonly<{ status: "failed"; reason: TdccRegistrationFailure }>;
+export type DeviceRegistrationStep =
+  | Readonly<{ status: "code-required"; registrationId: string; channel: DeviceRegistrationChannel }>
+  | Readonly<{ status: "registered"; channels: readonly DeviceRegistrationChannel[] }>
+  | Readonly<{ status: "failed"; reason: DeviceRegistrationFailure }>;
 
-/** Whether a device is registered for the saved TDCC sign-in identifier. */
-export type TdccDeviceRegistrationStatus = Readonly<{ registered: boolean }>;
+export type DeviceRegistrationStatus = Readonly<{ registered: boolean }>;
 
 export type AutomationTaskSummary = {
   id: string;
