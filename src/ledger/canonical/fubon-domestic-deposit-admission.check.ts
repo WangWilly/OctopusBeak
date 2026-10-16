@@ -20,6 +20,7 @@ const reconcilingRecord: fubon.FubonDepositBalanceReconciliation = {
 function admitWithAccountValue(
   value: string,
   balanceReconciliation?: fubon.FubonDepositBalanceReconciliation,
+  continuedSourceAccountKey?: string,
 ) {
   const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
   const option = { value, label: `${accountDigits} (SYNTHETIC-BRANCH)` };
@@ -36,17 +37,21 @@ function admitWithAccountValue(
   const structural = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
   assert.ok(structural.capture, structural.diagnostics.join(","));
   assert.equal(structural.capture.providerRouteEvidence?.currency, "TWD");
-  const identity = fubon.deriveFubonDomesticDepositAccountIdentity(
+  const derived = fubon.deriveFubonDomesticDepositAccountIdentity(
     structural.capture.account,
     FUBON_HUMAN_ATTESTED_V1_MANIFEST,
     sourceConnectionKey,
   );
+  const identity = continuedSourceAccountKey === undefined
+    ? derived
+    : fubon.continueFubonDomesticDepositAccountIdentity(derived, continuedSourceAccountKey);
   const rule = fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY;
   return fubon.admitFubonDomesticDepositFinancialCapture({
     capture: structural.capture,
     captureId: `fubon-composite-${value}`,
     sourceConnectionScope: scope,
     sourceConnectionKey,
+    ...(continuedSourceAccountKey === undefined ? {} : { continuedSourceAccountKey }),
     humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
     semantics: {
       evidenceVersion: fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -311,3 +316,26 @@ test("identity pins stay fixed for a TWD-coded composite, a USD-coded composite,
   assert.equal(usd.subjectDigest, usd.accountNo);
 });
 
+test("a rewritten option continued under the admitted key admits the same identity and transaction keys", () => {
+  const twd = admitWithAccountValue(twdValue);
+  assert.ok(twd.capture, twd.diagnostics.join(","));
+  const rewritten = admitWithAccountValue(`456-00${accountDigits}-USD-03`, reconcilingRecord, twd.capture.identity.sourceAccountKey);
+  assert.ok(rewritten.capture, rewritten.diagnostics.join(","));
+  const identityFields = ({ accountNo, sourceAccountKey, subjectDigest, identityEpochKey }: typeof twd.capture.identity) =>
+    ({ accountNo, sourceAccountKey, subjectDigest, identityEpochKey });
+  assert.deepEqual(identityFields(rewritten.capture.identity), identityFields(twd.capture.identity));
+  const keys = (records: typeof twd.capture.records) =>
+    records.map(({ occurrenceKey, collisionKey, providerKey, contentHash }) =>
+      ({ occurrenceKey, collisionKey, providerKey, contentHash }));
+  assert.ok(twd.capture.records.length > 0);
+  assert.deepEqual(keys(rewritten.capture.records), keys(twd.capture.records));
+});
+
+test("a continuation needs account-number evidence and an opaque key", () => {
+  const twd = admitWithAccountValue(twdValue);
+  assert.ok(twd.capture, twd.diagnostics.join(","));
+  const unevidenced = admitWithAccountValue("SYNTHETIC-FUBON-ACCOUNT-VALUE", undefined, twd.capture.identity.sourceAccountKey);
+  assert.equal(unevidenced.capture, null);
+  assert.ok(unevidenced.diagnostics.includes("account-identity-unproven"));
+  assert.throws(() => admitWithAccountValue(twdValue, undefined, "not-an-opaque-key"), /opaque source token/u);
+});

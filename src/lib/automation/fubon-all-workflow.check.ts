@@ -156,6 +156,11 @@ try {
               accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-"),
               reconciliation: "running-balance-mismatch",
             },
+            {
+              reason: "account-identity-ambiguous",
+              accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-"),
+              accountCount: 2,
+            },
           ],
         };
       },
@@ -208,6 +213,11 @@ try {
       calls.indexOf("event:collection:deposit-statement-excluded-account-currency-unproven")
         > calls.indexOf("deposit-collected"),
       "a statement account excluded for unproven currency is reported as an operational event",
+    );
+    assert.ok(
+      calls.indexOf("event:collection:deposit-statement-excluded-account-identity-ambiguous")
+        > calls.indexOf("deposit-collected"),
+      "a statement account excluded for an ambiguous identity is reported as an operational event",
     );
     assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
     assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));

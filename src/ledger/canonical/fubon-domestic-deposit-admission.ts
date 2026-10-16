@@ -1240,6 +1240,7 @@ export type FubonDomesticDepositFinancialAdmissionInput = {
    * capture as financial records.
    */
   allowSourceOnlyRows?: boolean;
+  continuedSourceAccountKey?: string;
 };
 
 export type FubonDomesticDepositFinancialAdmissionDiagnostic =
@@ -1433,9 +1434,7 @@ export type FubonDomesticDepositAccountIdentity = {
  * Derive stable, privacy-safe identity keys from one selector option. The
  * selector value is never persisted as an account number; multiple options
  * therefore remain distinct subjects without leaking the raw value. The key
- * hashes the raw option value, so it changes when Fubon rewrites the option;
- * the collector continues an admitted account by its evidenced account number
- * before it derives an identity.
+ * hashes the raw option value, so it changes when Fubon rewrites the option.
  * Omitting sourceConnectionKey preserves a legacy compatibility calculation only;
  * source and financial admission always supply a validated workflow key and
  * never persist the compatibility result.
@@ -1467,6 +1466,15 @@ export function deriveFubonDomesticDepositAccountIdentity(
     ),
     subjectDigest,
   };
+}
+
+export function continueFubonDomesticDepositAccountIdentity(
+  derived: FubonDomesticDepositAccountIdentity,
+  sourceAccountKey: string,
+): FubonDomesticDepositAccountIdentity {
+  if (!validOpaque(sourceAccountKey))
+    throw new Error("A continued Fubon deposit account key must be an opaque source token.");
+  return { ...derived, accountNo: sourceAccountKey, subjectDigest: sourceAccountKey };
 }
 
 function hasPositiveTwdDomesticRouteEvidence(
@@ -1722,11 +1730,16 @@ function normalizeFubonDomesticDepositFinancialCapture(
       capture: null,
       diagnostics: [...new Set(diagnostics)],
     };
-  const identity = deriveFubonDomesticDepositAccountIdentity(
+  const derivedIdentity = deriveFubonDomesticDepositAccountIdentity(
     input.capture.account,
     attestedManifest,
     sourceConnection.sourceConnectionKey,
   );
+  const identity = input.continuedSourceAccountKey === undefined
+    ? derivedIdentity
+    : continueFubonDomesticDepositAccountIdentity(derivedIdentity, input.continuedSourceAccountKey);
+  if (input.continuedSourceAccountKey !== undefined && !input.capture.account.accountNumber)
+    diagnostics.push("account-identity-unproven");
   if (
     semantics.account.accountNo !== identity.accountNo ||
     semantics.account.sourceConnectionKey !== identity.sourceConnectionKey ||

@@ -4,6 +4,10 @@ import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type {
+  AccountIdentityContinuity,
+  AccountIdentityContinuityRequest,
+} from "../ledger/pglite/account-identity-continuity.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -19,6 +23,7 @@ import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
   admitFubonDomesticDepositFinancialCapture,
+  continueFubonDomesticDepositAccountIdentity,
   createFubonDomesticDepositSourceEvidence,
   deriveFubonDomesticDepositAccountIdentity,
   FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -44,6 +49,7 @@ import {
   fubonExactDecimalEquals,
   isUsdCodedCompositeOfOwnLabel,
   type FubonDepositBalanceReconciliation,
+  type FubonDomesticDepositAccountIdentity,
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
@@ -231,6 +237,9 @@ export type FubonStatementsRunDependencies = Readonly<{
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  accountIdentityContinuity: (
+    request: AccountIdentityContinuityRequest,
+  ) => Promise<AccountIdentityContinuity>;
   reportActivity?: (activity: "query" | "download") => Promise<void>;
   openTransactionDetailForAccountIndex?: (
     page: Page,
@@ -261,12 +270,17 @@ export type FubonCurrentBalanceExclusion = Readonly<{
   unlinkedStatementAccountShapes: readonly string[];
 }>;
 
-export type FubonStatementExclusion = Readonly<{
-  reason: "account-currency-unproven";
-  /** Selector option value with digits as 9 and letters as A. */
-  accountShape: string;
-  reconciliation: FubonDepositReconciliationFailure;
-}>;
+export type FubonStatementExclusion =
+  | Readonly<{
+    reason: "account-currency-unproven";
+    accountShape: string;
+    reconciliation: FubonDepositReconciliationFailure;
+  }>
+  | Readonly<{
+    reason: "account-identity-ambiguous";
+    accountShape: string;
+    accountCount: number;
+  }>;
 
 export type FubonDepositReconciliationFailure =
   | "not-attempted"
@@ -954,13 +968,8 @@ export function buildFubonDepositStatementEvidence(
 
 function buildFubonHumanAttestedFinancialSemantics(
   capture: FubonDomesticDepositValidatedEvidence,
-  sourceConnectionKey?: string,
+  identity: FubonDomesticDepositAccountIdentity,
 ) {
-  const identity = deriveFubonDomesticDepositAccountIdentity(
-    capture.account,
-    undefined,
-    sourceConnectionKey as `sha256:${string}` | undefined,
-  );
   return {
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
@@ -2893,6 +2902,21 @@ export async function runFubonStatements(
   const currentBalanceExclusions: FubonCurrentBalanceExclusion[] = [];
   const unlinkedStatementAccountShapes = new Set<string>();
   const statementExclusions: FubonStatementExclusion[] = [];
+  const ambiguousAccountNumbers = new Set<string>();
+  const continuityByAccountNumber = new Map<string, Promise<AccountIdentityContinuity>>();
+  const continuityFor = (accountNumber: string, identityEpochKey: string) => {
+    const known = continuityByAccountNumber.get(accountNumber);
+    if (known) return known;
+    const continuity = overrides.accountIdentityContinuity({
+      integrationNamespace: "fubon",
+      sourceConnectionKey: stableSourceConnectionKey,
+      identityEpochKey,
+      stream: "domestic-deposit",
+      identifier: { kind: "depository-account", value: accountNumber },
+    });
+    continuityByAccountNumber.set(accountNumber, continuity);
+    return continuity;
+  };
 
   {
     await overrides.reportActivity?.("query");
@@ -2901,7 +2925,7 @@ export async function runFubonStatements(
     let sourceCount = 0;
     let rowCount = 0;
 
-    const admitAccount = (
+    const admitAccount = async (
       account: FubonDepositAccountOption,
       statementEvidence: readonly FubonDepositStatementEvidence[],
       reconciliation: FubonDepositReconciliationFailure,
@@ -2939,16 +2963,39 @@ export async function runFubonStatements(
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
+        const derivedIdentity = deriveFubonDomesticDepositAccountIdentity(
+          capture.account,
+          undefined,
+          stableSourceConnectionKey as `sha256:${string}`,
+        );
+        const accountNumber = capture.account.accountNumber?.value;
+        const continuity = accountNumber
+          ? await continuityFor(accountNumber, derivedIdentity.identityEpochKey)
+          : ({ status: "unseen" } as const);
+        if (continuity.status === "ambiguous" && accountNumber) {
+          if (!ambiguousAccountNumbers.has(accountNumber))
+            statementExclusions.push({
+              reason: "account-identity-ambiguous",
+              accountShape: fubonAccountOptionShape(account.value),
+              accountCount: continuity.accountCount,
+            });
+          ambiguousAccountNumbers.add(accountNumber);
+          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+          continue;
+        }
+        const identity: FubonDomesticDepositAccountIdentity = continuity.status === "continued"
+          ? continueFubonDomesticDepositAccountIdentity(derivedIdentity, continuity.sourceAccountKey)
+          : derivedIdentity;
         let financialInput = {
           capture,
           captureId: `fubon-financial-${nextTimestamp()}-${accountDigest}-${index}`,
-          semantics: buildFubonHumanAttestedFinancialSemantics(
-            capture,
-            stableSourceConnectionKey,
-          ),
+          semantics: buildFubonHumanAttestedFinancialSemantics(capture, identity),
           humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
           sourceConnectionScope,
           sourceConnectionKey: stableSourceConnectionKey,
+          ...(continuity.status === "continued"
+            ? { continuedSourceAccountKey: continuity.sourceAccountKey }
+            : {}),
         };
         // Run the semantic classifier before the execution boundary. Malformed
         // amount/time/row/balance data must fail visibly rather than being
@@ -3004,6 +3051,11 @@ export async function runFubonStatements(
           );
         financialCaptures.push(financialCapture);
         financialDepositCaptures.push(financialCapture);
+        if (accountNumber && continuity.status === "unseen")
+          continuityByAccountNumber.set(
+            accountNumber,
+            Promise.resolve({ status: "continued", sourceAccountKey: identity.accountNo }),
+          );
         if (!capture.account.accountNumber)
           unlinkedStatementAccountShapes.add(fubonAccountOptionShape(capture.account.value));
         relationInputs.push({
@@ -3044,7 +3096,7 @@ export async function runFubonStatements(
         deferred.push({ account, statements: accountStatements });
         continue;
       }
-      admitAccount(account, buildFubonDepositStatementEvidence(accountStatements), "not-attempted");
+      await admitAccount(account, buildFubonDepositStatementEvidence(accountStatements), "not-attempted");
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -3081,7 +3133,7 @@ export async function runFubonStatements(
         currentRows,
         currentObservedAt,
       );
-      admitAccount(
+      await admitAccount(
         account,
         buildFubonDepositStatementEvidence(statements, undefined, outcome.record),
         outcome.failure ?? "running-balance-mismatch",
@@ -3093,6 +3145,7 @@ export async function runFubonStatements(
         financialCaptures,
       );
       for (const unadjustedRow of selectFubonDomesticCurrentDepositRows(currentRows)) {
+        if (ambiguousAccountNumbers.has(unadjustedRow.accountNumber)) continue;
         const row = { ...unadjustedRow, observedAt: currentObservedAt };
         const matching = existingByAccountNumber.get(row.accountNumber);
         if (!matching) {
