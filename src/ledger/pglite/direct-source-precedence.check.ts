@@ -4,9 +4,11 @@ import { createBaselinePGlite } from "./baseline-test-template.ts";
 import { readPGliteDailyHistoryWithAccounts } from "./daily-history.ts";
 import {
   commitCathay,
+  commitFubon,
   commitTdccCathayFund,
   commitTdccSettlement,
   commitTdccYuantaBroker,
+  commitYuantaUsdDeposit,
   commitYuantaTrade,
   observedAt,
   tdcc,
@@ -112,7 +114,7 @@ test("a direct Cathay deposit account covers the TDCC Cathay settlement account 
 
 test("a covered account still awaiting its balance leaves no gap in the totals", async () => {
   await withStore(async (store) => {
-    await commitTdccSettlement(store, "013", false);
+    await commitTdccSettlement(store, "013", { withBalance: false });
     const awaiting = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
     assert.deepEqual([awaiting.availability, awaiting.sourceGaps.map((gap) => gap.reason)], ["awaiting", ["current-value-not-observed"]]);
     await commitCathay(store);
@@ -149,6 +151,44 @@ test("a TDCC account at a bank with no direct source counts beside a direct acco
     assert.deepEqual(view.activity, TDCC_CATHAY_COUNTED.activity);
     assert.equal(view.spendingRows, 2);
     assert.deepEqual(view.covered, []);
+  });
+});
+
+async function countedAndCovered(store: PGliteStore) {
+  const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+  const line = (account: CanonicalOverviewProjection["accounts"][number]) =>
+    `${account.integrationNamespace} ${account.institutionKey}: ${twd(account.amounts).join(", ")}`;
+  return {
+    counted: projection.accounts.map(line).sort(),
+    covered: projection.coveredAccounts.map((account) => `${line(account)} by ${account.coveredBy.namespace}`).sort(),
+  };
+}
+
+test("a TWD-only direct Fubon account covers TDCC's Fubon TWD settlement account but not its USD one", async () => {
+  await withStore(async (store) => {
+    await commitTdccSettlement(store, "012", { currency: "USD" });
+    await commitTdccSettlement(store, "012");
+    await commitFubon(store);
+    assert.deepEqual(await countedAndCovered(store), {
+      counted: ["fubon fubon: 3000e-0 TWD", "tdcc fubon: 15200e-0 USD"],
+      covered: ["tdcc fubon: 15200e-0 TWD by fubon"],
+    });
+  });
+});
+
+test("a direct Yuanta foreign-currency account holding USD covers TDCC's Yuanta USD settlement account", async () => {
+  await withStore(async (store) => {
+    await commitTdccSettlement(store, "806", { currency: "USD" });
+    await commitTdccSettlement(store, "806");
+    await commitYuantaUsdDeposit(store);
+    const { covered } = await countedAndCovered(store);
+    assert.deepEqual(covered, ["tdcc yuanta-bank: 15200e-0 USD by yuanta"]);
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    assert.deepEqual(
+      projection.accounts.filter((account) => account.integrationNamespace === "tdcc").map((account) => twd(account.amounts)),
+      [["15200e-0 TWD"]],
+      "a foreign-currency account does not cover TWD",
+    );
   });
 });
 
