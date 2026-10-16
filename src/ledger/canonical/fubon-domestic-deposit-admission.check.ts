@@ -8,19 +8,18 @@ const accountDigits = "12345678901234";
 const scope = "synthetic-fubon-user\0synthetic-fubon-account";
 const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", scope);
 
-const twdTab = fubon.FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL;
-const fxTab = "外幣活期存款";
-const tabs = [twdTab, fxTab] as const;
-const activeTwd: fubon.FubonDepositResultCurrencyEvidence = { kind: "active-tab", label: twdTab, labels: tabs };
-const activeFx: fubon.FubonDepositResultCurrencyEvidence = { kind: "active-tab", label: fxTab, labels: tabs };
-const noTabs: fubon.FubonDepositResultCurrencyEvidence = { kind: "no-currency-tabs" };
-const ambiguous = (
-  reason: "no-active-tab" | "multiple-active-tabs" | "currency-column-present",
-): fubon.FubonDepositResultCurrencyEvidence => ({ kind: "ambiguous", reason, labels: tabs });
+const decimal = (coefficient: string, scale: number): fubon.FubonExactDecimal => ({ coefficient, scale });
+const reconcilingRecord: fubon.FubonDepositBalanceReconciliation = {
+  sourceField: "statement 即時餘額 vs current-balance instantBalance",
+  latestRow: { localDate: "2026-01-02", localTime: "09:10:11", runningBalance: decimal("100", 0) },
+  snapshotTwdBalance: decimal("10000", 2),
+  snapshotOtherBalances: [{ currency: "USD", balance: decimal("1234", 2) }],
+  snapshotObservedAt: "2026-01-31T12:00:00.000Z",
+};
 
 function admitWithAccountValue(
   value: string,
-  currencyEvidence: fubon.FubonDepositResultCurrencyEvidence = noTabs,
+  balanceReconciliation?: fubon.FubonDepositBalanceReconciliation,
 ) {
   const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
   const option = { value, label: `${accountDigits} (SYNTHETIC-BRANCH)` };
@@ -31,11 +30,9 @@ function admitWithAccountValue(
     ...(accountNumber ? { accountNumber } : {}),
   };
   raw.account = account;
-  raw.pages = raw.pages.map((page) => ({
-    ...page,
-    selectedAccount: account,
-    currencyEvidence,
-  }));
+  raw.pages = raw.pages.map((page) => ({ ...page, selectedAccount: account }));
+  if (balanceReconciliation)
+    raw.providerRouteEvidence = { ...raw.providerRouteEvidence!, balanceReconciliation };
   const structural = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
   assert.ok(structural.capture, structural.diagnostics.join(","));
   assert.equal(structural.capture.providerRouteEvidence?.currency, "TWD");
@@ -102,39 +99,83 @@ test("parses the composite selector option into its account segment and currency
   );
 });
 
-test("route currency follows the active result tab before the selector option's code", () => {
-  const label = `${accountDigits} (SYNTHETIC-BRANCH)`;
-  const usd = `123-00${accountDigits}-USD-02`;
-  const usdMismatch = `123-99${accountDigits}-USD-02`;
-  const jpy = `123-00${accountDigits}-JPY-02`;
-  const twd = `123-00${accountDigits}-TWD-01`;
-  const cases: ReadonlyArray<
-    readonly [string, string, ReadonlyArray<fubon.FubonDepositResultCurrencyEvidence>, "TWD" | "unknown"]
-  > = [
-    ["USD-coded, active 臺幣 on every page", usd, [activeTwd, activeTwd], "TWD"],
-    ["USD-coded, one page without tabs", usd, [activeTwd, noTabs], "unknown"],
-    ["USD-coded, explicit no-currency-tabs", usd, [noTabs], "unknown"],
-    ["USD-coded whose segment does not match its label, active 臺幣", usdMismatch, [activeTwd], "unknown"],
-    ["JPY-coded, active 臺幣", jpy, [activeTwd], "unknown"],
-    ["USD-coded, active 外幣", usd, [activeFx], "unknown"],
-    ["TWD-coded, active 外幣", twd, [activeFx], "unknown"],
-    ["codeless, active 外幣", accountDigits, [activeFx], "unknown"],
-    ["TWD-coded, no tabs", twd, [noTabs], "TWD"],
-    ["TWD-coded, active 臺幣", twd, [activeTwd], "TWD"],
-    ["codeless, no tabs", accountDigits, [noTabs], "TWD"],
-    ["TWD-coded, tabs without an active marker", twd, [ambiguous("no-active-tab")], "unknown"],
-    ["TWD-coded, both tabs marked active", twd, [ambiguous("multiple-active-tabs")], "unknown"],
-    ["USD-coded, 幣別 column in the statement table", usd, [ambiguous("currency-column-present")], "unknown"],
-    ["TWD-coded, 幣別 on a later page", twd, [noTabs, ambiguous("currency-column-present")], "unknown"],
-  ];
-  for (const [name, value, evidence, expected] of cases) {
-    const pages = evidence.map((currencyEvidence) => ({ currencyEvidence }));
-    assert.equal(fubon.fubonDepositRouteCurrency({ value, label }, pages), expected, name);
-  }
+test("exact decimals compare by value after aligning scales", () => {
+  assert.equal(fubon.fubonExactDecimalEquals(decimal("100", 0), decimal("10000", 2)), true);
+  assert.equal(fubon.fubonExactDecimalEquals(decimal("10000", 2), decimal("100", 0)), true);
+  assert.equal(fubon.fubonExactDecimalEquals(decimal("100", 0), decimal("10001", 2)), false);
+  assert.equal(fubon.fubonExactDecimalEquals(decimal("-100", 0), decimal("100", 0)), false);
 });
 
-test("a USD-coded composite option whose pages all show the 臺幣活期存款 tab active admits with V3 evidence", () => {
-  const result = admitWithAccountValue(`123-00${accountDigits}-USD-02`, activeTwd);
+const row = (date: string, time: string, balance: string) => ({
+  cells: [date, time, "SYNTHETIC", "", "1", balance, ""] as const,
+});
+
+test("the latest statement row is the greatest date then time, the later one in capture order on a tie", () => {
+  assert.deepEqual(
+    fubon.fubonDepositLatestStatementRow([
+      { rows: [row("2026/01/03", "08:00:00", "30"), row("2026/01/02", "23:59:59", "20")] },
+      { rows: [row("2026/01/03", "07:59:59", "10")] },
+    ]),
+    { localDate: "2026-01-03", localTime: "08:00:00", runningBalance: decimal("30", 0) },
+    "a later page with an earlier row does not win on capture order alone",
+  );
+  assert.deepEqual(
+    fubon.fubonDepositLatestStatementRow([
+      { rows: [row("2026/01/03", "08:00:00", "30")] },
+      { rows: [row("2026/01/03", "08:00:00", "1,234.50")] },
+    ]),
+    { localDate: "2026-01-03", localTime: "08:00:00", runningBalance: decimal("123450", 2) },
+    "a tie goes to the row later in capture order",
+  );
+  assert.equal(fubon.fubonDepositLatestStatementRow([]), null);
+  assert.equal(fubon.fubonDepositLatestStatementRow([{ rows: [] }]), null);
+  assert.equal(
+    fubon.fubonDepositLatestStatementRow([{ rows: [row("2026/01/03", "08:00:00", "n/a")] }]),
+    null,
+    "an unparseable running balance on the latest row yields no latest row",
+  );
+});
+
+test("route currency is TWD for a plain or TWD-coded option and for a USD-coded one only with a reconciling balance record", () => {
+  const label = `${accountDigits} (SYNTHETIC-BRANCH)`;
+  const usd = `123-00${accountDigits}-USD-02`;
+  const pages = [{ rows: [row("2026/01/02", "09:10:11", "100")] }];
+  const laterPages = [...pages, { rows: [row("2026/01/02", "09:10:12", "100")] }];
+  const sameTimeOtherBalance = [{ rows: [row("2026/01/02", "09:10:11", "99")] }];
+  const matchesUsd = {
+    ...reconcilingRecord,
+    snapshotOtherBalances: [{ currency: "USD", balance: decimal("100", 0) }],
+  };
+  const mismatched = { ...reconcilingRecord, snapshotTwdBalance: decimal("10001", 2) };
+  const cases: ReadonlyArray<
+    readonly [string, string, typeof pages, fubon.FubonDepositBalanceReconciliation | undefined, "TWD" | "unknown"]
+  > = [
+    ["plain option, no record", accountDigits, pages, undefined, "TWD"],
+    ["TWD-coded option, no record", `123-00${accountDigits}-TWD-01`, pages, undefined, "TWD"],
+    ["USD-coded with a reconciling record", usd, pages, reconcilingRecord, "TWD"],
+    ["USD-coded with a reconciling record and no rows in this capture", usd, [{ rows: [] }], reconcilingRecord, "TWD"],
+    ["USD-coded without a record", usd, pages, undefined, "unknown"],
+    ["USD-coded whose snapshot TWD balance equals its USD balance", usd, pages, matchesUsd, "unknown"],
+    ["USD-coded whose snapshot TWD balance differs from the running balance", usd, pages, mismatched, "unknown"],
+    ["USD-coded whose capture has a row later than the record's latest row", usd, laterPages, reconcilingRecord, "unknown"],
+    ["USD-coded whose same-time latest row carries another balance", usd, sameTimeOtherBalance, reconcilingRecord, "unknown"],
+    ["USD-coded whose segment does not match its label", `123-99${accountDigits}-USD-02`, pages, reconcilingRecord, "unknown"],
+    ["JPY-coded with a reconciling record", `123-00${accountDigits}-JPY-02`, pages, reconcilingRecord, "unknown"],
+  ];
+  for (const [name, value, capturePages, balanceReconciliation, expected] of cases)
+    assert.equal(
+      fubon.fubonDepositRouteCurrency({
+        account: { value, label },
+        pages: capturePages,
+        providerRouteEvidence: { balanceReconciliation },
+      }),
+      expected,
+      name,
+    );
+});
+
+test("a USD-coded composite option with a reconciling balance record admits with V3 evidence", () => {
+  const result = admitWithAccountValue(`123-00${accountDigits}-USD-02`, reconcilingRecord);
   assert.ok(result.capture, result.diagnostics.join(","));
   assert.equal(result.diagnostics.includes("currency-unproven"), false);
   assert.equal(
@@ -143,15 +184,18 @@ test("a USD-coded composite option whose pages all show the 臺幣活期存款 t
   );
 });
 
-for (const [name, value, evidence] of [
-  ["a USD-coded option whose pages show no currency tabs", `123-00${accountDigits}-USD-02`, noTabs],
-  ["a USD-coded option whose pages show the 外幣活期存款 tab active", `123-00${accountDigits}-USD-02`, activeFx],
-  ["a JPY-coded option with the 臺幣活期存款 tab active", `123-00${accountDigits}-JPY-02`, activeTwd],
-  ["a USD-coded option whose segment does not match its label", `123-99${accountDigits}-USD-02`, activeTwd],
-  ["a TWD-coded option whose pages show the 外幣活期存款 tab active", `123-00${accountDigits}-TWD-01`, activeFx],
+for (const [name, value, record] of [
+  ["a USD-coded option without a balance record", `123-00${accountDigits}-USD-02`, undefined],
+  [
+    "a USD-coded option whose snapshot TWD balance equals another currency's balance",
+    `123-00${accountDigits}-USD-02`,
+    { ...reconcilingRecord, snapshotOtherBalances: [{ currency: "USD", balance: decimal("100", 0) }] },
+  ],
+  ["a JPY-coded option with a reconciling record", `123-00${accountDigits}-JPY-02`, reconcilingRecord],
+  ["a USD-coded option whose segment does not match its label", `123-99${accountDigits}-USD-02`, reconcilingRecord],
 ] as const) {
   test(`${name} stays out of financial admission even when route evidence says TWD`, () => {
-    const result = admitWithAccountValue(value, evidence);
+    const result = admitWithAccountValue(value, record);
     assert.equal(result.capture, null, `${name} must not admit as TWD`);
     assert.ok(result.diagnostics.includes("currency-unproven"), result.diagnostics.join(","));
     assert.ok(
@@ -161,17 +205,29 @@ for (const [name, value, evidence] of [
   });
 }
 
-test("a page without currency evidence is rejected structurally", () => {
-  const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
-  const { currencyEvidence: _omitted, ...pageWithoutEvidence } = raw.pages[1]!;
-  raw.pages = [raw.pages[0]!, pageWithoutEvidence as typeof raw.pages[number]];
-  const result = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
-  assert.equal(result.status, "rejected");
-  assert.equal(result.capture, null);
-  assert.ok(
-    result.diagnostics.includes("page-currency-evidence-invalid"),
-    result.diagnostics.join(","),
-  );
+test("a malformed balance reconciliation record is rejected structurally and never downgraded to source-only", () => {
+  const malformed: ReadonlyArray<readonly [string, unknown]> = [
+    ["a coefficient with a decimal point", { ...reconcilingRecord, snapshotTwdBalance: { coefficient: "1.00", scale: 2 } }],
+    ["a negative scale", { ...reconcilingRecord, latestRow: { ...reconcilingRecord.latestRow, runningBalance: { coefficient: "100", scale: -1 } } }],
+    ["an empty local date", { ...reconcilingRecord, latestRow: { ...reconcilingRecord.latestRow, localDate: "" } }],
+    ["an empty other currency", { ...reconcilingRecord, snapshotOtherBalances: [{ currency: "", balance: decimal("1", 0) }] }],
+    ["an empty observation time", { ...reconcilingRecord, snapshotObservedAt: "" }],
+    ["another source field", { ...reconcilingRecord, sourceField: "statement" }],
+  ];
+  for (const [name, record] of malformed) {
+    const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
+    raw.providerRouteEvidence = {
+      ...raw.providerRouteEvidence!,
+      balanceReconciliation: record as fubon.FubonDepositBalanceReconciliation,
+    };
+    const result = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
+    assert.equal(result.status, "rejected", name);
+    assert.deepEqual(result.diagnostics, ["balance-reconciliation-invalid"], name);
+    assert.equal(fubon.admitFubonDomesticDepositSourceOnlyEvidence(raw).status, "rejected", name);
+  }
+  const wellFormed = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
+  wellFormed.providerRouteEvidence = { ...wellFormed.providerRouteEvidence!, balanceReconciliation: reconcilingRecord };
+  assert.equal(fubon.admitFubonDomesticDepositCaptureEvidence(wellFormed).status, "admissible");
 });
 
 test("composite account-number evidence is versioned by currency code and rejected under the wrong one", () => {
@@ -285,7 +341,7 @@ test("the superseded key is the pre-fix digest of a USD-coded value and null for
 
 test("a USD-coded recapture of the same account admits the same identity and transaction keys as the TWD-coded capture", () => {
   const twd = admitWithAccountValue(twdValue);
-  const usd = admitWithAccountValue(usdValue, activeTwd);
+  const usd = admitWithAccountValue(usdValue, reconcilingRecord);
   assert.ok(twd.capture, twd.diagnostics.join(","));
   assert.ok(usd.capture, usd.diagnostics.join(","));
   const identityFields = ({ accountNo, subjectDigest, identityEpochKey }: typeof twd.capture.identity) =>

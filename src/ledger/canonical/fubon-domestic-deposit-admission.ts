@@ -176,7 +176,6 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
           },
         ],
         zeroObservation: "non-empty-page",
-        currencyEvidence: { kind: "no-currency-tabs" },
       },
       {
         pageOrdinal: 1,
@@ -193,7 +192,6 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
         providerPageSize: 10,
         rows: [],
         zeroObservation: "empty-page",
-        currencyEvidence: { kind: "no-currency-tabs" },
       },
     ],
     zeroObservation: "non-empty-range",
@@ -227,7 +225,6 @@ export type FubonDomesticDepositCaptureDiagnostic =
   | "page-shape-invalid"
   | "page-rows-invalid"
   | "page-metadata-invalid"
-  | "page-currency-evidence-invalid"
   | "page-ordinal-invalid"
   | "page-ordinal-gap"
   | "page-order-invalid"
@@ -262,6 +259,7 @@ export type FubonDomesticDepositCaptureDiagnostic =
   | "occurrence-ambiguous"
   | "composite-occurrence-collision"
   | "zero-observation-invalid"
+  | "balance-reconciliation-invalid"
   | "provenance-invalid";
 
 export type FubonDomesticDepositCaptureValidationResult = {
@@ -449,27 +447,44 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-function validResultCurrencyEvidence(value: unknown): boolean {
+function validExactDecimal(value: unknown): boolean {
   if (value === null || typeof value !== "object") return false;
-  const evidence = value as Record<string, unknown>;
-  const validLabels =
-    Array.isArray(evidence.labels) &&
-    evidence.labels.every((label) => typeof label === "string");
-  switch (evidence.kind) {
-    case "no-currency-tabs":
-      return true;
-    case "active-tab":
-      return typeof evidence.label === "string" && validLabels;
-    case "ambiguous":
-      return (
-        (evidence.reason === "no-active-tab" ||
-          evidence.reason === "multiple-active-tabs" ||
-          evidence.reason === "currency-column-present") &&
-        validLabels
-      );
-    default:
-      return false;
-  }
+  const decimal = value as Record<string, unknown>;
+  return (
+    typeof decimal.coefficient === "string" &&
+    /^-?\d+$/.test(decimal.coefficient) &&
+    Number.isSafeInteger(decimal.scale) &&
+    (decimal.scale as number) >= 0
+  );
+}
+
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && clean(value) !== "";
+}
+
+function validBalanceReconciliation(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const latestRow = record.latestRow as Record<string, unknown> | null;
+  return (
+    record.sourceField ===
+      "statement 即時餘額 vs current-balance instantBalance" &&
+    latestRow !== null &&
+    typeof latestRow === "object" &&
+    nonEmptyString(latestRow.localDate) &&
+    nonEmptyString(latestRow.localTime) &&
+    validExactDecimal(latestRow.runningBalance) &&
+    validExactDecimal(record.snapshotTwdBalance) &&
+    Array.isArray(record.snapshotOtherBalances) &&
+    record.snapshotOtherBalances.every(
+      (other: unknown) =>
+        other !== null &&
+        typeof other === "object" &&
+        nonEmptyString((other as Record<string, unknown>).currency) &&
+        validExactDecimal((other as Record<string, unknown>).balance),
+    ) &&
+    nonEmptyString(record.snapshotObservedAt)
+  );
 }
 
 /**
@@ -536,6 +551,13 @@ export function admitFubonDomesticDepositCaptureEvidence(
     capture.provenance.semantics !== "unresolved"
   )
     diagnostic(diagnostics, "provenance-invalid");
+  const balanceReconciliation =
+    capture.providerRouteEvidence?.balanceReconciliation;
+  if (
+    balanceReconciliation !== undefined &&
+    !validBalanceReconciliation(balanceReconciliation)
+  )
+    diagnostic(diagnostics, "balance-reconciliation-invalid");
   if (!Array.isArray(capture.pages)) {
     diagnostic(diagnostics, "pages-invalid");
   } else if (capture.pages.length === 0) {
@@ -573,8 +595,6 @@ export function admitFubonDomesticDepositCaptureEvidence(
       (page.pageFieldName !== null && typeof page.pageFieldName !== "string")
     )
       diagnostic(diagnostics, "page-metadata-invalid");
-    if (!validResultCurrencyEvidence(page.currencyEvidence))
-      diagnostic(diagnostics, "page-currency-evidence-invalid");
     if (page.queryRange === null || typeof page.queryRange !== "object") {
       diagnostic(diagnostics, "query-range-shape-invalid");
     } else if (
@@ -1486,31 +1506,7 @@ function hasExplicitFxAccountMarker(
   );
 }
 
-export type FubonDepositResultCurrencyEvidence =
-  | Readonly<{ kind: "no-currency-tabs" }>
-  | Readonly<{ kind: "active-tab"; label: string; labels: readonly string[] }>
-  | Readonly<{
-      kind: "ambiguous";
-      reason: "no-active-tab" | "multiple-active-tabs" | "currency-column-present";
-      labels: readonly string[];
-    }>;
-
-export const FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL = "臺幣活期存款" as const;
-
-type FubonDepositResultCurrencyPage = Readonly<{
-  currencyEvidence: FubonDepositResultCurrencyEvidence;
-}>;
-
-export function fubonDepositPageShowsActiveTwdTab(
-  page: FubonDepositResultCurrencyPage,
-): boolean {
-  return (
-    page.currencyEvidence.kind === "active-tab" &&
-    page.currencyEvidence.label === FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL
-  );
-}
-
-function isUsdCodedCompositeOfOwnLabel(
+export function isUsdCodedCompositeOfOwnLabel(
   account: Readonly<{ value: string; label: string }>,
 ): boolean {
   const composite = parseFubonCompositeAccountOption(account.value);
@@ -1523,25 +1519,104 @@ function isUsdCodedCompositeOfOwnLabel(
   );
 }
 
-export function fubonDepositRouteCurrency(
-  account: Readonly<{ value: string; label: string }>,
-  pages: readonly FubonDepositResultCurrencyPage[],
-): "TWD" | "unknown" {
-  const evidence = pages.map((page) => page.currencyEvidence);
-  if (evidence.some((entry) => entry.kind === "ambiguous")) return "unknown";
+export type FubonExactDecimal = Readonly<{ coefficient: string; scale: number }>;
+
+export type FubonDepositBalanceReconciliation = Readonly<{
+  sourceField: "statement 即時餘額 vs current-balance instantBalance";
+  latestRow: Readonly<{
+    localDate: string;
+    localTime: string;
+    runningBalance: FubonExactDecimal;
+  }>;
+  snapshotTwdBalance: FubonExactDecimal;
+  snapshotOtherBalances: readonly Readonly<{
+    currency: string;
+    balance: FubonExactDecimal;
+  }>[];
+  snapshotObservedAt: string;
+}>;
+
+type FubonDepositLatestRow = FubonDepositBalanceReconciliation["latestRow"];
+
+type FubonDepositRowsPage = Readonly<{
+  rows: readonly Readonly<{ cells: readonly string[] }>[];
+}>;
+
+export function fubonExactDecimalEquals(
+  left: FubonExactDecimal,
+  right: FubonExactDecimal,
+): boolean {
+  if (!validExactDecimal(left) || !validExactDecimal(right)) return false;
+  const scale = Math.max(left.scale, right.scale);
+  return (
+    BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale) ===
+    BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
+  );
+}
+
+function latestRowKey(row: Readonly<{ localDate: string; localTime: string }>): string {
+  return `${row.localDate}T${row.localTime}`;
+}
+
+export function fubonDepositLatestStatementRow(
+  pages: readonly FubonDepositRowsPage[],
+): FubonDepositLatestRow | null {
+  let latest: { key: string; localDate: string; localTime: string; balanceCell: string } | null = null;
+  for (const page of pages)
+    for (const row of page.rows) {
+      const time = sourceTime(row.cells, FUBON_DOMESTIC_DEPOSIT_TIME_ZONE);
+      if (!time) continue;
+      const key = latestRowKey(time);
+      const laterOrSameTimeInCaptureOrder = latest === null || key >= latest.key;
+      if (laterOrSameTimeInCaptureOrder)
+        latest = { key, localDate: time.localDate, localTime: time.localTime, balanceCell: row.cells[5] ?? "" };
+    }
+  const runningBalance = latest && exactAmount(latest.balanceCell);
+  if (!latest || !runningBalance) return null;
+  return { localDate: latest.localDate, localTime: latest.localTime, runningBalance };
+}
+
+export function fubonDepositBalanceReconciles(
+  record: FubonDepositBalanceReconciliation,
+  pages: readonly FubonDepositRowsPage[],
+): boolean {
+  if (!fubonExactDecimalEquals(record.snapshotTwdBalance, record.latestRow.runningBalance))
+    return false;
   if (
-    evidence.some(
-      (entry) =>
-        entry.kind === "active-tab" &&
-        entry.label !== FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
+    record.snapshotOtherBalances.some((other) =>
+      fubonExactDecimalEquals(record.snapshotTwdBalance, other.balance),
     )
   )
-    return "unknown";
-  const composite = parseFubonCompositeAccountOption(account.value);
+    return false;
+  const latestKey = latestRowKey(record.latestRow);
+  for (const page of pages)
+    for (const row of page.rows) {
+      const time = sourceTime(row.cells, FUBON_DOMESTIC_DEPOSIT_TIME_ZONE);
+      if (time && latestRowKey(time) > latestKey) return false;
+    }
+  const own = fubonDepositLatestStatementRow(pages);
+  return (
+    own === null ||
+    latestRowKey(own) !== latestKey ||
+    fubonExactDecimalEquals(own.runningBalance, record.latestRow.runningBalance)
+  );
+}
+
+export function fubonDepositRouteCurrency(
+  capture: Readonly<{
+    account: Readonly<{ value: string; label: string }>;
+    pages: readonly FubonDepositRowsPage[];
+    providerRouteEvidence?: Readonly<{
+      balanceReconciliation?: FubonDepositBalanceReconciliation;
+    }>;
+  }>,
+): "TWD" | "unknown" {
+  const composite = parseFubonCompositeAccountOption(capture.account.value);
   if (composite === null || composite.currencyCode === "TWD") return "TWD";
-  return pages.length > 0 &&
-    pages.every(fubonDepositPageShowsActiveTwdTab) &&
-    isUsdCodedCompositeOfOwnLabel(account)
+  const record = capture.providerRouteEvidence?.balanceReconciliation;
+  return isUsdCodedCompositeOfOwnLabel(capture.account) &&
+    record !== undefined &&
+    fubonDepositBalanceReconciles(record, capture.pages)
     ? "TWD"
     : "unknown";
 }
@@ -1697,8 +1772,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
   if (hasExplicitFxAccountMarker(input.capture.account)) {
     diagnostics.push("unsupported-currency");
   } else if (
-    fubonDepositRouteCurrency(input.capture.account, input.capture.pages) ===
-    "unknown"
+    fubonDepositRouteCurrency(input.capture) === "unknown"
   ) {
     diagnostics.push("currency-unproven");
   } else if (!hasPositiveTwdDomesticRouteEvidence(input.capture)) {

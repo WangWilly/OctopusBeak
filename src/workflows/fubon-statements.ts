@@ -39,11 +39,12 @@ import {
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   deriveFubonCompositeAccountNumberEvidence,
+  fubonDepositLatestStatementRow,
   fubonDepositRouteCurrency,
-  fubonDepositPageShowsActiveTwdTab,
+  fubonExactDecimalEquals,
   fubonDomesticDepositSupersededSourceAccountKey,
-  FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
-  type FubonDepositResultCurrencyEvidence,
+  isUsdCodedCompositeOfOwnLabel,
+  type FubonDepositBalanceReconciliation,
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
@@ -265,8 +266,15 @@ export type FubonStatementExclusion = Readonly<{
   reason: "account-currency-unproven";
   /** Selector option value with digits as 9 and letters as A. */
   accountShape: string;
-  currencyEvidenceByPage: readonly FubonDepositResultCurrencyEvidence[];
+  reconciliation: FubonDepositReconciliationFailure;
 }>;
+
+export type FubonDepositReconciliationFailure =
+  | "not-attempted"
+  | "no-statement-rows"
+  | "no-twd-snapshot-row"
+  | "running-balance-mismatch"
+  | "matches-non-twd-balance";
 
 export type FubonSupersededAccountIdentity = Readonly<{
   supersededSourceAccountKey: `sha256:${string}`;
@@ -483,7 +491,6 @@ export type ParsedDepositStatementPage = {
   endDate: string;
   selectedAccountValue: string;
   selectedAccountLabel: string;
-  currencyEvidence: FubonDepositResultCurrencyEvidence;
   evidenceRows: FubonDepositStatementRowEvidence[];
   responseMetadata: FubonDepositResponseMetadata;
   bodyLength: number;
@@ -633,7 +640,6 @@ export type FubonDepositStatementPageEvidence = {
   providerTotalCount?: number;
   rows: readonly FubonDepositStatementRowEvidence[];
   zeroObservation: "empty-page" | "non-empty-page";
-  currencyEvidence: FubonDepositResultCurrencyEvidence;
 };
 
 export type FubonDepositStatementEvidence = {
@@ -649,7 +655,7 @@ export type FubonDepositStatementEvidence = {
     endpointPath: string;
     contract: string;
     currency: "TWD" | "FX" | "unknown";
-    currencySource?: FubonDepositRouteCurrencySource;
+    balanceReconciliation?: FubonDepositBalanceReconciliation;
   };
   /** Empty ranges are canonical only when the provider explicitly says no data. */
   zeroResultAuthority?: "provider-explicit-no-data" | "unproven";
@@ -873,32 +879,10 @@ export function inspectFubonDepositResponseMetadata(
   };
 }
 
-export type FubonDepositRouteCurrencySource =
-  | "selector-option"
-  | `active-tab:${typeof FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL}`;
-
-function depositRouteCurrencyEvidence(
-  statement: FubonParsedDepositStatement,
-): Readonly<
-  | { currency: "TWD"; currencySource: FubonDepositRouteCurrencySource }
-  | { currency: "unknown" }
-> {
-  const currency = fubonDepositRouteCurrency(
-    statement.accountOption,
-    statement.pages,
-  );
-  if (currency === "unknown") return { currency };
-  return {
-    currency,
-    currencySource: statement.pages.every(fubonDepositPageShowsActiveTwdTab)
-      ? `active-tab:${FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL}`
-      : "selector-option",
-  };
-}
-
 export function buildFubonDepositStatementEvidence(
   statements: readonly FubonParsedDepositStatement[],
   observedAt = new Date().toISOString(),
+  balanceReconciliation?: FubonDepositBalanceReconciliation,
 ): FubonDepositStatementEvidence[] {
   return statements.map((statement) => ({
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
@@ -940,7 +924,6 @@ export function buildFubonDepositStatementEvidence(
           : {}),
       })),
       zeroObservation: page.zeroObservation,
-      currencyEvidence: page.currencyEvidence,
     })),
     zeroObservation: statement.pages.every(
       (page) => page.zeroObservation === "empty-page",
@@ -961,7 +944,12 @@ export function buildFubonDepositStatementEvidence(
     providerRouteEvidence: {
       endpointPath: FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_PATH,
       contract: FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
-      ...depositRouteCurrencyEvidence(statement),
+      currency: fubonDepositRouteCurrency({
+        account: statement.accountOption,
+        pages: statement.pages,
+        providerRouteEvidence: { balanceReconciliation },
+      }),
+      ...(balanceReconciliation ? { balanceReconciliation } : {}),
     },
     provenance: {
       source: "fubon-ebank-domestic-deposit-form-postback",
@@ -2117,7 +2105,7 @@ async function parseDepositStatementHtml(
   responseSequence = pageOrdinal + 1,
 ): Promise<ParsedDepositStatementPage> {
   const parsed = (await page.evaluate(
-    ({ html: sourceHtml, headers, currencyTabLabels, currencyHeader }) => {
+    ({ html: sourceHtml, headers }) => {
       const clean = (value: string | null | undefined) =>
         (value ?? "")
           .replace(/[\u00a0\u3000]/g, " ")
@@ -2151,66 +2139,6 @@ async function parseDepositStatementHtml(
         .slice(headerRowIndex + 1)
         .map((row) => headers.map((_, index) => clean(row[index])))
         .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
-      const tabCandidates = Array.from(
-        doc.querySelectorAll("a, li, span, div, button, td, th, label"),
-      ).filter((element) =>
-        currencyTabLabels.includes(clean(element.textContent)),
-      );
-      const tabs = tabCandidates.filter(
-        (element) =>
-          !tabCandidates.some(
-            (other) => other !== element && element.contains(other),
-          ),
-      );
-      const activeMarker =
-        /^(?:active|selected|on|current|cur|sel|tab-?active|ui-tabs-active|ui-state-active)$/i;
-      const isMarkedActive = (element: Element) => {
-        let current: Element | null = element;
-        for (let level = 0; current && level <= 3; level += 1) {
-          if (
-            current.getAttribute("aria-selected") === "true" ||
-            Array.from(current.classList).some((token) =>
-              activeMarker.test(token),
-            )
-          )
-            return true;
-          current = current.parentElement;
-        }
-        return false;
-      };
-      const tabLabels = [
-        ...new Set(tabs.map((element) => clean(element.textContent))),
-      ];
-      const activeLabels = tabLabels.filter((label) =>
-        tabs.some(
-          (element) =>
-            clean(element.textContent) === label && isMarkedActive(element),
-        ),
-      );
-      const currencyEvidence = tableRows[headerRowIndex]!.includes(
-        currencyHeader,
-      )
-        ? {
-            kind: "ambiguous" as const,
-            reason: "currency-column-present" as const,
-            labels: tabLabels,
-          }
-        : tabLabels.length === 0
-          ? { kind: "no-currency-tabs" as const }
-          : activeLabels.length === 1
-            ? {
-                kind: "active-tab" as const,
-                label: activeLabels[0]!,
-                labels: tabLabels,
-              }
-            : {
-                kind: "ambiguous" as const,
-                reason:
-                  activeLabels.length === 0
-                    ? ("no-active-tab" as const)
-                    : ("multiple-active-tabs" as const),
-                labels: tabLabels,
-              };
       const startDate = clean(
         (doc.getElementById("form1:startDate") as HTMLInputElement | null)
           ?.value,
@@ -2262,15 +2190,9 @@ async function parseDepositStatementHtml(
         startDate,
         endDate,
         rows,
-        currencyEvidence,
       };
     },
-    {
-      html,
-      headers: depositHeaders,
-      currencyTabLabels: [FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL, "外幣活期存款"],
-      currencyHeader: "幣別",
-    },
+    { html, headers: depositHeaders },
   )) as ParsedDepositStatementPage;
 
   const responseMetadata = inspectFubonDepositResponseMetadata(html);
@@ -2358,21 +2280,7 @@ export async function parseFubonDepositStatementHtml(
       : {}),
     zeroObservation:
       parsed.evidenceRows.length === 0 ? "empty-page" : "non-empty-page",
-    currencyEvidence: parsed.currencyEvidence,
   };
-}
-
-export async function parseFubonDepositStatementResponses(
-  page: Page,
-  htmls: readonly string[],
-  accountOption: FubonDepositAccountOption,
-): Promise<FubonParsedDepositStatement> {
-  const pages: ParsedDepositStatementPage[] = [];
-  for (const html of htmls)
-    pages.push(
-      await parseDepositStatementHtml(page, html, pages.length, pages.length + 1),
-    );
-  return assembleFubonParsedDepositStatement(pages, accountOption);
 }
 
 async function fetchDepositStatement(
@@ -2907,6 +2815,44 @@ export async function captureFubonDepositTelemetry(
   }
 }
 
+function reconcileFubonDepositBalance(
+  account: FubonDepositAccountOption,
+  statements: readonly FubonParsedDepositStatement[],
+  snapshotRows: readonly FubonCurrentDepositBalanceRow[],
+  snapshotObservedAt: string,
+): Readonly<{
+  record?: FubonDepositBalanceReconciliation;
+  failure: FubonDepositReconciliationFailure | null;
+}> {
+  const accountNumber = deriveFubonCompositeAccountNumberEvidence(account)?.value;
+  const accountRows = snapshotRows.filter((row) => row.accountNumber === accountNumber);
+  const twdRow = accountRows.find((row) => row.currency === "TWD");
+  const latestRow = fubonDepositLatestStatementRow(
+    statements.flatMap((statement) => statement.pages),
+  );
+  if (latestRow === null) return { failure: "no-statement-rows" };
+  if (twdRow === undefined) return { failure: "no-twd-snapshot-row" };
+  const decimal = ({ coefficient, scale }: FubonCurrentDepositBalanceRow["instantBalance"]) =>
+    ({ coefficient, scale });
+  const record: FubonDepositBalanceReconciliation = {
+    sourceField: "statement 即時餘額 vs current-balance instantBalance",
+    latestRow,
+    snapshotTwdBalance: decimal(twdRow.instantBalance),
+    snapshotOtherBalances: accountRows
+      .filter((row) => row.currency !== "TWD")
+      .map((row) => ({ currency: row.currency, balance: decimal(row.instantBalance) })),
+    snapshotObservedAt,
+  };
+  const failure = !fubonExactDecimalEquals(record.snapshotTwdBalance, latestRow.runningBalance)
+    ? "running-balance-mismatch"
+    : record.snapshotOtherBalances.some((other) =>
+          fubonExactDecimalEquals(record.snapshotTwdBalance, other.balance),
+        )
+      ? "matches-non-twd-balance"
+      : null;
+  return { record, failure };
+}
+
 export async function runFubonStatements(
   page: Page,
   input: FubonStatementsInput,
@@ -2963,34 +2909,17 @@ export async function runFubonStatements(
     let sourceCount = 0;
     let rowCount = 0;
 
-    for (const account of accounts) {
-      overrides.signal?.throwIfAborted();
-      await selectAccount(page, account);
-      const accountStatements: FubonParsedDepositStatement[] = [];
-
-      for (const dateRange of input.dateRanges) {
-        overrides.signal?.throwIfAborted();
-        await overrides.reportActivity?.("query");
-        const statement = await fetchStatement(page, dateRange, account);
-        overrides.sourceText.assertIntact(JSON.stringify(statement));
-        accountStatements.push(statement);
-      }
-      if (accountStatements.length === 0) {
-        throw new Error(
-          "Fubon deposit evidence admission blocked: no query pages.",
-        );
-      }
-      sourceCount += accountStatements.length;
-      rowCount += accountStatements.reduce((count, statement) => count + statement.rows.length, 0);
-      const statementEvidence = buildFubonDepositStatementEvidence(accountStatements);
+    const admitAccount = (
+      account: FubonDepositAccountOption,
+      statementEvidence: readonly FubonDepositStatementEvidence[],
+      reconciliation: FubonDepositReconciliationFailure,
+    ) => {
       if (statementEvidence.some((capture) => capture.providerRouteEvidence?.currency === "unknown")) {
         const accountShape = fubonAccountOptionShape(account.value);
         statementExclusions.push({
           reason: "account-currency-unproven",
           accountShape,
-          currencyEvidenceByPage: statementEvidence.flatMap((capture) =>
-            capture.pages.map((page) => page.currencyEvidence),
-          ),
+          reconciliation,
         });
         unlinkedStatementAccountShapes.add(accountShape);
       }
@@ -3098,15 +3027,54 @@ export async function runFubonStatements(
           ),
         });
       }
+    };
+
+    const deferred: Array<{
+      account: FubonDepositAccountOption;
+      statements: FubonParsedDepositStatement[];
+    }> = [];
+    for (const account of accounts) {
+      overrides.signal?.throwIfAborted();
+      await selectAccount(page, account);
+      const accountStatements: FubonParsedDepositStatement[] = [];
+
+      for (const dateRange of input.dateRanges) {
+        overrides.signal?.throwIfAborted();
+        await overrides.reportActivity?.("query");
+        const statement = await fetchStatement(page, dateRange, account);
+        overrides.sourceText.assertIntact(JSON.stringify(statement));
+        accountStatements.push(statement);
+      }
+      if (accountStatements.length === 0) {
+        throw new Error(
+          "Fubon deposit evidence admission blocked: no query pages.",
+        );
+      }
+      sourceCount += accountStatements.length;
+      rowCount += accountStatements.reduce((count, statement) => count + statement.rows.length, 0);
+      if (isUsdCodedCompositeOfOwnLabel(account)) {
+        deferred.push({ account, statements: accountStatements });
+        continue;
+      }
+      admitAccount(account, buildFubonDepositStatementEvidence(accountStatements), "not-attempted");
     }
 
     // Read and validate the point-in-time page before opening the financial
     // commit boundary. A failure here must not leave statement captures from
-    // this run behind.
-    if (financialCaptures.length > 0) {
+    // this run behind. The snapshot follows the statements, so a posting in
+    // between breaks a USD-coded account's reconciliation for this run only.
+    let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
+    let currentObservedAt = "";
+    if (financialCaptures.length > 0 || deferred.length > 0) {
       await overrides.reportActivity?.("query");
-      const authority = financialCaptures[0]!.identity;
-      const currentRows = await readCurrent(page, {
+      const authority =
+        financialCaptures[0]?.identity ??
+        deriveFubonDomesticDepositAccountIdentity(
+          deferred[0]!.statements[0]!.accountOption,
+          undefined,
+          stableSourceConnectionKey as `sha256:${string}`,
+        );
+      currentRows = await readCurrent(page, {
         observedAt: new Date().toISOString(),
         financialAuthority: {
           sourceConnectionKey: authority.sourceConnectionKey,
@@ -3115,7 +3083,24 @@ export async function runFubonStatements(
         },
       });
       overrides.sourceText.assertIntact(JSON.stringify(currentRows));
-      const currentObservedAt = new Date().toISOString();
+      currentObservedAt = new Date().toISOString();
+    }
+
+    for (const { account, statements } of deferred) {
+      const outcome = reconcileFubonDepositBalance(
+        account,
+        statements,
+        currentRows,
+        currentObservedAt,
+      );
+      admitAccount(
+        account,
+        buildFubonDepositStatementEvidence(statements, undefined, outcome.record),
+        outcome.failure ?? "running-balance-mismatch",
+      );
+    }
+
+    if (financialCaptures.length > 0) {
       const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
         financialCaptures,
       );

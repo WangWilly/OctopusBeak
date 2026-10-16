@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
-import type { FubonDepositResultCurrencyEvidence } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import {
   buildFubonLoanPaymentAccountEvidence,
   buildFubonCurrentDepositBalanceCapture,
@@ -176,7 +175,6 @@ const relationEvidenceCapture: FubonDepositStatementEvidence = {
         { rowOrdinal: 1, cells: ["2026/08/17", "09:01:00", "轉帳", "1.00", "", "99.00", relationAccount] },
       ],
       zeroObservation: "non-empty-page",
-      currencyEvidence: { kind: "no-currency-tabs" },
     },
   ],
   zeroObservation: "non-empty-range",
@@ -420,26 +418,14 @@ try {
     branchName: "013",
   };
   assert.equal(deriveFubonDomesticDepositAccountNumberEvidence(unlinkableAccount), null);
-  const statementFor = (
-    account: typeof unlinkableAccount,
-    currencyEvidence?: FubonDepositResultCurrencyEvidence,
-  ): FubonParsedDepositStatement => ({
+  const statementFor = (account: typeof unlinkableAccount): FubonParsedDepositStatement => ({
     ...statement,
     account: account.label,
     accountId: account.value,
     branchName: account.branchName,
-    pages: statement.pages.map((page) => ({
-      ...page,
-      selectedAccount: account,
-      ...(currencyEvidence ? { currencyEvidence } : {}),
-    })),
+    pages: statement.pages.map((page) => ({ ...page, selectedAccount: account })),
     accountOption: account,
   });
-  const activeTwdTab: FubonDepositResultCurrencyEvidence = {
-    kind: "active-tab",
-    label: "臺幣活期存款",
-    labels: ["臺幣活期存款", "外幣活期存款"],
-  };
   const secondTwdRow: FubonCurrentDepositBalanceRow = {
     ...currentBalanceRow,
     accountNumber: secondAccountNumber,
@@ -517,46 +503,86 @@ try {
     instantBalance: { coefficient: "864213", scale: 2, sourceLexeme: "8642.13" },
     availableBalance: { coefficient: "864213", scale: 2, sourceLexeme: "8642.13" },
   };
-  const usdCodedItems: PGliteWorkflowRunItem[] = [];
-  const usdCodedResult = await runFubonStatements(
-    {} as never,
-    collectionInput,
-    {
-      ...collectorOverrides(usdCodedItems, async (_page, _range, account) =>
-        account.value === usdCodedAccount.value ? statementFor(usdCodedAccount, activeTwdTab) : statement,
-      ),
-      readDepositAccountOptions: async () => [selectedAccount, usdCodedAccount],
-      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdMarkedRow],
-    },
+  const withRunningBalance = (
+    source: FubonParsedDepositStatement,
+    balance: string,
+    queryRange?: { startDate: string; endDate: string },
+    rowDate?: string,
+  ): FubonParsedDepositStatement => {
+    const pages = source.pages.map((page) => ({
+      ...page,
+      ...(queryRange ? { queryRange } : {}),
+      rows: page.rows.map((row) => ({
+        ...row,
+        cells: row.cells.map((cell, index) =>
+          index === 5 ? balance : index === 0 && rowDate ? rowDate : cell,
+        ) as [string, string, string, string, string, string, string],
+      })),
+    }));
+    return { ...source, rows: pages.flatMap((page) => page.rows.map((row) => [...row.cells])), pages };
+  };
+  const olderRange = { startDate: "2025/07/01", endDate: "2025/12/31" };
+  const olderStatementFor = (account: typeof unlinkableAccount) =>
+    withRunningBalance(statementFor(account), "40.00", olderRange, "2025/08/01");
+  const usdCodedNewest = (balance: string) => withRunningBalance(statementFor(usdCodedAccount), balance);
+  const twoRangeInput = { dateRanges: ["30" as const, "180_365" as const], downloadFormat: "EXCEL" as const };
+  const runUsdCoded = async (
+    newestBalance: string,
+    snapshotRows: readonly FubonCurrentDepositBalanceRow[],
+    usdStatement: (range: string) => FubonParsedDepositStatement = (range) =>
+      range === "30" ? usdCodedNewest(newestBalance) : olderStatementFor(usdCodedAccount),
+  ) => {
+    const items: PGliteWorkflowRunItem[] = [];
+    const result = await runFubonStatements(
+      {} as never,
+      twoRangeInput,
+      {
+        ...collectorOverrides(items, async (_page, range, account) =>
+          account.value === usdCodedAccount.value
+            ? usdStatement(range)
+            : range === "30" ? statement : olderStatementFor(selectedAccount),
+        ),
+        readDepositAccountOptions: async () => [selectedAccount, usdCodedAccount],
+        readCurrentDepositBalances: async () => snapshotRows,
+      },
+    );
+    return { items, result };
+  };
+  const assertNoUsdSnapshotLeak = (items: PGliteWorkflowRunItem[]) => {
+    for (const item of items)
+      assert.doesNotMatch(
+        JSON.stringify(item.command),
+        /"currency":"USD"|美金|外幣活存|"coefficient":"864213"|8642\.13/u,
+        `the USD snapshot row must not reach a ${item.command.kind} command`,
+      );
+  };
+
+  const { items: usdCodedItems, result: usdCodedResult } = await runUsdCoded(
+    "50.00",
+    [currentBalanceRow, secondTwdRow, secondUsdMarkedRow],
   );
   const usdCodedDeposits = depositAccountKeys(usdCodedItems);
   assert.deepEqual(
-    usdCodedDeposits.map(([number]) => number).sort(),
+    [...new Set(usdCodedDeposits.map(([number]) => number))].sort(),
     [accountNumber, secondAccountNumber].sort(),
-    "a USD-coded account whose pages show the 臺幣活期存款 tab active commits as TWD financial deposits",
-  );
-  assert.deepEqual(
-    depositIdentityFor(usdCodedItems, secondAccountNumber).map((identity) => identity.accountNumber?.evidenceVersion),
-    ["fubon/domestic-deposit/account-number-v3"],
-    "the USD-coded account's number carries V3 evidence",
-  );
-  assert.deepEqual(
-    balanceAccountKeys(usdCodedItems).sort(),
-    usdCodedDeposits.map(([, key]) => key).sort(),
-    "both accounts' TWD balances are captured",
+    "a USD-coded account whose newest running balance equals its TWD snapshot balance commits as TWD financial deposits",
   );
   assert.equal(
     usdCodedItems.some((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND),
     false,
-    "no statement falls back to source-only evidence",
+    "no statement falls back to source-only evidence, including the older range whose running balance is stale",
   );
-  for (const item of usdCodedItems) {
-    assert.doesNotMatch(
-      JSON.stringify(item.command),
-      /"currency":"USD"|美金|外幣活存|"coefficient":"864213"|8642\.13/u,
-      `the USD snapshot row must not reach a ${item.command.kind} command`,
-    );
-  }
+  assert.deepEqual(
+    depositIdentityFor(usdCodedItems, secondAccountNumber).map((identity) => identity.accountNumber?.evidenceVersion),
+    ["fubon/domestic-deposit/account-number-v3", "fubon/domestic-deposit/account-number-v3"],
+    "both of the USD-coded account's ranges carry V3 account-number evidence",
+  );
+  assert.deepEqual(
+    balanceAccountKeys(usdCodedItems).sort(),
+    [...new Set(usdCodedDeposits.map(([, key]) => key))].sort(),
+    "both accounts' TWD balances are captured",
+  );
+  assertNoUsdSnapshotLeak(usdCodedItems);
   assert.deepEqual(usdCodedResult.currentBalanceExclusions, []);
   assert.deepEqual(usdCodedResult.statementExclusions, []);
   const oldContractUsdCodedKey = `sha256:${createHash("sha256")
@@ -591,7 +617,7 @@ try {
     collectionInput,
     {
       ...collectorOverrides(twdCodedItems, async (_page, _range, account) =>
-        account.value === twdCodedAccount.value ? statementFor(twdCodedAccount, activeTwdTab) : statement,
+        account.value === twdCodedAccount.value ? statementFor(twdCodedAccount) : statement,
       ),
       readDepositAccountOptions: async () => [selectedAccount, twdCodedAccount],
       readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
@@ -603,50 +629,74 @@ try {
     "the TWD-coded option admits under the successor key",
   );
   assert.deepEqual(twdCodedResult.supersededAccountIdentities, [], "a TWD-coded option supersedes nothing");
+  assert.deepEqual(twdCodedResult.statementExclusions, [], "a TWD-coded option needs no reconciliation");
   assert.deepEqual(
-    depositIdentityFor(usdCodedItems, accountNumber),
-    depositIdentityFor(deferredItems, accountNumber),
+    [...new Set(depositIdentityFor(usdCodedItems, accountNumber).map((identity) => JSON.stringify(identity)))],
+    depositIdentityFor(deferredItems, accountNumber).map((identity) => JSON.stringify(identity)),
     "the first account's identity does not churn when a second account joins",
   );
   assert.equal(depositIdentityFor(deferredItems, accountNumber).length, 1);
 
   const usdCodedShape = ["999", "9".repeat(16), "AAA", "99"].join("-");
-  const usdUntabbedItems: PGliteWorkflowRunItem[] = [];
-  const usdUntabbedResult = await runFubonStatements(
-    {} as never,
-    collectionInput,
-    {
-      ...collectorOverrides(usdUntabbedItems, async (_page, _range, account) =>
-        account.value === usdCodedAccount.value ? statementFor(usdCodedAccount) : statement,
-      ),
-      readDepositAccountOptions: async () => [selectedAccount, usdCodedAccount],
-      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdMarkedRow],
-    },
-  );
+  const assertUsdCodedSourceOnly = (
+    run: Awaited<ReturnType<typeof runUsdCoded>>,
+    reconciliation: string,
+    name: string,
+  ) => {
+    assert.deepEqual(
+      [...new Set(depositAccountKeys(run.items).map(([number]) => number))],
+      [accountNumber],
+      `${name}: the USD-coded account stays out of financial admission`,
+    );
+    assert.equal(
+      run.items.filter((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND).length,
+      2,
+      `${name}: both of the USD-coded account's ranges land as source-only evidence`,
+    );
+    assert.deepEqual(
+      run.result.statementExclusions,
+      [{ reason: "account-currency-unproven", accountShape: usdCodedShape, reconciliation }],
+      `${name}: the exclusion names the reconciliation failure`,
+    );
+    assertNoUsdSnapshotLeak(run.items);
+  };
+
+  const mismatched = await runUsdCoded("49.99", [currentBalanceRow, secondTwdRow, secondUsdMarkedRow]);
+  assertUsdCodedSourceOnly(mismatched, "running-balance-mismatch", "a newest running balance that differs from the TWD snapshot");
+  assert.deepEqual(mismatched.result.currentBalanceExclusions, [
+    { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: [usdCodedShape] },
+  ]);
+
+  const secondUsdEqualRow: FubonCurrentDepositBalanceRow = {
+    ...secondUsdMarkedRow,
+    instantBalance: { coefficient: "50", scale: 0, sourceLexeme: "50" },
+  };
+  const matchesUsd = await runUsdCoded("50.00", [currentBalanceRow, secondTwdRow, secondUsdEqualRow]);
+  assertUsdCodedSourceOnly(matchesUsd, "matches-non-twd-balance", "a TWD snapshot balance equal to the account's USD balance");
+  assert.deepEqual(matchesUsd.result.currentBalanceExclusions, [
+    { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: [usdCodedShape] },
+  ]);
+
+  const noTwdRow = await runUsdCoded("50.00", [currentBalanceRow, secondUsdMarkedRow]);
+  assertUsdCodedSourceOnly(noTwdRow, "no-twd-snapshot-row", "a snapshot without the account's TWD row");
+  assert.deepEqual(noTwdRow.result.currentBalanceExclusions, []);
+
+  const emptyUsdStatement = (range: string): FubonParsedDepositStatement => {
+    const source = range === "30" ? statementFor(usdCodedAccount) : olderStatementFor(usdCodedAccount);
+    const pages = source.pages.map((page) => ({ ...page, rows: [], zeroObservation: "empty-page" as const }));
+    return { ...source, rows: [], pages };
+  };
+  const noRows = await runUsdCoded("50.00", [currentBalanceRow, secondTwdRow, secondUsdMarkedRow], emptyUsdStatement);
   assert.deepEqual(
-    depositAccountKeys(usdUntabbedItems).map(([number]) => number),
-    [accountNumber],
-    "a USD-coded account whose pages show no currency tab stays out of financial admission",
+    noRows.result.statementExclusions,
+    [{ reason: "account-currency-unproven", accountShape: usdCodedShape, reconciliation: "no-statement-rows" }],
+    "a USD-coded account without statement rows cannot reconcile",
   );
   assert.equal(
-    usdUntabbedItems.filter((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND).length,
-    1,
-    "the untabbed USD-coded account's statement lands as source-only evidence",
+    depositAccountKeys(noRows.items).some(([number]) => number === secondAccountNumber),
+    false,
+    "a USD-coded account without statement rows stays out of financial admission",
   );
-  assert.deepEqual(usdUntabbedResult.statementExclusions, [
-    {
-      reason: "account-currency-unproven",
-      accountShape: usdCodedShape,
-      currencyEvidenceByPage: statement.pages.map(() => ({ kind: "no-currency-tabs" })),
-    },
-  ]);
-  for (const item of usdUntabbedItems) {
-    assert.doesNotMatch(
-      JSON.stringify(item.command),
-      /"currency":"USD"|美金|外幣活存|"coefficient":"864213"|8642\.13/u,
-      `the USD snapshot row must not reach a ${item.command.kind} command`,
-    );
-  }
 
   const jpyCodedAccount = {
     value: `999-00${secondAccountNumber}-JPY-02`,
@@ -723,7 +773,7 @@ try {
     {
       reason: "account-currency-unproven",
       accountShape: jpyCodedShape,
-      currencyEvidenceByPage: jpyCodedPages.map(() => ({ kind: "no-currency-tabs" })),
+      reconciliation: "not-attempted",
     },
   ]);
 
@@ -753,7 +803,6 @@ try {
       selectedAccount: noRecordAccount,
       rows: [],
       zeroObservation: "empty-page",
-      currencyEvidence: { kind: "no-currency-tabs" },
       responseMetadata: {
         fieldNames: [],
         fields: [],
@@ -840,7 +889,6 @@ try {
       providerPageSize: 1,
       rows: [{ rowOrdinal: 0, cells: [...incompleteRow] }],
       zeroObservation: "non-empty-page",
-      currencyEvidence: { kind: "no-currency-tabs" },
     }],
     accountOption: incompleteAccount,
   };
