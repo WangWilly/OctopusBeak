@@ -900,7 +900,7 @@ const en = {
         description:
           "Cathay asks for a one-time code when a device it does not trust signs in. Register here once so syncs can sign in without a code, and again whenever Cathay stops trusting this device.",
         disclosure:
-          "Registering adds a trusted device named “OctopusBeak” to your Cathay United Bank online banking account. You can see or remove it in Cathay online banking under Device management (裝置管理). If you later set up a trusted device somewhere else, Cathay may remove this one, and syncs then ask you to register again.",
+          "Registering adds this App's browser as a trusted device on your Cathay United Bank online banking account. You can see or remove it in Cathay online banking under Device management (裝置管理). If you later set up a trusted device somewhere else, Cathay may remove this one, and syncs then ask you to register again.",
         registered: "Registered",
         notRegistered: "Not registered",
         register: "Register this device",
@@ -2184,7 +2184,7 @@ const zh: typeof en = {
         description:
           "國泰世華遇到尚未信任的裝置登入時，會要求輸入一次性驗證碼。請在這裡註冊一次，之後同步就能免驗證碼登入；國泰不再信任這台裝置時，再註冊一次。",
         disclosure:
-          "註冊後，你的國泰世華網路銀行帳戶會新增一台名為「OctopusBeak」的信任裝置。你可以在國泰世華網路銀行的「裝置管理」查看或移除它。之後若你在其他地方設定信任裝置，國泰可能會移除這一台，屆時同步會請你重新註冊。",
+          "註冊後，你的國泰世華網路銀行帳戶會把這個 App 的瀏覽器新增為信任裝置。你可以在國泰世華網路銀行的「裝置管理」查看或移除它。之後若你在其他地方設定信任裝置，國泰可能會移除這一台，屆時同步會請你重新註冊。",
         registered: "已註冊",
         notRegistered: "尚未註冊",
         register: "註冊此裝置",
