@@ -1,6 +1,7 @@
 import { derived, writable } from "svelte/store";
 import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
 import type { TdccRegistrationChannel, TdccRegistrationFailure } from "../automation/types.ts";
+import type { SupersededAccountPurgeRefusalReason } from "../settings/superseded-account-purge.ts";
 
 export const locales = ["en", "zh-TW"] as const;
 export type Locale = (typeof locales)[number];
@@ -1205,6 +1206,25 @@ const en = {
     deletePreviewDataAction: "Delete",
     previewDataDeleted: "Preview data deleted",
     deletePreviewDataFailed: "Preview data could not be deleted. Try again.",
+    dataRepair: "Data repair",
+    dataRepairDescription: "Fix account records that an earlier version of OctopusBeak collected incorrectly.",
+    supersededAccount: "Duplicate Fubon account identity",
+    supersededAccountCounts: (transactions: number, captures: number, balanceObservations: number) =>
+      `${transactions} transactions · ${captures} captures · ${balanceObservations} balance observations`,
+    supersededAccountConfirm: (transactions: number) =>
+      `The duplicate account identity created by the old contract will be permanently deleted together with its ${transactions} transactions. The surviving account already carries the re-collected history. This action cannot be undone.`,
+    supersededAccountDelete: "Delete duplicate",
+    supersededAccountDeleteAction: "Delete permanently",
+    supersededAccountDeleted: "Duplicate account identity deleted",
+    supersededAccountRefused: (reason: string) => `Cannot delete: ${reason}`,
+    supersededAccountRefusal: {
+      "superseded-account-missing": "already deleted",
+      "superseded-account-ambiguous": "more than one account matches",
+      "successor-account-missing": "the surviving account was not found",
+      "successor-is-superseded": "the surviving account is the duplicate",
+      "external-reference": "other records still refer to it",
+    } satisfies Record<SupersededAccountPurgeRefusalReason, string>,
+    supersededAccountFailed: "The duplicate account identity could not be checked or deleted. Try again.",
     saving: "Saving...",
     settingsSaved: "Settings saved.",
     allChangesSaved: "All changes saved",
@@ -2431,6 +2451,25 @@ const zh: typeof en = {
     deletePreviewDataAction: "刪除",
     previewDataDeleted: "已刪除預覽資料",
     deletePreviewDataFailed: "無法刪除預覽資料，請再試一次。",
+    dataRepair: "資料修復",
+    dataRepairDescription: "修正舊版 OctopusBeak 收集錯誤的帳戶紀錄。",
+    supersededAccount: "Fubon 帳戶身分重複",
+    supersededAccountCounts: (transactions, captures, balanceObservations) =>
+      `${transactions} 筆交易 · ${captures} 份擷取 · ${balanceObservations} 筆餘額觀測`,
+    supersededAccountConfirm: (transactions) =>
+      `舊規則建立的重複帳戶身分將連同它的 ${transactions} 筆交易永久刪除。保留的帳戶已帶有重新收集的歷史紀錄。此動作無法復原。`,
+    supersededAccountDelete: "刪除重複身分",
+    supersededAccountDeleteAction: "永久刪除",
+    supersededAccountDeleted: "已刪除重複的帳戶身分",
+    supersededAccountRefused: (reason) => `無法刪除：${reason}`,
+    supersededAccountRefusal: {
+      "superseded-account-missing": "已刪除",
+      "superseded-account-ambiguous": "符合的帳戶不只一個",
+      "successor-account-missing": "找不到保留的帳戶",
+      "successor-is-superseded": "保留的帳戶就是重複身分",
+      "external-reference": "仍有其他紀錄參照它",
+    },
+    supersededAccountFailed: "無法檢查或刪除重複的帳戶身分，請再試一次。",
     saving: "儲存中...",
     settingsSaved: "設定已儲存。",
     allChangesSaved: "所有變更已儲存",

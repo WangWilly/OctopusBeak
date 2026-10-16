@@ -28,6 +28,7 @@ import {
   fubonStatementsInputSchema,
   runFubonStatements,
   type FubonDepositWorkflowCollection,
+  type FubonSupersededAccountIdentity,
 } from "./fubon-statements.ts";
 import { completeFubonHumanLoginWithAssistance, hasFubonDuplicateLoginTerminal, openFubonLoginForm } from "./fubon-auth.ts";
 import {
@@ -155,6 +156,7 @@ export type FubonAllWorkflowOutput = Readonly<{
   skippedProductCount: number;
   products: readonly CollectionProductOutcome[];
   status: "financial-admitted" | "source-only" | "no-data" | "partial" | "failed";
+  supersededAccountIdentities?: readonly FubonSupersededAccountIdentity[];
 }>;
 
 export type FubonWorkflowIdentity = Readonly<{
@@ -353,6 +355,7 @@ export async function runFubonAllStatementsWorkflow(
     try {
       await context.event("decoding", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
+      const supersededAccountIdentities: FubonSupersededAccountIdentity[] = [];
       const summary = await collectSelectedProducts({
         productIds,
         selectedIds,
@@ -365,6 +368,10 @@ export async function runFubonAllStatementsWorkflow(
               await context.event("collection", `deposit-current-balance-excluded-${exclusion.reason}`);
             for (const exclusion of deposit.statementExclusions ?? [])
               await context.event("collection", `deposit-statement-excluded-${exclusion.reason}`);
+            for (const identity of deposit.supersededAccountIdentities ?? []) {
+              supersededAccountIdentities.push(identity);
+              await context.event("collection", "deposit-superseded-account-identity");
+            }
             return deposit;
           };
           const result = typeId === "deposit"
@@ -414,6 +421,7 @@ export async function runFubonAllStatementsWorkflow(
         skippedProductCount: summary.products.filter((product) => product.status === "skipped").length,
         products: summary.products,
         status,
+        ...(supersededAccountIdentities.length > 0 ? { supersededAccountIdentities } : {}),
       };
     } finally {
       stop();

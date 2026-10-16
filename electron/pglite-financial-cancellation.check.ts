@@ -141,3 +141,48 @@ test("unknown financial failures remain fatal across the worker boundary", async
     await server.close();
   }
 });
+
+test("superseded account purge is served only by an owner port, never a workflow child port", async () => {
+  const purgeRequest = {
+    integrationNamespace: "fubon",
+    stream: "domestic-deposit",
+    supersededSourceAccountKey: `sha256:${"S".repeat(43)}`,
+    successorSourceAccountKey: `sha256:${"T".repeat(43)}`,
+  };
+  const purged: unknown[] = [];
+  const registry = {
+    purgeSupersededAccount: async (request: unknown) => {
+      purged.push(request);
+      return { refused: "superseded-account-missing" };
+    },
+    previewSupersededAccountPurge: async () => ({ refused: "superseded-account-missing" }),
+  } as unknown as PGliteFinancialRegistry;
+
+  const [childClientPort, childServerPort] = memoryPair();
+  const childServer = createPGliteFinancialRpcServer(childServerPort, registry, () => undefined);
+  const childClient = createPGliteFinancialRpcClient(childClientPort);
+  const [ownerClientPort, ownerServerPort] = memoryPair();
+  const ownerServer = createPGliteFinancialRpcServer(ownerServerPort, registry, undefined, { serveOwnerOperations: true });
+  const ownerClient = createPGliteFinancialRpcClient(ownerClientPort);
+  try {
+    for (const call of [
+      () => childClient.registry.purgeSupersededAccount(purgeRequest),
+      () => childClient.registry.previewSupersededAccountPurge(purgeRequest),
+    ]) {
+      await assert.rejects(call(), (error: unknown) => error instanceof PGliteFinancialError && error.code === "invalid-request");
+    }
+    assert.deepEqual(purged, [], "a child port never reaches the destructive registry method");
+    await assert.rejects(
+      ownerClient.registry.purgeSupersededAccount({ ...purgeRequest, supersededSourceAccountKey: "sha256:short" }),
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "invalid-request",
+    );
+    assert.deepEqual(await ownerClient.registry.purgeSupersededAccount(purgeRequest), { refused: "superseded-account-missing" });
+    assert.deepEqual(purged, [purgeRequest]);
+  }
+  finally {
+    childClient.close();
+    ownerClient.close();
+    await childServer.close();
+    await ownerServer.close();
+  }
+});
