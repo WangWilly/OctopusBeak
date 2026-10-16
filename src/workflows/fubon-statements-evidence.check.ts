@@ -130,6 +130,7 @@ try {
   else globalObject.DOMParser = previousDomParser;
 }
 assert.equal(parsedPage.pageOrdinal, 0);
+assert.deepEqual(parsedPage.currencyEvidence, { kind: "no-currency-tabs" });
 assert.equal(parsedPage.responseSequence, 1);
 assert.equal(parsedPage.terminal, false);
 assert.equal(parsedPage.nextPage, "2");
@@ -570,13 +571,35 @@ assert.equal(
   null,
 );
 const usdCodedSelectorValue = `987-00${nonLeadingZeroAccount}-USD-02`;
-assert.equal(
+const jpyCodedSelectorValue = `987-00${nonLeadingZeroAccount}-JPY-02`;
+assert.deepEqual(
   module.deriveFubonDomesticDepositAccountNumberEvidence({
     value: usdCodedSelectorValue,
     label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
   }),
+  {
+    value: nonLeadingZeroAccount,
+    kind: "depository-account",
+    evidenceVersion: "fubon/domestic-deposit/account-number-v3",
+    sourceField: "form1:comboAccount option.value + option.text",
+  },
+  "a USD-coded option whose segment is 00 plus its label yields V3 evidence, never V2",
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: `987-99${nonLeadingZeroAccount}-USD-02`,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
   null,
-  "a USD-coded selector option must not yield TWD account-number evidence",
+  "a USD-coded option whose segment does not match its label yields no evidence",
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: jpyCodedSelectorValue,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  null,
+  "a code other than TWD or USD yields no account-number evidence",
 );
 const statement = {
   account: accountLabel,
@@ -614,6 +637,7 @@ const statement = {
         },
       ],
       zeroObservation: "non-empty-page" as const,
+      currencyEvidence: { kind: "no-currency-tabs" as const },
     },
   ],
   accountOption: {
@@ -636,26 +660,81 @@ const rawEvidence = module.buildFubonDepositStatementEvidence(
 assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
 assert.equal(rawEvidence[0].providerRouteEvidence?.currency, "TWD");
+assert.equal(
+  rawEvidence[0].providerRouteEvidence?.currencySource,
+  "selector-option",
+  "a plain option on a page without currency tabs is TWD by its selector option",
+);
 
-const routeEvidenceCurrencyFor = (value: string) => {
+const activeTwdTab = {
+  kind: "active-tab",
+  label: "臺幣活期存款",
+  labels: ["臺幣活期存款", "外幣活期存款"],
+} as const;
+const activeFxTab = { ...activeTwdTab, label: "外幣活期存款" } as const;
+const noCurrencyTabs = { kind: "no-currency-tabs" } as const;
+const routeEvidenceFor = (value: string, currencyEvidence: unknown) => {
   const option = { value, label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`, branchName: "SYNTHETIC-BRANCH" };
-  return module.buildFubonDepositStatementEvidence(
+  const [capture] = module.buildFubonDepositStatementEvidence(
     [{
       ...statement,
       account: option.label,
       accountId: value,
-      pages: statement.pages.map((page) => ({ ...page, selectedAccount: option })),
+      pages: statement.pages.map((page) => ({
+        ...page,
+        selectedAccount: option,
+        currencyEvidence,
+      })),
       accountOption: option,
     }],
     "2026-02-01T00:00:00.000Z",
-  )[0]?.providerRouteEvidence?.currency;
+  );
+  assert.deepEqual(
+    capture.pages.map((page: { currencyEvidence: unknown }) => page.currencyEvidence),
+    [currencyEvidence],
+    "the page's currency evidence is carried into the capture",
+  );
+  const { currency, currencySource } = capture.providerRouteEvidence;
+  return { currency, currencySource };
 };
-assert.equal(
-  routeEvidenceCurrencyFor(usdCodedSelectorValue),
-  "unknown",
-  "a USD-coded option's capture must not claim TWD route evidence",
+assert.deepEqual(
+  routeEvidenceFor(usdCodedSelectorValue, activeTwdTab),
+  { currency: "TWD", currencySource: "active-tab:臺幣活期存款" },
+  "a USD-coded option whose page shows the 臺幣活期存款 tab active claims TWD from the tab",
 );
-assert.equal(routeEvidenceCurrencyFor(`987-00${nonLeadingZeroAccount}-TWD-02`), "TWD");
+assert.deepEqual(
+  routeEvidenceFor(usdCodedSelectorValue, noCurrencyTabs),
+  { currency: "unknown", currencySource: undefined },
+  "a USD-coded option without tab evidence must not claim TWD route evidence",
+);
+assert.deepEqual(
+  routeEvidenceFor(usdCodedSelectorValue, activeFxTab),
+  { currency: "unknown", currencySource: undefined },
+  "a USD-coded option whose page shows the 外幣活期存款 tab active must not claim TWD route evidence",
+);
+assert.deepEqual(
+  routeEvidenceFor(`987-99${nonLeadingZeroAccount}-USD-02`, activeTwdTab),
+  { currency: "unknown", currencySource: undefined },
+  "a USD-coded option whose segment does not match its label must not claim TWD route evidence",
+);
+assert.deepEqual(
+  routeEvidenceFor(jpyCodedSelectorValue, activeTwdTab),
+  { currency: "unknown", currencySource: undefined },
+  "a JPY-coded option's capture must not claim TWD route evidence",
+);
+assert.deepEqual(
+  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, noCurrencyTabs),
+  { currency: "TWD", currencySource: "selector-option" },
+);
+assert.deepEqual(
+  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, activeTwdTab),
+  { currency: "TWD", currencySource: "active-tab:臺幣活期存款" },
+);
+assert.deepEqual(
+  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, activeFxTab),
+  { currency: "unknown", currencySource: undefined },
+  "an active 外幣活期存款 tab overrides a TWD-coded option",
+);
 assert.deepEqual(rawEvidence[0].account.accountNumber, {
   value: accountValue,
   kind: "depository-account",

@@ -131,6 +131,7 @@ const statement = (empty: boolean): FubonParsedDepositStatement => ({
       },
       rows: [],
       zeroObservation: empty ? "empty-page" : "non-empty-page",
+      currencyEvidence: { kind: "no-currency-tabs" },
     },
   ],
   accountOption: {
@@ -291,6 +292,7 @@ const uiPageStatement = (
     account: "masked (012)",
     accountId: "masked",
     queryPeriod: `${range}~${range}`,
+    currencyEvidence: { kind: "no-currency-tabs" },
     branchName: "012",
     rows: evidenceRows.map((row) => [...row.cells]),
     nextPage: null,
