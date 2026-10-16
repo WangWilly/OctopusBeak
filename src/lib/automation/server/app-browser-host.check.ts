@@ -27,13 +27,15 @@ test("CTBC profile drops retained CTBC cookies but preserves unrelated browser s
   assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies), cookies);
 });
 
-test("Cathay login starts without retained Cathay cookies", () => {
+test("Cathay login drops retained Cathay session cookies but keeps the trusted-device cookie", () => {
   const cookies = [
     { name: "old-session", value: "one", domain: "www.cathaybk.com.tw", path: "/" },
     { name: "shared-bank", value: "two", domain: ".cathaybk.com.tw", path: "/" },
     { name: "unrelated", value: "three", domain: "example.com", path: "/" },
+    { name: "CUB.eBank.DeviceId", value: "synthetic-device", domain: ".cathaybk.com.tw", path: "/" },
   ];
-  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "cathay-login"), [cookies[2]]);
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "cathay-login"), [cookies[2], cookies[3]]);
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile([cookies[3]], "ctbc-login"), [cookies[3]]);
 });
 
 test("E.SUN App execution starts without stale E.SUN session cookies", () => {
