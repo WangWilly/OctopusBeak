@@ -8,8 +8,6 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "settings:load",
   "settings:save",
   "settings:deletePreviewData",
-  "settings:previewSupersededAccountPurge",
-  "settings:purgeSupersededAccount",
   "overview:load",
   "overview:block",
   "assets:load",

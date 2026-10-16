@@ -46,11 +46,6 @@ import type {
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
-  SupersededAccountIdentity,
-  SupersededAccountPurgeOutcomeDto,
-  SupersededAccountPurgePreviewDto,
-} from "$lib/settings/superseded-account-purge.ts";
-import type {
   DataReadOptions,
   DataInvalidationEvent,
   DataVersionSnapshot,
@@ -239,8 +234,6 @@ export type OctopusBeakApi = {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
     deletePreviewData(): Promise<void>;
-    previewSupersededAccountPurge(identity: SupersededAccountIdentity): Promise<SupersededAccountPurgePreviewDto>;
-    purgeSupersededAccount(identity: SupersededAccountIdentity): Promise<SupersededAccountPurgeOutcomeDto>;
   };
   overview: {
     load(options?: DataReadOptions): Promise<OverviewPageDto>;
@@ -312,8 +305,6 @@ export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
   "settings:deletePreviewData",
-  "settings:previewSupersededAccountPurge",
-  "settings:purgeSupersededAccount",
   "overview:load",
   "overview:block",
   "assets:load",

@@ -119,14 +119,6 @@ import {
   type PGliteCanonicalLoanRelationResolutionRequest,
   type PGliteCanonicalInvestmentRelationResolutionRequest,
 } from "../src/ledger/pglite/relations.ts";
-import {
-  previewSupersededAccountPurge,
-  purgeSupersededAccount,
-  type SupersededAccountPurgePreview,
-  type SupersededAccountPurgeRefusal,
-  type SupersededAccountPurgeRequest,
-  type SupersededAccountPurgeResult,
-} from "../src/ledger/pglite/superseded-account-purge.ts";
 import type { PGliteStore, PGliteTransaction } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
@@ -146,7 +138,6 @@ type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces:
 
 import {
   PGLITE_FINANCIAL_OPERATIONS,
-  PGLITE_FINANCIAL_OWNER_OPERATIONS,
   PGliteFinancialError,
   type PGliteFinancialCancelRequest,
   type PGliteFinancialExpectedSources,
@@ -200,8 +191,6 @@ export type PGliteFinancialPageClient = Readonly<{
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
   revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
-  previewSupersededAccountPurge(request: SupersededAccountPurgeRequest): Promise<SupersededAccountPurgePreview | SupersededAccountPurgeRefusal>;
-  purgeSupersededAccount(request: SupersededAccountPurgeRequest): Promise<SupersededAccountPurgeResult | SupersededAccountPurgeRefusal>;
 }>;
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
@@ -336,19 +325,6 @@ function einvoiceCaptureShape(value: unknown): boolean {
     && Array.isArray(value.invoices);
 }
 
-const OPAQUE_SOURCE_ACCOUNT_KEY = /^sha256:[A-Za-z0-9_-]{43}$/u;
-
-function supersededAccountPurgeRequestShape(value: unknown): boolean {
-  return plainRecord(value)
-    && Object.keys(value).length === 4
-    && stringField(value, "integrationNamespace")
-    && stringField(value, "stream")
-    && typeof value.supersededSourceAccountKey === "string"
-    && OPAQUE_SOURCE_ACCOUNT_KEY.test(value.supersededSourceAccountKey)
-    && typeof value.successorSourceAccountKey === "string"
-    && OPAQUE_SOURCE_ACCOUNT_KEY.test(value.successorSourceAccountKey);
-}
-
 function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly unknown[]): boolean {
   switch (operation) {
     case "financial.overview.current":
@@ -440,9 +416,6 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
       return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
     case "financial.exchangeRates.upsert":
       return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
-    case "financial.supersededAccount.previewPurge":
-    case "financial.supersededAccount.purge":
-      return args.length === 1 && supersededAccountPurgeRequestShape(args[0]);
     default:
       return false;
   }
@@ -853,8 +826,6 @@ export function createPGliteFinancialRegistry(
     readExchangeRates: (currencies) => exchangeRates.readExchangeRates(currencies),
     upsertExchangeRates: (rows) => exchangeRates.upsertExchangeRates(rows),
     listTdccFundAccounts: (connection) => listPGliteTdccFundAccounts(store, connection),
-    previewSupersededAccountPurge: (request) => previewSupersededAccountPurge(store, request),
-    purgeSupersededAccount: (request) => purgeSupersededAccount(store, request),
   });
 }
 
@@ -897,8 +868,6 @@ async function invoke(
     case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
     case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
     case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
-    case "financial.supersededAccount.previewPurge": return registry.previewSupersededAccountPurge(args[0] as SupersededAccountPurgeRequest);
-    case "financial.supersededAccount.purge": return registry.purgeSupersededAccount(args[0] as SupersededAccountPurgeRequest);
   }
 }
 
@@ -922,7 +891,6 @@ export function createPGliteFinancialRpcServer(
   port: RpcPort,
   registry: PGliteFinancialRegistry,
   assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
-  options: Readonly<{ serveOwnerOperations?: boolean }> = {},
 ): PGliteFinancialRpcServer {
   let closed = false;
   let sequence = Promise.resolve();
@@ -946,7 +914,6 @@ export function createPGliteFinancialRpcServer(
       return;
     }
     if (!PGLITE_FINANCIAL_OPERATIONS.includes(value.operation as PGliteFinancialOperation)
-      || (PGLITE_FINANCIAL_OWNER_OPERATIONS.has(value.operation) && options.serveOwnerOperations !== true)
       || !validFinancialArgs(value.operation as PGliteFinancialOperation, value.args)) {
       post(port, genericFailure(value.id, "invalid-request"));
       return;
@@ -1078,8 +1045,6 @@ export function createPGliteFinancialPageClient(
     confirmCandidate: (input: SpendingConfirmActionInput) => rpc.registry.confirmCandidate(input),
     denyCandidate: (input: SpendingCandidateActionInput) => rpc.registry.denyCandidate(input),
     revokeLink: (input: SpendingLinkActionInput) => rpc.registry.revokeLink(input),
-    previewSupersededAccountPurge: (request: SupersededAccountPurgeRequest) => rpc.registry.previewSupersededAccountPurge(request),
-    purgeSupersededAccount: (request: SupersededAccountPurgeRequest) => rpc.registry.purgeSupersededAccount(request),
     ...(subscribe ? { subscribe } : {}),
   };
   return page as PGliteFinancialPageClient & { subscribe?: typeof subscribe };

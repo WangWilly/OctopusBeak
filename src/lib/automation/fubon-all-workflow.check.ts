@@ -7,7 +7,6 @@ import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts"
 import type { WorkflowContext } from "./workflow-executor.ts";
 import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
-import { summarizeTypedWorkflowOutput } from "./server/typed-workflow-outcome.ts";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -123,11 +122,6 @@ const input = {
   },
 };
 
-const supersededIdentity = {
-  supersededSourceAccountKey: `sha256:${"S".repeat(43)}`,
-  successorSourceAccountKey: `sha256:${"T".repeat(43)}`,
-} as const;
-
 try {
   {
     const calls: string[] = [];
@@ -163,7 +157,6 @@ try {
               reconciliation: "running-balance-mismatch",
             },
           ],
-          supersededAccountIdentities: [supersededIdentity],
         };
       },
       collectCreditCard: async (_page, _input, _context, _identity, items) => {
@@ -189,18 +182,7 @@ try {
         { typeId: "loan", status: "success", itemCount: 1, committedCount: 1 },
       ],
       status: "financial-admitted",
-      supersededAccountIdentities: [supersededIdentity],
     });
-    assert.deepEqual(
-      summarizeTypedWorkflowOutput(result)?.supersededAccountIdentities,
-      [supersededIdentity],
-      "the superseded account identity reaches the persisted run summary",
-    );
-    assert.equal(
-      calls.filter((call) => call === "event:collection:deposit-superseded-account-identity").length,
-      1,
-      "a superseded account identity is reported as one operational event",
-    );
     assert.ok(calls.indexOf("deposit-collected") < calls.indexOf("commit"));
     assert.ok(calls.indexOf("card-collected") > calls.indexOf("deposit-collected"));
     assert.ok(calls.indexOf("loan-collected") > calls.indexOf("card-collected"));

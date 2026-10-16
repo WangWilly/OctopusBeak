@@ -330,15 +330,6 @@ test("a USD-coded composite derives the TWD-coded identity; another account, NNN
   assert.equal(keys.size, 4);
 });
 
-test("the superseded key is the pre-fix digest of a USD-coded value and null for TWD-coded or plain values", () => {
-  assert.equal(fubon.fubonDomesticDepositSupersededSourceAccountKey({ value: twdValue }), null);
-  assert.equal(fubon.fubonDomesticDepositSupersededSourceAccountKey({ value: accountDigits }), null);
-  assert.equal(
-    fubon.fubonDomesticDepositSupersededSourceAccountKey({ value: usdValue }),
-    "sha256:yHiR0UZ3Ae2rQB-4QcRxebK9ENey7MNaBXBUk_ivbtE",
-  );
-});
-
 test("a USD-coded recapture of the same account admits the same identity and transaction keys as the TWD-coded capture", () => {
   const twd = admitWithAccountValue(twdValue);
   const usd = admitWithAccountValue(usdValue, reconcilingRecord);

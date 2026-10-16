@@ -972,14 +972,6 @@ function sourceAccountDigest(
   );
 }
 
-export function fubonDomesticDepositSupersededSourceAccountKey(
-  account: { value: string },
-): `sha256:${string}` | null {
-  if (fubonDomesticDepositSourceAccountKeyInput(account.value) === account.value)
-    return null;
-  return opaqueToken("fubon-source-account-v2", account.value);
-}
-
 function sourcePageMetadata(
   page: FubonDomesticDepositCaptureEvidence["pages"][number],
 ): Record<string, unknown> {
