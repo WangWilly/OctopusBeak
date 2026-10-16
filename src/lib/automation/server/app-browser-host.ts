@@ -9,7 +9,7 @@ import {
 } from "./config-files.ts";
 import {
   browserRuntime,
-  cookieResetDomainForBrowserProfile,
+  cookieResetForBrowserProfile,
   type BrowserRuntime,
   type BrowserRuntimeIdentity,
   type BrowserRuntimeProfileId,
@@ -69,16 +69,17 @@ export function cookiesForAppWorkflowBrowserProfile(
   cookies: readonly AppBrowserCookie[],
   profile?: AppWorkflowBrowserProfile,
 ): AppBrowserCookie[] {
-  const resetDomain = cookieResetDomainForBrowserProfile(profile);
-  if (!resetDomain) return [...cookies];
+  const reset = cookieResetForBrowserProfile(profile);
+  if (!reset) return [...cookies];
   return cookies.filter((cookie) => {
+    if (reset.retainedNames.includes(cookie.name)) return true;
     let domain = cookie.domain;
     if (!domain && cookie.url) {
       try { domain = new URL(cookie.url).hostname; } catch { return false; }
     }
     if (!domain) return false;
     domain = domain.replace(/^\./u, "").toLowerCase();
-    return domain !== resetDomain && !domain.endsWith(`.${resetDomain}`);
+    return domain !== reset.domain && !domain.endsWith(`.${reset.domain}`);
   });
 }
 const remoteDebuggingArgs = [
