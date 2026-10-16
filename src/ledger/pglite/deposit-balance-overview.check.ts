@@ -22,6 +22,7 @@ import { exchangeRateRequestFromOverview } from "../exchange-rate-requirements.t
 import { PGliteStore } from "./transaction.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
+  FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
   FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2,
   FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS,
   FUBON_DOMESTIC_DEPOSIT_EFFECTIVE_TIME_BASIS,
@@ -34,6 +35,7 @@ import {
   FUBON_DOMESTIC_DEPOSIT_TIME_ZONE,
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositFinancialCapture,
+  deriveFubonCompositeAccountNumberEvidence,
   deriveFubonDomesticDepositAccountIdentity,
 } from "../canonical/fubon-domestic-deposit.ts";
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
@@ -641,6 +643,142 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
       [{ currency: "TWD" }],
     );
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_records")).rows[0]?.count, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a USD-coded Fubon recapture attaches to the TWD-coded account with no duplicated transactions and one newest balance", async () => {
+  const digits = "12345678901234";
+  const sourceConnectionScope = "PGLITE-FUBON-USER-002\u0000PGLITE-FUBON-LOGIN-002";
+  const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", sourceConnectionScope);
+  const activeTwd = {
+    kind: "active-tab" as const,
+    label: FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
+    labels: [FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL, "外幣活期存款"] as const,
+  };
+  const admitFubon = (value: string, captureId: string, currencyEvidence?: typeof activeTwd) => {
+    const raw = structuredClone(FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
+    const option = { value, label: `${digits} (SYNTHETIC-BRANCH)` };
+    const accountNumberEvidence = deriveFubonCompositeAccountNumberEvidence(option);
+    assert.ok(accountNumberEvidence);
+    const account = { ...option, branchName: "SYNTHETIC-BRANCH", accountNumber: accountNumberEvidence };
+    raw.account = account;
+    raw.pages = raw.pages.map((page) => ({
+      ...page,
+      selectedAccount: account,
+      ...(currencyEvidence ? { currencyEvidence } : {}),
+    }));
+    const structural = admitFubonDomesticDepositCaptureEvidence(raw);
+    assert.ok(structural.capture, structural.diagnostics.join(","));
+    const identity = deriveFubonDomesticDepositAccountIdentity(structural.capture.account, FUBON_HUMAN_ATTESTED_V1_MANIFEST, sourceConnectionKey);
+    const financial = admitFubonDomesticDepositFinancialCapture({
+      capture: structural.capture,
+      captureId,
+      sourceConnectionScope,
+      sourceConnectionKey,
+      humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+      semantics: {
+        evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+        account: { ...identity, accountNumber: accountNumberEvidence, accountType: "depository", currency: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY },
+        authority: { route: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY, scope: "personal-owned-accounts", membershipEffectiveDate: null },
+        posting: { status: "posted", origin: FUBON_DOMESTIC_DEPOSIT_POSTING_ORIGIN, basis: FUBON_DOMESTIC_DEPOSIT_POSTING_BASIS, ruleVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY },
+        direction: { outflowCellIndex: 3, inflowCellIndex: 4, ruleVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY },
+        effectiveTime: { basis: FUBON_DOMESTIC_DEPOSIT_EFFECTIVE_TIME_BASIS, timeZone: FUBON_DOMESTIC_DEPOSIT_TIME_ZONE, ruleVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY },
+        cancellation: { rule: "explicit-none-only", ruleVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY },
+        completeness: { basis: FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS, ruleVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY, absenceAuthority: FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY },
+        occurrence: { ruleVersion: FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
+      },
+    });
+    assert.ok(financial.capture, financial.diagnostics.join(","));
+    return { identity, capture: financial.capture };
+  };
+  const fubonBalance = (
+    captureId: string,
+    identity: ReturnType<typeof deriveFubonDomesticDepositAccountIdentity>,
+    effectiveAt: string,
+    coefficient: string,
+  ): PGliteCanonicalBalanceCaptureRequest => {
+    const occurrenceKey = token(`${captureId}:occurrence`);
+    const date = effectiveAt.slice(0, 10);
+    const contractVersion = "fubon/current-deposit-balance-v1";
+    return {
+      capture: {
+        captureId,
+        integrationNamespace: "fubon",
+        sourceConnectionKey: identity.sourceConnectionKey,
+        identityEpoch: identity.identityEpochKey,
+        stream: "domestic-deposit",
+        recordKind: "synthetic-balance",
+        routeKey: "fubon/domestic-deposit/current-balance-v1",
+        contractVersion,
+        subjectDigest: identity.subjectDigest,
+        observedAt: effectiveAt,
+        accountNumber: null,
+        scope: {
+          startDate: date,
+          endDate: date,
+          dateFormat: "YYYY-MM-DD",
+          kind: "point-in-time",
+          completeness: "single-page",
+          ruleVersion: contractVersion,
+          sourceAccountKey: identity.accountNo,
+          accountNo: identity.accountNo,
+        },
+        pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, metadata: { provider: "synthetic" } }],
+        records: [{
+          occurrenceKey,
+          collisionKey: token(`${captureId}:collision`),
+          providerKey: token(`${captureId}:provider`),
+          contentHash: token(`${captureId}:content`),
+          compact: { balance: { coefficient, scale: 0 }, effectiveAt },
+        }],
+      },
+      account: { sourceAccountKey: identity.accountNo, accountType: "depository", currency: "TWD" },
+      observations: [{
+        observationKey: token(`${captureId}:ledger`),
+        balanceKind: "ledger",
+        balance: { coefficient, scale: 0 },
+        currency: "TWD",
+        effectiveAt,
+        effectiveTimeBasis: "provider-system-time",
+        effectiveTimeRuleVersion: contractVersion,
+        evidenceSourceRecordKey: occurrenceKey,
+        evidenceSourceField: "balance",
+        evidenceSourceValue: coefficient,
+        evidenceContractVersion: contractVersion,
+        sourceOccurrenceKey: occurrenceKey,
+      }],
+    };
+  };
+
+  const twd = admitFubon(`123-00${digits}-TWD-01`, "pglite-fubon-twd-coded");
+  const usd = admitFubon(`123-00${digits}-USD-01`, "pglite-fubon-usd-coded", activeTwd);
+  const database = await createBaselinePGlite();
+  const store = new PGliteStore(database);
+  try {
+    const first = await commitPGliteCanonicalDepositCapture(store, twd.capture, { clock: () => 400 });
+    assert.equal(first.transactions.length, 1);
+    await commitPGliteCanonicalBalanceCapture(store, fubonBalance("pglite-fubon-balance-1", twd.identity, "2026-10-01T04:00:00.000Z", "1000"), { clock: () => 401 });
+    await commitPGliteCanonicalDepositCapture(store, usd.capture, { clock: () => 402 });
+    await commitPGliteCanonicalBalanceCapture(store, fubonBalance("pglite-fubon-balance-2", usd.identity, "2026-10-02T04:00:00.000Z", "1250"), { clock: () => 403 });
+
+    const accounts = (await store.query<{ source_account_key: string; account_type: string }>(
+      "SELECT source_account_key, account_type FROM financial_accounts",
+    )).rows;
+    assert.deepEqual(accounts, [{ source_account_key: twd.identity.accountNo, account_type: "depository" }]);
+    assert.equal(
+      (await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count,
+      1,
+      "the USD-coded recapture must not duplicate the transaction",
+    );
+    const current = await createPGliteCanonicalOverviewQuery(store).current();
+    const fubonAccounts = current.projection.accounts.filter((account) => account.institutionKey === "fubon");
+    assert.equal(fubonAccounts.length, 1);
+    assert.deepEqual(fubonAccounts[0]?.amounts.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "1250", scale: 0 } },
+    ]);
+    assert.equal(current.projection.transactions.length, 1);
   } finally {
     await store.close();
   }
