@@ -299,48 +299,15 @@ const identityOf = (value: string) =>
 const twdValue = `123-00${accountDigits}-TWD-01`;
 const usdValue = `123-00${accountDigits}-USD-01`;
 
-test("identity pins stay fixed for a TWD-coded composite and a V1 bare digit value", () => {
+test("identity pins stay fixed for a TWD-coded composite, a USD-coded composite, and a V1 bare digit value", () => {
   const twd = identityOf(twdValue);
   assert.equal(twd.accountNo, "sha256:xeksKSdLQ_I-uRZo-r77FpAga5wpxUdbgB69hM3I-RQ");
   assert.equal(twd.subjectDigest, twd.accountNo);
   const bare = identityOf(accountDigits);
   assert.equal(bare.accountNo, "sha256:7WXovsuVT0sHUd7xJOy13Fds_1y5RVvqULtyguhwkPI");
   assert.equal(bare.subjectDigest, bare.accountNo);
-});
-
-test("the source account key input drops only a non-TWD currency code and leaves every other value byte-identical", () => {
-  assert.equal(fubon.fubonDomesticDepositSourceAccountKeyInput(usdValue), twdValue);
-  assert.equal(fubon.fubonDomesticDepositSourceAccountKeyInput(` ${usdValue} `), ` ${twdValue} `);
-  for (const value of [twdValue, accountDigits, "SYNTHETIC-FUBON-ACCOUNT-VALUE", ` ${twdValue} `, `123-00${accountDigits}-usd-01`])
-    assert.equal(fubon.fubonDomesticDepositSourceAccountKeyInput(value), value);
-});
-
-test("a USD-coded composite derives the TWD-coded identity; another account, NNN prefix, or NN suffix derives another key (NNN and NN are assumed stable per account)", () => {
-  const twd = identityOf(twdValue);
   const usd = identityOf(usdValue);
-  assert.equal(usd.accountNo, twd.accountNo);
-  assert.equal(usd.subjectDigest, twd.subjectDigest);
-  assert.equal(usd.identityEpochKey, twd.identityEpochKey);
-  const keys = new Set([
-    twd.subjectDigest,
-    identityOf(`123-0098765432109876-TWD-01`).subjectDigest,
-    identityOf(`124-00${accountDigits}-TWD-01`).subjectDigest,
-    identityOf(`123-00${accountDigits}-TWD-02`).subjectDigest,
-  ]);
-  assert.equal(keys.size, 4);
+  assert.equal(usd.accountNo, "sha256:yHiR0UZ3Ae2rQB-4QcRxebK9ENey7MNaBXBUk_ivbtE", "a USD-coded composite hashes its raw option value");
+  assert.equal(usd.subjectDigest, usd.accountNo);
 });
 
-test("a USD-coded recapture of the same account admits the same identity and transaction keys as the TWD-coded capture", () => {
-  const twd = admitWithAccountValue(twdValue);
-  const usd = admitWithAccountValue(usdValue, reconcilingRecord);
-  assert.ok(twd.capture, twd.diagnostics.join(","));
-  assert.ok(usd.capture, usd.diagnostics.join(","));
-  const identityFields = ({ accountNo, subjectDigest, identityEpochKey }: typeof twd.capture.identity) =>
-    ({ accountNo, subjectDigest, identityEpochKey });
-  assert.deepEqual(identityFields(usd.capture.identity), identityFields(twd.capture.identity));
-  const keys = (records: typeof twd.capture.records) =>
-    records.map(({ occurrenceKey, collisionKey, providerKey, contentHash }) =>
-      ({ occurrenceKey, collisionKey, providerKey, contentHash }));
-  assert.ok(twd.capture.records.length > 0);
-  assert.deepEqual(keys(usd.capture.records), keys(twd.capture.records));
-});

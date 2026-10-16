@@ -956,20 +956,10 @@ function sourceRowDigest(
   );
 }
 
-const COMPOSITE_ACCOUNT_OPTION_CURRENCY_CODE = /^(\s*\d{3}-\d{16}-)([A-Z]{3})(-\d{2}\s*)$/;
-
-export function fubonDomesticDepositSourceAccountKeyInput(value: string): string {
-  const match = COMPOSITE_ACCOUNT_OPTION_CURRENCY_CODE.exec(value);
-  return match ? `${match[1]}TWD${match[3]}` : value;
-}
-
 function sourceAccountDigest(
   account: FubonDomesticDepositCaptureEvidence["account"],
 ): `sha256:${string}` {
-  return opaqueToken(
-    "fubon-source-account-v2",
-    fubonDomesticDepositSourceAccountKeyInput(account.value),
-  );
+  return opaqueToken("fubon-source-account-v2", account.value);
 }
 
 function sourcePageMetadata(
@@ -1443,9 +1433,9 @@ export type FubonDomesticDepositAccountIdentity = {
  * Derive stable, privacy-safe identity keys from one selector option. The
  * selector value is never persisted as an account number; multiple options
  * therefore remain distinct subjects without leaking the raw value. The key
- * hashes the option value with a non-TWD currency code rewritten to TWD,
- * because Fubon's code names what the account currently holds rather than
- * which account it is.
+ * hashes the raw option value, so it changes when Fubon rewrites the option;
+ * the collector continues an admitted account by its evidenced account number
+ * before it derives an identity.
  * Omitting sourceConnectionKey preserves a legacy compatibility calculation only;
  * source and financial admission always supply a validated workflow key and
  * never persist the compatibility result.
