@@ -39,6 +39,7 @@ import {
   isFubonHumanAttestedV1Active,
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
+  parseFubonCompositeAccountOption,
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
@@ -573,16 +574,14 @@ export function deriveFubonDomesticDepositAccountNumberEvidence(
   const value = cleanText(account.value);
   const label = cleanText(account.label);
   if (!label) return null;
-  const composite = value.match(
-    /^(?:\d{3})-(\d{16})-TWD-(?:\d{2})$/u,
-  );
+  const composite = parseFubonCompositeAccountOption(value);
   const displayLabel = label.match(
     /^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u,
   );
   if (
-    composite &&
+    composite?.currencyCode === "TWD" &&
     displayLabel &&
-    composite[1] === `00${displayLabel[1]}`
+    composite.accountSegment === `00${displayLabel[1]}`
   ) {
     return {
       value: displayLabel[1]!,
