@@ -130,7 +130,6 @@ try {
   else globalObject.DOMParser = previousDomParser;
 }
 assert.equal(parsedPage.pageOrdinal, 0);
-assert.deepEqual(parsedPage.currencyEvidence, { kind: "no-currency-tabs" });
 assert.equal(parsedPage.responseSequence, 1);
 assert.equal(parsedPage.terminal, false);
 assert.equal(parsedPage.nextPage, "2");
@@ -637,7 +636,6 @@ const statement = {
         },
       ],
       zeroObservation: "non-empty-page" as const,
-      currencyEvidence: { kind: "no-currency-tabs" as const },
     },
   ],
   accountOption: {
@@ -661,79 +659,58 @@ assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
 assert.equal(rawEvidence[0].providerRouteEvidence?.currency, "TWD");
 assert.equal(
-  rawEvidence[0].providerRouteEvidence?.currencySource,
-  "selector-option",
-  "a plain option on a page without currency tabs is TWD by its selector option",
+  "balanceReconciliation" in rawEvidence[0].providerRouteEvidence,
+  false,
+  "a capture built without a reconciliation record carries none",
 );
 
-const activeTwdTab = {
-  kind: "active-tab",
-  label: "臺幣活期存款",
-  labels: ["臺幣活期存款", "外幣活期存款"],
+const reconcilingRecord = {
+  sourceField: "statement 即時餘額 vs current-balance instantBalance",
+  latestRow: { localDate: "2026-01-02", localTime: "09:10:11", runningBalance: { coefficient: "100", scale: 0 } },
+  snapshotTwdBalance: { coefficient: "10000", scale: 2 },
+  snapshotOtherBalances: [{ currency: "USD", balance: { coefficient: "1234", scale: 2 } }],
+  snapshotObservedAt: "2026-02-01T00:00:00.000Z",
 } as const;
-const activeFxTab = { ...activeTwdTab, label: "外幣活期存款" } as const;
-const noCurrencyTabs = { kind: "no-currency-tabs" } as const;
-const routeEvidenceFor = (value: string, currencyEvidence: unknown) => {
+const routeEvidenceFor = (value: string, balanceReconciliation?: typeof reconcilingRecord) => {
   const option = { value, label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`, branchName: "SYNTHETIC-BRANCH" };
   const [capture] = module.buildFubonDepositStatementEvidence(
     [{
       ...statement,
       account: option.label,
       accountId: value,
-      pages: statement.pages.map((page) => ({
-        ...page,
-        selectedAccount: option,
-        currencyEvidence,
-      })),
+      pages: statement.pages.map((page) => ({ ...page, selectedAccount: option })),
       accountOption: option,
     }],
     "2026-02-01T00:00:00.000Z",
+    balanceReconciliation,
   );
-  assert.deepEqual(
-    capture.pages.map((page: { currencyEvidence: unknown }) => page.currencyEvidence),
-    [currencyEvidence],
-    "the page's currency evidence is carried into the capture",
-  );
-  const { currency, currencySource } = capture.providerRouteEvidence;
-  return { currency, currencySource };
+  return capture.providerRouteEvidence;
 };
-assert.deepEqual(
-  routeEvidenceFor(usdCodedSelectorValue, activeTwdTab),
-  { currency: "TWD", currencySource: "active-tab:臺幣活期存款" },
-  "a USD-coded option whose page shows the 臺幣活期存款 tab active claims TWD from the tab",
+assert.equal(routeEvidenceFor(nonLeadingZeroAccount).currency, "TWD", "a plain option is TWD");
+assert.equal(
+  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`).currency,
+  "TWD",
+  "a TWD-coded option is TWD",
+);
+assert.equal(
+  routeEvidenceFor(usdCodedSelectorValue).currency,
+  "unknown",
+  "a USD-coded option without a reconciliation record must not claim TWD route evidence",
 );
 assert.deepEqual(
-  routeEvidenceFor(usdCodedSelectorValue, noCurrencyTabs),
-  { currency: "unknown", currencySource: undefined },
-  "a USD-coded option without tab evidence must not claim TWD route evidence",
+  routeEvidenceFor(usdCodedSelectorValue, reconcilingRecord),
+  {
+    endpointPath: "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces",
+    contract: "fubon-domestic-deposit-twd-v1",
+    currency: "TWD",
+    balanceReconciliation: reconcilingRecord,
+  },
+  "a USD-coded option with a reconciling record claims TWD and carries the record",
 );
-assert.deepEqual(
-  routeEvidenceFor(usdCodedSelectorValue, activeFxTab),
-  { currency: "unknown", currencySource: undefined },
-  "a USD-coded option whose page shows the 外幣活期存款 tab active must not claim TWD route evidence",
-);
-assert.deepEqual(
-  routeEvidenceFor(`987-99${nonLeadingZeroAccount}-USD-02`, activeTwdTab),
-  { currency: "unknown", currencySource: undefined },
-  "a USD-coded option whose segment does not match its label must not claim TWD route evidence",
-);
-assert.deepEqual(
-  routeEvidenceFor(jpyCodedSelectorValue, activeTwdTab),
-  { currency: "unknown", currencySource: undefined },
-  "a JPY-coded option's capture must not claim TWD route evidence",
-);
-assert.deepEqual(
-  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, noCurrencyTabs),
-  { currency: "TWD", currencySource: "selector-option" },
-);
-assert.deepEqual(
-  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, activeTwdTab),
-  { currency: "TWD", currencySource: "active-tab:臺幣活期存款" },
-);
-assert.deepEqual(
-  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`, activeFxTab),
-  { currency: "unknown", currencySource: undefined },
-  "an active 外幣活期存款 tab overrides a TWD-coded option",
+assert.equal(
+  routeEvidenceFor(jpyCodedSelectorValue, reconcilingRecord).currency,
+  "unknown",
+  "a JPY-coded option's capture must not claim TWD route evidence even with a record",
 );
 assert.deepEqual(rawEvidence[0].account.accountNumber, {
   value: accountValue,

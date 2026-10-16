@@ -22,7 +22,6 @@ import { exchangeRateRequestFromOverview } from "../exchange-rate-requirements.t
 import { PGliteStore } from "./transaction.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
-  FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
   FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2,
   FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS,
   FUBON_DOMESTIC_DEPOSIT_EFFECTIVE_TIME_BASIS,
@@ -33,6 +32,7 @@ import {
   FUBON_DOMESTIC_DEPOSIT_POSTING_BASIS,
   FUBON_DOMESTIC_DEPOSIT_POSTING_ORIGIN,
   FUBON_DOMESTIC_DEPOSIT_TIME_ZONE,
+  type FubonDepositBalanceReconciliation,
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositFinancialCapture,
   deriveFubonCompositeAccountNumberEvidence,
@@ -652,23 +652,22 @@ test("a USD-coded Fubon recapture attaches to the TWD-coded account with no dupl
   const digits = "12345678901234";
   const sourceConnectionScope = "PGLITE-FUBON-USER-002\u0000PGLITE-FUBON-LOGIN-002";
   const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", sourceConnectionScope);
-  const activeTwd = {
-    kind: "active-tab" as const,
-    label: FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL,
-    labels: [FUBON_DEPOSIT_TWD_RESULT_TAB_LABEL, "外幣活期存款"] as const,
+  const reconcilingRecord: FubonDepositBalanceReconciliation = {
+    sourceField: "statement 即時餘額 vs current-balance instantBalance",
+    latestRow: { localDate: "2026-01-02", localTime: "09:10:11", runningBalance: { coefficient: "100", scale: 0 } },
+    snapshotTwdBalance: { coefficient: "10000", scale: 2 },
+    snapshotOtherBalances: [],
+    snapshotObservedAt: "2026-01-31T12:00:00.000Z",
   };
-  const admitFubon = (value: string, captureId: string, currencyEvidence?: typeof activeTwd) => {
+  const admitFubon = (value: string, captureId: string, balanceReconciliation?: FubonDepositBalanceReconciliation) => {
     const raw = structuredClone(FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
     const option = { value, label: `${digits} (SYNTHETIC-BRANCH)` };
     const accountNumberEvidence = deriveFubonCompositeAccountNumberEvidence(option);
     assert.ok(accountNumberEvidence);
     const account = { ...option, branchName: "SYNTHETIC-BRANCH", accountNumber: accountNumberEvidence };
     raw.account = account;
-    raw.pages = raw.pages.map((page) => ({
-      ...page,
-      selectedAccount: account,
-      ...(currencyEvidence ? { currencyEvidence } : {}),
-    }));
+    raw.pages = raw.pages.map((page) => ({ ...page, selectedAccount: account }));
+    if (balanceReconciliation) raw.providerRouteEvidence = { ...raw.providerRouteEvidence!, balanceReconciliation };
     const structural = admitFubonDomesticDepositCaptureEvidence(raw);
     assert.ok(structural.capture, structural.diagnostics.join(","));
     const identity = deriveFubonDomesticDepositAccountIdentity(structural.capture.account, FUBON_HUMAN_ATTESTED_V1_MANIFEST, sourceConnectionKey);
@@ -753,7 +752,7 @@ test("a USD-coded Fubon recapture attaches to the TWD-coded account with no dupl
   };
 
   const twd = admitFubon(`123-00${digits}-TWD-01`, "pglite-fubon-twd-coded");
-  const usd = admitFubon(`123-00${digits}-USD-01`, "pglite-fubon-usd-coded", activeTwd);
+  const usd = admitFubon(`123-00${digits}-USD-01`, "pglite-fubon-usd-coded", reconcilingRecord);
   const database = await createBaselinePGlite();
   const store = new PGliteStore(database);
   try {

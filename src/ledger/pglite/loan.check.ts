@@ -717,7 +717,7 @@ test("Fubon repeated deposit capture resolves repayment evidence through its sta
         nextPage: null, pageFieldName: null, queryRange, selectedAccount: sourceAccount,
         rows: [{ rowOrdinal: 0, cells: [
           "2026/09/21", "12:00:00", "放款繳款", "1000", "", "100", "01234567890123測試分行",
-        ] }], zeroObservation: "non-empty-page", currencyEvidence: { kind: "no-currency-tabs" } }],
+        ] }], zeroObservation: "non-empty-page" }],
       zeroObservation: "non-empty-range",
       providerRouteEvidence: { endpointPath: "/synthetic", contract: "synthetic", currency: "TWD" },
       provenance: { source: "fubon-ebank-domestic-deposit-form-postback", responseBodyRetained: false, semantics: "unresolved" },
@@ -761,7 +761,7 @@ test("repeated deposit capture resolves repayment evidence that names no account
         nextPage: null, pageFieldName: null, queryRange, selectedAccount: sourceAccount,
         rows: [{ rowOrdinal: 0, cells: [
           "2026/09/21", "12:00:00", "放款繳款", "1000", "", "100", "01234567890123測試分行",
-        ] }], zeroObservation: "non-empty-page", currencyEvidence: { kind: "no-currency-tabs" } }],
+        ] }], zeroObservation: "non-empty-page" }],
       zeroObservation: "non-empty-range",
       providerRouteEvidence: { endpointPath: "/synthetic", contract: "synthetic", currency: "TWD" },
       provenance: { source: "fubon-ebank-domestic-deposit-form-postback", responseBodyRetained: false, semantics: "unresolved" },
