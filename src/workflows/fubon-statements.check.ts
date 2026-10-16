@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
@@ -558,6 +559,50 @@ try {
   }
   assert.deepEqual(usdCodedResult.currentBalanceExclusions, []);
   assert.deepEqual(usdCodedResult.statementExclusions, []);
+  const oldContractUsdCodedKey = `sha256:${createHash("sha256")
+    .update(`fubon-source-account-v2\0${usdCodedAccount.value}`)
+    .digest("base64url")}`;
+  assert.deepEqual(
+    usdCodedResult.supersededAccountIdentities,
+    [{
+      supersededSourceAccountKey: oldContractUsdCodedKey,
+      successorSourceAccountKey: usdCodedDeposits.find(([number]) => number === secondAccountNumber)?.[1],
+    }],
+    "the USD-coded account reports its raw-value key as superseded by its admitted key, once",
+  );
+  assert.notEqual(
+    usdCodedResult.supersededAccountIdentities?.[0]?.successorSourceAccountKey,
+    oldContractUsdCodedKey,
+  );
+  assert.deepEqual(result.supersededAccountIdentities, [], "a plain account option supersedes nothing");
+
+  const twdCodedOption = {
+    value: `999-00${secondAccountNumber}-TWD-02`,
+    label: `${secondAccountNumber} (013)`,
+  };
+  const twdCodedAccount = {
+    ...twdCodedOption,
+    branchName: "013",
+    accountNumber: deriveFubonDomesticDepositAccountNumberEvidence(twdCodedOption)!,
+  };
+  const twdCodedItems: PGliteWorkflowRunItem[] = [];
+  const twdCodedResult = await runFubonStatements(
+    {} as never,
+    collectionInput,
+    {
+      ...collectorOverrides(twdCodedItems, async (_page, _range, account) =>
+        account.value === twdCodedAccount.value ? statementFor(twdCodedAccount, activeTwdTab) : statement,
+      ),
+      readDepositAccountOptions: async () => [selectedAccount, twdCodedAccount],
+      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
+    },
+  );
+  assert.deepEqual(
+    depositAccountKeys(twdCodedItems).find(([number]) => number === secondAccountNumber)?.[1],
+    usdCodedResult.supersededAccountIdentities?.[0]?.successorSourceAccountKey,
+    "the TWD-coded option admits under the successor key",
+  );
+  assert.deepEqual(twdCodedResult.supersededAccountIdentities, [], "a TWD-coded option supersedes nothing");
   assert.deepEqual(
     depositIdentityFor(usdCodedItems, accountNumber),
     depositIdentityFor(deferredItems, accountNumber),

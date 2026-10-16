@@ -31,6 +31,8 @@ for (const [method, channel] of [
   ["startTdccDeviceRegistration", "automation:startTdccDeviceRegistration"],
   ["submitTdccRegistrationCode", "automation:submitTdccRegistrationCode"],
   ["cancelTdccDeviceRegistration", "automation:cancelTdccDeviceRegistration"],
+  ["previewSupersededAccountPurge", "settings:previewSupersededAccountPurge"],
+  ["purgeSupersededAccount", "settings:purgeSupersededAccount"],
 ]) {
   assert.equal((octopusBeakApiChannels as readonly string[]).includes(channel), true, `${channel} is an allowed channel`);
   assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));

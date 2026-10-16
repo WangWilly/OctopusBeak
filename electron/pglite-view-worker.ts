@@ -91,7 +91,9 @@ export async function startPGliteViewWorker(
       );
     },
   };
-  const financialServer = createPGliteFinancialRpcServer(port, financialRegistry);
+  const financialServer = createPGliteFinancialRpcServer(port, financialRegistry, undefined, {
+    serveOwnerOperations: true,
+  });
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
     port,
