@@ -521,17 +521,6 @@ assert.match(saveCredentialsSource, /credentialDrafts: setupInput\.credentialDra
 assert.match(saveCredentialsSource, /if \(credentialChanges\.editor\) return;/);
 assert.doesNotMatch(saveCredentialsSource, /credentialInputValue/);
 
-assert.match(source, /id="cathay-gmail-otp-title"/);
-assert.match(source, /\$t\.automation\.cathayGmailOtpAlwaysAutomatic/);
-assert.match(source, /window\.octopusBeak\.automation\.enableCathayGmailOtp\(\)/);
-assert.doesNotMatch(source, /setCathayGmailOtpEnabled/);
-assert.match(source, /window\.octopusBeak\.automation\.disconnectCathayGmailOtp\(\)/);
-assert.doesNotMatch(source, /aria-pressed=\{cathayGmailOtpStatus\.enabled\}/);
-assert.match(source, /cathayGmailOtpStatus\.connectedEmail/);
-assert.match(source, /cathayGmailOtpStatus\.needsAuthorization/);
-assert.match(source, /cathayGmailOtpConnectionErrorMessage/);
-assert.match(source, /result\.connectionError/);
-
 assert.doesNotMatch(source, /viewerImageUrl|screenshotUnavailable|floatingInput/);
 
 assert.match(

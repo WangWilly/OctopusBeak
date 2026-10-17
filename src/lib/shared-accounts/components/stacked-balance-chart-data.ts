@@ -15,6 +15,7 @@ export type StackedBalanceSeries = {
   label: string;
   color: string;
   data: StackedBalancePoint[];
+  includesPreview: boolean;
 };
 
 export type StackedBalanceChartData = {
@@ -22,6 +23,7 @@ export type StackedBalanceChartData = {
   series: StackedBalanceSeries[];
   totals: StackedBalancePoint[];
   signature: string;
+  includesPreview: boolean;
 };
 
 const STACK_COLORS = [
@@ -70,6 +72,8 @@ export function buildStackedBalanceChartData(options: {
         label: group.label,
         color: STACK_COLORS[index % STACK_COLORS.length],
         data,
+        includesPreview: group.accounts.some((account) => account.preview && dates.some((date) =>
+          Math.abs(sumForDate([account], options.dailyHistoryByAccount, date, options.currency, options.mode)) > EPSILON)),
       };
     })
     .filter((item) => item.data.some((point) => Math.abs(point.value) > EPSILON));
@@ -84,6 +88,7 @@ export function buildStackedBalanceChartData(options: {
     dates,
     series,
     totals,
+    includesPreview: series.some((item) => item.includesPreview),
     signature: `${options.mode}:${options.filter}:${options.currency}:${series.map((item) => item.key).join("|")}:${dates.join("|")}`,
   };
 }
@@ -113,6 +118,7 @@ export function selectStackedBalanceChartSeries(
     ...chart,
     series: visibleSeries,
     totals,
+    includesPreview: visibleSeries.some((item) => item.includesPreview),
     signature: `${chart.signature}:selected:${visibleSeries.map((item) => item.key).join("|")}`,
   };
 }

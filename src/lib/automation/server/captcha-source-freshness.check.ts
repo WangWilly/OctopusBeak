@@ -48,6 +48,7 @@ function descriptor(
     frameUrl: "https://provider.example/login",
     frameName: "top",
     markerKey: "test-captcha-marker",
+    scope: {} as never,
     ...overrides,
   };
 }
@@ -214,4 +215,58 @@ test("capture failure clears any prior record", async () => {
   succeeds = false;
   assert.equal(await store.capture("session", contract(), owner), null);
   assert.equal(await store.isCurrent("session", contract()), false);
+});
+
+type RefreshCall = { session: string; previous: CaptchaSourceCapture };
+
+function refreshingOwner(id: string, refreshes: RefreshCall[]): CaptchaSourceOwner {
+  return {
+    ...fakeOwner(id, true),
+    refresh: async (session, _contract, previous) => {
+      refreshes.push({ session, previous });
+      return true;
+    },
+  };
+}
+
+test("refresh without a capture record never reaches the owner", async () => {
+  const refreshes: RefreshCall[] = [];
+  const owner = refreshingOwner("owner-a", refreshes);
+  const store = createCaptchaSourceFreshnessStore(() => owner);
+  assert.equal(await store.refresh("session", contract()), false);
+  assert.equal(refreshes.length, 0);
+});
+
+test("refresh consumes the record and refreshes through the recorded owner", async () => {
+  const refreshes: RefreshCall[] = [];
+  const recorded = refreshingOwner("owner-a", refreshes);
+  const other = refreshingOwner("owner-b", []);
+  const resolvedIds: string[] = [];
+  const store = createCaptchaSourceFreshnessStore((ownerId) => {
+    resolvedIds.push(ownerId);
+    return ownerId === recorded.id ? recorded : other;
+  });
+  await store.capture("session", contract(), recorded);
+  assert.equal(await store.refresh("session", contract()), true);
+  assert.deepEqual(resolvedIds, ["owner-a"]);
+  assert.equal(refreshes.length, 1);
+  assert.equal(refreshes[0]!.session, "session");
+  assert.deepEqual(refreshes[0]!.previous.image, Buffer.from("owner-a"));
+  assert.equal(await store.isCurrent("session", contract()), false, "a refreshed record cannot validate an answer");
+  assert.equal(await store.refresh("session", contract()), false);
+  assert.equal(refreshes.length, 1);
+});
+
+test("refresh is false for an owner without a refresh control or for a newer contract", async () => {
+  const plain = fakeOwner("plain-owner", true);
+  const store = createCaptchaSourceFreshnessStore(() => plain);
+  await store.capture("session", contract(), plain);
+  assert.equal(await store.refresh("session", contract()), false);
+
+  const refreshes: RefreshCall[] = [];
+  const refreshing = refreshingOwner("owner-a", refreshes);
+  const refreshingStore = createCaptchaSourceFreshnessStore(() => refreshing);
+  await refreshingStore.capture("session", contract(), refreshing);
+  assert.equal(await refreshingStore.refresh("session", contract(2)), false);
+  assert.equal(refreshes.length, 0);
 });

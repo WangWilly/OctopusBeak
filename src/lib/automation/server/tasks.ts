@@ -7,6 +7,12 @@ import type {
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.ts";
 import {
+  assertPreviewRegistry,
+  PREVIEW_SOURCES,
+  previewCredentialGroup,
+} from "../../preview-sources/registry.ts";
+import { previewTaskId } from "../../preview-sources/source-id.ts";
+import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
   packagedBrowserFixtureEnabled,
 } from "./packaged-browser-fixture.ts";
@@ -67,7 +73,7 @@ function credentialGroup(
   };
 }
 
-export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] =
+const VERIFIED_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] =
   [
     credentialGroup({
       ...BANK_STATEMENT_CAPABILITIES.fubon,
@@ -682,6 +688,10 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
+      sessionTakeoverNotice: localized(
+        "SinoPac allows one online banking sign-in at a time. Every sync, including daily scheduled collection, confirms SinoPac's duplicate sign-in prompt, which signs you out of SinoPac online banking or its phone App elsewhere.",
+        "永豐同一時間只允許一處網路銀行登入。每次同步（包括每日排程收集）都會確認永豐的重複登入提示，讓你在其他地方的永豐網路銀行或手機 App 登出。",
+      ),
       setupGuide: {
         summary: localized(
           "Use the ID number, user code, and password registered for Bank SinoPac MMA online banking.",
@@ -807,10 +817,14 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
+      sessionTakeoverNotice: localized(
+        "OctopusBeak signs in the way the E-Invoice phone App does, so every sync, including daily scheduled collection, signs the phone App out. Signing in on the phone again needs no code.",
+        "OctopusBeak 以電子發票手機 App 的方式登入，每次同步（包括每日排程收集）都會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
+      ),
       setupGuide: {
         summary: localized(
-          "Use the mobile phone number and password registered with the Ministry of Finance E-Invoice Platform. OctopusBeak signs in the way the E-Invoice phone App does, so syncing here signs the phone App out. Signing in on the phone again works as usual and needs no code.",
-          "請使用已在財政部電子發票服務平台註冊的手機號碼與平台密碼。OctopusBeak 以電子發票手機 App 的方式登入，在這裡同步會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
+          "Use the mobile phone number and password registered with the Ministry of Finance E-Invoice Platform.",
+          "請使用已在財政部電子發票服務平台註冊的手機號碼與平台密碼。",
         ),
         requirements: [
           localized(
@@ -962,10 +976,14 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
           "password",
         ),
       ],
+      sessionTakeoverNotice: localized(
+        "TDCC trusts one device at a time, so every sync, including daily scheduled collection, signs the TDCC e-Passbook phone App out. If you sign in to the phone App again, register this device again before the next sync.",
+        "集保一次只信任一台裝置，每次同步（包括每日排程收集）都會讓集保e手掌握手機 App 登出。如果之後又登入手機 App，下次同步前請在這裡重新註冊裝置。",
+      ),
       setupGuide: {
         summary: localized(
-          "Use the ID number and password you use in the TDCC e-Passbook phone App. TDCC trusts one device at a time, so syncing here signs the phone App out.",
-          "請使用登入集保e手掌握 App 的身分證字號與密碼。集保一次只信任一台裝置，在這裡同步會讓手機 App 登出。",
+          "Use the ID number and password you use in the TDCC e-Passbook phone App.",
+          "請使用登入集保e手掌握 App 的身分證字號與密碼。",
         ),
         requirements: [
           localized("An active TDCC e-Passbook account", "已開通的集保e手掌握帳戶"),
@@ -1000,6 +1018,27 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
       },
     }),
   ];
+
+const PREVIEW_SOURCE_REGISTRY = assertPreviewRegistry(
+  PREVIEW_SOURCES,
+  VERIFIED_CREDENTIAL_GROUPS.map((group) => group.id),
+);
+
+export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] = [
+  ...VERIFIED_CREDENTIAL_GROUPS,
+  ...PREVIEW_SOURCE_REGISTRY.map(previewCredentialGroup),
+];
+
+const previewTasks: readonly AutomationTask[] = PREVIEW_SOURCE_REGISTRY.map((source) => ({
+  id: previewTaskId(source),
+  label: source.displayName.en,
+  workflowId: previewTaskId(source),
+  kind: "crawler",
+  credentialGroupId: source.id,
+  credentialKeys: source.credentialFields.map((field) => field.key),
+  dependencies: [],
+  maxAttempts: 1,
+}));
 
 const coreAutomationTasks: readonly AutomationTask[] = [
   {
@@ -1161,7 +1200,7 @@ export function automationTasksForEnvironment(
       maxAttempts: 1,
     }))
     : [];
-  return [...coreAutomationTasks, ...packagedBrowserFixtureTasks];
+  return [...coreAutomationTasks, ...previewTasks, ...packagedBrowserFixtureTasks];
 }
 
 export const AUTOMATION_TASKS: readonly AutomationTask[] = automationTasksForEnvironment();
@@ -1193,6 +1232,9 @@ const AUTOMATION_CONFIDENCE_THRESHOLD_KEYS = Object.values(
 export const AUTOMATION_NON_SECRET_KEYS = [
   "SYSTEM_TIMEZONE",
   "EXCHANGE_RATE_UPDATE_TIME",
+  "SCHEDULED_COLLECTION_ENABLED",
+  "SCHEDULED_COLLECTION_TIME",
+  "PREVIEW_FEATURES_ENABLED",
   "AUTOMATION_BUSINESS_TIMEZONE",
   "MAX_SUB_ACCOUNT",
   ...AUTOMATION_ENABLED_KEYS,

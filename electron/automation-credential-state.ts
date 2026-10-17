@@ -2,14 +2,12 @@ import type {
   AutomationCredentialStateDto,
   CertificateFileValidationReason,
 } from "../src/lib/desktop/api.ts";
-import type { CathayGmailOtpStatus } from "../src/lib/automation/types.ts";
 
 export type AutomationCredentialStateSource = {
   status: Readonly<Record<string, boolean>>;
   fileNames: Readonly<Record<string, string>>;
   invalidFileKeys: readonly string[];
   invalidFileReasons: Readonly<Record<string, CertificateFileValidationReason>>;
-  cathayGmailOtp?: CathayGmailOtpStatus;
 };
 
 /**
@@ -37,25 +35,13 @@ export function toAutomationCredentialStateDto(
     invalidFileReasons[key] = source.invalidFileReasons[key]!;
   }
 
-  const dto: AutomationCredentialStateDto = {
+  return {
     revision,
     status,
     fileNames,
     invalidFileKeys,
     invalidFileReasons,
   };
-  if (source.cathayGmailOtp) {
-    const cathayGmailOtp: CathayGmailOtpStatus = {
-      enabled: source.cathayGmailOtp.enabled === true,
-      connectedEmail: source.cathayGmailOtp.connectedEmail,
-      needsAuthorization: source.cathayGmailOtp.needsAuthorization === true,
-    };
-    if (source.cathayGmailOtp.connectionError) {
-      cathayGmailOtp.connectionError = source.cathayGmailOtp.connectionError;
-    }
-    dto.cathayGmailOtp = cathayGmailOtp;
-  }
-  return dto;
 }
 
 export class AutomationCredentialStateError extends Error {

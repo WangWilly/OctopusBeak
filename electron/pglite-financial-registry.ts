@@ -53,6 +53,19 @@ import {
 import { readPGliteDailyHistoryWithAccounts, type PGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
 import { readPGliteHoldingPrices, type PGliteHoldingPrice } from "../src/ledger/pglite/holding-prices.ts";
 import {
+  readPreviewAccounts,
+  readPreviewBalanceHistory,
+  readPreviewTransactions,
+  type PreviewVisibility,
+} from "../src/ledger/pglite/preview-financial-data.ts";
+import {
+  countableWithRates,
+  previewAccountRow,
+  previewBalanceSeries,
+  withPreviewHistory,
+  type PreviewBalanceSeries,
+} from "../src/ledger/pglite/preview-overview.ts";
+import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
 import {
@@ -98,6 +111,10 @@ import {
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
 import {
+  resolvePGliteAccountIdentityContinuity,
+  type AccountIdentityContinuityRequest,
+} from "../src/ledger/pglite/account-identity-continuity.ts";
+import {
   executePGliteCanonicalLoanRelationCommand,
   executePGliteCanonicalInvestmentRelationCommand,
   queryPGliteCurrentLoanRepaymentRelations,
@@ -117,6 +134,7 @@ import {
   isWorkflowFailureCorrelation,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+  type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
@@ -141,6 +159,7 @@ type RpcPort = PGliteFinancialRpcPort;
 type PGliteFinancialPageActionEvents = Readonly<{
   isSpendingPageActionInFlight?(): boolean;
   onSpendingPageActionSettled?(listener: (result: SpendingPageActionResult | null) => void): () => void;
+  onPreviewVisibilityChanged?(listener: () => void): () => void;
 }>;
 type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Required<PGliteFinancialPageActionEvents>;
 
@@ -171,6 +190,7 @@ export type PGliteFinancialPageClient = Readonly<{
     automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot,
   ): Promise<import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
+  previewVisibilityChanged(): Promise<void>;
   prewarmPairingCandidates(input: { dataVersion: number }): Promise<{ status: "ready" | "stale"; dataVersion: number; reused?: boolean; requestedVersion?: number }>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -274,6 +294,19 @@ function stringField(value: unknown, key: string): boolean {
   return typeof field === "string" && field.length > 0;
 }
 
+function accountIdentityContinuityRequestShape(value: unknown): boolean {
+  return plainRecord(value)
+    && Object.keys(value).length === 5
+    && stringField(value, "integrationNamespace")
+    && stringField(value, "sourceConnectionKey")
+    && stringField(value, "identityEpochKey")
+    && stringField(value, "stream")
+    && plainRecord(value.identifier)
+    && Object.keys(value.identifier).length === 2
+    && stringField(value.identifier, "kind")
+    && stringField(value.identifier, "value");
+}
+
 function sourceEvidenceShape(value: unknown): boolean {
   return plainRecord(value)
     && [
@@ -318,6 +351,7 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
     case "financial.spending.current":
       return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
     case "financial.spending.version":
+    case "financial.preview.visibilityChanged":
       return args.length === 0;
     case "financial.spending.pairing":
       return args.length === 1 && plainRecord(args[0])
@@ -397,6 +431,8 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
       return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"));
     case "financial.tdccFundAccounts.list":
       return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
+    case "financial.accountIdentity.continuity":
+      return args.length === 1 && accountIdentityContinuityRequestShape(args[0]);
     case "financial.exchangeRates.upsert":
       return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
     default:
@@ -488,9 +524,12 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
   const assetValue = new Map<string, AggregatedAmount>();
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
+  const preview = assets.some((account) => account.preview && account.amountLines.length > 0)
+    ? { includesPreview: true }
+    : {};
   return [
-    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`] },
-    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display) },
+    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview },
+    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview },
     { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display) },
   ];
 }
@@ -500,9 +539,10 @@ function mapOverview(
   rates: readonly ExchangeRateRecord[],
   history: PGliteDailyHistory,
   prices: readonly PGliteHoldingPrice[],
+  previewAccounts: readonly AccountRowDto[],
 ): OverviewPageDto {
   const projection = result.projection;
-  const accounts: AccountRowDto[] = projection.accounts.map((account) => ({
+  const canonicalAccounts: AccountRowDto[] = projection.accounts.map((account) => ({
     id: account.id,
     canonicalAccountId: account.id,
     label: account.label,
@@ -521,6 +561,7 @@ function mapOverview(
     valueAvailability: account.availability,
     ...(account.creditCard ? { creditCard: mapCanonicalCreditCard(account.creditCard) } : {}),
   }));
+  const accounts = [...canonicalAccounts, ...previewAccounts];
   return {
     availability: projection.availability,
     coverage: projection.availability === "unavailable" ? "unavailable" : projection.sourceGaps.length > 0 || projection.availability !== "available" ? "partial" : "complete",
@@ -586,6 +627,7 @@ function readHeldCurrencyRates(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
   history: PGliteDailyHistory,
+  preview: PreviewOverview,
 ): Promise<ExchangeRateRecord[]> {
   const currencies = [...new Set([
     ...result.projection.positions.map((position) => position.currency),
@@ -595,13 +637,45 @@ function readHeldCurrencyRates(
       ...row.assets,
       ...row.liabilities,
     ].map((amount) => amount.currency)),
+    ...preview.accounts.flatMap((account) => account.amountLines.map((amount) => amount.currency)),
+    ...preview.series.flatMap((series) => series.points.map((point) => point.currency)),
   ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
   return currencies.length === 0 ? Promise.resolve([]) : readExchangeRatesOnReader(reader, currencies);
+}
+
+type PreviewOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly PreviewBalanceSeries[] }>;
+
+const NO_PREVIEW: PreviewOverview = { accounts: [], series: [] };
+
+async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<PreviewOverview> {
+  const views = await readPreviewAccounts(reader, visibility);
+  if (views.length === 0) return NO_PREVIEW;
+  const accounts: AccountRowDto[] = [];
+  for (const view of views)
+    accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
+  return { accounts, series: previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)) };
+}
+
+async function readHistoryWithPreview(
+  reader: PGliteReader,
+  result: CanonicalOverviewCurrentQueryResult,
+  visibility: PreviewVisibility,
+) {
+  const canonical = await readPGliteDailyHistoryWithAccounts(
+    reader,
+    result.projection.knowledgePoint,
+    result.projection.accounts,
+  );
+  const preview = await readPreviewOverview(reader, visibility);
+  const rates = await readHeldCurrencyRates(reader, result, canonical, preview);
+  const history = withPreviewHistory(canonical, preview.series, countableWithRates(rates));
+  return { canonical, history, preview, rates };
 }
 
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   exchangeRates: ExchangeRatePersistencePort,
+  previewVisibility: () => PreviewVisibility = () => ({ sourceIds: [] }),
 ): PGliteFinancialRegistryWithPageActionEvents {
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
@@ -609,6 +683,7 @@ export function createPGliteFinancialRegistry(
   let spendingPageActionCount = 0;
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
+  const previewVisibilityListeners = new Set<() => void>();
   const readTaggedSpendingPage = (read: SpendingTaggedRead, request: unknown) => {
     switch (read) {
       case "record-page": return spending.recordPage(request as SpendingRecordPageRequest);
@@ -630,14 +705,9 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        const history = await readPGliteDailyHistoryWithAccounts(
-          transaction,
-          result.projection.knowledgePoint,
-          result.projection.accounts,
-        );
+        const { history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
         const prices = await readPGliteHoldingPrices(transaction, result.projection.knowledgePoint);
-        const rates = await readHeldCurrencyRates(transaction, result, history);
-        return mapOverview(result, rates, history, prices);
+        return mapOverview(result, rates, history, prices, preview.accounts);
       });
     },
     async assetsCurrent(expectedSources = []) {
@@ -646,14 +716,16 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        const history = await readPGliteDailyHistoryWithAccounts(
-          transaction,
-          result.projection.knowledgePoint,
-          result.projection.accounts,
-        );
-        const rates = await readHeldCurrencyRates(transaction, result, history);
+        const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
+        const product = mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", canonical);
         return {
-          ...mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", history),
+          ...product,
+          accounts: [...product.accounts, ...preview.accounts],
+          dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
+          dailyHistoryByAccount: {
+            ...product.dailyHistoryByAccount,
+            ...Object.fromEntries(preview.accounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
+          },
           exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
         };
       });
@@ -669,7 +741,7 @@ export function createPGliteFinancialRegistry(
           result.projection.knowledgePoint,
           result.projection.accounts,
         );
-        const rates = await readHeldCurrencyRates(transaction, result, history);
+        const rates = await readHeldCurrencyRates(transaction, result, history, NO_PREVIEW);
         return {
           ...mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", history),
           exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
@@ -707,6 +779,13 @@ export function createPGliteFinancialRegistry(
     onSpendingPageActionSettled(listener) {
       pageActionListeners.add(listener);
       return () => pageActionListeners.delete(listener);
+    },
+    onPreviewVisibilityChanged(listener) {
+      previewVisibilityListeners.add(listener);
+      return () => previewVisibilityListeners.delete(listener);
+    },
+    async previewVisibilityChanged() {
+      for (const listener of previewVisibilityListeners) listener();
     },
     confirmCandidate(input) {
       const tagged = input as SpendingConfirmActionInput & Readonly<{
@@ -766,6 +845,7 @@ export function createPGliteFinancialRegistry(
     readExchangeRates: (currencies) => exchangeRates.readExchangeRates(currencies),
     upsertExchangeRates: (rows) => exchangeRates.upsertExchangeRates(rows),
     listTdccFundAccounts: (connection) => listPGliteTdccFundAccounts(store, connection),
+    accountIdentityContinuity: (request) => resolvePGliteAccountIdentityContinuity(store, request),
   });
 }
 
@@ -782,6 +862,7 @@ async function invoke(
     case "financial.liabilities.current": return registry.liabilitiesCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
     case "financial.spending.current": return registry.spendingCurrent(args[0] as SpendingLoadInput | undefined);
     case "financial.spending.version": return registry.spendingVersion();
+    case "financial.preview.visibilityChanged": return registry.previewVisibilityChanged();
     case "financial.spending.pairing": return registry.spendingPairing(args[0] as SpendingPairingCandidatesInput);
     case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
     case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
@@ -806,14 +887,31 @@ async function invoke(
     case "financial.investmentRelations.current": return registry.currentInvestmentRelations(args[0] as string | undefined);
     case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
     case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
+    case "financial.accountIdentity.continuity": return registry.accountIdentityContinuity(args[0] as AccountIdentityContinuityRequest);
     case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
   }
 }
+
+const CANONICAL_COMMIT_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
+  "financial.source.commit",
+  "financial.source.commitBatch",
+  "financial.deposit.commit",
+  "financial.mixed.commit",
+  "financial.balance.capture",
+  "financial.einvoice.commit",
+  "financial.creditCard.commit",
+  "financial.creditCard.balance",
+  "financial.loan.commit",
+  "financial.investment.commit",
+]);
+
+export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
 
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
   registry: PGliteFinancialRegistry,
+  assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
 ): PGliteFinancialRpcServer {
   let closed = false;
   let sequence = Promise.resolve();
@@ -846,6 +944,9 @@ export function createPGliteFinancialRpcServer(
     controllers.set(value.id, controller);
     const work = sequence.then(() => {
       if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+      if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
+        assertCommitAdmissible(value.diagnosticContext);
+      }
       return invoke(registry, operation, value.args, controller.signal);
     }).then(
       (result) => {
@@ -955,6 +1056,7 @@ export function createPGliteFinancialPageClient(
       return projectFinancialBlock(value, block as never, pageName as never) as import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload;
     },
     rankPairingCandidates: (input: SpendingPairingCandidatesInput) => rpc.registry.spendingPairing(input),
+    previewVisibilityChanged: () => rpc.registry.previewVisibilityChanged(),
     prewarmPairingCandidates: async (input: { dataVersion: number }) => {
       const currentVersion = await rpc.registry.spendingVersion();
       return currentVersion === input.dataVersion
@@ -968,6 +1070,14 @@ export function createPGliteFinancialPageClient(
   };
   return page as PGliteFinancialPageClient & { subscribe?: typeof subscribe };
 }
+
+const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
+  (SELECT COUNT(*) FROM preview_accounts) AS accounts,
+  (SELECT MAX(last_collected_at) FROM preview_accounts) AS account_collected_at,
+  (SELECT COUNT(*) FROM preview_balance_observations) AS balances,
+  (SELECT MAX(collected_at) FROM preview_balance_observations) AS balance_collected_at,
+  (SELECT COUNT(*) FROM preview_transactions) AS transactions,
+  (SELECT MAX(collected_at) FROM preview_transactions) AS transaction_collected_at`;
 
 export type PGliteFinancialLiveView =
   | "financial.overview.current"
@@ -1009,6 +1119,7 @@ export function createPGliteFinancialLiveViews(
         let initialReady = false;
         let stopped = false;
         let stopPageActionListener = () => {};
+        let stopPreviewVisibilityListener = () => {};
         const recompute = async () => {
           if (stopped) return;
           if (running) {
@@ -1136,6 +1247,9 @@ export function createPGliteFinancialLiveViews(
             });
           });
         }
+        const showsPreview = view === "financial.overview.current" || view === "financial.assets.current";
+        if (showsPreview && registry.onPreviewVisibilityChanged)
+          stopPreviewVisibilityListener = registry.onPreviewVisibilityChanged(trigger);
         // Financial pages depend on every canonical commit because source
         // admissions, e-invoice/card commits, and projection rebuilds can
         // change the knowledge point even when a current projection marker
@@ -1149,11 +1263,13 @@ export function createPGliteFinancialLiveViews(
           ...(view === "financial.overview.current"
             ? [db.live.query("SELECT rate_date, currency, twd_per_unit, source, fetched_at FROM exchange_rates", [], trigger)]
             : []),
+          ...(showsPreview ? [db.live.query(PREVIEW_DATA_FINGERPRINT_SQL, [], trigger)] : []),
         ];
         const stop = async () => {
           if (stopped) return;
           stopped = true;
           stopPageActionListener();
+          stopPreviewVisibilityListener();
           if (entries.get(key) === entry) entries.delete(key);
           const dependencies = await Promise.allSettled(dependencyQueries);
           await Promise.allSettled(dependencies.flatMap((result) =>

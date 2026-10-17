@@ -9,7 +9,6 @@ import {
   isTypedWorkflowOutcomeSummary,
   type TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
-import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
@@ -18,6 +17,7 @@ import {
   workflowFailureDiagnosticRepoRoot,
   type SafeWorkflowFailureError,
 } from "./workflow-failure-diagnostics.ts";
+import { parsePreviewResponseShapes, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
 export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 2 as const;
 export const APP_WORKFLOW_WORKER_MAX_FRAME_BYTES = 1_048_576;
@@ -28,28 +28,6 @@ const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_TARGET_ID = /^[A-Za-z0-9._:-]{1,200}$/u;
 const PGLITE_TOKEN = /^[A-Za-z0-9_-]{32,128}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const CATHAY_OTP = /^[A-Z]{4}-[0-9]{6}$/u;
-const gmailOtpFallbackReasons = new Set<GmailOtpFallbackReason>([
-  "disabled",
-  "not-configured",
-  "needs-authorization",
-  "authorization-cancelled",
-  "authorization-failed",
-  "token-invalid",
-  "gmail-request-failed",
-  "no-candidate",
-  "ambiguous-candidate",
-  "stale-candidate",
-  "malformed-candidate",
-  "unauthenticated-candidate",
-  "unauthenticated-google-results",
-  "unauthenticated-cathay-alignment",
-  "unauthenticated-hme-original-sender",
-  "unauthenticated-hme-relay-auth",
-  "unauthenticated-hme-relay-signature",
-  "timeout",
-  "protocol-error",
-]);
 const stages = new Set<WorkflowRunEvent["stage"]>([
   "preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization",
 ]);
@@ -88,7 +66,6 @@ export type AppWorkflowWorkerInboundFrame =
     requestId: string;
     status: Exclude<HumanAssistanceCompletionStatus, "pending">;
   }>
-  | CathayGmailOtpResponseFrame
   | TdccSessionResponseFrame;
 
 export type TdccSessionOperation = "open" | "sign-in-details";
@@ -121,56 +98,6 @@ export type TdccSessionResponseFrame =
     requestId: string;
     operation: "sign-in-details";
     lease: TdccSignInLease;
-  }>;
-
-export type CathayGmailOtpOperation = "ensure-access" | "prepare-retrieval" | "retrieve";
-
-export type CathayGmailOtpRequestFrame =
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-request";
-    requestId: string;
-    operation: "ensure-access" | "prepare-retrieval";
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-request";
-    requestId: string;
-    operation: "retrieve";
-    boundaryId: string;
-  }>;
-
-export type CathayGmailOtpResponseFrame =
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-response";
-    requestId: string;
-    operation: "ensure-access";
-    status: "ready";
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-response";
-    requestId: string;
-    operation: "prepare-retrieval";
-    status: "prepared";
-    boundaryId: string;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-response";
-    requestId: string;
-    operation: "retrieve";
-    status: "found";
-    otp: string;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "cathay-gmail-otp-response";
-    requestId: string;
-    operation: CathayGmailOtpOperation;
-    status: "fallback";
-    reason: GmailOtpFallbackReason;
   }>;
 
 export type AppWorkflowWorkerOutboundFrame =
@@ -208,6 +135,7 @@ export type AppWorkflowWorkerOutboundFrame =
     errorCode: string;
     diagnostic?: SafeWorkflowFailureError;
     summary?: TypedWorkflowOutcomeSummary | null;
+    previewResponses?: PreviewResponseShapes;
   }>
   | Readonly<{
     protocolVersion: 2;
@@ -215,7 +143,6 @@ export type AppWorkflowWorkerOutboundFrame =
     taskRunId: string;
     summary?: TypedWorkflowOutcomeSummary | null;
   }>
-  | CathayGmailOtpRequestFrame
   | TdccSessionRequestFrame
   | TdccSessionRotatedFrame;
 
@@ -225,6 +152,14 @@ export class AppWorkflowWorkerProtocolError extends Error {
   constructor() {
     super("App workflow worker protocol rejected a frame.");
     this.name = "AppWorkflowWorkerProtocolError";
+  }
+}
+
+function parsedPreviewResponses(value: unknown): PreviewResponseShapes {
+  try {
+    return parsePreviewResponseShapes(value);
+  } catch {
+    invalid();
   }
 }
 
@@ -408,28 +343,6 @@ export function parseAppWorkflowWorkerInboundFrame(value: unknown): AppWorkflowW
     ) invalid();
     return value as unknown as AppWorkflowWorkerInboundFrame;
   }
-  if (value.kind === "cathay-gmail-otp-response") {
-    if (
-      typeof value.requestId !== "string"
-      || !UUID.test(value.requestId)
-      || (value.operation !== "ensure-access" && value.operation !== "prepare-retrieval" && value.operation !== "retrieve")
-    ) invalid();
-    if (value.status === "fallback" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "status", "reason"])) {
-      if (typeof value.reason !== "string" || !gmailOtpFallbackReasons.has(value.reason as GmailOtpFallbackReason)) invalid();
-      return value as unknown as AppWorkflowWorkerInboundFrame;
-    }
-    if (value.operation === "ensure-access" && value.status === "ready" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "status"])) {
-      return value as unknown as AppWorkflowWorkerInboundFrame;
-    }
-    if (value.operation === "prepare-retrieval" && value.status === "prepared" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "status", "boundaryId"])) {
-      if (typeof value.boundaryId !== "string" || !UUID.test(value.boundaryId)) invalid();
-      return value as unknown as AppWorkflowWorkerInboundFrame;
-    }
-    if (value.operation === "retrieve" && value.status === "found" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "status", "otp"])) {
-      if (typeof value.otp !== "string" || !CATHAY_OTP.test(value.otp)) invalid();
-      return value as unknown as AppWorkflowWorkerInboundFrame;
-    }
-  }
   invalid();
 }
 
@@ -543,25 +456,11 @@ export function parseAppWorkflowWorkerOutboundFrame(
     if (!validTdccSession(value.session)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
-  if (value.kind === "cathay-gmail-otp-request") {
-    if (
-      typeof value.requestId !== "string"
-      || !UUID.test(value.requestId)
-      || (value.operation !== "ensure-access" && value.operation !== "prepare-retrieval" && value.operation !== "retrieve")
-    ) invalid();
-    if (value.operation === "retrieve") {
-      if (!exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "boundaryId"])) invalid();
-      if (typeof value.boundaryId !== "string" || !UUID.test(value.boundaryId)) invalid();
-      return value as unknown as AppWorkflowWorkerOutboundFrame;
-    }
-    if (!exactKeys(value, ["protocolVersion", "kind", "requestId", "operation"])) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
   if (value.kind === "completed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "summary"])) {
     if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId) || !validSummary(value.summary)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
-  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic", "summary"])) {
+  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic", "summary", "previewResponses"])) {
     if (
       (value.taskRunId !== null && (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)))
       || typeof value.errorCode !== "string"
@@ -576,6 +475,9 @@ export function parseAppWorkflowWorkerOutboundFrame(
       ...(Object.hasOwn(value, "summary") ? { summary: value.summary as TypedWorkflowOutcomeSummary | null } : {}),
       ...(Object.hasOwn(value, "diagnostic")
         ? { diagnostic: sanitizeSafeWorkflowFailureError(value.diagnostic, diagnosticRepoRoot) }
+        : {}),
+      ...(Object.hasOwn(value, "previewResponses")
+        ? { previewResponses: parsedPreviewResponses(value.previewResponses) }
         : {}),
     };
   }

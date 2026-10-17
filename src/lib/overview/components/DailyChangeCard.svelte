@@ -2,6 +2,7 @@
   import { ArrowRight, ChartColumn } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import type { DailyBar } from "$lib/overview/overview-model.ts";
   import { formatShortDate, formatTwdNumber } from "$lib/overview/overview-format.ts";
 
@@ -18,7 +19,10 @@
   <header class="card-head">
     <div>
       <h2>{`${$t.overview.dailyChangeTitle} · ${$t.overview.dailyChangeRange}`}</h2>
-      <p>{$t.overview.dailyChangeLead}</p>
+      <p>
+        {$t.overview.dailyChangeLead}
+        {#if bars.some((bar) => bar.includesPreview)}<PreviewMarker />{/if}
+      </p>
     </div>
     {#if hasDetail}
       <button type="button" class="link-button" onclick={openDetail}>

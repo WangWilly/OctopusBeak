@@ -599,7 +599,7 @@ test("financial live views recover after a transient read failure and stop durin
   resolveBlocked(page);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(rows.length, rowCountBeforeStop, "unsubscribe during a read must suppress its eventual result");
-  assert.equal(unsubscribeCount, 2, "all overview dependencies must drain on stop");
+  assert.equal(unsubscribeCount, 3, "all overview dependencies must drain on stop");
 });
 
 test("failed live subscription releases started dependencies and permits retry", async () => {
@@ -632,7 +632,7 @@ test("failed live subscription releases started dependencies and permits retry",
   assert.equal(activeDependencies, 0, "failed initial recompute must be drained");
   failRead = false;
   const stop = await views.subscribe("financial.overview.current", {}, () => {});
-  assert.equal(activeDependencies, 2, "a later subscription must start both dependencies");
+  assert.equal(activeDependencies, 3, "a later subscription must start every dependency");
   await stop();
   assert.equal(activeDependencies, 0);
 });

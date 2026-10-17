@@ -4,6 +4,7 @@ import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import {
   buildEsunCanonicalCreditCardCapture,
+  classifyEsunPostLoginPage,
   buildEsunSettledPeriodsFromIssuerSummaries,
   attachEsunIssuerStatementPeriods,
   deriveEsunProjectedInstrumentIdentity,
@@ -834,3 +835,18 @@ try {
       previousManagedSecret;
   }
 }
+
+test("an unexpected E.SUN post-login page is classified by kind, never by its text", () => {
+  assert.deepEqual(classifyEsunPostLoginPage("請輸入圖形驗證碼"), ["captcha"]);
+  assert.deepEqual(classifyEsunPostLoginPage("我們已傳送簡訊動態密碼至您的手機"), ["otp"]);
+  assert.deepEqual(classifyEsunPostLoginPage("偵測到新裝置登入，請完成綁定"), ["device"]);
+  assert.deepEqual(classifyEsunPostLoginPage("您已重複登入"), ["duplicate-login"]);
+  assert.deepEqual(classifyEsunPostLoginPage("您的密碼到期，請變更密碼"), ["password-change"]);
+  assert.deepEqual(classifyEsunPostLoginPage("使用者代號或密碼輸入錯誤"), ["credentials-rejected"]);
+  assert.deepEqual(classifyEsunPostLoginPage("帳號已鎖定"), ["locked"]);
+  assert.deepEqual(classifyEsunPostLoginPage("請輸入簡訊 OTP，並完成裝置綁定"), ["otp", "device"]);
+  assert.deepEqual(classifyEsunPostLoginPage("歡迎光臨"), ["unrecognized"]);
+  for (const state of classifyEsunPostLoginPage("驗證碼 OTP 裝置 重複登入 變更密碼 密碼錯誤 鎖定")) {
+    assert.match(`esun-post-login-${state}`, /^[a-z][a-z0-9-]{0,63}$/u);
+  }
+});

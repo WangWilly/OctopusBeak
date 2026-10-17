@@ -4,6 +4,7 @@ import type {
 } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
+import type { PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   appendWorkflowFailureDiagnostic,
   isWorkflowFailureCorrelation,
@@ -50,10 +51,21 @@ const MAICOIN_METHODS = [
   "startRun", "appendSnapshots", "appendStatementRows", "finishRun",
 ] as const satisfies readonly (keyof PGliteMaicoinPersistencePort & string)[];
 
+const PREVIEW_METHODS = [
+  "write", "deleteAll", "accounts", "transactions",
+] as const satisfies readonly (keyof PGlitePreviewFinancialDataPort & string)[];
+
+export type PGliteOperationalDomains = AutomationPersistenceProvider & {
+  exchangeRates: ExchangeRatePersistencePort;
+  maicoin: PGliteMaicoinPersistencePort;
+  preview: PGlitePreviewFinancialDataPort;
+};
+
 export type PGliteOperationalOperation =
   | `automation.${(typeof AUTOMATION_METHODS)[number]}`
   | `exchangeRates.${(typeof EXCHANGE_RATE_METHODS)[number]}`
-  | `maicoin.${(typeof MAICOIN_METHODS)[number]}`;
+  | `maicoin.${(typeof MAICOIN_METHODS)[number]}`
+  | `preview.${(typeof PREVIEW_METHODS)[number]}`;
 
 export type PGliteOperationalRequest = {
   readonly kind: "pglite-operational-request";
@@ -109,6 +121,7 @@ const ALL_OPERATIONS = new Set<string>([
   ...AUTOMATION_METHODS.map((method) => `automation.${method}`),
   ...EXCHANGE_RATE_METHODS.map((method) => `exchangeRates.${method}`),
   ...MAICOIN_METHODS.map((method) => `maicoin.${method}`),
+  ...PREVIEW_METHODS.map((method) => `preview.${method}`),
 ]);
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
@@ -182,6 +195,11 @@ const TASK_RUN_UPDATE_FIELDS = [
   "browserRuntime",
 ] as const;
 
+function previewVisibility(value: unknown): boolean {
+  return hasOnlyFields(value, ["sourceIds"]) && Array.isArray(value.sourceIds)
+    && (value.sourceIds as unknown[]).length <= 100 && (value.sourceIds as unknown[]).every(stringValue);
+}
+
 function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
   switch (operation) {
     case "automation.createTaskRun":
@@ -250,6 +268,16 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
     case "maicoin.finishRun":
       return args.length === 1 && stringFields(args[0], ["syncRunId", "finishedAt"])
         && plainRecord((args[0] as Record<string, unknown>).record);
+    case "preview.write":
+      return args.length === 1 && hasOnlyFields(args[0], ["sourceId", "institution", "product", "collection"])
+        && stringFields(args[0], ["sourceId", "institution", "product"])
+        && plainRecord((args[0] as Record<string, unknown>).collection);
+    case "preview.deleteAll":
+      return args.length === 0;
+    case "preview.accounts":
+      return args.length === 1 && previewVisibility(args[0]);
+    case "preview.transactions":
+      return args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]);
     default:
       return false;
   }
@@ -265,11 +293,11 @@ function postResponse(port: RpcPort, response: PGliteOperationalResponse): void 
 }
 
 async function invokeOperation(
-  provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort; maicoin: PGliteMaicoinPersistencePort },
+  provider: PGliteOperationalDomains,
   operation: PGliteOperationalOperation,
   args: readonly unknown[],
 ): Promise<unknown> {
-  const [namespace, method] = operation.split(".") as ["automation" | "exchangeRates" | "maicoin", string];
+  const [namespace, method] = operation.split(".") as ["automation" | "exchangeRates" | "maicoin" | "preview", string];
   if (namespace === "automation") {
     switch (method) {
       case "createTaskRun": return provider.automation.createTaskRun(args[0] as Parameters<AutomationPersistencePort["createTaskRun"]>[0]);
@@ -346,6 +374,18 @@ async function invokeOperation(
       default: throw new Error("Unknown MaiCoin operational operation.");
     }
   }
+  if (namespace === "preview") {
+    switch (method) {
+      case "write": return provider.preview.write(args[0] as Parameters<PGlitePreviewFinancialDataPort["write"]>[0]);
+      case "deleteAll": return provider.preview.deleteAll();
+      case "accounts": return provider.preview.accounts(args[0] as Parameters<PGlitePreviewFinancialDataPort["accounts"]>[0]);
+      case "transactions": return provider.preview.transactions(
+        args[0] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[0],
+        args[1] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[1],
+      );
+      default: throw new Error("Unknown preview operational operation.");
+    }
+  }
   switch (method) {
     case "readExchangeRates": return provider.exchangeRates.readExchangeRates(
       args[0] as Parameters<ExchangeRatePersistencePort["readExchangeRates"]>[0],
@@ -364,7 +404,7 @@ export type PGliteOperationalRpcServer = {
 /** Install the allowlisted operational command/query server in the worker. */
 export function createPGliteOperationalRpcServer(
   port: RpcPort,
-  provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort; maicoin: PGliteMaicoinPersistencePort },
+  provider: PGliteOperationalDomains,
 ): PGliteOperationalRpcServer {
   let closed = false;
   const active = new Set<Promise<void>>();
@@ -434,7 +474,7 @@ export type PGliteOperationalRpcClient = {
     operation: K,
     args: readonly unknown[],
   ): Promise<unknown>;
-  provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort; maicoin: PGliteMaicoinPersistencePort };
+  provider: PGliteOperationalDomains;
   close(error?: Error): void;
 };
 
@@ -531,6 +571,13 @@ export function createPGliteOperationalRpcClient(
     return request(exchangeOperationName(method), args) as Promise<Awaited<ReturnType<ExchangeRatePersistencePort[K]>>>;
   }
 
+  function previewMethod<K extends keyof PGlitePreviewFinancialDataPort>(
+    method: K,
+    args: Parameters<PGlitePreviewFinancialDataPort[K]>,
+  ): Promise<Awaited<ReturnType<PGlitePreviewFinancialDataPort[K]>>> {
+    return request(`preview.${method}` as PGliteOperationalOperation, args) as Promise<Awaited<ReturnType<PGlitePreviewFinancialDataPort[K]>>>;
+  }
+
   function maicoinMethod<K extends keyof PGliteMaicoinPersistencePort>(
     method: K,
     args: Parameters<PGliteMaicoinPersistencePort[K]>,
@@ -569,6 +616,12 @@ export function createPGliteOperationalRpcClient(
     appendStatementRows: (...args) => maicoinMethod("appendStatementRows", args),
     finishRun: (...args) => maicoinMethod("finishRun", args),
   };
+  const preview: PGlitePreviewFinancialDataPort = {
+    write: (...args) => previewMethod("write", args),
+    deleteAll: (...args) => previewMethod("deleteAll", args),
+    accounts: (...args) => previewMethod("accounts", args),
+    transactions: (...args) => previewMethod("transactions", args),
+  };
 
   const close = (error = new Error("PGlite operational worker is closed.")): void => {
     if (closed) return;
@@ -580,7 +633,7 @@ export function createPGliteOperationalRpcClient(
 
   return {
     request,
-    provider: Object.freeze({ automation, exchangeRates, maicoin }),
+    provider: Object.freeze({ automation, exchangeRates, maicoin, preview }),
     close,
   };
 }

@@ -8,6 +8,7 @@
     formatSignedAmountLines,
   } from "$lib/shared-money/money.ts";
   import { formatUtcDate } from "$lib/time/timezone.ts";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
   type SortDirection = "asc" | "desc";
@@ -150,6 +151,7 @@
                   FX
                 </span>
               {/if}
+              {#if row.includesPreview}<PreviewMarker />{/if}
             </td>
             <td class="right money">{formatCurrencyAmount(row, "netAssets")}</td>
             <td

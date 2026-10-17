@@ -44,6 +44,7 @@ export type SummaryMetricDto = {
   label: string;
   amounts: CurrencyAmountDto[];
   breakdown: string[];
+  includesPreview?: boolean;
 };
 
 export type DailyHistoryRowDto = {
@@ -58,6 +59,7 @@ export type DailyHistoryRowDto = {
   exchangeRateMissing?: boolean;
   accountChanges: string[];
   positionCount: number;
+  includesPreview?: boolean;
 };
 
 export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">) {
@@ -100,7 +102,23 @@ export type AccountRowDto = {
   creditCard?: CreditCardAccountDto;
   /** The direct source that counts this Intermediary-source account, which no total includes. */
   coveredBy?: Readonly<{ namespace: string; institutionKey: string; product: InstitutionProduct }>;
+  preview?: PreviewAccountDto;
 };
+
+export type PreviewAccountDto = Readonly<{
+  sourceId: string;
+  lastCollectedAt: string;
+  balanceTime: Readonly<{ at: string; source: "reported" | "collection-time" }> | null;
+  transactions: readonly PreviewTransactionRowDto[];
+}>;
+
+export type PreviewTransactionRowDto = Readonly<{
+  amount: string;
+  currency: string;
+  direction: "inflow" | "outflow" | "unknown";
+  postedAt: Readonly<{ precision: "day" | "minute" | "second"; value: string }>;
+  description: string | null;
+}>;
 
 export type CreditCardStatementMembershipDto = {
   transactionId: string;

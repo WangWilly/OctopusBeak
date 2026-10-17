@@ -311,6 +311,7 @@ test("E.SUN typed workflow fails closed on a sign-in challenge without requestin
     assert.equal(harness.assistanceCount, 0);
     assert.equal(harness.committed.length, 0);
     assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "solver-challenge-unsupported"));
+    assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "esun-post-login-unrecognized"));
   } finally {
     if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
     else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;

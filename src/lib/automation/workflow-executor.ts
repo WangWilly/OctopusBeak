@@ -10,7 +10,9 @@ import type {
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import type { WorkflowPreviewWritePort } from "../preview-sources/workflow.ts";
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
+import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { TdccConnection, TdccSessionPort } from "../../workflows/tdcc-session.ts";
 import {
   COLLECTION_PRODUCT_TYPE_IDS,
@@ -91,6 +93,10 @@ export type WorkflowTdccPort = Readonly<{
   admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
 }>;
 
+export type WorkflowAccountIdentityPort = Readonly<{
+  continuity(request: AccountIdentityContinuityRequest): Promise<AccountIdentityContinuity>;
+}>;
+
 export type WorkflowContext = Readonly<{
   runId: string;
   signal: AbortSignal;
@@ -101,6 +107,8 @@ export type WorkflowContext = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  accountIdentity?: WorkflowAccountIdentityPort;
+  previewWrite?: WorkflowPreviewWritePort;
   event(
     stage: WorkflowStage,
     code: string,
@@ -114,6 +122,8 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
   requiresTdcc?: boolean;
+  requiresAccountIdentity?: boolean;
+  requiresPreviewWrite?: boolean;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -124,6 +134,8 @@ export type WorkflowExecutorPorts = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  accountIdentity?: WorkflowAccountIdentityPort;
+  previewWrite?: WorkflowPreviewWritePort;
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
@@ -161,6 +173,12 @@ export function createWorkflowExecutor(
       }
       if (definition.requiresTdcc && !ports.tdcc) {
         throw new Error("TDCC session port is unavailable.");
+      }
+      if (definition.requiresAccountIdentity && !ports.accountIdentity) {
+        throw new Error("Account identity port is unavailable.");
+      }
+      if (definition.requiresPreviewWrite && !ports.previewWrite) {
+        throw new Error("Preview write port is unavailable.");
       }
       const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
@@ -209,6 +227,8 @@ export function createWorkflowExecutor(
           ? { maicoinPersistence: ports.maicoinPersistence }
           : {}),
         ...(definition.requiresTdcc ? { tdcc: ports.tdcc } : {}),
+        ...(definition.requiresAccountIdentity ? { accountIdentity: ports.accountIdentity } : {}),
+        ...(definition.requiresPreviewWrite ? { previewWrite: ports.previewWrite } : {}),
         event,
         productFailure,
       };

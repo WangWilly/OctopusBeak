@@ -3,7 +3,11 @@ import type {
   HumanAssistanceContract,
   HumanVerificationRect,
 } from "../human-assistance.ts";
+import type { Locator } from "playwright";
 import type { ViewerPageAccess } from "./automation-viewer.ts";
+
+const CAPTCHA_IMAGE_LOAD_WAIT_MS = 5_000;
+const CAPTCHA_REFRESH_POLL_MS = 100;
 
 /** A locator-backed image source that can be inspected without exposing Page. */
 export type CaptchaImageDescriptor = {
@@ -14,6 +18,14 @@ export type CaptchaImageDescriptor = {
   frameName: string;
   /** A stable key scoped to the page/frame whose value identifies the source. */
   markerKey: string;
+  /** The page or frame that contains the image; sibling controls resolve here. */
+  scope: { locator(selector: string): Locator };
+};
+
+/** Provider-declared, evidence-backed in-page refresh control. */
+export type CaptchaRefreshControl = {
+  /** Must match exactly one visible element in the image descriptor's scope. */
+  selector: string;
 };
 
 type CaptchaImageSource = {
@@ -51,10 +63,20 @@ export type CaptchaSourceOwner = {
     contract: HumanAssistanceContract,
     capture: CaptchaSourceCapture,
   ): Promise<boolean>;
+  /**
+   * Present only when the provider declared a refresh control. Returns false
+   * when the control is missing or ambiguous, or the image did not change.
+   */
+  refresh?(
+    session: string,
+    contract: HumanAssistanceContract,
+    previous: CaptchaSourceCapture,
+  ): Promise<boolean>;
 };
 
 type CaptchaSourceOwnerFactoryOptions = {
   id: string;
+  refreshControl?: CaptchaRefreshControl;
   naturalWidth?: number;
   naturalHeight?: number;
   withPage: CaptchaSourcePageRunner;
@@ -85,6 +107,11 @@ type CaptchaSourceFreshnessStore = {
   ): Promise<Buffer | null>;
   /** Validate and consume the capture record. Missing records are stale. */
   isCurrent(session: string, contract: HumanAssistanceContract): Promise<boolean>;
+  /**
+   * Consume the capture record, then refresh through the owner that produced
+   * it. Missing records and owners without a refresh control return false.
+   */
+  refresh(session: string, contract: HumanAssistanceContract): Promise<boolean>;
   clear(session: string): void;
 };
 
@@ -123,13 +150,13 @@ function imageFromDataUrl(dataUrl: unknown): Buffer | null {
  */
 async function inspectCaptchaImageSource(
   descriptor: CaptchaImageDescriptor,
-  waitForLoad = false,
+  waitForLoadMs = 0,
 ): Promise<CaptchaImageSource | null> {
-  return descriptor.image.evaluate(async (node, { key, waitForLoad }) => {
+  return descriptor.image.evaluate(async (node, { key, waitForLoadMs }) => {
     if (!(node instanceof HTMLImageElement)) return null;
     // A visible, CSS-sized image can still have no decoded pixels. Wait only
     // while it is loading; broken/unsupported sources continue to fail closed.
-    if (waitForLoad && !node.complete) {
+    if (waitForLoadMs > 0 && !node.complete) {
       await new Promise<void>((resolve) => {
         const finish = () => {
           clearTimeout(timer);
@@ -137,7 +164,7 @@ async function inspectCaptchaImageSource(
           node.removeEventListener("error", finish);
           resolve();
         };
-        const timer = setTimeout(finish, 5_000);
+        const timer = setTimeout(finish, waitForLoadMs);
         node.addEventListener("load", finish, { once: true });
         node.addEventListener("error", finish, { once: true });
         if (node.complete) finish();
@@ -188,7 +215,7 @@ async function inspectCaptchaImageSource(
       naturalWidth: node.naturalWidth,
       naturalHeight: node.naturalHeight,
     };
-  }, { key: descriptor.markerKey, waitForLoad }).catch(() => null) as Promise<CaptchaImageSource | null>;
+  }, { key: descriptor.markerKey, waitForLoadMs }).catch(() => null) as Promise<CaptchaImageSource | null>;
 }
 
 function fingerprintForCaptchaCapture(input: {
@@ -238,22 +265,25 @@ function geometryMatches(
 export function createLoadedCaptchaSourceOwner(
   options: CaptchaSourceOwnerFactoryOptions,
 ): CaptchaSourceOwner {
+  const inspectPage = async (
+    page: ViewerPageAccess,
+    contract: HumanAssistanceContract,
+    waitForLoadMs = 0,
+  ) => {
+    const descriptor = await options.resolveImage(page, contract);
+    if (!descriptor) return null;
+    const source = await inspectCaptchaImageSource(descriptor, waitForLoadMs);
+    return { descriptor, source };
+  };
   const inspect = async (
     session: string,
     contract: HumanAssistanceContract,
-    waitForLoad = false,
-  ) => options.withPage(session, async (page) => {
-    const descriptor = await options.resolveImage(page, contract);
-    if (!descriptor) return null;
-    const source = await inspectCaptchaImageSource(descriptor, waitForLoad);
-    return { descriptor, source };
-  });
+    waitForLoadMs = 0,
+  ) => options.withPage(session, (page) => inspectPage(page, contract, waitForLoadMs));
 
-  const makeCapture = async (
-    session: string,
-    contract: HumanAssistanceContract,
-  ): Promise<CaptchaSourceCapture | null> => {
-    const inspected = await inspect(session, contract, true);
+  const loadedCapture = (
+    inspected: Awaited<ReturnType<typeof inspectPage>>,
+  ): CaptchaSourceCapture | null => {
     if (!inspected?.source || !geometryMatches(inspected.source, options)) return null;
     const sourceImage = imageFromDataUrl(inspected.source.dataUrl);
     if (!sourceImage) return null;
@@ -267,22 +297,48 @@ export function createLoadedCaptchaSourceOwner(
     };
   };
 
+  const makeCapture = async (
+    session: string,
+    contract: HumanAssistanceContract,
+  ): Promise<CaptchaSourceCapture | null> =>
+    loadedCapture(await inspect(session, contract, CAPTCHA_IMAGE_LOAD_WAIT_MS));
+
+  const refreshControl = options.refreshControl;
+  const refresh = refreshControl
+    ? async (
+        session: string,
+        contract: HumanAssistanceContract,
+        previous: CaptchaSourceCapture,
+      ) => options.withPage(session, async (page) => {
+        const descriptor = await options.resolveImage(page, contract);
+        if (!descriptor) return false;
+        const controls = descriptor.scope.locator(refreshControl.selector);
+        if (await controls.count().catch(() => 0) !== 1) return false;
+        const control = controls.first();
+        if (!await control.isVisible().catch(() => false)) return false;
+        await control.click();
+        const deadline = Date.now() + CAPTCHA_IMAGE_LOAD_WAIT_MS;
+        for (;;) {
+          const remaining = Math.max(deadline - Date.now(), 0);
+          const current = loadedCapture(await inspectPage(page, contract, remaining));
+          // Only new pixels prove a new challenge; a changed src alone may
+          // still be loading or may serve the same image.
+          if (current && current.fingerprint.imageHash !== previous.fingerprint.imageHash) {
+            return true;
+          }
+          if (Date.now() + CAPTCHA_REFRESH_POLL_MS >= deadline) return false;
+          await new Promise((resolve) => setTimeout(resolve, CAPTCHA_REFRESH_POLL_MS));
+        }
+      })
+    : undefined;
+
   return {
     id: options.id,
     capture: makeCapture,
+    ...(refresh ? { refresh } : {}),
     isCurrent: async (session, contract, capture) => {
-      const inspected = await inspect(session, contract);
-      if (!inspected?.source || !geometryMatches(inspected.source, options)) return false;
-      const sourceImage = imageFromDataUrl(inspected.source.dataUrl);
-      if (!sourceImage) return false;
-      return fingerprintMatches(
-        fingerprintForCaptchaCapture({
-          descriptor: inspected.descriptor,
-          source: inspected.source,
-          image: sourceImage,
-        }),
-        capture.fingerprint,
-      );
+      const current = loadedCapture(await inspect(session, contract));
+      return current !== null && fingerprintMatches(current.fingerprint, capture.fingerprint);
     },
   };
 }
@@ -330,6 +386,17 @@ export function createCaptchaSourceFreshnessStore(
       } catch {
         return false;
       }
+    },
+    refresh: async (session, contract) => {
+      const record = records.get(session);
+      records.delete(session);
+      if (!record) return false;
+      if (record.stageId !== contract.stageId || record.contractVersion !== contract.version) {
+        return false;
+      }
+      const owner = resolveOwner(record.ownerId, contract);
+      if (!owner?.refresh || owner.id !== record.ownerId) return false;
+      return owner.refresh(session, contract, record.capture);
     },
     clear: (session) => {
       records.delete(session);

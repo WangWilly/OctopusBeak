@@ -33,7 +33,7 @@ test("default and source profiles share a version-derived normal Chrome User-Age
   assert.doesNotMatch(defaultProfile.userAgent, /HeadlessChrome|Chrome\/143\./u);
   assert.deepEqual(defaultProfile.args, []);
   assert.deepEqual(ctbcProfile.args, ["--disable-blink-features=AutomationControlled"]);
-  assert.equal(ctbcProfile.cookieResetDomain, "ctbcbank.com");
+  assert.deepEqual(ctbcProfile.cookieReset, { domain: "ctbcbank.com", retainedNames: [] });
 });
 
 test("normal Chrome User-Agent uses the host platform token", async () => {

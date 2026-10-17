@@ -16,7 +16,7 @@ npm run workflow:dev -- fixture
 npm run workflow:dev -- inspect http://127.0.0.1:4173
 ```
 
-`list` shows the eleven browser provider definitions in the App registry. `exchange-rates`, `sync-maicoin`, and `sync-tdcc` are typed non-browser workflows and do not use this browser CLI. To inventory the TDCC e-Passbook App protocol endpoints, use the development probe described in [Running the TDCC e-Passbook probe](tdcc-probe.md). `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
+`list` shows the eleven browser provider definitions in the App registry. `exchange-rates`, `sync-maicoin`, and `sync-tdcc` are typed non-browser workflows and do not use this browser CLI. To inventory the TDCC e-Passbook App protocol endpoints, use the development probe described in [Running the TDCC e-Passbook probe](tdcc-probe.md). To inventory the E.SUN deposit and foreign-currency portal endpoints, use [Running the E.SUN deposit probe](esun-deposit-probe.md). `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
 
 ```sh
 npm run workflow:dev -- validate src/lib/automation/example-workflow.ts exampleWorkflow --input-env WORKFLOW_DEV_INPUT_JSON
@@ -57,6 +57,8 @@ Provider code uses only the ports supplied by `WorkflowContext`:
 - `event(stage, code, counts)` reports bounded progress. Event codes must be lowercase kebab-case.
 - `humanAssistance.request(contract, signal)` declares a verification stage for the solver. Despite its name, no person completes it ([ADR 0039](../adr/0039-solver-only-verification.md)). The stage needs a registered solver route, or the run fails closed. The workflow must resume only after the provider's completion check succeeds.
 - Financial definitions set `requiresFinancialCommit: true` and call `context.financialCommit.execute(...)` only after source validation. Do not open a financial database or write an alternate output.
+
+A Preview Source does not use `financialCommit`. Follow [Building on Preview Sources](preview-sources.md) instead.
 
 Add a focused `*.check.ts` test alongside the provider. Exercise success, malformed or incomplete input before commit, cancellation, event reporting, and that the injected commit port receives the expected items.
 

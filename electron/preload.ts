@@ -71,6 +71,7 @@ const api: OctopusBeakApi = {
   settings: {
     load: () => ipcRenderer.invoke("settings:load"),
     save: (input) => ipcRenderer.invoke("settings:save", input),
+    deletePreviewData: () => ipcRenderer.invoke("settings:deletePreviewData"),
   },
   overview: {
     load: (options) => ipcRenderer.invoke("overview:load", options),
@@ -106,14 +107,10 @@ const api: OctopusBeakApi = {
   automation: {
     loadBlock: (block, options) => ipcRenderer.invoke("automation:block", block, options),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
-    cathayGmailOtpStatus: () => ipcRenderer.invoke("automation:cathayGmailOtpStatus"),
-    enableCathayGmailOtp: () => ipcRenderer.invoke("automation:enableCathayGmailOtp"),
-    setCathayGmailOtpEnabled: (enabled) => ipcRenderer.invoke("automation:setCathayGmailOtpEnabled", enabled),
-    disconnectCathayGmailOtp: () => ipcRenderer.invoke("automation:disconnectCathayGmailOtp"),
-    tdccDeviceRegistrationStatus: () => ipcRenderer.invoke("automation:tdccDeviceRegistrationStatus"),
-    startTdccDeviceRegistration: () => ipcRenderer.invoke("automation:startTdccDeviceRegistration"),
-    submitTdccRegistrationCode: (registrationId, code) => ipcRenderer.invoke("automation:submitTdccRegistrationCode", registrationId, code),
-    cancelTdccDeviceRegistration: (registrationId) => ipcRenderer.invoke("automation:cancelTdccDeviceRegistration", registrationId),
+    deviceRegistrationStatus: (source) => ipcRenderer.invoke("automation:deviceRegistrationStatus", source),
+    startDeviceRegistration: (source) => ipcRenderer.invoke("automation:startDeviceRegistration", source),
+    submitDeviceRegistrationCode: (source, registrationId, code) => ipcRenderer.invoke("automation:submitDeviceRegistrationCode", source, registrationId, code),
+    cancelDeviceRegistration: (source, registrationId) => ipcRenderer.invoke("automation:cancelDeviceRegistration", source, registrationId),
     selectCertificateFile: (locale) => ipcRenderer.invoke("automation:selectCertificateFile", locale),
     openSetupGuideLink: (groupId, linkId, locale) => ipcRenderer.invoke("automation:openSetupGuideLink", groupId, linkId, locale),
     run: (taskId) => ipcRenderer.invoke("automation:run", taskId),
@@ -130,6 +127,14 @@ const api: OctopusBeakApi = {
       };
       ipcRenderer.on("automation:runtime-changed", handler);
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
+    },
+    takeSignInSettingsRequest: () => ipcRenderer.invoke("automation:takeSignInSettingsRequest"),
+    previewStructureReport: (taskId) => ipcRenderer.invoke("automation:previewStructureReport", taskId),
+    openPreviewStructureReportIssue: (taskId) => ipcRenderer.invoke("automation:openPreviewStructureReportIssue", taskId),
+    onSignInSettingsRequested(listener) {
+      const handler = () => listener();
+      ipcRenderer.on("automation:sign-in-settings-requested", handler);
+      return () => ipcRenderer.removeListener("automation:sign-in-settings-requested", handler);
     },
   },
   data: {

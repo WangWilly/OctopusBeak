@@ -25,17 +25,6 @@ export const AUTOMATION_SETTINGS_PATH = "settings.json";
 export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
 export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
 
-// Gmail OTP state is owned by the host process.  These keys intentionally do
-// not belong to any workflow credential group: the refresh token and linked
-// address are never copied into a child workflow environment.
-export const CATHAY_GMAIL_OTP_ENABLED_KEY = "CATHAY_GMAIL_OTP_ENABLED";
-export const CATHAY_GMAIL_REFRESH_TOKEN_KEY = "CATHAY_GMAIL_REFRESH_TOKEN";
-export const CATHAY_GMAIL_CONNECTED_EMAIL_KEY = "CATHAY_GMAIL_CONNECTED_EMAIL";
-export const CATHAY_GMAIL_HOST_KEYS = [
-  CATHAY_GMAIL_REFRESH_TOKEN_KEY,
-  CATHAY_GMAIL_CONNECTED_EMAIL_KEY,
-] as const;
-
 // TDCC sign-in details and its registered device identity and session token
 // (ADR 0041). A TDCC run reaches them only through its host-owned session
 // port, so they never reach a child workflow environment.
@@ -50,7 +39,12 @@ export const TDCC_HOST_KEYS = [
   TDCC_SESSION_KEY,
 ] as const;
 
-const HOST_ONLY_SECRET_KEYS = new Set<string>([...CATHAY_GMAIL_HOST_KEYS, ...TDCC_HOST_KEYS]);
+export const CATHAY_TRUSTED_DEVICE_USER_ID_KEY = "CATHAY_TRUSTED_DEVICE_USER_ID";
+
+const HOST_ONLY_SECRET_KEYS = new Set<string>([
+  ...TDCC_HOST_KEYS,
+  CATHAY_TRUSTED_DEVICE_USER_ID_KEY,
+]);
 
 export type AutomationCredentialCodec = {
   encrypt(text: string): string;
@@ -81,10 +75,7 @@ export function isAutomationCredentialCodecConfigured() {
   return automationCredentialCodec !== null;
 }
 
-const automationSettingKeys = new Set<string>([
-  ...AUTOMATION_NON_SECRET_KEYS,
-  CATHAY_GMAIL_OTP_ENABLED_KEY,
-]);
+const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
 const automationSecretKeys = new Set<string>([
   ...AUTOMATION_SECRET_KEYS,
   ...HOST_ONLY_SECRET_KEYS,
@@ -100,7 +91,6 @@ const automationUserSecretKeys = new Set<string>(
 const automationKnownKeys = new Set<string>([
   ...automationSettingKeys,
   ...automationUserSecretKeys,
-  ...CATHAY_GMAIL_HOST_KEYS,
 ]);
 
 export const FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY =

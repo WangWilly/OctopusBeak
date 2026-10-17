@@ -6,10 +6,10 @@ import type {
   WorkflowExecutorPorts,
   WorkflowFinancialCommitPort,
   WorkflowRunEvent,
+  WorkflowAccountIdentityPort,
   WorkflowTdccPort,
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
@@ -33,9 +33,6 @@ import {
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerOutboundFrame,
   type AppWorkflowWorkerStart,
-  type CathayGmailOtpOperation,
-  type CathayGmailOtpRequestFrame,
-  type CathayGmailOtpResponseFrame,
   type TdccSessionOperation,
   type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
@@ -47,6 +44,8 @@ import {
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
 import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rpc-client.ts";
 import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
+import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
+import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
@@ -80,6 +79,7 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
+  previewWrite?: WorkflowPreviewWritePort;
   now?: WorkflowExecutorPorts["now"];
 }>;
 
@@ -117,11 +117,6 @@ export async function runAppWorkflowWorker(
   const controller = new AbortController();
   const pendingEvents = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
   const pendingAssistance = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
-  const pendingCathayOtp = new Map<string, Readonly<{
-    operation: CathayGmailOtpOperation;
-    resolve(frame: AppWorkflowWorkerInboundFrame): void;
-    reject(error: Error): void;
-  }>>();
   const pendingTdccSession = new Map<string, Readonly<{
     operation: TdccSessionOperation;
     resolve(frame: TdccSessionResponseFrame): void;
@@ -137,7 +132,6 @@ export async function runAppWorkflowWorker(
   const failPending = () => {
     pendingEvents.clear();
     pendingAssistance.clear();
-    pendingCathayOtp.clear();
     pendingTdccSession.clear();
   };
   const onAbort = () => failPending();
@@ -176,17 +170,6 @@ export async function runAppWorkflowWorker(
         return;
       }
       pendingTdccSession.delete(frame.requestId);
-      pending.resolve(frame);
-      return;
-    }
-    if (frame.kind === "cathay-gmail-otp-response") {
-      const pending = pendingCathayOtp.get(frame.requestId);
-      if (!pending || pending.operation !== frame.operation) {
-        protocolFailure = true;
-        if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
-        return;
-      }
-      pendingCathayOtp.delete(frame.requestId);
       pending.resolve(frame);
       return;
     }
@@ -232,82 +215,6 @@ export async function runAppWorkflowWorker(
       reject(new AppWorkflowWorkerProtocolError());
     }
   });
-
-  const requestCathayOtp = (
-    operation: CathayGmailOtpOperation,
-    boundaryId?: string,
-  ): Promise<CathayGmailOtpResponseFrame> => new Promise((resolve, reject) => {
-    if (controller.signal.aborted) {
-      reject(abortError());
-      return;
-    }
-    if (start.workflowId !== "cathay-all-statements" || pendingCathayOtp.size >= 8) {
-      reject(new AppWorkflowWorkerProtocolError());
-      return;
-    }
-    const requestId = randomUUID();
-    const frame: CathayGmailOtpRequestFrame = operation === "retrieve"
-      ? {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-request",
-        requestId,
-        operation,
-        boundaryId: boundaryId ?? "",
-      }
-      : {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-request",
-        requestId,
-        operation,
-      };
-    const onAbortRequest = () => {
-      pendingCathayOtp.delete(requestId);
-      reject(abortError());
-    };
-    controller.signal.addEventListener("abort", onAbortRequest, { once: true });
-    pendingCathayOtp.set(requestId, {
-      operation,
-      resolve: (value) => {
-        controller.signal.removeEventListener("abort", onAbortRequest);
-        resolve(value as CathayGmailOtpResponseFrame);
-      },
-      reject: (error) => {
-        controller.signal.removeEventListener("abort", onAbortRequest);
-        reject(error);
-      },
-    });
-    try {
-      send(frame);
-    } catch {
-      controller.signal.removeEventListener("abort", onAbortRequest);
-      pendingCathayOtp.delete(requestId);
-      reject(new AppWorkflowWorkerProtocolError());
-    }
-  });
-
-  const cathayGmailOtpPort: CathayGmailOtpPort = {
-    async ensureAccess() {
-      const response = await requestCathayOtp("ensure-access");
-      if (response.operation !== "ensure-access") throw new AppWorkflowWorkerProtocolError();
-      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
-      if (response.status !== "ready") throw new AppWorkflowWorkerProtocolError();
-      return { status: "ready" };
-    },
-    async prepareRetrieval() {
-      const response = await requestCathayOtp("prepare-retrieval");
-      if (response.operation !== "prepare-retrieval") throw new AppWorkflowWorkerProtocolError();
-      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
-      if (response.status !== "prepared") throw new AppWorkflowWorkerProtocolError();
-      return { status: "prepared", boundaryId: response.boundaryId };
-    },
-    async retrieve(boundaryId) {
-      const response = await requestCathayOtp("retrieve", boundaryId);
-      if (response.operation !== "retrieve") throw new AppWorkflowWorkerProtocolError();
-      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
-      if (response.status !== "found") throw new AppWorkflowWorkerProtocolError();
-      return { status: "found", otp: response.otp };
-    },
-  };
 
   const requestTdccSession = (operation: TdccSessionOperation): Promise<TdccSessionResponseFrame> =>
     new Promise((resolve, reject) => {
@@ -357,6 +264,7 @@ export async function runAppWorkflowWorker(
   };
 
   let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
+  let previewWorkflow = false;
   let progressQueue = Promise.resolve();
   let acknowledgedEventQueue = Promise.resolve();
   const sendAcknowledgedEvent = (
@@ -381,7 +289,6 @@ export async function runAppWorkflowWorker(
       await abortable(childRpc.ready, controller.signal);
     }
     const definitionDependencies: AppWorkflowRegistryDependencies = {
-      ...(start.workflowId === "cathay-all-statements" ? { cathayGmailOtpPort } : {}),
       ...(start.workflowId === "exchange-rates" && childRpc ? {
         exchangeRateSyncService: createExchangeRateSyncService({
           exchangeRates: childRpc.operationalProvider.exchangeRates,
@@ -406,6 +313,7 @@ export async function runAppWorkflowWorker(
     };
     const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
+    previewWorkflow = definition.requiresPreviewWrite === true;
     let financialCommit = options.financialCommit;
     if (definition.requiresFinancialCommit && !financialCommit) {
       if (!childRpc && start.pgliteRpc) {
@@ -419,12 +327,24 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc) && !childRpc) throw new Error("worker-start-failed");
+    const previewWrite = definition.requiresPreviewWrite ? options.previewWrite : undefined;
+    if (definition.requiresPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
+      childRpc = createPGliteChildRpcClient({
+        endpoint: start.pgliteRpc.endpoint,
+        token: start.pgliteRpc.token,
+        diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
+      });
+      await abortable(childRpc.ready, controller.signal);
+    }
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
         admittedFundAccounts: (connection) => childRpc!.financial.listTdccFundAccounts(connection),
       }
+      : undefined;
+    const accountIdentity: WorkflowAccountIdentityPort | undefined = definition.requiresAccountIdentity
+      ? { continuity: (request) => childRpc!.financial.accountIdentityContinuity(request) }
       : undefined;
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
@@ -467,6 +387,8 @@ export async function runAppWorkflowWorker(
       ...(financialCommit ? { financialCommit } : {}),
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
+      ...(accountIdentity ? { accountIdentity } : {}),
+      ...(definition.requiresPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,
@@ -510,6 +432,7 @@ export async function runAppWorkflowWorker(
     }
   } catch (error) {
     terminal = true;
+    const previewResponses = previewWorkflow ? previewResponseShapes(takePreviewObservations(error)) : null;
     const summary = summarizeInterruptedProductCollection(error);
     const errorCode = protocolFailure
       ? "protocol-invalid"
@@ -531,6 +454,7 @@ export async function runAppWorkflowWorker(
           taskRunId: start.taskRunId,
           errorCode,
           ...(summary ? { summary } : {}),
+          ...(previewResponses ? { previewResponses } : {}),
           diagnostic: captureSafeWorkflowFailureError(
             protocolFailure ? new AppWorkflowWorkerProtocolError() : error,
             workflowFailureDiagnosticRepoRoot(),

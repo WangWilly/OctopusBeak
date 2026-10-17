@@ -19,7 +19,7 @@ import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import {
   automationBusinessTimezone,
-  automationGroupEnabledStatus,
+  offeredAutomationSources,
   readAutomationSettings,
 } from "./settings.ts";
 import {
@@ -29,6 +29,7 @@ import {
   forceTerminateAutomationTask,
   hasActiveAutomationTask,
   startAutomationTask,
+  type StartAutomationTaskOptions,
 } from "./runner.ts";
 import {
   type AutomationPersistenceProvider,
@@ -49,71 +50,7 @@ import type {
   AutomationRunManyTaskResult,
   AutomationRuntimeSnapshot,
 } from "$lib/desktop/api.ts";
-import type {
-  CathayGmailOtpConnectionError,
-  CathayGmailOtpStatus,
-} from "../types.ts";
-import {
-  cathayGmailOtpStatus as readCathayGmailOtpStatus,
-  disconnectCathayGmailOtp as disconnectCathayGmailOtpCore,
-  enableCathayGmailOtp as enableCathayGmailOtpCore,
-  setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
-} from "./gmail-otp-service.ts";
 import { automationRuntimeState } from "./runtime-state.ts";
-
-const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
-  "authorization-cancelled",
-  "authorization-failed",
-  "token-exchange-failed",
-  "gmail-profile-failed",
-  "credential-storage-failed",
-]);
-
-function sanitizedCathayGmailOtpStatus(
-  status = readCathayGmailOtpStatus(),
-): CathayGmailOtpStatus {
-  const connectedEmail =
-    typeof status.connectedEmail === "string" && status.connectedEmail.trim()
-      ? status.connectedEmail.trim()
-      : null;
-  const connectionError =
-    typeof status.connectionError === "string" &&
-    cathayGmailOtpConnectionErrors.has(status.connectionError as CathayGmailOtpConnectionError)
-      ? status.connectionError as CathayGmailOtpConnectionError
-      : null;
-  return {
-    enabled: status.enabled === true,
-    connectedEmail,
-    needsAuthorization: status.needsAuthorization === true,
-    ...(connectionError ? { connectionError } : {}),
-  };
-}
-
-/** Renderer-safe Gmail state; token material never crosses this boundary. */
-export function cathayGmailOtpStatus(): CathayGmailOtpStatus {
-  return sanitizedCathayGmailOtpStatus();
-}
-
-/** Starts the user-initiated OAuth flow and returns sanitized state only. */
-export async function enableCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
-  return sanitizedCathayGmailOtpStatus(await enableCathayGmailOtpCore());
-}
-
-/** Legacy callers may connect, but cannot disable automatic verification. */
-export async function setCathayGmailOtpEnabled(
-  enabled: boolean,
-): Promise<CathayGmailOtpStatus> {
-  if (typeof enabled !== "boolean") {
-    throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
-  }
-  return sanitizedCathayGmailOtpStatus(await setCathayGmailOtpEnabledCore(enabled));
-}
-
-/** Revokes/clears the grant through the core and always returns safe state. */
-export async function disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
-  await disconnectCathayGmailOtpCore();
-  return sanitizedCathayGmailOtpStatus();
-}
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 const certificateFileCredentialKeys = new Set([
@@ -186,7 +123,6 @@ export function readAutomationCredentialState() {
     fileNames: state.fileNames,
     invalidFileKeys: state.invalidFileKeys,
     invalidFileReasons: state.invalidFileReasons,
-    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
   };
 }
 
@@ -228,7 +164,7 @@ export async function loadAutomationCoreSnapshot(
   credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
 ): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
-  const enabledGroups = automationGroupEnabledStatus(settings);
+  const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
   const activeTaskIds = activeAutomationTaskIds();
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
@@ -236,7 +172,7 @@ export async function loadAutomationCoreSnapshot(
     provider.automation.todayTaskRunIds({ startUtc: range.startUtc, endUtc: range.endUtc }),
     provider.automation.activeTaskPrerequisiteNotices(),
   ]);
-  const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
+  const credentialGroups = offeredGroups.map((group) => {
     const enabled = enabledGroups[group.id] !== false;
     const selectionSettings = { ...settings, [group.enabledKey]: enabled };
     const selection = isStatementSelectionGroup(group)
@@ -295,9 +231,6 @@ export function applyAutomationCredentialState(
       credentialStates: credentialState.states
         ? { ...credentialState.states }
         : credentialStatesFromStatus(credentialState.status),
-      ...(credentialState.cathayGmailOtp
-        ? { cathayGmailOtp: credentialState.cathayGmailOtp }
-        : {}),
     },
     credentialGroups,
   };
@@ -313,7 +246,6 @@ export async function loadAutomationDesktopModel(
     fileNames: raw.fileNames,
     invalidFileKeys: raw.invalidFileKeys,
     invalidFileReasons: raw.invalidFileReasons,
-    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
   };
   return applyAutomationCredentialState(
     await loadAutomationCoreSnapshot(provider, raw.status),
@@ -477,6 +409,7 @@ export async function automationRun(
 export async function automationRunMany(
   taskIds: string[],
   provider: AutomationPersistenceProvider,
+  options: StartAutomationTaskOptions = {},
 ): Promise<AutomationRunManyResult> {
   if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
     throw new TypeError("Task IDs must be an array of strings.");
@@ -494,7 +427,7 @@ export async function automationRunMany(
         continue;
       }
       const task = assertAutomationTaskCanStartInModel(taskId, model);
-      const run = await startAutomationTask(task.id, provider);
+      const run = await startAutomationTask(task.id, provider, options);
       started.push(task.id);
       results[task.id] = { status: "started", runId: run.runId };
     } catch (error) {

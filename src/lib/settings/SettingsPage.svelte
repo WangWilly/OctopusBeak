@@ -8,6 +8,7 @@
     CircleStop,
     Clock,
     Compass,
+    FlaskConical,
     Globe,
     Languages,
     RotateCcw,
@@ -31,6 +32,8 @@
   import {
     applySystemSettings,
     exchangeRateUpdateTime,
+    previewFeaturesEnabled,
+    scheduledCollection,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
@@ -49,6 +52,7 @@
   const SECTIONS = [
     { id: "settings-schedule", icon: Clock },
     { id: "settings-display", icon: Languages },
+    { id: "settings-preview", icon: FlaskConical },
     { id: "settings-onboarding", icon: Compass },
   ] as const;
   const SCALE_TICKS = [75, 100, 125, 150];
@@ -68,6 +72,11 @@
   let selectedUpdateTime = $exchangeRateUpdateTime;
   let selectedHour = "06";
   let selectedMinute = "00";
+  let collectionEnabled = $scheduledCollection.enabled;
+  let [collectionHour, collectionMinute] = $scheduledCollection.time.split(":");
+  let previewEnabled = $previewFeaturesEnabled;
+  let previewDeleteConfirming = false;
+  let previewDeleteStatus: "idle" | "pending" | "deleted" | "error" = "idle";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -76,10 +85,12 @@
   $: sectionTitles = {
     "settings-schedule": $t.settings.scheduleSettings,
     "settings-display": $t.settings.languageDisplaySettings,
+    "settings-preview": $t.settings.previewFeatures,
     "settings-onboarding": $t.settings.onboardingSection,
   };
   $: timezoneName = zoneName(selectedTimezone, $locale);
   $: nextRun = nextDailyRun(selectedUpdateTime, selectedTimezone, now);
+  $: nextCollectionRun = nextDailyRun(`${collectionHour}:${collectionMinute}`, selectedTimezone, now);
   $: scaleTickLabels = SCALE_TICKS.map((value) => ({
     value,
     offset: (value - DISPLAY_SCALE_MIN) / (DISPLAY_SCALE_MAX - DISPLAY_SCALE_MIN),
@@ -172,6 +183,9 @@
     const input = {
       systemTimezone: selectedTimezone,
       exchangeRateUpdateTime: selectedUpdateTime,
+      scheduledCollectionEnabled: collectionEnabled,
+      scheduledCollectionTime: `${collectionHour}:${collectionMinute}`,
+      previewFeaturesEnabled: previewEnabled,
     };
     saveStatus = "pending";
     saveError = "";
@@ -182,6 +196,9 @@
         applySystemSettings(value);
         selectedTimezone = value.systemTimezone;
         setSelectedUpdateTime(value.exchangeRateUpdateTime);
+        collectionEnabled = value.scheduledCollectionEnabled;
+        [collectionHour, collectionMinute] = value.scheduledCollectionTime.split(":");
+        previewEnabled = value.previewFeaturesEnabled;
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
@@ -194,6 +211,27 @@
   function updateScheduledTime() {
     selectedUpdateTime = `${selectedHour}:${selectedMinute}`;
     saveSystemSettings();
+  }
+
+  function toggleScheduledCollection() {
+    collectionEnabled = !collectionEnabled;
+    saveSystemSettings();
+  }
+
+  function togglePreviewFeatures() {
+    previewEnabled = !previewEnabled;
+    saveSystemSettings();
+  }
+
+  async function deletePreviewData() {
+    previewDeleteConfirming = false;
+    previewDeleteStatus = "pending";
+    try {
+      await window.octopusBeak.settings.deletePreviewData();
+      previewDeleteStatus = "deleted";
+    } catch {
+      previewDeleteStatus = "error";
+    }
   }
 
   function changeDisplayScale(value: number) {
@@ -314,6 +352,43 @@
               </p>
             </div>
           </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="collection-time-label">{$t.settings.scheduledCollection}</span>
+              <small class="setting-hint">{$t.settings.scheduledCollectionHint}</small>
+            </div>
+            <div class="setting-control">
+              <div class="collection-control">
+                <button
+                  id="scheduled-collection-toggle"
+                  class="switch collection-switch"
+                  type="button"
+                  aria-pressed={collectionEnabled}
+                  aria-labelledby="collection-time-label"
+                  onclick={toggleScheduledCollection}
+                >
+                  <span>{$t.settings.scheduledCollectionToggle}</span>
+                  <span class="switch-track" aria-hidden="true"></span>
+                </button>
+                <div class="field time-field" class:disabled={!collectionEnabled} role="group" aria-labelledby="collection-time-label">
+                  <Clock size={16} strokeWidth={2} aria-hidden="true" />
+                  <select id="collection-hour" class="num" aria-label={$t.settings.hour} disabled={!collectionEnabled} bind:value={collectionHour} onchange={saveSystemSettings}>
+                    {#each hours as hour}<option value={hour}>{hour}</option>{/each}
+                  </select>
+                  <span class="time-colon num" aria-hidden="true">:</span>
+                  <select id="collection-minute" class="num" aria-label={$t.settings.minute} disabled={!collectionEnabled} bind:value={collectionMinute} onchange={saveSystemSettings}>
+                    {#each minutes as minute}<option value={minute}>{minute}</option>{/each}
+                  </select>
+                  <span class="field-note">{timezoneName}</span>
+                </div>
+              </div>
+              <p class="rate-status" data-collection-status>
+                {collectionEnabled
+                  ? $t.settings.scheduledCollectionNextRun(scheduleTime(nextCollectionRun, selectedTimezone))
+                  : $t.settings.scheduledCollectionOff}
+              </p>
+            </div>
+          </div>
           {#if saveStatus === "error"}
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
@@ -383,6 +458,73 @@
                   <kbd>{shortcutModifier}0</kbd>{$t.settings.resetScale}
                 </p>
               </div>
+            </div>
+          {/if}
+        </div>
+      </section>
+
+      <section id="settings-preview" class="settings-section" aria-labelledby="settings-preview-title">
+        <header>
+          <h2 id="settings-preview-title">{$t.settings.previewFeatures}</h2>
+          <p>{$t.settings.previewFeaturesDescription}</p>
+        </header>
+        <div class="card settings-card">
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="preview-features-label">{$t.settings.previewFeatures}</span>
+              <small class="setting-hint">{$t.settings.previewFeaturesHint}</small>
+            </div>
+            <div class="setting-control">
+              <button
+                id="preview-features-toggle"
+                class="switch collection-switch"
+                type="button"
+                aria-pressed={previewEnabled}
+                aria-labelledby="preview-features-label"
+                onclick={togglePreviewFeatures}
+              >
+                <span>{previewEnabled ? $t.settings.previewFeaturesOn : $t.settings.previewFeaturesOff}</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.deletePreviewData}</span>
+              <small class="setting-hint">{$t.settings.deletePreviewDataHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if previewDeleteStatus === "deleted"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.previewDataDeleted}
+                </span>
+              {/if}
+              {#if !previewDeleteConfirming}
+                <button
+                  id="delete-preview-data"
+                  class="button"
+                  type="button"
+                  disabled={previewDeleteStatus === "pending"}
+                  aria-busy={previewDeleteStatus === "pending"}
+                  onclick={() => (previewDeleteConfirming = true)}
+                >{$t.settings.deletePreviewData}</button>
+              {/if}
+            </div>
+          </div>
+          {#if previewDeleteConfirming}
+            <div class="restart-confirm" role="group" aria-labelledby="preview-delete-confirm">
+              <p id="preview-delete-confirm">{$t.settings.deletePreviewDataConfirm}</p>
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (previewDeleteConfirming = false)}>{$t.common.cancel}</button>
+                <button id="confirm-delete-preview-data" class="button danger" type="button" onclick={deletePreviewData}>{$t.settings.deletePreviewDataAction}</button>
+              </div>
+            </div>
+          {/if}
+          {#if previewDeleteStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.deletePreviewDataFailed}</span>
             </div>
           {/if}
         </div>
@@ -626,6 +768,40 @@
     color: var(--muted);
     font-size: 11px;
   }
+
+  .collection-control {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .collection-switch {
+    width: auto;
+    min-width: 0;
+    min-height: 40px;
+    gap: var(--space-3);
+    padding: 0 10px 0 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 680;
+    cursor: pointer;
+  }
+
+  .collection-switch .switch-track {
+    background: var(--border);
+    transition: background 180ms ease;
+  }
+
+  .collection-switch .switch-track::after {
+    right: auto;
+    left: 3px;
+  }
+
+  .collection-switch[aria-pressed="true"] .switch-track { background: var(--fg); }
+  .collection-switch[aria-pressed="true"] .switch-track::after { transform: translateX(12px); }
+  .time-field.disabled { opacity: 0.55; }
+  .time-field select:disabled { cursor: default; }
 
   .rate-status :global(svg) { flex: none; color: var(--success); }
   .rate-status.failed :global(svg) { color: var(--danger); }

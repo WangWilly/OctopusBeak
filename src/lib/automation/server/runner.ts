@@ -28,7 +28,7 @@ import {
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
-import { TDCC_SYNC_TASK_ID, TdccDeviceBusyError, tdccDeviceLock } from "./tdcc-device-lock.ts";
+import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -61,6 +61,7 @@ function assertAppExecutorTask(
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
   taskRunId?: string;
+  onFinished?: (run: AutomationTaskRun) => void;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
@@ -186,16 +187,15 @@ function claimTask(taskId: string) {
   if (activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is already running: ${taskId}`);
   }
-  if (taskId === TDCC_SYNC_TASK_ID) {
-    const holder = tdccDeviceLock.claim("sync");
-    if (holder) throw new TdccDeviceBusyError(holder);
-  }
+  const device = sourceDeviceForTask(taskId);
+  const holder = device?.lock.claim("sync");
+  if (device && holder) throw new SourceDeviceBusyError(device.source, holder);
   activeTaskRunIds.set(taskId, "pending");
 }
 
 function releaseTask(taskId: string) {
   activeTaskRunIds.delete(taskId);
-  if (taskId === TDCC_SYNC_TASK_ID) tdccDeviceLock.release("sync");
+  sourceDeviceForTask(taskId)?.lock.release("sync");
 }
 
 function runtimeForTask(taskId: string) {
@@ -263,7 +263,9 @@ async function startPreparedTaskWithPersistence(
     runExecution: options.runExecution,
   }).then(async () => {
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
-    if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    if (!finalRun) return;
+    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    options.onFinished?.(finalRun);
   }).catch(async () => {
     console.error("automation-task-run-failed");
     const failed = await provider.automation.taskRunById(run.taskRunId);

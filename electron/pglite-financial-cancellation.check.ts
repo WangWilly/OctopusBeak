@@ -141,3 +141,47 @@ test("unknown financial failures remain fatal across the worker boundary", async
     await server.close();
   }
 });
+
+test("an account identity continuity read crosses the workflow port only in its exact request shape", async () => {
+  const evidencedNumber = "12345678901234";
+  const request = {
+    integrationNamespace: "fubon",
+    sourceConnectionKey: `sha256:${"C".repeat(43)}`,
+    identityEpochKey: `sha256:${"E".repeat(43)}`,
+    stream: "domestic-deposit",
+    identifier: { kind: "depository-account" as const, value: evidencedNumber },
+  };
+  const continued = { status: "continued", sourceAccountKey: `sha256:${"K".repeat(43)}` };
+  const served: unknown[] = [];
+  const registry = {
+    accountIdentityContinuity: async (input: unknown) => {
+      served.push(input);
+      return continued;
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const [clientPort, serverPort] = memoryPair();
+  const server = createPGliteFinancialRpcServer(serverPort, registry, () => undefined);
+  const client = createPGliteFinancialRpcClient(clientPort);
+  try {
+    const { identifier: _identifier, ...withoutIdentifier } = request;
+    for (const malformed of [
+      withoutIdentifier,
+      { ...request, identifier: { kind: "depository-account", value: "" } },
+      { ...request, identifier: { ...request.identifier, label: "extra" } },
+      { ...request, stream: undefined },
+      { ...request, accountLabel: "extra" },
+    ]) {
+      await assert.rejects(
+        client.registry.accountIdentityContinuity(malformed as never),
+        (error: unknown) => error instanceof PGliteFinancialError && error.code === "invalid-request",
+      );
+    }
+    assert.deepEqual(served, [], "a malformed request never reaches the store read");
+    assert.deepEqual(await client.registry.accountIdentityContinuity(request), continued);
+    assert.deepEqual(served, [request]);
+  }
+  finally {
+    client.close();
+    await server.close();
+  }
+});

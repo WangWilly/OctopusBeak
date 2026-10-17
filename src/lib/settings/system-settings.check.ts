@@ -1,15 +1,51 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { systemSettings, validateSystemSettings } from "./system-settings.ts";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  readAutomationSettingsFile,
+  writeAutomationSettingsFile,
+} from "../automation/server/config-files.ts";
+import {
+  systemSettings,
+  systemSettingsFileEntries,
+  validateSystemSettings,
+  type SystemSettingsDto,
+} from "./system-settings.ts";
 
-assert.deepEqual(systemSettings({}), {
+const defaults: SystemSettingsDto = {
   systemTimezone: "Asia/Taipei",
   exchangeRateUpdateTime: "06:00",
-});
+  scheduledCollectionEnabled: false,
+  scheduledCollectionTime: "07:00",
+  previewFeaturesEnabled: false,
+};
+assert.deepEqual(systemSettings({}), defaults, "scheduled collection and preview features are opt-in");
 assert.equal(systemSettings({ AUTOMATION_BUSINESS_TIMEZONE: "Asia/Tokyo" }).systemTimezone, "Asia/Tokyo");
-assert.throws(() => validateSystemSettings({ systemTimezone: "Mars/Base", exchangeRateUpdateTime: "06:00" }));
-assert.throws(() => validateSystemSettings({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "6:00" }));
-assert.throws(() => validateSystemSettings({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "24:00" }));
+assert.throws(() => validateSystemSettings({ ...defaults, systemTimezone: "Mars/Base" }));
+assert.throws(() => validateSystemSettings({ ...defaults, exchangeRateUpdateTime: "6:00" }));
+assert.throws(() => validateSystemSettings({ ...defaults, exchangeRateUpdateTime: "24:00" }));
+assert.throws(() => validateSystemSettings({ ...defaults, scheduledCollectionTime: "7:00" }));
+assert.throws(() => validateSystemSettings({
+  ...defaults,
+  scheduledCollectionEnabled: "true" as unknown as boolean,
+}));
+
+const settingsDirectory = mkdtempSync(join(tmpdir(), "system-settings-"));
+try {
+  const settingsPath = join(settingsDirectory, "settings.json");
+  for (const saved of [
+    { ...defaults, scheduledCollectionEnabled: true, scheduledCollectionTime: "21:45" },
+    { ...defaults, scheduledCollectionEnabled: false, scheduledCollectionTime: "05:10" },
+    { ...defaults, previewFeaturesEnabled: true },
+    { ...defaults, previewFeaturesEnabled: false },
+  ]) {
+    writeAutomationSettingsFile(settingsPath, systemSettingsFileEntries(validateSystemSettings(saved)));
+    assert.deepEqual(systemSettings(readAutomationSettingsFile(settingsPath)), saved, "settings file round-trip");
+  }
+} finally {
+  rmSync(settingsDirectory, { recursive: true, force: true });
+}
 
 const settingsPageSource = readFileSync(new URL("./SettingsPage.svelte", import.meta.url), "utf8");
 assert.match(

@@ -9,7 +9,6 @@ import {
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.js";
 import {
-  type CathayGmailOtpPort,
   type CathayStrictSourceOptions,
   type CathaySession,
   CathayApiClient,
@@ -74,7 +73,6 @@ const typedCathayInputSchema = z.object({
   domesticAccountFilters: z.array(z.string()).optional(),
   foreignAccountFilters: z.array(z.string()).optional(),
   currencyFilters: z.array(z.string()).default([]),
-  trustDevice: z.boolean().default(false),
 });
 
 export type CathayAllProviderWorkflowInput = z.infer<
@@ -96,8 +94,6 @@ export type CathayAllProviderWorkflowOutput = Readonly<{
 }>;
 
 export type CathayAllProviderWorkflowDependencies = Readonly<{
-  /** Bind the existing App Gmail OTP broker here; never import it in provider logic. */
-  otp: CathayGmailOtpPort;
   signIn?: typeof signInCathayForApp;
   createSession?: (
     page: Page,
@@ -254,7 +250,7 @@ function currentBalanceItems(
 export async function runCathayAllProviderWorkflow(
   context: WorkflowContext,
   rawInput: unknown,
-  dependencies: CathayAllProviderWorkflowDependencies,
+  dependencies: CathayAllProviderWorkflowDependencies = {},
 ): Promise<CathayAllProviderWorkflowOutput> {
   const parsed = typedCathayInputSchema.safeParse(rawInput);
   if (!parsed.success)
@@ -284,8 +280,7 @@ export async function runCathayAllProviderWorkflow(
     };
     await context.event("authentication", "authentication-started");
     const authenticate = dependencies.signIn ?? signInCathayForApp;
-    await authenticate(page, input.credentials, input.trustDevice, {
-      otp: dependencies.otp,
+    await authenticate(page, input.credentials, {
       signal: context.signal,
       event: async (code) => context.event("authentication", code),
     });
