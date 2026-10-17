@@ -32,29 +32,6 @@ test("credential DTO copies only sanitized allowlisted fields", () => {
   assert.equal(Object.hasOwn(dto, "encryptedPayload"), false);
 });
 
-test("credential DTO keeps Gmail state sanitized and explicit", () => {
-  const dto = toAutomationCredentialStateDto({
-    status: {},
-    fileNames: {},
-    invalidFileKeys: [],
-    invalidFileReasons: {},
-    cathayGmailOtp: {
-      enabled: true,
-      connectedEmail: "  user@example.test ",
-      needsAuthorization: false,
-      connectionError: "authorization-failed",
-    },
-  }, 2);
-  assert.deepEqual(dto.cathayGmailOtp, {
-    enabled: true,
-    connectedEmail: "  user@example.test ",
-    needsAuthorization: false,
-    connectionError: "authorization-failed",
-  });
-  assert.equal(Object.hasOwn(dto, "refreshToken"), false);
-  assert.equal(Object.hasOwn(dto, "encryptedPayload"), false);
-});
-
 test("same credential revision shares one in-flight read", async () => {
   let reads = 0;
   const cache = createAutomationCredentialStateCache(() => {

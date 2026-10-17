@@ -82,25 +82,6 @@ export type AutomationTaskProgress = {
   params?: Readonly<Record<string, string | number | boolean>>;
 };
 
-/**
- * Renderer-safe state for Cathay's optional Gmail Email OTP integration.
- * Tokens, message content, and OAuth implementation details stay in the
- * Electron main process.
- */
-export type CathayGmailOtpStatus = {
-  enabled: boolean;
-  connectedEmail: string | null;
-  needsAuthorization: boolean;
-  connectionError?: CathayGmailOtpConnectionError;
-};
-
-export type CathayGmailOtpConnectionError =
-  | "authorization-cancelled"
-  | "authorization-failed"
-  | "token-exchange-failed"
-  | "gmail-profile-failed"
-  | "credential-storage-failed";
-
 export const DEVICE_REGISTRATION_SOURCES = ["tdcc", "cathay"] as const;
 export type DeviceRegistrationSource = typeof DEVICE_REGISTRATION_SOURCES[number];
 
@@ -216,7 +197,4 @@ export type AutomationPageModel = {
   credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
-  /** Main-process policy projection; missing entries fail closed to solver in the UI. */
-  /** Optional for compatibility with non-desktop model consumers. */
-  cathayGmailOtp?: CathayGmailOtpStatus;
 };

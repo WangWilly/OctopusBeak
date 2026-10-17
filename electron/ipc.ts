@@ -8,9 +8,6 @@ import {
 } from "electron";
 import {
   automationCancel,
-  cathayGmailOtpStatus,
-  disconnectCathayGmailOtp,
-  enableCathayGmailOtp,
   automationRun,
   automationRunMany,
   automationForceTerminate,
@@ -21,7 +18,6 @@ import {
   loadAutomationCoreSnapshot,
   externalPrerequisiteById,
   readAutomationCredentialState,
-  setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   assertKnownAutomationRuntimeTasks,
@@ -427,29 +423,6 @@ export function registerOctopusBeakIpc({
       if (result.saved) await automationCredentials.refresh();
       return result;
     },
-  );
-  ipcMain.handle("automation:cathayGmailOtpStatus", () =>
-    cathayGmailOtpStatus(),
-  );
-  const refreshingCredentialState = async <T>(change: () => T | Promise<T>): Promise<T> => {
-    const result = await change();
-    await automationCredentials.refresh();
-    return result;
-  };
-  ipcMain.handle("automation:enableCathayGmailOtp", () =>
-    refreshingCredentialState(() => enableCathayGmailOtp()),
-  );
-  ipcMain.handle(
-    "automation:setCathayGmailOtpEnabled",
-    (_event, enabled: unknown) => {
-      if (typeof enabled !== "boolean") {
-        throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
-      }
-      return refreshingCredentialState(() => setCathayGmailOtpEnabled(enabled));
-    },
-  );
-  ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
-    refreshingCredentialState(() => disconnectCathayGmailOtp()),
   );
   ipcMain.handle(
     "automation:deviceRegistrationStatus",

@@ -83,20 +83,6 @@ assert.doesNotMatch(
 );
 assert.match(source, /await pgliteViewRegistration\.close\(\)/);
 assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);
-assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
-assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:disconnectCathayGmailOtp"/);
-for (const channel of ["enableCathayGmailOtp", "disconnectCathayGmailOtp"]) {
-  assert.match(
-    source,
-    new RegExp(`ipcMain\\.handle\\(\\s*"automation:${channel}",\\s*\\(\\)\\s*=>\\s*refreshingCredentialState\\(`),
-    `${channel} refreshes the cached credential state the dashboard reads`,
-  );
-}
-assert.match(source, /return refreshingCredentialState\(\(\) => setCathayGmailOtpEnabled\(enabled\)\)/);
-assert.match(source, /const result = await change\(\);\s*await automationCredentials\.refresh\(\);/);
-assert.match(source, /typeof enabled !== "boolean"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:deviceRegistrationStatus"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:startDeviceRegistration"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:submitDeviceRegistrationCode"/);

@@ -50,71 +50,7 @@ import type {
   AutomationRunManyTaskResult,
   AutomationRuntimeSnapshot,
 } from "$lib/desktop/api.ts";
-import type {
-  CathayGmailOtpConnectionError,
-  CathayGmailOtpStatus,
-} from "../types.ts";
-import {
-  cathayGmailOtpStatus as readCathayGmailOtpStatus,
-  disconnectCathayGmailOtp as disconnectCathayGmailOtpCore,
-  enableCathayGmailOtp as enableCathayGmailOtpCore,
-  setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
-} from "./gmail-otp-service.ts";
 import { automationRuntimeState } from "./runtime-state.ts";
-
-const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
-  "authorization-cancelled",
-  "authorization-failed",
-  "token-exchange-failed",
-  "gmail-profile-failed",
-  "credential-storage-failed",
-]);
-
-function sanitizedCathayGmailOtpStatus(
-  status = readCathayGmailOtpStatus(),
-): CathayGmailOtpStatus {
-  const connectedEmail =
-    typeof status.connectedEmail === "string" && status.connectedEmail.trim()
-      ? status.connectedEmail.trim()
-      : null;
-  const connectionError =
-    typeof status.connectionError === "string" &&
-    cathayGmailOtpConnectionErrors.has(status.connectionError as CathayGmailOtpConnectionError)
-      ? status.connectionError as CathayGmailOtpConnectionError
-      : null;
-  return {
-    enabled: status.enabled === true,
-    connectedEmail,
-    needsAuthorization: status.needsAuthorization === true,
-    ...(connectionError ? { connectionError } : {}),
-  };
-}
-
-/** Renderer-safe Gmail state; token material never crosses this boundary. */
-export function cathayGmailOtpStatus(): CathayGmailOtpStatus {
-  return sanitizedCathayGmailOtpStatus();
-}
-
-/** Starts the user-initiated OAuth flow and returns sanitized state only. */
-export async function enableCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
-  return sanitizedCathayGmailOtpStatus(await enableCathayGmailOtpCore());
-}
-
-/** Legacy callers may connect, but cannot disable automatic verification. */
-export async function setCathayGmailOtpEnabled(
-  enabled: boolean,
-): Promise<CathayGmailOtpStatus> {
-  if (typeof enabled !== "boolean") {
-    throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
-  }
-  return sanitizedCathayGmailOtpStatus(await setCathayGmailOtpEnabledCore(enabled));
-}
-
-/** Revokes/clears the grant through the core and always returns safe state. */
-export async function disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus> {
-  await disconnectCathayGmailOtpCore();
-  return sanitizedCathayGmailOtpStatus();
-}
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 const certificateFileCredentialKeys = new Set([
@@ -187,7 +123,6 @@ export function readAutomationCredentialState() {
     fileNames: state.fileNames,
     invalidFileKeys: state.invalidFileKeys,
     invalidFileReasons: state.invalidFileReasons,
-    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
   };
 }
 
@@ -296,9 +231,6 @@ export function applyAutomationCredentialState(
       credentialStates: credentialState.states
         ? { ...credentialState.states }
         : credentialStatesFromStatus(credentialState.status),
-      ...(credentialState.cathayGmailOtp
-        ? { cathayGmailOtp: credentialState.cathayGmailOtp }
-        : {}),
     },
     credentialGroups,
   };
@@ -314,7 +246,6 @@ export async function loadAutomationDesktopModel(
     fileNames: raw.fileNames,
     invalidFileKeys: raw.invalidFileKeys,
     invalidFileReasons: raw.invalidFileReasons,
-    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
   };
   return applyAutomationCredentialState(
     await loadAutomationCoreSnapshot(provider, raw.status),
