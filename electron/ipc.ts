@@ -431,8 +431,13 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("automation:cathayGmailOtpStatus", () =>
     cathayGmailOtpStatus(),
   );
+  const refreshingCredentialState = async <T>(change: () => T | Promise<T>): Promise<T> => {
+    const result = await change();
+    await automationCredentials.refresh();
+    return result;
+  };
   ipcMain.handle("automation:enableCathayGmailOtp", () =>
-    enableCathayGmailOtp(),
+    refreshingCredentialState(() => enableCathayGmailOtp()),
   );
   ipcMain.handle(
     "automation:setCathayGmailOtpEnabled",
@@ -440,11 +445,11 @@ export function registerOctopusBeakIpc({
       if (typeof enabled !== "boolean") {
         throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
       }
-      return setCathayGmailOtpEnabled(enabled);
+      return refreshingCredentialState(() => setCathayGmailOtpEnabled(enabled));
     },
   );
   ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
-    disconnectCathayGmailOtp(),
+    refreshingCredentialState(() => disconnectCathayGmailOtp()),
   );
   ipcMain.handle(
     "automation:deviceRegistrationStatus",
