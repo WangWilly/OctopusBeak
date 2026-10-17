@@ -6,7 +6,7 @@ import test from "node:test";
 import { TDCC_BASE_URL } from "../../../workflows/tdcc-epassbook-client.ts";
 import { createTdccRegistrationService } from "./tdcc-registration-service.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
-import { createTdccDeviceLock, type TdccDeviceLock } from "./tdcc-device-lock.ts";
+import { createSourceDeviceLock, type SourceDeviceLock } from "./source-device-lock.ts";
 import { createTdccRegistrationFixtureFetch } from "./tdcc-registration-fixture.ts";
 
 // Built at runtime so the repository privacy hook does not read ID-shaped literals.
@@ -59,7 +59,7 @@ function withService(
     store: ReturnType<typeof createTdccSecretStore>;
     credentialsText: () => string;
   }>) => Promise<void>,
-  options: { codeTimeoutMs?: number; signInDetails?: boolean; deviceLock?: TdccDeviceLock } = {},
+  options: { codeTimeoutMs?: number; signInDetails?: boolean; deviceLock?: SourceDeviceLock } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "tdcc-registration-"));
   const path = join(directory, "credentials.json");
@@ -70,7 +70,7 @@ function withService(
     fetch: fake.fetch,
     now: () => new Date("2026-10-09T02:31:00.000Z"),
     createDevice: () => DEVICE,
-    deviceLock: options.deviceLock ?? createTdccDeviceLock(),
+    deviceLock: options.deviceLock ?? createSourceDeviceLock(),
     ...(options.codeTimeoutMs === undefined ? {} : { codeTimeoutMs: options.codeTimeoutMs }),
   });
   const credentialsText = () => codec.decrypt(JSON.parse(readFileSync(path, "utf8")).data);
@@ -167,7 +167,7 @@ test("a registered device is reused when the person registers again", async () =
 });
 
 test("registration is refused while a TDCC sync holds the device, and holds the device until it ends", async () => {
-  const deviceLock = createTdccDeviceLock();
+  const deviceLock = createSourceDeviceLock();
   const fake = fakeTdcc();
   await withService(fake, async ({ service }) => {
     deviceLock.claim("sync");

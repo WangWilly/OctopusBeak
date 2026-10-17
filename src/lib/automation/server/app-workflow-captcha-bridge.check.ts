@@ -12,7 +12,6 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
-import { MAX_CAPTCHA_RETRY_ROUNDS } from "./captcha-retry-campaign.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
@@ -133,6 +132,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
               return Buffer.from("mock captcha image");
             },
             async isChallengeImageCurrent() { return true; },
+            refreshesChallengeImage: () => false,
+            async refreshChallengeImage() { return false; },
           },
           injectAnswer: async (session, _contract, answer) => {
             assert.equal(session, created.taskRunId);
@@ -413,7 +414,7 @@ test("exhausted App solver retries finalize with a typed verification failure an
       },
     });
     assert.deepEqual(result, { status: "failed" });
-    assert.equal(attempts.length, MAX_CAPTCHA_RETRY_ROUNDS);
+    assert.deepEqual(attempts, [1, 2, 3]);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "failed");
     assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "verification-failed");
@@ -424,6 +425,73 @@ test("exhausted App solver retries finalize with a typed verification failure an
     await store.close();
   }
 });
+
+for (const scenario of [
+  { name: "a failed verification route", requestsCaptcha: true },
+  { name: "a workflow failure before any CAPTCHA", requestsCaptcha: false },
+] as const) {
+  test(`${scenario.name} runs exactly one execution and never restarts`, async () => {
+    const store = new PGliteStore(await PGlite.create());
+    const controller = new AbortController();
+    try {
+      await applyPgliteOperationalBaseline(store);
+      const provider = createPgliteOperationalProvider(store);
+      const taskId = "fubon-all-statements";
+      const created = await provider.automation.createTaskRun({
+        taskId,
+        kind: "crawler",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+      });
+      const attempts: number[] = [];
+      let routes = 0;
+      const result = await runCaptchaRetryCampaign({
+        taskId,
+        appWorkflow: true,
+        provider,
+        launchVerificationSettings: {},
+        initialExecutionOptions: { taskRunId: created.taskRunId },
+        isCancellationRequested: () => false,
+        captchaRetryCooldownMs: () => undefined,
+        routeWaitingRunVerification: async (input) => {
+          routes += 1;
+          await input.onChallengeCaptured?.();
+          return { kind: "failed" };
+        },
+        async execute(options) {
+          attempts.push(options.attempt ?? 1);
+          if (scenario.requestsCaptcha) {
+            const assistance = createAppWorkflowHumanAssistancePort({
+              taskRunId: created.taskRunId,
+              persistence: provider.automation,
+            });
+            await assistance.request(sinopacContract, controller.signal).catch(() => undefined);
+          }
+          return {
+            status: "failed" as const,
+            taskRunId: created.taskRunId,
+            executionId: options.executionId!,
+            result: {
+              exitCode: 1,
+              signal: null,
+              error: new Error("workflow failed"),
+              outputPersistenceWarnings: [],
+              externalPrerequisiteIds: [],
+            },
+          };
+        },
+      });
+      assert.deepEqual(result, { status: "failed" });
+      assert.deepEqual(attempts, [1]);
+      assert.equal(routes, scenario.requestsCaptcha ? 1 : 0);
+    } finally {
+      controller.abort();
+      await store.close();
+    }
+  });
+}
 
 test("Yuanta Trade audio solver exhaustion restarts through the App campaign", async () => {
   const store = new PGliteStore(await PGlite.create());

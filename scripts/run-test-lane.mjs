@@ -9,9 +9,13 @@ const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/app-browser-host.check.ts",
   "src/lib/automation/server/captcha-source-loading.check.ts",
+  "src/lib/automation/server/cathay-registration-service.check.ts",
   "src/lib/automation/server/sinopac-login-page.check.ts",
   "src/lib/automation/server/esun-timeline-page.check.ts",
   "src/lib/automation/server/yuanta-report-page.check.ts",
+  "src/lib/preview-sources/taishin-login-form.check.ts",
+  "scripts/captcha-calibration/collect.check.mjs",
+  "scripts/esun-deposit-probe/page.check.mjs",
   "scripts/site-browser.check.mjs",
   "scripts/spending-browser-harness.check.mjs",
   "scripts/spending-page-recovery.check.mjs",

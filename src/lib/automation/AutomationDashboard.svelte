@@ -1,6 +1,6 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import TdccDeviceRegistration from "$lib/automation/TdccDeviceRegistration.svelte";
+  import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
   import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
   import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
@@ -20,6 +20,8 @@
     Plus,
     RefreshCw,
     Search,
+    FlaskConical,
+    Smartphone,
     X,
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
@@ -30,9 +32,9 @@
     AutomationActionToken,
     createAutomationRuntimeController,
   } from "$lib/automation/runtime-controller.ts";
-  import type {
-    CathayGmailOtpConnectionError,
-    CathayGmailOtpStatus,
+  import {
+    deviceRegistrationSource,
+    type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
 import {
@@ -64,9 +66,7 @@ import {
     type PendingCredentialChange,
   } from "$lib/automation/credential-changes.ts";
   import {
-    cathayEmailOtpFailureReason,
-    cathayOtpReasonNeedsGmailSettings,
-    verificationFailureEventReason,
+    isVerificationSolverExhaustedEvent,
     verificationSolverExhausted,
   } from "$lib/automation/verification-actor-ui.ts";
 import type { OnboardingWorkflowToken } from "$lib/onboarding/controller.ts";
@@ -126,6 +126,8 @@ import type {
   export let onboardingTrackedTaskId: string | null = null;
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
+  export let signInSettingsGroupId: string | null = null;
+  export let onSignInSettingsOpened: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
     credentialGroupId: string | null,
@@ -164,6 +166,46 @@ import type {
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
   $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
+  let structureReport: { taskId: string; text: string } | null = null;
+  let structureReportKey: string | null = null;
+  let structureReportOpen = false;
+  let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
+  $: expandedFailedTask = automation.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
+  $: void loadStructureReport(expandedFailedTask);
+
+  async function loadStructureReport(task: AutomationTaskRow | null) {
+    const key = task ? `${task.id}:${task.latestFinishedAt ?? ""}` : null;
+    if (key === structureReportKey) return;
+    structureReportKey = key;
+    structureReport = null;
+    if (!task || !key) return;
+    const text = await window.octopusBeak.automation.previewStructureReport(task.id).catch(() => null);
+    if (structureReportKey === key && text) structureReport = { taskId: task.id, text };
+  }
+
+  function openStructureReport() {
+    structureReportNotice = null;
+    structureReportOpen = true;
+  }
+
+  async function copyStructureReport() {
+    if (!structureReport) return;
+    try {
+      await navigator.clipboard.writeText(structureReport.text);
+      structureReportNotice = "copied";
+    } catch {
+      structureReportNotice = "copyFailed";
+    }
+  }
+
+  async function openStructureReportIssue() {
+    if (!structureReport) return;
+    try {
+      await window.octopusBeak.automation.openPreviewStructureReportIssue(structureReport.taskId);
+    } catch {
+      structureReportNotice = "openIssueFailed";
+    }
+  }
   onDestroy(() => stopRunDetailsOverview?.());
 
   function watchRunDetailsOverview(store: Readable<ViewState<OverviewPageDto>> | null) {
@@ -195,20 +237,12 @@ import type {
   let credentialChanges: CredentialChanges = NO_CREDENTIAL_CHANGES;
   let credentialFileErrors: Record<string, string> = {};
   let focusedCredentialKey: string | null = null;
-  let cathayGmailOtpBusy = false;
-  let tdccRegistering = false;
-  let cathayGmailOtpError = "";
+  let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
   let statementSelectionConfirmed = false;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let setupGuideOpen = false;
   let stageOpen: Record<string, boolean> = { sync: true };
-  const defaultCathayGmailOtpStatus: CathayGmailOtpStatus = {
-    enabled: true,
-    connectedEmail: null,
-    needsAuthorization: true,
-  };
-  let cathayGmailOtpStatus: CathayGmailOtpStatus = defaultCathayGmailOtpStatus;
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
@@ -226,7 +260,6 @@ import type {
   $: taskStages = taskStagesFor(automation);
   $: renderedPendingActions = mergePendingActions(appPendingActions, localPendingActions);
   $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
-  $: cathayGmailOtpStatus = automation.cathayGmailOtp ?? defaultCathayGmailOtpStatus;
   $: pendingChanges = pendingCredentialChanges(credentialGroups, credentialChanges);
   $: credentialsDirty = pendingChanges.length > 0 || Boolean(credentialChanges.editor?.draft.trim());
   $: savedEnabledGroupCount = credentialGroups.filter((group) => group.enabled).length;
@@ -626,25 +659,10 @@ import type {
       : $t.automation.unreadableCertificateFile;
   }
 
-  function cathayGmailOtpConnectionErrorMessage(
-    error: CathayGmailOtpConnectionError | undefined,
-  ) {
-    if (error === "authorization-cancelled")
-      return $t.automation.cathayGmailOtpAuthorizationCancelled;
-    if (error === "token-exchange-failed")
-      return $t.automation.cathayGmailOtpTokenExchangeFailed;
-    if (error === "gmail-profile-failed")
-      return $t.automation.cathayGmailOtpProfileFailed;
-    if (error === "credential-storage-failed")
-      return $t.automation.cathayGmailOtpStorageFailed;
-    return $t.automation.cathayGmailOtpActionFailed;
-  }
-
   function resetCredentialChanges() {
     credentialChanges = NO_CREDENTIAL_CHANGES;
     credentialFileErrors = {};
     focusedCredentialKey = null;
-    cathayGmailOtpError = "";
     statementSelectionConfirmed = false;
     statementSelectionError = "";
   }
@@ -711,24 +729,31 @@ import type {
     if (task) await runTask(task);
   }
 
-  async function openTdccDeviceRegistration() {
+  $: if (signInSettingsGroupId && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
+    const groupId = signInSettingsGroupId;
+    onSignInSettingsOpened();
     openCredentials();
-    selectCredentialGroup("tdcc");
+    selectCredentialGroup(groupId);
+  }
+
+  function registrationBlocksRun(task: Pick<AutomationTaskRow, "credentialGroupId">) {
+    const source = deviceRegistrationSource(task.credentialGroupId);
+    return source !== null && deviceRegistering[source];
+  }
+
+  async function openDeviceRegistration(groupId: string | null | undefined) {
+    const source = deviceRegistrationSource(groupId);
+    if (!source) return;
+    openCredentials();
+    selectCredentialGroup(source);
     await tick();
-    document.getElementById("tdcc-device-title")?.focus();
+    document.getElementById(`${source}-device-title`)?.focus();
   }
 
   function runStartErrorMessage(message: string) {
-    return message.includes("TDCC device registration is in progress")
-      ? $t.automation.tdccSyncBlockedByRegistration
+    return message.includes("Device registration is in progress")
+      ? $t.automation.deviceRegistrationBlocksSync
       : message;
-  }
-
-  async function openCathayGmailOtpSettings() {
-    openCredentials();
-    selectCredentialGroup("cathay");
-    await tick();
-    document.getElementById("cathay-gmail-otp-title")?.focus();
   }
 
   function closeCredentials() {
@@ -769,37 +794,6 @@ import type {
       groupId,
       !effectiveGroupEnabled(credentialGroups, credentialChanges, groupId),
     );
-  }
-
-  async function enableCathayGmailOtp() {
-    if (cathayGmailOtpBusy) return;
-    cathayGmailOtpBusy = true;
-    cathayGmailOtpError = "";
-    try {
-      const result = await window.octopusBeak.automation.enableCathayGmailOtp();
-      await reload();
-      if (result.connectionError)
-        cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
-    } catch {
-      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
-    } finally {
-      cathayGmailOtpBusy = false;
-    }
-  }
-
-  async function disconnectCathayGmailOtp() {
-    if (cathayGmailOtpBusy) return;
-    if (!confirm($t.automation.confirmCathayGmailOtpDisconnect)) return;
-    cathayGmailOtpBusy = true;
-    cathayGmailOtpError = "";
-    try {
-      await window.octopusBeak.automation.disconnectCathayGmailOtp();
-      await reload();
-    } catch {
-      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
-    } finally {
-      cathayGmailOtpBusy = false;
-    }
   }
 
   function toggleStatementType(groupId: string, typeId: string) {
@@ -931,8 +925,8 @@ import type {
 
   async function runTask(task: AutomationTaskRow) {
     if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
-    if (task.id === "sync-tdcc" && tdccRegistering) {
-      actionError = $t.automation.tdccSyncBlockedByRegistration;
+    if (registrationBlocksRun(task)) {
+      actionError = $t.automation.deviceRegistrationBlocksSync;
       return;
     }
     const token = beginActionToken(task.id, "run");
@@ -1343,11 +1337,7 @@ import type {
   }
 
   function workflowEventFailureLabel(event: AutomationTaskRow["events"][number]): string | null {
-    const reason = verificationFailureEventReason(event);
-    if (reason === "verification-solver-exhausted") {
-      return $t.automation.verificationSolverExhausted;
-    }
-    return reason ? $t.automation.cathayOtpFailureReasons[reason] : null;
+    return isVerificationSolverExhaustedEvent(event) ? $t.automation.verificationSolverExhausted : null;
   }
 
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
@@ -1671,9 +1661,9 @@ import type {
                         {#if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                           <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                         {/if}
-                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
-                          <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
-                            {$t.automation.tdccDevice.openSettings}
+                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required" && deviceRegistrationSource(task.credentialGroupId)}
+                          <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
+                            {$t.automation.deviceRegistrationOpenSettings}
                           </button>
                         {/if}
                       </div>
@@ -1739,26 +1729,16 @@ import type {
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
                       {#if task.appWorkflowOutcome?.errorCode}
-                        {@const cathayOtpFailure = cathayEmailOtpFailureReason(task.events)}
                         {@const solverExhausted = verificationSolverExhausted(task.events)}
                         <div class="workflow-outcome-error">
                           <code>{task.appWorkflowOutcome.errorCode}</code>
-                          {#if cathayOtpFailure}
-                            <span>{$t.automation.cathayOtpFailureReasons[cathayOtpFailure]}</span>
-                            {#if cathayOtpReasonNeedsGmailSettings(cathayOtpFailure)}
-                              <button
-                                class="button secondary cathay-gmail-settings-action"
-                                type="button"
-                                onclick={() => void openCathayGmailOtpSettings()}
-                              >
-                                {$t.automation.cathayGmailOtpSettingsAction}
+                          {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
+                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                            {#if deviceRegistrationSource(task.credentialGroupId)}
+                              <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
+                                {$t.automation.deviceRegistrationOpenSettings}
                               </button>
                             {/if}
-                          {:else if task.appWorkflowOutcome.errorCode === "device-registration-required"}
-                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
-                            <button class="button secondary tdcc-registration-action" type="button" onclick={() => void openTdccDeviceRegistration()}>
-                              {$t.automation.tdccDevice.openSettings}
-                            </button>
                           {:else if solverExhausted}
                             <span>{$t.automation.verificationSolverExhausted}</span>
                           {:else if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
@@ -1771,6 +1751,11 @@ import type {
                               : "The provider did not return a usable login form (busy or blank response). Try again later."}</span>
                           {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                          {/if}
+                          {#if structureReport?.taskId === task.id}
+                            <button class="button secondary structure-report-action" type="button" onclick={openStructureReport}>
+                              {$t.automation.structureReport.share}
+                            </button>
                           {/if}
                         </div>
                       {/if}
@@ -2075,7 +2060,7 @@ import type {
                   <button
                     class="button"
                     type="button"
-                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || (syncTask.id === "sync-tdcc" && tdccRegistering)}
+                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || registrationBlocksRun(syncTask)}
                     onclick={() => void runTask(syncTask)}
                   ><RefreshCw size={14} />{$t.automation.resync}</button>
                 {/if}
@@ -2210,70 +2195,34 @@ import type {
               </ul>
             </section>
 
-            {#if group.id === "cathay"}
-              <section class="gmail-otp-settings" aria-labelledby="cathay-gmail-otp-title">
-                <div class="gmail-otp-head">
-                  <div>
-                    <h4 id="cathay-gmail-otp-title" tabindex="-1">{$t.automation.cathayGmailOtpTitle}</h4>
-                    <p>{$t.automation.cathayGmailOtpDescription}</p>
-                  </div>
-                  <span class="chip good">{$t.automation.cathayGmailOtpAlwaysAutomatic}</span>
-                </div>
-                <p class="gmail-otp-status" aria-live="polite">
-                  {#if cathayGmailOtpStatus.needsAuthorization}
-                    {$t.automation.cathayGmailOtpNeedsAuthorization}
-                  {:else if cathayGmailOtpStatus.connectedEmail}
-                    {$t.automation.cathayGmailOtpConnected(cathayGmailOtpStatus.connectedEmail)}
-                  {:else}
-                    {$t.automation.cathayGmailOtpNotConnected}
-                  {/if}
+            {#if group.preview}
+              <div class="source-notice" role="note" data-preview-disclosure>
+                <FlaskConical size={16} aria-hidden="true" />
+                <p>
+                  <strong>{$t.automation.previewSourceTitle}</strong>
+                  <span>{$t.automation.previewSourceBody}</span>
                 </p>
-                <div class="gmail-otp-actions">
-                  {#if !cathayGmailOtpStatus.connectedEmail}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void enableCathayGmailOtp()}
-                    >
-                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
-                      {$t.automation.cathayGmailOtpConnect}
-                    </button>
-                  {:else if cathayGmailOtpStatus.needsAuthorization}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void enableCathayGmailOtp()}
-                    >
-                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
-                      {$t.automation.cathayGmailOtpReconnect}
-                    </button>
-                  {/if}
-                  {#if cathayGmailOtpStatus.connectedEmail}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void disconnectCathayGmailOtp()}
-                    >
-                      {$t.automation.cathayGmailOtpDisconnect}
-                    </button>
-                  {/if}
-                </div>
-                {#if cathayGmailOtpError}
-                  <p class="credential-error" aria-live="polite">{cathayGmailOtpError}</p>
-                {/if}
-              </section>
+              </div>
             {/if}
 
-            {#if group.id === "tdcc"}
-              <TdccDeviceRegistration
+            {#if group.sessionTakeoverNotice}
+              <div class="source-notice" role="note">
+                <Smartphone size={16} aria-hidden="true" />
+                <p>
+                  <strong>{$t.automation.sessionTakeoverTitle}</strong>
+                  <span>{localizedText(group.sessionTakeoverNotice)}</span>
+                </p>
+              </div>
+            {/if}
+
+            {#if deviceRegistrationSource(group.id)}
+              {@const source = deviceRegistrationSource(group.id)!}
+              <SourceDeviceRegistration
+                {source}
                 signInDetailsSaved={group.credentialFields.every((credentialField) =>
                   credentialState(credentialField.key) === "ready" && !credentialChanges.credentials[credentialField.key])}
                 syncActive={Boolean(selectedGroupTask?.isActive)}
-                sourceEnabled={groupOn}
-                bind:registering={tdccRegistering}
+                bind:registering={deviceRegistering[source]}
               />
             {/if}
 
@@ -2416,6 +2365,36 @@ import type {
         >{$t.automation.saveChanges}</button>
       </div>
     </form>
+  </div>
+{/if}
+
+{#if structureReportOpen && structureReport}
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="structure-report-title">
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}></button>
+    <div class="modal-panel structure-report-modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="structure-report-title">{$t.automation.structureReport.title}</h2>
+          <p>{$t.automation.structureReport.intro}</p>
+        </div>
+        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}><X size={20} /></button>
+      </div>
+      <div class="modal-body structure-report-body">
+        <ul class="structure-report-scope">
+          <li>{$t.automation.structureReport.contains}</li>
+          <li>{$t.automation.structureReport.neverContains}</li>
+          <li>{$t.automation.structureReport.sending}</li>
+        </ul>
+        <pre class="structure-report-text">{structureReport.text}</pre>
+        <div class="structure-report-actions">
+          {#if structureReportNotice}
+            <span class="structure-report-notice" role="status">{$t.automation.structureReport[structureReportNotice]}</span>
+          {/if}
+          <button class="button secondary" type="button" onclick={() => void copyStructureReport()}>{$t.automation.structureReport.copy}</button>
+          <button class="button" type="button" onclick={() => void openStructureReportIssue()}>{$t.automation.structureReport.openIssue}</button>
+        </div>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -3217,12 +3196,11 @@ import type {
     font-family: var(--font-mono);
   }
 
-  .cathay-gmail-settings-action,
-  .tdcc-registration-action {
+  .device-registration-action {
     min-height: 32px;
   }
 
-  .workflow-failure-summary .tdcc-registration-action {
+  .workflow-failure-summary .device-registration-action {
     width: fit-content;
     margin-top: var(--space-1);
   }
@@ -3404,6 +3382,61 @@ import type {
   .history-modal {
     width: min(1180px, 100%);
     height: min(760px, calc(100vh - 40px));
+  }
+
+  .structure-report-modal {
+    width: min(760px, 100%);
+  }
+
+  .structure-report-modal .modal-head p {
+    margin: var(--space-2) 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .structure-report-body {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .structure-report-scope {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding-left: var(--space-5);
+    font-size: 13px;
+  }
+
+  .structure-report-text {
+    max-height: 360px;
+    margin: 0;
+    padding: var(--space-3);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: pre;
+    user-select: text;
+  }
+
+  .structure-report-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+  }
+
+  .structure-report-notice {
+    margin-right: auto;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .structure-report-action {
+    min-height: 32px;
   }
 
   .history-head-actions {
@@ -3780,6 +3813,35 @@ import type {
     font-size: 13px;
   }
 
+  .source-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid color-mix(in oklch, var(--warn) 34%, var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--warn) 6%, var(--surface));
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .source-notice :global(svg) {
+    flex: none;
+    margin-top: 2px;
+    color: var(--warn);
+  }
+
+  .source-notice p {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+  }
+
+  .source-notice span {
+    color: var(--muted);
+  }
+
   .credential-switch {
     width: auto;
     min-width: 0;
@@ -4059,48 +4121,6 @@ import type {
   .credential-editor-foot .button {
     min-height: 34px;
     padding: 0 var(--space-3);
-  }
-
-  .gmail-otp-settings {
-    padding: var(--space-4) var(--space-5);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-  }
-
-  .gmail-otp-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  .gmail-otp-head h4 {
-    margin: 0 0 var(--space-1);
-    font-size: 15px;
-  }
-
-  .gmail-otp-head p,
-  .gmail-otp-status {
-    margin: 0;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  .gmail-otp-status {
-    margin-top: var(--space-3);
-  }
-
-  .gmail-otp-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    margin-top: var(--space-3);
-  }
-
-  .gmail-otp-actions .button {
-    min-height: 36px;
   }
 
   .file-error {

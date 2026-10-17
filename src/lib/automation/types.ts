@@ -82,28 +82,18 @@ export type AutomationTaskProgress = {
   params?: Readonly<Record<string, string | number | boolean>>;
 };
 
-/**
- * Renderer-safe state for Cathay's optional Gmail Email OTP integration.
- * Tokens, message content, and OAuth implementation details stay in the
- * Electron main process.
- */
-export type CathayGmailOtpStatus = {
-  enabled: boolean;
-  connectedEmail: string | null;
-  needsAuthorization: boolean;
-  connectionError?: CathayGmailOtpConnectionError;
-};
+export const DEVICE_REGISTRATION_SOURCES = ["tdcc", "cathay"] as const;
+export type DeviceRegistrationSource = typeof DEVICE_REGISTRATION_SOURCES[number];
 
-export type CathayGmailOtpConnectionError =
-  | "authorization-cancelled"
-  | "authorization-failed"
-  | "token-exchange-failed"
-  | "gmail-profile-failed"
-  | "credential-storage-failed";
+export function deviceRegistrationSource(groupId: string | null | undefined): DeviceRegistrationSource | null {
+  return (DEVICE_REGISTRATION_SOURCES as readonly (string | null | undefined)[]).includes(groupId)
+    ? groupId as DeviceRegistrationSource
+    : null;
+}
 
-export type TdccRegistrationChannel = "email" | "sms";
+export type DeviceRegistrationChannel = "email" | "sms";
 
-export type TdccRegistrationFailure =
+export type DeviceRegistrationFailure =
   | "sign-in-details-missing"
   | "sign-in-rejected"
   | "code-rejected"
@@ -116,17 +106,12 @@ export type TdccRegistrationFailure =
   | "not-found"
   | "sync-running";
 
-/**
- * One step of TDCC Source device registration (ADR 0041), as the renderer
- * sees it. It carries no code, token, or sign-in identifier.
- */
-export type TdccRegistrationStep =
-  | Readonly<{ status: "code-required"; registrationId: string; channel: TdccRegistrationChannel }>
-  | Readonly<{ status: "registered"; channels: readonly TdccRegistrationChannel[] }>
-  | Readonly<{ status: "failed"; reason: TdccRegistrationFailure }>;
+export type DeviceRegistrationStep =
+  | Readonly<{ status: "code-required"; registrationId: string; channel: DeviceRegistrationChannel }>
+  | Readonly<{ status: "registered"; channels: readonly DeviceRegistrationChannel[] }>
+  | Readonly<{ status: "failed"; reason: DeviceRegistrationFailure }>;
 
-/** Whether a device is registered for the saved TDCC sign-in identifier. */
-export type TdccDeviceRegistrationStatus = Readonly<{ registered: boolean }>;
+export type DeviceRegistrationStatus = Readonly<{ registered: boolean }>;
 
 export type AutomationTaskSummary = {
   id: string;
@@ -147,6 +132,8 @@ export type AutomationCredentialGroup = {
   credentialKeys: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
+  sessionTakeoverNotice?: AutomationLocalizedText;
+  preview?: true;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];
 };
@@ -210,7 +197,4 @@ export type AutomationPageModel = {
   credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
-  /** Main-process policy projection; missing entries fail closed to solver in the UI. */
-  /** Optional for compatibility with non-desktop model consumers. */
-  cathayGmailOtp?: CathayGmailOtpStatus;
 };

@@ -83,16 +83,12 @@ assert.doesNotMatch(
 );
 assert.match(source, /await pgliteViewRegistration\.close\(\)/);
 assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);
-assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
-assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:disconnectCathayGmailOtp"/);
-assert.match(source, /typeof enabled !== "boolean"/);
-assert.match(source, /ipcMain\.handle\("automation:tdccDeviceRegistrationStatus"/);
-assert.match(source, /ipcMain\.handle\("automation:startTdccDeviceRegistration"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:submitTdccRegistrationCode"/);
-assert.match(source, /ipcMain\.handle\(\s*"automation:cancelTdccDeviceRegistration"/);
-assert.match(source, /TDCC_ONE_TIME_CODE\.test\(code\)/, "the renderer cannot pass anything but a digit code to TDCC");
+assert.match(source, /ipcMain\.handle\(\s*"automation:deviceRegistrationStatus"/);
+assert.match(source, /ipcMain\.handle\(\s*"automation:startDeviceRegistration"/);
+assert.match(source, /ipcMain\.handle\(\s*"automation:submitDeviceRegistrationCode"/);
+assert.match(source, /ipcMain\.handle\(\s*"automation:cancelDeviceRegistration"/);
+assert.match(source, /ONE_TIME_CODE\.test\(code\)/, "the renderer cannot pass anything but a digit code to a source");
+assert.match(source, /deviceRegistrationSource\(value\)/, "the renderer cannot name a source without device registration");
 assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
 assert.doesNotMatch(source, /refreshCathayEmailOtpTarget|refreshSinopacCaptchaTarget|refreshYuantaTradeChallengeSubmitTarget/);
 assert.doesNotMatch(source, /shouldCheckYuantaTradeCompletion|shouldAutoResumeYuantaTradeCaptcha/);
@@ -101,8 +97,9 @@ const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
 assert.match(
   mainSource,
-  /onSystemSettingsChanged:\s*\(\)\s*=>\s*scheduler\?\.reschedule\(\)/,
+  /onSystemSettingsChanged:\s*\(\)\s*=>\s*\{\s*scheduler\?\.reschedule\(\);\s*collectionScheduler\?\.reschedule\(\);\s*\}/,
 );
+assert.match(mainSource, /scheduled-collection-scheduler-error/);
 assert.match(mainSource, /scheduler\?\.start\(\)/);
 assert.match(mainSource, /scheduler\?\.stop\(\)/);
 assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc/);

@@ -252,12 +252,15 @@ async function collectFubonDepositForApp(
   items: PGliteWorkflowRunItem[],
   reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonDepositWorkflowCollection> {
+  const accountIdentity = context.accountIdentity;
+  if (!accountIdentity) throw new Error("Account identity port is unavailable.");
   return await runFubonStatements(page, input, {
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,
+    accountIdentityContinuity: (request) => accountIdentity.continuity(request),
     reportActivity,
   });
 }
@@ -359,8 +362,16 @@ export async function runFubonAllStatementsWorkflow(
         signal: context.signal,
         assertSession: () => assertSession(page),
         collect: async (typeId, stagedItems, reportActivity) => {
+          const collectDepositWithExclusionEvents = async () => {
+            const deposit = await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity);
+            for (const exclusion of deposit.currentBalanceExclusions ?? [])
+              await context.event("collection", `deposit-current-balance-excluded-${exclusion.reason}`);
+            for (const exclusion of deposit.statementExclusions ?? [])
+              await context.event("collection", `deposit-statement-excluded-${exclusion.reason}`);
+            return deposit;
+          };
           const result = typeId === "deposit"
-            ? await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity)
+            ? await collectDepositWithExclusionEvents()
             : typeId === "credit_card"
               ? await collectCreditCard(page, parsed.data.creditCards, context, identity, stagedItems, reportActivity)
               : await collectLoan(page, parsed.data.loans, context, identity, stagedItems, reportActivity);

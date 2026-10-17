@@ -11,7 +11,6 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -54,14 +53,6 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   const definition = workflowDefinitionForTask(task.workflowId);
   assert.equal(definition?.id, "cathay-all-statements");
   assert.equal(definition?.requiresFinancialCommit, true);
-  const otpPort: CathayGmailOtpPort = {
-    async ensureAccess() { return { status: "fallback", reason: "not-configured" }; },
-    async prepareRetrieval() { return { status: "fallback", reason: "not-configured" }; },
-    async retrieve() { return { status: "fallback", reason: "not-configured" }; },
-  };
-  const injectedDefinition = workflowDefinitionForTask(task.workflowId, { cathayGmailOtpPort: otpPort });
-  assert.equal(injectedDefinition?.id, definition?.id);
-  assert.notEqual(injectedDefinition, definition, "the worker registry binds the supplied host OTP port per run");
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
   assert.equal(workflowBrowserProfileForTask(task.workflowId), "cathay-login");
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
@@ -94,7 +85,6 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   let observedBrowserProfile: string | undefined;
   let browserDispatches = 0;
   let commitCalls = 0;
-  let otpPortCreations = 0;
   const browser: WorkflowBrowserPort = {
     async withPage() {
       browserDispatches += 1;
@@ -123,10 +113,6 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
-      createCathayGmailOtpPort() {
-        otpPortCreations += 1;
-        return otpPort;
-      },
       workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
         observedBrowserProfile = browserProfile;
@@ -139,7 +125,6 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     assert.equal(observedBrowserProfile, "cathay-login");
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
-    assert.equal(otpPortCreations, 1, "the inline App host binds one Gmail OTP port per Cathay run");
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no statement or log files");

@@ -1,6 +1,27 @@
 import { derived, writable } from "svelte/store";
 import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
-import type { TdccRegistrationChannel, TdccRegistrationFailure } from "../automation/types.ts";
+import type {
+  DeviceRegistrationChannel,
+  DeviceRegistrationFailure,
+  DeviceRegistrationSource,
+} from "../automation/types.ts";
+
+type DeviceRegistrationCopy = Readonly<{
+  title: string;
+  description: string;
+  disclosure: string | null;
+  registered: string;
+  notRegistered: string;
+  register: string;
+  registerAgain: string;
+  starting: string;
+  codeLabel: Readonly<Record<DeviceRegistrationChannel, string>>;
+  codeHelp: string;
+  submit: string;
+  registeredMessage: string;
+  saveFirst: string;
+  failures: Readonly<Record<DeviceRegistrationFailure, string>>;
+}>;
 
 export const locales = ["en", "zh-TW"] as const;
 export type Locale = (typeof locales)[number];
@@ -480,6 +501,24 @@ const en = {
       `${dates.length === 1 ? "Rate date" : "Rate dates"}: ${dates.join(", ")}`,
     missingExchangeRate: "Missing exchange rate; showing native currencies",
   },
+  preview: {
+    marker: "Includes preview data",
+    markerTooltip:
+      "This total counts balances from a Preview source. Preview sources are not verified against live data, so their figures may be incomplete or wrong.",
+    groupHeading: "Preview",
+    groupNote:
+      "Collected by Preview sources, which are not verified against live data. Their balances count toward totals; their transactions appear only in each account's own view.",
+    collectedAt: (time: string) => `Collected ${time}`,
+    balanceTimeReported: "Reported by source",
+    balanceTimeCollected: "Collection time",
+    balanceTime: (time: string, basis: string) => `Balance as of ${time} · ${basis}`,
+    transactionsEyebrow: "Preview transactions",
+    transactionsNote: "As the Preview source reported them. They are not part of Spending.",
+    amount: "Amount",
+    direction: "Direction",
+    directions: { inflow: "In", outflow: "Out", unknown: "Unknown" },
+    noTransactions: "No transactions collected for this account.",
+  },
   chart: {
     trendAria: (label: string, currency: string) =>
       `${label} trend ${currency}`,
@@ -670,32 +709,6 @@ const en = {
     workflowEventEmpty: "No recent workflow events remain.",
     verificationSolverExhausted:
       "Automatic verification could not finish this challenge, so the run stopped. Retry when the challenge can be completed automatically.",
-    cathayOtpFailureReasons: {
-      "challenge-unavailable": "Cathay did not show a supported Email OTP challenge.",
-      "answer-entry-failed": "The verification code could not be entered, so this run stopped.",
-      "send-uncertain": "Cathay may have sent the email code; the app stopped without requesting another one.",
-      "submission-uncertain": "The code submission could not be confirmed; the app did not submit it again.",
-      "completion-unconfirmed": "Cathay did not confirm sign-in after verification. Check the bank session before retrying.",
-      "gmail-disabled": "Automatic Gmail OTP is turned off for Cathay.",
-      "gmail-not-configured": "Gmail OTP is not configured for Cathay.",
-      "gmail-needs-authorization": "Connect or reconnect Gmail in Cathay sign-in details before running this source.",
-      "gmail-authorization-cancelled": "Gmail authorization was cancelled. Connect Gmail in Cathay sign-in details to retry.",
-      "gmail-authorization-failed": "Gmail authorization could not be completed. Reconnect Gmail in Cathay sign-in details.",
-      "gmail-token-invalid": "The saved Gmail authorization is no longer valid. Reconnect Gmail in Cathay sign-in details.",
-      "gmail-request-failed": "Gmail could not provide a verification code. Check the Gmail connection and retry.",
-      "gmail-no-candidate": "No eligible Cathay verification email was found in Gmail.",
-      "gmail-ambiguous-candidate": "More than one possible Cathay verification email was found; the app stopped safely.",
-      "gmail-stale-candidate": "The available Cathay verification email was outside the current request window.",
-      "gmail-malformed-candidate": "The matching Cathay email did not contain a usable verification code.",
-      "gmail-unauthenticated-candidate": "The matching Cathay email could not be authenticated safely.",
-      "gmail-unauthenticated-google-results": "Gmail results could not be authenticated safely.",
-      "gmail-unauthenticated-cathay-alignment": "The email could not be safely matched to Cathay's verification request.",
-      "gmail-unauthenticated-hme-original-sender": "The email sender could not be authenticated safely.",
-      "gmail-unauthenticated-hme-relay-auth": "The forwarded email authorization could not be verified safely.",
-      "gmail-unauthenticated-hme-relay-signature": "The forwarded email signature could not be verified safely.",
-      "gmail-timeout": "Gmail did not return a verification result in time.",
-      "gmail-protocol-error": "The Gmail verification request could not be completed safely.",
-    } as Record<string, string>,
     workflowEventCounts: (completed: number | undefined, total: number | undefined) =>
       completed !== undefined && total !== undefined
         ? `${completed} / ${total}`
@@ -780,67 +793,95 @@ const en = {
     },
     summarySeparator: "; ",
     changeListSeparator: ", ",
-    cathayGmailOtpTitle: "Cathay Gmail OTP",
-    cathayGmailOtpAlwaysAutomatic: "Automatic verification",
-    cathayGmailOtpDescription:
-      "Cathay automatically retrieves and submits one matching code after you authorize Gmail.",
-    cathayGmailOtpConnected: (email: string) => `Connected Gmail: ${email}`,
-    cathayGmailOtpNotConnected: "No Google account connected.",
-    cathayGmailOtpNeedsAuthorization:
-      "Google authorization is required before Gmail can be read.",
-    cathayGmailOtpConnect: "Connect Google account",
-    cathayGmailOtpReconnect: "Reconnect Google account",
-    cathayGmailOtpDisconnect: "Disconnect Google account",
-    cathayGmailOtpSettingsAction: "Open Cathay Gmail settings",
-    cathayGmailOtpActionFailed:
-      "The Gmail connection could not be updated. Automatic Cathay verification will stop until Gmail is configured.",
-    cathayGmailOtpAuthorizationCancelled:
-      "Google authorization was cancelled. Connect Gmail before trying automatic verification again.",
-    cathayGmailOtpTokenExchangeFailed:
-      "Google authorization could not be completed. Reconnect the Google account and try again.",
-    cathayGmailOtpProfileFailed:
-      "Gmail account details could not be read. Confirm Gmail API access and try again.",
-    cathayGmailOtpStorageFailed:
-      "Google authorization could not be stored securely on this device.",
-    confirmCathayGmailOtpDisconnect:
-      "Disconnect Google account? Cathay verification will require Gmail authorization again.",
-    tdccDevice: {
-      title: "Device registration",
-      description:
-        "TDCC asks for one-time codes the first time this device signs in. Register here once, and again whenever TDCC stops trusting this device.",
-      registered: "Registered",
-      notRegistered: "Not registered",
-      register: "Register this device",
-      registerAgain: "Register again",
-      starting: "Signing in to TDCC…",
-      codeLabel: {
-        email: "Enter the code TDCC sent to your email",
-        sms: "Enter the code TDCC sent by text message",
-      } as Record<TdccRegistrationChannel, string>,
-      codeHelp: "The code goes straight to TDCC. OctopusBeak does not save it.",
-      submit: "Submit code",
-      registeredMessage: "This device is registered. TDCC sync can sign in now.",
-      saveFirst: "Save your ID number and password first, then register this device.",
-      openSettings: "Register this device",
-      conflictTitle: "TDCC trusts one device at a time",
-      conflictBody:
-        "Syncing here signs the TDCC e-Passbook phone App out, and the phone App asks for a code the next time you sign in there. If you use the phone App again, register this device again before the next sync.",
-      failures: {
-        "sign-in-details-missing": "Save your ID number and password first, then register this device.",
-        "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
-        "code-rejected": "TDCC did not accept that code. Register again to get a new code.",
-        "code-expired": "That code has expired. Register again to get a new code.",
-        "not-trusted": "TDCC accepted the codes but still does not trust this device. Register again.",
-        "protocol-outdated": "TDCC changed its App interface. Update OctopusBeak to register this device.",
-        unavailable: "TDCC could not be reached. Try again later.",
-        expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
-        cancelled: "Registration cancelled.",
-        "not-found": "This registration has ended. Register again.",
-        "sync-running": "A TDCC sync is running. Register this device after it finishes.",
-      } as Record<TdccRegistrationFailure, string>,
+    sessionTakeoverTitle: "Syncing signs out your other session",
+    previewSourceTitle: "Preview source: not verified against live data",
+    previewSourceBody:
+      "OctopusBeak has not run this source against a real account yet. Its balances and transactions may be incomplete or wrong. They are kept apart from verified data and marked as preview wherever they appear.",
+    structureReport: {
+      share: "Share structure report",
+      title: "Structure report",
+      intro:
+        "This preview source failed. The report below describes the shape of the responses it received, so the source can be fixed. Read it in full before you share it.",
+      contains: "It contains endpoint paths, HTTP statuses, field names, value types and formats, and short codes such as currency.",
+      neverContains: "It never contains account numbers, names, amounts, balances, dates, remarks, or other free text.",
+      sending:
+        "OctopusBeak does not send this report anywhere. Open GitHub issue opens a prefilled issue in your browser; paste the report there and submit it only if you want to.",
+      copy: "Copy",
+      copied: "Copied",
+      copyFailed: "Copy failed. Select the text and copy it manually.",
+      openIssue: "Open GitHub issue",
+      openIssueFailed: "Could not open the browser.",
     },
-    tdccSyncBlockedByRegistration:
-      "TDCC device registration is in progress. Finish or cancel it, then run the sync.",
+    deviceRegistration: {
+      tdcc: {
+        title: "Device registration",
+        description:
+          "TDCC asks for one-time codes the first time this device signs in. Register here once, and again whenever TDCC stops trusting this device.",
+        disclosure: null,
+        registered: "Registered",
+        notRegistered: "Not registered",
+        register: "Register this device",
+        registerAgain: "Register again",
+        starting: "Signing in to TDCC…",
+        codeLabel: {
+          email: "Enter the code TDCC sent to your email",
+          sms: "Enter the code TDCC sent by text message",
+        },
+        codeHelp: "The code goes straight to TDCC. OctopusBeak does not save it.",
+        submit: "Submit code",
+        registeredMessage: "This device is registered. TDCC sync can sign in now.",
+        saveFirst: "Save your ID number and password first, then register this device.",
+        failures: {
+          "sign-in-details-missing": "Save your ID number and password first, then register this device.",
+          "sign-in-rejected": "TDCC did not accept this ID number and password. Check them and try again.",
+          "code-rejected": "TDCC did not accept that code. Register again to get a new code.",
+          "code-expired": "That code has expired. Register again to get a new code.",
+          "not-trusted": "TDCC accepted the codes but still does not trust this device. Register again.",
+          "protocol-outdated": "TDCC changed its App interface. Update OctopusBeak to register this device.",
+          unavailable: "TDCC could not be reached. Try again later.",
+          expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
+          cancelled: "Registration cancelled.",
+          "not-found": "This registration has ended. Register again.",
+          "sync-running": "A TDCC sync is running. Register this device after it finishes.",
+        },
+      },
+      cathay: {
+        title: "Trusted device",
+        description:
+          "Cathay asks for a one-time code when a device it does not trust signs in. Register here once so syncs can sign in without a code, and again whenever Cathay stops trusting this device.",
+        disclosure:
+          "Registering adds this App's browser as a trusted device on your Cathay United Bank online banking account. You can see or remove it in Cathay online banking under Device management (裝置管理). If you later set up a trusted device somewhere else, Cathay may remove this one, and syncs then ask you to register again.",
+        registered: "Registered",
+        notRegistered: "Not registered",
+        register: "Register this device",
+        registerAgain: "Register again",
+        starting: "Signing in to Cathay…",
+        codeLabel: {
+          email: "Enter the code Cathay sent to your email",
+          sms: "Enter the code Cathay sent by text message",
+        },
+        codeHelp: "Enter the digits; you can leave out any letter prefix. The code goes straight to Cathay. OctopusBeak does not save it.",
+        submit: "Submit code",
+        registeredMessage: "This device is registered. Cathay sync can sign in without a code now.",
+        saveFirst: "Save your ID number, online banking code, and password first, then register this device.",
+        failures: {
+          "sign-in-details-missing": "Save your ID number, online banking code, and password first, then register this device.",
+          "sign-in-rejected": "Cathay did not accept these sign-in details. Check them and try again.",
+          "code-rejected": "Cathay did not accept that code. Register again to get a new code.",
+          "code-expired": "That code has expired. Register again to get a new code.",
+          "not-trusted": "Cathay accepted the code but did not add this device as trusted. Register again.",
+          "protocol-outdated": "Cathay changed its sign-in page. Update OctopusBeak to register this device.",
+          unavailable: "Cathay did not show the expected sign-in step. Check your sign-in details, or try again later.",
+          expired: "The registration waited more than 10 minutes for a code and has ended. Register again.",
+          cancelled: "Registration cancelled.",
+          "not-found": "This registration has ended. Register again.",
+          "sync-running": "A Cathay sync is running. Register this device after it finishes.",
+        },
+      },
+    } as Record<DeviceRegistrationSource, DeviceRegistrationCopy>,
+    deviceRegistrationBlocksSync:
+      "Device registration is in progress for this source. Finish or cancel it, then run the sync.",
+    deviceRegistrationOpenSettings: "Register this device",
     unvaluedAccounts: {
       title: "Accounts without a current value",
       body: "These accounts were imported, but no balance or holding value was observed, so totals leave them out.",
@@ -1149,9 +1190,28 @@ const en = {
       `Last ${when} ${succeeded ? "succeeded" : "failed"}`,
     exchangeRateNextRun: (when: string) => `Next ${when}`,
     systemSettingsDescription:
-      "Set the timezone used for timestamps and the daily exchange-rate update time.",
+      "Set the timezone used for timestamps, the daily exchange-rate update time, and daily scheduled collection.",
     systemTimezone: "System timezone",
     exchangeRateUpdateTime: "Exchange-rate update time",
+    scheduledCollection: "Daily scheduled collection",
+    scheduledCollectionHint:
+      "While OctopusBeak is open, sync every enabled source once a day at this time. A source that needs you sends a notification.",
+    scheduledCollectionToggle: "Daily",
+    scheduledCollectionNextRun: (when: string) => `Next ${when}`,
+    scheduledCollectionOff: "Off. Sources sync only when you start them.",
+    previewFeatures: "Preview features",
+    previewFeaturesDescription:
+      "Connect banks that OctopusBeak has not yet verified against live data. Preview data stays separate from verified data.",
+    previewFeaturesHint:
+      "Shows preview sources in sign-in settings and includes them in syncing. Turning this off hides them and their data but keeps the data.",
+    previewFeaturesOn: "On",
+    previewFeaturesOff: "Off",
+    deletePreviewData: "Delete all preview data",
+    deletePreviewDataHint: "Removes every balance and transaction collected by preview sources. Verified data is not affected.",
+    deletePreviewDataConfirm: "Delete all preview data? This cannot be undone. Preview sources collect again on their next sync.",
+    deletePreviewDataAction: "Delete",
+    previewDataDeleted: "Preview data deleted",
+    deletePreviewDataFailed: "Preview data could not be deleted. Try again.",
     saving: "Saving...",
     settingsSaved: "Settings saved.",
     allChangesSaved: "All changes saved",
@@ -1691,6 +1751,22 @@ const zh: typeof en = {
     rateDates: (dates) => `匯率日期：${dates.join("、")}`,
     missingExchangeRate: "缺少匯率，顯示原幣金額",
   },
+  preview: {
+    marker: "含預覽資料",
+    markerTooltip: "這個總額包含預覽來源的餘額。預覽來源尚未經實際資料驗證，數字可能不完整或有誤。",
+    groupHeading: "預覽",
+    groupNote: "由尚未經實際資料驗證的預覽來源收集。餘額計入總額，交易只在各帳戶自己的明細中顯示。",
+    collectedAt: (time) => `收集於 ${time}`,
+    balanceTimeReported: "來源回報時間",
+    balanceTimeCollected: "收集時間",
+    balanceTime: (time, basis) => `餘額時間 ${time} · ${basis}`,
+    transactionsEyebrow: "預覽交易",
+    transactionsNote: "依預覽來源回報的內容顯示，不計入消費。",
+    amount: "金額",
+    direction: "方向",
+    directions: { inflow: "存入", outflow: "支出", unknown: "未知" },
+    noTransactions: "這個帳戶尚未收集到交易。",
+  },
   chart: {
     trendAria: (label, currency) => `${label} 趨勢 ${currency}`,
     labelAria: (label, currency) => `${label} ${currency}`,
@@ -1873,32 +1949,6 @@ const zh: typeof en = {
     workflowEventEmpty: "目前沒有保留中的工作流程事件。",
     verificationSolverExhausted:
       "自動驗證無法完成這次驗證，流程已停止。請在驗證可由系統自動完成時再重試。",
-    cathayOtpFailureReasons: {
-      "challenge-unavailable": "國泰未顯示支援的 Email OTP 驗證畫面。",
-      "answer-entry-failed": "無法輸入驗證碼，這次同步已停止。",
-      "send-uncertain": "國泰可能已寄出驗證碼；系統停止流程，沒有再次要求寄送。",
-      "submission-uncertain": "無法確認驗證碼是否已送出；系統沒有重複提交。",
-      "completion-unconfirmed": "驗證後國泰仍未確認登入成功。請先確認銀行工作階段，再重試。",
-      "gmail-disabled": "國泰的 Gmail 自動驗證碼功能尚未開啟。",
-      "gmail-not-configured": "尚未設定國泰 Gmail 驗證碼功能。",
-      "gmail-needs-authorization": "請先在國泰登入資料中連結或重新授權 Gmail，再執行此來源。",
-      "gmail-authorization-cancelled": "已取消 Gmail 授權。請在國泰登入資料中連結 Gmail 後重試。",
-      "gmail-authorization-failed": "無法完成 Gmail 授權。請在國泰登入資料中重新連結 Gmail。",
-      "gmail-token-invalid": "已儲存的 Gmail 授權失效。請在國泰登入資料中重新連結 Gmail。",
-      "gmail-request-failed": "Gmail 無法提供驗證碼。請確認 Gmail 連結後重試。",
-      "gmail-no-candidate": "Gmail 中找不到符合條件的國泰驗證郵件。",
-      "gmail-ambiguous-candidate": "Gmail 中找到多封可能的國泰驗證郵件，系統已安全停止。",
-      "gmail-stale-candidate": "找到的國泰驗證郵件不在本次要求的時間範圍內。",
-      "gmail-malformed-candidate": "符合條件的國泰郵件未包含可用的驗證碼。",
-      "gmail-unauthenticated-candidate": "無法安全確認這封國泰郵件的真實性。",
-      "gmail-unauthenticated-google-results": "無法安全確認 Gmail 搜尋結果的真實性。",
-      "gmail-unauthenticated-cathay-alignment": "無法安全確認郵件符合國泰本次驗證要求。",
-      "gmail-unauthenticated-hme-original-sender": "無法安全確認郵件寄件者。",
-      "gmail-unauthenticated-hme-relay-auth": "無法安全確認轉寄郵件授權。",
-      "gmail-unauthenticated-hme-relay-signature": "無法安全確認轉寄郵件簽章。",
-      "gmail-timeout": "Gmail 未能在時限內回傳驗證結果。",
-      "gmail-protocol-error": "Gmail 驗證要求無法安全完成。",
-    } as Record<string, string>,
     workflowEventCounts: (completed, total) =>
       completed !== undefined && total !== undefined
         ? `${completed} / ${total}`
@@ -1980,65 +2030,92 @@ const zh: typeof en = {
     },
     summarySeparator: "；",
     changeListSeparator: "、",
-    cathayGmailOtpTitle: "國泰 Gmail 驗證碼",
-    cathayGmailOtpAlwaysAutomatic: "自動驗證已啟用",
-    cathayGmailOtpDescription:
-      "授權 Gmail 後，國泰登入會自動取得符合條件的驗證碼，並送出一次。",
-    cathayGmailOtpConnected: (email) => `已連結 Gmail：${email}`,
-    cathayGmailOtpNotConnected: "尚未連結 Google 帳號。",
-    cathayGmailOtpNeedsAuthorization: "需要重新授權 Google，才能讀取 Gmail。",
-    cathayGmailOtpConnect: "連結 Google 帳號",
-    cathayGmailOtpReconnect: "重新連結 Google 帳號",
-    cathayGmailOtpDisconnect: "解除 Google 帳號連結",
-    cathayGmailOtpSettingsAction: "開啟國泰 Gmail 設定",
-    cathayGmailOtpActionFailed:
-      "無法更新 Gmail 連結；Gmail 設定完成前，國泰自動驗證流程會停止。",
-    cathayGmailOtpAuthorizationCancelled:
-      "已取消 Google 授權。請連結 Gmail 後再執行自動驗證。",
-    cathayGmailOtpTokenExchangeFailed:
-      "無法完成 Google 授權交換，請重新連結 Google 帳號後再試一次。",
-    cathayGmailOtpProfileFailed:
-      "無法讀取 Gmail 帳號資料，請確認 Gmail API 權限後再試一次。",
-    cathayGmailOtpStorageFailed:
-      "無法在這台裝置上安全保存 Google 授權。",
-    confirmCathayGmailOtpDisconnect:
-      "要解除 Google 帳號連結嗎？下次國泰驗證前需要重新授權 Gmail。",
-    tdccDevice: {
-      title: "裝置註冊",
-      description:
-        "這台裝置第一次登入集保時，集保會要求輸入一次性驗證碼。請在這裡註冊；之後集保不再信任這台裝置時，再註冊一次。",
-      registered: "已註冊",
-      notRegistered: "尚未註冊",
-      register: "註冊此裝置",
-      registerAgain: "重新註冊",
-      starting: "正在登入集保…",
-      codeLabel: {
-        email: "輸入集保寄到你電子郵件的驗證碼",
-        sms: "輸入集保以簡訊寄送的驗證碼",
+    sessionTakeoverTitle: "同步會登出你在其他地方的登入",
+    previewSourceTitle: "預覽來源：尚未以實際資料驗證",
+    previewSourceBody:
+      "OctopusBeak 尚未用真實帳戶執行過這個來源，餘額與交易可能不完整或有誤。這些資料與已驗證的資料分開保存，出現的地方都會標示為預覽。",
+    structureReport: {
+      share: "分享結構報告",
+      title: "結構報告",
+      intro: "這個預覽來源執行失敗。下方報告描述它收到的回應格式，可用來修正這個來源。分享前請完整閱讀。",
+      contains: "報告包含端點路徑、HTTP 狀態碼、欄位名稱、值的型別與格式，以及幣別等簡短代碼。",
+      neverContains: "報告絕不包含帳號、姓名、金額、餘額、日期、備註或其他自由文字。",
+      sending: "OctopusBeak 不會自行傳送這份報告。「開啟 GitHub issue」會在瀏覽器開啟預填的 issue；請自行貼上報告，並由你決定是否送出。",
+      copy: "複製",
+      copied: "已複製",
+      copyFailed: "複製失敗，請選取文字後手動複製。",
+      openIssue: "開啟 GitHub issue",
+      openIssueFailed: "無法開啟瀏覽器。",
+    },
+    deviceRegistration: {
+      tdcc: {
+        title: "裝置註冊",
+        description:
+          "這台裝置第一次登入集保時，集保會要求輸入一次性驗證碼。請在這裡註冊；之後集保不再信任這台裝置時，再註冊一次。",
+        disclosure: null,
+        registered: "已註冊",
+        notRegistered: "尚未註冊",
+        register: "註冊此裝置",
+        registerAgain: "重新註冊",
+        starting: "正在登入集保…",
+        codeLabel: {
+          email: "輸入集保寄到你電子郵件的驗證碼",
+          sms: "輸入集保以簡訊寄送的驗證碼",
+        },
+        codeHelp: "驗證碼會直接送給集保，OctopusBeak 不會保存。",
+        submit: "送出驗證碼",
+        registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
+        saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
+        failures: {
+          "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
+          "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
+          "code-rejected": "集保不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
+          "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
+          "not-trusted": "集保已接受驗證碼，但仍不信任這台裝置。請再註冊一次。",
+          "protocol-outdated": "集保e手掌握的 App 介面已變更，需要更新 OctopusBeak 才能註冊裝置。",
+          unavailable: "目前無法連線到集保，請稍後再試。",
+          expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
+          cancelled: "已取消註冊。",
+          "not-found": "這次註冊已結束，請重新註冊。",
+          "sync-running": "集保同步進行中，同步結束後再註冊這台裝置。",
+        },
       },
-      codeHelp: "驗證碼會直接送給集保，OctopusBeak 不會保存。",
-      submit: "送出驗證碼",
-      registeredMessage: "已註冊這台裝置，集保同步現在可以登入。",
-      saveFirst: "請先儲存身分證字號與密碼，再註冊這台裝置。",
-      openSettings: "註冊此裝置",
-      conflictTitle: "集保一次只信任一台裝置",
-      conflictBody:
-        "在這裡同步會讓集保e手掌握 App 登出，下次在手機登入時需要輸入驗證碼。如果之後又使用手機 App，下次同步前請在這裡重新註冊這台裝置。",
-      failures: {
-        "sign-in-details-missing": "請先儲存身分證字號與密碼，再註冊這台裝置。",
-        "sign-in-rejected": "集保不接受這組身分證字號與密碼，請確認後再試一次。",
-        "code-rejected": "集保不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
-        "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
-        "not-trusted": "集保已接受驗證碼，但仍不信任這台裝置。請再註冊一次。",
-        "protocol-outdated": "集保e手掌握的 App 介面已變更，需要更新 OctopusBeak 才能註冊裝置。",
-        unavailable: "目前無法連線到集保，請稍後再試。",
-        expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
-        cancelled: "已取消註冊。",
-        "not-found": "這次註冊已結束，請重新註冊。",
-        "sync-running": "集保同步進行中，同步結束後再註冊這台裝置。",
+      cathay: {
+        title: "信任裝置",
+        description:
+          "國泰世華遇到尚未信任的裝置登入時，會要求輸入一次性驗證碼。請在這裡註冊一次，之後同步就能免驗證碼登入；國泰不再信任這台裝置時，再註冊一次。",
+        disclosure:
+          "註冊後，你的國泰世華網路銀行帳戶會把這個 App 的瀏覽器新增為信任裝置。你可以在國泰世華網路銀行的「裝置管理」查看或移除它。之後若你在其他地方設定信任裝置，國泰可能會移除這一台，屆時同步會請你重新註冊。",
+        registered: "已註冊",
+        notRegistered: "尚未註冊",
+        register: "註冊此裝置",
+        registerAgain: "重新註冊",
+        starting: "正在登入國泰世華…",
+        codeLabel: {
+          email: "輸入國泰寄到你電子郵件的驗證碼",
+          sms: "輸入國泰以簡訊寄送的驗證碼",
+        },
+        codeHelp: "輸入數字即可，英文前綴可省略。驗證碼會直接送給國泰，OctopusBeak 不會保存。",
+        submit: "送出驗證碼",
+        registeredMessage: "已註冊這台裝置，國泰同步現在可以免驗證碼登入。",
+        saveFirst: "請先儲存身分證字號、網路銀行代碼與密碼，再註冊這台裝置。",
+        failures: {
+          "sign-in-details-missing": "請先儲存身分證字號、網路銀行代碼與密碼，再註冊這台裝置。",
+          "sign-in-rejected": "國泰不接受這組登入資料，請確認後再試一次。",
+          "code-rejected": "國泰不接受這個驗證碼。請重新註冊以取得新的驗證碼。",
+          "code-expired": "驗證碼已過期。請重新註冊以取得新的驗證碼。",
+          "not-trusted": "國泰已接受驗證碼，但沒有把這台裝置加入信任裝置。請再註冊一次。",
+          "protocol-outdated": "國泰的登入頁面已變更，需要更新 OctopusBeak 才能註冊裝置。",
+          unavailable: "國泰沒有顯示預期的登入步驟。請確認登入資料，或稍後再試。",
+          expired: "等待驗證碼超過 10 分鐘，這次註冊已結束。請重新註冊。",
+          cancelled: "已取消註冊。",
+          "not-found": "這次註冊已結束，請重新註冊。",
+          "sync-running": "國泰同步進行中，同步結束後再註冊這台裝置。",
+        },
       },
     },
-    tdccSyncBlockedByRegistration: "集保裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    deviceRegistrationBlocksSync: "這個來源的裝置註冊進行中。請完成或取消註冊後，再執行同步。",
+    deviceRegistrationOpenSettings: "註冊此裝置",
     unvaluedAccounts: {
       title: "沒有金額的帳戶",
       body: "這些帳戶已匯入，但沒有觀測到餘額或持股價值，總額不含這些帳戶。",
@@ -2329,9 +2406,25 @@ const zh: typeof en = {
     exchangeRateHint: "每天更新一次外幣與加密資產匯率",
     exchangeRateLastRun: (when, succeeded) => `上次 ${when} ${succeeded ? "成功" : "失敗"}`,
     exchangeRateNextRun: (when) => `下次 ${when}`,
-    systemSettingsDescription: "設定時間戳記使用的時區，以及每日匯率更新時間。",
+    systemSettingsDescription: "設定時間戳記使用的時區、每日匯率更新時間，以及每日排程收集。",
     systemTimezone: "系統時區",
     exchangeRateUpdateTime: "匯率更新時間",
+    scheduledCollection: "每日排程收集",
+    scheduledCollectionHint: "OctopusBeak 開啟時，每天在這個時間同步所有已啟用的來源。需要你處理的來源會發送通知。",
+    scheduledCollectionToggle: "每日",
+    scheduledCollectionNextRun: (when) => `下次 ${when}`,
+    scheduledCollectionOff: "已關閉。只有在你手動開始時才會同步。",
+    previewFeatures: "預覽測試功能",
+    previewFeaturesDescription: "連接 OctopusBeak 尚未以實際資料驗證的銀行。預覽資料與已驗證的資料分開保存。",
+    previewFeaturesHint: "在登入設定顯示預覽來源，並納入同步。關閉後會隱藏預覽來源與其資料，但資料仍會保留。",
+    previewFeaturesOn: "開啟",
+    previewFeaturesOff: "關閉",
+    deletePreviewData: "刪除所有預覽資料",
+    deletePreviewDataHint: "移除預覽來源收集的所有餘額與交易，不影響已驗證的資料。",
+    deletePreviewDataConfirm: "要刪除所有預覽資料嗎？此動作無法復原。預覽來源下次同步時會重新收集。",
+    deletePreviewDataAction: "刪除",
+    previewDataDeleted: "已刪除預覽資料",
+    deletePreviewDataFailed: "無法刪除預覽資料，請再試一次。",
     saving: "儲存中...",
     settingsSaved: "設定已儲存。",
     allChangesSaved: "所有變更已儲存",

@@ -18,6 +18,7 @@ import {
   isTerminalTaskRunStatus,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
@@ -63,7 +64,7 @@ import {
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
-import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
+import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
@@ -96,8 +97,6 @@ export type AutomationTaskExecutionOptions = {
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
   /** App composition may replace a typed workflow capability at its port seam. */
   workflowPorts?: Partial<WorkflowExecutorPorts>;
-  /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
-  createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
   /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
   createTdccSessionHost?: () => TdccSessionHost;
   /** Test seam for the supervised App workflow worker. Production uses Worker. */
@@ -258,24 +257,52 @@ async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  // Explicit port overrides are an inline composition seam. Production browser
-  // workflows, including E-Invoice, use the supervised App worker.
-  if (options.workflowPorts !== undefined) {
-    return await executeInlineAppWorkflow(execution, options);
+  const scope = registerCollectionScope(
+    execution.run.taskRunId,
+    execution.task,
+    options.launchEnv ?? automationProcessEnv(),
+  );
+  try {
+    // Explicit port overrides are an inline composition seam. Production browser
+    // workflows, including E-Invoice, use the supervised App worker.
+    const result = options.workflowPorts !== undefined
+      ? await executeInlineAppWorkflow(execution, options)
+      : await executeSupervisedAppWorkflow(execution, options);
+    return scope.refused() ? collectionScopeChangedResult(result) : result;
+  } finally {
+    scope.release();
   }
-  return await executeSupervisedAppWorkflow(execution, options);
+}
+
+function collectionScopeChangedResult(
+  result: AutomationTaskExecutionResult,
+): AutomationTaskExecutionResult {
+  const summary = result.appWorkflowOutcome?.summary ?? null;
+  return {
+    ...result,
+    exitCode: 1,
+    signal: null,
+    error: new Error("App workflow failed (collection-scope-changed)."),
+    appWorkflowOutcome: {
+      errorCode: "collection-scope-changed",
+      summary: summary?.products
+        ? {
+          ...summary,
+          products: summary.products.map((product) =>
+            product.errorCode === "commit-outcome-unknown"
+              ? { ...product, errorCode: "collection-scope-changed" }
+              : product),
+        }
+        : summary,
+    },
+  };
 }
 
 async function executeInlineAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  const workflowDependencies = execution.task.workflowId === "cathay-all-statements"
-    ? {
-      cathayGmailOtpPort: (options.createCathayGmailOtpPort ?? createCathayGmailOtpPort)(),
-    }
-    : {};
-  const definition = workflowDefinitionForTask(execution.task.workflowId, workflowDependencies);
+  const definition = workflowDefinitionForTask(execution.task.workflowId);
   if (!definition || !execution.task.workflowId) {
     return {
       exitCode: 1,
@@ -317,6 +344,25 @@ async function executeInlineAppWorkflow(
       await childRpc.ready;
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
+    let previewWrite = injectedPorts.previewWrite;
+    if (definition.requiresPreviewWrite && !previewWrite) {
+      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
+        workflowId: execution.task.workflowId,
+        taskRunId: execution.run.taskRunId,
+      });
+      await childRpc.ready;
+      previewWrite = childRpc.operationalProvider.preview;
+    }
+    let accountIdentity = injectedPorts.accountIdentity;
+    if (definition.requiresAccountIdentity && !accountIdentity) {
+      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
+        workflowId: execution.task.workflowId,
+        taskRunId: execution.run.taskRunId,
+      });
+      await childRpc.ready;
+      const { financial } = childRpc;
+      accountIdentity = { continuity: (request) => financial.accountIdentityContinuity(request) };
+    }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const input = workflowInputForTask(execution.task.workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
@@ -356,6 +402,8 @@ async function executeInlineAppWorkflow(
         }),
       ...(financialCommit ? { financialCommit } : {}),
       ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
+      ...(accountIdentity ? { accountIdentity } : {}),
+      ...(previewWrite ? { previewWrite } : {}),
       events: injectedPorts.events ?? {
         async append(event) {
           await progressReporter.appendEvent(event);
@@ -535,6 +583,19 @@ async function executeSupervisedAppWorkflow(
     }, "workflow-failed");
   }
 
+  previewStructureReports.clear(execution.task.id);
+  const recordPreviewFailure = (
+    errorCode: string,
+    events: readonly WorkflowRunEvent[],
+    shapes: PreviewResponseShapes = { responses: [], omittedResponses: 0 },
+  ) => {
+    previewStructureReports.recordFailure(execution.task.id, {
+      stage: lastWorkflowStage(events) ?? null,
+      errorCode,
+      shapes,
+    });
+  };
+
   const controller = new AbortController();
   const cancellationPoll = setInterval(() => {
     if (
@@ -569,7 +630,7 @@ async function executeSupervisedAppWorkflow(
     const input = workflowInputForTask(workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const runtime = workflowRuntimeForTask(workflowId);
-    const pgliteRpc = (definition.requiresFinancialCommit || runtime.kind === "nonbrowser")
+    const pgliteRpc = (definition.requiresFinancialCommit || definition.requiresPreviewWrite || runtime.kind === "nonbrowser")
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
@@ -632,12 +693,6 @@ async function executeSupervisedAppWorkflow(
         requestHumanAssistance: (contract, signal) =>
           humanAssistance.request(contract, signal),
         ...(definition.requiresTdcc ? { tdccSession: tdccSessionHost(options) } : {}),
-        ...(options.createCathayGmailOtpPort
-          ? {
-              createCathayGmailOtpPort: (signal) =>
-                options.createCathayGmailOtpPort!(undefined, { signal }),
-            }
-          : {}),
         ...(options.appWorkflowWorkerFactory
           ? { workerFactory: options.appWorkflowWorkerFactory }
           : {}),
@@ -696,6 +751,7 @@ async function executeSupervisedAppWorkflow(
           stage: lastWorkflowStage(eventsForExecution),
           safeError: outcome.diagnostic,
         });
+        recordPreviewFailure(errorCode, eventsForExecution, outcome.previewResponses);
       }
     }
   } catch (error) {
@@ -744,6 +800,7 @@ async function executeSupervisedAppWorkflow(
         stage: lastWorkflowStage(eventsForExecution),
         error,
       });
+      recordPreviewFailure(errorCode, eventsForExecution);
     }
   } finally {
     unregisterHumanAssistance?.();

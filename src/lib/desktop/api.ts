@@ -6,9 +6,9 @@ import type {
   AutomationTaskHistoryRow,
   AutomationTaskProgress,
   TypedWorkflowOutcome,
-  CathayGmailOtpStatus,
-  TdccDeviceRegistrationStatus,
-  TdccRegistrationStep,
+  DeviceRegistrationSource,
+  DeviceRegistrationStatus,
+  DeviceRegistrationStep,
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -120,8 +120,6 @@ export type AutomationCredentialStateDto = {
   fileNames: Readonly<Record<string, string>>;
   invalidFileKeys: readonly string[];
   invalidFileReasons: Readonly<Record<string, CertificateFileValidationReason>>;
-  /** Main-process-derived, renderer-safe Gmail connection state only. */
-  cathayGmailOtp?: CathayGmailOtpStatus;
 };
 
 export type AutomationCredentialGroupCoreDto = Omit<
@@ -233,6 +231,7 @@ export type OctopusBeakApi = {
   settings: {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
+    deletePreviewData(): Promise<void>;
   };
   overview: {
     load(options?: DataReadOptions): Promise<OverviewPageDto>;
@@ -268,14 +267,14 @@ export type OctopusBeakApi = {
   automation: {
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
-    cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
-    enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
-    setCathayGmailOtpEnabled(enabled: boolean): Promise<CathayGmailOtpStatus>;
-    disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
-    tdccDeviceRegistrationStatus(): Promise<TdccDeviceRegistrationStatus>;
-    startTdccDeviceRegistration(): Promise<TdccRegistrationStep>;
-    submitTdccRegistrationCode(registrationId: string, code: string): Promise<TdccRegistrationStep>;
-    cancelTdccDeviceRegistration(registrationId: string): Promise<void>;
+    deviceRegistrationStatus(source: DeviceRegistrationSource): Promise<DeviceRegistrationStatus>;
+    startDeviceRegistration(source: DeviceRegistrationSource): Promise<DeviceRegistrationStep>;
+    submitDeviceRegistrationCode(
+      source: DeviceRegistrationSource,
+      registrationId: string,
+      code: string,
+    ): Promise<DeviceRegistrationStep>;
+    cancelDeviceRegistration(source: DeviceRegistrationSource, registrationId: string): Promise<void>;
     selectCertificateFile(locale: "en" | "zh-TW"): Promise<CertificateFileSelectionResult>;
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
@@ -287,6 +286,10 @@ export type OctopusBeakApi = {
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
+    takeSignInSettingsRequest(): Promise<string | null>;
+    onSignInSettingsRequested(listener: () => void): () => void;
+    previewStructureReport(taskId: string): Promise<string | null>;
+    openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
   };
   data: {
     getVersion(): Promise<DataVersionSnapshot>;
@@ -299,6 +302,7 @@ export type OctopusBeakApi = {
 export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
+  "settings:deletePreviewData",
   "overview:load",
   "overview:block",
   "assets:load",
@@ -324,14 +328,10 @@ export const octopusBeakApiChannels = [
   "spending:revokeLink",
   "automation:block",
   "automation:saveCredentials",
-  "automation:cathayGmailOtpStatus",
-  "automation:enableCathayGmailOtp",
-  "automation:setCathayGmailOtpEnabled",
-  "automation:disconnectCathayGmailOtp",
-  "automation:tdccDeviceRegistrationStatus",
-  "automation:startTdccDeviceRegistration",
-  "automation:submitTdccRegistrationCode",
-  "automation:cancelTdccDeviceRegistration",
+  "automation:deviceRegistrationStatus",
+  "automation:startDeviceRegistration",
+  "automation:submitDeviceRegistrationCode",
+  "automation:cancelDeviceRegistration",
   "automation:selectCertificateFile",
   "automation:openSetupGuideLink",
   "automation:run",
@@ -343,6 +343,10 @@ export const octopusBeakApiChannels = [
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",
+  "automation:takeSignInSettingsRequest",
+  "automation:sign-in-settings-requested",
+  "automation:previewStructureReport",
+  "automation:openPreviewStructureReportIssue",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

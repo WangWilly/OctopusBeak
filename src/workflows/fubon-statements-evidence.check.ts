@@ -569,6 +569,37 @@ assert.equal(
   }),
   null,
 );
+const usdCodedSelectorValue = `987-00${nonLeadingZeroAccount}-USD-02`;
+const jpyCodedSelectorValue = `987-00${nonLeadingZeroAccount}-JPY-02`;
+assert.deepEqual(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: usdCodedSelectorValue,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  {
+    value: nonLeadingZeroAccount,
+    kind: "depository-account",
+    evidenceVersion: "fubon/domestic-deposit/account-number-v3",
+    sourceField: "form1:comboAccount option.value + option.text",
+  },
+  "a USD-coded option whose segment is 00 plus its label yields V3 evidence, never V2",
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: `987-99${nonLeadingZeroAccount}-USD-02`,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  null,
+  "a USD-coded option whose segment does not match its label yields no evidence",
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: jpyCodedSelectorValue,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  null,
+  "a code other than TWD or USD yields no account-number evidence",
+);
 const statement = {
   account: accountLabel,
   accountId: accountValue,
@@ -626,6 +657,61 @@ const rawEvidence = module.buildFubonDepositStatementEvidence(
 );
 assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
+assert.equal(rawEvidence[0].providerRouteEvidence?.currency, "TWD");
+assert.equal(
+  "balanceReconciliation" in rawEvidence[0].providerRouteEvidence,
+  false,
+  "a capture built without a reconciliation record carries none",
+);
+
+const reconcilingRecord = {
+  sourceField: "statement 即時餘額 vs current-balance instantBalance",
+  latestRow: { localDate: "2026-01-02", localTime: "09:10:11", runningBalance: { coefficient: "100", scale: 0 } },
+  snapshotTwdBalance: { coefficient: "10000", scale: 2 },
+  snapshotOtherBalances: [{ currency: "USD", balance: { coefficient: "1234", scale: 2 } }],
+  snapshotObservedAt: "2026-02-01T00:00:00.000Z",
+} as const;
+const routeEvidenceFor = (value: string, balanceReconciliation?: typeof reconcilingRecord) => {
+  const option = { value, label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`, branchName: "SYNTHETIC-BRANCH" };
+  const [capture] = module.buildFubonDepositStatementEvidence(
+    [{
+      ...statement,
+      account: option.label,
+      accountId: value,
+      pages: statement.pages.map((page) => ({ ...page, selectedAccount: option })),
+      accountOption: option,
+    }],
+    "2026-02-01T00:00:00.000Z",
+    balanceReconciliation,
+  );
+  return capture.providerRouteEvidence;
+};
+assert.equal(routeEvidenceFor(nonLeadingZeroAccount).currency, "TWD", "a plain option is TWD");
+assert.equal(
+  routeEvidenceFor(`987-00${nonLeadingZeroAccount}-TWD-02`).currency,
+  "TWD",
+  "a TWD-coded option is TWD",
+);
+assert.equal(
+  routeEvidenceFor(usdCodedSelectorValue).currency,
+  "unknown",
+  "a USD-coded option without a reconciliation record must not claim TWD route evidence",
+);
+assert.deepEqual(
+  routeEvidenceFor(usdCodedSelectorValue, reconcilingRecord),
+  {
+    endpointPath: "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces",
+    contract: "fubon-domestic-deposit-twd-v1",
+    currency: "TWD",
+    balanceReconciliation: reconcilingRecord,
+  },
+  "a USD-coded option with a reconciling record claims TWD and carries the record",
+);
+assert.equal(
+  routeEvidenceFor(jpyCodedSelectorValue, reconcilingRecord).currency,
+  "unknown",
+  "a JPY-coded option's capture must not claim TWD route evidence even with a record",
+);
 assert.deepEqual(rawEvidence[0].account.accountNumber, {
   value: accountValue,
   kind: "depository-account",

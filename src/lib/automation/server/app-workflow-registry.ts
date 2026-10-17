@@ -11,6 +11,8 @@ import { createTdccWorkflow } from "../tdcc-workflow.ts";
 import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
+import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
+import { previewWorkflowDefinition, previewWorkflowInput } from "../../preview-sources/workflow.ts";
 import type {
   FubonAllWorkflowInput,
   FubonAllWorkflowOutput,
@@ -19,11 +21,7 @@ import type {
   YuantaAllWorkflowInput,
   YuantaAllWorkflowOutput,
 } from "../../../workflows/yuanta-all-statements.ts";
-import type {
-  CathayAllProviderWorkflowInput,
-  CathayAllProviderWorkflowOutput,
-} from "../../../workflows/cathay-all-statements.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
+import type { CathayAllProviderWorkflowOutput } from "../../../workflows/cathay-all-statements.ts";
 import {
   YUANTA_TRADE_LOGIN_URL,
   type YuantaTradeProviderWorkflowOutput,
@@ -69,32 +67,18 @@ type AppWorkflowRegistration = Readonly<{
 }>;
 
 export type AppWorkflowRegistryDependencies = Readonly<{
-  cathayGmailOtpPort?: CathayGmailOtpPort;
   exchangeRateSyncService?: ExchangeRateSyncService;
   exchangeRateProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 }>;
 
-const unavailableCathayOtpPort: CathayGmailOtpPort = {
-  async ensureAccess() { return { status: "fallback", reason: "not-configured" }; },
-  async prepareRetrieval() { return { status: "fallback", reason: "not-configured" }; },
-  async retrieve() { return { status: "fallback", reason: "not-configured" }; },
+const cathayAllStatementsWorkflow: WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> = {
+  id: "cathay-all-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const { runCathayAllProviderWorkflow } = await import("../../../workflows/cathay-all-statements.ts");
+    return await runCathayAllProviderWorkflow(context, input);
+  },
 };
-
-function createCathayRegistryDefinition(
-  otp: CathayGmailOtpPort,
-): WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> {
-  return {
-    id: "cathay-all-statements",
-    requiresFinancialCommit: true,
-    async run(context, input) {
-      const { createCathayAllStatementsWorkflow } = await import("../cathay-all-workflow.ts");
-      return await createCathayAllStatementsWorkflow(otp).run(
-        context,
-        input as CathayAllProviderWorkflowInput,
-      );
-    },
-  };
-}
 
 function statementTypeIdsFromEnvironment(
   groupId: keyof typeof BANK_STATEMENT_CAPABILITIES,
@@ -111,14 +95,13 @@ function statementTypeIdsFromEnvironment(
   ).selectedIds;
 }
 
-const cathayAllStatementsWorkflow = createCathayRegistryDefinition(unavailableCathayOtpPort);
-
 const fubonAllStatementsWorkflow: WorkflowDefinition<
   FubonAllWorkflowInput,
   FubonAllWorkflowOutput
 > = {
   id: "fubon-all-statements",
   requiresFinancialCommit: true,
+  requiresAccountIdentity: true,
   async run(context, input) {
     const { fubonAllStatementsWorkflow: definition } = await import(
       "../fubon-all-workflow.ts"
@@ -344,11 +327,6 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: cathayAllStatementsWorkflow,
-    definitionForDependencies(dependencies) {
-      return dependencies.cathayGmailOtpPort
-        ? createCathayRegistryDefinition(dependencies.cathayGmailOtpPort)
-        : cathayAllStatementsWorkflow;
-    },
     runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
     inputFromEnvironment(environment) {
       return {
@@ -374,7 +352,12 @@ export function appWorkflowCatalogForEnvironment(
       inputFromEnvironment() { return null; },
     }))
     : [];
-  return [...appWorkflowCatalog, ...packagedBrowserFixtureRegistrations];
+  const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
+    definition: previewWorkflowDefinition(source) as WorkflowDefinition,
+    runtime: browser(source.startUrl),
+    inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
+  }));
+  return [...appWorkflowCatalog, ...previewRegistrations, ...packagedBrowserFixtureRegistrations];
 }
 
 /** Test-only local workflow registrations are absent during ordinary App startup. */

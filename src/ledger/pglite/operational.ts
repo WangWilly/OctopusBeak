@@ -1,3 +1,7 @@
+import {
+  createPGlitePreviewFinancialData,
+  type PGlitePreviewFinancialDataPort,
+} from "./preview-financial-data.ts";
 import { randomUUID } from "node:crypto";
 import {
   createHumanAssistanceContract,
@@ -919,6 +923,7 @@ export type PGliteOperationalProvider = Readonly<{
   automation: AutomationPersistencePort;
   exchangeRates: ExchangeRatePersistencePort;
   maicoin: PGliteMaicoinPersistencePort;
+  preview: PGlitePreviewFinancialDataPort;
 }>;
 
 export function createPgliteOperationalProvider(
@@ -929,5 +934,6 @@ export function createPgliteOperationalProvider(
     automation: operational,
     exchangeRates: operational,
     maicoin: createPGliteMaicoinPersistence(database),
+    preview: createPGlitePreviewFinancialData(database),
   });
 }

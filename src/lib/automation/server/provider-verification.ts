@@ -98,6 +98,12 @@ export type ProviderVerificationHost = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handlesChallengeImage(contract: HumanAssistanceContract): boolean;
+  /** True only when the challenge-image owner declares an in-page refresh control. */
+  refreshesChallengeImage(contract: HumanAssistanceContract): boolean;
+  refreshChallengeImage(
+    session: string,
+    contract: HumanAssistanceContract,
+  ): Promise<boolean>;
   handlesChallengeAudio(contract: HumanAssistanceContract): boolean;
   captureChallengeAudio(
     session: string,
@@ -509,6 +515,7 @@ async function resolveFubonCaptchaImage(
     frameUrl: typeof frame.url === "function" ? frame.url() : "",
     frameName: typeof frame.name === "function" ? frame.name() : "",
     markerKey: "__octopusBeakFubonCaptchaFrameMarker",
+    scope: frame,
   };
 }
 
@@ -542,6 +549,7 @@ async function resolveYuantaCaptchaImage(
     frameUrl,
     frameName,
     markerKey: "__octopusBeakYuantaCaptchaFrameMarker",
+    scope: frame,
   };
 }
 
@@ -565,6 +573,7 @@ async function resolveSinopacCaptchaImage(
     frameUrl: pageUrl,
     frameName: "top",
     markerKey: "__octopusBeakSinopacCaptchaPageMarker",
+    scope: page,
   };
 }
 
@@ -747,6 +756,12 @@ export function createProviderVerificationHost(
     return sourceFreshness.isCurrent(session, contract);
   };
 
+  const refreshesChallengeImage = (contract: HumanAssistanceContract) =>
+    capabilityRegistry.resolve("challenge-image", contract)?.sourceOwner?.refresh !== undefined;
+
+  const refreshChallengeImage = (session: string, contract: HumanAssistanceContract) =>
+    sourceFreshness.refresh(session, contract);
+
   const handlesChallengeAudio = (contract: HumanAssistanceContract) =>
     yuantaTradeAudioContract(contract);
 
@@ -831,6 +846,8 @@ export function createProviderVerificationHost(
     captureChallengeImage,
     isChallengeImageCurrent,
     handlesChallengeImage,
+    refreshesChallengeImage,
+    refreshChallengeImage,
     handlesChallengeAudio,
     captureChallengeAudio,
     sendInput,
@@ -845,6 +862,8 @@ const defaultHost = createProviderVerificationHost();
 export const captureProviderVerificationImage = defaultHost.captureChallengeImage;
 export const isProviderVerificationImageCurrent = defaultHost.isChallengeImageCurrent;
 export const providerVerificationHandlesChallengeImage = defaultHost.handlesChallengeImage;
+export const providerVerificationRefreshesChallengeImage = defaultHost.refreshesChallengeImage;
+export const refreshProviderVerificationImage = defaultHost.refreshChallengeImage;
 export const captureProviderVerificationAudio = defaultHost.captureChallengeAudio;
 export const injectProviderVerificationAnswer = defaultHost.injectAnswer;
 export const probeProviderVerificationPostSubmit = defaultHost.probePostSubmit;

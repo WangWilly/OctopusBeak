@@ -4,6 +4,7 @@ import {
   BROKER_FIRM_ROWS,
 } from "./institution-tables.generated.ts";
 import { TDCC_FUND_STREAM } from "../../ledger/canonical/tdcc-investment-contract.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS, previewTaskId } from "../preview-sources/source-id.ts";
 
 /**
  * The Institutions this app can name, keyed by a stable key the canonical
@@ -138,7 +139,16 @@ export type LogoInstitutionKey = (typeof INSTITUTION_KEYS)[number];
 /** Intermediary sources are not Institutions, but each still shows its own logo wherever sources are listed. */
 export type IntermediarySourceLogoKey = "tdcc";
 
-export type LogoKey = LogoInstitutionKey | IntermediarySourceLogoKey;
+/**
+ * Institutions a Preview source collects from. They show their logo, but a
+ * Preview source is not a supported source of their own, so they stay out of
+ * INSTITUTION_KEYS and a direct source can never name one.
+ */
+export type PreviewInstitutionLogoKey = (typeof PREVIEW_SOURCE_INSTITUTIONS)[keyof typeof PREVIEW_SOURCE_INSTITUTIONS];
+
+const PREVIEW_INSTITUTION_LOGO_KEYS: ReadonlySet<string> = new Set(Object.values(PREVIEW_SOURCE_INSTITUTIONS));
+
+export type LogoKey = LogoInstitutionKey | PreviewInstitutionLogoKey | IntermediarySourceLogoKey;
 
 /** Interface names of every catalog Institution. */
 export function institutionNames(locale: "en" | "zh-TW"): Record<InstitutionKey, string> {
@@ -146,9 +156,12 @@ export function institutionNames(locale: "en" | "zh-TW"): Record<InstitutionKey,
     [key, name[locale] ?? name["zh-TW"]])) as Record<InstitutionKey, string>;
 }
 
-/** The logo an Institution shows; null for the many catalog Institutions without a source of their own. */
-export function institutionLogo(key: InstitutionKey | undefined): LogoInstitutionKey | null {
-  return (INSTITUTION_KEYS as readonly string[]).includes(key ?? "") ? key as LogoInstitutionKey : null;
+/** The logo an Institution shows; null for the many catalog Institutions with neither a source of their own nor a Preview source. */
+export function institutionLogo(key: InstitutionKey | undefined): LogoInstitutionKey | PreviewInstitutionLogoKey | null {
+  if (key === undefined) return null;
+  return (INSTITUTION_KEYS as readonly string[]).includes(key) || PREVIEW_INSTITUTION_LOGO_KEYS.has(key)
+    ? key as LogoInstitutionKey | PreviewInstitutionLogoKey
+    : null;
 }
 
 /** The Intermediary source a namespace names, or null for a direct source or an unknown namespace. */
@@ -180,6 +193,7 @@ const TASK_LOGOS: Readonly<Record<string, LogoKey>> = {
   "einvoice-personal-invoices": "einvoice",
   "sync-maicoin": "maicoin",
   "sync-tdcc": "tdcc",
+  ...Object.fromEntries(Object.entries(PREVIEW_SOURCE_INSTITUTIONS).map(([id, institution]) => [previewTaskId({ id }), institution])),
 };
 
 const TASK_NAMESPACES: Readonly<Record<string, readonly string[]>> = {
@@ -209,8 +223,14 @@ export function institutionForNamespace(namespace: string | undefined): LogoInst
   return source?.kind === "direct" ? source.institution : null;
 }
 
-/** The logo of the source an integration namespace names: its Institution for a direct source, its own for an Intermediary source. */
+/**
+ * The logo of the source an integration namespace or Preview source id names:
+ * its Institution for a direct or Preview source, its own for an Intermediary source.
+ */
 export function sourceLogo(namespace: string): LogoKey | null {
+  if (Object.hasOwn(PREVIEW_SOURCE_INSTITUTIONS, namespace)) {
+    return PREVIEW_SOURCE_INSTITUTIONS[namespace as keyof typeof PREVIEW_SOURCE_INSTITUTIONS];
+  }
   const source = sourceInstitution(namespace);
   if (!source) return null;
   return source.kind === "direct" ? source.institution : source.logo;

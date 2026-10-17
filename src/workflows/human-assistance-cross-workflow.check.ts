@@ -47,7 +47,7 @@ const explicitlyExcludedCaptchaWorkflows = [
   {
     provider: "Cathay United Bank",
     source: "../workflows/cathay-statements.ts",
-    reason: "Email OTP is retrieved through Gmail OAuth",
+    reason: "a registered trusted device signs in without a code (ADR 0050)",
   },
   {
     provider: "E-Invoice",

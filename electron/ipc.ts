@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -7,9 +8,6 @@ import {
 } from "electron";
 import {
   automationCancel,
-  cathayGmailOtpStatus,
-  disconnectCathayGmailOtp,
-  enableCathayGmailOtp,
   automationRun,
   automationRunMany,
   automationForceTerminate,
@@ -20,18 +18,21 @@ import {
   loadAutomationCoreSnapshot,
   externalPrerequisiteById,
   readAutomationCredentialState,
-  setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   assertKnownAutomationRuntimeTasks,
   AutomationRuntimeInvariantError,
 } from "../src/lib/automation/runtime-invariants.ts";
 import {
-  cancelTdccDeviceRegistration,
-  startTdccDeviceRegistration,
-  submitTdccRegistrationCode,
-  tdccDeviceRegistrationStatus,
-} from "../src/lib/automation/server/tdcc-registration-service.ts";
+  cancelDeviceRegistration,
+  deviceRegistrationStatus,
+  startDeviceRegistration,
+  submitDeviceRegistrationCode,
+} from "../src/lib/automation/server/device-registration-host.ts";
+import {
+  deviceRegistrationSource,
+  type DeviceRegistrationSource,
+} from "../src/lib/automation/types.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
@@ -43,11 +44,21 @@ import {
 } from "./pglite-ipc.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
-import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { currentPreviewVisibility, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
+import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
+import {
+  previewSourceForTask,
+  previewStructureReportIssueUrl,
+  previewStructureReports,
+  renderPreviewStructureReport,
+} from "../src/lib/preview-sources/structure-report.ts";
+import type { PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   systemSettings,
+  systemSettingsFileEntries,
   validateSystemSettings,
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
@@ -80,8 +91,21 @@ import type {
 } from "../src/lib/spending/model.ts";
 import { projectFinancialBlock } from "./financial-page-block-loader.ts";
 
-const TDCC_REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const TDCC_ONE_TIME_CODE = /^[0-9]{4,8}$/u;
+const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
+
+function registrationSource(value: unknown): DeviceRegistrationSource {
+  const source = typeof value === "string" ? deviceRegistrationSource(value) : null;
+  if (!source) throw new TypeError("Device registration source is invalid.");
+  return source;
+}
+
+function registrationId(value: unknown): string {
+  if (typeof value !== "string" || !REGISTRATION_ID.test(value)) {
+    throw new TypeError("Device registration ID is invalid.");
+  }
+  return value;
+}
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -101,7 +125,10 @@ export function registerOctopusBeakIpc({
     workerPath?: string;
   };
   pgliteOperational: {
-    provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort };
+    provider: AutomationPersistenceProvider & {
+      exchangeRates: ExchangeRatePersistencePort;
+      preview: Pick<PGlitePreviewFinancialDataPort, "deleteAll">;
+    };
     worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
     dataDir?: string;
     workerPath?: string;
@@ -173,19 +200,31 @@ export function registerOctopusBeakIpc({
       trafficLightPositionForScale(percent),
     );
   });
+  function markStaleWhenPreviewVisibilityChanges<T>(write: () => T): T {
+    const before = currentPreviewVisibility().sourceIds.join(",");
+    const result = write();
+    if (currentPreviewVisibility().sourceIds.join(",") !== before) {
+      dataVersionStore.markStale("preview-data-changed");
+      void financialPages.previewVisibilityChanged()
+        .catch((error) => console.error("preview-visibility-refresh-failed", error));
+    }
+    return result;
+  }
   ipcMain.handle("settings:load", () =>
     systemSettings(readAutomationSettings()),
   );
   ipcMain.handle("settings:save", async (_event, input: SystemSettingsDto) => {
     const value = validateSystemSettings(input);
-    writeAutomationSettings({
+    markStaleWhenPreviewVisibilityChanges(() => writeAutomationSettings({
       ...readAutomationSettings(),
-      SYSTEM_TIMEZONE: value.systemTimezone,
-      EXCHANGE_RATE_UPDATE_TIME: value.exchangeRateUpdateTime,
-    });
+      ...systemSettingsFileEntries(value),
+    }));
     await onSystemSettingsChanged?.(value);
     return value;
   });
+  ipcMain.handle("settings:deletePreviewData", () =>
+    deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
+  );
   ipcMain.handle(
     "overview:load",
     (_event, options: DataReadOptions | undefined) =>
@@ -380,54 +419,34 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:saveCredentials",
     async (_event, updates: Record<string, string>) => {
-      const result = automationSaveCredentials(updates);
+      const result = markStaleWhenPreviewVisibilityChanges(() => automationSaveCredentials(updates));
       if (result.saved) await automationCredentials.refresh();
       return result;
     },
   );
-  ipcMain.handle("automation:cathayGmailOtpStatus", () =>
-    cathayGmailOtpStatus(),
-  );
-  ipcMain.handle("automation:enableCathayGmailOtp", () =>
-    enableCathayGmailOtp(),
+  ipcMain.handle(
+    "automation:deviceRegistrationStatus",
+    (_event, source: unknown) => deviceRegistrationStatus(registrationSource(source)),
   );
   ipcMain.handle(
-    "automation:setCathayGmailOtpEnabled",
-    (_event, enabled: unknown) => {
-      if (typeof enabled !== "boolean") {
-        throw new TypeError("Cathay Gmail OTP enabled flag must be boolean.");
-      }
-      return setCathayGmailOtpEnabled(enabled);
-    },
-  );
-  ipcMain.handle("automation:disconnectCathayGmailOtp", () =>
-    disconnectCathayGmailOtp(),
-  );
-  ipcMain.handle("automation:tdccDeviceRegistrationStatus", () =>
-    tdccDeviceRegistrationStatus(),
-  );
-  ipcMain.handle("automation:startTdccDeviceRegistration", () =>
-    startTdccDeviceRegistration(),
+    "automation:startDeviceRegistration",
+    (_event, source: unknown) => startDeviceRegistration(registrationSource(source)),
   );
   ipcMain.handle(
-    "automation:submitTdccRegistrationCode",
-    (_event, registrationId: unknown, code: unknown) => {
-      if (typeof registrationId !== "string" || !TDCC_REGISTRATION_ID.test(registrationId)) {
-        throw new TypeError("TDCC registration ID is invalid.");
+    "automation:submitDeviceRegistrationCode",
+    (_event, source: unknown, id: unknown, code: unknown) => {
+      const validSource = registrationSource(source);
+      const validId = registrationId(id);
+      if (typeof code !== "string" || !ONE_TIME_CODE.test(code)) {
+        throw new TypeError("A one-time code must be 4 to 8 digits.");
       }
-      if (typeof code !== "string" || !TDCC_ONE_TIME_CODE.test(code)) {
-        throw new TypeError("TDCC one-time code must be 4 to 8 digits.");
-      }
-      return submitTdccRegistrationCode(registrationId, code);
+      return submitDeviceRegistrationCode(validSource, validId, code);
     },
   );
   ipcMain.handle(
-    "automation:cancelTdccDeviceRegistration",
-    (_event, registrationId: unknown) => {
-      if (typeof registrationId !== "string" || !TDCC_REGISTRATION_ID.test(registrationId)) {
-        throw new TypeError("TDCC registration ID is invalid.");
-      }
-      cancelTdccDeviceRegistration(registrationId);
+    "automation:cancelDeviceRegistration",
+    (_event, source: unknown, id: unknown) => {
+      cancelDeviceRegistration(registrationSource(source), registrationId(id));
     },
   );
   ipcMain.handle(
@@ -484,6 +503,17 @@ export function registerOctopusBeakIpc({
     automationForceTerminate(taskId, operationalProvider, expectedRunId),
   );
   ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
+  ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
+  ipcMain.handle("automation:previewStructureReport", (_event, taskId: string) => {
+    const report = previewStructureReports.get(taskId);
+    return report ? renderPreviewStructureReport(report, app.getVersion()) : null;
+  });
+  ipcMain.handle("automation:openPreviewStructureReportIssue", async (_event, taskId: string) => {
+    const source = previewSourceForTask(taskId);
+    if (!source || !previewStructureReports.get(taskId)) throw new Error("No preview structure report for this task.");
+    await shell.openExternal(previewStructureReportIssueUrl(source));
+    return { ok: true as const };
+  });
   ipcMain.handle(
     "automation:openExternalPrerequisite",
     async (_event, prerequisiteId: string) => {

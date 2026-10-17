@@ -59,6 +59,30 @@ test("financial workflow fails closed before running without a commit port", asy
   assert.equal(events.length, 0);
 });
 
+test("the account identity port reaches only a workflow that requires it, which fails closed without it", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const accountIdentity = { continuity: async () => ({ status: "unseen" as const }) };
+  const seen: Record<string, unknown> = {};
+  const executor = createWorkflowExecutor([
+    { id: "identity-reader", requiresFinancialCommit: true, requiresAccountIdentity: true, async run(context) { seen.reader = context.accountIdentity; } },
+    { id: "plain", requiresFinancialCommit: true, async run(context) { seen.plain = context.accountIdentity; } },
+  ], { ...ports(events), accountIdentity });
+  await executor.run("identity-reader", "run-identity", null, new AbortController().signal);
+  await executor.run("plain", "run-plain", null, new AbortController().signal);
+  assert.equal(seen.reader, accountIdentity);
+  assert.equal(seen.plain, undefined);
+
+  let called = false;
+  const withoutPort = createWorkflowExecutor([
+    { id: "identity-reader", requiresFinancialCommit: true, requiresAccountIdentity: true, async run() { called = true; } },
+  ], ports([]));
+  await assert.rejects(
+    withoutPort.run("identity-reader", "run-missing", null, new AbortController().signal),
+    /Account identity port is unavailable/,
+  );
+  assert.equal(called, false);
+});
+
 test("an event write failure after work starts does not relabel the outcome", async () => {
   const events: WorkflowRunEvent[] = [];
   const failures: string[] = [];

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { CATHAY_TRUSTED_DEVICE_COOKIE } from "../../../workflows/cathay-login.ts";
 
 export type BrowserRuntimeProfileId =
   | "default"
@@ -14,11 +15,16 @@ export type BrowserRuntimeIdentity = Readonly<{
   chromiumVersion: string;
 }>;
 
+export type BrowserCookieReset = Readonly<{
+  domain: string;
+  retainedNames: readonly string[];
+}>;
+
 export type BrowserRuntimeConfiguration = Readonly<{
   identity: BrowserRuntimeIdentity;
   userAgent: string;
   args: readonly string[];
-  cookieResetDomain: string | null;
+  cookieReset: BrowserCookieReset | null;
 }>;
 
 export type BrowserRuntimeDependencies = Readonly<{
@@ -49,29 +55,29 @@ export class BrowserRuntimeConfigurationError extends Error {
 type ProfileSettings = Readonly<{
   revision: number;
   compatibilityArgs: readonly string[];
-  cookieResetDomain: string | null;
+  cookieReset: BrowserCookieReset | null;
 }>;
 
 const profileSettings: Readonly<Record<BrowserRuntimeProfileId, ProfileSettings>> = {
   default: {
     revision: 1,
     compatibilityArgs: [],
-    cookieResetDomain: null,
+    cookieReset: null,
   },
   "ctbc-login": {
     revision: 1,
     compatibilityArgs: ["--disable-blink-features=AutomationControlled"],
-    cookieResetDomain: "ctbcbank.com",
+    cookieReset: { domain: "ctbcbank.com", retainedNames: [] },
   },
   "cathay-login": {
-    revision: 1,
+    revision: 2,
     compatibilityArgs: [],
-    cookieResetDomain: "cathaybk.com.tw",
+    cookieReset: { domain: "cathaybk.com.tw", retainedNames: [CATHAY_TRUSTED_DEVICE_COOKIE] },
   },
   "esun-login": {
     revision: 1,
     compatibilityArgs: [],
-    cookieResetDomain: "esunbank.com.tw",
+    cookieReset: { domain: "esunbank.com.tw", retainedNames: [] },
   },
 };
 
@@ -112,14 +118,14 @@ function chromePlatformToken(platform: NodeJS.Platform): string {
   }
 }
 
-export function cookieResetDomainForBrowserProfile(
+export function cookieResetForBrowserProfile(
   profile: BrowserRuntimeProfileId | undefined,
-): string | null {
+): BrowserCookieReset | null {
   const profileId = profile ?? "default";
   if (!Object.hasOwn(profileSettings, profileId)) {
     throw new BrowserRuntimeConfigurationError("unsupported-profile");
   }
-  return profileSettings[profileId].cookieResetDomain;
+  return profileSettings[profileId].cookieReset;
 }
 
 export function createBrowserRuntime(dependencies: BrowserRuntimeDependencies = {}): BrowserRuntime {
@@ -153,7 +159,7 @@ export function createBrowserRuntime(dependencies: BrowserRuntimeDependencies = 
         },
         userAgent: `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVersion} Safari/537.36`,
         args: [...settings.compatibilityArgs],
-        cookieResetDomain: settings.cookieResetDomain,
+        cookieReset: settings.cookieReset,
       };
     },
   };

@@ -12,5 +12,6 @@ export const fubonAllStatementsWorkflow: WorkflowDefinition<
 > = {
   id: "fubon-all-statements",
   requiresFinancialCommit: true,
+  requiresAccountIdentity: true,
   run: runFubonAllStatementsWorkflow,
 };

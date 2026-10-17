@@ -112,12 +112,32 @@ A supported source that reports Financial Accounts maintained by other Instituti
 _Avoid_: TDCC as Institution, aggregator account, depository-owned account
 
 **Direct source precedence**:
-The rule that, for one Institution and product, a Financial Account collected from a source operated by that Institution counts toward totals ahead of any account an Intermediary source reports there. Coverage exists while the direct source holds at least one current account for that Institution and product. A covered intermediary account stays visible in its own account view but is excluded from totals, net worth, activity, and spending; nothing compares account numbers, and no identities merge.
+The rule that, for one Institution, product, and currency, a Financial Account collected from a source operated by that Institution counts toward totals ahead of any account an Intermediary source reports there. An intermediary account is covered while, for every currency it holds, the direct source holds at least one current account for that Institution and product in that currency; a currency the direct source does not collect, such as USD at a bank whose direct source collects only TWD, leaves the intermediary account counting. A covered intermediary account stays visible in its own account view but is excluded from totals, net worth, activity, and spending; nothing compares account numbers, and no identities merge.
 _Avoid_: Account matching, cross-source deduplication, identity merge, user-selected authority
 
 **Institution source coverage**:
 The many-to-many mapping that records which Institutions and products a supported source can collect or import. Coverage does not make a supported-source identifier the canonical identity of an Institution.
 _Avoid_: Source connection, Institution identity, account ownership
+
+**Preview features**:
+The person's opt-in setting, labelled 「預覽測試功能」 in the Traditional Chinese UI, that makes Preview Sources available. Turning it off hides every Preview Source, stops its collection, and removes Preview Financial Data from every view and total while retaining that data until the person explicitly deletes it.
+_Avoid_: Beta mode, experimental flag, unverified mode
+
+**Preview source**:
+A supported source, shown as 「預覽來源」, whose collection has no live-verified source contract and is offered only while Preview Features are on. It writes only Preview Financial Data, never a Source Capture or any canonical fact, and is hidden and not collected while a verified source covers the same Institution and product.
+_Avoid_: Unverified source, beta connector, provisional canonical source
+
+**Preview financial data**:
+Account balances and transactions collected by a Preview Source and kept apart from canonical financial data. Its balances count toward assets, liabilities, and net worth with a visible preview marker; its transactions appear only in their own account view, outside spending, classification, transfer pairing, and deduplication. It still refuses missing currencies and keeps source amounts exactly rather than filling defaults.
+_Avoid_: Canonical assertion, verified data, low-confidence canonical record
+
+**Preview source promotion**:
+The replacement of a Preview Source by a verified source contract for one Institution and product. Its Preview Financial Data is deleted and the data is recollected through canonical admission; preview records are never migrated into the canonical model.
+_Avoid_: Record migration, trust upgrade in place, merge
+
+**Preview structure report**:
+A sanitized description of a Preview Source's responses, listing endpoints, statuses, field names, types, and bounded codes but never identifiers, names, amounts, dates, or free text. The person reviews it in full and sends it only by pasting it into a prefilled public issue; the App transmits nothing itself.
+_Avoid_: Crash report, telemetry, raw response upload
 
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
@@ -146,6 +166,10 @@ _Avoid_: Logged-in-user assumption, all-cards-at-bank merge, card-list account i
 **Account lifecycle fact**:
 A source-supported activation, suspension, closure, or comparable operational state of a Financial Account that requires a contract-established effective time because it changes synchronization and historical financial scope. Absence from a Capture or a state lacking its effective time cannot establish a lifecycle revision and instead fails admission when the contract requires that fact.
 _Avoid_: Account identity status, missing-account inference, collection-time closure
+
+**Time-deposit financial account**:
+A `depository` Financial Account for one fixed-term deposit, collected only when the person's Statement Selection includes the source's time-deposit statement type rather than as part of demand deposits. Its maturity or early redemption is an Account Lifecycle Fact, established only from a complete time-deposit Capture, never from the deposit's absence alone.
+_Avoid_: Demand-deposit balance line, product collection exclusion, closure by absence
 
 **Crypto financial account**:
 An `investment` financial account with evidence-supported subtype `crypto_exchange` or `non_custodial_wallet`. Provider wallet labels create separate financial accounts only when the source establishes independent ledger, balance, transaction-scope, or wallet identity.
@@ -679,12 +703,8 @@ _Avoid_: Local-only product, anonymous financial data
 A login password, one-time code, session token, cookie, API key, credential answer, or equivalent material that can authenticate as the person. It is never exposed to a model or agent tool, even when other financial data is locally observable.
 _Avoid_: Financial account identifier, account data
 
-**Gmail OTP mailbox authorization**:
-The person's explicit Google consent that allows the application to retrieve Cathay sign-in codes from Gmail. Automatic retrieval is always enabled, but the grant must be given or restored explicitly in sign-in settings. Disconnecting removes that grant and makes verification require authorization again.
-_Avoid_: Email password, unrestricted mailbox ownership, generic email login
-
 **Source device registration**:
-The sign-in setting action in which the person makes a supported source trust this installation's device identity, typing any one-time code the source sends during that action. It is setup, not a workflow stage, so it does not breach ADR 0039; a later run that finds the device untrusted fails with an actionable reason instead of waiting for a person. It is repeated whenever the source withdraws trust, such as when TDCC moves its single trusted device to the person's phone. The registered device identity is an authentication secret, retained across password changes and reset only when the sign-in identifier changes.
+The sign-in setting action in which the person makes a supported source trust this installation's device identity, typing any one-time code the source sends during that action. It is setup, not a workflow stage, so it does not breach ADR 0039; a later run that finds the device untrusted fails with an actionable reason instead of waiting for a person. It is repeated whenever the source withdraws trust, such as when TDCC moves its single trusted device to the person's phone. The registered device identity is an authentication secret, retained across password changes and reset only when the sign-in identifier changes. TDCC (ADR 0041) and Cathay United Bank (ADR 0050) support it. For Cathay, the identity is Cathay's device cookie, kept with the Cathay task's browser state, and registering adds the App's browser as a trusted device on the person's Cathay account, which sign-in settings disclose. One registration runs at a time, and never while that source's run holds its device.
 _Avoid_: Workflow OTP prompt, manual verification stage, human assistance
 
 **Authentication certificate file**:
@@ -817,6 +837,18 @@ A reusable unit of automation that can be started manually, in a batch, or by it
 **Automation task run**:
 One execution attempt of an automation task, including its status, bounded operational events, and any verification stage it waits on. A solver completing that stage continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
+**Scheduled collection**:
+The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings.
+_Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
+
+**User-action failure**:
+An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. It is the only failure class that raises an operating-system notification; transient failures remain in run history.
+_Avoid_: Transient failure, retryable failure, human assistance
+
+**Session takeover**:
+A provider sign-in that ends the person's other session with that provider, such as its phone App, either because the provider allows one session or because the workflow confirms the provider's duplicate-login prompt. Manual and scheduled runs may cause it; sign-in settings disclose it for each source that does.
+_Avoid_: Silent sign-out, account lock, device registration
+
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
 _Avoid_: Log file, raw stdout, source record, financial fact
@@ -910,11 +942,15 @@ One invocation of a distinct provider-declared OCR strategy against the image be
 _Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
 
 **CAPTCHA challenge round**:
-The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
+The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction, and use the same fixed limit of three rounds with no provider or user override. A round submits at most one answer; a provider with In-page CAPTCHA Refresh evidence may refresh an unaccepted challenge without submitting, up to five challenges within the round. A rejected submitted answer, or exhausting the round's challenges without an accepted candidate, restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
 _Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
 
+**In-page CAPTCHA refresh**:
+Loading a new challenge through the provider's own refresh control on the same login page, without submitting an answer or restarting the workflow, when no candidate satisfies the Solve Acceptance Policy. A provider may use it only with evidence that the refresh yields a new challenge without resetting the entered Sign-in Details; it never counts as a submitted sign-in. A source that fetches its challenge from the provider's pre-login API refreshes by requesting a new challenge from that API in the same session.
+_Avoid_: Workflow restart, Solve Attempt, submitted retry
+
 **CAPTCHA retry campaign**:
-The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, ten consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed. `npm run workflow:dev` runs no campaign, so a retryable outcome ends a development run. Only a new explicit user operation starts a new campaign with a fresh budget.
+The bounded, strictly serial sequence of CAPTCHA Challenge Rounds belonging to one user-initiated provider automation operation. It appears as one running operation and one final history result even when its internal workflow execution restarts; round-level operational audit retains only timing and outcome classification, never challenge images or answers. A new round begins immediately after a valid retry outcome only when the prior workflow and browser session have finished cleanup; the first version adds no separate retry delay. The first successfully captured challenge consumes round one, and the budget survives only the workflow restarts coordinated inside that uninterrupted operation. Success, cancellation, a non-retryable failure, three consumed rounds, application termination, or unexpected automation-process loss ends the campaign; exhausting the budget fails closed. `npm run workflow:dev` runs no campaign, so a retryable outcome ends a development run. Only a new explicit user operation starts a new campaign with a fresh budget.
 _Avoid_: Independent failed history item per round, per-process retry counter, automatically renewed retry budget
 
 **CAPTCHA campaign launch snapshot**:
@@ -949,9 +985,13 @@ _Avoid_: Unrestricted E-Invoice CAPTCHA, mixed-layout E-Invoice CAPTCHA corpus
 The supported local-solver CAPTCHA family on the Taipei Fubon Bank login workflow: a 158-by-30-pixel white-background image whose answer is exactly six decimal digits rendered as colored, variably tilted glyphs without an interference-line requirement. Automatic submission requires OCR Agreement from at least two distinct provider-declared preprocessing strategies; missing agreement fails closed. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
 _Avoid_: Repeated identical Fubon OCR attempt, confidence-only Fubon submission, mixed-layout Fubon CAPTCHA corpus
 
-**Cathay login Email OTP**:
-The supported Gmail-retrieved one-time-code family for Cathay United Bank login. Its message has the exact CUBE two-step-login subject and instruction template, declares a five-minute validity window, and contains one answer made of four uppercase Latin letters, a hyphen, and six decimal digits. A recipient may be a forwarding alias rather than the authorized Gmail address. An eligible message either arrives directly with Google-verified Cathay sender authentication, or arrives through Apple Hide My Email with Google-verified iCloud authentication whose iCloud-signed relay header identifies the original Cathay delivery domain. Automatic entry requires exactly one authenticated post-request message and exactly one answer satisfying the calibrated family. The workflow fills and submits that answer at most once; an uncertain submit is never repeated. Automatic verification ends the attempt with an actionable reason when authorization or an eligible answer is unavailable, rejected, or uncertain, and never persists the message or answer. When the Cathay send button is not visible, the workflow fails with `challenge-unavailable`. There is no manual Email OTP entry (ADR 0039).
-_Avoid_: Numeric-only Cathay OTP, arbitrary six-digit email code, recipient-address equality
+**Taishin Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Taishin Bank preview source: a 120-by-36-pixel image whose answer is exactly six decimal digits. Automatic submission requires confidence at or above 0.5 from the best of two declared strategies. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Taishin CAPTCHA, mixed-layout Taishin CAPTCHA corpus
+
+**Mega Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Mega Bank preview source: a 100-by-49-pixel image whose answer is exactly five decimal digits. Automatic submission requires confidence at or above 0.99 from the best of three declared strategies; an unaccepted challenge may be replaced by an In-page CAPTCHA Refresh. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
+_Avoid_: Unrestricted Mega CAPTCHA, lowered Mega confidence threshold, mixed-layout Mega CAPTCHA corpus
 
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge goes to its solver route.

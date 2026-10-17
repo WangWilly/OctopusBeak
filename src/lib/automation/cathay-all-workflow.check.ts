@@ -22,18 +22,16 @@ import type {
   WorkflowFinancialCommitPort,
 } from "./workflow-executor.ts";
 import {
-  completeCathayEmailOtpForApp,
   decodeCathayApiSourceResponse,
-  waitForCathayAppSignedInState,
+  waitForCathayTrustedDeviceSignIn,
   type CathayDomesticFinancialCollection,
-  type CathayGmailOtpPort,
 } from "../../workflows/cathay-statements.ts";
 import type {
   CathayAppLoginDependencies,
   CathayCredentials,
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -77,85 +75,6 @@ const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
 const DOMESTIC_REQUESTS = buildCathayDomesticFinancialRequestsForPGlite(
   DOMESTIC_SYNC_FIXTURE,
 );
-
-function otpPort(
-  overrides: Partial<CathayGmailOtpPort> = {},
-): CathayGmailOtpPort {
-  return {
-    ensureAccess: overrides.ensureAccess ?? (async () => ({ status: "ready" })),
-    prepareRetrieval:
-      overrides.prepareRetrieval ??
-      (async () => ({
-        status: "prepared",
-        boundaryId: "fixture-boundary",
-      })),
-    retrieve:
-      overrides.retrieve ??
-      (async () => ({ status: "found", otp: "ABCD-123456" })),
-  };
-}
-
-function otpPage() {
-  let fieldValue = "";
-  let sendClicks = 0;
-  let confirmClicks = 0;
-  let sendVisible = true;
-  let sendError: unknown;
-  let confirmError: unknown;
-  const otpField = {
-    isVisible: async () => true,
-    waitFor: async () => undefined,
-    scrollIntoViewIfNeeded: async () => undefined,
-    focus: async () => undefined,
-    boundingBox: async () => ({ x: 20, y: 30, width: 150, height: 40 }),
-    fill: async (value: string) => {
-      fieldValue = value;
-    },
-    inputValue: async () => fieldValue,
-  };
-  const link = { isVisible: async () => true, click: async () => undefined };
-  const send = {
-    isVisible: async () => sendVisible,
-    click: async () => {
-      sendClicks += 1;
-      if (sendError) throw sendError;
-    },
-  };
-  const confirm = {
-    click: async () => {
-      confirmClicks += 1;
-      if (confirmError) throw confirmError;
-    },
-  };
-  const page = {
-    url: () => "https://www.cathaybk.com.tw/MyBank/",
-    waitForTimeout: async () => undefined,
-    locator(selector: string) {
-      if (selector === "a") return { filter: () => ({ first: () => link }) };
-      if (selector === "#OtpMailPassword") return otpField;
-      if (selector === "#js-otp-email-send") return send;
-      if (selector === "#btnConfirm") return confirm;
-      throw new Error(`Unexpected OTP selector ${selector}`);
-    },
-  } as unknown as Page;
-  return {
-    page,
-    otpField,
-    read: () => ({ fieldValue, sendClicks, confirmClicks }),
-    setFieldValue: (value: string) => {
-      fieldValue = value;
-    },
-    setSendVisible: (value: boolean) => {
-      sendVisible = value;
-    },
-    setSendError: (error: unknown) => {
-      sendError = error;
-    },
-    setConfirmError: (error: unknown) => {
-      confirmError = error;
-    },
-  };
-}
 
 test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response metadata", () => {
   const metadata = {
@@ -205,252 +124,73 @@ test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response
   );
 });
 
-test("Cathay App Gmail OTP defaults to solver and never falls back to manual assistance", async () => {
-  for (const reason of [
-    "disabled",
-    "not-configured",
-    "needs-authorization",
-    "authorization-cancelled",
-    "authorization-failed",
-    "token-invalid",
-  ] as const) {
-    const unavailable = otpPage();
-    const events: string[] = [];
-    await assert.rejects(
-      completeCathayEmailOtpForApp(unavailable.page, {
-        otp: otpPort({
-          ensureAccess: async () => ({ status: "fallback", reason }),
-        }),
-        signal: new AbortController().signal,
-        event: async (code) => {
-          events.push(code);
-        },
-      }),
-      (error: unknown) =>
-        error instanceof Error &&
-        "errorCode" in error &&
-        error.errorCode === "verification-configuration-failed" &&
-        "reason" in error &&
-        error.reason === `gmail-${reason}`,
-    );
-    assert.deepEqual(unavailable.read(), {
-      fieldValue: "",
-      sendClicks: 0,
-      confirmClicks: 0,
-    });
-    assert.deepEqual(events, [`cathay-email-otp-gmail-${reason}`]);
-  }
-
-  const automatic = otpPage();
-  let retrieveCalls = 0;
-  const completion = await completeCathayEmailOtpForApp(automatic.page, {
-    otp: otpPort({
-      retrieve: async () => {
-        retrieveCalls += 1;
-        return { status: "found", otp: "ABCD-123456" };
-      },
+function signInPage(state: { signedIn?: boolean; challenge?: boolean }) {
+  const visible = (shown: boolean | undefined) => ({ isVisible: async () => shown === true });
+  return {
+    url: () => state.signedIn
+      ? "https://www.cathaybk.com.tw/OnlineBanking/Home"
+      : "https://www.cathaybk.com.tw/MyBank/",
+    waitForTimeout: async () => undefined,
+    getByText: () => ({ first: () => visible(state.signedIn) }),
+    locator: () => ({
+      filter: () => ({}),
+      or: () => ({ first: () => visible(state.challenge) }),
     }),
-    signal: new AbortController().signal,
-  });
-  assert.deepEqual(automatic.read(), {
-    fieldValue: "123456",
-    sendClicks: 1,
-    confirmClicks: 1,
-  });
-  assert.equal(retrieveCalls, 1);
-  assert.equal(completion, "solver-submitted");
-  const completionEvents: string[] = [];
-  await assert.rejects(
-    waitForCathayAppSignedInState(
-      automatic.page,
-      {
-        otp: otpPort(),
-        signal: new AbortController().signal,
-        event: async (code) => {
-          completionEvents.push(code);
-        },
-      },
-      0,
-    ),
-    (error: unknown) =>
-      error instanceof Error &&
-      "errorCode" in error &&
-      error.errorCode === "verification-failed" &&
-      "reason" in error &&
-      error.reason === "completion-unconfirmed",
-  );
-  assert.deepEqual(completionEvents, [
-    "cathay-email-otp-completion-unconfirmed",
-  ]);
-});
+  } as unknown as Page;
+}
 
-test("Cathay solver stops on ambiguous or timed-out Gmail results without a manual retry", async () => {
-  for (const reason of [
-    "no-candidate",
-    "ambiguous-candidate",
-    "timeout",
-  ] as const) {
-    const fixture = otpPage();
-    const events: string[] = [];
-    let retrieveCalls = 0;
-    await assert.rejects(
-      completeCathayEmailOtpForApp(fixture.page, {
-        otp: otpPort({
-          retrieve: async () => {
-            retrieveCalls += 1;
-            return { status: "fallback", reason };
-          },
-        }),
-        signal: new AbortController().signal,
-        event: async (code) => {
-          events.push(code);
-        },
-      }),
-      (error: unknown) =>
-        error instanceof Error &&
-        "errorCode" in error &&
-        error.errorCode === "verification-failed" &&
-        "reason" in error &&
-        error.reason === `gmail-${reason}`,
-    );
-    assert.deepEqual(fixture.read(), {
-      fieldValue: "",
-      sendClicks: 1,
-      confirmClicks: 0,
-    });
-    assert.equal(retrieveCalls, 1);
-    assert.deepEqual(events, [`cathay-email-otp-gmail-${reason}`]);
-  }
-});
-
-test("Cathay solver stops before sending when Gmail retrieval cannot be prepared", async () => {
-  const fixture = otpPage();
-  await assert.rejects(
-    completeCathayEmailOtpForApp(fixture.page, {
-      otp: otpPort({
-        prepareRetrieval: async () => ({
-          status: "fallback",
-          reason: "gmail-request-failed",
-        }),
-      }),
-      signal: new AbortController().signal,
-    }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "errorCode" in error &&
-      error.errorCode === "verification-failed" &&
-      "reason" in error &&
-      error.reason === "gmail-request-failed",
-  );
-  assert.deepEqual(fixture.read(), {
-    fieldValue: "",
-    sendClicks: 0,
-    confirmClicks: 0,
-  });
-});
-
-test("Cathay solver stops with a setup reason when the OTP send control is unsupported", async () => {
-  const fixture = otpPage();
-  fixture.setSendVisible(false);
-  let ensureCalls = 0;
-  await assert.rejects(
-    completeCathayEmailOtpForApp(fixture.page, {
-      otp: otpPort({
-        ensureAccess: async () => {
-          ensureCalls += 1;
-          return { status: "ready" };
-        },
-      }),
-      signal: new AbortController().signal,
-    }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "errorCode" in error &&
-      error.errorCode === "verification-configuration-failed" &&
-      "reason" in error &&
-      error.reason === "challenge-unavailable",
-  );
-  assert.equal(ensureCalls, 0);
-  assert.deepEqual(fixture.read(), {
-    fieldValue: "",
-    sendClicks: 0,
-    confirmClicks: 0,
-  });
-});
-
-test("Cathay solver treats uncertain send and submit as terminal and never repeats them", async () => {
-  const sendUncertain = otpPage();
-  sendUncertain.setSendError(new Error("synthetic send uncertainty"));
-  let sendRetrievalCalls = 0;
-  await assert.rejects(
-    completeCathayEmailOtpForApp(sendUncertain.page, {
-      otp: otpPort({
-        retrieve: async () => {
-          sendRetrievalCalls += 1;
-          return { status: "found", otp: "ABCD-123456" };
-        },
-      }),
-      signal: new AbortController().signal,
-    }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "errorCode" in error &&
-      error.errorCode === "verification-failed" &&
-      "reason" in error &&
-      error.reason === "send-uncertain",
-  );
-  assert.deepEqual(sendUncertain.read(), {
-    fieldValue: "",
-    sendClicks: 1,
-    confirmClicks: 0,
-  });
-  assert.equal(sendRetrievalCalls, 0);
-
-  const submitUncertain = otpPage();
-  submitUncertain.setConfirmError(new Error("synthetic submit uncertainty"));
-  let submitRetrievalCalls = 0;
-  await assert.rejects(
-    completeCathayEmailOtpForApp(submitUncertain.page, {
-      otp: otpPort({
-        retrieve: async () => {
-          submitRetrievalCalls += 1;
-          return { status: "found", otp: "ABCD-123456" };
-        },
-      }),
-      signal: new AbortController().signal,
-    }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "errorCode" in error &&
-      error.errorCode === "verification-failed" &&
-      "reason" in error &&
-      error.reason === "submission-uncertain",
-  );
-  assert.deepEqual(submitUncertain.read(), {
-    fieldValue: "123456",
-    sendClicks: 1,
-    confirmClicks: 1,
-  });
-  assert.equal(submitRetrievalCalls, 1);
-});
-
-test("Cathay solver abort wins over OTP failure classification", async () => {
-  const fixture = otpPage();
-  const controller = new AbortController();
+function recordEvents() {
   const events: string[] = [];
-  controller.abort();
+  return { events, event: async (code: string) => { events.push(code); } };
+}
+
+test("a Cathay run that meets an OTP challenge stops asking for device registration", async () => {
+  const { events, event } = recordEvents();
   await assert.rejects(
-    completeCathayEmailOtpForApp(fixture.page, {
-      otp: otpPort({
-        ensureAccess: async () => ({ status: "fallback", reason: "disabled" }),
-      }),
-      signal: controller.signal,
-      event: async (code) => {
-        events.push(code);
-      },
+    waitForCathayTrustedDeviceSignIn(signInPage({ challenge: true }), {
+      signal: new AbortController().signal,
+      event,
     }),
     (error: unknown) =>
-      error instanceof Error && error.name === "AbortError",
+      error instanceof ProductCollectionFatalError &&
+      error.errorCode === "device-registration-required",
+  );
+  assert.deepEqual(events, ["device-registration-required"]);
+});
+
+test("a trusted Cathay device signs in without a code", async () => {
+  const { events, event } = recordEvents();
+  await waitForCathayTrustedDeviceSignIn(signInPage({ signedIn: true, challenge: true }), {
+    signal: new AbortController().signal,
+    event,
+  });
+  assert.deepEqual(events, []);
+});
+
+test("a Cathay sign-in that never settles fails verification", async () => {
+  const { events, event } = recordEvents();
+  await assert.rejects(
+    waitForCathayTrustedDeviceSignIn(signInPage({}), {
+      signal: new AbortController().signal,
+      event,
+    }, 0),
+    (error: unknown) =>
+      error instanceof ProductCollectionFatalError &&
+      error.errorCode === "verification-failed",
+  );
+  assert.deepEqual(events, ["authentication-sign-in-unconfirmed"]);
+});
+
+test("cancellation wins over the Cathay device-registration outcome", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const { events, event } = recordEvents();
+  await assert.rejects(
+    waitForCathayTrustedDeviceSignIn(signInPage({ challenge: true }), {
+      signal: controller.signal,
+      event,
+    }),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
   );
   assert.deepEqual(events, []);
 });
@@ -508,7 +248,6 @@ function collectionDependencies(
     signIn: (
       page: Page,
       credentials: CathayCredentials,
-      trustDevice: boolean,
       dependencies: CathayAppLoginDependencies,
     ) => Promise<{ usedExistingSession: boolean }>;
     domestic: CathayDomesticFinancialCollection;
@@ -522,7 +261,6 @@ function collectionDependencies(
   }> = {},
 ) {
   return {
-    otp: otpPort(),
     signIn:
       override.signIn ??
       (async () => ({ usedExistingSession: true })),

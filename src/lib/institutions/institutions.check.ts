@@ -19,6 +19,11 @@ import {
   accountProduct,
   sourceInstitution,
 } from "./institutions.ts";
+import { PREVIEW_SOURCES } from "../preview-sources/registry.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS, previewTaskId } from "../preview-sources/source-id.ts";
+
+const logoExists = (key: Parameters<typeof institutionLogoFile>[0]) =>
+  existsSync(new URL(`../../../site/assets/logos/${institutionLogoFile(key)}`, import.meta.url));
 
 test("every institution has a downloaded logo and a name in both locales", () => {
   for (const key of INSTITUTION_KEYS) {
@@ -92,7 +97,8 @@ test("a TDCC account localizes its stored Institution and shows its logo only wh
   assert.equal(zh.label, "台新國際商業銀行 · 銀行帳戶 · 200123456");
   assert.equal(dictionaries["zh-TW"].accounts.viaSource.tdcc, "經由集保e手掌握");
   assert.equal(dictionaries.en.accounts.viaSource.tdcc, "via TDCC e-Passbook");
-  assert.equal(institutionLogo("bank-812"), null);
+  assert.equal(institutionLogo("bank-812"), "bank-812", "Taishin has a logo through its Preview source");
+  assert.equal(institutionLogo("bank-004"), null);
   assert.equal(institutionLogo("fubon"), "fubon");
 
   const broker = account({ label: "永豐金 · Investment account · 1", institution: "永豐金", institutionKey: "broker-9A00", product: "Investment account" });
@@ -154,4 +160,30 @@ test("an account's product comes from its account type and its source's investme
   assert.equal(product("yuanta-trade", "investment-margin", "loan"), null);
   assert.equal(product("cathay", "credit-card", "credit"), null);
   assert.equal(product("tdcc", "toString", "investment"), null);
+});
+
+test("every Preview source's task, sign-in group, and accounts show its Institution's logo", () => {
+  assert.deepEqual(
+    Object.keys(PREVIEW_SOURCE_INSTITUTIONS).sort(),
+    PREVIEW_SOURCES.map((source) => source.id).sort(),
+    "every production Preview source names its Institution in the interface table",
+  );
+  for (const source of PREVIEW_SOURCES) {
+    const logo = institutionLogo(source.institution);
+    assert.equal(logo, source.institution, `${source.id} accounts show the ${source.institution} logo`);
+    assert.ok(logoExists(logo), `${source.institution} logo must exist in site/assets/logos`);
+    assert.equal(sourceLogoForTask(previewTaskId(source)), logo, `${previewTaskId(source)} shows the ${logo} logo`);
+    assert.equal(sourceLogo(source.id), logo, `the ${source.id} sign-in group shows the ${logo} logo`);
+  }
+  assert.equal(sourceLogoForTask("preview-mega-deposit"), "bank-017");
+  assert.equal(sourceLogoForTask("preview-unknown"), null);
+});
+
+test("a Preview source's Institution never becomes a direct source's Institution", () => {
+  for (const [id, institution] of Object.entries(PREVIEW_SOURCE_INSTITUTIONS)) {
+    assert.ok(!(INSTITUTION_KEYS as readonly string[]).includes(institution), `${institution} has no supported source of its own`);
+    assert.equal(sourceInstitution(id), null, `${id} is not an integration namespace`);
+    assert.equal(institutionForNamespace(id), null);
+  }
+  assert.equal(accountProduct({ integrationNamespace: "taishin-deposit", stream: "investment", accountType: "investment" }), null);
 });

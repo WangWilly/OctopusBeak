@@ -149,6 +149,20 @@ try {
     assert.equal(workflowEnv[key], undefined, `${key} stays out of child workflow environments`);
   }
 
+  const legacyGmailPath = join(dir, "legacy-gmail-credentials.json");
+  const legacyGmailSettingsPath = join(dir, "legacy-gmail-settings.json");
+  writeFileSync(legacyGmailPath, JSON.stringify({
+    CATHAY_GMAIL_REFRESH_TOKEN: "legacy-refresh-token",
+    CATHAY_GMAIL_CONNECTED_EMAIL: "person@example.test",
+    [fubonPasswordKey]: "pw",
+  }));
+  writeFileSync(legacyGmailSettingsPath, JSON.stringify({ CATHAY_GMAIL_OTP_ENABLED: true }));
+  const legacyCredentials = readAutomationCredentialsFile(legacyGmailPath, null);
+  assert.deepEqual(legacyCredentials, { [fubonPasswordKey]: "pw" }, "stored Gmail grants are no longer read");
+  assert.deepEqual(readAutomationSettingsFile(legacyGmailSettingsPath), {});
+  writeAutomationCredentialsFile(legacyGmailPath, legacyCredentials, null);
+  assert.equal(readFileSync(legacyGmailPath, "utf8").includes("legacy-refresh-token"), false, "the next credential write drops the Gmail grant");
+
   assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");
   assert.equal(AUTOMATION_ENV_PATH, ".env");

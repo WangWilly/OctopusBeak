@@ -1,6 +1,6 @@
 # Bounded CAPTCHA Retry Campaigns
 
-Status: accepted; amended by [ADR 0039](0039-solver-only-verification.md)
+Status: accepted; amended by [ADR 0039](0039-solver-only-verification.md) and [ADR 0046](0046-in-page-captcha-refresh.md), which caps campaigns at three rounds and adds in-page refresh
 
 ADR 0039 removed human verification. Mentions below of human-operated verification, human fallback, and explicit human runs record the original context. The campaign itself is unchanged. `npm run workflow:dev` does not run campaigns, so a retryable outcome ends a development run.
 

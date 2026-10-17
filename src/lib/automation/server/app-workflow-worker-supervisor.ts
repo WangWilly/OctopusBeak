@@ -1,16 +1,13 @@
 import { join } from "node:path";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { HumanAssistanceCompletionStatus, HumanAssistanceContractInput } from "../human-assistance.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcomeSummary, TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
-import { gmailOtpFallbackReason, type GmailOtpFallbackReason } from "../gmail-otp.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
   type SafeWorkflowFailureError,
 } from "./workflow-failure-diagnostics.ts";
-import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
 import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
@@ -18,12 +15,11 @@ import {
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerStart,
-  type CathayGmailOtpRequestFrame,
-  type CathayGmailOtpResponseFrame,
   type TdccSessionRequestFrame,
   type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
 import type { TdccSessionHost } from "./tdcc-session-host.ts";
+import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
 
 export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-start-failed" | "protocol-invalid";
@@ -37,6 +33,7 @@ export type AppWorkflowWorkerOutcome =
     summary: TypedWorkflowOutcomeSummary | null;
     failureKind: "worker-start" | "worker-crash" | "workflow" | "unexpected-exit" | "protocol";
     diagnostic?: SafeWorkflowFailureError;
+    previewResponses?: PreviewResponseShapes;
   }>;
 
 type WorkerDataStream = {
@@ -81,8 +78,6 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
   /** The host side of a TDCC run's session port; absent for every other workflow. */
   tdccSession?: TdccSessionHost;
-  /** Test seam; production creates one host OTP adapter per Cathay run. */
-  createCathayGmailOtpPort?: (signal: AbortSignal) => CathayGmailOtpPort;
   /** Defaults to the sibling bundle emitted by the Electron build. */
   workerPath?: string;
   /** Test seam; production always uses node:worker_threads. */
@@ -101,9 +96,6 @@ const CANCELLED: AppWorkflowWorkerOutcome = cancelled();
 const MAX_EVENTS_PER_RUN = 512;
 const DEFAULT_CANCEL_GRACE_MS = 2_000;
 const DEFAULT_TERMINAL_GRACE_MS = 1_000;
-const MAX_CATHAY_OTP_OPERATIONS_PER_RUN = 128;
-const CATHAY_OTP_BOUNDARY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const CATHAY_OTP_PATTERN = /^[A-Z]{4}-[0-9]{6}$/u;
 const MAX_TDCC_SESSION_REQUESTS_PER_RUN = 8;
 
 function tdccSessionResponse(
@@ -121,6 +113,7 @@ function failed(
   failureKind: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>['failureKind'],
   diagnostic: SafeWorkflowFailureError | null = null,
   summary: TypedWorkflowOutcomeSummary | null = null,
+  previewResponses?: PreviewResponseShapes,
 ): AppWorkflowWorkerOutcome {
   return {
     status: "failed",
@@ -128,6 +121,7 @@ function failed(
     summary,
     failureKind,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(previewResponses ? { previewResponses } : {}),
   };
 }
 
@@ -155,67 +149,6 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 function defaultWorkerFactory(path: string, options: WorkerOptions): AppWorkflowWorkerHandle {
   return new Worker(path, options);
-}
-
-function fallbackOtpResponse(
-  request: CathayGmailOtpRequestFrame,
-  reason: GmailOtpFallbackReason,
-): CathayGmailOtpResponseFrame {
-  return {
-    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-    kind: "cathay-gmail-otp-response",
-    requestId: request.requestId,
-    operation: request.operation,
-    status: "fallback",
-    reason,
-  };
-}
-
-function resultOtpResponse(
-  request: CathayGmailOtpRequestFrame,
-  result: unknown,
-): CathayGmailOtpResponseFrame {
-  const record = result && typeof result === "object" && !Array.isArray(result)
-    ? result as Record<string, unknown>
-    : null;
-  const fallbackReason = gmailOtpFallbackReason(result);
-  if (fallbackReason) return fallbackOtpResponse(request, fallbackReason);
-
-  if (request.operation === "ensure-access") {
-    return record?.status === "ready"
-      ? {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-response",
-        requestId: request.requestId,
-        operation: request.operation,
-        status: "ready",
-      }
-      : fallbackOtpResponse(request, "protocol-error");
-  }
-  if (request.operation === "prepare-retrieval") {
-    if (record?.status === "prepared" && typeof record.boundaryId === "string" && CATHAY_OTP_BOUNDARY_UUID.test(record.boundaryId)) {
-      return {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-response",
-        requestId: request.requestId,
-        operation: request.operation,
-        status: "prepared",
-        boundaryId: record.boundaryId,
-      };
-    }
-    return fallbackOtpResponse(request, "protocol-error");
-  }
-  if (record?.status === "found" && typeof record.otp === "string" && CATHAY_OTP_PATTERN.test(record.otp)) {
-    return {
-      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-      kind: "cathay-gmail-otp-response",
-      requestId: request.requestId,
-      operation: request.operation,
-      status: "found",
-      otp: record.otp,
-    };
-  }
-  return fallbackOtpResponse(request, record?.status === "found" ? "malformed-candidate" : "protocol-error");
 }
 
 /**
@@ -258,17 +191,6 @@ export async function runSupervisedAppWorkflow(
   } catch {
     return failed("worker-start-failed", "worker-start");
   }
-  let cathayGmailOtpPort: CathayGmailOtpPort | undefined;
-  try {
-    if (options.workflowId === "cathay-all-statements") {
-      const createPort = options.createCathayGmailOtpPort
-        ?? ((runSignal: AbortSignal) => createCathayGmailOtpPort(undefined, { signal: runSignal }));
-      cathayGmailOtpPort = createPort(signal);
-    }
-  } catch {
-    void Promise.resolve(worker.terminate()).catch(() => undefined);
-    return failed("worker-start-failed", "worker-start");
-  }
   // workerData contains credentials. Drop the supervisor's reference as soon as
   // worker_threads has received its structured clone.
   start = undefined as unknown as AppWorkflowWorkerStart;
@@ -282,8 +204,6 @@ export async function runSupervisedAppWorkflow(
   let terminalTimer: ReturnType<typeof setTimeout> | undefined;
   let eventInFlight = false;
   let assistanceInFlight = false;
-  let cathayOtpInFlight = false;
-  let cathayOtpRequestCount = 0;
   let tdccSessionRequestCount = 0;
   let tdccSession = options.tdccSession;
   let rotatedTdccSession: TdccIssuedSession | null = null;
@@ -302,9 +222,6 @@ export async function runSupervisedAppWorkflow(
   let eventCount = 0;
   const eventIds = new Set<string>();
   const assistanceIds = new Set<string>();
-  const cathayOtpRequestIds = new Set<string>();
-  const cathayOtpBoundaryIds = new Set<string>();
-  const cathayOtpConsumedBoundaryIds = new Set<string>();
   const streamDrains: Array<{ stream: WorkerDataStream; listener: (chunk: unknown) => void }> = [];
   let appendEvent = options.appendEvent;
   let appendExchangeRateProgress = options.appendExchangeRateProgress;
@@ -331,10 +248,6 @@ export async function runSupervisedAppWorkflow(
       appendEvent = undefined as unknown as typeof appendEvent;
       appendExchangeRateProgress = undefined;
       requestHumanAssistance = undefined as unknown as typeof requestHumanAssistance;
-      cathayGmailOtpPort = undefined;
-      cathayOtpRequestIds.clear();
-      cathayOtpBoundaryIds.clear();
-      cathayOtpConsumedBoundaryIds.clear();
       worker = undefined as unknown as AppWorkflowWorkerHandle;
     };
     const settle = (outcome: AppWorkflowWorkerOutcome) => {
@@ -453,51 +366,6 @@ export async function runSupervisedAppWorkflow(
         status,
       });
     };
-    const finishCathayOtp = async (request: CathayGmailOtpRequestFrame) => {
-      let response: CathayGmailOtpResponseFrame;
-      try {
-        if (signal.aborted) {
-          cathayOtpInFlight = false;
-          return;
-        }
-        const port = cathayGmailOtpPort;
-        if (!port) throw new Error("otp-port-unavailable");
-        const invoke = <T>(callback: () => Promise<T>) => Promise.resolve().then(() => {
-          if (signal.aborted) throw new Error("cancelled");
-          return callback();
-        });
-        let operation: Promise<unknown>;
-        switch (request.operation) {
-          case "ensure-access":
-            operation = invoke(() => port.ensureAccess());
-            break;
-          case "prepare-retrieval":
-            operation = invoke(() => port.prepareRetrieval());
-            break;
-          case "retrieve":
-            operation = invoke(() => port.retrieve(request.boundaryId));
-            break;
-        }
-        const result = await abortable(operation, signal);
-        response = resultOtpResponse(request, result);
-      } catch {
-        if (signal.aborted) {
-          cathayOtpInFlight = false;
-          return;
-        }
-        response = fallbackOtpResponse(request, "gmail-request-failed");
-      }
-      cathayOtpInFlight = false;
-      if (settled || pendingOutcome || signal.aborted) return;
-      if (response.status === "prepared") {
-        if (cathayOtpBoundaryIds.has(response.boundaryId) || cathayOtpBoundaryIds.size >= MAX_CATHAY_OTP_OPERATIONS_PER_RUN) {
-          protocolFailure();
-          return;
-        }
-        cathayOtpBoundaryIds.add(response.boundaryId);
-      }
-      send(response);
-    };
     const onMessage = (value: unknown) => {
       if (settled) return;
       let frame: ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>;
@@ -579,32 +447,6 @@ export async function runSupervisedAppWorkflow(
         void finishAssistance(frame.requestId, frame.contract);
         return;
       }
-      if (frame.kind === "cathay-gmail-otp-request") {
-        if (
-          options.workflowId !== "cathay-all-statements"
-          || cathayOtpInFlight
-          || cathayOtpRequestCount >= MAX_CATHAY_OTP_OPERATIONS_PER_RUN
-          || cathayOtpRequestIds.has(frame.requestId)
-          || !cathayGmailOtpPort
-        ) {
-          protocolFailure();
-          return;
-        }
-        if (frame.operation === "retrieve") {
-          if (!cathayOtpBoundaryIds.has(frame.boundaryId) || cathayOtpConsumedBoundaryIds.has(frame.boundaryId)) {
-            protocolFailure();
-            return;
-          }
-          // Consume before awaiting Gmail so cancellation or failure cannot replay it.
-          cathayOtpConsumedBoundaryIds.add(frame.boundaryId);
-        }
-        cathayOtpRequestCount += 1;
-        cathayOtpRequestIds.add(frame.requestId);
-        cathayOtpInFlight = true;
-        void finishCathayOtp(frame);
-        return;
-      }
-
       if (frame.kind === "tdcc-session-request") {
         if (!tdccSession || tdccSessionRequestCount >= MAX_TDCC_SESSION_REQUESTS_PER_RUN) {
           protocolFailure();
@@ -622,7 +464,7 @@ export async function runSupervisedAppWorkflow(
         return;
       }
 
-      if (eventInFlight || assistanceInFlight || cathayOtpInFlight) {
+      if (eventInFlight || assistanceInFlight) {
         protocolFailure();
         return;
       }
@@ -642,6 +484,7 @@ export async function runSupervisedAppWorkflow(
           "workflow",
           frame.diagnostic ?? null,
           frame.summary ?? null,
+          frame.previewResponses,
         ));
       }
     };

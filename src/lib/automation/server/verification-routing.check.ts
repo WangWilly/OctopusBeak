@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MAX_CHALLENGES_PER_ROUND,
   routeVerificationActor,
   routeWaitingRunVerification,
   selectVerificationChallengeImage,
+  verificationRoutingDependencies,
   type VerificationRoutingDependencies,
 } from "./verification-routing.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
@@ -114,6 +116,8 @@ test("a provider image owner never falls back to generic capture after failure",
         return null;
       },
       isChallengeImageCurrent: async () => true,
+      refreshesChallengeImage: () => false,
+      refreshChallengeImage: async () => false,
     },
     genericCaptureChallengeImage: async () => {
       calls.push("generic");
@@ -159,6 +163,8 @@ test("App verification uses its task-run ID and ignores legacy session text", as
         routeIds.push(viewerKey);
         return true;
       },
+      refreshesChallengeImage: () => false,
+      async refreshChallengeImage() { return false; },
     },
     injectAnswer: async (viewerKey) => { routeIds.push(viewerKey); },
     providerProbePostSubmit: async (viewerKey, _contract, resume) => {
@@ -173,4 +179,156 @@ test("App verification uses its task-run ID and ignores legacy session text", as
   assert.deepEqual(outcome, { kind: "resumed" });
   assert.equal(routeIds.length, 4);
   assert.ok(routeIds.every((viewerKey) => viewerKey === taskRunId));
+});
+
+type RefreshBehavior = "new-challenge" | "unchanged" | "throws";
+
+function refreshRound(options: { refresh?: RefreshBehavior; acceptOnChallenge?: number }) {
+  let challenge = 1;
+  const capturedChallenges = new Set<number>();
+  const counts = { refreshes: 0, injects: 0, probes: 0, resumes: 0, captureEvents: 0 };
+  const failures: string[] = [];
+  const dependencies: VerificationRoutingDependencies = {
+    solver: {
+      async solve() {
+        return {
+          answer: "1234",
+          confidence: challenge === options.acceptOnChallenge ? 0.99 : 0.1,
+        };
+      },
+    },
+    captureChallengeImage: async () => {
+      capturedChallenges.add(challenge);
+      return Buffer.from(`challenge-${challenge}`);
+    },
+    injectAnswer: async () => { counts.injects += 1; },
+    probePostSubmit: async (_session, _contract, resume) => {
+      counts.probes += 1;
+      await resume();
+      return "none";
+    },
+    injectSelections: async () => {},
+    clickTarget: async () => {},
+    resumeAppWorkflow: async () => { counts.resumes += 1; },
+    finalizeFailed: async (message) => { failures.push(message); },
+    onChallengeCaptured: async () => { counts.captureEvents += 1; },
+    ...(options.refresh
+      ? {
+          refreshChallenge: async () => {
+            counts.refreshes += 1;
+            if (options.refresh === "throws") throw new Error("refresh control detached");
+            if (options.refresh === "unchanged") return false;
+            challenge += 1;
+            return true;
+          },
+        }
+      : {}),
+  };
+  return {
+    counts,
+    failures,
+    capturedChallenges,
+    route: () => routeVerificationActor({
+      contract: captchaContract(),
+      taskRunId: "refresh-run",
+      confidenceThreshold: 0.9,
+      dependencies,
+    }),
+  };
+}
+
+test("a refresh-capable round solves five challenges without submitting any", async () => {
+  const round = refreshRound({ refresh: "new-challenge" });
+  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
+  assert.deepEqual([...round.capturedChallenges], [1, 2, 3, 4, 5]);
+  assert.equal(MAX_CHALLENGES_PER_ROUND, 5);
+  assert.deepEqual(round.counts, {
+    refreshes: 4,
+    injects: 0,
+    probes: 0,
+    resumes: 0,
+    captureEvents: 1,
+  });
+  assert.deepEqual(round.failures, []);
+});
+
+test("a refresh-capable round submits once when a later challenge is accepted", async () => {
+  const round = refreshRound({ refresh: "new-challenge", acceptOnChallenge: 3 });
+  assert.deepEqual(await round.route(), { kind: "resumed" });
+  assert.deepEqual([...round.capturedChallenges], [1, 2, 3]);
+  assert.deepEqual(round.counts, {
+    refreshes: 2,
+    injects: 1,
+    probes: 1,
+    resumes: 1,
+    captureEvents: 1,
+  });
+});
+
+test("a refresh that yields no new challenge ends the round without submitting", async () => {
+  const round = refreshRound({ refresh: "unchanged" });
+  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
+  assert.deepEqual([...round.capturedChallenges], [1]);
+  assert.equal(round.counts.refreshes, 1);
+  assert.equal(round.counts.injects, 0);
+  assert.equal(round.counts.resumes, 0);
+});
+
+test("a provider without a refresh control keeps one challenge per round", async () => {
+  const round = refreshRound({});
+  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
+  assert.deepEqual([...round.capturedChallenges], [1]);
+  assert.equal(round.counts.refreshes, 0);
+  assert.equal(round.counts.injects, 0);
+  assert.equal(round.counts.resumes, 0);
+});
+
+test("a refresh error fails the run instead of restarting it", async () => {
+  const round = refreshRound({ refresh: "throws" });
+  assert.deepEqual(await round.route(), { kind: "failed" });
+  assert.equal(round.failures.length, 1);
+  assert.equal(round.counts.resumes, 0);
+  assert.equal(round.counts.probes, 0);
+  assert.equal(round.counts.injects, 0);
+});
+
+test("only a provider-owned image whose owner declares a control gets a refresh seam", async () => {
+  const refreshed: string[] = [];
+  const provider = (owns: boolean, declaresRefresh: boolean) => ({
+    handlesChallengeImage: () => owns,
+    captureChallengeImage: async () => Buffer.from("provider"),
+    isChallengeImageCurrent: async () => true,
+    refreshesChallengeImage: () => declaresRefresh,
+    refreshChallengeImage: async (session: string) => {
+      refreshed.push(session);
+      return true;
+    },
+  });
+  const genericCaptureChallengeImage = async () => Buffer.from("generic");
+  const select = (owns: boolean, declaresRefresh: boolean) => selectVerificationChallengeImage(
+    captchaContract(),
+    { provider: provider(owns, declaresRefresh), genericCaptureChallengeImage },
+  );
+
+  const declaring = select(true, true);
+  assert.ok(declaring.refreshChallenge);
+  assert.equal(await declaring.refreshChallenge("owner-session", captchaContract()), true);
+  assert.deepEqual(refreshed, ["owner-session"]);
+  assert.equal(select(true, false).refreshChallenge, undefined);
+  assert.equal(select(false, true).refreshChallenge, undefined);
+
+  const wired = verificationRoutingDependencies(captchaContract(), {
+    providerVerification: provider(true, true),
+    resumeAppWorkflow: async () => {},
+    providerProbePostSubmit: async () => "none",
+    finalizeFailed: async () => {},
+  });
+  assert.ok(wired.refreshChallenge);
+  const generic = verificationRoutingDependencies(captchaContract(), {
+    providerVerification: provider(false, true),
+    resumeAppWorkflow: async () => {},
+    providerProbePostSubmit: async () => "none",
+    finalizeFailed: async () => {},
+  });
+  assert.equal(generic.refreshChallenge, undefined);
 });

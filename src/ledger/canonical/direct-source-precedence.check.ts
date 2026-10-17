@@ -8,26 +8,46 @@ const account = (
   institutionKey: string,
   accountType = "depository",
   stream = "domestic-deposit",
-): CoverageAccount => ({ accountId, integrationNamespace, institutionKey, accountType, stream });
+  currencies: readonly string[] = ["TWD"],
+): CoverageAccount => ({ accountId, integrationNamespace, institutionKey, accountType, stream, currencies });
 
 const coverage = (...accounts: CoverageAccount[]) => Object.fromEntries(directSourceCoverage(accounts));
 
-test("a direct deposit account covers every Intermediary-source deposit account at its Institution", () => {
+test("a direct deposit account covers an Intermediary-source deposit account at its Institution in the same currency", () => {
   assert.deepEqual(
-    coverage(
-      account("tdcc-cathay", "tdcc", "cathay"),
-      account("tdcc-cathay-usd", "tdcc", "cathay", "depository", "domestic-deposit"),
-      account("cathay-twd", "cathay", "cathay"),
-    ),
-    {
-      "tdcc-cathay": { namespace: "cathay", institutionKey: "cathay", product: "deposit" },
-      "tdcc-cathay-usd": { namespace: "cathay", institutionKey: "cathay", product: "deposit" },
-    },
+    coverage(account("tdcc-cathay", "tdcc", "cathay"), account("cathay-twd", "cathay", "cathay")),
+    { "tdcc-cathay": { namespace: "cathay", institutionKey: "cathay", product: "deposit" } },
   );
   assert.deepEqual(
-    coverage(account("tdcc-cathay", "tdcc", "cathay"), account("cathay-usd", "cathay", "cathay", "depository", "foreign-currency-deposit")),
-    { "tdcc-cathay": { namespace: "cathay", institutionKey: "cathay", product: "deposit" } },
-    "any deposit stream of the direct source counts for the deposit product",
+    coverage(
+      account("tdcc-yuanta-usd", "tdcc", "yuanta-bank", "depository", "domestic-deposit", ["USD"]),
+      account("yuanta-fx", "yuanta", "yuanta-bank", "depository", "foreign-currency-deposit", ["JPY", "USD"]),
+    ),
+    { "tdcc-yuanta-usd": { namespace: "yuanta", institutionKey: "yuanta-bank", product: "deposit" } },
+    "a multi-currency direct account covers each currency it holds",
+  );
+});
+
+test("a direct source that holds no account in a currency leaves the Intermediary-source account in it counting", () => {
+  const fubonUsd = account("tdcc-fubon-usd", "tdcc", "fubon", "depository", "domestic-deposit", ["USD"]);
+  const fubonTwd = account("tdcc-fubon-twd", "tdcc", "fubon");
+  assert.deepEqual(
+    coverage(fubonUsd, fubonTwd, account("fubon-twd", "fubon", "fubon")),
+    { "tdcc-fubon-twd": { namespace: "fubon", institutionKey: "fubon", product: "deposit" } },
+    "a TWD-only direct source does not cover a USD settlement account",
+  );
+  assert.deepEqual(
+    coverage(
+      account("tdcc-yuanta-usd", "tdcc", "yuanta-bank", "depository", "domestic-deposit", ["USD"]),
+      account("yuanta-fx", "yuanta", "yuanta-bank", "depository", "foreign-currency-deposit", ["JPY"]),
+    ),
+    {},
+    "a foreign-currency account without USD does not cover USD",
+  );
+  assert.deepEqual(
+    coverage(account("tdcc-cathay", "tdcc", "cathay", "depository", "domestic-deposit", []), account("cathay-twd", "cathay", "cathay")),
+    {},
+    "an account that holds no currency yet is not covered",
   );
 });
 

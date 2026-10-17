@@ -54,6 +54,7 @@ import type {
   PGliteCanonicalInvestmentCommitResult,
 } from "../src/ledger/pglite/investment.ts";
 import type { TdccAdmittedFundAccount } from "../src/ledger/canonical/tdcc-investment-admission.ts";
+import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../src/ledger/pglite/account-identity-continuity.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -70,6 +71,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.liabilities.current",
   "financial.spending.current",
   "financial.spending.version",
+  "financial.preview.visibilityChanged",
   "financial.spending.pairing",
   "financial.spending.confirmCandidate",
   "financial.spending.denyCandidate",
@@ -94,6 +96,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.investmentRelations.current",
   "financial.exchangeRates.read",
   "financial.tdccFundAccounts.list",
+  "financial.accountIdentity.continuity",
   "financial.exchangeRates.upsert",
 ] as const;
 
@@ -160,6 +163,7 @@ export type PGliteFinancialRegistry = Readonly<{
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
   spendingVersion(): Promise<number>;
+  previewVisibilityChanged(): Promise<void>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -184,6 +188,7 @@ export type PGliteFinancialRegistry = Readonly<{
   currentInvestmentRelations(sourceConnectionKey?: string): Promise<readonly Readonly<Record<string, unknown>>[]>;
   readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
   listTdccFundAccounts(connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>): Promise<readonly TdccAdmittedFundAccount[]>;
+  accountIdentityContinuity(request: AccountIdentityContinuityRequest): Promise<AccountIdentityContinuity>;
   upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
 }>;
 
@@ -326,6 +331,7 @@ export function createPGliteFinancialRpcClient(
     liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
     spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
     spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
+    previewVisibilityChanged: () => call("financial.preview.visibilityChanged", []).then(() => undefined),
     spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,
     confirmCandidate: (input) => call("financial.spending.confirmCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
     denyCandidate: (input) => call("financial.spending.denyCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
@@ -351,6 +357,7 @@ export function createPGliteFinancialRpcClient(
     readExchangeRates: (currencies) => call("financial.exchangeRates.read", currencies === undefined ? [] : [currencies]) as Promise<ExchangeRateRecord[]>,
     upsertExchangeRates: (rows) => call("financial.exchangeRates.upsert", [rows]).then(() => undefined),
     listTdccFundAccounts: (connection) => call("financial.tdccFundAccounts.list", [connection]) as Promise<readonly TdccAdmittedFundAccount[]>,
+    accountIdentityContinuity: (request) => call("financial.accountIdentity.continuity", [request]) as Promise<AccountIdentityContinuity>,
   };
   const close = (error = new PGliteFinancialError("worker-closed")): void => {
     if (closed) return;

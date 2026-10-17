@@ -154,6 +154,8 @@ function verificationHost(input: {
     async isChallengeImageCurrent() { return true; },
     handlesChallengeImage: (contract) => contract.challengeImageRegion?.semanticId
       === "yuanta-trade.login.challenge-image",
+    refreshesChallengeImage: () => false,
+    async refreshChallengeImage() { return false; },
     handlesChallengeAudio: (contract) => contract.challengeAudioSource?.semanticId
       === "yuanta-trade.login.audio-challenge",
     async captureChallengeAudio(session) {

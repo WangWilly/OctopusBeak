@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContextOptions, type Page } from "playwright";
 import {
   browserRuntime,
   type BrowserRuntime,
@@ -18,6 +18,7 @@ import {
   type WorkflowRunEvent,
 } from "../src/lib/automation/workflow-executor.ts";
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
+import { parsePreviewWrite } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   APP_WORKFLOW_DEFINITIONS,
   workflowBrowserProfileForTask,
@@ -198,6 +199,7 @@ export function createDevelopmentBrowserPort(
     runtime?: BrowserRuntime;
     /** Registers the page where the App's solver seams resolve it. */
     sessionKey?: string;
+    contextOptions?: BrowserContextOptions;
   }> = {},
 ): WorkflowExecutorPorts["browser"] {
   const runtime = options.runtime ?? browserRuntime;
@@ -218,6 +220,7 @@ export function createDevelopmentBrowserPort(
           acceptDownloads: false,
           locale: "zh-TW",
           userAgent: profile.userAgent,
+          ...options.contextOptions,
         });
         const page = await context.newPage();
         if (options.sessionKey) unregister = registerAppWorkflowPage(options.sessionKey, page);
@@ -475,16 +478,30 @@ async function main(args = process.argv.slice(2)) {
     const commitPort = definition.requiresFinancialCommit
       ? createDryRunFinancialCommitPort((count) => { dryRunCount = count; })
       : undefined;
-    const executor = createWorkflowExecutor([definition], makePorts(
-      interrupt.controller.signal,
-      definition.id,
-      startUrl,
-      commitPort,
-      { headless: hasFlag(flags, "--headless"), profile: browserProfile },
-    ));
+    let previewDryRun = { accounts: 0, balances: 0, transactions: 0 };
+    const executor = createWorkflowExecutor([definition], {
+      ...makePorts(
+        interrupt.controller.signal,
+        definition.id,
+        startUrl,
+        commitPort,
+        { headless: hasFlag(flags, "--headless"), profile: browserProfile },
+      ),
+      previewWrite: {
+        async write(write) {
+          const { collection } = parsePreviewWrite(write);
+          previewDryRun = {
+            accounts: collection.accounts.length,
+            balances: collection.accounts.reduce((sum, account) => sum + account.balances.length, 0),
+            transactions: collection.accounts.reduce((sum, account) => sum + account.transactions.length, 0),
+          };
+          return previewDryRun;
+        },
+      },
+    });
     try {
       await executor.run(definition.id, randomUUID(), input, interrupt.controller.signal);
-      stdout.write(`workflow completed; canonical financial dry-run items=${dryRunCount}; database writes=0; files=0\n`);
+      stdout.write(`workflow completed; canonical financial dry-run items=${dryRunCount}; preview dry-run accounts=${previewDryRun.accounts} balances=${previewDryRun.balances} transactions=${previewDryRun.transactions}; database writes=0; files=0\n`);
     } finally {
       interrupt.dispose();
     }
