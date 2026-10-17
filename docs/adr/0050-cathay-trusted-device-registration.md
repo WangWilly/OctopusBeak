@@ -1,6 +1,6 @@
 # Cathay trusted-device registration
 
-Status: proposed. It becomes accepted after the owner's live run shows that a registered device signs in without an OTP on two consecutive runs (issue #215).
+Status: accepted; supersedes [ADR 0014](0014-local-gmail-oauth-for-cathay-email-otp.md)
 
 ## Context
 
@@ -16,14 +16,16 @@ Cathay gets a Source device registration in its sign-in settings, the same actio
 - Registration succeeds only when the browser holds `CUB.eBank.DeviceId`. The App browser host saves it into the task's encrypted cookie state, as it does for runs. The App records the sign-in identifier it registered for. The status shows Registered only while that identifier matches the saved one.
 - The `cathay-login` profile still drops retained Cathay session cookies before a run but keeps `CUB.eBank.DeviceId`. The profile revision moves to 2.
 - Sign-in settings disclose that registering adds the App's browser as a trusted device on the person's Cathay account, that it can be removed in Cathay's 裝置管理, and that trust set up elsewhere may revoke it.
-- A run whose device is trusted passes login without an OTP. A run that meets Cathay's OTP asks one question, through `cathayRunOtpRoute`: does the person keep Gmail OTP mailbox authorization connected? If yes, the ADR 0014 Gmail path runs unchanged. If not, the run fails with `device-registration-required` and the dashboard links to Cathay sign-in settings. Runs never prompt for a code ([ADR 0039](0039-solver-only-verification.md)) and never add a trusted device.
+- A run whose device is trusted passes login without an OTP. A run that meets Cathay's OTP fails with `device-registration-required`, and the dashboard links to Cathay sign-in settings. Runs never prompt for a code ([ADR 0039](0039-solver-only-verification.md)) and never add a trusted device.
 - One registration runs at a time, and a Cathay run and a registration never overlap. Each source has its own device lock, and the runner refuses a run of a source while its registration holds the lock.
 
 TDCC and Cathay share one registration session (codes, timeout, cancel, lock) and one settings component. Each source supplies only its sign-in, trust check, and copy.
 
 ## Removing Gmail
 
-When the live run confirms trust holds, a follow-up removes Gmail OTP mailbox authorization and its code, and marks ADR 0014 superseded. Until then Gmail stays as the fallback for people who connected it.
+On 2026-10-17 the owner registered the App's browser in Cathay sign-in settings and disconnected Gmail. Two consecutive Cathay runs then signed in without an OTP and completed. Gmail OTP mailbox authorization, its OAuth client, and its code were then removed, and ADR 0014 is superseded.
+
+A person who relied on Gmail now sees `device-registration-required` on the first Cathay run that meets an OTP and registers the device once from the linked sign-in settings. Gmail grants stored by an earlier version stay in `credentials.json` until the next credential save drops them. The App no longer reads them.
 
 ## Considered options
 
