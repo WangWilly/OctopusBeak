@@ -12,7 +12,7 @@ The App's assistance port requires a registered solver route for every stage. A 
 
 Provider consequences:
 
-- Cathay United Bank Email OTP runs only through the Gmail OAuth retrieval of [ADR 0014](0014-local-gmail-oauth-for-cathay-email-otp.md). When the send button is not visible, the workflow fails with the typed reason `challenge-unavailable`. The unused statement-scope repair stage is gone.
+- Cathay United Bank Email OTP originally ran only through the Gmail OAuth retrieval of [ADR 0014](0014-local-gmail-oauth-for-cathay-email-otp.md). [ADR 0050](0050-cathay-trusted-device-registration.md) replaced it: a Cathay run that meets an OTP fails with `device-registration-required`. The unused statement-scope repair stage is gone.
 - E.SUN login verification emits `solver-challenge-unsupported` and fails. Users see the same typed outcome as before.
 - Yuanta Trade certificate selection and its image challenge still fail closed through the Yuanta Trade solver handler. Audio verification follows [ADR 0019](0019-yuanta-trade-audio-verification.md).
 

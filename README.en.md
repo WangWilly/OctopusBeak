@@ -48,7 +48,7 @@ The Automation page keeps sources, sign-in details, and run history in one place
 
 1. Open OctopusBeak and use Welcome to choose a language and whether to start setup.
 2. Choose one source, enter its sign-in details, and select statement types.
-3. Start collection. The App solves provider CAPTCHAs on your device, and retrieves the Cathay Email OTP from the Gmail account you authorized.
+3. Start collection. The App solves provider CAPTCHAs on your device. Cathay United Bank needs a one-time device registration in its sign-in settings before the first run.
 4. The app validates source completeness and writes accepted data directly to the local database.
 5. Return to Overview to review the result.
 
