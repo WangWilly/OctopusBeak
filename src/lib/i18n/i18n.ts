@@ -709,32 +709,6 @@ const en = {
     workflowEventEmpty: "No recent workflow events remain.",
     verificationSolverExhausted:
       "Automatic verification could not finish this challenge, so the run stopped. Retry when the challenge can be completed automatically.",
-    cathayOtpFailureReasons: {
-      "challenge-unavailable": "Cathay did not show a supported Email OTP challenge.",
-      "answer-entry-failed": "The verification code could not be entered, so this run stopped.",
-      "send-uncertain": "Cathay may have sent the email code; the app stopped without requesting another one.",
-      "submission-uncertain": "The code submission could not be confirmed; the app did not submit it again.",
-      "completion-unconfirmed": "Cathay did not confirm sign-in after verification. Check the bank session before retrying.",
-      "gmail-disabled": "Automatic Gmail OTP is turned off for Cathay.",
-      "gmail-not-configured": "Gmail OTP is not configured for Cathay.",
-      "gmail-needs-authorization": "Connect or reconnect Gmail in Cathay sign-in details before running this source.",
-      "gmail-authorization-cancelled": "Gmail authorization was cancelled. Connect Gmail in Cathay sign-in details to retry.",
-      "gmail-authorization-failed": "Gmail authorization could not be completed. Reconnect Gmail in Cathay sign-in details.",
-      "gmail-token-invalid": "The saved Gmail authorization is no longer valid. Reconnect Gmail in Cathay sign-in details.",
-      "gmail-request-failed": "Gmail could not provide a verification code. Check the Gmail connection and retry.",
-      "gmail-no-candidate": "No eligible Cathay verification email was found in Gmail.",
-      "gmail-ambiguous-candidate": "More than one possible Cathay verification email was found; the app stopped safely.",
-      "gmail-stale-candidate": "The available Cathay verification email was outside the current request window.",
-      "gmail-malformed-candidate": "The matching Cathay email did not contain a usable verification code.",
-      "gmail-unauthenticated-candidate": "The matching Cathay email could not be authenticated safely.",
-      "gmail-unauthenticated-google-results": "Gmail results could not be authenticated safely.",
-      "gmail-unauthenticated-cathay-alignment": "The email could not be safely matched to Cathay's verification request.",
-      "gmail-unauthenticated-hme-original-sender": "The email sender could not be authenticated safely.",
-      "gmail-unauthenticated-hme-relay-auth": "The forwarded email authorization could not be verified safely.",
-      "gmail-unauthenticated-hme-relay-signature": "The forwarded email signature could not be verified safely.",
-      "gmail-timeout": "Gmail did not return a verification result in time.",
-      "gmail-protocol-error": "The Gmail verification request could not be completed safely.",
-    } as Record<string, string>,
     workflowEventCounts: (completed: number | undefined, total: number | undefined) =>
       completed !== undefined && total !== undefined
         ? `${completed} / ${total}`
@@ -819,30 +793,6 @@ const en = {
     },
     summarySeparator: "; ",
     changeListSeparator: ", ",
-    cathayGmailOtpTitle: "Cathay Gmail OTP",
-    cathayGmailOtpAlwaysAutomatic: "Automatic verification",
-    cathayGmailOtpDescription:
-      "Cathay automatically retrieves and submits one matching code after you authorize Gmail.",
-    cathayGmailOtpConnected: (email: string) => `Connected Gmail: ${email}`,
-    cathayGmailOtpNotConnected: "No Google account connected.",
-    cathayGmailOtpNeedsAuthorization:
-      "Google authorization is required before Gmail can be read.",
-    cathayGmailOtpConnect: "Connect Google account",
-    cathayGmailOtpReconnect: "Reconnect Google account",
-    cathayGmailOtpDisconnect: "Disconnect Google account",
-    cathayGmailOtpSettingsAction: "Open Cathay Gmail settings",
-    cathayGmailOtpActionFailed:
-      "The Gmail connection could not be updated. Automatic Cathay verification will stop until Gmail is configured.",
-    cathayGmailOtpAuthorizationCancelled:
-      "Google authorization was cancelled. Connect Gmail before trying automatic verification again.",
-    cathayGmailOtpTokenExchangeFailed:
-      "Google authorization could not be completed. Reconnect the Google account and try again.",
-    cathayGmailOtpProfileFailed:
-      "Gmail account details could not be read. Confirm Gmail API access and try again.",
-    cathayGmailOtpStorageFailed:
-      "Google authorization could not be stored securely on this device.",
-    confirmCathayGmailOtpDisconnect:
-      "Disconnect Google account? Cathay verification will require Gmail authorization again.",
     sessionTakeoverTitle: "Syncing signs out your other session",
     previewSourceTitle: "Preview source: not verified against live data",
     previewSourceBody:
@@ -1999,32 +1949,6 @@ const zh: typeof en = {
     workflowEventEmpty: "目前沒有保留中的工作流程事件。",
     verificationSolverExhausted:
       "自動驗證無法完成這次驗證，流程已停止。請在驗證可由系統自動完成時再重試。",
-    cathayOtpFailureReasons: {
-      "challenge-unavailable": "國泰未顯示支援的 Email OTP 驗證畫面。",
-      "answer-entry-failed": "無法輸入驗證碼，這次同步已停止。",
-      "send-uncertain": "國泰可能已寄出驗證碼；系統停止流程，沒有再次要求寄送。",
-      "submission-uncertain": "無法確認驗證碼是否已送出；系統沒有重複提交。",
-      "completion-unconfirmed": "驗證後國泰仍未確認登入成功。請先確認銀行工作階段，再重試。",
-      "gmail-disabled": "國泰的 Gmail 自動驗證碼功能尚未開啟。",
-      "gmail-not-configured": "尚未設定國泰 Gmail 驗證碼功能。",
-      "gmail-needs-authorization": "請先在國泰登入資料中連結或重新授權 Gmail，再執行此來源。",
-      "gmail-authorization-cancelled": "已取消 Gmail 授權。請在國泰登入資料中連結 Gmail 後重試。",
-      "gmail-authorization-failed": "無法完成 Gmail 授權。請在國泰登入資料中重新連結 Gmail。",
-      "gmail-token-invalid": "已儲存的 Gmail 授權失效。請在國泰登入資料中重新連結 Gmail。",
-      "gmail-request-failed": "Gmail 無法提供驗證碼。請確認 Gmail 連結後重試。",
-      "gmail-no-candidate": "Gmail 中找不到符合條件的國泰驗證郵件。",
-      "gmail-ambiguous-candidate": "Gmail 中找到多封可能的國泰驗證郵件，系統已安全停止。",
-      "gmail-stale-candidate": "找到的國泰驗證郵件不在本次要求的時間範圍內。",
-      "gmail-malformed-candidate": "符合條件的國泰郵件未包含可用的驗證碼。",
-      "gmail-unauthenticated-candidate": "無法安全確認這封國泰郵件的真實性。",
-      "gmail-unauthenticated-google-results": "無法安全確認 Gmail 搜尋結果的真實性。",
-      "gmail-unauthenticated-cathay-alignment": "無法安全確認郵件符合國泰本次驗證要求。",
-      "gmail-unauthenticated-hme-original-sender": "無法安全確認郵件寄件者。",
-      "gmail-unauthenticated-hme-relay-auth": "無法安全確認轉寄郵件授權。",
-      "gmail-unauthenticated-hme-relay-signature": "無法安全確認轉寄郵件簽章。",
-      "gmail-timeout": "Gmail 未能在時限內回傳驗證結果。",
-      "gmail-protocol-error": "Gmail 驗證要求無法安全完成。",
-    } as Record<string, string>,
     workflowEventCounts: (completed, total) =>
       completed !== undefined && total !== undefined
         ? `${completed} / ${total}`
@@ -2106,29 +2030,6 @@ const zh: typeof en = {
     },
     summarySeparator: "；",
     changeListSeparator: "、",
-    cathayGmailOtpTitle: "國泰 Gmail 驗證碼",
-    cathayGmailOtpAlwaysAutomatic: "自動驗證已啟用",
-    cathayGmailOtpDescription:
-      "授權 Gmail 後，國泰登入會自動取得符合條件的驗證碼，並送出一次。",
-    cathayGmailOtpConnected: (email) => `已連結 Gmail：${email}`,
-    cathayGmailOtpNotConnected: "尚未連結 Google 帳號。",
-    cathayGmailOtpNeedsAuthorization: "需要重新授權 Google，才能讀取 Gmail。",
-    cathayGmailOtpConnect: "連結 Google 帳號",
-    cathayGmailOtpReconnect: "重新連結 Google 帳號",
-    cathayGmailOtpDisconnect: "解除 Google 帳號連結",
-    cathayGmailOtpSettingsAction: "開啟國泰 Gmail 設定",
-    cathayGmailOtpActionFailed:
-      "無法更新 Gmail 連結；Gmail 設定完成前，國泰自動驗證流程會停止。",
-    cathayGmailOtpAuthorizationCancelled:
-      "已取消 Google 授權。請連結 Gmail 後再執行自動驗證。",
-    cathayGmailOtpTokenExchangeFailed:
-      "無法完成 Google 授權交換，請重新連結 Google 帳號後再試一次。",
-    cathayGmailOtpProfileFailed:
-      "無法讀取 Gmail 帳號資料，請確認 Gmail API 權限後再試一次。",
-    cathayGmailOtpStorageFailed:
-      "無法在這台裝置上安全保存 Google 授權。",
-    confirmCathayGmailOtpDisconnect:
-      "要解除 Google 帳號連結嗎？下次國泰驗證前需要重新授權 Gmail。",
     sessionTakeoverTitle: "同步會登出你在其他地方的登入",
     previewSourceTitle: "預覽來源：尚未以實際資料驗證",
     previewSourceBody:

@@ -34,8 +34,6 @@
   } from "$lib/automation/runtime-controller.ts";
   import {
     deviceRegistrationSource,
-    type CathayGmailOtpConnectionError,
-    type CathayGmailOtpStatus,
     type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
@@ -68,9 +66,7 @@ import {
     type PendingCredentialChange,
   } from "$lib/automation/credential-changes.ts";
   import {
-    cathayEmailOtpFailureReason,
-    cathayOtpReasonNeedsGmailSettings,
-    verificationFailureEventReason,
+    isVerificationSolverExhaustedEvent,
     verificationSolverExhausted,
   } from "$lib/automation/verification-actor-ui.ts";
 import type { OnboardingWorkflowToken } from "$lib/onboarding/controller.ts";
@@ -241,20 +237,12 @@ import type {
   let credentialChanges: CredentialChanges = NO_CREDENTIAL_CHANGES;
   let credentialFileErrors: Record<string, string> = {};
   let focusedCredentialKey: string | null = null;
-  let cathayGmailOtpBusy = false;
   let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
-  let cathayGmailOtpError = "";
   let statementSelectionConfirmed = false;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
   let setupGuideOpen = false;
   let stageOpen: Record<string, boolean> = { sync: true };
-  const defaultCathayGmailOtpStatus: CathayGmailOtpStatus = {
-    enabled: true,
-    connectedEmail: null,
-    needsAuthorization: true,
-  };
-  let cathayGmailOtpStatus: CathayGmailOtpStatus = defaultCathayGmailOtpStatus;
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
@@ -272,7 +260,6 @@ import type {
   $: taskStages = taskStagesFor(automation);
   $: renderedPendingActions = mergePendingActions(appPendingActions, localPendingActions);
   $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
-  $: cathayGmailOtpStatus = automation.cathayGmailOtp ?? defaultCathayGmailOtpStatus;
   $: pendingChanges = pendingCredentialChanges(credentialGroups, credentialChanges);
   $: credentialsDirty = pendingChanges.length > 0 || Boolean(credentialChanges.editor?.draft.trim());
   $: savedEnabledGroupCount = credentialGroups.filter((group) => group.enabled).length;
@@ -672,25 +659,10 @@ import type {
       : $t.automation.unreadableCertificateFile;
   }
 
-  function cathayGmailOtpConnectionErrorMessage(
-    error: CathayGmailOtpConnectionError | undefined,
-  ) {
-    if (error === "authorization-cancelled")
-      return $t.automation.cathayGmailOtpAuthorizationCancelled;
-    if (error === "token-exchange-failed")
-      return $t.automation.cathayGmailOtpTokenExchangeFailed;
-    if (error === "gmail-profile-failed")
-      return $t.automation.cathayGmailOtpProfileFailed;
-    if (error === "credential-storage-failed")
-      return $t.automation.cathayGmailOtpStorageFailed;
-    return $t.automation.cathayGmailOtpActionFailed;
-  }
-
   function resetCredentialChanges() {
     credentialChanges = NO_CREDENTIAL_CHANGES;
     credentialFileErrors = {};
     focusedCredentialKey = null;
-    cathayGmailOtpError = "";
     statementSelectionConfirmed = false;
     statementSelectionError = "";
   }
@@ -784,13 +756,6 @@ import type {
       : message;
   }
 
-  async function openCathayGmailOtpSettings() {
-    openCredentials();
-    selectCredentialGroup("cathay");
-    await tick();
-    document.getElementById("cathay-gmail-otp-title")?.focus();
-  }
-
   function closeCredentials() {
     if (onboardingSourceSelection) return;
     if (credentialsDirty && !confirm($t.automation.discardCredentialChanges)) return;
@@ -829,37 +794,6 @@ import type {
       groupId,
       !effectiveGroupEnabled(credentialGroups, credentialChanges, groupId),
     );
-  }
-
-  async function enableCathayGmailOtp() {
-    if (cathayGmailOtpBusy) return;
-    cathayGmailOtpBusy = true;
-    cathayGmailOtpError = "";
-    try {
-      const result = await window.octopusBeak.automation.enableCathayGmailOtp();
-      await reload();
-      if (result.connectionError)
-        cathayGmailOtpError = cathayGmailOtpConnectionErrorMessage(result.connectionError);
-    } catch {
-      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
-    } finally {
-      cathayGmailOtpBusy = false;
-    }
-  }
-
-  async function disconnectCathayGmailOtp() {
-    if (cathayGmailOtpBusy) return;
-    if (!confirm($t.automation.confirmCathayGmailOtpDisconnect)) return;
-    cathayGmailOtpBusy = true;
-    cathayGmailOtpError = "";
-    try {
-      await window.octopusBeak.automation.disconnectCathayGmailOtp();
-      await reload();
-    } catch {
-      cathayGmailOtpError = $t.automation.cathayGmailOtpActionFailed;
-    } finally {
-      cathayGmailOtpBusy = false;
-    }
   }
 
   function toggleStatementType(groupId: string, typeId: string) {
@@ -1403,11 +1337,7 @@ import type {
   }
 
   function workflowEventFailureLabel(event: AutomationTaskRow["events"][number]): string | null {
-    const reason = verificationFailureEventReason(event);
-    if (reason === "verification-solver-exhausted") {
-      return $t.automation.verificationSolverExhausted;
-    }
-    return reason ? $t.automation.cathayOtpFailureReasons[reason] : null;
+    return isVerificationSolverExhaustedEvent(event) ? $t.automation.verificationSolverExhausted : null;
   }
 
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
@@ -1799,22 +1729,10 @@ import type {
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
                       {#if task.appWorkflowOutcome?.errorCode}
-                        {@const cathayOtpFailure = cathayEmailOtpFailureReason(task.events)}
                         {@const solverExhausted = verificationSolverExhausted(task.events)}
                         <div class="workflow-outcome-error">
                           <code>{task.appWorkflowOutcome.errorCode}</code>
-                          {#if cathayOtpFailure}
-                            <span>{$t.automation.cathayOtpFailureReasons[cathayOtpFailure]}</span>
-                            {#if cathayOtpReasonNeedsGmailSettings(cathayOtpFailure)}
-                              <button
-                                class="button secondary cathay-gmail-settings-action"
-                                type="button"
-                                onclick={() => void openCathayGmailOtpSettings()}
-                              >
-                                {$t.automation.cathayGmailOtpSettingsAction}
-                              </button>
-                            {/if}
-                          {:else if task.appWorkflowOutcome.errorCode === "device-registration-required"}
+                          {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                             {#if deviceRegistrationSource(task.credentialGroupId)}
                               <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
@@ -2276,63 +2194,6 @@ import type {
                 {/each}
               </ul>
             </section>
-
-            {#if group.id === "cathay"}
-              <section class="gmail-otp-settings" aria-labelledby="cathay-gmail-otp-title">
-                <div class="gmail-otp-head">
-                  <div>
-                    <h4 id="cathay-gmail-otp-title" tabindex="-1">{$t.automation.cathayGmailOtpTitle}</h4>
-                    <p>{$t.automation.cathayGmailOtpDescription}</p>
-                  </div>
-                  <span class="chip good">{$t.automation.cathayGmailOtpAlwaysAutomatic}</span>
-                </div>
-                <p class="gmail-otp-status" aria-live="polite">
-                  {#if cathayGmailOtpStatus.needsAuthorization}
-                    {$t.automation.cathayGmailOtpNeedsAuthorization}
-                  {:else if cathayGmailOtpStatus.connectedEmail}
-                    {$t.automation.cathayGmailOtpConnected(cathayGmailOtpStatus.connectedEmail)}
-                  {:else}
-                    {$t.automation.cathayGmailOtpNotConnected}
-                  {/if}
-                </p>
-                <div class="gmail-otp-actions">
-                  {#if !cathayGmailOtpStatus.connectedEmail}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void enableCathayGmailOtp()}
-                    >
-                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
-                      {$t.automation.cathayGmailOtpConnect}
-                    </button>
-                  {:else if cathayGmailOtpStatus.needsAuthorization}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void enableCathayGmailOtp()}
-                    >
-                      {#if cathayGmailOtpBusy}<span class="spinner" aria-hidden="true"></span>{/if}
-                      {$t.automation.cathayGmailOtpReconnect}
-                    </button>
-                  {/if}
-                  {#if cathayGmailOtpStatus.connectedEmail}
-                    <button
-                      class="button secondary"
-                      type="button"
-                      disabled={cathayGmailOtpBusy}
-                      onclick={() => void disconnectCathayGmailOtp()}
-                    >
-                      {$t.automation.cathayGmailOtpDisconnect}
-                    </button>
-                  {/if}
-                </div>
-                {#if cathayGmailOtpError}
-                  <p class="credential-error" aria-live="polite">{cathayGmailOtpError}</p>
-                {/if}
-              </section>
-            {/if}
 
             {#if group.preview}
               <div class="source-notice" role="note" data-preview-disclosure>
@@ -3335,7 +3196,6 @@ import type {
     font-family: var(--font-mono);
   }
 
-  .cathay-gmail-settings-action,
   .device-registration-action {
     min-height: 32px;
   }
@@ -4261,48 +4121,6 @@ import type {
   .credential-editor-foot .button {
     min-height: 34px;
     padding: 0 var(--space-3);
-  }
-
-  .gmail-otp-settings {
-    padding: var(--space-4) var(--space-5);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-  }
-
-  .gmail-otp-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  .gmail-otp-head h4 {
-    margin: 0 0 var(--space-1);
-    font-size: 15px;
-  }
-
-  .gmail-otp-head p,
-  .gmail-otp-status {
-    margin: 0;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  .gmail-otp-status {
-    margin-top: var(--space-3);
-  }
-
-  .gmail-otp-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    margin-top: var(--space-3);
-  }
-
-  .gmail-otp-actions .button {
-    min-height: 36px;
   }
 
   .file-error {

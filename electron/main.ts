@@ -25,7 +25,6 @@ import {
   startScheduledCollection,
 } from "../src/lib/automation/server/scheduled-collection.ts";
 import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
-import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
@@ -301,7 +300,6 @@ async function start() {
   });
   pgliteOperationalRuntime = operationalRuntime;
   registerAutomationCredentialSafeStorage();
-  registerCathayGmailOtpElectronRuntime(appRoot);
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
   // schema/recovery failure cannot be hidden by a partially hydrated UI.

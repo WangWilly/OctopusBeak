@@ -1,5 +1,4 @@
 import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
-import { CathayAppVerificationError } from "../verification-errors.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -7,9 +6,8 @@ import { tmpdir } from "node:os";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
-import { collectSelectedProducts } from "../product-collection.ts";
+import { collectSelectedProducts, ProductCollectionFatalError } from "../product-collection.ts";
 import type { WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import type { PGliteWorkflowRunItem, PGliteWorkflowRunResult } from "../../../ledger/pglite/workflow-run.ts";
 import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -155,40 +153,6 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     total: 3,
     percent: 33,
   }), /protocol rejected/u);
-  const otpRequest = {
-    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-    kind: "cathay-gmail-otp-request",
-    requestId: "c5596c12-0db2-46a3-bc80-14d31dc0d35e",
-    operation: "retrieve",
-    boundaryId: "ad6c9a82-815c-42f1-a5ba-7173f82616ec",
-  };
-  assert.equal(parseAppWorkflowWorkerOutboundFrame(otpRequest).kind, "cathay-gmail-otp-request");
-  assert.throws(
-    () => parseAppWorkflowWorkerOutboundFrame({ ...otpRequest, unexpected: "extra" }),
-    /protocol rejected/u,
-  );
-  assert.throws(
-    () => parseAppWorkflowWorkerInboundFrame({
-      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-      kind: "cathay-gmail-otp-response",
-      requestId: "c5596c12-0db2-46a3-bc80-14d31dc0d35e",
-      operation: "retrieve",
-      status: "found",
-      otp: "private mailbox response",
-    }),
-    /protocol rejected/u,
-  );
-  assert.throws(
-    () => parseAppWorkflowWorkerInboundFrame({
-      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-      kind: "cathay-gmail-otp-response",
-      requestId: "c5596c12-0db2-46a3-bc80-14d31dc0d35e",
-      operation: "retrieve",
-      status: "fallback",
-      reason: "private mailbox response",
-    }),
-    /protocol rejected/u,
-  );
 });
 
 test("worker terminal frame round-trips bounded product outcomes and rejects malformed products", () => {
@@ -297,7 +261,6 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
 test("Electron build emits the worker as an internal managed entry", () => {
   const workerBundle = join(process.cwd(), "build-electron", "app-workflow-worker.cjs");
   assert.ok(existsSync(workerBundle));
-  assert.doesNotMatch(readFileSync(workerBundle, "utf8"), /gmail-otp-service|cathay-otp-port/u);
 });
 
 test("bundled internal worker validates workerData and returns a sanitized frame", async () => {
@@ -536,7 +499,7 @@ test("worker failures cross the boundary only as a stable error code", async () 
   }
 });
 
-test("Cathay verification errors retain their actionable code across the worker boundary", async () => {
+test("a Cathay run that needs device registration keeps that code across the worker boundary", async () => {
   const channel = new MessageChannel();
   let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
@@ -554,8 +517,8 @@ test("Cathay verification errors retain their actionable code across the worker 
     id: "fixture-protocol",
     requiresFinancialCommit: false,
     async run(context) {
-      await context.event("authentication", "cathay-email-otp-gmail-needs-authorization");
-      throw new CathayAppVerificationError("gmail-needs-authorization");
+      await context.event("authentication", "device-registration-required");
+      throw new ProductCollectionFatalError("device-registration-required");
     },
   };
   try {
@@ -567,9 +530,9 @@ test("Cathay verification errors retain their actionable code across the worker 
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
-    assert.equal(terminal.kind === "failed" ? terminal.errorCode : null, "verification-configuration-failed");
-    assert.ok(frames.some((frame) => frame.kind === "event" && frame.event.code === "cathay-email-otp-gmail-needs-authorization"));
-    assert.doesNotMatch(JSON.stringify(frames), /could not be completed|refresh-token|private/u);
+    assert.equal(terminal.kind === "failed" ? terminal.errorCode : null, "device-registration-required");
+    assert.ok(frames.some((frame) => frame.kind === "event" && frame.event.code === "device-registration-required"));
+    assert.doesNotMatch(JSON.stringify(frames), /required workflow condition|private/u);
   } finally {
     channel.port1.close();
     channel.port2.close();
@@ -700,99 +663,6 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "cancelled");
     assert.equal(observed.some((frame) => frame.kind === "failed" && JSON.stringify(frame).includes("account data")), false);
-  } finally {
-    channel.port1.close();
-    channel.port2.close();
-  }
-});
-
-test("Cathay worker relays Gmail OTP through the injected host port and keeps it out of events and terminal output", async () => {
-  const channel = new MessageChannel();
-  const cathayStart = { ...start, workflowId: "cathay-all-statements" };
-  const observed: AppWorkflowWorkerOutboundFrame[] = [];
-  const eventFrames: AppWorkflowWorkerOutboundFrame[] = [];
-  const operationOrder: string[] = [];
-  const otp = "ABCD-123456";
-  const boundaryId = "ad6c9a82-815c-42f1-a5ba-7173f82616ec";
-  let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
-  const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
-  let injectedOtp: CathayGmailOtpPort | undefined;
-  const definition: WorkflowDefinition = {
-    id: "cathay-all-statements",
-    requiresFinancialCommit: false,
-    async run(context) {
-      assert.ok(injectedOtp);
-      assert.deepEqual(await injectedOtp.ensureAccess(), { status: "ready" });
-      const prepared = await injectedOtp.prepareRetrieval();
-      assert.deepEqual(prepared, { status: "prepared", boundaryId });
-      assert.deepEqual(await injectedOtp.retrieve(boundaryId), { status: "found", otp });
-      await context.event("authentication", "otp-accepted");
-      return { status: "completed", count: 1, otp };
-    },
-  };
-
-  channel.port2.on("message", (value: unknown) => {
-    const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    observed.push(frame);
-    if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolveTerminal(frame);
-    if (frame.kind === "event") {
-      eventFrames.push(frame);
-      channel.port2.postMessage({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "event-ack",
-        eventId: frame.eventId,
-        ok: true,
-      });
-      return;
-    }
-    if (frame.kind !== "cathay-gmail-otp-request") return;
-    operationOrder.push(frame.operation);
-    if (frame.operation === "ensure-access") {
-      channel.port2.postMessage({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-response",
-        requestId: frame.requestId,
-        operation: frame.operation,
-        status: "ready",
-      });
-    } else if (frame.operation === "prepare-retrieval") {
-      channel.port2.postMessage({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-response",
-        requestId: frame.requestId,
-        operation: frame.operation,
-        status: "prepared",
-        boundaryId,
-      });
-    } else {
-      channel.port2.postMessage({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "cathay-gmail-otp-response",
-        requestId: frame.requestId,
-        operation: frame.operation,
-        status: "found",
-        otp,
-      });
-    }
-  });
-
-  try {
-    await runAppWorkflowWorker({
-      port: channel.port1,
-      workerData: cathayStart,
-      resolveDefinition(workflowId, dependencies) {
-        assert.equal(workflowId, "cathay-all-statements");
-        injectedOtp = dependencies?.cathayGmailOtpPort;
-        return definition;
-      },
-      browser: { async withPage(run) { return await run({} as never); } },
-    });
-    const terminal = await terminalReceived;
-    assert.equal(terminal.kind, "completed");
-    assert.deepEqual(operationOrder, ["ensure-access", "prepare-retrieval", "retrieve"]);
-    assert.equal(eventFrames.some((frame) => JSON.stringify(frame).includes(otp)), false);
-    assert.equal(JSON.stringify(terminal).includes(otp), false);
-    assert.equal(JSON.stringify(terminal).includes("private"), false);
   } finally {
     channel.port1.close();
     channel.port2.close();

@@ -6,7 +6,6 @@ import type {
   AutomationTaskHistoryRow,
   AutomationTaskProgress,
   TypedWorkflowOutcome,
-  CathayGmailOtpStatus,
   DeviceRegistrationSource,
   DeviceRegistrationStatus,
   DeviceRegistrationStep,
@@ -121,8 +120,6 @@ export type AutomationCredentialStateDto = {
   fileNames: Readonly<Record<string, string>>;
   invalidFileKeys: readonly string[];
   invalidFileReasons: Readonly<Record<string, CertificateFileValidationReason>>;
-  /** Main-process-derived, renderer-safe Gmail connection state only. */
-  cathayGmailOtp?: CathayGmailOtpStatus;
 };
 
 export type AutomationCredentialGroupCoreDto = Omit<
@@ -270,10 +267,6 @@ export type OctopusBeakApi = {
   automation: {
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
-    cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
-    enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
-    setCathayGmailOtpEnabled(enabled: boolean): Promise<CathayGmailOtpStatus>;
-    disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
     deviceRegistrationStatus(source: DeviceRegistrationSource): Promise<DeviceRegistrationStatus>;
     startDeviceRegistration(source: DeviceRegistrationSource): Promise<DeviceRegistrationStep>;
     submitDeviceRegistrationCode(
@@ -335,10 +328,6 @@ export const octopusBeakApiChannels = [
   "spending:revokeLink",
   "automation:block",
   "automation:saveCredentials",
-  "automation:cathayGmailOtpStatus",
-  "automation:enableCathayGmailOtp",
-  "automation:setCathayGmailOtpEnabled",
-  "automation:disconnectCathayGmailOtp",
   "automation:deviceRegistrationStatus",
   "automation:startDeviceRegistration",
   "automation:submitDeviceRegistrationCode",

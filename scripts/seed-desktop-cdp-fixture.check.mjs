@@ -108,7 +108,7 @@ removeDesktopCdpFixture(root);
 await seedDesktopCdpFixture(
   root,
   new Date("2026-09-14T04:00:00.000Z"),
-  { includeCathayVerificationFailure: true },
+  { includeCathayDeviceRegistrationFailure: true },
 );
 const verificationSettings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
 assert.equal(Object.hasOwn(verificationSettings, "LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR"), false);
@@ -122,17 +122,16 @@ const cathayFixture = (await verificationDb.query(`
 const cathayRecord = JSON.parse(cathayFixture.record_json);
 assert.equal(cathayFixture.status, "failed");
 assert.deepEqual(cathayRecord.appWorkflowOutcome, {
-  errorCode: "verification-configuration-failed",
+  errorCode: "device-registration-required",
   summary: { status: "failed", counts: {} },
 });
 assert.deepEqual(cathayRecord.events.map(({ stage, code, occurredAt }) => ({ stage, code, occurredAt })), [
   {
     stage: "authentication",
-    code: "cathay-email-otp-gmail-needs-authorization",
+    code: "device-registration-required",
     occurredAt: "2026-09-14T10:01:00.000Z",
   },
 ]);
-assert.equal(JSON.stringify(cathayRecord).includes("otp"), true);
 assert.equal(JSON.stringify(cathayRecord).includes("fixture-cdp-"), false);
 await verificationDb.close();
 

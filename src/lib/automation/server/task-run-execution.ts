@@ -64,7 +64,6 @@ import {
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
-import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
@@ -98,8 +97,6 @@ export type AutomationTaskExecutionOptions = {
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
   /** App composition may replace a typed workflow capability at its port seam. */
   workflowPorts?: Partial<WorkflowExecutorPorts>;
-  /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
-  createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
   /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
   createTdccSessionHost?: () => TdccSessionHost;
   /** Test seam for the supervised App workflow worker. Production uses Worker. */
@@ -305,12 +302,7 @@ async function executeInlineAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  const workflowDependencies = execution.task.workflowId === "cathay-all-statements"
-    ? {
-      cathayGmailOtpPort: (options.createCathayGmailOtpPort ?? createCathayGmailOtpPort)(),
-    }
-    : {};
-  const definition = workflowDefinitionForTask(execution.task.workflowId, workflowDependencies);
+  const definition = workflowDefinitionForTask(execution.task.workflowId);
   if (!definition || !execution.task.workflowId) {
     return {
       exitCode: 1,
@@ -701,12 +693,6 @@ async function executeSupervisedAppWorkflow(
         requestHumanAssistance: (contract, signal) =>
           humanAssistance.request(contract, signal),
         ...(definition.requiresTdcc ? { tdccSession: tdccSessionHost(options) } : {}),
-        ...(options.createCathayGmailOtpPort
-          ? {
-              createCathayGmailOtpPort: (signal) =>
-                options.createCathayGmailOtpPort!(undefined, { signal }),
-            }
-          : {}),
         ...(options.appWorkflowWorkerFactory
           ? { workerFactory: options.appWorkflowWorkerFactory }
           : {}),

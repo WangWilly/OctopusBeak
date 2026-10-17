@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import {
-  gmailOtpFallbackReason,
-  type GmailOtpFallbackReason,
-} from "../lib/automation/gmail-otp.ts";
-import { CathayAppVerificationError } from "../lib/automation/verification-errors.ts";
 import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
@@ -27,26 +22,6 @@ export type CathayCredentials = {
   cathay_account?: string;
   cathay_password?: string;
 };
-
-/** The App host adapts its existing server-side Gmail OTP service to this
- * narrow result-only port. OAuth credentials and message contents stay in the
- * host; the workflow sees only ready/prepared/found or bounded fallback. */
-export type CathayGmailOtpPort = Readonly<{
-  ensureAccess(): Promise<
-    | Readonly<{ status: "ready" }>
-    | Readonly<{ status: "fallback"; reason: string }>
-  >;
-  prepareRetrieval(): Promise<
-    | Readonly<{ status: "prepared"; boundaryId: string }>
-    | Readonly<{ status: "fallback"; reason: string }>
-  >;
-  retrieve(
-    boundaryId: string,
-  ): Promise<
-    | Readonly<{ status: "found"; otp: string }>
-    | Readonly<{ status: "fallback"; reason: string }>
-  >;
-}>;
 
 export type CathayStrictSourceOptions = Readonly<{
   text: SourceTextPort;
@@ -710,24 +685,6 @@ export async function fillLoginForm(
   }
 }
 
-export function cathayEmailOtpSubmissionValue(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const outcome = value as {
-    kind?: unknown;
-    status?: unknown;
-    otp?: unknown;
-    code?: unknown;
-    answer?: unknown;
-  };
-  const kind = outcome.kind ?? outcome.status;
-  if (kind !== "found") return null;
-  const candidate = outcome.otp ?? outcome.code ?? outcome.answer;
-  if (typeof candidate !== "string") return null;
-  const normalized = candidate.trim();
-  const match = /^[A-Z]{4}-(\d{6})$/.exec(normalized);
-  return match?.[1] ?? null;
-}
-
 export function cathayTrustDevicePrompt(page: Page): Locator {
   return page.getByText("信任這台裝置？").first();
 }
@@ -785,213 +742,35 @@ async function dismissPostLoginPrompts(page: Page): Promise<void> {
 }
 
 export type CathayAppLoginDependencies = Readonly<{
-  otp: CathayGmailOtpPort;
   signal: AbortSignal;
   event?(code: string): Promise<void>;
 }>;
 
-type CathayOtpFailureReason = ConstructorParameters<
-  typeof CathayAppVerificationError
->[0];
+export const CATHAY_OTP_CHALLENGE = "#OtpMailPassword, #js-otp-send, #js-otp-email-send, .js-otp-view";
 
-async function failCathayOtpVerification(
-  dependencies: CathayAppLoginDependencies,
-  reason: CathayOtpFailureReason,
-): Promise<never> {
-  dependencies.signal.throwIfAborted();
-  await dependencies.event?.(`cathay-email-otp-${reason}`);
-  dependencies.signal.throwIfAborted();
-  throw new CathayAppVerificationError(reason);
-}
-
-function cathayGmailFailureReason(
-  result: unknown,
-  defaultReason: GmailOtpFallbackReason,
-): CathayOtpFailureReason {
-  const reason = gmailOtpFallbackReason(result) ?? defaultReason;
-  return reason === "gmail-request-failed" ? reason : `gmail-${reason}`;
-}
-
-export type CathayRunOtpRoute = "gmail" | "device-registration";
-
-export function cathayRunOtpRoute(
-  access: Awaited<ReturnType<CathayGmailOtpPort["ensureAccess"]>>,
-): CathayRunOtpRoute {
-  return access.status === "fallback" && access.reason === "not-configured"
-    ? "device-registration"
-    : "gmail";
-}
-
-/** Completes Cathay's Email OTP through Gmail OAuth auto-retrieval. */
-export async function completeCathayEmailOtpForApp(
-  page: Page,
-  dependencies: CathayAppLoginDependencies,
-): Promise<"not-needed" | "solver-submitted"> {
-  const emailVerificationLink = page
-    .locator("a")
-    .filter({ hasText: "Email驗證" });
-  const otpField = page.locator("#OtpMailPassword");
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    dependencies.signal.throwIfAborted();
-    if (await isCathaySignedIn(page)) return "not-needed";
-    if (await otpField.isVisible().catch(() => false)) break;
-    if (
-      await emailVerificationLink
-        .first()
-        .isVisible()
-        .catch(() => false)
-    )
-      break;
-    await waitForCathaySignal(page.waitForTimeout(500), dependencies.signal);
-  }
-
-  if (await isCathaySignedIn(page)) return "not-needed";
-  if (
-    !(await otpField.isVisible().catch(() => false)) &&
-    !(await emailVerificationLink
-      .first()
-      .isVisible()
-      .catch(() => false))
-  ) {
-    return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-  }
-
-  let access: Awaited<ReturnType<CathayGmailOtpPort["ensureAccess"]>>;
-  try {
-    access = await waitForCathaySignal(
-      dependencies.otp.ensureAccess(),
-      dependencies.signal,
-    );
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "gmail-request-failed");
-  }
-  if (cathayRunOtpRoute(access) === "device-registration") {
-    dependencies.signal.throwIfAborted();
-    await dependencies.event?.("device-registration-required");
-    dependencies.signal.throwIfAborted();
-    throw new ProductCollectionFatalError("device-registration-required");
-  }
-  if (access.status !== "ready") {
-    return await failCathayOtpVerification(
-      dependencies,
-      cathayGmailFailureReason(access, "authorization-failed"),
-    );
-  }
-
-  if (!(await otpField.isVisible().catch(() => false))) {
-    await waitForCathaySignal(
-      emailVerificationLink.first().click(),
-      dependencies.signal,
-    );
-  }
-  if (!(await otpField.isVisible().catch(() => false))) {
-    try {
-      await waitForCathaySignal(
-        otpField.waitFor({ state: "visible", timeout: 30_000 }),
-        dependencies.signal,
-      );
-    } catch (error) {
-      if (dependencies.signal.aborted) throw error;
-      return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-    }
-  }
-  dependencies.signal.throwIfAborted();
-
-  const sendEmailOtp = page.locator("#js-otp-email-send");
-  const sendIsVisible = await waitForCathaySignal(
-    sendEmailOtp.waitFor({ state: "visible", timeout: 15_000 }).then(() => true, () => false),
-    dependencies.signal,
-  );
-  if (!sendIsVisible) {
-    return await failCathayOtpVerification(dependencies, "challenge-unavailable");
-  }
-
-  let boundary: Awaited<ReturnType<CathayGmailOtpPort["prepareRetrieval"]>>;
-  try {
-    boundary = await waitForCathaySignal(
-      dependencies.otp.prepareRetrieval(),
-      dependencies.signal,
-    );
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "gmail-request-failed");
-  }
-  if (boundary.status !== "prepared") {
-    return await failCathayOtpVerification(
-      dependencies,
-      cathayGmailFailureReason(boundary, "protocol-error"),
-    );
-  }
-
-  try {
-    await waitForCathaySignal(sendEmailOtp.click(), dependencies.signal);
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "send-uncertain");
-  }
-
-  let result: Awaited<ReturnType<CathayGmailOtpPort["retrieve"]>>;
-  try {
-    result = await waitForCathaySignal(
-      dependencies.otp.retrieve(boundary.boundaryId),
-      dependencies.signal,
-    );
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "gmail-request-failed");
-  }
-  const otp = cathayEmailOtpSubmissionValue(result);
-  if (!otp) {
-    return await failCathayOtpVerification(
-      dependencies,
-      cathayGmailFailureReason(result, "protocol-error"),
-    );
-  }
-
-  try {
-    await waitForCathaySignal(
-      otpField.waitFor({ state: "visible", timeout: 30_000 }),
-      dependencies.signal,
-    );
-    await waitForCathaySignal(otpField.fill(otp), dependencies.signal);
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "answer-entry-failed");
-  }
-  try {
-    await waitForCathaySignal(
-      page.locator("#btnConfirm").click(),
-      dependencies.signal,
-    );
-  } catch (error) {
-    if (dependencies.signal.aborted) throw error;
-    return await failCathayOtpVerification(dependencies, "submission-uncertain");
-  }
-  await dependencies.event?.("authentication-otp-auto-retrieval-completed");
-  return "solver-submitted";
-}
-
-export async function waitForCathayAppSignedInState(
+export async function waitForCathayTrustedDeviceSignIn(
   page: Page,
   dependencies: CathayAppLoginDependencies,
   timeoutMs = 120_000,
 ): Promise<void> {
+  const challenge = page
+    .locator(CATHAY_OTP_CHALLENGE)
+    .or(page.locator("a").filter({ hasText: "Email驗證" }))
+    .first();
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  do {
     dependencies.signal.throwIfAborted();
     if (await isCathaySignedIn(page)) return;
-    try {
-      await waitForCathaySignal(page.waitForTimeout(500), dependencies.signal);
-    } catch (error) {
-      if (dependencies.signal.aborted) throw error;
-      break;
+    if (await challenge.isVisible().catch(() => false)) {
+      await dependencies.event?.("device-registration-required");
+      dependencies.signal.throwIfAborted();
+      throw new ProductCollectionFatalError("device-registration-required");
     }
-  }
+    await waitForCathaySignal(page.waitForTimeout(500), dependencies.signal);
+  } while (Date.now() < deadline);
+  await dependencies.event?.("authentication-sign-in-unconfirmed");
   dependencies.signal.throwIfAborted();
-  if (await isCathaySignedIn(page)) return;
-  return await failCathayOtpVerification(dependencies, "completion-unconfirmed");
+  throw new ProductCollectionFatalError("verification-failed");
 }
 
 export async function signInCathayForApp(
@@ -1005,8 +784,7 @@ export async function signInCathayForApp(
     fillLoginForm(page, credentials, dependencies.event),
     dependencies.signal,
   );
-  await completeCathayEmailOtpForApp(page, dependencies);
-  await waitForCathayAppSignedInState(page, dependencies);
+  await waitForCathayTrustedDeviceSignIn(page, dependencies);
   await waitForCathaySignal(
     dismissPostLoginPrompts(page),
     dependencies.signal,

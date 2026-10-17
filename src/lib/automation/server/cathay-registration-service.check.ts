@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { BrowserContext, Page } from "playwright";
-import { signInCathayForApp, type CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
+import { signInCathayForApp } from "../../../workflows/cathay-statements.ts";
 import { ProductCollectionFatalError } from "../product-collection.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import {
@@ -181,15 +181,8 @@ async function withFixture(
   }
 }
 
-const gmailNotConnected: CathayGmailOtpPort = {
-  ensureAccess: async () => ({ status: "fallback", reason: "not-configured" }),
-  prepareRetrieval: async () => assert.fail("no Gmail retrieval without a Gmail grant"),
-  retrieve: async () => assert.fail("no Gmail retrieval without a Gmail grant"),
-};
-
 function signInAsRun(page: Page, events: string[]) {
   return signInCathayForApp(page, SIGN_IN, {
-    otp: gmailNotConnected,
     signal: new AbortController().signal,
     event: async (code) => { events.push(code); },
   });
@@ -221,7 +214,7 @@ test("registering sends one code, adds the trusted device, and a later run signs
   });
 });
 
-test("a run that meets Cathay's OTP without connected Gmail stops asking for device registration and sends nothing", async () => {
+test("a run that meets Cathay's OTP stops asking for device registration and sends nothing", async () => {
   await withFixture({}, async ({ log, openRunPage }) => {
     const events: string[] = [];
     await assert.rejects(

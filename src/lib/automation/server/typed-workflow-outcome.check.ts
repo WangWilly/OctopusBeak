@@ -14,7 +14,6 @@ import {
 import { workflowFailureExplanation } from "../workflow-failures.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "../product-collection.ts";
-import { CathayAppVerificationError } from "../verification-errors.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "../tdcc-collection-summary.ts";
 
 test("typed workflow summary keeps only bounded status and aggregate counts", () => {
@@ -383,14 +382,6 @@ test("typed failures use stable privacy-safe categories", () => {
     code: "verification-solver-exhausted",
     occurredAt: "2026-10-03T00:00:00.000Z",
   }]), "verification-failed");
-  assert.equal(
-    classifyTypedWorkflowFailure(new CathayAppVerificationError("gmail-needs-authorization"), []),
-    "verification-configuration-failed",
-  );
-  assert.equal(
-    classifyTypedWorkflowFailure(new CathayAppVerificationError("gmail-no-candidate"), []),
-    "verification-failed",
-  );
   assert.equal(classifyTypedWorkflowFailure(new Error("private details"), [{
     runId: "run-1",
     stage: "authentication",

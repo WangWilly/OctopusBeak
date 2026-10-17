@@ -1,6 +1,7 @@
 import type { Locator, Page } from "playwright";
 import {
   answerCathayTrustDevicePrompt,
+  CATHAY_OTP_CHALLENGE,
   cathayTrustDevicePrompt,
   clickFirstVisible,
   fillLoginForm,
@@ -52,7 +53,6 @@ const CODE_FIELD: Readonly<Record<CathayOtpChannel, string>> = {
   email: "#OtpMailPassword",
   sms: '#OtpSmsPassword, .js-otp-view input[inputmode="numeric"], .js-otp-view input[type="tel"], .js-otp-view input[type="text"], input[autocomplete="one-time-code"]',
 };
-const CHALLENGE = '#OtpMailPassword, #js-otp-send, #js-otp-email-send, .js-otp-view';
 
 async function visible(locator: Locator): Promise<boolean> {
   return await locator.first().isVisible().catch(() => false);
@@ -115,7 +115,7 @@ async function advance(
       await fillLoginForm(page, credentials);
       const outcome = await firstOutcome(page, signal, 60_000, [
         ["signed-in", () => isCathaySignedIn(page)],
-        ["challenge", () => visible(page.locator(CHALLENGE))],
+        ["challenge", () => visible(page.locator(CATHAY_OTP_CHALLENGE))],
         ["challenge", () => visible(page.locator("a").filter({ hasText: "Email驗證" }))],
       ] as const);
       if (outcome === "signed-in") return { step: "done", result: { kind: "already-trusted" } };

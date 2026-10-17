@@ -64,7 +64,7 @@ export const desktopCdpTdccOutcomes = ["device-registration-required", "provider
 export type DesktopCdpTdccOutcome = (typeof desktopCdpTdccOutcomes)[number];
 
 export type DesktopCdpFixtureOptions = Readonly<{
-  includeCathayVerificationFailure?: boolean;
+  includeCathayDeviceRegistrationFailure?: boolean;
   /**
    * Enable TDCC with inert sign-in details and no registered device, seed
    * one sync-tdcc run with this outcome, and commit Cathay, Fubon, Yuanta
@@ -114,7 +114,6 @@ function tdccRunOutcome(outcome: DesktopCdpTdccOutcome): Readonly<{
 /**
  * Keep the base fixture small: one partially completed bank source, one
  * failed provider row, and one credential-group sync source for onboarding.
- * The opt-in verification fixture adds a safe Cathay Gmail setup reason.
  */
 export const desktopCdpFixtureSettings = {
   AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
@@ -157,7 +156,7 @@ export async function seedDesktopCdpFixture(
   mkdirSync(root, { recursive: true });
   const fixtureSettings = {
     ...desktopCdpFixtureSettings,
-    ...(options.includeCathayVerificationFailure ? { LIBRETTO_CLOUD_CATHAY_ENABLED: true } : {}),
+    ...(options.includeCathayDeviceRegistrationFailure ? { LIBRETTO_CLOUD_CATHAY_ENABLED: true } : {}),
     ...(options.tdccOutcome
       ? { LIBRETTO_CLOUD_TDCC_ENABLED: true, LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "securities,fund,settlement" }
       : {}),
@@ -241,7 +240,7 @@ export async function seedDesktopCdpFixture(
         summary: { status: "failed", counts: {} },
       },
     });
-    if (options.includeCathayVerificationFailure) {
+    if (options.includeCathayDeviceRegistrationFailure) {
       const cathayRun = await automation.createTaskRun({
         taskId: "cathay-all-statements",
         kind: "crawler",
@@ -253,7 +252,7 @@ export async function seedDesktopCdpFixture(
       await automation.appendRunEvent({
         runId: cathayRun.taskRunId,
         stage: "authentication",
-        code: "cathay-email-otp-gmail-needs-authorization",
+        code: "device-registration-required",
         occurredAt: `${day}T10:01:00.000Z`,
       });
       await automation.transitionTaskRunToTerminal(cathayRun.taskRunId, {
@@ -261,7 +260,7 @@ export async function seedDesktopCdpFixture(
         finishedAt: `${day}T10:02:00.000Z`,
         exitCode: 1,
         appWorkflowOutcome: {
-          errorCode: "verification-configuration-failed",
+          errorCode: "device-registration-required",
           summary: { status: "failed", counts: {} },
         },
       });
@@ -305,7 +304,7 @@ async function main() {
   removeDesktopCdpFixture(userData);
   const tdccOutcome = desktopCdpTdccOutcomes.find((outcome) => outcome === process.env.OCTOPUSBEAK_CDP_TDCC_OUTCOME);
   console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData, new Date(), {
-    includeCathayVerificationFailure: process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1",
+    includeCathayDeviceRegistrationFailure: process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1",
     ...(tdccOutcome ? { tdccOutcome } : {}),
   })}`);
 }

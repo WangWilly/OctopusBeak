@@ -8,10 +8,6 @@ assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
 assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:disconnectCathayGmailOtp"), true);
 assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
@@ -23,10 +19,6 @@ assert.deepEqual(
   "sandboxed preload must stay self-contained after bundling",
 );
 for (const [method, channel] of [
-  ["cathayGmailOtpStatus", "automation:cathayGmailOtpStatus"],
-  ["enableCathayGmailOtp", "automation:enableCathayGmailOtp"],
-  ["setCathayGmailOtpEnabled", "automation:setCathayGmailOtpEnabled"],
-  ["disconnectCathayGmailOtp", "automation:disconnectCathayGmailOtp"],
   ["deviceRegistrationStatus", "automation:deviceRegistrationStatus"],
   ["startDeviceRegistration", "automation:startDeviceRegistration"],
   ["submitDeviceRegistrationCode", "automation:submitDeviceRegistrationCode"],

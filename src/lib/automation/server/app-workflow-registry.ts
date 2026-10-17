@@ -21,11 +21,7 @@ import type {
   YuantaAllWorkflowInput,
   YuantaAllWorkflowOutput,
 } from "../../../workflows/yuanta-all-statements.ts";
-import type {
-  CathayAllProviderWorkflowInput,
-  CathayAllProviderWorkflowOutput,
-} from "../../../workflows/cathay-all-statements.ts";
-import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
+import type { CathayAllProviderWorkflowOutput } from "../../../workflows/cathay-all-statements.ts";
 import {
   YUANTA_TRADE_LOGIN_URL,
   type YuantaTradeProviderWorkflowOutput,
@@ -71,32 +67,18 @@ type AppWorkflowRegistration = Readonly<{
 }>;
 
 export type AppWorkflowRegistryDependencies = Readonly<{
-  cathayGmailOtpPort?: CathayGmailOtpPort;
   exchangeRateSyncService?: ExchangeRateSyncService;
   exchangeRateProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 }>;
 
-const unavailableCathayOtpPort: CathayGmailOtpPort = {
-  async ensureAccess() { return { status: "fallback", reason: "not-configured" }; },
-  async prepareRetrieval() { return { status: "fallback", reason: "not-configured" }; },
-  async retrieve() { return { status: "fallback", reason: "not-configured" }; },
+const cathayAllStatementsWorkflow: WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> = {
+  id: "cathay-all-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const { runCathayAllProviderWorkflow } = await import("../../../workflows/cathay-all-statements.ts");
+    return await runCathayAllProviderWorkflow(context, input);
+  },
 };
-
-function createCathayRegistryDefinition(
-  otp: CathayGmailOtpPort,
-): WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> {
-  return {
-    id: "cathay-all-statements",
-    requiresFinancialCommit: true,
-    async run(context, input) {
-      const { createCathayAllStatementsWorkflow } = await import("../cathay-all-workflow.ts");
-      return await createCathayAllStatementsWorkflow(otp).run(
-        context,
-        input as CathayAllProviderWorkflowInput,
-      );
-    },
-  };
-}
 
 function statementTypeIdsFromEnvironment(
   groupId: keyof typeof BANK_STATEMENT_CAPABILITIES,
@@ -112,8 +94,6 @@ function statementTypeIdsFromEnvironment(
     "strict",
   ).selectedIds;
 }
-
-const cathayAllStatementsWorkflow = createCathayRegistryDefinition(unavailableCathayOtpPort);
 
 const fubonAllStatementsWorkflow: WorkflowDefinition<
   FubonAllWorkflowInput,
@@ -347,11 +327,6 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: cathayAllStatementsWorkflow,
-    definitionForDependencies(dependencies) {
-      return dependencies.cathayGmailOtpPort
-        ? createCathayRegistryDefinition(dependencies.cathayGmailOtpPort)
-        : cathayAllStatementsWorkflow;
-    },
     runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
     inputFromEnvironment(environment) {
       return {
