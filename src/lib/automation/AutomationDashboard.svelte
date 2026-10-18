@@ -2251,7 +2251,12 @@ import type {
                           aria-invalid={statementSelectionError ? "true" : undefined}
                           onchange={() => toggleStatementType(group.id, type.id)}
                         />
-                        <span class="statement-type-name">{$t.automation.statementTypeLabels[type.id] ?? type.id}</span>
+                        <span class="statement-type-name">
+                          {$t.automation.statementTypeLabels[type.id] ?? type.id}
+                          {#if type.preview}
+                            <span class="statement-type-preview" title={$t.automation.previewStatementTypeHint} data-preview-statement-type>{$t.automation.previewStatementType}</span>
+                          {/if}
+                        </span>
                         {#if !checked}
                           <span class="statement-result" data-tone="muted">{$t.automation.productSkipReasons.not_selected}</span>
                         {:else if lastResult}
@@ -4182,6 +4187,21 @@ import type {
     flex: 1;
     font-size: 14px;
     font-weight: 650;
+  }
+
+  .statement-type-preview {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    margin-left: var(--space-2);
+    padding: 0 var(--space-2);
+    border: 1px solid color-mix(in oklch, var(--warn) 34%, transparent);
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--warn) 10%, var(--surface));
+    color: var(--warn);
+    font-size: 11px;
+    font-weight: 680;
+    vertical-align: middle;
   }
 
   .statement-result {
