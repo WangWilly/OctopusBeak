@@ -111,6 +111,21 @@ export function exactDecimal(value: unknown, field: string): string {
   return lexeme.replaceAll(",", "").replace(/^\+/u, "");
 }
 
+/** `minuend - subtrahend` for two exact decimal lexemes, at the larger scale, never rounded. */
+export function decimalDifference(minuend: string, subtrahend: string): string {
+  const parse = (lexeme: string) => {
+    const [whole, fraction = ""] = lexeme.split(".");
+    return { coefficient: BigInt(`${whole}${fraction}`), scale: fraction.length };
+  };
+  const left = parse(minuend);
+  const right = parse(subtrahend);
+  const scale = Math.max(left.scale, right.scale);
+  const coefficient = left.coefficient * 10n ** BigInt(scale - left.scale) - right.coefficient * 10n ** BigInt(scale - right.scale);
+  const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
+  const sign = coefficient < 0n ? "-" : "";
+  return scale === 0 ? `${sign}${digits}` : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+}
+
 export function isZeroDecimal(amount: string): boolean {
   return /^[+-]?0+(?:\.0+)?$/u.test(amount);
 }
