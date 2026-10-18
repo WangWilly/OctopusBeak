@@ -340,9 +340,16 @@ async function signIn(api: Client, form: TaishinLoginForm, solve: PreviewCaptcha
   const answer = await solveChallengeRound(context, solve, () => form.captcha(), 1);
   const dialog = await form.submit(credentials, answer);
   if (dialog !== null) classifyLoginDialog(dialog);
-  const path = "/web/common/sessioncheck";
-  const session = (await api.raw(path, {})).payload;
-  if (session.RESULT === "EXPIRED" || optionalText(session.DBSESSIONID) === null) fail("unexpected-response", "the login outcome is unknown: sessioncheck shows no session");
+  if (!await hasSession(api)) fail("unexpected-response", "the login outcome is unknown: sessioncheck shows no session");
+}
+
+async function hasSession(api: Client): Promise<boolean> {
+  const session = (await api.raw("/web/common/sessioncheck", {})).payload;
+  return session.RESULT !== "EXPIRED" && optionalText(session.DBSESSIONID) !== null;
+}
+
+async function assertSession(api: Client): Promise<void> {
+  if (!await hasSession(api)) fail("session-conflict", "sessioncheck shows the session ended");
 }
 
 export function createTaishinSource(options: Readonly<{
@@ -393,9 +400,11 @@ export function createTaishinSource(options: Readonly<{
         await context.event("authentication", "authentication-completed");
         await context.event("collection", "collection-started");
         const collectedAt = context.now();
-        const accounts = [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)];
+        const output = await context.preview.collect({
+          deposit: async () => ({ collectedAt, accounts: [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)] }),
+        }, { assertSession: () => assertSession(api) });
         await context.event("collection", "collection-completed");
-        return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
+        return output;
       });
     },
   };
