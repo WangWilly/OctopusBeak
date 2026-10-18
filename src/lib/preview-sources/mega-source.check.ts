@@ -37,6 +37,10 @@ const CARD_B = "0000000000004321";
 const CARD_UNLISTED = "0000000000009999";
 const bill = (type: string, month: string, currency: string, total: string, paid: string) =>
   `{"ACCT_TYPE":"${type}","ACCT_MON":"${month}","CURR_CODE":"${currency}","THIS_TTL_AMT":${total},"PAYMENT_AMT":${paid}}`;
+const statementRow = (month: string, currency: string, total: string, minimum: string, due?: string) =>
+  JSON.stringify({ acctMon: month, currCode: currency, thisTtlAmt: total, minPay: minimum, thisPayAmt: "0", ...(due === undefined ? {} : { lastpayDate: due }) });
+const billLists = (general: readonly string[], fancy: readonly string[] = [], rido: readonly string[] = []): ResourceRoute => () =>
+  ok(`{"generalRecordList":[${general.join(",")}],"fancyRecordList":[${fancy.join(",")}],"ridoRecordList":[${rido.join(",")}]}`);
 const purchase = (fields: Record<string, string>) =>
   JSON.stringify({ cardNo: CARD_A, sourceCurr: "TWD", destinationCurr: "TWD", ...fields });
 
@@ -62,6 +66,11 @@ const defaults: Record<string, ResourceRoute> = {
     bill("01", "202609", "USD", '"10.25"', '"20"'),
     bill("01", "999912", "USD", '"0"', '"0"'),
   ].join(",")}]}}`, { date: "Thu, 15 Oct 2026 01:58:00 GMT" }),
+  "/fao/fao01009/home": billLists(
+    [statementRow("202609", "TWD", "1,000", "100", "2026/10/15"), statementRow("202608", "TWD", "900", "90", "2026/09/15"), statementRow("202609", "USD", "10.25", "1", "2026/10/15")],
+    [statementRow("202609", "TWD", "200", "20", "2026/10/15")],
+    [statementRow("999912", "TWD", "300", "0")],
+  ),
   "/fao/fao01010/home": () => ok(`{"cardNumbers":[{"cardNo":"${CARD_A}","cardName":"測試正卡"},{"cardNo":"${CARD_B}","cardName":"測試副卡"}]}`),
   "/fao/fao01010/query": () => ok(`{"detailList":[{"cardNo":"${CARD_A}","detailList":[${[
     purchase({ purchaseDate: "2026/10/03", merchantChiName: "測試商店", destinationAmt: "300", acctMon: "999912" }),
@@ -287,7 +296,15 @@ test("one Mega sign-in writes deposits and a credit account per currency with an
     amount: "-9.75",
     basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "10.25", paidAmount: "20", unbilledAmount: "0" },
   }], "an overpaid account stays negative");
-  assert.deepEqual(twd!.statements, [], "no statement is written without source cycle dates");
+  const statement = (billingPeriod: string, currency: string, amount: string, minimumPayment: string, dueDate: string) => ({
+    statementKey: `${billingPeriod.replace("-", "")}:${currency}`, cycleStart: null, cycleEnd: null, closingDate: null, dueDate,
+    amount, currency, minimumPayment, billingPeriod, paidAmount: null, paid: null, noPaymentNeeded: null,
+  });
+  assert.deepEqual(twd!.statements, [
+    statement("2026-09", "TWD", "1200", "120", "2026-10-15"),
+    statement("2026-08", "TWD", "900", "90", "2026-09-15"),
+  ], "a month's rows across bill lists sum into one statement; 999912 is no statement; cycle dates and the paid amount stay unknown");
+  assert.deepEqual(usd!.statements, [statement("2026-09", "USD", "10.25", "1", "2026-10-15")]);
   assert.deepEqual(twd!.cards.map(({ cardMask, displayLabel }) => ({ cardMask, displayLabel })), [
     { cardMask: "****-6789", displayLabel: "測試正卡" },
     { cardMask: "****-4321", displayLabel: "測試副卡" },
@@ -303,13 +320,32 @@ test("one Mega sign-in writes deposits and a credit account per currency with an
       posting: { status: "posted", billing: "billed", postingDate: "2026-09-26" }, consumedAt: { precision: "day", value: "2026-09-24" }, sourceCardKey: cardA, description: "測試退款",
     },
   ], "999912 is unbilled, a billing month is billed, identical rows take an occurrence, and the sign is the direction because both signs occur");
+  assert.deepEqual(twd!.purchases.map((row) => row.statementKey), [null, null, "202609:TWD"], "a billed purchase links to its acctMon's statement");
   assert.deepEqual(usd!.purchases.map(({ amount, currency, direction, sourceCardKey }) => ({ amount, currency, direction, sourceCardKey })), [
     { amount: "12.00", currency: "USD", direction: "outflow", sourceCardKey: twd!.cards[1]!.sourceCardKey },
   ], "a flat row is its own card group and lands in its settlement currency's account");
   const query = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body) : null).find((body) => body?.resource === "/fao/fao01010/query");
   assert.deepEqual(query.rqData, { cardNo: "0", flag: "0", startDate: "2026/08/01", endDate: "2026/10/15" });
-  for (const endpoint of ["/fco/fco10007/home", "/fao/fao01010/home", "/fao/fao01010/query"])
+  for (const endpoint of ["/fco/fco10007/home", "/fao/fao01009/home", "/fao/fao01010/home", "/fao/fao01010/query"])
     assert.ok(observations.some((entry) => entry.endpoint === endpoint && entry.status === 200), `observe() saw ${endpoint}`);
+});
+
+test("a status-text due date leaves its statement unwritten and its purchases unlinked", async () => {
+  const { writes } = await run({
+    "/fao/fao01009/home": billLists(
+      [statementRow("202609", "TWD", "1000", "100", "免繳款"), statementRow("202608", "TWD", "900", "90", "2026/09/15")],
+      [statementRow("202609", "TWD", "200", "20", "2026/10/15")],
+    ),
+  }, {}, ["credit_card"]);
+  const [twd] = creditWrites(writes)[0]!.accounts;
+  assert.deepEqual(twd!.statements.map((row) => row.statementKey), ["202608:TWD"], "one status-text row skips the whole 202609 statement");
+  assert.deepEqual(twd!.purchases.map((row) => row.statementKey), [null, null, null], "no purchase points at an unwritten statement");
+});
+
+test("empty bill lists write no statement but keep the card product", async () => {
+  const { writes, output } = await run({ "/fao/fao01009/home": billLists([]) }, {}, BOTH);
+  assert.deepEqual(outcomes(output), { deposit: "success", credit_card: "success" }, "an empty bill list is not not_held");
+  assert.deepEqual(creditWrites(writes)[0]!.accounts.map((account) => account.statements), [[], []]);
 });
 
 test("card row keys survive volatile sequence fields and billing", async () => {
@@ -359,6 +395,16 @@ test("card failures stop before the credit write and leave the deposit write in 
     "missing unbilled operand": ["incomplete-data", { "/fco/fco10007/home": overview(bill("01", "202609", "TWD", "1", "0")) }],
     "missing statement operand": ["incomplete-data", { "/fco/fco10007/home": overview(bill("01", "999912", "TWD", "1", "0")) }],
     "unknown billing month": ["unexpected-response", { "/fco/fco10007/home": overview(bill("01", "2026-09", "TWD", "1", "0"), bill("01", "999912", "TWD", "0", "0")) }],
+    "malformed bill thisTtlAmt": ["malformed-amount", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1.2.3", "100", "2026/10/15")]) }],
+    "malformed bill minPay": ["malformed-amount", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "1O0", "2026/10/15")]) }],
+    "missing bill currency": ["missing-currency", { "/fao/fao01009/home": billLists([statementRow("202609", "", "1000", "100", "2026/10/15")]) }],
+    "missing bill lists": ["unexpected-response", { "/fao/fao01009/home": () => ok("{}") }],
+    "non-list bill list": ["unexpected-response", { "/fao/fao01009/home": () => ok('{"generalRecordList":null}') }],
+    "repeated bill": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100", "2026/10/15"), statementRow("202609", "TWD", "1000", "100", "2026/10/15")]) }],
+    "conflicting bill due dates": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1", "1", "2026/10/15")], [statementRow("202609", "TWD", "1", "1", "2026/10/16")]) }],
+    "missing bill due date": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100")]) }],
+    "invalid bill due date": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100", "2026/02/30")]) }],
+    "bill currency without an account": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "JPY", "1000", "100", "2026/10/15")]) }],
     "incomplete purchase list": ["unexpected-response", { "/fao/fao01010/query": () => ok("{}") }],
     "zero purchase amount": ["unexpected-response", { "/fao/fao01010/query": query(purchase({ purchaseDate: "2026/10/03", destinationAmt: "0.00", acctMon: "999912" })) }],
     "unlisted card": ["unexpected-response", { "/fao/fao01010/query": query(purchase({ cardNo: CARD_UNLISTED, purchaseDate: "2026/10/03", destinationAmt: "5", acctMon: "999912" })) }],
