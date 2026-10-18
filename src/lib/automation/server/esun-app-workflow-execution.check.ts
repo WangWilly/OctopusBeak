@@ -188,6 +188,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
       esun_password: "synthetic-password",
     },
     managedIdentitySecret: "synthetic-esun-managed-secret",
+    attachedPreviewProducts: [],
   });
 
   const root = await mkdtemp(join(tmpdir(), "esun-app-workflow-"));
