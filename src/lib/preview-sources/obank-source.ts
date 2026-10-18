@@ -1,5 +1,11 @@
 import { constants, createHash, publicEncrypt, randomUUID } from "node:crypto";
-import type { PreviewAccount, PreviewLocalDate, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type {
+  PreviewAccount,
+  PreviewLocalDate,
+  PreviewTimeDeposit,
+  PreviewTimeDepositCollection,
+  PreviewTransaction,
+} from "../../ledger/pglite/preview-financial-data.ts";
 import type { PreviewHttp, PreviewHttpOpener, PreviewImageDecoder } from "./browser-http.ts";
 import { nodeHttp } from "./node-http.ts";
 import type { PreviewSource } from "./registry.ts";
@@ -36,6 +42,7 @@ const RESOURCE = {
   captcha: "common/CMN01001/010",
   timeFactor: "common/EndToEnd/020",
   demandDeposits: "fao/FAO01012/010",
+  timeDeposits: "fao/FAO01022/020",
 } as const;
 
 const KEY = {
@@ -285,6 +292,64 @@ async function itemTransactions(api: Api, item: DemandItem, window: Readonly<{ s
   return transactionsFrom(records(rsData.despositTxnDetails, `${field}.despositTxnDetails`), `${field}.despositTxnDetails`, item.currency);
 }
 
+async function demandAccounts(api: Api, collectedAt: string): Promise<PreviewAccount[]> {
+  const list = await api.secure(RESOURCE.demandDeposits, { masterAccountNo: "", queryType: "before7Days", initQuery: "Y" }, "FAO01012");
+  const window = taipeiMonthWindow(collectedAt, MONTHS);
+  const accounts: PreviewAccount[] = [];
+  for (const item of demandItems(list, collectedAt))
+    accounts.push({ ...item.account, transactions: await itemTransactions(api, item, window) });
+  return accounts;
+}
+
+const absent = (value: unknown) => value === undefined || value === null || value === "";
+
+/** `displayRate` reads like `1.725%`; a tiered-rate deposit (`isTierIntrstFlg`) shows no single rate. */
+function interestRate(detail: SourceRecord, field: string): string | null {
+  if (detail.isTierIntrstFlg === true || absent(detail.displayRate)) return null;
+  return exactDecimal(String(detail.displayRate).replace(/\s*%$/u, ""), `${field}.displayRate`);
+}
+
+async function timeDeposit(api: Api, entry: SourceRecord, field: string, collectedAt: string): Promise<PreviewTimeDeposit> {
+  const number = text(entry.tdAccountNumber, `${field}.tdAccountNumber`);
+  const currency = currencyCode(entry.currency, `${field}.currency`);
+  const response = await api.secure(RESOURCE.timeDeposits, { tdAccountNumber: number, linkFromTxnId: "FAO01012_010" }, "FAO01022");
+  const detailField = `${RESOURCE.timeDeposits}.rsData.tdDetail`;
+  const detail = record(record(response.body.rsData, `${RESOURCE.timeDeposits}.rsData`).tdDetail, detailField);
+  if (detail.tdAccountNumber !== number) return fail("unexpected-response", `${detailField} answers another deposit`);
+  if (currencyCode(detail.currency, `${detailField}.currency`) !== currency) return fail("unexpected-response", `${detailField}.currency differs from the list`);
+  const product = optionalText(detail.displayProductType) ?? "定存";
+  const last4 = number.replace(/\D/gu, "").slice(-4);
+  return {
+    sourceAccountKey: `td:${number}`,
+    displayLabel: `王道銀行 ${product}${last4 ? ` ${last4}` : ""}${currency === "TWD" ? "" : ` (${currency})`}`,
+    currency,
+    balances: [{
+      kind: "current",
+      amount: exactDecimal(detail.displayWorkingBalance, `${detailField}.displayWorkingBalance`),
+      currency,
+      observedAt: observedAt(response.date, collectedAt),
+    }],
+    principal: null,
+    interestRate: interestRate(detail, detailField),
+    maturityDate: absent(detail.maturityDate) ? null : obankDate(detail.maturityDate, `${detailField}.maturityDate`).value.slice(0, 10),
+  };
+}
+
+/**
+ * The FAO01022 list (`repeats`) is the page's complete deposit selector and has
+ * no paging; it is complete only when every deposit's detail was read too.
+ */
+async function timeDeposits(api: Api, collectedAt: string): Promise<PreviewTimeDepositCollection> {
+  const list = await api.secure(RESOURCE.timeDeposits, { page: "td", linkFromTxnId: "FAO01012_010" }, "FAO01022");
+  const field = `${RESOURCE.timeDeposits}.rsData.repeats`;
+  const repeats = records(record(list.body.rsData, `${RESOURCE.timeDeposits}.rsData`).repeats, field);
+  const deposits: PreviewTimeDeposit[] = [];
+  for (const [index, entry] of repeats.entries()) deposits.push(await timeDeposit(api, entry, `${field}[${index}]`, collectedAt));
+  if (new Set(deposits.map((deposit) => deposit.sourceAccountKey)).size !== deposits.length)
+    return fail("unexpected-response", `${field} repeats a deposit`);
+  return { collectedAt, completeness: "complete", deposits };
+}
+
 async function signIn(
   context: PreviewWorkflowContext,
   api: Api,
@@ -317,7 +382,7 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
   return {
     id: "obank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["obank-deposit"],
-    products: ["deposit"],
+    products: ["deposit", "time_deposit"],
     displayName: { en: "O-Bank deposits (preview)", "zh-TW": "王道銀行存款（預覽）" },
     searchAliases: ["O-Bank", "OBank", "王道", "王道銀行"],
     credentialFields: [
@@ -353,15 +418,11 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
         await signIn(context, api, decodeImage, solve, input.credentials);
         await context.event("authentication", "authentication-completed");
         try {
-          await context.event("collection", "collection-started");
           const collectedAt = context.now();
-          const list = await api.secure(RESOURCE.demandDeposits, { masterAccountNo: "", queryType: "before7Days", initQuery: "Y" }, "FAO01012");
-          const window = taipeiMonthWindow(collectedAt, MONTHS);
-          const accounts: PreviewAccount[] = [];
-          for (const item of demandItems(list, collectedAt))
-            accounts.push({ ...item.account, transactions: await itemTransactions(api, item, window) });
-          await context.event("collection", "collection-completed");
-          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
+          return await context.preview.collect({
+            deposit: async () => ({ collectedAt, accounts: await demandAccounts(api, collectedAt) }),
+            time_deposit: async () => timeDeposits(api, collectedAt),
+          });
         } finally {
           await api.logout().catch(() => undefined);
         }
