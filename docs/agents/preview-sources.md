@@ -59,6 +59,7 @@ The run details show 「分享結構報告」 for a failed preview run. The dial
 | Need | Use | File |
 | --- | --- | --- |
 | Send requests through the App-owned browser (ADR 0044) | `browserHttp`, or a fake `PreviewHttpOpener` in checks | `src/lib/preview-sources/browser-http.ts` |
+| Send requests from Node, after a probe shows the hosts accept it (ADR 0044) | `nodeHttp` | `src/lib/preview-sources/node-http.ts` |
 | Parse JSON without losing number lexemes | `parseSourceJson` returns every JSON number as its source text | `src/lib/preview-sources/source-kit.ts` |
 | Exact amounts, ISO currency, local dates, as-of time | `exactDecimal`, `currencyCode`, `localDate`, `observedAt` | `src/lib/preview-sources/source-kit.ts` |
 | Typed failures | `fail(reason, detail)`, `refuseUnsupportedVerification`, `requireDeviceRegistration` | `src/lib/preview-sources/source-kit.ts` |
@@ -175,3 +176,23 @@ Every source below has never run against a live account. Each was built from the
   - `RESULT` `EBF0015` on `web1/rb0101/query` marks an account online banking cannot query. Its `rb0100` balance is kept and its transactions are skipped.
   - No logout endpoint is documented, so the session is left to expire.
   - The session-takeover notice is a precaution. The login dialog `USER 正在線上，無法登入` suggests one web session at a time. The effect on the phone App is unconfirmed.
+### O-Bank (王道銀行), `obank-deposit`
+
+Built from all-set-tw commit `f05dd30` and O-Bank's public web banking page code.
+
+- Transport: the MobileFirst adapters of O-Bank's web banking under `https://www.o-bank.com/ebank/ixtein`, sent from Node with the plain HTTP transport (`nodeHttp`), which keeps a cookie jar per run. [The transport probe](../research/2026-10-18-obank-transport-probe.md) found every pre-login endpoint answering a Node client with HTTP 200 and no WAF challenge, so the browser is not used. Requests carry the web page's `Origin` and `Referer`, the OAuth bearer token, the MD5 `checksum` header, and `x-transaction-id`. Request and response bodies are plain JSON.
+- Sign-in: OAuth client credentials (`browser`), `common/CMN01003/010` for the RSA public key (`rsData.params.e2e`, PKCS#1 PEM), `emptyLogin`, the login page calls, a CAPTCHA, then `submitCredentials` with the national ID, the user code, and the password. The user code and the password are each encrypted with the public key (PKCS#1 v1.5, base64) after the server time factor from a fresh `common/EndToEnd/020` call is appended. `resultType` `2` or `10`, `1`, or `lockDownFlag` `Y` fails as `authentication-failed`. `resultType` `3` (another session) fails as `session-conflict`; the source always sends `force` `0` and never retries with `1`, which would end the other session.
+- CAPTCHA: a 4-character alphanumeric JPEG from `common/CMN01001/010`. No calibrated family exists, so every production run ends with `verification-configuration-failed` before any request. Checks inject `solveCaptcha` to exercise the full flow.
+- Collected: every item of `fao/FAO01012/010` `rsData.userAccounts[].accountItems[]`, NT-dollar and foreign-currency, as one account per `accountItemNo` and `curr`. The current balance is `displayWorkBalNoCurr` (帳上餘額) and the available balance is `displayActBalNoCurr` (可用餘額), as of the list response's HTTP `Date` header. Each item gets one `customDisplay` history query from the first day of the month two months back through today (Taipei), read from `despositTxnDetails`.
+- Fail-closed: an item without an ISO `curr` fails `missing-currency`. A history response whose echoed `startDate` or `endDate` differs from the requested range fails `incomplete-data`. A history response without a `despositTxnDetails` list, with a `curry` other than the queried currency, an account list without items, or an item and currency that repeat fail `source-validation-failed`. There is no paging, so no cursor applies.
+- Assumptions:
+  - Currency comes from each account item's `curr` and is never defaulted. Rows carry no currency field, so a row takes its item's currency, which the query also sends as `curry`.
+  - `displayTxnAmount` is kept as its source lexeme, possibly signed. The direction is always `unknown`, because neither all-set-tw nor the public page shows a direction field.
+  - The balance names follow the labels of the public web page (`FAO01012.js`), not all-set-tw, which reads `actBal` first as the balance. The raw `actBal` and `workBal` fields are unconfirmed and unused.
+  - `queryType` `customDisplay` follows all-set-tw. The public page's own custom-range button may send another value; this is unverified.
+  - A history answer is taken as complete, because neither source shows paging or a row count. The page allows ranges up to two years, so a three-month query is inside its limit.
+  - `txnDate` may use the ROC year and unpadded parts, and is read as a Taipei calendar date.
+  - Rows have no transaction id. The row key is the date, a hash of date, amount, `displayClsBal`, `txnDesc`, `displayMemo`, and `diplayAcct`, and an occurrence counter for identical rows in one account.
+  - Time deposits are not collected. They come from a separate endpoint (`fao/FAO01022/020`), which the source does not call, and do not appear in `userAccounts`. Family accounts (`fmlyChild`) are not queried.
+  - The Node transport is verified only before sign-in. If O-Bank rejects it after sign-in, switch the source to `browserHttp`.
+  - The session-takeover notice is a precaution. The `resultType` `3` refusal and all-set-tw's optional forced login suggest one session at a time; this is unconfirmed.
