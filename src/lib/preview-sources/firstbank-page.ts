@@ -1,16 +1,28 @@
 import type { Frame, Page, Response } from "playwright";
 import { decodeImageToPng } from "./browser-http.ts";
-import type { FirstbankCapture, FirstbankPageOpener, FirstbankQueryAccount, FirstbankSignInOutcome } from "./firstbank-source.ts";
+import type { FirstbankCapture, FirstbankCardPages, FirstbankPageOpener, FirstbankQueryAccount, FirstbankSignInOutcome } from "./firstbank-source.ts";
 import { fail } from "./source-kit.ts";
 
 const ORIGIN = "https://ibank.firstbank.com.tw";
 export const FIRSTBANK_LOGIN_URL = `${ORIGIN}/NetBank/index103.html`;
 const OVERVIEW_URL = `${ORIGIN}/NetBank/1/acntReviewAll.html`;
 const QUERY_URL = `${ORIGIN}/NetBank/2/0101.html`;
+const FRAMESET_URL = `${ORIGIN}/NetBank/frame.html`;
+const CARD_HOME_URL = `${ORIGIN}/NetBank/1/01.jsp`;
 const CAPTCHA_PATH = "/netbank/code_verify1.jpg";
 const OVERVIEW_PATH = /^\/netbank\/ajax\/acntreview1\.html$/u;
 const HISTORY_PATH = /^\/netbank\/2\/010103(?:\.html?)?$/u;
 const FRAMESET_PATH = /^\/netbank\/frame\.html$/u;
+const CARD_HOME_PATH = /^\/netbank\/1\/01\.jsp$/u;
+const CARD_QUERY_PATH = /^\/cmsweb\/common\/sendcmsqry\d{4}$/u;
+const CARD_MEMBER_LOGOUT_PATH = /^\/cmsweb\/home\/logout$/u;
+const BILL_DATES_PATH = /^\/cmsweb\/common\/sendcmsqry9999$/u;
+// The service overview's own links: 帳單查詢 (F1632), 近期繳款 (F1633), 未出帳消費 (F1634).
+const CARD_FUNCTIONS = [
+  { func: "F1632", path: /^\/cmsweb\/common\/sendcmsqry0014$/u },
+  { func: "F1633", path: /^\/cmsweb\/common\/sendcmsqry0006$/u },
+  { func: "F1634", path: /^\/cmsweb\/common\/sendcmsqry0008$/u },
+] as const;
 const SIGNED_IN_MARKER = "#btnOpen, #tFunc";
 const DEPOSIT_TRIGGER = "#btnOpen a, #overview-account a[onclick*=\"chgAcntReviewType('1')\"], a[href=\"#tab1\"]";
 const QUERY_SELECT = 'select[name="acnt"]';
@@ -20,22 +32,32 @@ const SIGN_IN_WAIT_MS = 20_000;
 const AUTO_LOAD_GRACE_MS = 2_000;
 const CAPTURE_WAIT_MS = 30_000;
 const LOGOUT_SETTLE_MS = 2_000;
+// all-set-tw's recorder saw a little over 11 seconds from the card bridge page to CMSQRY0014.
+const CARD_WAIT_MS = 30_000;
+// After an empty CMSQRY9999 bill-date list the page sends no CMSQRY0014; a late one still gets this long.
+const BILL_AFTER_DATES_MS = 5_000;
+// all-set-tw merges several CMSQRY0006 responses, so later ones may still arrive after the last function answered.
+const CARD_SETTLE_MS = 1_500;
 
 type Recorded = Readonly<{ path: string; capture: Promise<FirstbankCapture | null> }>;
 
 const lowerPath = (url: string) => new URL(url).pathname.split(";")[0]!.toLowerCase();
+const isCardPath = (path: string) => CARD_QUERY_PATH.test(path) || CARD_MEMBER_LOGOUT_PATH.test(path);
+// all-set-tw does not document the card member system's host, so card paths are accepted from any First Bank https host.
+const isFirstbankHost = (url: URL) => url.protocol === "https:" && (url.hostname === "firstbank.com.tw" || url.hostname.endsWith(".firstbank.com.tw"));
 
 function recordResponses(page: Page): { entries: Recorded[]; captcha: () => Promise<Buffer | null> | null } {
   const entries: Recorded[] = [];
   let captcha: Promise<Buffer | null> | null = null;
   page.on("response", (response: Response) => {
-    if (new URL(response.url()).origin !== ORIGIN) return;
+    const url = new URL(response.url());
     const path = lowerPath(response.url());
+    if (url.origin !== ORIGIN && !(isFirstbankHost(url) && isCardPath(path))) return;
     if (path === CAPTCHA_PATH && response.status() === 200) {
       captcha = response.body().catch(() => null);
       return;
     }
-    if (!OVERVIEW_PATH.test(path) && !HISTORY_PATH.test(path)) return;
+    if (!OVERVIEW_PATH.test(path) && !HISTORY_PATH.test(path) && !isCardPath(path)) return;
     entries.push({
       path,
       capture: response.text().then(
@@ -166,6 +188,41 @@ async function clickLoginArea(page: Page): Promise<void> {
   await page.mouse.click(point.x, point.y);
 }
 
+const isMenuRuntime = () => typeof (window as Window & { getMenuObjById?: unknown }).getMenuObjById === "function";
+
+/** Card functions need the signed-in frameset's menu runtime (all-set-tw); a lost frameset is reloaded, never the login page. */
+async function ensureFrameset(page: Page): Promise<void> {
+  if (await page.evaluate(isMenuRuntime).catch(() => false)) return;
+  await page.goto(FRAMESET_URL, { waitUntil: "domcontentloaded", timeout: PAGE_WAIT_MS }).catch(() => undefined);
+  await page.waitForFunction(isMenuRuntime, undefined, { timeout: PAGE_WAIT_MS })
+    .catch(() => fail("unexpected-response", "the signed-in frameset did not load for the card functions"));
+}
+
+type CardHome = Readonly<{ frame: Frame; notice: null }> | Readonly<{ frame: null; notice: string }>;
+
+/** The service overview with all three card links, or the message it shows instead of them. */
+async function cardHome(page: Page, content: Frame): Promise<CardHome> {
+  await content.goto(CARD_HOME_URL, { waitUntil: "domcontentloaded", timeout: PAGE_WAIT_MS }).catch(() => undefined);
+  const funcs = CARD_FUNCTIONS.map(({ func }) => func);
+  const deadline = Date.now() + PAGE_WAIT_MS;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      if (frame.isDetached() || frame === page.mainFrame() || !CARD_HOME_PATH.test(framePath(frame))) continue;
+      const state = await frame.evaluate((wanted) => ({
+        links: wanted.every((func) => document.querySelector(`a[data-func="${func}"]`) !== null),
+        notice: [...document.querySelectorAll<HTMLElement>("#alertMsgContent, [role='alert']")]
+          .filter((element) => element.getClientRects().length > 0)
+          .map((element) => element.innerText.replace(/\s+/gu, " ").trim())
+          .find((text) => text !== "") ?? null,
+      }), funcs).catch(() => null);
+      if (state?.links) return { frame, notice: null };
+      if (state?.notice) return { frame: null, notice: state.notice };
+    }
+    await page.waitForTimeout(POLL_MS);
+  }
+  return fail("unexpected-response", "the card service overview did not show its card functions");
+}
+
 /**
  * Unverified against the live site: selectors and flow follow all-set-tw's
  * First Bank connector (commit f05dd30) and the public login page.
@@ -256,6 +313,54 @@ export const playwrightFirstbankPage: FirstbankPageOpener = (context, startUrl, 
         if (!submitted) return fail("unexpected-response", "the transaction query has no search button");
         return await waitForCapture(page, responses.entries, HISTORY_PATH, before, CAPTURE_WAIT_MS)
           ?? fail("unexpected-response", "no 010103 response");
+      },
+      async cardPages(): Promise<FirstbankCardPages> {
+        const first = responses.entries.length;
+        const cardEntries = () => responses.entries.slice(first).filter((entry) => isCardPath(entry.path));
+        const memberLoggedOut = () => cardEntries().some((entry) => CARD_MEMBER_LOGOUT_PATH.test(entry.path));
+        dialogMessage = null;
+        let notice: string | null = null;
+        await ensureFrameset(page);
+        for (const { func, path } of CARD_FUNCTIONS) {
+          const home = await cardHome(page, await contentFrame());
+          if (home.notice !== null) {
+            notice = home.notice;
+            break;
+          }
+          const start = responses.entries.length;
+          // The bank's handler may navigate the frame away mid-evaluate; the query it started is still awaited, never clicked twice.
+          const clicked = await home.frame.evaluate((wanted) => {
+            const link = document.querySelector<HTMLElement>(`a[data-func="${wanted}"]`);
+            if (link) setTimeout(() => link.click(), 0);
+            return link !== null;
+          }, func).catch(() => true);
+          if (!clicked) return fail("unexpected-response", `the card function ${func} is missing`);
+          const answer = await cardAnswer(start, path, func === "F1632");
+          if (answer === "stopped") break;
+          if (answer === "timeout") return fail("incomplete-data", `the card function ${func} loaded no response`);
+        }
+        let seen = -1;
+        while (seen !== cardEntries().length) {
+          seen = cardEntries().length;
+          await page.waitForTimeout(CARD_SETTLE_MS);
+        }
+        const captures = await Promise.all(cardEntries().map(async (entry) =>
+          (await entry.capture) ?? fail("unexpected-response", `the ${entry.path} body was not readable`)));
+        return { captures, notice: notice ?? dialogMessage };
+
+        async function cardAnswer(start: number, path: RegExp, bill: boolean): Promise<"answered" | "stopped" | "timeout"> {
+          const deadline = Date.now() + CARD_WAIT_MS;
+          let datesAt: number | null = null;
+          while (Date.now() < deadline) {
+            const arrived = responses.entries.slice(start);
+            if (arrived.some((entry) => path.test(entry.path))) return "answered";
+            if (dialogMessage !== null || memberLoggedOut()) return "stopped";
+            if (bill && datesAt === null && arrived.some((entry) => BILL_DATES_PATH.test(entry.path))) datesAt = Date.now();
+            if (datesAt !== null && Date.now() - datesAt >= BILL_AFTER_DATES_MS) return "answered";
+            await page.waitForTimeout(POLL_MS);
+          }
+          return "timeout";
+        }
       },
       async signOut() {
         const frameset = page.frames().find((frame) => FRAMESET_PATH.test(framePath(frame)));
