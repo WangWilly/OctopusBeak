@@ -1,0 +1,252 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { PreviewCreditCollection } from "../ledger/pglite/preview-financial-data.ts";
+import { parsePreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
+import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
+import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
+import {
+  collectSinopacCreditCards,
+  SINOCARD_ACCOUNTING_PATH,
+  SINOCARD_AUTH_PATH,
+  SINOCARD_LATEST_TX_PATH,
+  SINOCARD_OUTSTANDING_PATH,
+  SINOCARD_SSO_PATH,
+  SINOPAC_CARD_SUMMARY_PATH,
+  sumDecimals,
+  type SinopacCardTransport,
+} from "./sinopac-credit-card.ts";
+
+const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
+const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
+
+type Bodies = Record<string, unknown>;
+
+const bodies = (): Bodies => ({
+  [SINOPAC_CARD_SUMMARY_PATH]: [{ Header: "SUCCESS", Message: null, CardTrans: "Y" }],
+  [SINOCARD_SSO_PATH]: { ResultCode: "00", ResultMessage: "", Result: { ID: "SYNTHETIC-ID" } },
+  [SINOCARD_AUTH_PATH]: { ResultCode: "00", ResultMessage: "", Result: {} },
+  [SINOCARD_LATEST_TX_PATH]: {
+    ResultCode: "00",
+    Result: {
+      Items: [
+        { AuthDate: "2026/09/23", AuthTime: "12:30:00", CardNo: "************1234", Memo: "測試便利商店", AuthAmt: "120", AuthResult: "Y" },
+      ],
+    },
+  },
+  [SINOCARD_OUTSTANDING_PATH]: {
+    ResultCode: "00",
+    Result: {
+      Detail: [
+        { CurrencyCode: "000", CardLast4: "5678", TXDATE: "2026/09/22", DEDATE: "2026/09/24", MEMO: "測試電費", AMT: "1,500" },
+        { CurrencyCode: "000", CardLast4: "5678", TXDATE: "2026/09/20", DEDATE: "2026/09/24", MEMO: "現金回饋", AMT: "-88" },
+        { CurrencyCode: "392", CardLast4: "5678", TXDATE: "2026/09/01", DEDATE: "2026/09/02", MEMO: "測試消費", AMT: "100" },
+        { CurrencyCode: "840", CardLast4: "5678", TXDATE: "2026/09/05", DEDATE: "2026/09/07", MEMO: "測試海外", AMT: "12.50" },
+      ],
+      SubTotal: [
+        { CurrencyCode: "000", SubTotalAmt: "1,412", Count: 2 },
+        { CurrencyCode: "392", SubTotalAmt: "100", Count: 1 },
+        { CurrencyCode: "840", SubTotalAmt: "12.50", Count: 1 },
+      ],
+    },
+  },
+  [SINOCARD_ACCOUNTING_PATH]: {
+    ResultCode: "00",
+    Result: {
+      BaseData: { STMTDATE: "20260723", DUEDATE: "20260807" },
+      BillAmounts: [
+        { CurrencyCode: "000", CURRBAL: "2,000", DUEAMT: "500", TotalPaymentAmt: "-" },
+        { CurrencyCode: "392", CURRBAL: "-137", TotalPaymentAmt: "0" },
+      ],
+    },
+  },
+});
+
+function fakeTransport(source: Bodies) {
+  const calls: Array<{ path: string; content?: unknown; userId?: string | null }> = [];
+  const answer = (path: string) => {
+    if (!(path in source)) throw new Error(`Unrouted fake request: ${path}`);
+    const body = source[path];
+    return { endpoint: path, status: 200, date: DATE_HEADER, text: typeof body === "string" ? body : JSON.stringify(body) };
+  };
+  const transport: SinopacCardTransport = {
+    mma: async (path) => { calls.push({ path }); return answer(path); },
+    sinoCard: async (path, content, userId) => { calls.push({ path, content, userId }); return answer(path); },
+  };
+  return { transport, calls };
+}
+
+async function collect(source: Bodies = bodies()) {
+  const observations: PreviewResponseObservation[] = [];
+  const { transport, calls } = fakeTransport(source);
+  const result = await collectSinopacCreditCards({ transport, collectedAt: COLLECTED_AT, observe: (item) => observations.push(item) });
+  return { result, observations, calls };
+}
+
+async function written(source: Bodies = bodies()): Promise<PreviewCreditCollection> {
+  const { result } = await collect(source);
+  assert.ok(!("absent" in result), "a collection, not an absence");
+  return parsePreviewCreditCollection(result);
+}
+
+async function failure(source: Bodies): Promise<PreviewSourceFailure["reason"]> {
+  try {
+    await written(source);
+  } catch (error) {
+    assert.ok(error instanceof PreviewSourceFailure, `expected a typed failure, got ${String(error)}`);
+    return error.reason;
+  }
+  return assert.fail("the collection was written");
+}
+
+function edit(mutate: (source: any) => void): Bodies {
+  const source = bodies();
+  mutate(source);
+  return source;
+}
+
+test("SinoPac cards write one account per currency with exact statement-minus-paid-plus-unbilled balances", async () => {
+  const collection = await written();
+  assert.deepEqual(collection.accounts.map((account) => account.sourceAccountKey), ["card:TWD", "card:JPY", "card:USD"]);
+  const [twd, jpy, usd] = collection.accounts;
+
+  assert.deepEqual(twd!.balances, [{
+    amount: "3412",
+    currency: "TWD",
+    observedAt: { at: "2026-09-24T04:00:00.000Z", source: "reported" },
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "2000", paidAmount: "0", unbilledAmount: "1412" },
+  }]);
+  assert.equal(jpy!.balances[0]!.amount, "-37", "a negative bill stays negative");
+  assert.deepEqual(jpy!.balances[0]!.basis, { kind: "statement-minus-paid-plus-unbilled", statementAmount: "-137", paidAmount: "0", unbilledAmount: "100" });
+  assert.deepEqual(usd!.balances, [], "an unbilled-only currency has no bill operands, so its used credit stays unknown");
+
+  assert.deepEqual(twd!.statements, [{
+    statementKey: "2026-07-23",
+    cycleStart: "2026-06-24",
+    cycleEnd: "2026-07-23",
+    closingDate: "2026-07-23",
+    dueDate: "2026-08-07",
+    amount: "2000",
+    currency: "TWD",
+    minimumPayment: "500",
+    billingPeriod: "2026-07",
+    paidAmount: "0",
+    paid: false,
+    noPaymentNeeded: false,
+  }]);
+  assert.equal(jpy!.statements[0]!.noPaymentNeeded, true);
+  assert.equal(jpy!.statements[0]!.paid, null);
+
+  assert.deepEqual(twd!.cards.map((card) => [card.sourceCardKey, card.cardMask]), [["1234", "****1234"], ["5678", "****5678"]]);
+  assert.deepEqual(twd!.purchases.map((row) => [row.posting.status, row.amount, row.direction, row.sourceCardKey, row.consumedAt.value]), [
+    ["pending", "120", "unknown", "1234", "2026-09-23T12:30:00"],
+    ["posted", "1500", "outflow", "5678", "2026-09-22"],
+    ["posted", "88", "inflow", "5678", "2026-09-20"],
+  ]);
+  assert.deepEqual(twd!.purchases[1]!.posting, { status: "posted", billing: "unbilled", postingDate: "2026-09-24" });
+  assert.equal(usd!.purchases[0]!.amount, "12.50");
+});
+
+test("SinoPac card collection observes every response and signs in to SinoCard with the SSO customer id", async () => {
+  const { observations, calls } = await collect();
+  assert.deepEqual(observations.map((item) => item.endpoint), [
+    SINOPAC_CARD_SUMMARY_PATH, SINOCARD_SSO_PATH, SINOCARD_AUTH_PATH,
+    SINOCARD_LATEST_TX_PATH, SINOCARD_OUTSTANDING_PATH, SINOCARD_ACCOUNTING_PATH,
+  ]);
+  assert.equal(calls[1]!.userId, null);
+  assert.ok(calls.slice(2).every((call) => call.userId === "SYNTHETIC-ID"));
+});
+
+test("SinoPac card row keys stay stable across collections and count identical rows", async () => {
+  const twice = edit((source) => {
+    const detail = source[SINOCARD_OUTSTANDING_PATH].Result.Detail;
+    detail.push({ ...detail[0] });
+    source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal[0] = { CurrencyCode: "000", SubTotalAmt: "2,912", Count: 3 };
+  });
+  const first = (await written(twice)).accounts[0]!.purchases.map((row) => row.sourceRowKey);
+  const second = (await written(twice)).accounts[0]!.purchases.map((row) => row.sourceRowKey);
+  assert.deepEqual(first, second);
+  assert.equal(new Set(first).size, first.length);
+  assert.ok(first.some((key) => key.endsWith("#2")));
+});
+
+test("SinoPac posted purchases fall back to unknown direction unless both signs and no zero are present", async () => {
+  const oneSign = await written(edit((source) => {
+    source[SINOCARD_OUTSTANDING_PATH].Result.Detail[1].AMT = "88";
+    source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal[0].SubTotalAmt = "1588";
+  }));
+  assert.ok(oneSign.accounts.flatMap((account) => account.purchases).every((row) => row.direction === "unknown"));
+
+  const withZero = await written(edit((source) => {
+    source[SINOCARD_OUTSTANDING_PATH].Result.Detail.push({ CurrencyCode: "000", CardLast4: "5678", TXDATE: "2026/09/21", MEMO: "調整", AMT: "0" });
+    source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal[0].Count = 3;
+  }));
+  const twd = withZero.accounts[0]!.purchases;
+  assert.ok(twd.every((row) => row.direction === "unknown"));
+  assert.deepEqual(twd.filter((row) => row.posting.status === "posted").map((row) => row.amount), ["1500", "-88"]);
+});
+
+test("SinoPac card collection fails before write on a missing currency", async () => {
+  assert.equal(await failure(edit((source) => { delete source[SINOCARD_OUTSTANDING_PATH].Result.Detail[2].CurrencyCode; })), "missing-currency");
+  assert.equal(await failure(edit((source) => { source[SINOCARD_ACCOUNTING_PATH].Result.BillAmounts[1].CurrencyCode = "999"; })), "missing-currency");
+});
+
+test("SinoPac card collection fails before write on a malformed amount", async () => {
+  assert.equal(await failure(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "1,5x0"; })), "malformed-amount");
+  assert.equal(await failure(edit((source) => { source[SINOCARD_LATEST_TX_PATH].Result.Items[0].AuthAmt = ""; })), "malformed-amount");
+});
+
+test("SinoPac card collection fails before write on a missing balance operand", async () => {
+  assert.equal(await failure(edit((source) => { delete source[SINOCARD_ACCOUNTING_PATH].Result.BillAmounts[0].TotalPaymentAmt; })), "malformed-amount");
+  assert.equal(await failure(edit((source) => { delete source[SINOCARD_ACCOUNTING_PATH].Result.BillAmounts[0].CURRBAL; })), "malformed-amount");
+  assert.equal(await failure(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal[1].SubTotalAmt = "n/a"; })), "malformed-amount");
+});
+
+test("SinoPac card collection fails before write on an incomplete list", async () => {
+  assert.equal(await failure(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal[0].Count = 3; })), "incomplete-data");
+  assert.equal(await failure(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal.splice(1, 1); })), "incomplete-data");
+  assert.equal(await failure(edit((source) => { delete source[SINOCARD_LATEST_TX_PATH].Result.Items; })), "unexpected-response");
+  assert.equal(await failure(edit((source) => { delete source[SINOCARD_OUTSTANDING_PATH].Result.SubTotal; })), "unexpected-response");
+});
+
+test("SinoPac reports not_held only on an explicit no-card message", async () => {
+  const noCardSummary = await collect(edit((source) => {
+    source[SINOPAC_CARD_SUMMARY_PATH] = [{ Header: "FAIL", Message: "您目前沒有本行信用卡。" }];
+  }));
+  assert.deepEqual(noCardSummary.result, { absent: "not_held" });
+  assert.equal(noCardSummary.calls.length, 1, "no SinoCard request after the no-card summary");
+
+  assert.deepEqual((await collect(edit((source) => {
+    source[SINOCARD_LATEST_TX_PATH] = { ResultCode: "99", ResultMessage: "沒有有效卡" };
+  }))).result, { absent: "not_held" });
+
+  assert.deepEqual((await collect(edit((source) => {
+    source[SINOCARD_LATEST_TX_PATH].Result.Items = [];
+    source[SINOCARD_OUTSTANDING_PATH].Result = { Detail: [], SubTotal: [] };
+    source[SINOCARD_ACCOUNTING_PATH].Result.BillAmounts = [];
+  }))).result, { absent: "no_data" }, "a card holder with no activity is no_data, not not_held");
+
+  assert.equal(await failure(edit((source) => { source[SINOPAC_CARD_SUMMARY_PATH] = [{ Header: "EXCEPTION", Message: "系統忙線中，請稍後再試" }]; })), "unexpected-response");
+  assert.equal(await failure(edit((source) => { source[SINOCARD_LATEST_TX_PATH] = { ResultCode: "99", ResultMessage: "查無資料" }; })), "unexpected-response");
+});
+
+test("SinoPac card collection treats a signed-out MMA session as a session loss", async () => {
+  assert.equal(await failure(edit((source) => {
+    source[SINOPAC_CARD_SUMMARY_PATH] = [{ SubInfo: null, Header: "TIMEOUT", Message: "您尚未登入網銀" }];
+  })), "session-conflict");
+});
+
+test("SinoPac card collection refuses an authorization that was not approved", async () => {
+  assert.equal(await failure(edit((source) => { source[SINOCARD_LATEST_TX_PATH].Result.Items[0].AuthResult = "N"; })), "unexpected-response");
+});
+
+test("SinoPac card statements are not written when the due date is only a status text", async () => {
+  const collection = await written(edit((source) => { source[SINOCARD_ACCOUNTING_PATH].Result.BaseData.DUEDATE = "自動扣繳"; }));
+  assert.deepEqual(collection.accounts[0]!.statements, []);
+  assert.equal(collection.accounts[0]!.balances[0]!.amount, "3412");
+});
+
+test("exact decimal sums keep scale and sign", () => {
+  assert.equal(sumDecimals([{ value: "2000" }, { value: "0", negate: true }, { value: "1412" }]), "3412");
+  assert.equal(sumDecimals([{ value: "-137" }, { value: "0", negate: true }, { value: "100" }]), "-37");
+  assert.equal(sumDecimals([{ value: "10.5" }, { value: "10.75", negate: true }, { value: "0" }]), "-0.25");
+});
