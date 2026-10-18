@@ -6,6 +6,7 @@ import type {
   PreviewCreditBasis,
   PreviewCreditCollection,
   PreviewPurchase,
+  PreviewStatement,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
@@ -423,6 +424,71 @@ function creditBases(list: readonly SourceRecord[]): ReadonlyMap<string, Stateme
   return bases;
 }
 
+const BILL_LISTS = ["generalRecordList", "fancyRecordList", "ridoRecordList"] as const;
+type BillRow = Readonly<{ key: string; month: string; currency: string; amount: string; minimum: string | null; due: string | null }>;
+
+/** `lastpayDate` is a date, or a status text that means the bill has no due date to write. */
+function dueDate(value: unknown, field: string): string | null {
+  const raw = text(value, field);
+  return /^\d/u.test(raw) ? localDate(raw, field).value.slice(0, 10) : null;
+}
+
+/**
+ * One statement per billing month and currency from the fao01009 bill lists.
+ * The lists split bills by card family, so a month's rows across lists sum
+ * into one statement, as all-set-tw does. A status-text due date on any of
+ * them leaves that statement unwritten.
+ */
+function statementsFrom(data: SourceRecord): PreviewStatement[] {
+  const present = BILL_LISTS.filter((name) => data[name] !== undefined);
+  if (present.length === 0) return fail("unexpected-response", `fao01009 has none of ${BILL_LISTS.join(", ")}`);
+  const groups = new Map<string, BillRow[]>();
+  for (const name of present) {
+    const seen = new Set<string>();
+    for (const [index, row] of records(data[name], `fao01009.${name}`).entries()) {
+      const field = `fao01009.${name}[${index}]`;
+      const month = text(row.acctMon, `${field}.acctMon`);
+      if (month === UNBILLED_MONTH) continue;
+      if (!BILLING_MONTH.test(month)) return fail("unexpected-response", `${field}.acctMon is neither a billing month nor ${UNBILLED_MONTH}`);
+      const currency = currencyCode(row.currCode, `${field}.currCode`);
+      const key = `${month}:${currency}`;
+      if (seen.has(key)) return fail("unexpected-response", `fao01009.${name} repeats the ${key} bill`);
+      seen.add(key);
+      const bill: BillRow = {
+        key,
+        month,
+        currency,
+        amount: exactDecimal(row.thisTtlAmt, `${field}.thisTtlAmt`),
+        minimum: row.minPay === undefined || row.minPay === null ? null : exactDecimal(row.minPay, `${field}.minPay`),
+        due: dueDate(row.lastpayDate, `${field}.lastpayDate`),
+      };
+      groups.set(key, [...(groups.get(key) ?? []), bill]);
+    }
+  }
+  return [...groups.values()].flatMap((bills): PreviewStatement[] => {
+    const dues = new Set(bills.map((bill) => bill.due));
+    const [first] = bills;
+    const [due] = dues;
+    if (!first || !due || dues.has(null)) return [];
+    if (dues.size > 1) return fail("unexpected-response", `fao01009 gives the ${first.key} bill more than one lastpayDate`);
+    const minimums = bills.flatMap((bill) => bill.minimum === null ? [] : [bill.minimum]);
+    return [{
+      statementKey: first.key,
+      cycleStart: null,
+      cycleEnd: null,
+      closingDate: null,
+      dueDate: due,
+      amount: decimalSum(bills.map((bill) => [1, bill.amount] as const)),
+      currency: first.currency,
+      minimumPayment: minimums.length === bills.length ? decimalSum(minimums.map((minimum) => [1, minimum] as const)) : null,
+      billingPeriod: `${first.month.slice(0, 4)}-${first.month.slice(4)}`,
+      paidAmount: null,
+      paid: null,
+      noPaymentNeeded: null,
+    }];
+  });
+}
+
 /** The card number is only a request value; the stored key is its digest. */
 function cardKey(cardNo: string): string {
   return `card-${createHash("sha256").update(`octopusbeak-mega-card\u0000${cardNo}`).digest("hex").slice(0, 16)}`;
@@ -451,7 +517,7 @@ function purchaseRows(groups: readonly SourceRecord[]): readonly PurchaseRow[] {
   });
 }
 
-function purchasesFrom(groups: readonly SourceRecord[], cards: ReadonlyMap<string, PreviewCard>): PreviewPurchase[] {
+function purchasesFrom(groups: readonly SourceRecord[], cards: ReadonlyMap<string, PreviewCard>, statementKeys: ReadonlySet<string>): PreviewPurchase[] {
   const occurrences = new Map<string, number>();
   const purchases = purchaseRows(groups).map(({ row, cardNo, field }): PreviewPurchase => {
     const card = cards.get(text(cardNo, `${field}.cardNo`)) ?? fail("unexpected-response", `${field}.cardNo is not in fao01010.cardNumbers`);
@@ -481,7 +547,7 @@ function purchasesFrom(groups: readonly SourceRecord[], cards: ReadonlyMap<strin
       },
       consumedAt,
       sourceCardKey: card.sourceCardKey,
-      statementKey: null,
+      statementKey: statementKeys.has(`${month}:${currency}`) ? `${month}:${currency}` : null,
       bankReference: null,
       description,
     };
@@ -497,6 +563,10 @@ async function collectCards(api: Client, now: string): Promise<PreviewCreditColl
   if (bills.length === 0) return { absent: "not_held" };
   const asOf = observedAt(overview.date, now);
   const bases = creditBases(bills);
+  const billing = await api.resource("megapmb", "/fao/fao01009/home", {}, { pageId: "fao01009", pageNo: "home" });
+  const statements = statementsFrom(rsData(billing.body, "fao01009"));
+  const unmatched = statements.find((statement) => !bases.has(statement.currency));
+  if (unmatched) return fail("unexpected-response", `a ${unmatched.currency} bill has no ${unmatched.currency} row in fco10007`);
   const home = await api.resource("megapmb", "/fao/fao01010/home", {}, { pageId: "fao01010", pageNo: "home" });
   const cards = cardsFrom(records(rsData(home.body, "fao01010").cardNumbers, "fao01010.cardNumbers"));
   if (cards.size === 0) return fail("unexpected-response", "fco10007 lists card bills but fao01010 lists no card");
@@ -507,7 +577,7 @@ async function collectCards(api: Client, now: string): Promise<PreviewCreditColl
     startDate: window.start.replaceAll("-", "/"),
     endDate: window.end.replaceAll("-", "/"),
   }, { pageId: "fao01010", pageNo: "query" });
-  const purchases = purchasesFrom(records(rsData(query.body, "fao01010").detailList, "fao01010.detailList"), cards);
+  const purchases = purchasesFrom(records(rsData(query.body, "fao01010").detailList, "fao01010.detailList"), cards, new Set(statements.map((statement) => statement.statementKey)));
   const orphan = purchases.find((purchase) => !bases.has(purchase.currency));
   if (orphan) return fail("unexpected-response", `a ${orphan.currency} purchase has no ${orphan.currency} row in fco10007`);
   return {
@@ -525,7 +595,7 @@ async function collectCards(api: Client, now: string): Promise<PreviewCreditColl
         basis,
       }],
       purchases: purchases.filter((purchase) => purchase.currency === currency),
-      statements: [],
+      statements: statements.filter((statement) => statement.currency === currency),
     })),
   };
 }
