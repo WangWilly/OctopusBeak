@@ -1,4 +1,5 @@
 import { institutionNames } from "../../lib/institutions/institutions.ts";
+import { totalIncomplete } from "../../lib/shared-ledger/preview-account.ts";
 import type {
   AccountRowDto,
   CurrencyAmountDto,
@@ -156,10 +157,6 @@ export function previewCreditAccountRow(
   };
 }
 
-/** Whether a preview liability row's balance is unknown, so any total holding it is incomplete. */
-export const previewBalanceUnknown = (account: AccountRowDto): boolean =>
-  account.preview !== undefined && account.group === "liability" && account.valueAvailability === "unavailable";
-
 export type PreviewSummaryMarkers = Readonly<{
   assets: Pick<SummaryMetricDto, "includesPreview">;
   liabilities: Pick<SummaryMetricDto, "includesPreview" | "incomplete">;
@@ -169,7 +166,7 @@ export type PreviewSummaryMarkers = Readonly<{
 export function previewSummaryMarkers(accounts: readonly AccountRowDto[]): PreviewSummaryMarkers {
   const counted = (group: AccountRowDto["group"][]) => accounts.some((account) =>
     account.preview && group.includes(account.group) && account.amountLines.length > 0);
-  const incomplete = accounts.some(previewBalanceUnknown);
+  const incomplete = totalIncomplete(accounts);
   const assets = counted(["asset", "investment"]);
   const liabilities = counted(["liability"]);
   return {
