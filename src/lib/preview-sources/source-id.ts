@@ -17,4 +17,5 @@ export const PREVIEW_SOURCE_INSTITUTIONS = {
   "mega-deposit": "bank-017",
   "taishin-deposit": "bank-812",
   "obank-deposit": "bank-048",
+  "firstbank-deposit": "bank-007",
 } as const satisfies Readonly<Record<string, InstitutionKey>>;
