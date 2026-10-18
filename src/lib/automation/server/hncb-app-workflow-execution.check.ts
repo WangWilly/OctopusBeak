@@ -32,6 +32,7 @@ test("HNCB statements resolve to the App-owned typed workflow", () => {
       hncb_account: "synthetic-account",
       hncb_password: "synthetic-password",
     },
+    statementTypes: ["deposit"],
     attachedPreviewProducts: [],
   });
 });

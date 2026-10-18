@@ -284,6 +284,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           hncb_account: environment.LIBRETTO_CLOUD_HNCB_ACCOUNT ?? "",
           hncb_password: environment.LIBRETTO_CLOUD_HNCB_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("hncb", environment),
         attachedPreviewProducts: selectedAttachedPreviewProducts("hncb", environment),
       };
     },
