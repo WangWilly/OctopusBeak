@@ -1,5 +1,19 @@
 import type { InstitutionKey } from "../institutions/institutions.ts";
 
+export const PREVIEW_PRODUCTS = ["deposit", "credit_card", "time_deposit"] as const;
+
+export type PreviewProduct = (typeof PREVIEW_PRODUCTS)[number];
+
+export const isPreviewProduct = (value: unknown): value is PreviewProduct =>
+  PREVIEW_PRODUCTS.includes(value as PreviewProduct);
+
+export class PreviewDataRejected extends Error {
+  constructor(reason: string) {
+    super(`Preview data rejected: ${reason}`);
+    this.name = "PreviewDataRejected";
+  }
+}
+
 export const PREVIEW_SOURCE_ID = /^[a-z][a-z0-9-]{0,47}$/u;
 
 export const previewTaskId = (source: Readonly<{ id: string }>) => `preview-${source.id}`;

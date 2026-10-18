@@ -1,11 +1,8 @@
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
-export const PREVIEW_PRODUCTS = ["deposit", "credit_card", "time_deposit"] as const;
+import { isPreviewProduct, PREVIEW_PRODUCTS, PreviewDataRejected, type PreviewProduct } from "../../lib/preview-sources/source-id.ts";
 
-export type PreviewProduct = (typeof PREVIEW_PRODUCTS)[number];
-
-export const isPreviewProduct = (value: unknown): value is PreviewProduct =>
-  PREVIEW_PRODUCTS.includes(value as PreviewProduct);
+export { isPreviewProduct, PREVIEW_PRODUCTS, type PreviewProduct };
 
 /** An exact decimal lexeme such as `"1234.50"`, never a number. */
 export type PreviewAmount = string;
@@ -46,12 +43,7 @@ export const LOCAL_DATE: Readonly<Record<PreviewLocalDate["precision"], RegExp>>
   second: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/u,
 };
 
-export class PreviewDataRejected extends Error {
-  constructor(reason: string) {
-    super(`Preview data rejected: ${reason}`);
-    this.name = "PreviewDataRejected";
-  }
-}
+export { PreviewDataRejected };
 
 export function nonEmpty(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new PreviewDataRejected(`${field} is missing`);

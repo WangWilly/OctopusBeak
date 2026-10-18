@@ -6,7 +6,7 @@ import type {
   PreviewWrite,
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
-import { PreviewDataRejected } from "../../ledger/pglite/preview-financial-data.ts";
+import { PreviewDataRejected } from "./source-id.ts";
 import type { InstitutionKey } from "../institutions/institutions.ts";
 import {
   ProductCollectionFatalError,
