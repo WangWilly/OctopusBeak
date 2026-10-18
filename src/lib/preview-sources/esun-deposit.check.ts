@@ -213,7 +213,9 @@ test("unclear or incomplete answers fail the product before any write", async ()
     ["a foreign row without a currency", { frSearch: () => ok(group([{ txDate: "2026/10/01", amount: "1", debitCredit: "CR" }])) }, "missing-currency"],
     ["a foreign row in another currency", { frSearch: () => ok(group([{ txDate: "2026/10/01", currency: "EUR", amount: "1", debitCredit: "CR" }])) }, "unexpected-response"],
     ["a row without a date", { twSearch: () => ok(group([twRow({ txDate: "" })])) }, "unexpected-response"],
-    ["a page that repeats", { twSearch: () => ok(group(Array.from({ length: 100 }, () => twRow()))) }, "incomplete-data"],
+    ["a page that repeats", {
+      twSearch: (_account, startIndex) => startIndex > 101 ? ok(group([])) : ok(group(Array.from({ length: 100 }, (_, index) => twRow({ amount: String(index + 1) })))),
+    }, "incomplete-data"],
     ["more pages than the limit", { twSearch: (_account, startIndex) => ok(group(Array.from({ length: 100 }, (_, index) => twRow({ amount: String(startIndex + index) })))) }, "incomplete-data"],
     ["a page longer than requested", { twSearch: () => ok(group(Array.from({ length: 101 }, (_, index) => twRow({ amount: String(index + 1) })))) }, "incomplete-data"],
     ["an empty search beside pre-query rows", { twPrequery: (account) => ok(twPrequery(account ?? TW_ACCOUNT, group([twRow()]))), twSearch: () => ok(group([])) }, "incomplete-data"],
