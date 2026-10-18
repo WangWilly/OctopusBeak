@@ -319,6 +319,17 @@ test("an unbilled foreign-currency group is its own account without a used-credi
   assert.deepEqual(usd!.purchases.map(({ amount, currency }) => ({ amount, currency })), [{ amount: "-12.50", currency: "USD" }]);
 });
 
+test("a no-consumption subtotal is a zero unbilled operand", async () => {
+  const result = await run({
+    [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "(CRXTIKE004)無消費資料", unpostedTx: {} }),
+  }, loginForm(), CARD_ONLY);
+  assert.equal(result.errorCode, null, String(result.error));
+  assert.deepEqual(creditCollection(result.writes)!.accounts[0]!.balances.map(({ amount, basis }) => ({ amount, basis })), [{
+    amount: "600",
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "1000", paidAmount: "400", unbilledAmount: "0" },
+  }]);
+});
+
 test("each card defect fails the card product before write and keeps the deposit write", async () => {
   const cases: Record<string, [Record<string, FakeRoute>, string, RegExp]> = {
     "missing currency": [{ [`${P}/web4/rb0708rwd/init`]: (request) => JSON.parse(request.body!).bmonth === "10"
@@ -328,8 +339,8 @@ test("each card defect fails the card product before write and keeps the deposit
       "source-validation-failed", /malformed-amount/u],
     "missing paid operand": [{ [`${P}/web4/rb0760/getCardOverviewData`]: () => card({ carInfoList: { "001": { BillYear: "2026", BillMon: "10", StmtBalance: "1000" } } }) },
       "source-validation-failed", /LstPymtAmt/u],
-    "no-consumption subtotal": [{ [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "(CRXTIKE004)無消費資料", unpostedTx: {} }) },
-      "source-validation-failed", /SUBTOTAL is missing/u],
+    "non-decimal subtotal": [{ [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "(CRXTIKE999)查詢失敗", unpostedTx: {} }) },
+      "source-validation-failed", /SUBTOTAL/u],
     "overview for another bill": [{ [`${P}/web4/rb0760/getCardOverviewData`]: () => card({ carInfoList: { "001": { BillYear: "2026", BillMon: "09", StmtBalance: "1000", LstPymtAmt: "0" } } }) },
       "source-validation-failed", /not the current bill/u],
     "incomplete unbilled list": [{ [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "1,430", unpostedTx: { "001TWD": { ErrMsg: "無法取得資料" } } }) },
