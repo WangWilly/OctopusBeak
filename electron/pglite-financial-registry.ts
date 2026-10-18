@@ -739,13 +739,14 @@ export function createPGliteFinancialRegistry(
         ).current();
         const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
         const product = mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", canonical);
+        const previewAssets = preview.accounts.filter((account) => account.group !== "liability");
         return {
           ...product,
-          accounts: [...product.accounts, ...preview.accounts],
+          accounts: [...product.accounts, ...previewAssets],
           dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
           dailyHistoryByAccount: {
             ...product.dailyHistoryByAccount,
-            ...Object.fromEntries(preview.accounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
+            ...Object.fromEntries(previewAssets.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
           },
           exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
         };
@@ -757,14 +758,17 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        const history = await readPGliteDailyHistoryWithAccounts(
-          transaction,
-          result.projection.knowledgePoint,
-          result.projection.accounts,
-        );
-        const rates = await readHeldCurrencyRates(transaction, result, history, NO_PREVIEW);
+        const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
+        const product = mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", canonical);
+        const previewLiabilities = preview.accounts.filter((account) => account.group === "liability");
         return {
-          ...mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", history),
+          ...product,
+          accounts: [...product.accounts, ...previewLiabilities],
+          dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
+          dailyHistoryByAccount: {
+            ...product.dailyHistoryByAccount,
+            ...Object.fromEntries(previewLiabilities.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
+          },
           exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
         };
       });
