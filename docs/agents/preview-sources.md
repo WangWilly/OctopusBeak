@@ -2,36 +2,58 @@
 
 Status: Current
 
-A Preview Source collects balances and transactions for an Institution that no live-verified source contract covers. Its data goes to separate preview tables and never reaches canonical admission. See [ADR 0047](../adr/0047-preview-sources-outside-canonical-admission.md) for the decision and `CONTEXT.md` for the terms *Preview features*, *Preview source*, and *Preview financial data*.
+A Preview Source collects balances, transactions, card purchases, and statements for an Institution that no live-verified source contract covers. Its data goes to separate preview tables and never reaches canonical admission. See [ADR 0047](../adr/0047-preview-sources-outside-canonical-admission.md) for the decision, [ADR 0051](../adr/0051-attached-preview-products-on-verified-sources.md) for Attached Preview Products, [the product spec](../specs/preview-credit-cards-and-time-deposits.md) for credit cards and time deposits, and `CONTEXT.md` for the terms *Preview features*, *Preview source*, *Preview financial data*, *Attached preview product*, *Preview authorization pairing*, *Preview billing supersession*, and *Preview time deposit closure*.
 
 This guide describes the seam that display, structure-report, and connector work builds on. Do not edit canonical admission, Source Capture, or source contract catalog code for preview work.
 
+## Products
+
+A preview product is `deposit`, `credit_card`, or `time_deposit` (`PreviewProduct` in `src/ledger/pglite/preview-core.ts`). A source declares the list it can collect; the person selects among them in Statement Selection; each selected product gets its own result. Each product has its own collection type and is written by its own call:
+
+| Product | Collection | Rows written | Account id |
+| --- | --- | --- | --- |
+| `deposit` | `PreviewDepositCollection` (`accounts: PreviewAccount[]`) | `preview_accounts`, `preview_balance_observations`, `preview_transactions` | `previewAccountId(sourceId, sourceAccountKey)` |
+| `time_deposit` | `PreviewTimeDepositCollection` (`completeness: "complete"`, `deposits: PreviewTimeDeposit[]`) | `preview_accounts` (with maturity, principal, rate, closed-at), `preview_balance_observations` | same formula, so a key that moves between `deposit` and `time_deposit` keeps its row |
+| `credit_card` | `PreviewCreditCollection` (`accounts: PreviewCreditAccount[]`) | `preview_credit_accounts`, `preview_credit_cards`, `preview_credit_balance_observations`, `preview_credit_purchases`, `preview_credit_statements`, `preview_credit_relations` | `previewCreditAccountId(sourceId, sourceAccountKey)` |
+
 ## Invariants
 
-- Preview data is written only to `preview_accounts`, `preview_balance_observations`, and `preview_transactions`. These tables live in the App's PGlite database and are created by the `preview-financial-data-v1` operational migration.
-- A row without an ISO 4217 currency is refused. Amounts are exact decimal strings such as `"1234.50"`, never numbers. Both the port and the table `CHECK` constraints enforce this.
-- A transaction direction is `inflow`, `outflow`, or `unknown`. Use `unknown` when the source does not say. Never infer a direction from the sign.
-- A preview workflow never receives `financialCommit`. Its context has a `preview` writer bound to its own source.
-- When the Preview features setting is off, preview sources are absent from sign-in settings, Sync all, Scheduled Collection, and direct runs. Their data is excluded from every read and is retained.
-- While an enabled verified source covers the same Institution and product, the preview source is hidden, is not collected, and its data is not read.
+- Preview data is written only to the tables in the Products table above. They live in the App's PGlite database and are created by the `preview-financial-data-v1` and `preview-financial-data-v2` operational migrations (`PREVIEW_FINANCIAL_DATA_TABLES`).
+- A row without an ISO 4217 currency is refused. Amounts are exact decimal strings such as `"1234.50"`, never numbers. Both the port and the table `CHECK` constraints enforce this. A card purchase with a zero amount is refused.
+- A direction is `inflow`, `outflow`, or `unknown`. Use `unknown` when the source does not say. Never infer a direction from the sign, except for a card purchase whose bank section states that assumption and whose collection holds both signs.
+- A used-credit balance carries its basis (`PreviewCreditBasis`) with every operand the basis used. A missing operand fails the product; nothing defaults to zero. An account whose latest used credit is unknown shows as such and makes every total that would include it incomplete.
+- A time-deposit collection is the complete list, declared by `completeness: "complete"`. A deposit absent from it is closed (`closed_at`); a closed deposit stays listed with its history and counts toward nothing. A source that cannot show the list complete fails the product and closes nothing. A deposit present again in a later complete list is open again, and the receipt's `closedAccounts` reports each closure.
+- A credit write carries the complete current pending and unbilled purchase lists. Preview Authorization Pairing (`pending_to_posted`) and Preview Billing Supersession (`unbilled_to_billed`) run inside the write transaction, from the stored rows, and are never reassigned once written; the primary key and unique constraint on `preview_credit_relations` enforce that. Rows with an `unknown` direction or no card never pair.
+- A preview workflow never receives `financialCommit`. Its context has a `preview` writer bound to its own source, and a verified workflow with Attached Preview Products receives `previewWrite` beside its canonical commit port and binds it through `collectAttachedPreviewProducts`.
+- When the Preview features setting is off, preview sources are absent from sign-in settings, Sync all, Scheduled Collection, and direct runs, and attached products leave their verified source's Statement Selection. All preview data is excluded from every read and is retained.
+- Visibility is per Institution and product. While an enabled verified source covers the same Institution and product, that product is hidden from Statement Selection, is not collected, and its data is not read; the source's other products are unaffected.
+- A product failure stays with that product: earlier products' writes are kept and later products still run. A session loss (`sign-in-rejected`, `session-conflict`, a verification or device-registration failure, or a failing `assertSession`) ends the run with the remaining products `skipped` (`not_attempted`).
 
 ## The seam
 
 | Need | Use | File |
 | --- | --- | --- |
-| Register a source | Add a `PreviewSource` to `PRODUCTION_PREVIEW_SOURCES` | `src/lib/preview-sources/registry.ts` |
-| Write collected data | `context.preview.write(collection)` inside `PreviewSource.run` | `src/lib/preview-sources/workflow.ts` |
-| Data shapes | `PreviewCollection`, `PreviewAccount`, `PreviewBalanceObservation`, `PreviewTransaction` | `src/ledger/pglite/preview-financial-data.ts` |
-| Decide what is visible | `currentPreviewVisibility()` in the main process, or the pure `previewVisibility(...)` | `src/lib/automation/server/settings.ts`, `src/lib/preview-sources/visibility.ts` |
-| Read preview data | `preview.accounts(visibility)` and `preview.transactions(visibility, previewAccountId)` on the operational provider | `electron/pglite-operational-rpc.ts` |
-| Verified coverage | `VERIFIED_SOURCE_COVERAGE`, keyed by verified credential group | `src/lib/preview-sources/visibility.ts` |
+| Register a source | Add a `PreviewSource` with its `products` to `PRODUCTION_PREVIEW_SOURCES` | `src/lib/preview-sources/registry.ts` |
+| Collect and write the selected products | `context.preview.collect({ deposit: async () => ..., credit_card: async () => ... })` inside `PreviewSource.run`; it returns the run's `PreviewRunOutput` | `src/lib/preview-sources/workflow.ts`, `src/lib/preview-sources/product-collection.ts` |
+| Declare and collect attached products on a verified source | `ATTACHED_PREVIEW_PRODUCTS` and `collectAttachedPreviewProducts(...)` | `src/lib/preview-sources/attached-products.ts` |
+| Data shapes | `PreviewDepositCollection`, `PreviewAccount`, `PreviewTimeDepositCollection`, `PreviewTimeDeposit`, `PreviewCreditCollection`, `PreviewCreditAccount`, `PreviewCard`, `PreviewCreditBalance`, `PreviewCreditBasis`, `PreviewPurchase`, `PreviewStatement` | `src/ledger/pglite/preview-financial-data.ts` (re-exports `preview-core.ts` and `preview-credit.ts`) |
+| Decide what is visible | `currentPreviewVisibility()` in the main process, or the pure `previewVisibility(...)`; `visibleProducts(visibility, source)` for one source | `src/lib/automation/server/settings.ts`, `src/lib/preview-sources/visibility.ts` |
+| Read preview data | `preview.accounts(visibility)`, `preview.transactions(visibility, id)`, `preview.creditAccounts(visibility)`, `preview.purchases(visibility, id)`, `preview.statements(visibility, id)` on the operational provider | `electron/pglite-operational-rpc.ts` |
+| Compose preview rows into the overview | `previewAccountRow`, `previewCreditAccountRow`, `previewSummaryMarkers`, `withPreviewHistory` | `src/ledger/pglite/preview-overview.ts` |
+| Verified coverage | `VERIFIED_SOURCE_COVERAGE`, keyed by verified credential group, listing Institution and product pairs | `src/lib/preview-sources/visibility.ts` |
 | Delete all preview data | `settings.deletePreviewData()` in the renderer, `deleteAllPreviewData` in main | `src/lib/preview-sources/delete-preview-data.ts` |
 | Record a response for a structure report | `context.preview.observe({ endpoint, status, body })` inside `PreviewSource.run` | `src/lib/preview-sources/workflow.ts` |
 | Sanitize, bound, and share a report | `previewResponseShapes`, `previewStructureReports`, `previewStructureReportIssueUrl` | `src/lib/preview-sources/structure-report.ts` |
 
-`PreviewVisibility` is the single query-level predicate: `{ sourceIds }`. A read returns rows only for the listed sources, and an empty list returns nothing. Always compute it with `currentPreviewVisibility()` at read time, then pass it to the read. Do not cache it across a settings change; the App marks data stale (`preview-data-changed`) when the toggle changes or preview data is deleted.
+`PreviewVisibility` is the single query-level predicate: `{ visible: { sourceId, product }[] }`. A read returns rows only for the listed pairs, and an empty list returns nothing. Attached products use the verified credential group's id as their `sourceId`. Always compute it with `currentPreviewVisibility()` at read time, then pass it to the read. Do not cache it across a settings change; the App marks data stale (`preview-data-changed`) when the toggle changes, a verified source's enabled flag changes the covered pairs, or preview data is deleted.
 
-The main process reaches the port as `pgliteOperational.provider.preview`. A workflow child reaches the same port through the authenticated child RPC, and the runtime injects it only into definitions with `requiresPreviewWrite: true`.
+The main process reaches the port as `pgliteOperational.provider.preview`. A workflow child reaches the same port through the authenticated child RPC. The runtime injects it into definitions with `requiresPreviewWrite: true` (a Preview Source, which cannot run without it) and into definitions that declare `attachedPreviewProducts` (a verified workflow, which still runs its verified products when the port is absent and then reports its attached products `failed`).
+
+### Statement Selection and product results
+
+A Preview Source's credential group has `statementSelectionKey` `PREVIEW_<ID>_STATEMENT_TYPES` and one statement type per product. A source with one product is selected without setup, as a verified single-product group is; a source with several products needs an explicit choice, and nothing is selected for the person. `previewWorkflowInput` turns the stored selection into `input.products`: the selected products, minus any pair an enabled verified source covers, in the source's declared order. `context.preview.collect` runs exactly those products.
+
+The run's output is a `PreviewRunOutput` (`status`, `accountCount`, `itemCount`, `committedCount`, `products`), and its `products` are `CollectionProductOutcome`s with `success`, `no_data`, `not_held`, `failed` (with an `errorCode`), or `skipped` (`not_selected` or `not_attempted`). A product counts as `success` when its write stored at least one account; a collection that stores none is `not_held`; a collector may also return `{ absent: "not_held" | "no_data" }` for a provider message instead of a collection. A run in which no attempted product produced data fails: with the sole product's own error when one product was attempted, so single-product sources and their checks behave as before, or with a `ProductCollectionInterruptedError` that carries every outcome. A session loss throws the same error with the remaining products `not_attempted`.
 
 ## Structure reports
 
@@ -44,15 +66,40 @@ The run details show 「分享結構報告」 for a failed preview run. The dial
 ## Add a bank
 
 1. Create `src/lib/preview-sources/<bank>-source.ts` and export a `PreviewSource`:
-   - `id` is lowercase kebab-case, such as `nextbank-deposit`. The task and workflow id become `preview-<id>`, and the enabled setting becomes `PREVIEW_<ID>_ENABLED`.
-   - `institution` is an `InstitutionKey` from `src/lib/institutions/institution-tables.generated.ts`, such as `bank-823`. `product` is `deposit`.
+   - `id` is lowercase kebab-case, such as `nextbank-deposit`. The task and workflow id become `preview-<id>`, the enabled setting becomes `PREVIEW_<ID>_ENABLED`, and the Statement Selection setting becomes `PREVIEW_<ID>_STATEMENT_TYPES`.
+   - `institution` is an `InstitutionKey` from `src/lib/institutions/institution-tables.generated.ts`, such as `bank-823`. `products` lists what the source can collect, in Statement Selection order, such as `["deposit", "credit_card"]`.
    - Every credential field key starts with `PREVIEW_<ID>_`, for example `PREVIEW_NEXTBANK_DEPOSIT_PASSWORD`.
    - `startUrl` uses `https:`.
-   - `run(context, input)` signs in with `input.credentials[<key>]`, collects, validates, and returns `await context.preview.write(collection)`.
-2. Add the source to `PRODUCTION_PREVIEW_SOURCES` in `registry.ts`. The App derives the sign-in group, the task, the workflow registration, and the Sync all and Scheduled Collection membership from this entry.
-3. If a verified source for the same Institution and product exists, confirm that `VERIFIED_SOURCE_COVERAGE` lists it. Otherwise the preview source stays visible beside it.
-4. Add a `<bank>-source.check.ts` that runs the source through `runPreviewSource` from `preview-source-harness.ts`, with `fakeHttpOpener` routes built from the bank's documented response shapes. Assert the written collection, that `observe()` saw each response, and that a missing currency, a malformed amount, or an incomplete page fails before `write`.
-5. Give the setup guide at least one official link, and add a section for the bank under [Sources](#sources).
+   - `run(context, input)` signs in with `input.credentials[<key>]`, then returns `await context.preview.collect(collectors, { assertSession })`. `collectors` has one async function per declared product that collects, validates, and returns that product's collection (or `{ absent }`); `input.products` tells the run which products are selected, so a sign-in step a product needs can be skipped when it is not. Pass `assertSession` when the bank has a cheap session check; the runner calls it before each product and after a product failure. Read only the products in `input.products`.
+   - A time-deposit collector returns the complete list or fails the product with `fail("incomplete-data", ...)`; it never returns a partial list. A credit collector builds a `PreviewCreditBalance` only when every operand of its basis was read, and sends the complete current pending and unbilled lists in every write.
+2. Add the source to `PRODUCTION_PREVIEW_SOURCES` in `registry.ts`. The App derives the sign-in group, the Statement Selection, the task, the workflow registration, and the Sync all and Scheduled Collection membership from this entry.
+3. If a verified source for the same Institution and product exists, confirm that `VERIFIED_SOURCE_COVERAGE` lists that pair. Otherwise the preview product stays visible beside it.
+4. Add a `<bank>-source.check.ts` that runs the source through `runPreviewSource` from `preview-source-harness.ts`, with `fakeHttpOpener` routes built from the bank's documented response shapes. The harness takes the selected products as its fourth argument (default: every declared product) and returns `writes` (every `PreviewWrite`), `deposits` (the deposit collections), `output` (the `PreviewRunOutput`), and `receipt` (the summed receipts). Assert the written collections, the per-product outcomes, that `observe()` saw each response, and that a missing currency, a malformed amount, a zero card amount, a missing basis operand, or an incomplete page fails that product before its write and leaves the other products' writes in place.
+5. Give the setup guide at least one official link, and add a section for the bank under [Sources](#sources). State there any direction-from-sign assumption a card product makes.
+
+## Add a product to a verified source
+
+An Attached Preview Product (ADR 0051) is collected by a verified workflow during its own sign-in. The foundation declares the four sources in `ATTACHED_PREVIEW_PRODUCTS` (`src/lib/preview-sources/attached-products.ts`): Cathay `credit_card` and `time_deposit`, HNCB `credit_card`, SinoPac `credit_card`, E.SUN `deposit`. For each, the registry in `app-workflow-registry.ts` already sets `attachedPreviewProducts` on the workflow definition and passes `input.attachedPreviewProducts` (the selected, uncovered attached products, empty while Preview features are off). The Statement Selection shows the attached products with `preview: true` while Preview features are on, unselected by default. What is left to a bank worker is collection:
+
+1. In the verified workflow, after sign-in and after its verified products, call
+
+   ```ts
+   const attached = await collectAttachedPreviewProducts({
+     context,
+     source: ATTACHED_PREVIEW_PRODUCTS.cathay,
+     selected: input.attachedPreviewProducts,
+     collectors: { credit_card: async () => ..., time_deposit: async () => ... },
+     assertSession,
+   });
+   ```
+
+   It writes each product through a writer bound to the verified source (`sourceId` is the credential group id, so rows read back as that source), never through the canonical commit, and it never throws. Append `attached.products` to the run's `products`, and treat `attached.interrupted` (a session loss during an attached product) like a session loss in a verified product. An attached product never builds a Source Capture, and a verified product never calls the preview writer; review checks both.
+2. Parse `input.attachedPreviewProducts` in the workflow's input schema as an optional list of `PreviewProduct` ids, default empty, and collect nothing for it when it is empty. The verified `statementTypes` input never contains an attached id; `statementTypeIdsFromEnvironment` strips them.
+3. A person may select only attached products. Decide how the workflow signs in with an empty verified selection (Cathay's input schema requires at least one verified type today) and document it in the workflow's section.
+4. Keep the `VERIFIED_SOURCE_COVERAGE` entry for the verified products only. When the attached product is promoted, remove it from `ATTACHED_PREVIEW_PRODUCTS`, add it to the coverage, and let the person delete and recollect (ADR 0047).
+5. Check the workflow with `collectAttachedPreviewProducts` against a recording `previewWrite` port, as `product-collection.check.ts` does: the attached product writes only `PreviewWrite`s with the group's `sourceId`, a failing attached product leaves the verified products' outcomes intact, and `attachedPreviewProducts: []` collects nothing.
+
+A product that cannot share the verified sign-in (CTBC credit cards use the App protocol) is its own Preview Source with its own `products`; follow [Add a bank](#add-a-bank).
 
 ### Building blocks
 
@@ -63,9 +110,12 @@ The run details show 「分享結構報告」 for a failed preview run. The dial
 | Parse JSON without losing number lexemes | `parseSourceJson` returns every JSON number as its source text | `src/lib/preview-sources/source-kit.ts` |
 | Exact amounts, ISO currency, local dates, as-of time | `exactDecimal`, `currencyCode`, `localDate`, `observedAt` | `src/lib/preview-sources/source-kit.ts` |
 | Typed failures | `fail(reason, detail)`, `refuseUnsupportedVerification`, `requireDeviceRegistration` | `src/lib/preview-sources/source-kit.ts` |
+| Run the selected products with per-product outcomes | `collectPreviewProducts`, `previewRunOutput`; `context.preview.collect` wraps them for a Preview Source | `src/lib/preview-sources/product-collection.ts` |
+| Bind a writer to one source | `boundPreviewWriter(port, { sourceId, institution })` | `src/lib/preview-sources/product-collection.ts` |
+| Normalize an amount for comparison | `amountKey("100.00") === amountKey("100")` | `src/ledger/pglite/preview-core.ts` |
 | Solve a CAPTCHA with a calibrated family | `calibratedCaptchaSolver(family)` and `solveChallengeRound` | `src/lib/preview-sources/preview-captcha.ts`, `src/lib/preview-sources/source-kit.ts` |
 
-`fail` throws a `PreviewSourceFailure` whose reason maps to one typed outcome:
+`fail` throws a `PreviewSourceFailure` whose reason maps to one typed outcome. Inside a product collector, `sign-in-rejected`, `session-conflict`, the verification reasons, and `device-registration-required` end the run; the other reasons fail only that product:
 
 | Reason | Outcome |
 | --- | --- |
@@ -80,13 +130,14 @@ Rules every source follows:
 
 - Read the currency from the source. Fix it per endpoint only when the source's product cannot hold another currency, say why in the bank's section, and let a currency the source does send win.
 - Take the direction from a source field, such as separate in and out columns or a debit/credit code. Otherwise use `unknown`. Do not infer it from keywords, balance differences, or the sign.
-- Fail the run when a paging or truncation flag says data is incomplete. Never write a partial page set.
+- Fail the product when a paging or truncation flag says data is incomplete. Never write a partial page set, and never return a partial time-deposit list.
+- Report `not_held` only with explicit evidence: a provider message, or a complete empty list. A timeout, an unknown shape, or a missing list fails the product.
 - Report a balance as of a source timestamp or the HTTP `Date` header when one is readable, else mark it `collection-time`.
 - A CAPTCHA needs a calibrated on-device solver (ADR 0039). Until one exists for the bank, the source calls `refuseUnsupportedVerification` before sending any request. To measure a family for a bank, see [How to calibrate a preview source CAPTCHA](captcha-calibration.md).
 - A calibrated family lives in `preview-captcha.ts`, with its geometry, answer length, charset, strategies, policy, and threshold. `calibratedCaptchaSolver` refuses a capture outside the family with `verification-configuration-failed` and returns `null` when no candidate is accepted. The challenge image must be PNG. Decode another format with the page's decoder, as calibration did.
 - Get the answer through `solveChallengeRound`. It submits nothing itself, and it fails with `verification-exhausted` and the `verification-solver-exhausted` event when no challenge is accepted. Pass more than one challenge only when the bank can serve a fresh challenge without a sign-in (ADR 0046), and never more than `MAX_CHALLENGES_PER_ROUND`. Preview sources solve inside the run, so the host's CAPTCHA Retry Campaign does not start another round: each run is one round and submits at most one answer.
 
-`assertPreviewRegistry` runs when `tasks.ts` loads. It rejects a duplicate id, a credential key outside the source's prefix, and a non-https start URL.
+`assertPreviewRegistry` runs when `tasks.ts` loads. It rejects a duplicate id, an empty or repeated `products` list, a credential key outside the source's prefix, and a non-https start URL.
 
 ## Test fixture
 
