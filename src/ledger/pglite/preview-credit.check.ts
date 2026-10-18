@@ -123,6 +123,19 @@ test("a credit write keeps the limit, cards, basis operands, purchases, and stat
   });
 });
 
+test("a statement without cycle or closing dates is written and read back as unknown, but a missing due date is refused", async () => {
+  await withPreviewStore(async ({ preview }) => {
+    await preview.write(write(T1, { statements: [statement({ cycleStart: null, cycleEnd: null, closingDate: null })] }));
+    const [view] = await preview.creditAccounts(visible);
+    const [stored] = await preview.statements(visible, view!.previewAccountId);
+    assert.deepEqual([stored!.cycleStart, stored!.cycleEnd, stored!.closingDate, stored!.dueDate], [null, null, null, "2026-10-05"]);
+    await assert.rejects(
+      preview.write(write(T2, { statements: [statement({ dueDate: null as unknown as string })] })),
+      "a statement still needs its due date",
+    );
+  });
+});
+
 test("a bank reference pairs an authorization with the one posted purchase that shares it", async () => {
   await withPreviewStore(async ({ store, preview }) => {
     await preview.write(write(T1, { purchases: [

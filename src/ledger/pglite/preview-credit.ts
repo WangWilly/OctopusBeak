@@ -78,9 +78,9 @@ export type PreviewPurchase = Readonly<{
 
 export type PreviewStatement = Readonly<{
   statementKey: string;
-  cycleStart: string;
-  cycleEnd: string;
-  closingDate: string;
+  cycleStart: string | null;
+  cycleEnd: string | null;
+  closingDate: string | null;
   dueDate: string;
   amount: PreviewAmount;
   currency: PreviewCurrency;
@@ -204,9 +204,9 @@ CREATE TABLE preview_credit_purchases (
 CREATE TABLE preview_credit_statements (
   preview_account_id TEXT NOT NULL REFERENCES preview_credit_accounts(preview_account_id) ON DELETE CASCADE,
   statement_key TEXT NOT NULL,
-  cycle_start TEXT NOT NULL,
-  cycle_end TEXT NOT NULL,
-  closing_date TEXT NOT NULL,
+  cycle_start TEXT,
+  cycle_end TEXT,
+  closing_date TEXT,
   due_date TEXT NOT NULL,
   amount TEXT NOT NULL CHECK (amount ~ '^[+-]?[0-9]+([.][0-9]+)?$'),
   currency TEXT NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
@@ -329,9 +329,9 @@ function parseAccount(input: PreviewCreditAccount): PreviewCreditAccount {
       throw new PreviewDataRejected("billingPeriod is not YYYY-MM");
     return {
       statementKey: nonEmpty(statement.statementKey, "statementKey"),
-      cycleStart: dateOnly(statement.cycleStart, "cycleStart"),
-      cycleEnd: dateOnly(statement.cycleEnd, "cycleEnd"),
-      closingDate: dateOnly(statement.closingDate, "closingDate"),
+      cycleStart: optionalDateOnly(statement.cycleStart, "cycleStart"),
+      cycleEnd: optionalDateOnly(statement.cycleEnd, "cycleEnd"),
+      closingDate: optionalDateOnly(statement.closingDate, "closingDate"),
       dueDate: dateOnly(statement.dueDate, "dueDate"),
       amount: amount(statement.amount, "statement amount"),
       currency: currency(statement.currency, "statement currency"),
@@ -682,7 +682,7 @@ export async function readPreviewPurchases(
 }
 
 type StatementRow = {
-  preview_account_id: string; statement_key: string; cycle_start: string; cycle_end: string; closing_date: string;
+  preview_account_id: string; statement_key: string; cycle_start: string | null; cycle_end: string | null; closing_date: string | null;
   due_date: string; amount: string; currency: string; minimum_payment: string | null; billing_period: string;
   paid_amount: string | null; paid: boolean | null; no_payment_needed: boolean | null;
 };

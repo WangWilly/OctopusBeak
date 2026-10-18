@@ -161,9 +161,9 @@ export type PreviewPurchaseRowDto = Readonly<{
 export type PreviewStatementRowDto = Readonly<{
   statementKey: string;
   billingPeriod: string;
-  cycleStart: string;
-  cycleEnd: string;
-  closingDate: string;
+  cycleStart: string | null;
+  cycleEnd: string | null;
+  closingDate: string | null;
   dueDate: string;
   amount: string;
   currency: string;

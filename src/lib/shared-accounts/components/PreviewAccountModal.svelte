@@ -158,7 +158,7 @@
                 {@const payment = statementPayment(statement)}
                 <tr>
                   <td class="num">{statement.billingPeriod}</td>
-                  <td class="date num">{statement.closingDate}</td>
+                  <td class="date num">{statement.closingDate ?? "—"}</td>
                   <td class="date num">{statement.dueDate}</td>
                   <td class="right money" data-sensitive>{money(statement.currency, statement.amount)}</td>
                   <td class="right money" data-sensitive>{statement.minimumPayment === null ? "—" : money(statement.currency, statement.minimumPayment)}</td>
