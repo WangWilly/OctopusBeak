@@ -30,7 +30,9 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
+import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   ProductCollectionFatalError,
@@ -1161,12 +1163,14 @@ type EsunCreditCardResult = Readonly<{
   itemCount: number;
 }>;
 
+type EsunCreditCardFailure = Readonly<{ error: unknown; errorCode: TypedWorkflowErrorCode }>;
+
 /** `products` lists the verified credit card first, then each attached preview product (ADR 0051). */
 export type EsunProviderWorkflowOutput = Readonly<{
   usedExistingSession: boolean;
   count: number;
   query: Readonly<{ startDate: string; endDate: string }> | null;
-  canonicalAdmission: "admitted" | "not-selected";
+  canonicalAdmission: "admitted" | "failed" | "not-selected";
   canonicalCaptureCount: 0 | 1;
   captureId: string | null;
   committedCount: number;
@@ -1462,11 +1466,17 @@ async function collectEsunAttachedProducts(
   });
 }
 
-function esunRunSummary(creditCard: EsunCreditCardResult | null, attached: PreviewProductRun): ProductCollectionRunSummary {
+function esunRunSummary(
+  creditCard: EsunCreditCardResult | null,
+  creditCardFailure: EsunCreditCardFailure | null,
+  attached: PreviewProductRun,
+): ProductCollectionRunSummary {
   const products: CollectionProductOutcome[] = [
     creditCard
       ? { typeId: "credit_card", status: "success", itemCount: creditCard.itemCount, committedCount: creditCard.itemCount }
-      : { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
+      : creditCardFailure
+        ? { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: creditCardFailure.errorCode }
+        : { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
     ...attached.products,
   ];
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
@@ -1510,24 +1520,31 @@ export async function runEsunCreditCardProviderWorkflow(
     await context.event("authentication", "authentication-completed");
 
     let creditCard: EsunCreditCardResult | null = null;
-    let creditCardFailure: Readonly<{ error: unknown }> | null = null;
+    let creditCardFailure: EsunCreditCardFailure | null = null;
     if (creditCardSelected) {
+      const cardEvents: WorkflowRunEvent[] = [];
+      const cardContext: WorkflowContext = {
+        ...context,
+        event: async (stage, code, counts) => {
+          cardEvents.push({ runId: context.runId, stage, code, occurredAt: context.now() });
+          await context.event(stage, code, counts);
+        },
+      };
       try {
-        creditCard = await collectEsunCreditCard(page, context, input, financialCommit!);
+        creditCard = await collectEsunCreditCard(page, cardContext, input, financialCommit!);
       } catch (error) {
         if (context.signal.aborted || input.attachedPreviewProducts.length === 0) throw error;
-        creditCardFailure = { error };
+        creditCardFailure = { error, errorCode: classifyTypedWorkflowFailure(error, cardEvents) };
       }
     }
-    // The deposit still runs after a card failure so its data is kept; the run then fails with the card's own error.
     const attached = await collectEsunAttachedProducts(page, context, input.attachedPreviewProducts);
-    if (creditCardFailure) throw creditCardFailure.error;
-    const summary = esunRunSummary(creditCard, attached);
+    const summary = esunRunSummary(creditCard, creditCardFailure, attached);
     if (attached.interrupted) {
       const interrupted = new ProductCollectionInterruptedError(attached.interrupted.errorCode, summary);
       (interrupted as { cause?: unknown }).cause = attached.interrupted.error;
       throw interrupted;
     }
+    if (creditCardFailure && summary.committedCount === 0) throw creditCardFailure.error;
     if (!creditCard && attached.products.every((product) => product.status === "failed" || product.status === "skipped")) {
       throw attached.firstFailure;
     }
@@ -1535,7 +1552,7 @@ export async function runEsunCreditCardProviderWorkflow(
       usedExistingSession,
       count: creditCard?.count ?? 0,
       query: creditCard?.query ?? null,
-      canonicalAdmission: creditCard ? "admitted" : "not-selected",
+      canonicalAdmission: creditCard ? "admitted" : creditCardFailure ? "failed" : "not-selected",
       canonicalCaptureCount: creditCard ? 1 : 0,
       captureId: creditCard?.captureId ?? null,
       committedCount: summary.committedCount,
