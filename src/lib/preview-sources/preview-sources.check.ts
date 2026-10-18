@@ -202,3 +202,50 @@ test("production Mega and Taishin solve their calibrated CAPTCHA, while NextBank
     assert.match(String(result.error), /preview source checks open no page/u);
   }
 });
+
+
+test("an attached preview product is offered only while Preview features are on, marked preview, and never selected by default", async () => {
+  const { selectStatementTypes } = await import("../automation/statement-selection.ts");
+  const groups = (settings: Record<string, string>) =>
+    Object.fromEntries(offeredAutomationSources(settings).credentialGroups.map((group) => [group.id, group.statementTypes ?? []]));
+  const off = groups({ PREVIEW_FEATURES_ENABLED: "false" });
+  assert.deepEqual(off.cathay!.map((type) => type.id), ["domestic", "foreign_currency"]);
+  assert.deepEqual(off.hncb!.map((type) => type.id), ["deposit"]);
+  const on = groups({ PREVIEW_FEATURES_ENABLED: "true" });
+  assert.deepEqual(on.cathay, [
+    { id: "domestic" }, { id: "foreign_currency" }, { id: "credit_card", preview: true }, { id: "time_deposit", preview: true },
+  ]);
+  assert.deepEqual(on.hncb, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
+  assert.deepEqual(on.sinopac, [{ id: "accounts" }, { id: "credit_card", preview: true }]);
+  assert.deepEqual(on.esun, [{ id: "credit_card" }, { id: "deposit", preview: true }]);
+  assert.deepEqual(on.fubon!.map((type) => type.preview), [undefined, undefined, undefined], "a group without attached products is unchanged");
+
+  const hncb = { id: "hncb", label: "HNCB", enabledKey: "E", statementSelectionKey: "S", statementTypes: on.hncb! };
+  assert.deepEqual(selectStatementTypes(hncb, { E: true }, "display"), { selectedIds: ["deposit"], needsSetup: false, persisted: false },
+    "the single verified product is still selected by default; the attached product is not");
+  assert.deepEqual(selectStatementTypes(hncb, { E: true, S: "deposit,credit_card" }, "strict").selectedIds, ["deposit", "credit_card"]);
+});
+
+test("a covered product is left out of a source's selection, and a verified run receives only its visible attached products", async () => {
+  const { selectedPreviewProducts, selectedAttachedPreviewProducts } = await import("./workflow.ts");
+  const twoProducts = { id: "sinopac-cards", institution: "sinopac", products: ["deposit", "credit_card"] } as const;
+  const chosen = { PREVIEW_FEATURES_ENABLED: "true", PREVIEW_SINOPAC_CARDS_STATEMENT_TYPES: "deposit,credit_card" };
+  assert.deepEqual(selectedPreviewProducts(twoProducts, chosen), ["deposit", "credit_card"]);
+  assert.deepEqual(selectedPreviewProducts(twoProducts, { ...chosen, [SINOPAC_ENABLED]: "true" }), ["credit_card"],
+    "the enabled verified SinoPac source covers deposits only");
+  assert.deepEqual(selectedPreviewProducts(twoProducts, { PREVIEW_FEATURES_ENABLED: "true" }), [], "two products need an explicit selection");
+  assert.deepEqual(selectedPreviewProducts(twoProducts, { ...chosen, PREVIEW_FEATURES_ENABLED: "false" }), []);
+
+  const cathay = { LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,credit_card", LIBRETTO_CLOUD_CATHAY_ENABLED: "true" };
+  assert.deepEqual(selectedAttachedPreviewProducts("cathay", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }), ["credit_card"]);
+  assert.deepEqual(selectedAttachedPreviewProducts("cathay", cathay), [], "Preview features off collects no attached product");
+  const input = workflowInputForTask("cathay-all-statements", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }) as Record<string, unknown>;
+  assert.deepEqual(input.statementTypes, ["domestic"], "the verified selection tolerates the attached id without collecting it");
+  assert.deepEqual(input.attachedPreviewProducts, ["credit_card"]);
+  assert.deepEqual((workflowInputForTask("cathay-all-statements", cathay) as Record<string, unknown>).attachedPreviewProducts, []);
+  assert.equal(workflowDefinitionForTask("cathay-all-statements")?.attachedPreviewProducts?.sourceId, "cathay");
+  assert.equal(workflowDefinitionForTask("hncb-statements")?.attachedPreviewProducts?.sourceId, "hncb");
+  assert.equal(workflowDefinitionForTask("sinopac-statements")?.attachedPreviewProducts?.sourceId, "sinopac");
+  assert.equal(workflowDefinitionForTask("esun-credit-card-statements")?.attachedPreviewProducts?.sourceId, "esun");
+  assert.equal(workflowDefinitionForTask("ctbc-statements")?.attachedPreviewProducts, undefined, "CTBC credit cards are a separate Preview Source");
+});

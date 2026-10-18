@@ -188,3 +188,73 @@ test("the preview migration is recorded once and refuses drift", async () => {
     await assert.rejects(applyPglitePreviewFinancialDataSchema(store), /signature has changed/u);
   });
 });
+
+
+const TIME_DEPOSITS: PreviewVisibility = { visible: [{ sourceId: "synthetic-preview", product: "time_deposit" }] };
+
+const deposit = (key: string, amount: string, at: string) => ({
+  sourceAccountKey: key,
+  displayLabel: `Term ${key}`,
+  currency: "TWD",
+  balances: [{ kind: "current" as const, amount, currency: "TWD", observedAt: { at, source: "collection-time" as const } }],
+  principal: amount,
+  interestRate: "1.725",
+  maturityDate: "2027-01-15",
+});
+
+const timeDepositWrite = (collectedAt: string, deposits: ReturnType<typeof deposit>[], completeness: unknown = "complete"): PreviewWrite => ({
+  sourceId: "synthetic-preview",
+  institution: "bank-017",
+  product: "time_deposit",
+  collection: { collectedAt, completeness: completeness as "complete", deposits },
+});
+
+test("a complete time-deposit list closes the deposits it lacks, keeps their history, and reopens one that returns", async () => {
+  await withPreviewStore(async ({ preview }) => {
+    const first = timeDepositWrite("2026-10-15T01:00:00.000Z", [
+      deposit("td-1", "100000", "2026-10-15T01:00:00.000Z"),
+      deposit("td-2", "50000", "2026-10-15T01:00:00.000Z"),
+    ]);
+    assert.deepEqual(await preview.write(first), { accounts: 2, balances: 2, transactions: 0, statements: 0, closedAccounts: 0 });
+    assert.deepEqual(await preview.write(first), { accounts: 2, balances: 2, transactions: 0, statements: 0, closedAccounts: 0 }, "a rerun closes nothing");
+    await preview.write(write);
+    assert.deepEqual((await preview.accounts(visible)).map((account) => account.product), ["deposit"],
+      "the deposit product's write neither lists nor closes time deposits");
+
+    const second = timeDepositWrite("2026-10-16T01:00:00.000Z", [deposit("td-1", "100000", "2026-10-16T01:00:00.000Z")]);
+    assert.deepEqual(await preview.write(second), { accounts: 1, balances: 1, transactions: 0, statements: 0, closedAccounts: 1 });
+    const accounts = await preview.accounts(TIME_DEPOSITS);
+    assert.deepEqual(accounts.map((account) => [account.displayLabel, account.product, account.timeDeposit?.closedAt]), [
+      ["Term td-1", "time_deposit", null],
+      ["Term td-2", "time_deposit", "2026-10-16T01:00:00.000Z"],
+    ], "a closed deposit stays listed with its closure time");
+    assert.equal(accounts[1]!.latestBalance?.amount, "50000", "history is kept");
+    assert.deepEqual(accounts[0]!.timeDeposit, { principal: "100000", interestRate: "1.725", maturityDate: "2027-01-15", closedAt: null });
+
+    const third = timeDepositWrite("2026-10-17T01:00:00.000Z", [
+      deposit("td-1", "100000", "2026-10-17T01:00:00.000Z"),
+      deposit("td-2", "50000", "2026-10-17T01:00:00.000Z"),
+    ]);
+    await preview.write(third);
+    assert.deepEqual((await preview.accounts(TIME_DEPOSITS)).map((account) => account.timeDeposit?.closedAt), [null, null],
+      "a deposit present again in a complete list is open again");
+  });
+});
+
+test("a time-deposit list that is not declared complete cannot be written and closes nothing", async () => {
+  await withPreviewStore(async ({ preview }) => {
+    await preview.write(timeDepositWrite("2026-10-15T01:00:00.000Z", [deposit("td-1", "100000", "2026-10-15T01:00:00.000Z")]));
+    for (const completeness of ["partial", null, true, "COMPLETE"]) {
+      await assert.rejects(preview.write(timeDepositWrite("2026-10-16T01:00:00.000Z", [], completeness)), `completeness ${String(completeness)}`);
+    }
+    assert.deepEqual((await preview.accounts(TIME_DEPOSITS)).map((account) => account.timeDeposit?.closedAt), [null]);
+    await assert.rejects(
+      preview.write(timeDepositWrite("2026-10-16T01:00:00.000Z", [{ ...deposit("td-9", "1", "2026-10-16T01:00:00.000Z"), currency: "" }])),
+      "a deposit without a currency fails the whole write",
+    );
+    assert.deepEqual((await preview.accounts(TIME_DEPOSITS)).map((account) => account.timeDeposit?.closedAt), [null],
+      "a rejected write closes nothing");
+    assert.deepEqual(await preview.write(timeDepositWrite("2026-10-17T01:00:00.000Z", [])),
+      { accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 1 }, "a complete empty list closes every deposit");
+  });
+});

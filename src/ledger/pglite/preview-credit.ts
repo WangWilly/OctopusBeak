@@ -267,7 +267,11 @@ function basis(value: unknown): PreviewCreditBasis {
 function posting(value: unknown): PreviewPurchasePosting {
   const candidate = value as Partial<Record<string, unknown>> | null | undefined;
   const status = oneOf(candidate?.status, ["pending", "posted"], "posting status");
-  if (status === "pending") return { status };
+  if (status === "pending") {
+    if (candidate?.billing !== undefined || candidate?.postingDate !== undefined)
+      throw new PreviewDataRejected("a pending purchase has no billing status or posting date");
+    return { status };
+  }
   return {
     status,
     billing: oneOf(candidate?.billing, ["billed", "unbilled"], "billing status"),
@@ -637,7 +641,7 @@ export async function readPreviewPurchases(
     `SELECT row.preview_account_id, row.source_row_key, row.amount, row.currency, row.direction, row.posting_status,
             row.billing_status, row.consumed_at, row.consumed_at_precision, row.posting_date, row.source_card_key,
             row.statement_key, row.bank_reference, row.description,
-            authorization.consumed_at AS authorized_at, authorization.consumed_at_precision AS authorized_at_precision
+            paired.consumed_at AS authorized_at, paired.consumed_at_precision AS authorized_at_precision
        FROM preview_credit_purchases row
        JOIN preview_credit_accounts account ON account.preview_account_id = row.preview_account_id
        LEFT JOIN LATERAL (
@@ -651,7 +655,7 @@ export async function readPreviewPurchases(
           WHERE pairing.preview_account_id = row.preview_account_id AND pairing.relation_kind = 'pending_to_posted'
             AND (pairing.to_row_key = row.source_row_key OR supersession.to_row_key = row.source_row_key)
           LIMIT 1
-       ) authorization ON TRUE
+       ) paired ON TRUE
       WHERE ${CREDIT_VISIBLE} AND row.preview_account_id = $3
         AND NOT EXISTS (
           SELECT 1 FROM preview_credit_relations hidden
