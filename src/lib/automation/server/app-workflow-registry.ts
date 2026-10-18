@@ -229,6 +229,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
           esun_password: environment.LIBRETTO_CLOUD_ESUN_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("esun", environment),
         attachedPreviewProducts: selectedAttachedPreviewProducts("esun", environment),
       };
     },
