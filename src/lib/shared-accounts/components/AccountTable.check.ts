@@ -7,8 +7,14 @@ const source = readFileSync(new URL("./AccountTable.svelte", import.meta.url), "
 
 test("unavailable account balances render explicit localized copy", () => {
   assert.equal(translations["zh-TW"].accounts.noAvailableData, "無可用資料");
-  assert.match(source, /\{#if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
+  assert.match(source, /\{:else if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
   assert.doesNotMatch(source, /data-issues|dataIssueId/);
+});
+
+test("a preview row with an unknown used credit or a closed time deposit says so instead of a balance", () => {
+  assert.match(source, /\{#if previewValue\?\.kind === "credit-unknown"\}[\s\S]*?\$t\.preview\.creditUnknown[\s\S]*?\{:else if previewValue\?\.kind === "closed"\}[\s\S]*?\$t\.preview\.closed[\s\S]*?\{:else if account\.valueAvailability === "awaiting"\}/);
+  assert.match(source, /timeDepositTerms\(account\.preview\.timeDeposit\)/);
+  assert.match(source, /<PreviewAccountModal bind:open=\{previewAccountOpen\}/);
 });
 
 test("available-only account rows expose their balance basis", () => {
