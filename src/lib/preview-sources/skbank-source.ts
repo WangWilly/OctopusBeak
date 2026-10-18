@@ -1,5 +1,5 @@
 import { constants, createHash, createHmac, publicEncrypt } from "node:crypto";
-import type { PreviewAccount, PreviewLocalDate, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewAccount, PreviewDepositCollection, PreviewLocalDate, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
@@ -277,9 +277,7 @@ async function transactionPages(api: Api, deposit: DepositAccount, range: Readon
   return transactionsFrom(details, `${path}.Details`, deposit.currency);
 }
 
-async function collect(api: Api, collectedAt: string): Promise<PreviewAccount[]> {
-  await api.get(PATH.userInformation);
-  await api.get(PATH.megaMenu);
+async function collectDeposits(api: Api, collectedAt: string): Promise<PreviewDepositCollection> {
   const deposits = [
     ...depositAccounts(await api.get(PATH.accountSummary), "GetAccountSummary", "TWD", collectedAt),
     ...depositAccounts(await api.get(PATH.foreignAccountSummary), "GetForeignCurrencyAccountSummary", "FX", collectedAt),
@@ -296,7 +294,7 @@ async function collect(api: Api, collectedAt: string): Promise<PreviewAccount[]>
       ? deposit.account
       : { ...deposit.account, transactions: await transactionPages(api, deposit, range) });
   }
-  return accounts;
+  return { collectedAt, accounts };
 }
 
 export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener }> = {}): PreviewSource {
@@ -344,11 +342,10 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
         await signIn(api, credentials);
         await context.event("authentication", "authentication-completed");
         try {
-          await context.event("collection", "collection-started");
+          await api.get(PATH.userInformation);
+          await api.get(PATH.megaMenu);
           const collectedAt = context.now();
-          const accounts = await collect(api, collectedAt);
-          await context.event("collection", "collection-completed");
-          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
+          return await context.preview.collect({ deposit: () => collectDeposits(api, collectedAt) });
         } finally {
           if (api.signedIn()) await api.send("POST", PATH.logout).catch(() => undefined);
         }
