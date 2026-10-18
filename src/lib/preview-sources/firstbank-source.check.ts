@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
+import type { PreviewCreditCollection, PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import {
   createFirstbankSource,
   FIRSTBANK_PREVIEW_SOURCE,
   type FirstbankCapture,
+  type FirstbankCardPages,
   type FirstbankPage,
   type FirstbankPageOpener,
   type FirstbankQueryAccount,
@@ -47,11 +50,58 @@ const QUERY: readonly FirstbankQueryAccount[] = [
   { value: "A2", label: "123-45-999999" },
 ];
 
+const cms = (code: string, content: unknown, head: Record<string, string> = {}) =>
+  ({ HEAD: { MSGID: `CMSQRY${code}`, RETURNCODE: "0000", ...head }, CONTENT: content });
+
+const billRecord = (overrides: Record<string, unknown> = {}) => ({
+  CardNo: "4000-00XX-XXXX-1234",
+  Currency: "TWD",
+  BillingPeriod: "2026/09",
+  BillDate: "2026/09/07",
+  PayEndDate: "2026/09/25",
+  TotalAmount: "5,040",
+  MinAmount: "504",
+  CreditAmount: "80,000",
+  Records: [
+    { TransDate: "2026/08/20", AcctDate: "2026/08/22", AcctAmount: "4,800", TransDetail: "合成商店" },
+    { CardNo: "4000-00XX-XXXX-5678", TransDate: "2026/08/28", AcctDate: "2026/08/29", AcctAmount: "300", TransDetail: "合成超市" },
+    { TransDate: "2026/09/01", AcctDate: "2026/09/02", AcctAmount: "60-", TransDetail: "合成退貨" },
+    { TransDetail: "本期金額合計", AcctAmount: "5,040" },
+  ],
+  ...overrides,
+});
+
+const unbilledRecord = (overrides: Record<string, unknown> = {}) =>
+  ({ CardNo: "1234", Currency: "TWD", TransDate: "2026/10/14", AcctAmount: "99", TransDetail: "合成咖啡", ...overrides });
+
+const UNBILLED_RECORDS = [
+  unbilledRecord({ TransDate: "115/10/10", AcctDate: "2026/10/11", AcctAmount: "1,250.50", TransDetail: "合成餐廳", Currency: "新臺幣" }),
+  unbilledRecord({ TransDate: "2026/10/14 18:30", AcctAmount: "(200)", TransDetail: "合成退款" }),
+  unbilledRecord(),
+  unbilledRecord(),
+  unbilledRecord({ TransDate: "2026/10/12", AcctAmount: "15.20", TransDetail: "Synthetic store", Currency: "USD" }),
+];
+
+const card = (code: string, body: unknown, status = 200): FirstbankCapture =>
+  ({ endpoint: `/cmsweb/Common/sendCMSQRY${code}`, status, date: null, text: typeof body === "string" ? body : JSON.stringify(body) });
+const LOGOUT: FirstbankCapture = { endpoint: "/cmsweb/Home/Logout", status: 200, date: null, text: "<html><body>您已登出信用卡會員服務系統</body></html>" };
+
+const cardCaptures = (parts: Readonly<{ dates?: unknown; bill?: unknown; payments?: readonly unknown[]; unbilled?: unknown }> = {}) => [
+  card("9999", parts.dates ?? cms("9999", { ResultCount: "1", Result: "2026/09/07" })),
+  ...(parts.bill === null ? [] : [card("0014", parts.bill ?? cms("0014", { BillRecords: [billRecord()] }))]),
+  ...(parts.payments ?? [
+    cms("0006", { Records: [{ PayDate: "2026/09/20", Amount: "3,000", Currency: "TWD" }] }),
+    cms("0006", { Records: [{ PayDate: "2026/08/20", Amount: "1,000", Currency: "TWD" }] }),
+  ]).map((body) => card("0006", body)),
+  ...(parts.unbilled === null ? [] : [card("0008", parts.unbilled ?? cms("0008", { Records: UNBILLED_RECORDS }))]),
+];
+
 type Script = Readonly<{
   signIn?: FirstbankSignInOutcome;
   overview?: string;
   query?: readonly FirstbankQueryAccount[];
   histories?: Readonly<Record<string, string>>;
+  cards?: FirstbankCardPages;
   signOutFails?: boolean;
 }>;
 
@@ -71,6 +121,10 @@ function fakePage(script: Script = {}) {
       calls.push(`transactions:${account.value}:${range.start}-${range.end}`);
       return capture("/NetBank/2/010103.html", (script.histories ?? histories)[account.value]!);
     },
+    async cardPages() {
+      calls.push("cardPages");
+      return script.cards ?? { captures: cardCaptures(), notice: null };
+    },
     async signOut() {
       calls.push("signOut");
       if (script.signOutFails) throw new Error("logout failed");
@@ -82,15 +136,16 @@ function fakePage(script: Script = {}) {
 
 const solveCaptcha = async () => "1234";
 
-async function run(script: Script = {}) {
+async function run(script: Script = {}, products: readonly PreviewProduct[] = ["deposit"]) {
   const fake = fakePage(script);
-  const result = await runPreviewSource(createFirstbankSource({ page: fake.opener, solveCaptcha }), credentials);
+  const result = await runPreviewSource(createFirstbankSource({ page: fake.opener, solveCaptcha }), credentials, undefined, products);
   return { ...result, fake };
 }
 
 test("a First Bank run writes each deposit account with exact balances and three months of column-directed transactions", async () => {
   const { receipt, writes, observations, fake } = await run();
   assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3, statements: 0, closedAccounts: 0 });
+  assert.equal(writes.length, 1, "an unselected card product is not collected");
   const asOf = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
   const [salary, dollar, term] = depositCollection(writes[0]!).accounts;
   assert.deepEqual(
@@ -168,6 +223,180 @@ test("a row that sets both or neither column, or a page for another account, fai
   const other = await run({ histories: { ...histories, A1: history("123-45-000000", []) } });
   assert.equal(other.errorCode, "source-validation-failed");
   assert.equal(both.writes.length + neither.writes.length + other.writes.length, 0);
+});
+
+const creditOf = (writes: readonly PreviewWrite[]): PreviewCreditCollection => {
+  const write = writes.find((candidate) => candidate.product === "credit_card");
+  if (write?.product !== "credit_card") throw new Error("no credit card write");
+  return write.collection;
+};
+
+const bothProducts = (script: Script = {}) => run(script, ["deposit", "credit_card"]);
+const cardsOnly = (cards: FirstbankCardPages) => run({ cards }, ["credit_card"]);
+const outcomes = (output: { products: readonly { typeId: string; status: string; errorCode?: string }[] } | null) =>
+  output?.products.map(({ typeId, status, errorCode }) => errorCode ? `${typeId}:${status}:${errorCode}` : `${typeId}:${status}`);
+
+test("one sign-in collects deposits, then the card bill, payments, and unbilled list as one account per currency", async () => {
+  const { writes, output, observations, fake } = await bothProducts();
+  assert.deepEqual(outcomes(output), ["deposit:success", "credit_card:success"]);
+  assert.deepEqual(writes.map((write) => write.product), ["deposit", "credit_card"]);
+  assert.doesNotThrow(() => parsePreviewCreditCollection(creditOf(writes)), "the preview port accepts the collection");
+  assert.deepEqual(fake.calls.slice(-2), ["cardPages", "signOut"], "the card pages come after the deposit pages, in the same session");
+  const [twd, usd] = creditOf(writes).accounts;
+  assert.deepEqual(
+    { key: twd!.sourceAccountKey, label: twd!.displayLabel, currency: twd!.currency, limit: twd!.creditLimit, cards: twd!.cards, balances: twd!.balances },
+    {
+      key: "card:TWD",
+      label: "第一銀行 信用卡",
+      currency: "TWD",
+      limit: "80000",
+      cards: [
+        { sourceCardKey: "1234", cardMask: "****-1234", displayLabel: null },
+        { sourceCardKey: "5678", cardMask: "****-5678", displayLabel: null },
+      ],
+      balances: [{
+        amount: "3288.50",
+        currency: "TWD",
+        observedAt: { at: "2026-10-15T02:00:00.000Z", source: "collection-time" },
+        basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "5040", paidAmount: "3000", unbilledAmount: "1248.50" },
+      }],
+    },
+    "5040 - 3000 (paid after the 09/07 closing) + 1248.50 (1250.50 - 200 + 99 + 99); the 08/20 payment predates the statement",
+  );
+  assert.deepEqual(twd!.statements, [{
+    statementKey: "2026-09",
+    cycleStart: "2026-08-08",
+    cycleEnd: "2026-09-07",
+    closingDate: "2026-09-07",
+    dueDate: "2026-09-25",
+    amount: "5040",
+    currency: "TWD",
+    minimumPayment: "504",
+    billingPeriod: "2026-09",
+    paidAmount: "3000",
+    paid: false,
+    noPaymentNeeded: null,
+  }]);
+  assert.deepEqual(twd!.purchases.map(({ amount, direction, posting, consumedAt, sourceCardKey, statementKey, description }) =>
+    ({ amount, direction, posting, consumedAt: consumedAt.value, sourceCardKey, statementKey, description })), [
+    { amount: "4800", direction: "outflow", posting: { status: "posted", billing: "billed", postingDate: "2026-08-22" }, consumedAt: "2026-08-20", sourceCardKey: "1234", statementKey: "2026-09", description: "合成商店" },
+    { amount: "300", direction: "outflow", posting: { status: "posted", billing: "billed", postingDate: "2026-08-29" }, consumedAt: "2026-08-28", sourceCardKey: "5678", statementKey: "2026-09", description: "合成超市" },
+    { amount: "60", direction: "inflow", posting: { status: "posted", billing: "billed", postingDate: "2026-09-02" }, consumedAt: "2026-09-01", sourceCardKey: "1234", statementKey: "2026-09", description: "合成退貨" },
+    { amount: "1250.50", direction: "outflow", posting: { status: "posted", billing: "unbilled", postingDate: "2026-10-11" }, consumedAt: "2026-10-10", sourceCardKey: "1234", statementKey: null, description: "合成餐廳" },
+    { amount: "200", direction: "inflow", posting: { status: "pending" }, consumedAt: "2026-10-14T18:30", sourceCardKey: "1234", statementKey: null, description: "合成退款" },
+    { amount: "99", direction: "outflow", posting: { status: "pending" }, consumedAt: "2026-10-14", sourceCardKey: "1234", statementKey: null, description: "合成咖啡" },
+    { amount: "99", direction: "outflow", posting: { status: "pending" }, consumedAt: "2026-10-14", sourceCardKey: "1234", statementKey: null, description: "合成咖啡" },
+  ], "the summary line is skipped, a trailing minus and parentheses read as negative, and both signs present allow direction from the sign");
+  const [first, second] = twd!.purchases.slice(-2).map((purchase) => purchase.sourceRowKey);
+  assert.equal(first!.replace(/:1$/u, ":2"), second, "identical rows differ only by their occurrence count");
+  assert.deepEqual({ key: usd!.sourceAccountKey, label: usd!.displayLabel, balances: usd!.balances, statements: usd!.statements, amounts: usd!.purchases.map((purchase) => purchase.amount) },
+    { key: "card:USD", label: "第一銀行 信用卡 USD", balances: [], statements: [], amounts: ["15.20"] }, "a currency without a statement has no balance rather than a zero one");
+  assert.deepEqual(observations.map((entry) => entry.endpoint).slice(3), [
+    "/cmsweb/Common/sendCMSQRY9999", "/cmsweb/Common/sendCMSQRY0014", "/cmsweb/Common/sendCMSQRY0006", "/cmsweb/Common/sendCMSQRY0006", "/cmsweb/Common/sendCMSQRY0008",
+  ], "every card response is observed");
+  const again = await bothProducts();
+  assert.deepEqual(creditOf(again.writes).accounts.flatMap((account) => account.purchases.map((purchase) => purchase.sourceRowKey)),
+    [twd!, usd!].flatMap((account) => account.purchases.map((purchase) => purchase.sourceRowKey)), "row keys are stable across collections");
+});
+
+test("a card collection with only one sign keeps the signed amounts with an unknown direction", async () => {
+  const result = await cardsOnly({ captures: cardCaptures({
+    bill: cms("0014", { BillRecords: [billRecord({ TotalAmount: "300", Records: [{ TransDate: "2026/08/28", AcctAmount: "300", TransDetail: "合成超市" }] })] }),
+    unbilled: cms("0008", { Records: [unbilledRecord()] }),
+  }), notice: null });
+  const [account] = creditOf(result.writes).accounts;
+  assert.deepEqual(account!.purchases.map(({ amount, direction }) => [amount, direction]), [["300", "unknown"], ["99", "unknown"]]);
+  const refunds = await cardsOnly({ captures: cardCaptures({ bill: null, dates: cms("9999", { ResultCount: "0", Result: "" }), unbilled: cms("0008", { Records: [unbilledRecord({ AcctAmount: "99-" })] }) }), notice: null });
+  assert.deepEqual(creditOf(refunds.writes).accounts[0]!.purchases.map(({ amount, direction }) => [amount, direction]), [["-99", "unknown"]]);
+});
+
+test("an overpaid card gives a negative used credit, never clamped", async () => {
+  const result = await cardsOnly({ captures: cardCaptures({
+    bill: cms("0014", { BillRecords: [billRecord({ TotalAmount: "(1,200)", Records: [] })] }),
+    payments: [cms("0006", { Records: [{ PayDate: "2026/09/10", Amount: "300", Currency: "TWD" }] })],
+    unbilled: cms("0008", { Records: [unbilledRecord({ AcctAmount: "450.5" })] }),
+  }), notice: null });
+  const [twd] = creditOf(result.writes).accounts;
+  assert.deepEqual(twd!.balances.map(({ amount, basis }) => ({ amount, basis })), [{
+    amount: "-1049.5",
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "-1200", paidAmount: "300", unbilledAmount: "450.5" },
+  }]);
+  assert.equal(twd!.statements[0]!.paid, true, "a paid amount at or above a credit statement means paid");
+});
+
+test("an empty bill-date list means no statement: purchases are written and the balance stays unknown", async () => {
+  const result = await cardsOnly({ captures: cardCaptures({ bill: null, dates: cms("9999", { ResultCount: "0", Result: "" }) }), notice: null });
+  assert.deepEqual(outcomes(result.output), ["deposit:skipped", "credit_card:success"]);
+  const [twd] = creditOf(result.writes).accounts;
+  assert.deepEqual([twd!.balances, twd!.statements, twd!.purchases.length], [[], [], 4]);
+});
+
+test("a due date given only as a status text keeps the balance but writes no statement", async () => {
+  const result = await cardsOnly({ captures: cardCaptures({ bill: cms("0014", { BillRecords: [billRecord({ PayEndDate: "免繳" })] }) }), notice: null });
+  const [twd] = creditOf(result.writes).accounts;
+  assert.deepEqual(twd!.statements, []);
+  assert.equal(twd!.balances[0]!.amount, "3288.50");
+});
+
+test("not_held needs an explicit no-card signal", async () => {
+  const signals: Record<string, FirstbankCardPages> = {
+    "CMSQRY0006 REFRETURNDESC 查無卡人": { captures: [card("9999", cms("9999", { ResultCount: "0", Result: "" })), card("0006", cms("0006", null, { REFRETURNDESC: "查無卡人" })), card("0008", cms("0008", null, { RETURNDESC: "查無卡片資訊" }))], notice: null },
+    "the card member logout before any card answer": { captures: [LOGOUT], notice: null },
+    "a no-card notice": { captures: [], notice: "您目前沒有本行信用卡。" },
+  };
+  for (const [name, cards] of Object.entries(signals)) {
+    const result = await cardsOnly(cards);
+    assert.deepEqual(outcomes(result.output), ["deposit:skipped", "credit_card:not_held"], name);
+    assert.equal(result.writes.length, 0, `${name} writes no account and no zero balance`);
+  }
+  const empty = await cardsOnly({ captures: cardCaptures({ bill: null, dates: cms("9999", { ResultCount: "0", Result: "" }), payments: [cms("0006", { Records: [] })], unbilled: cms("0008", { Records: [] }) }), notice: null });
+  assert.equal(empty.errorCode, null);
+  assert.deepEqual(outcomes(empty.output), ["deposit:skipped", "credit_card:no_data"], "empty lists without a no-card signal are not not_held");
+  const refusals: Record<string, readonly [FirstbankCardPages, RegExp]> = {
+    "a logout after a card answer": [{ captures: [card("0014", cms("0014", { BillRecords: [] })), LOGOUT], notice: null }, /incomplete-data.*CMSQRY0006/u],
+    "an unrecognized notice": [{ captures: [], notice: "系統忙碌中，請稍後再試" }, /unrecognized message/u],
+    "a membership hint": [{ captures: [], notice: "未申請網服會員" }, /unrecognized message/u],
+    "no card pages at all": [{ captures: [], notice: null }, /incomplete-data/u],
+    "a no-card answer beside card data": [{ captures: [...cardCaptures(), card("0006", cms("0006", null, { REFRETURNDESC: "查無卡人" }))], notice: null }, /no card and card data together/u],
+  };
+  for (const [name, [cards, reason]] of Object.entries(refusals)) {
+    const result = await cardsOnly(cards);
+    assert.match(String(result.error), reason, name);
+    assert.equal(result.writes.length, 0, name);
+  }
+});
+
+test("card data that is missing, malformed, or incomplete fails the card product before write and keeps the deposits", async () => {
+  const cases: Record<string, readonly [FirstbankCardPages, RegExp]> = {
+    "an unbilled row without a currency": [{ captures: cardCaptures({ unbilled: cms("0008", { Records: [unbilledRecord({ Currency: "" })] }) }), notice: null }, /missing-currency/u],
+    "a statement without a currency": [{ captures: cardCaptures({ bill: cms("0014", { BillRecords: [billRecord({ Currency: undefined })] }) }), notice: null }, /missing-currency/u],
+    "a malformed statement amount": [{ captures: cardCaptures({ bill: cms("0014", { BillRecords: [billRecord({ TotalAmount: "5.040.00" })] }) }), notice: null }, /malformed-amount/u],
+    "a malformed purchase amount": [{ captures: cardCaptures({ unbilled: cms("0008", { Records: [unbilledRecord({ AcctAmount: "NT$99" })] }) }), notice: null }, /malformed-amount/u],
+    "a zero purchase amount": [{ captures: cardCaptures({ unbilled: cms("0008", { Records: [unbilledRecord({ AcctAmount: "0" })] }) }), notice: null }, /malformed-amount/u],
+    "a statement without its amount operand": [{ captures: cardCaptures({ bill: cms("0014", { BillRecords: [billRecord({ TotalAmount: "" })] }) }), notice: null }, /unexpected-response.*statement amount/u],
+    "a payment without its amount operand": [{ captures: cardCaptures({ payments: [cms("0006", { Records: [{ PayDate: "2026/09/20", Currency: "TWD" }] })] }), notice: null }, /malformed-amount/u],
+    "no payment list (the paid operand)": [{ captures: cardCaptures({ payments: [] }), notice: null }, /incomplete-data.*CMSQRY0006/u],
+    "no unbilled list (the unbilled operand)": [{ captures: cardCaptures({ unbilled: null }), notice: null }, /incomplete-data.*CMSQRY0008/u],
+    "no statement although bill dates exist": [{ captures: cardCaptures({ bill: null }), notice: null }, /incomplete-data.*CMSQRY0014/u],
+    "an unbilled response without its list": [{ captures: cardCaptures({ unbilled: cms("0008", {}) }), notice: null }, /unexpected-response.*Records/u],
+    "a failed card query": [{ captures: cardCaptures({ unbilled: cms("0008", { Records: [] }, { RETURNCODE: "E999" }) }), notice: null }, /unexpected-response.*E999/u],
+    "an HTTP error": [{ captures: [...cardCaptures({ unbilled: null }), card("0008", "<html>error</html>", 500)], notice: null }, /HTTP 500/u],
+    "a repeated billing period": [{ captures: cardCaptures({ bill: cms("0014", { BillRecords: [billRecord(), billRecord({ CardNo: "5678", TotalAmount: "1" })] }) }), notice: null }, /repeats a TWD billing period/u],
+  };
+  for (const [name, [cards, reason]] of Object.entries(cases)) {
+    const result = await bothProducts({ cards });
+    assert.deepEqual(outcomes(result.output), ["deposit:success", `credit_card:failed:${/incomplete-data/u.test(reason.source) ? "source-collection-failed" : "source-validation-failed"}`], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no card data and keeps the deposits`);
+    const failure = await cardsOnly(cards);
+    assert.match(String(failure.error), reason, name);
+  }
+});
+
+test("a deposit failure leaves the card product collected in the same run", async () => {
+  const result = await bothProducts({ overview: overview([row("活期存款", "123-45-999999", "", "812.34", "-")]) });
+  assert.deepEqual(outcomes(result.output), ["deposit:failed:source-validation-failed", "credit_card:success"]);
+  assert.deepEqual(result.writes.map((write) => write.product), ["credit_card"]);
+  assert.ok(result.fake.calls.includes("cardPages"));
 });
 
 test("production refuses the image CAPTCHA before opening any page", async () => {

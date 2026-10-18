@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto";
-import type { PreviewAccount, PreviewBalanceObservation, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type {
+  PreviewAccount,
+  PreviewBalanceObservation,
+  PreviewCreditAccount,
+  PreviewCreditCollection,
+  PreviewLocalDate,
+  PreviewPurchase,
+  PreviewStatement,
+  PreviewTransaction,
+} from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
 import { FIRSTBANK_LOGIN_URL, playwrightFirstbankPage } from "./firstbank-page.ts";
+import type { PreviewProductAbsence } from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
@@ -11,11 +21,17 @@ import {
   isZeroDecimal,
   localDate,
   observedAt,
+  optionalText,
+  parseSourceJson,
+  record,
+  records,
   refuseUnsupportedVerification,
   requireDeviceRegistration,
   solveChallengeRound,
   taipeiMonthWindow,
+  unsignedDecimal,
   type PreviewCaptchaSolver,
+  type SourceRecord,
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 
@@ -50,6 +66,13 @@ export type FirstbankQueryAccount = Readonly<{ value: string; label: string }>;
 
 export type FirstbankCredentials = Readonly<{ idNumber: string; userCode: string; password: string; captcha: string }>;
 
+/**
+ * What the card functions loaded: every card member system response (`sendCMSQRY*`
+ * and the `/cmsweb/Home/Logout` page) in arrival order, and a dialog or alert the
+ * bank showed instead of card data.
+ */
+export type FirstbankCardPages = Readonly<{ captures: readonly FirstbankCapture[]; notice: string | null }>;
+
 /** First Bank's web banking renders server-side HTML in frames, so the source drives the page and reads its responses. */
 export type FirstbankPage = Readonly<{
   captchaImage(): Promise<Buffer>;
@@ -58,6 +81,8 @@ export type FirstbankPage = Readonly<{
   queryAccounts(): Promise<readonly FirstbankQueryAccount[]>;
   /** `start` and `end` are Taipei dates as YYYY/MM/DD. */
   transactions(account: FirstbankQueryAccount, range: Readonly<{ start: string; end: string }>): Promise<FirstbankCapture>;
+  /** Opens 帳單查詢 (F1632), 近期繳款 (F1633), and 未出帳消費 (F1634) in turn. Ends the iBank session for a person without a card. */
+  cardPages(): Promise<FirstbankCardPages>;
   signOut(): Promise<void>;
 }>;
 
@@ -312,7 +337,7 @@ function pageAccountIdentity(text: string): string | null {
 
 const slashDate = (date: string) => date.replaceAll("-", "/");
 
-async function collect(context: PreviewWorkflowContext, page: FirstbankPage, collectedAt: string): Promise<PreviewAccount[]> {
+async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankPage, collectedAt: string): Promise<PreviewAccount[]> {
   const overviewCapture = await page.depositOverview();
   const overview = observeTable(context, overviewCapture, OVERVIEW);
   const entries = depositEntries(overview.rows, overview.text);
@@ -360,13 +385,344 @@ async function collect(context: PreviewWorkflowContext, page: FirstbankPage, col
   });
 }
 
+/** Exact decimal arithmetic on source lexemes; the result keeps the widest scale of its operands. */
+function decimalUnits(values: readonly string[]): { scale: number; units: bigint[] } {
+  const scale = Math.max(0, ...values.map((value) => value.split(".")[1]?.length ?? 0));
+  const units = values.map((value) => {
+    const [whole = "0", fraction = ""] = value.replace(/^-/u, "").split(".");
+    const magnitude = BigInt(whole + fraction.padEnd(scale, "0"));
+    return value.startsWith("-") ? -magnitude : magnitude;
+  });
+  return { scale, units };
+}
+
+function formatUnits(units: bigint, scale: number): string {
+  const digits = (units < 0n ? -units : units).toString().padStart(scale + 1, "0");
+  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return units < 0n ? `-${body}` : body;
+}
+
+/** `terms` are added; each `[value, -1]` pair is subtracted. */
+function decimalSum(terms: readonly (readonly [string, 1 | -1])[]): string {
+  const { scale, units } = decimalUnits(terms.map(([value]) => value));
+  return formatUnits(units.reduce((total, unit, index) => total + unit * BigInt(terms[index]![1]), 0n), scale);
+}
+
+const decimalSign = (value: string) => (isZeroDecimal(value) ? 0 : value.startsWith("-") ? -1 : 1);
+
+/** First Bank card amounts may end in `-` or sit in parentheses when negative, such as `1,200-` or `(1,200)`. */
+function cardDecimal(value: unknown, field: string): string {
+  if (typeof value !== "string") return fail("malformed-amount", `${field} is not a decimal lexeme`);
+  const lexeme = value.trim();
+  const negative = /^\(.*\)$/u.exec(lexeme) ? lexeme.slice(1, -1).trim() : /-$/u.test(lexeme) ? lexeme.slice(0, -1).trim() : null;
+  if (negative === null) return exactDecimal(lexeme, field);
+  if (/^[+-]/u.test(negative)) return fail("malformed-amount", `${field} is signed twice`);
+  const amount = exactDecimal(negative, field);
+  return isZeroDecimal(amount) ? amount : `-${amount}`;
+}
+
+const CARD_QUERY = /sendcmsqry(\d{4})$/iu;
+const CARD_MEMBER_LOGOUT = /\/cmsweb\/home\/logout$/iu;
+const BILL = "0014";
+const PAYMENTS = "0006";
+const UNBILLED = "0008";
+const BILL_DATES = "9999";
+// all-set-tw saw these exact RETURNDESC and REFRETURNDESC texts from an account without a card.
+const NO_CARD_DESCRIPTIONS = new Set(["查無卡人", "查無卡片資訊"]);
+// all-set-tw's isNoCreditCardMessage: a message that opens by saying the person holds no card, not an application hint.
+const NO_CARD_MESSAGE =
+  /^(?:您)?(?:目前)?(?:(?:尚未|未|沒有|無)(?:持有|申辦|申請)?(?:本行)?信用卡|沒有(?:本行)?有效卡|非(?:本行)?(?:信用卡)?(?:持卡人|卡友)|非(?:本行)?信用卡客戶)(?=[，,。.!！；;]|$)/u;
+const isNoCardMessage = (value: unknown) =>
+  typeof value === "string" && NO_CARD_MESSAGE.test(value.replace(/\s+/gu, "").replace(/^\d{4}[:：]/u, ""));
+const isNoCardDescription = (value: unknown) =>
+  isNoCardMessage(value) || (typeof value === "string" && NO_CARD_DESCRIPTIONS.has(value.trim()));
+// Statement lines that total or announce rather than record a purchase, as all-set-tw skips them.
+const CARD_SUMMARY = /小計|合計|總計|本期金額|前期帳單|^一銀自動扣款$|記名式.*卡號|將於.*自動扣繳/iu;
+
+const CONSUME_DATE_FIELDS = ["TransDate", "TxnDate", "TxDate", "ConsumeDate", "PurchaseDate", "TradeDate"] as const;
+const POSTING_DATE_FIELDS = ["AcctDate", "PostingDate", "ValueDate"] as const;
+const PURCHASE_AMOUNT_FIELDS = ["AcctAmount", "TransAmount", "Amount", "LocalAmount", "TxnAmount", "TWDAmount", "NTDAmount", "NTAmount", "BillAmount"] as const;
+const STATEMENT_AMOUNT_FIELDS = ["TotalAmount", "StatementAmount", "CurrentPeriodAmount"] as const;
+
+const fieldKey = (name: string) => name.toLowerCase().replace(/[\s_\-:]/gu, "");
+
+/** The first named property that holds a non-blank value, matched case- and separator-insensitively as all-set-tw does. */
+function cardField(value: SourceRecord, names: readonly string[]): unknown {
+  const keys = new Map(Object.keys(value).map((key) => [fieldKey(key), key] as const));
+  for (const name of names) {
+    const key = keys.get(fieldKey(name));
+    const found = key === undefined ? undefined : value[key];
+    if (found !== undefined && found !== null && !(typeof found === "string" && isBlank(found))) return found;
+  }
+  return undefined;
+}
+
+function cardKey(value: SourceRecord, field: string): string | null {
+  const cardNo = cardField(value, ["CardNo"]);
+  if (cardNo === undefined) return null;
+  return /(\d{4})$/u.exec(String(cardNo).replace(/\D/gu, ""))?.[1] ?? fail("unexpected-response", `${field}.CardNo has no last four digits`);
+}
+
+const isDateText = (value: unknown) => typeof value === "string" && /^(?:\d{3,4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{8})(?:\D|$)/u.test(value.trim());
+const dateOnly = (value: unknown, field: string) => firstbankDate(typeof value === "string" ? value : undefined, field).value.slice(0, 10);
+
+/** `YYYY-MM` from 2026-10, 202610, 115/10, or a full date. */
+function billingPeriod(value: unknown, field: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (isDateText(raw)) return dateOnly(raw, field).slice(0, 7);
+  const match = /^(\d{3,4})[/.-]?(\d{1,2})$/u.exec(raw);
+  const month = Number(match?.[2]);
+  if (!match || month < 1 || month > 12) return fail("unexpected-response", `${field} is not a billing period`);
+  const year = match[1]!.length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+type CardRow = Readonly<{
+  card: string | null;
+  currency: string;
+  consumedAt: PreviewLocalDate;
+  postingDate: string | null;
+  /** Signed: a trailing minus or parentheses in the source make it negative. */
+  amount: string;
+  description: string | null;
+}>;
+
+/** `currency` is the statement's for a billed row; an unbilled row (`null`) carries its own. */
+function cardRow(value: SourceRecord, field: string, currency: string | null, card: string | null): CardRow | null {
+  const consumed = cardField(value, CONSUME_DATE_FIELDS);
+  const amount = cardField(value, PURCHASE_AMOUNT_FIELDS);
+  const description = optionalText(cardField(value, ["TransDetail", "Description", "Memo"]));
+  const summary = description !== null && CARD_SUMMARY.test(description.replace(/\s+/gu, ""));
+  if (summary || (consumed === undefined && amount === undefined)) return null;
+  if (consumed === undefined) return fail("unexpected-response", `${field} has no consume date`);
+  const signed = cardDecimal(amount, `${field}.amount`);
+  if (isZeroDecimal(signed)) return fail("malformed-amount", `${field} has a zero amount`);
+  const posted = cardField(value, POSTING_DATE_FIELDS);
+  return {
+    card: cardKey(value, field) ?? card,
+    currency: currency ?? currencyCode(cardField(value, ["Currency"]), `${field}.Currency`, CURRENCY_ALIASES),
+    consumedAt: firstbankDate(String(consumed), `${field}.consumeDate`),
+    postingDate: posted === undefined ? null : dateOnly(posted, `${field}.postingDate`),
+    amount: signed,
+    description,
+  };
+}
+
+type CardBill = Readonly<{
+  card: string | null;
+  currency: string;
+  period: string;
+  closingDate: string;
+  /** `null` when the due date is only a status text, so the statement is not written. */
+  dueDate: string | null;
+  amount: string;
+  minimumPayment: string | null;
+  creditLimit: string | null;
+  rows: readonly CardRow[];
+}>;
+
+function cardBill(value: SourceRecord, field: string): CardBill {
+  const nested = cardField(value, ["Records"]);
+  const entries = nested === undefined ? [] : records(nested, `${field}.Records`);
+  const card = cardKey(value, field) ?? entries.map((entry, index) => cardKey(entry, `${field}.Records[${index}]`)).find((key) => key !== null) ?? null;
+  const currency = currencyCode(cardField(value, ["Currency"]), `${field}.Currency`, CURRENCY_ALIASES);
+  const closing = cardField(value, ["BillDate", "StatementClosingDate", "StatementDate"]);
+  if (!isDateText(closing)) return fail("unexpected-response", `${field} has no statement closing date`);
+  const amount = cardField(value, STATEMENT_AMOUNT_FIELDS);
+  if (amount === undefined) return fail("unexpected-response", `${field} has no statement amount`);
+  const due = cardField(value, ["PayEndDate", "PaymentDueDate"]);
+  const minimum = cardField(value, ["MinAmount", "MinimumPayment"]);
+  const limit = cardField(value, ["CreditAmount", "CreditLimit"]);
+  return {
+    card,
+    currency,
+    period: billingPeriod(cardField(value, ["BillingPeriod", "BillYM", "BillDate"]), `${field}.BillingPeriod`),
+    closingDate: dateOnly(closing, `${field}.BillDate`),
+    dueDate: isDateText(due) ? dateOnly(due, `${field}.PayEndDate`) : null,
+    amount: cardDecimal(amount, `${field}.TotalAmount`),
+    minimumPayment: minimum === undefined ? null : cardDecimal(minimum, `${field}.MinAmount`),
+    creditLimit: limit === undefined ? null : cardDecimal(limit, `${field}.CreditAmount`),
+    rows: entries.flatMap((entry, index) => cardRow(entry, `${field}.Records[${index}]`, currency, card) ?? []),
+  };
+}
+
+type CardPayment = Readonly<{ card: string | null; currency: string; date: string; amount: string }>;
+
+function cardPayment(value: SourceRecord, field: string): CardPayment | null {
+  const date = cardField(value, ["PayDate", "PaymentDate"]);
+  const amount = cardField(value, ["Amount", "PaymentAmount"]);
+  if (date === undefined && amount === undefined) return null;
+  if (date === undefined) return fail("unexpected-response", `${field} has no payment date`);
+  const paid = cardDecimal(amount, `${field}.Amount`);
+  if (paid.startsWith("-")) return fail("unexpected-response", `${field} is a negative payment`);
+  return {
+    card: cardKey(value, field),
+    currency: currencyCode(cardField(value, ["Currency"]), `${field}.Currency`, CURRENCY_ALIASES),
+    date: dateOnly(date, `${field}.PayDate`),
+    amount: paid,
+  };
+}
+
+type CardEnvelope = Readonly<{ code: string; noCard: boolean; content: SourceRecord | null }>;
+
+function cardEnvelope(context: PreviewWorkflowContext, capture: FirstbankCapture): CardEnvelope {
+  const code = CARD_QUERY.exec(capture.endpoint)?.[1] ?? fail("unexpected-response", `unexpected card endpoint ${capture.endpoint}`);
+  let body: unknown = null;
+  try {
+    if (capture.status < 200 || capture.status >= 300) return fail("unexpected-response", `CMSQRY${code} answered HTTP ${capture.status}`);
+    body = parseSourceJson(capture.text, capture.endpoint);
+  } finally {
+    context.preview.observe({ endpoint: capture.endpoint, status: capture.status, body });
+  }
+  const root = record(body, `CMSQRY${code}`);
+  const head = record(cardField(root, ["HEAD"]), `CMSQRY${code}.HEAD`);
+  const messageId = optionalText(cardField(head, ["MSGID"]));
+  if (messageId !== null && !messageId.includes(code)) return fail("unexpected-response", `CMSQRY${code} answered ${messageId}`);
+  if (isNoCardDescription(cardField(head, ["RETURNDESC"])) || isNoCardDescription(cardField(head, ["REFRETURNDESC"])))
+    return { code, noCard: true, content: null };
+  const returnCode = optionalText(cardField(head, ["RETURNCODE", "STATUSCODE"]));
+  if (returnCode !== null && !/^0{1,4}$/u.test(returnCode)) return fail("unexpected-response", `CMSQRY${code} returned code ${returnCode}`);
+  return { code, noCard: false, content: record(cardField(root, ["CONTENT"]), `CMSQRY${code}.CONTENT`) };
+}
+
+/** The list each card response carries; repeated responses (all-set-tw merges CMSQRY0006 pages) are concatenated, identical ones once. */
+function cardList(envelopes: readonly CardEnvelope[], code: string, key: string): SourceRecord[] | null {
+  const answered = envelopes.filter((envelope) => envelope.code === code && envelope.content !== null);
+  if (answered.length === 0) return null;
+  const seen = new Set<string>();
+  return answered.flatMap((envelope, index) => {
+    const list = records(cardField(envelope.content!, [key]) ?? fail("unexpected-response", `CMSQRY${code} has no ${key}`), `CMSQRY${code}[${index}].${key}`);
+    const identity = JSON.stringify(list);
+    if (seen.has(identity)) return [];
+    seen.add(identity);
+    return list;
+  });
+}
+
+const cardMask = (card: string) => `****-${card}`;
+
+/** The day after the closing date one calendar month earlier: First Bank cycles are monthly (an assumption). */
+function cycleStart(closingDate: string): string {
+  const [year, month, day] = closingDate.split("-").map(Number) as [number, number, number];
+  const lastOfPrevious = new Date(Date.UTC(year, month - 1, 0)).getUTCDate();
+  const previous = new Date(Date.UTC(year, month - 2, Math.min(day, lastOfPrevious)));
+  return new Date(previous.getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
+async function collectCards(
+  context: PreviewWorkflowContext,
+  pages: FirstbankCardPages,
+  collectedAt: string,
+): Promise<PreviewCreditCollection | PreviewProductAbsence> {
+  const isLogout = (capture: FirstbankCapture) => CARD_MEMBER_LOGOUT.test(capture.endpoint);
+  for (const capture of pages.captures.filter(isLogout))
+    context.preview.observe({ endpoint: capture.endpoint, status: capture.status, body: { rows: htmlRows(capture.text) } });
+  const envelopes = pages.captures.filter((capture) => !isLogout(capture)).map((capture) => cardEnvelope(context, capture));
+  // all-set-tw: the card member system logs out a person without a card before it answers any card query.
+  const firstAnswer = pages.captures.find((capture) => CARD_QUERY.exec(capture.endpoint)?.[1] !== BILL_DATES);
+  const loggedOutFirst = firstAnswer !== undefined && isLogout(firstAnswer);
+  if (pages.notice !== null && !isNoCardMessage(pages.notice)) return fail("unexpected-response", "the card pages showed an unrecognized message");
+
+  const bills = cardList(envelopes, BILL, "BillRecords");
+  const payments = cardList(envelopes, PAYMENTS, "Records");
+  const unbilled = cardList(envelopes, UNBILLED, "Records");
+  if (pages.notice !== null || loggedOutFirst || envelopes.some((envelope) => envelope.noCard)) {
+    if ([bills, payments, unbilled].some((list) => list !== null && list.length > 0))
+      return fail("unexpected-response", "the card pages report no card and card data together");
+    return { absent: "not_held" };
+  }
+  const datesEmpty = envelopes.some((envelope) => envelope.code === BILL_DATES && envelope.content !== null
+    && String(cardField(envelope.content, ["ResultCount"]) ?? "") === "0" && optionalText(cardField(envelope.content, ["Result"])) === null);
+  if (bills === null && !datesEmpty) return fail("incomplete-data", "no CMSQRY0014 statement response and no empty bill-date list");
+  if (payments === null) return fail("incomplete-data", "no CMSQRY0006 payment response");
+  if (unbilled === null) return fail("incomplete-data", "no CMSQRY0008 unbilled response");
+
+  const statements = (bills ?? []).map((value, index) => cardBill(value, `CMSQRY0014.BillRecords[${index}]`));
+  const paid = payments.flatMap((value, index) => cardPayment(value, `CMSQRY0006.Records[${index}]`) ?? []);
+  const pending = unbilled.flatMap((value, index) => cardRow(value, `CMSQRY0008.Records[${index}]`, null, null) ?? []);
+
+  const purchases = [...statements.flatMap((bill) => bill.rows), ...pending];
+  // Direction from the sign is used only when this collection shows both signs (see the First Bank section of preview-sources.md).
+  const signs = new Set(purchases.map((row) => decimalSign(row.amount)));
+  const signed = signs.has(1) && signs.has(-1);
+  const occurrences = new Map<string, number>();
+  const purchase = (row: CardRow, statementKey: string | null): PreviewPurchase => {
+    const kind = statementKey === null ? "unbilled" : "billed";
+    const identity = [kind, statementKey ?? "", row.card ?? "", row.consumedAt.value, row.postingDate ?? "", row.amount, row.currency, row.description ?? ""].join("\u0000");
+    const occurrence = (occurrences.get(identity) ?? 0) + 1;
+    occurrences.set(identity, occurrence);
+    return {
+      sourceRowKey: `${kind}:${row.consumedAt.value.slice(0, 10)}:${createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 16)}:${occurrence}`,
+      amount: signed ? unsignedDecimal(row.amount) : row.amount,
+      currency: row.currency,
+      direction: signed ? (row.amount.startsWith("-") ? "inflow" : "outflow") : "unknown",
+      posting: statementKey !== null
+        ? { status: "posted", billing: "billed", postingDate: row.postingDate }
+        // An unbilled row with a posting date has posted; one without is still an authorization.
+        : row.postingDate !== null ? { status: "posted", billing: "unbilled", postingDate: row.postingDate } : { status: "pending" },
+      consumedAt: row.consumedAt,
+      sourceCardKey: row.card,
+      statementKey,
+      bankReference: null,
+      description: row.description,
+    };
+  };
+
+  const currencies = [...new Set([...statements.map((bill) => bill.currency), ...pending.map((row) => row.currency)])].sort();
+  const accounts = currencies.map((currency): PreviewCreditAccount => {
+    const ownBills = statements.filter((bill) => bill.currency === currency).sort((left, right) => left.closingDate.localeCompare(right.closingDate));
+    if (new Set(ownBills.map((bill) => bill.period)).size !== ownBills.length)
+      return fail("unexpected-response", `CMSQRY0014 repeats a ${currency} billing period`);
+    const ownPending = pending.filter((row) => row.currency === currency);
+    const latest = ownBills.at(-1);
+    // A payment counts toward the latest statement once that statement has closed.
+    const paidAmount = latest === undefined ? null
+      : decimalSum(paid.filter((payment) => payment.currency === currency && payment.date > latest.closingDate).map((payment) => [payment.amount, 1] as const));
+    const unbilledAmount = decimalSum(ownPending.map((row) => [row.amount, 1] as const));
+    const cards = [...new Set([
+      ...ownBills.flatMap((bill) => [bill.card, ...bill.rows.map((row) => row.card)]),
+      ...ownPending.map((row) => row.card),
+      ...paid.filter((payment) => payment.currency === currency).map((payment) => payment.card),
+    ].filter((card): card is string => card !== null))].sort();
+    return {
+      sourceAccountKey: `card:${currency}`,
+      displayLabel: `第一銀行 信用卡${currency === "TWD" ? "" : ` ${currency}`}`,
+      currency,
+      creditLimit: latest?.creditLimit ?? null,
+      cards: cards.map((card) => ({ sourceCardKey: card, cardMask: cardMask(card), displayLabel: null })),
+      balances: latest === undefined || paidAmount === null ? [] : [{
+        amount: decimalSum([[latest.amount, 1], [paidAmount, -1], [unbilledAmount, 1]]),
+        currency,
+        observedAt: { at: collectedAt, source: "collection-time" },
+        basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: latest.amount, paidAmount, unbilledAmount },
+      }],
+      purchases: [...ownBills.flatMap((bill) => bill.rows.map((row) => purchase(row, bill.period))), ...ownPending.map((row) => purchase(row, null))],
+      statements: ownBills.flatMap((bill): PreviewStatement[] => bill.dueDate === null ? [] : [{
+        statementKey: bill.period,
+        cycleStart: cycleStart(bill.closingDate),
+        cycleEnd: bill.closingDate,
+        closingDate: bill.closingDate,
+        dueDate: bill.dueDate,
+        amount: bill.amount,
+        currency,
+        minimumPayment: bill.minimumPayment,
+        billingPeriod: bill.period,
+        paidAmount: bill === latest ? paidAmount : null,
+        paid: bill === latest && paidAmount !== null ? decimalSign(decimalSum([[paidAmount, 1], [bill.amount, -1]])) >= 0 : null,
+        noPaymentNeeded: null,
+      }]),
+    };
+  });
+  return accounts.length === 0 ? { absent: "no_data" } : { collectedAt, accounts };
+}
+
 export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOpener; solveCaptcha?: PreviewCaptchaSolver }> = {}): PreviewSource {
   const open = options.page ?? playwrightFirstbankPage;
   return {
     id: "firstbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["firstbank-deposit"],
-    products: ["deposit"],
-    displayName: { en: "First Bank deposits (preview)", "zh-TW": "第一銀行存款（預覽）" },
+    products: ["deposit", "credit_card"],
+    displayName: { en: "First Bank (preview)", "zh-TW": "第一銀行（預覽）" },
     searchAliases: ["First Bank", "First Commercial Bank", "FCB", "第一銀行", "一銀", "第一商業銀行"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -378,7 +734,10 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
         en: "Preview source, never run against a live First Bank account. Its data may be incomplete or wrong. First Bank's web sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
         "zh-TW": "預覽來源，從未以真實的第一銀行帳戶執行過，資料可能不完整或有誤。第一銀行網路銀行登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
       },
-      requirements: [{ en: "A First Bank iBank (個人網路銀行) login.", "zh-TW": "可登入第一銀行個人網路銀行的帳號。" }],
+      requirements: [{
+        en: "A First Bank iBank (個人網路銀行) login. Credit cards are read through iBank's 信用卡 functions.",
+        "zh-TW": "可登入第一銀行個人網路銀行的帳號。信用卡資料經由網路銀行的信用卡功能讀取。",
+      }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to First Bank iBank.", "zh-TW": "輸入登入第一銀行個人網路銀行使用的身分證字號、使用者代號與密碼。" }],
       links: [{
         id: "firstbank-ibank",
@@ -410,9 +769,13 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
           await context.event("authentication", "authentication-completed");
           await context.event("collection", "collection-started");
           const collectedAt = context.now();
-          const accounts = await collect(context, page, collectedAt);
+          // Deposits are declared first, so they are read before the card member system, which can end the iBank session.
+          const output = await context.preview.collect({
+            deposit: async () => ({ collectedAt, accounts: await collectDeposits(context, page, collectedAt) }),
+            credit_card: async () => collectCards(context, await page.cardPages(), collectedAt),
+          });
           await context.event("collection", "collection-completed");
-          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
+          return output;
         } finally {
           await page.signOut().catch(() => undefined);
         }
