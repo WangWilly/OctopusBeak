@@ -141,7 +141,9 @@ Rules every source follows:
 
 ## Test fixture
 
-Set `OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE=1` to register the synthetic source in `src/lib/preview-sources/fixture-source.ts`. Its id is `synthetic`. It writes one fixed account without using the page. Its start URL does not resolve, so use it in checks and CDP screenshots, not for an App run. It never ships enabled.
+Set `OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE=1` to register the two synthetic sources in `src/lib/preview-sources/fixture-source.ts`. `synthetic` writes one fixed deposit account without using the page. `synthetic-products` declares deposit, credit card, and time deposit, and `previewProductsFixtureWrites(now)` gives its writes over two collections: a closed time deposit, a paired authorization, a pending purchase, a statement, and a card whose used credit is unknown. Their start URL does not resolve, so use them in checks and CDP screenshots, not for an App run. They never ship enabled.
+
+To see this data in the App, seed the desktop CDP fixture with `OCTOPUSBEAK_CDP_PREVIEW_FIXTURE=1` (it turns Preview features on and writes the data), then start the App with `OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE=1`.
 
 ## Promotion
 
