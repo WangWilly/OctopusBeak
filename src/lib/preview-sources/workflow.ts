@@ -1,20 +1,29 @@
-import type {
-  PreviewCollection,
-  PreviewWrite,
-  PreviewWriteReceipt,
-} from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
+import { BANK_STATEMENT_CAPABILITIES } from "../automation/statement-selection.ts";
 import type { WorkflowContext, WorkflowDefinition } from "../automation/workflow-executor.ts";
+import { ATTACHED_PREVIEW_PRODUCTS, type AttachedPreviewGroupId } from "./attached-products.ts";
+import {
+  boundPreviewWriter,
+  collectPreviewProducts,
+  previewRunOutput,
+  type PreviewProductCollectors,
+  type PreviewRunOutput,
+} from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
 import { previewTaskId } from "./source-id.ts";
+import { previewVisibilityFromEnvironment, visibleProducts } from "./visibility.ts";
 
-export type WorkflowPreviewWritePort = Readonly<{
-  write(input: PreviewWrite): Promise<PreviewWriteReceipt>;
-}>;
+export type { WorkflowPreviewWritePort } from "./product-collection.ts";
 
 export type PreviewResponseObservation = Readonly<{ endpoint: string; status: number; body: unknown }>;
 
+/**
+ * The writer a source's run holds. `collect` runs the selected products
+ * through the given collectors and writes each one as it completes; it is
+ * the only way a run produces its output.
+ */
 export type PreviewSourceWriter = Readonly<{
-  write(collection: PreviewCollection): Promise<PreviewWriteReceipt>;
+  collect(collectors: PreviewProductCollectors, options?: Readonly<{ assertSession?: () => Promise<void> }>): Promise<PreviewRunOutput>;
   observe(response: PreviewResponseObservation): void;
 }>;
 
@@ -36,12 +45,51 @@ export type PreviewWorkflowContext = Omit<
 export type PreviewWorkflowInput = Readonly<{
   startUrl: string;
   credentials: Readonly<Record<string, string>>;
+  /** The selected products no verified source covers, in the source's declared order. */
+  products: readonly PreviewProduct[];
 }>;
 
 export type PreviewWorkflowRun = (
   context: PreviewWorkflowContext,
   input: PreviewWorkflowInput,
-) => Promise<PreviewWriteReceipt>;
+) => Promise<PreviewRunOutput>;
+
+export const previewStatementSelectionKey = (source: Pick<PreviewSource, "id">) =>
+  `PREVIEW_${source.id.toUpperCase().replaceAll("-", "_")}_STATEMENT_TYPES`;
+
+/**
+ * Statement Selection for a Preview Source. A single product is the
+ * selection; several products need an explicit choice, and a product a
+ * verified source covers is never collected.
+ */
+export function selectedPreviewProducts(
+  source: Pick<PreviewSource, "id" | "institution" | "products">,
+  environment: NodeJS.ProcessEnv,
+): readonly PreviewProduct[] {
+  const raw = environment[previewStatementSelectionKey(source)];
+  const chosen = new Set(raw === undefined
+    ? source.products.length === 1 ? source.products : []
+    : raw.split(",").map((id) => id.trim()));
+  const selected = source.products.filter((product) => chosen.has(product));
+  const visibility = previewVisibilityFromEnvironment(environment, [source]);
+  return visibleProducts(visibility, { sourceId: source.id, products: selected });
+}
+
+/**
+ * The attached products a verified workflow run may write: the person's
+ * selection, reduced to the products Preview features offer and no verified
+ * source covers. Empty while Preview features are off.
+ */
+export function selectedAttachedPreviewProducts(
+  groupId: AttachedPreviewGroupId,
+  environment: NodeJS.ProcessEnv,
+): readonly PreviewProduct[] {
+  const attached = ATTACHED_PREVIEW_PRODUCTS[groupId];
+  const raw = environment[BANK_STATEMENT_CAPABILITIES[groupId].statementSelectionKey] ?? "";
+  const chosen = new Set(raw.split(",").map((id) => id.trim()));
+  const selected = attached.products.filter((product) => chosen.has(product));
+  return visibleProducts(previewVisibilityFromEnvironment(environment, []), { sourceId: attached.sourceId, products: selected });
+}
 
 export function previewWorkflowInput(
   source: PreviewSource,
@@ -52,12 +100,13 @@ export function previewWorkflowInput(
     credentials: Object.fromEntries(
       source.credentialFields.map((field) => [field.key, environment[field.key] ?? ""]),
     ),
+    products: selectedPreviewProducts(source, environment),
   };
 }
 
 export function previewWorkflowDefinition(
   source: PreviewSource,
-): WorkflowDefinition<PreviewWorkflowInput, PreviewWriteReceipt> {
+): WorkflowDefinition<PreviewWorkflowInput, PreviewRunOutput> {
   return {
     id: previewTaskId(source),
     requiresFinancialCommit: false,
@@ -66,16 +115,20 @@ export function previewWorkflowDefinition(
       const port = context.previewWrite!;
       const { financialCommit: _commit, maicoinPersistence: _maicoin, tdcc: _tdcc, previewWrite: _port, ...rest } = context;
       const observations: PreviewResponseObservation[] = [];
+      const write = boundPreviewWriter(port, { sourceId: source.id, institution: source.institution });
       try {
         return await source.run({
           ...rest,
           preview: {
-            write: (collection) => port.write({
-              sourceId: source.id,
-              institution: source.institution,
-              product: source.product,
-              collection,
-            }),
+            collect: async (collectors, options = {}) => previewRunOutput(await collectPreviewProducts({
+              products: source.products,
+              selected: input.products,
+              collectors,
+              write,
+              signal: context.signal,
+              event: context.event,
+              ...(options.assertSession ? { assertSession: options.assertSession } : {}),
+            })),
             observe(response) {
               observations.push(response);
               if (observations.length > MAX_OBSERVATIONS) observations.shift();

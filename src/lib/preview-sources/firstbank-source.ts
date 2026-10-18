@@ -365,7 +365,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
   return {
     id: "firstbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["firstbank-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "First Bank deposits (preview)", "zh-TW": "第一銀行存款（預覽）" },
     searchAliases: ["First Bank", "First Commercial Bank", "FCB", "第一銀行", "一銀", "第一商業銀行"],
     credentialFields: [
@@ -412,7 +412,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
           const collectedAt = context.now();
           const accounts = await collect(context, page, collectedAt);
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           await page.signOut().catch(() => undefined);
         }

@@ -9,7 +9,7 @@ import {
   type FirstbankQueryAccount,
   type FirstbankSignInOutcome,
 } from "./firstbank-source.ts";
-import { runPreviewSource } from "./preview-source-harness.ts";
+import { depositCollection, runPreviewSource } from "./preview-source-harness.ts";
 
 const credentials = {
   PREVIEW_FIRSTBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -90,9 +90,9 @@ async function run(script: Script = {}) {
 
 test("a First Bank run writes each deposit account with exact balances and three months of column-directed transactions", async () => {
   const { receipt, writes, observations, fake } = await run();
-  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3 });
+  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3, statements: 0, closedAccounts: 0 });
   const asOf = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
-  const [salary, dollar, term] = writes[0]!.collection.accounts;
+  const [salary, dollar, term] = depositCollection(writes[0]!).accounts;
   assert.deepEqual(
     [salary, dollar, term].map((account) => ({ key: account!.sourceAccountKey, label: account!.displayLabel, currency: account!.currency, balances: account!.balances })),
     [

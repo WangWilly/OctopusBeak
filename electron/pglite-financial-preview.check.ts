@@ -27,8 +27,8 @@ process.env.OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE = "1";
 const { currentPreviewVisibility } = await import("../src/lib/automation/server/settings.ts");
 
 const token = (value: string): string => `sha256:${value.padEnd(64, value.at(-1) ?? "x").slice(0, 64)}`;
-const VISIBLE: PreviewVisibility = { sourceIds: ["synthetic"] };
-const HIDDEN: PreviewVisibility = { sourceIds: [] };
+const VISIBLE: PreviewVisibility = { visible: [{ sourceId: "synthetic", product: "deposit" }] };
+const HIDDEN: PreviewVisibility = { visible: [] };
 const TODAY = "2026-10-15";
 
 function depositCommit(): PGliteCanonicalFinancialCommitRequest {

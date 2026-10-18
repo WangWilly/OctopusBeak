@@ -93,7 +93,7 @@ export function renderPreviewStructureReport(report: PreviewStructureReport, app
 
 export function previewStructureReportIssueUrl(source: PreviewSource): string {
   const url = new URL(ISSUE_URL);
-  url.searchParams.set("title", `Preview source report: ${source.displayName.en} ${source.product}`);
+  url.searchParams.set("title", `Preview source report: ${source.displayName.en} ${source.products.join(" ")}`);
   url.searchParams.set("body", [
     "Paste the Preview Structure Report that OctopusBeak showed you between the fences below. Read it before you submit: it lists endpoints, statuses, field names, and value forms, and never account numbers, names, amounts, dates, or free text.",
     "請將 OctopusBeak 顯示的預覽結構報告貼在下方程式碼區塊中。送出前請先閱讀：報告只列出端點、狀態碼、欄位名稱與值的格式，不含帳號、姓名、金額、日期或自由文字。",
@@ -124,7 +124,7 @@ export const previewStructureReports = {
     reports.set(taskId, {
       previewSource: source.id,
       institution: source.institution,
-      product: source.product,
+      product: source.products.join(","),
       failure: { stage: failure.stage, errorCode: failure.errorCode },
       ...failure.shapes,
     });

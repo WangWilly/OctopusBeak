@@ -11,7 +11,7 @@ const text = (en: string, zhTW: string) => ({ en, "zh-TW": zhTW });
 export const PREVIEW_FIXTURE_SOURCE: PreviewSource = {
   id: "synthetic",
   institution: "bank-009",
-  product: "deposit",
+  products: ["deposit"],
   displayName: text("Preview fixture bank", "預覽測試銀行"),
   searchAliases: ["preview fixture"],
   credentialFields: [{
@@ -30,7 +30,7 @@ export const PREVIEW_FIXTURE_SOURCE: PreviewSource = {
   async run(context) {
     await context.event("collection", "collection-started");
     const collectedAt = context.now();
-    return context.preview.write({
+    return context.preview.collect({ deposit: async () => ({
       collectedAt,
       accounts: [{
         sourceAccountKey: "fixture-account",
@@ -40,6 +40,6 @@ export const PREVIEW_FIXTURE_SOURCE: PreviewSource = {
         balances: [{ kind: "current", amount: "1000.00", currency: "TWD", observedAt: { at: collectedAt, source: "collection-time" } }],
         transactions: [],
       }],
-    });
+    }) });
   },
 };

@@ -4,7 +4,7 @@ import type {
 } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
-import type { PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
+import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   appendWorkflowFailureDiagnostic,
   isWorkflowFailureCorrelation,
@@ -52,7 +52,7 @@ const MAICOIN_METHODS = [
 ] as const satisfies readonly (keyof PGliteMaicoinPersistencePort & string)[];
 
 const PREVIEW_METHODS = [
-  "write", "deleteAll", "accounts", "transactions",
+  "write", "deleteAll", "accounts", "transactions", "creditAccounts", "purchases", "statements",
 ] as const satisfies readonly (keyof PGlitePreviewFinancialDataPort & string)[];
 
 export type PGliteOperationalDomains = AutomationPersistenceProvider & {
@@ -196,8 +196,10 @@ const TASK_RUN_UPDATE_FIELDS = [
 ] as const;
 
 function previewVisibility(value: unknown): boolean {
-  return hasOnlyFields(value, ["sourceIds"]) && Array.isArray(value.sourceIds)
-    && (value.sourceIds as unknown[]).length <= 100 && (value.sourceIds as unknown[]).every(stringValue);
+  return hasOnlyFields(value, ["visible"]) && Array.isArray(value.visible)
+    && (value.visible as unknown[]).length <= 100
+    && (value.visible as unknown[]).every((entry) => hasOnlyFields(entry, ["sourceId", "product"])
+      && stringValue(entry.sourceId) && isPreviewProduct(entry.product));
 }
 
 function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
@@ -277,7 +279,11 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
     case "preview.accounts":
       return args.length === 1 && previewVisibility(args[0]);
     case "preview.transactions":
+    case "preview.purchases":
+    case "preview.statements":
       return args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]);
+    case "preview.creditAccounts":
+      return args.length === 1 && previewVisibility(args[0]);
     default:
       return false;
   }
@@ -382,6 +388,15 @@ async function invokeOperation(
       case "transactions": return provider.preview.transactions(
         args[0] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[0],
         args[1] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[1],
+      );
+      case "creditAccounts": return provider.preview.creditAccounts(args[0] as Parameters<PGlitePreviewFinancialDataPort["creditAccounts"]>[0]);
+      case "purchases": return provider.preview.purchases(
+        args[0] as Parameters<PGlitePreviewFinancialDataPort["purchases"]>[0],
+        args[1] as Parameters<PGlitePreviewFinancialDataPort["purchases"]>[1],
+      );
+      case "statements": return provider.preview.statements(
+        args[0] as Parameters<PGlitePreviewFinancialDataPort["statements"]>[0],
+        args[1] as Parameters<PGlitePreviewFinancialDataPort["statements"]>[1],
       );
       default: throw new Error("Unknown preview operational operation.");
     }
@@ -621,6 +636,9 @@ export function createPGliteOperationalRpcClient(
     deleteAll: (...args) => previewMethod("deleteAll", args),
     accounts: (...args) => previewMethod("accounts", args),
     transactions: (...args) => previewMethod("transactions", args),
+    creditAccounts: (...args) => previewMethod("creditAccounts", args),
+    purchases: (...args) => previewMethod("purchases", args),
+    statements: (...args) => previewMethod("statements", args),
   };
 
   const close = (error = new Error("PGlite operational worker is closed.")): void => {

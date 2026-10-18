@@ -354,7 +354,7 @@ export function createTaishinSource(options: Readonly<{
   return {
     id: "taishin-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["taishin-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "Taishin Bank deposits (preview)", "zh-TW": "台新銀行存款（預覽）" },
     searchAliases: ["Taishin", "Taishin Bank", "台新", "台新銀行", "Richart"],
     credentialFields: [
@@ -395,7 +395,7 @@ export function createTaishinSource(options: Readonly<{
         const collectedAt = context.now();
         const accounts = [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)];
         await context.event("collection", "collection-completed");
-        return await context.preview.write({ collectedAt, accounts });
+        return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
       });
     },
   };

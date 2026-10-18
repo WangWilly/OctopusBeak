@@ -304,7 +304,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
   return {
     id: "skbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["skbank-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "Shin Kong Bank deposits (preview)", "zh-TW": "新光銀行存款（預覽）" },
     searchAliases: ["Shin Kong Bank", "SKBank", "新光", "新光銀行"],
     credentialFields: [
@@ -348,7 +348,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
           const collectedAt = context.now();
           const accounts = await collect(api, collectedAt);
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           if (api.signedIn()) await api.send("POST", PATH.logout).catch(() => undefined);
         }

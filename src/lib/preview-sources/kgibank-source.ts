@@ -255,7 +255,7 @@ export function createKgibankSource(options: Readonly<{
   return {
     id: "kgibank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["kgibank-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "KGI Bank deposits (preview)", "zh-TW": "凱基銀行存款（預覽）" },
     searchAliases: ["KGI", "KGI Bank", "凱基", "凱基銀行", "凱基商業銀行"],
     credentialFields: [
@@ -313,7 +313,7 @@ export function createKgibankSource(options: Readonly<{
           const collectedAt = context.now();
           const accounts = await collect(api, collectedAt);
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           if (submitted) await api.logout().catch(() => undefined);
         }

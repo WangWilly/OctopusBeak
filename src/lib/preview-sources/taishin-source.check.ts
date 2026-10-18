@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PreviewHttpOpener } from "./browser-http.ts";
 import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { createTaishinSource, type TaishinCredentials, type TaishinLoginForm, type TaishinSessionOpener } from "./taishin-source.ts";
 
 const credentials = {
@@ -61,8 +61,8 @@ async function run(overrides: Record<string, FakeRoute> = {}, form = loginForm()
 test("a Taishin run writes NT-dollar and foreign-currency accounts with exact amounts and in/out directions", async () => {
   const { receipt, writes, observations, http, form } = await run();
   assert.equal(writes.length, 1, `run failed: ${String(receipt)}`);
-  assert.deepEqual(receipt, { accounts: 2, balances: 3, transactions: 3 });
-  const [ntd, usd] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 2, balances: 3, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [ntd, usd] = depositCollection(writes[0]!).accounts;
   assert.equal(ntd!.sourceAccountKey, "TS7788:TWD");
   assert.deepEqual(ntd!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -149,7 +149,7 @@ test("a truncated NT-dollar list is split and requeried, and a short single day 
     },
   });
   assert.equal(split.writes.length, 1);
-  assert.equal(split.writes[0]!.collection.accounts[0]!.transactions.length, 1);
+  assert.equal(depositCollection(split.writes[0]!).accounts[0]!.transactions.length, 1);
 
   const short = await run({ [`${P}/web1/rb0102/query`]: () => twdList([twdRow("1", '"5"', '"-"')], 3, 0) });
   assert.equal(short.errorCode, "source-collection-failed");
@@ -197,7 +197,7 @@ test("an account online banking cannot query (EBF0015) keeps its overview balanc
   const { writes, http } = await run({
     [`${P}/web1/rb0101/query`]: () => jsonResponse({ RESULT: "ERROR", ERRORMSG: "(EBF0015)無交易權限" }),
   });
-  const [ntd] = writes[0]!.collection.accounts;
+  const [ntd] = depositCollection(writes[0]!).accounts;
   assert.deepEqual(ntd!.balances.map(({ kind, amount }) => ({ kind, amount })), [{ kind: "current", amount: "9999.00" }]);
   assert.equal(ntd!.transactions.length, 0);
   assert.ok(!http.requests.some((request) => request.url.endsWith("rb0102/query")));

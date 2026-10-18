@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { constants, createHash, createHmac, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import test from "node:test";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
 import { createSkbankSource, skbankDate, skbankDeviceId } from "./skbank-source.ts";
 
 const credentials = {
@@ -59,8 +59,8 @@ async function run(overrides: Record<string, FakeRoute> = {}) {
 test("an SKBank run writes TWD, time-deposit, and foreign accounts with exact amounts and source currencies", async () => {
   const { receipt, writes, observations, http, error } = await run();
   assert.equal(error, null);
-  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3 });
-  const [demand, term, foreign] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [demand, term, foreign] = depositCollection(writes[0]!).accounts;
   const reported = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
   assert.deepEqual(demand!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: reported },

@@ -317,7 +317,7 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
   return {
     id: "obank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["obank-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "O-Bank deposits (preview)", "zh-TW": "王道銀行存款（預覽）" },
     searchAliases: ["O-Bank", "OBank", "王道", "王道銀行"],
     credentialFields: [
@@ -361,7 +361,7 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
           for (const item of demandItems(list, collectedAt))
             accounts.push({ ...item.account, transactions: await itemTransactions(api, item, window) });
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           await api.logout().catch(() => undefined);
         }

@@ -40,6 +40,8 @@ const canonical: PGliteDailyHistory = {
 const savings: PreviewBalanceSeries = {
   accountId: "preview:a",
   label: "Preview savings",
+  side: "asset",
+  closedOn: null,
   points: [
     { date: "2026-10-03", currency: "TWD", exact: { coefficient: "12345", scale: 1 } },
     { date: "2026-10-05", currency: "TWD", exact: { coefficient: "500", scale: 0 } },
@@ -88,6 +90,8 @@ test("a preview balance without a rate is left out instead of dropping the date"
   const usd: PreviewBalanceSeries = {
     accountId: "preview:u",
     label: "Preview USD",
+    side: "asset",
+    closedOn: null,
     points: [{ date: "2026-10-03", currency: "USD", exact: { coefficient: "100", scale: 0 } }],
   };
   const merged = withPreviewHistory(canonical, [usd], countableWithRates([
@@ -113,6 +117,7 @@ test("the series prefers current balances and keeps each date's newest observati
   const [series] = previewBalanceSeries([{
     previewAccountId: "a",
     displayLabel: "Preview savings",
+    closedAt: null,
     observations: [
       { kind: "available", amount: "9", currency: "TWD", observedAt: { at: "2026-10-03T09:00:00Z", source: "reported" } },
       { kind: "current", amount: "1", currency: "TWD", observedAt: { at: "2026-10-03T01:00:00Z", source: "reported" } },
@@ -120,6 +125,7 @@ test("the series prefers current balances and keeps each date's newest observati
     ],
   }]);
   assert.deepEqual(series!.points, [{ date: "2026-10-03", currency: "TWD", exact: { coefficient: "2", scale: 0 } }]);
+  assert.deepEqual([series!.side, series!.closedOn], ["asset", null]);
 });
 
 test("a preview account row keeps the source amount exact and is namespaced away from canonical ids", () => {
@@ -134,6 +140,7 @@ test("a preview account row keeps the source amount exact and is namespaced away
     type: "depository",
     lastCollectedAt: "2026-10-15T01:00:00Z",
     latestBalance: { kind: "current", amount: "1234.50", currency: "USD", observedAt: { at: "2026-10-14T23:00:00Z", source: "collection-time" } },
+    timeDeposit: null,
   }, []);
   assert.equal(row.id, "preview:abc");
   assert.equal(row.canonicalAccountId, undefined);

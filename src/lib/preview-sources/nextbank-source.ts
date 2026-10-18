@@ -242,7 +242,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
   return {
     id: "nextbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["nextbank-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "Next Bank deposits (preview)", "zh-TW": "將來銀行存款（預覽）" },
     searchAliases: ["Next Bank", "NextBank", "將來", "將來銀行"],
     credentialFields: [
@@ -296,7 +296,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
           const collectedAt = context.now();
           const accounts = [await mainAccount(api, collectedAt), ...await pocketAccounts(api, collectedAt)];
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           await api.post("/ap2/api/v1.0/membership/Logout", {}, true).catch(() => undefined);
         }

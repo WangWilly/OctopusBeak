@@ -10,6 +10,7 @@ import type {
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import type { AttachedPreviewSource } from "../preview-sources/attached-products.ts";
 import type { WorkflowPreviewWritePort } from "../preview-sources/workflow.ts";
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
@@ -124,8 +125,15 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
   requiresTdcc?: boolean;
   requiresAccountIdentity?: boolean;
   requiresPreviewWrite?: boolean;
+  /** ADR 0051: the preview products this verified workflow may write beside its canonical commit. */
+  attachedPreviewProducts?: AttachedPreviewSource;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
+
+/** Whether the definition's context carries `previewWrite` when the port is available. */
+export function workflowUsesPreviewWrite(definition: Pick<WorkflowDefinition, "requiresPreviewWrite" | "attachedPreviewProducts">): boolean {
+  return definition.requiresPreviewWrite === true || definition.attachedPreviewProducts !== undefined;
+}
 
 export type WorkflowExecutorPorts = Readonly<{
   browser: WorkflowBrowserPort;
@@ -228,7 +236,7 @@ export function createWorkflowExecutor(
           : {}),
         ...(definition.requiresTdcc ? { tdcc: ports.tdcc } : {}),
         ...(definition.requiresAccountIdentity ? { accountIdentity: ports.accountIdentity } : {}),
-        ...(definition.requiresPreviewWrite ? { previewWrite: ports.previewWrite } : {}),
+        ...(workflowUsesPreviewWrite(definition) && ports.previewWrite ? { previewWrite: ports.previewWrite } : {}),
         event,
         productFailure,
       };

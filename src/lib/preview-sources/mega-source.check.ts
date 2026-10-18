@@ -3,7 +3,7 @@ import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from
 import test from "node:test";
 import { createMegaSource, encryptMegaLogin, megaVirtualDevice } from "./mega-source.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 
@@ -77,8 +77,8 @@ async function run(overrides: Record<string, ResourceRoute> = {}, extra: Record<
 
 test("a Mega run writes each account and currency with exact amounts, DRCR directions, and paged NT-dollar history", async () => {
   const { receipt, writes, observations, http, resources } = await run();
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3 });
-  const [twd, usd] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [twd, usd] = depositCollection(writes[0]!).accounts;
   assert.equal(twd!.sourceAccountKey, "MG-7788:TWD");
   assert.deepEqual(twd!.balances, [
     { kind: "available", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -153,7 +153,7 @@ test("an unaccepted CAPTCHA is refreshed through the captcha API without a login
     unsure, unsure, unsure,
     { text: "24680", confidence: 0.995 }, unsure, unsure,
   ]);
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3 });
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
   assert.equal(engine.calls.length, 9, "three strategies on each of three challenges");
   assert.deepEqual(signInResources(resources), [
     "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/e2ee", "/fco/fco02003/login",

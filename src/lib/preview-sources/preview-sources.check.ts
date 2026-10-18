@@ -52,10 +52,16 @@ test("a registry entry derives its sign-in group, task, and preview-only workflo
   const definition = workflowDefinitionForTask("preview-synthetic");
   assert.equal(definition?.requiresFinancialCommit, false, "a preview workflow never receives the canonical commit");
   assert.equal(definition?.requiresPreviewWrite, true);
-  assert.deepEqual(workflowInputForTask("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u" }), {
+  assert.deepEqual(workflowInputForTask("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u", PREVIEW_FEATURES_ENABLED: "true" }), {
     startUrl: "https://preview-fixture.invalid/",
     credentials: { PREVIEW_SYNTHETIC_USER_ID: "u" },
-  });
+    products: ["deposit"],
+  }, "a single product is the selection");
+  assert.deepEqual(
+    (workflowInputForTask("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u" }) as { products: unknown }).products,
+    [],
+    "Preview features off offers no product",
+  );
 });
 
 test("the registry refuses colliding ids, foreign credential keys, and non-https start URLs", () => {
@@ -69,20 +75,21 @@ test("the registry refuses colliding ids, foreign credential keys, and non-https
 
 test("an enabled verified source covering the same Institution and product hides a preview source", () => {
   const sources = [
-    { id: "sinopac-preview", institution: "sinopac", product: "deposit" },
-    { id: "esun-deposit-preview", institution: "esun", product: "deposit" },
-    { id: "yuanta-deposit-preview", institution: "yuanta-bank", product: "deposit" },
+    { id: "sinopac-preview", institution: "sinopac", products: ["deposit"] },
+    { id: "esun-preview", institution: "esun", products: ["deposit", "credit_card"] },
+    { id: "yuanta-deposit-preview", institution: "yuanta-bank", products: ["deposit"] },
   ] as const;
   const visible = (enabledGroups: Record<string, boolean>) =>
-    previewVisibility({ previewFeaturesEnabled: true, enabledGroups, sources }).sourceIds;
-  assert.deepEqual(visible({}), ["sinopac-preview", "esun-deposit-preview", "yuanta-deposit-preview"]);
-  assert.deepEqual(visible({ sinopac: true }), ["esun-deposit-preview", "yuanta-deposit-preview"]);
-  assert.deepEqual(visible({ sinopac: false }), ["sinopac-preview", "esun-deposit-preview", "yuanta-deposit-preview"],
+    previewVisibility({ previewFeaturesEnabled: true, enabledGroups, sources, attached: [] }).visible
+      .map((entry) => `${entry.sourceId}:${entry.product}`);
+  assert.deepEqual(visible({}), ["sinopac-preview:deposit", "esun-preview:deposit", "esun-preview:credit_card", "yuanta-deposit-preview:deposit"]);
+  assert.deepEqual(visible({ sinopac: true }), ["esun-preview:deposit", "esun-preview:credit_card", "yuanta-deposit-preview:deposit"]);
+  assert.deepEqual(visible({ sinopac: false }), ["sinopac-preview:deposit", "esun-preview:deposit", "esun-preview:credit_card", "yuanta-deposit-preview:deposit"],
     "a disabled verified source covers nothing");
-  assert.deepEqual(visible({ esun: true, yuanta: true }), ["sinopac-preview", "esun-deposit-preview"],
-    "E.SUN's verified source collects credit cards, not deposits");
+  assert.deepEqual(visible({ esun: true, yuanta: true }), ["sinopac-preview:deposit", "esun-preview:deposit"],
+    "E.SUN's verified source covers only its credit cards, so the deposit product stays");
   assert.deepEqual(
-    previewVisibility({ previewFeaturesEnabled: false, enabledGroups: {}, sources }).sourceIds,
+    previewVisibility({ previewFeaturesEnabled: false, enabledGroups: {}, sources }).visible,
     [],
     "Preview features off reads no preview source",
   );
@@ -94,14 +101,14 @@ test("Preview features off removes preview sources from sign-in settings, Sync a
   assert.equal(off.signInSettings.includes("synthetic"), false);
   assert.equal(off.syncAll.includes("preview-synthetic"), false);
   assert.equal(off.scheduled.includes("preview-synthetic"), false);
-  assert.deepEqual(off.visibility, { sourceIds: [] });
+  assert.deepEqual(off.visibility, { visible: [] });
   assert.ok(off.syncAll.includes("sinopac-statements"), "verified sources still sync");
 
   const on = offered({ ...ready, PREVIEW_FEATURES_ENABLED: "true" });
   assert.ok(on.signInSettings.includes("synthetic"));
   assert.ok(on.syncAll.includes("preview-synthetic"));
   assert.ok(on.scheduled.includes("preview-synthetic"));
-  assert.ok(on.visibility.sourceIds.includes("synthetic"));
+  assert.ok(on.visibility.visible.some((entry) => entry.sourceId === "synthetic" && entry.product === "deposit"));
 });
 
 test("a preview workflow writes only through its bound preview port", async () => {
@@ -125,11 +132,16 @@ test("a preview workflow writes only through its bound preview port", async () =
   };
   const executor = createWorkflowExecutor([observing], {
     ...ports,
-    previewWrite: { write: async (input) => { writes.push(input); return { accounts: 1, balances: 1, transactions: 0 }; } },
+    previewWrite: { write: async (input) => { writes.push(input); return { accounts: 1, balances: 1, transactions: 0, statements: 0, closedAccounts: 0 }; } },
   });
   const signal = new AbortController().signal;
-  assert.deepEqual(await executor.run("preview-synthetic", "run-1", { startUrl: "", credentials: {} }, signal),
-    { accounts: 1, balances: 1, transactions: 0 });
+  assert.deepEqual(await executor.run("preview-synthetic", "run-1", { startUrl: "", credentials: {}, products: ["deposit"] }, signal), {
+    status: "completed",
+    accountCount: 1,
+    itemCount: 1,
+    committedCount: 1,
+    products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+  });
   assert.equal(seenContextKeys.includes("financialCommit"), false);
   assert.deepEqual(writes.map(({ sourceId, institution, product }) => ({ sourceId, institution, product })),
     [{ sourceId: "synthetic", institution: "bank-009", product: "deposit" }]);
@@ -162,11 +174,11 @@ test("a failed preview run keeps the responses it observed for a structure repor
     browser: { withPage: async () => { throw new Error("no page"); } },
     text: {} as never,
     humanAssistance: { request: async () => "failed" as const },
-    previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0 }) },
+    previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 }) },
     events: { append: async () => undefined },
     now: () => "2026-10-15T02:00:00.000Z",
   });
-  const thrown = await executor.run("preview-synthetic", "run-3", {}, new AbortController().signal).catch((error) => error);
+  const thrown = await executor.run("preview-synthetic", "run-3", { products: ["deposit"] }, new AbortController().signal).catch((error) => error);
   assert.equal(thrown, failure, "the original error reaches the runner unchanged");
   assert.deepEqual(takePreviewObservations(thrown), [{ endpoint: "/accounts", status: 200, body: { list: [] } }]);
   assert.deepEqual(takePreviewObservations(thrown), [], "raw bodies are released after the first take");

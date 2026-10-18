@@ -293,7 +293,7 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
   return {
     id: "rakuten-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["rakuten-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "Rakuten International Commercial Bank deposits (preview)", "zh-TW": "樂天國際銀行存款（預覽）" },
     searchAliases: ["Rakuten", "Rakuten Bank", "樂天", "樂天銀行", "樂天國際銀行"],
     credentialFields: [
@@ -343,7 +343,7 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
             months.push(monthFrom(context, await page.depositMonth(back), back === 0 ? CURRENT_MONTH_PATH : PAST_MONTH_PATH));
           const account = depositAccount(months, collectedAt);
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts: [account] });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts: [account] }) });
         } finally {
           await page.signOut().catch(() => undefined);
         }

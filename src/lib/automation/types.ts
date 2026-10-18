@@ -138,7 +138,11 @@ export type AutomationCredentialGroup = {
   statementTypes?: readonly StatementTypeCapability[];
 };
 
-export type StatementTypeCapability = { id: string };
+export type StatementTypeCapability = {
+  id: string;
+  /** An Attached Preview Product (ADR 0051): offered only while Preview features are on, never selected by default. */
+  preview?: true;
+};
 
 export type AutomationTaskHistoryRow = {
   taskRunId: string;
