@@ -11,6 +11,7 @@ import type {
 import type { PreviewProductAbsence, PreviewProductCollectors } from "../lib/preview-sources/product-collection.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -71,22 +72,6 @@ function content(response: CathayPreviewResponse): SourceRecord {
   if (envelope.returnCode !== "0000" || envelope.success === false)
     fail("unexpected-response", `${response.endpoint} returned ${String(envelope.returnCode)}`);
   return record(envelope.content, `${response.endpoint} content`);
-}
-
-function scaled(value: string, scale: number): bigint {
-  const negative = value.startsWith("-");
-  const [whole = "0", fraction = ""] = value.replace(/^[+-]/u, "").split(".");
-  const magnitude = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-  return negative ? -magnitude : magnitude;
-}
-
-/** Exact decimal sum of signed terms, at the widest scale of its operands. */
-export function decimalSum(terms: readonly Readonly<{ value: string; sign: 1 | -1 }>[]): string {
-  const scale = Math.max(0, ...terms.map(({ value }) => value.split(".")[1]?.length ?? 0));
-  const total = terms.reduce((sum, { value, sign }) => sum + BigInt(sign) * scaled(value, scale), 0n);
-  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
-  const whole = digits.slice(0, digits.length - scale);
-  return `${total < 0n ? "-" : ""}${whole}${scale > 0 ? `.${digits.slice(-scale)}` : ""}`;
 }
 
 function day(value: unknown, field: string): string {
@@ -189,7 +174,7 @@ function currentStatement(
     cycleEnd: closingDate,
     closingDate,
     dueDate: latest.dueDate,
-    amount: decimalSum([{ value: bill.unpaid, sign: 1 }, { value: bill.paid, sign: 1 }]),
+    amount: decimalSum([[1, bill.unpaid], [1, bill.paid]]),
     currency: bill.currency,
     minimumPayment: minimum,
     billingPeriod: closingDate.slice(0, 7),
@@ -296,7 +281,7 @@ export async function collectCathayCreditCards(
     creditLimit: limit.amount,
     cards,
     balances: [{
-      amount: decimalSum([{ value: limit.amount, sign: 1 }, { value: available.amount, sign: -1 }]),
+      amount: decimalSum([[1, limit.amount], [-1, available.amount]]),
       currency: "TWD",
       observedAt: observedAt(overview.cardStatus.date, collectedAt),
       basis: { kind: "credit-limit-minus-available", creditLimit: limit.amount, availableCredit: available.amount },
@@ -377,8 +362,8 @@ export async function collectCathayTimeDeposits(
   if (section.totalAccountBalance !== undefined && section.totalAccountBalance !== null) {
     if (deposits.some((deposit) => deposit.currency !== "TWD")) fail("unexpected-response", "timeDepositData mixes currencies under one total");
     const total = exactDecimal(section.totalAccountBalance, "timeDepositData.totalAccountBalance");
-    const sum = decimalSum(deposits.map((deposit) => ({ value: deposit.balances[0]!.amount, sign: 1 as const })));
-    if (!isZeroDecimal(decimalSum([{ value: sum, sign: 1 }, { value: total, sign: -1 }])))
+    const sum = decimalSum(deposits.map((deposit) => [1, deposit.balances[0]!.amount] as const));
+    if (!isZeroDecimal(decimalSum([[1, sum], [-1, total]])))
       fail("incomplete-data", "timeDepositData rows do not add up to totalAccountBalance");
   }
   return { collectedAt, completeness: "complete", deposits };

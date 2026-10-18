@@ -6,7 +6,6 @@ import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import {
   collectCathayCreditCards,
   collectCathayTimeDeposits,
-  decimalSum,
 } from "./cathay-attached-preview.ts";
 import {
   CATHAY_CARD_OVERVIEW_TEXT as OVERVIEW_TEXT,
@@ -23,11 +22,6 @@ async function rejectsWith(promise: Promise<unknown>, reason: PreviewSourceFailu
   await assert.rejects(promise, (error: unknown) => error instanceof PreviewSourceFailure && error.reason === reason);
 }
 
-test("decimalSum is exact and keeps the widest scale", () => {
-  assert.equal(decimalSum([{ value: "100000", sign: 1 }, { value: "98765.5", sign: -1 }]), "1234.5");
-  assert.equal(decimalSum([{ value: "10", sign: 1 }, { value: "10.25", sign: -1 }]), "-0.25");
-  assert.equal(decimalSum([{ value: "0.1", sign: 1 }, { value: "0.2", sign: 1 }]), "0.3");
-});
 
 test("Cathay credit cards write an NT-dollar account with balance, cards, billed purchases, and a statement per currency", async () => {
   const { port, seen } = fakePort();

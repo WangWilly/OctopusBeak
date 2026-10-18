@@ -22,6 +22,7 @@ const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewVisibility } = await import("./visibility.ts");
 const { takePreviewObservations, previewWorkflowDefinition } = await import("./workflow.ts");
 const { deleteAllPreviewData } = await import("./delete-preview-data.ts");
+const { decimalSum } = await import("./source-kit.ts");
 
 const SINOPAC_ENABLED = "LIBRETTO_CLOUD_SINOPAC_ENABLED";
 
@@ -43,6 +44,18 @@ function offered(settings: Record<string, string>) {
     visibility: currentPreviewVisibility(settings),
   };
 }
+
+test("decimalSum adds signed lexemes exactly at the widest operand scale", () => {
+  assert.equal(decimalSum([]), "0");
+  assert.equal(decimalSum([[1, "3000"], [-1, "1000"], [1, "1530"]]), "3530");
+  assert.equal(decimalSum([[1, "0.1"], [1, "0.2"]]), "0.3");
+  assert.equal(decimalSum([[1, "100000"], [-1, "87654.50"]]), "12345.50");
+  assert.equal(decimalSum([[1, "100"], [-1, "100.25"]]), "-0.25");
+  assert.equal(decimalSum([[1, "-12.50"], [1, "-0"], [-1, "0"]]), "-12.50");
+  assert.equal(decimalSum([[-1, "-5"], [1, "-5"]]), "0");
+  assert.equal(decimalSum([[1, "-0.05"], [1, "0.01"]]), "-0.04");
+  assert.equal(decimalSum([[1, "007.10"], [-1, "0.001"]]), "7.099");
+});
 
 test("a registry entry derives its sign-in group, task, and preview-only workflow", () => {
   const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === "synthetic");

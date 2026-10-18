@@ -14,7 +14,7 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
-  decimalDifference,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -431,7 +431,7 @@ async function collectCreditCards(api: Api, collectedAt: string): Promise<Previe
       creditLimit,
       cards: cardList,
       balances: [{
-        amount: decimalDifference(creditLimit, availableCredit),
+        amount: decimalSum([[1, creditLimit], [-1, availableCredit]]),
         currency,
         observedAt: observedAt(summaryEnvelope.date, collectedAt),
         basis: { kind: "credit-limit-minus-available", creditLimit, availableCredit },

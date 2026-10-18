@@ -17,7 +17,6 @@ import {
   SINOCARD_OUTSTANDING_PATH,
   SINOCARD_SSO_PATH,
   SINOPAC_CARD_SUMMARY_PATH,
-  sumDecimals,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
 import { runSinopacProviderWorkflow } from "./sinopac-statements.ts";
@@ -249,12 +248,6 @@ test("SinoPac card statements are not written when the due date is only a status
   const collection = await written(edit((source) => { source[SINOCARD_ACCOUNTING_PATH].Result.BaseData.DUEDATE = "自動扣繳"; }));
   assert.deepEqual(collection.accounts[0]!.statements, []);
   assert.equal(collection.accounts[0]!.balances[0]!.amount, "3412");
-});
-
-test("exact decimal sums keep scale and sign", () => {
-  assert.equal(sumDecimals([{ value: "2000" }, { value: "0", negate: true }, { value: "1412" }]), "3412");
-  assert.equal(sumDecimals([{ value: "-137" }, { value: "0", negate: true }, { value: "100" }]), "-37");
-  assert.equal(sumDecimals([{ value: "10.5" }, { value: "10.75", negate: true }, { value: "0" }]), "-0.25");
 });
 
 const accountId = ["1410", "1800", "0822", "21"].join("");

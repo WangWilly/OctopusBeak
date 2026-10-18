@@ -4,7 +4,6 @@ import test from "node:test";
 import type { PreviewCreditCollection, PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
 import { createSkbankSource, skbankDate, skbankDeviceId } from "./skbank-source.ts";
-import { decimalDifference } from "./source-kit.ts";
 
 const credentials = {
   PREVIEW_SKBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -329,9 +328,3 @@ test("a statement is written only with a dated due date and a matching history m
   assert.deepEqual([statement!.cycleStart, statement!.closingDate], ["2026-10-01", "2026-10-31"], "a day-31 closing clamps to month end");
 });
 
-test("decimalDifference subtracts exact lexemes without rounding", () => {
-  assert.equal(decimalDifference("100000", "87654.50"), "12345.50");
-  assert.equal(decimalDifference("100", "100.25"), "-0.25");
-  assert.equal(decimalDifference("0.1", "0.3"), "-0.2");
-  assert.equal(decimalDifference("-5", "-5"), "0");
-});

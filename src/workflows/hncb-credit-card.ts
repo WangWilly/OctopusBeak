@@ -10,6 +10,7 @@ import type {
 import type { PreviewProductAbsence } from "../lib/preview-sources/product-collection.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -264,19 +265,6 @@ function billPage(text: string, html: string): BillPage | null {
     creditLimit: labelled(text, ["信用額度"], "信用額度"),
     rows: cardRows(html, period),
   };
-}
-
-/** Exact sum of signed decimal lexemes. */
-export function decimalSum(terms: readonly (readonly [1 | -1, string])[]): string {
-  const scale = Math.max(0, ...terms.map(([, value]) => (value.split(".")[1] ?? "").length));
-  const total = terms.reduce((sum, [sign, value]) => {
-    const [whole, fraction = ""] = value.replace(/^[+-]/u, "").split(".");
-    const units = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-    return sum + BigInt(sign) * (value.startsWith("-") ? -units : units);
-  }, 0n);
-  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
-  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return `${total < 0n ? "-" : ""}${body}`;
 }
 
 function nextDay(date: string): string {
