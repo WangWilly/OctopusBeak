@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createNextBankSource, encryptNextBankPassword } from "./nextbank-source.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
 
 const credentials = {
   PREVIEW_NEXTBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -46,8 +46,8 @@ async function run(overrides: Record<string, FakeRoute> = {}) {
 
 test("a NextBank run writes the main account, pockets, and paged pocket transactions with exact amounts", async () => {
   const { receipt, writes, observations, http } = await run();
-  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 4 });
-  const [main, pocket, term] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 4, statements: 0, closedAccounts: 0 });
+  const [main, pocket, term] = depositCollection(writes[0]!).accounts;
   assert.deepEqual(main!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
     { kind: "available", amount: "1200.00", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -138,5 +138,5 @@ test("a USD currency reported by the source is kept instead of the TWD endpoint 
   const { writes } = await run({
     "POST /ap1/api/v3.0/AppMainPage/PocketInfo": () => jsonResponse('{"success":true,"data":{"pocketDetails":[{"depositType":"TERMDEPOSIT","arrngId":"TD9","amount":10.5,"currency":"usd"}]}}'),
   });
-  assert.deepEqual(writes[0]!.collection.accounts[1]!.balances.map(({ amount, currency }) => ({ amount, currency })), [{ amount: "10.5", currency: "USD" }]);
+  assert.deepEqual(depositCollection(writes[0]!).accounts[1]!.balances.map(({ amount, currency }) => ({ amount, currency })), [{ amount: "10.5", currency: "USD" }]);
 });

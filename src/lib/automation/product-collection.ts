@@ -20,6 +20,7 @@ import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts
 export const COLLECTION_PRODUCT_TYPE_IDS = [
   "deposit",
   "credit_card",
+  "time_deposit",
   "loan",
   "foreign_currency",
   "fund",

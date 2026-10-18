@@ -11,6 +11,7 @@ import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from 
 import {
   applyPglitePreviewFinancialDataSchema,
   PREVIEW_FINANCIAL_DATA_TABLES,
+  type PreviewVisibility,
   type PreviewWrite,
 } from "./preview-financial-data.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -42,7 +43,7 @@ const write: PreviewWrite = {
   },
 };
 
-const visible = { sourceIds: ["synthetic-preview"] };
+const visible: PreviewVisibility = { visible: [{ sourceId: "synthetic-preview", product: "deposit" }] };
 
 async function withPreviewStore(run: (input: {
   store: PGliteStore;
@@ -83,6 +84,8 @@ async function nonPreviewRowCounts(store: PGliteStore): Promise<Record<string, n
   return counts;
 }
 
+const EMPTY_COUNTS = Object.fromEntries(PREVIEW_FINANCIAL_DATA_TABLES.map((table) => [table, 0]));
+
 async function previewRowCounts(store: PGliteStore) {
   return Object.fromEntries(await Promise.all(PREVIEW_FINANCIAL_DATA_TABLES.map(async (table) => [
     table,
@@ -96,11 +99,11 @@ test("preview writes keep exact decimal strings and touch no canonical table", a
     const before = await nonPreviewRowCounts(store);
     assert.ok(Object.values(before).some((count) => count > 0), "the fixture seeded canonical rows");
 
-    assert.deepEqual(await preview.write(write), { accounts: 1, balances: 1, transactions: 2 });
-    assert.deepEqual(await preview.write(write), { accounts: 1, balances: 1, transactions: 2 }, "a rerun converges");
+    assert.deepEqual(await preview.write(write), { accounts: 1, balances: 1, transactions: 2, statements: 0, closedAccounts: 0 });
+    assert.deepEqual(await preview.write(write), { accounts: 1, balances: 1, transactions: 2, statements: 0, closedAccounts: 0 }, "a rerun converges");
     assert.deepEqual(await nonPreviewRowCounts(store), before, "canonical and operational row counts unchanged");
     assert.deepEqual(await previewRowCounts(store), {
-      preview_accounts: 1, preview_balance_observations: 1, preview_transactions: 2,
+      ...EMPTY_COUNTS, preview_accounts: 1, preview_balance_observations: 1, preview_transactions: 2,
     });
 
     const [account] = await preview.accounts(visible);
@@ -134,9 +137,7 @@ test("preview data refuses a missing currency and inexact amounts", async () => 
     ]) {
       await assert.rejects(preview.write(rejected));
     }
-    assert.deepEqual(await previewRowCounts(store), {
-      preview_accounts: 0, preview_balance_observations: 0, preview_transactions: 0,
-    }, "a rejected write leaves nothing behind");
+    assert.deepEqual(await previewRowCounts(store), EMPTY_COUNTS, "a rejected write leaves nothing behind");
 
     await store.query(
       `INSERT INTO preview_accounts(preview_account_id, source_id, institution_key, product, source_account_key,
@@ -158,10 +159,12 @@ test("the visibility predicate reads nothing for hidden sources", async () => {
   await withPreviewStore(async ({ preview }) => {
     await preview.write(write);
     assert.equal((await preview.accounts(visible)).length, 1);
-    assert.deepEqual(await preview.accounts({ sourceIds: [] }), [], "Preview features off");
-    assert.deepEqual(await preview.accounts({ sourceIds: ["another-preview"] }), []);
+    assert.deepEqual(await preview.accounts({ visible: [] }), [], "Preview features off");
+    assert.deepEqual(await preview.accounts({ visible: [{ sourceId: "another-preview", product: "deposit" }] }), []);
+    assert.deepEqual(await preview.accounts({ visible: [{ sourceId: "synthetic-preview", product: "time_deposit" }] }), [],
+      "visibility is per product, not per source");
     const [account] = await preview.accounts(visible);
-    assert.deepEqual(await preview.transactions({ sourceIds: [] }, account!.previewAccountId), []);
+    assert.deepEqual(await preview.transactions({ visible: [] }, account!.previewAccountId), []);
   });
 });
 
@@ -171,9 +174,7 @@ test("delete all preview data empties only preview tables", async () => {
     await preview.write(write);
     const before = await nonPreviewRowCounts(store);
     await preview.deleteAll();
-    assert.deepEqual(await previewRowCounts(store), {
-      preview_accounts: 0, preview_balance_observations: 0, preview_transactions: 0,
-    });
+    assert.deepEqual(await previewRowCounts(store), EMPTY_COUNTS);
     assert.deepEqual(await nonPreviewRowCounts(store), before, "canonical rows survive the delete");
   });
 });

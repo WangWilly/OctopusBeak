@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PreviewHttpOpener } from "./browser-http.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
 import { createKgibankSource, type KgibankLoginForm, type KgibankLoginSignal, type KgibankSessionOpener } from "./kgibank-source.ts";
 
 const credentials = {
@@ -71,8 +71,8 @@ async function run(overrides: Record<string, FakeRoute> = {}, form = loginForm()
 
 test("a KGI run writes the NT-dollar demand account with exact amounts, seconds-precision row keys, and an unknown direction", async () => {
   const { receipt, writes, observations, http, form, paths } = await run();
-  assert.deepEqual(receipt, { accounts: 1, balances: 2, transactions: 3 });
-  const [account] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 1, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [account] = depositCollection(writes[0]!).accounts;
   assert.equal(account!.sourceAccountKey, "7788:TWD");
   assert.equal(account!.displayLabel, "凱基銀行 活期儲蓄存款 7788");
   assert.deepEqual(account!.balances, [
@@ -186,14 +186,14 @@ test("a currency the source sends wins over the endpoint's TWD", async () => {
     [`GET ${API}/AcctQuery`]: () => list(['{"acctNo":"7788","acctBal":"5","currency":"NTD"}']),
     [`GET ${API}/TxnQuery`]: () => list([txn("2026-10-03T09:15:20+08:00", '"1"', '"5"', ',"currency":"USD"')]),
   });
-  const [account] = writes[0]!.collection.accounts;
+  const [account] = depositCollection(writes[0]!).accounts;
   assert.equal(account!.currency, "TWD");
   assert.equal(account!.transactions[0]!.currency, "USD");
 });
 
 test("a failed sign-out does not change the run's outcome", async () => {
   const success = await run({ [LOGOUT]: () => ({ status: 500, headers: {}, text: "" }) });
-  assert.deepEqual(success.receipt, { accounts: 1, balances: 2, transactions: 3 });
+  assert.deepEqual(success.receipt, { accounts: 1, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
   const failure = await run({
     [LOGOUT]: () => { throw new Error("network down"); },
     [`GET ${API}/TxnQuery`]: () => list([], ',"hasMore":true'),

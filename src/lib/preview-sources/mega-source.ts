@@ -364,7 +364,7 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
   return {
     id: "mega-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["mega-deposit"],
-    product: "deposit",
+    products: ["deposit"],
     displayName: { en: "Mega Bank deposits (preview)", "zh-TW": "兆豐銀行存款（預覽）" },
     searchAliases: ["Mega Bank", "Mega International Commercial Bank", "MegaBank", "兆豐", "兆豐銀行", "兆豐國際商業銀行"],
     credentialFields: [
@@ -409,7 +409,7 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
           const collectedAt = context.now();
           const accounts = await collect(api, collectedAt);
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           await api.resource("megapmb", "/fco/fco02011/logout", {}, null, false).catch(() => undefined);
         }

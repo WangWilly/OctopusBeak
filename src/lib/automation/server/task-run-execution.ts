@@ -21,7 +21,7 @@ import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
-import { createWorkflowExecutor } from "../workflow-executor.ts";
+import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
 import type {
   WorkflowBrowserPort,
   WorkflowExecutorPorts,
@@ -345,7 +345,7 @@ async function executeInlineAppWorkflow(
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
     let previewWrite = injectedPorts.previewWrite;
-    if (definition.requiresPreviewWrite && !previewWrite) {
+    if (workflowUsesPreviewWrite(definition) && !previewWrite) {
       childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
         workflowId: execution.task.workflowId,
         taskRunId: execution.run.taskRunId,

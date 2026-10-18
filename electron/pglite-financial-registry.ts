@@ -53,15 +53,25 @@ import {
 import { readPGliteDailyHistoryWithAccounts, type PGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
 import { readPGliteHoldingPrices, type PGliteHoldingPrice } from "../src/ledger/pglite/holding-prices.ts";
 import {
+  NO_PREVIEW_VISIBILITY,
   readPreviewAccounts,
   readPreviewBalanceHistory,
   readPreviewTransactions,
   type PreviewVisibility,
 } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
+  readPreviewCreditAccounts,
+  readPreviewCreditBalanceHistory,
+  readPreviewPurchases,
+  readPreviewStatements,
+} from "../src/ledger/pglite/preview-credit.ts";
+import {
   countableWithRates,
   previewAccountRow,
   previewBalanceSeries,
+  previewCreditAccountRow,
+  previewCreditSeries,
+  previewSummaryMarkers,
   withPreviewHistory,
   type PreviewBalanceSeries,
 } from "../src/ledger/pglite/preview-overview.ts";
@@ -524,13 +534,11 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
   const assetValue = new Map<string, AggregatedAmount>();
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
-  const preview = assets.some((account) => account.preview && account.amountLines.length > 0)
-    ? { includesPreview: true }
-    : {};
+  const preview = previewSummaryMarkers(accounts);
   return [
-    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview },
-    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview },
-    { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display) },
+    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview.net },
+    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview.assets },
+    { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display), ...preview.liabilities },
   ];
 }
 
@@ -649,11 +657,24 @@ const NO_PREVIEW: PreviewOverview = { accounts: [], series: [] };
 
 async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<PreviewOverview> {
   const views = await readPreviewAccounts(reader, visibility);
-  if (views.length === 0) return NO_PREVIEW;
+  const creditViews = await readPreviewCreditAccounts(reader, visibility);
+  if (views.length === 0 && creditViews.length === 0) return NO_PREVIEW;
   const accounts: AccountRowDto[] = [];
   for (const view of views)
     accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
-  return { accounts, series: previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)) };
+  for (const view of creditViews)
+    accounts.push(previewCreditAccountRow(
+      view,
+      await readPreviewPurchases(reader, visibility, view.previewAccountId),
+      await readPreviewStatements(reader, visibility, view.previewAccountId),
+    ));
+  return {
+    accounts,
+    series: [
+      ...previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)),
+      ...previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)),
+    ],
+  };
 }
 
 async function readHistoryWithPreview(
@@ -675,7 +696,7 @@ async function readHistoryWithPreview(
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   exchangeRates: ExchangeRatePersistencePort,
-  previewVisibility: () => PreviewVisibility = () => ({ sourceIds: [] }),
+  previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
 ): PGliteFinancialRegistryWithPageActionEvents {
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
@@ -1077,7 +1098,14 @@ const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
   (SELECT COUNT(*) FROM preview_balance_observations) AS balances,
   (SELECT MAX(collected_at) FROM preview_balance_observations) AS balance_collected_at,
   (SELECT COUNT(*) FROM preview_transactions) AS transactions,
-  (SELECT MAX(collected_at) FROM preview_transactions) AS transaction_collected_at`;
+  (SELECT MAX(collected_at) FROM preview_transactions) AS transaction_collected_at,
+  (SELECT COUNT(*) FROM preview_credit_accounts) AS credit_accounts,
+  (SELECT MAX(last_collected_at) FROM preview_credit_accounts) AS credit_collected_at,
+  (SELECT COUNT(*) FROM preview_credit_balance_observations) AS credit_balances,
+  (SELECT COUNT(*) FROM preview_credit_purchases) AS purchases,
+  (SELECT MAX(last_collected_at) FROM preview_credit_purchases) AS purchase_collected_at,
+  (SELECT COUNT(*) FROM preview_credit_statements) AS statements,
+  (SELECT COUNT(*) FROM preview_credit_relations) AS relations`;
 
 export type PGliteFinancialLiveView =
   | "financial.overview.current"

@@ -10,7 +10,7 @@ import type {
   WorkflowTdccPort,
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
-import { createWorkflowExecutor } from "../workflow-executor.ts";
+import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
@@ -327,8 +327,9 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    const previewWrite = definition.requiresPreviewWrite ? options.previewWrite : undefined;
-    if (definition.requiresPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
+    const usesPreviewWrite = workflowUsesPreviewWrite(definition);
+    const previewWrite = usesPreviewWrite ? options.previewWrite : undefined;
+    if (usesPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
         token: start.pgliteRpc.token,
@@ -336,7 +337,7 @@ export async function runAppWorkflowWorker(
       });
       await abortable(childRpc.ready, controller.signal);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (usesPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
@@ -388,7 +389,7 @@ export async function runAppWorkflowWorker(
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
       ...(accountIdentity ? { accountIdentity } : {}),
-      ...(definition.requiresPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
+      ...(usesPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,

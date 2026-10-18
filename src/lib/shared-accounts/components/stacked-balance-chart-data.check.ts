@@ -131,7 +131,7 @@ assert.equal(
 {
   const previewBank: AccountRowDto = {
     ...account("preview:a", "Preview bank", "bank", 50),
-    preview: { sourceId: "synthetic", lastCollectedAt: "2026-06-25T00:00:00Z", balanceTime: null, transactions: [] },
+    preview: { sourceId: "synthetic", product: "deposit", lastCollectedAt: "2026-06-25T00:00:00Z", balanceTime: null, transactions: [] },
   };
   const withPreview = { ...dailyHistoryByAccount, "preview:a": [row("2026-06-25", 50, 0)] };
   const chart = buildStackedBalanceChartData({

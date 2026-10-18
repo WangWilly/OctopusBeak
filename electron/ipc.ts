@@ -45,6 +45,7 @@ import {
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { currentPreviewVisibility, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { sameVisibility } from "../src/lib/preview-sources/visibility.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
@@ -201,9 +202,9 @@ export function registerOctopusBeakIpc({
     );
   });
   function markStaleWhenPreviewVisibilityChanges<T>(write: () => T): T {
-    const before = currentPreviewVisibility().sourceIds.join(",");
+    const before = currentPreviewVisibility();
     const result = write();
-    if (currentPreviewVisibility().sourceIds.join(",") !== before) {
+    if (!sameVisibility(currentPreviewVisibility(), before)) {
       dataVersionStore.markStale("preview-data-changed");
       void financialPages.previewVisibilityChanged()
         .catch((error) => console.error("preview-visibility-refresh-failed", error));

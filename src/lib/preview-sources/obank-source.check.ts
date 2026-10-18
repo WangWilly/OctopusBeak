@@ -3,7 +3,7 @@ import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import test from "node:test";
 import type { PreviewHttpRequest } from "./browser-http.ts";
 import { createObankSource, obankDate } from "./obank-source.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
 
 const credentials = {
   PREVIEW_OBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -92,8 +92,8 @@ const loginBody = (requests: readonly PreviewHttpRequest[]) =>
 
 test("an O-Bank run writes each demand account item with its balances and three months of exact transactions", async () => {
   const { receipt, writes, observations, http } = await run();
-  assert.deepEqual(receipt, { accounts: 2, balances: 4, transactions: 4 });
-  const [twd, usd] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 2, balances: 4, transactions: 4, statements: 0, closedAccounts: 0 });
+  const [twd, usd] = depositCollection(writes[0]!).accounts;
   const asOf = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
   assert.equal(twd!.sourceAccountKey, "ITEM-TWD:TWD");
   assert.equal(twd!.displayLabel, "王道銀行 活存 8901");
