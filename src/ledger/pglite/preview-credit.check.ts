@@ -123,6 +123,19 @@ test("a credit write keeps the limit, cards, basis operands, purchases, and stat
   });
 });
 
+test("a statement in another currency than its account is stored and read back in its own currency", async () => {
+  await withPreviewStore(async ({ preview }) => {
+    await preview.write(write(T1, { statements: [statement(), statement({ statementKey: "2026-09:USD", amount: "12.30", currency: "USD", minimumPayment: "12.30" })] }));
+    const [view] = await preview.creditAccounts(visible);
+    assert.equal(view!.currency, "TWD");
+    const stored = await preview.statements(visible, view!.previewAccountId);
+    assert.deepEqual(stored.map((row) => [row.statementKey, row.amount, row.currency, row.minimumPayment]), [
+      ["2026-09", "12345.00", "TWD", "1000"],
+      ["2026-09:USD", "12.30", "USD", "12.30"],
+    ]);
+  });
+});
+
 test("a statement without cycle or closing dates is written and read back as unknown, but a missing due date is refused", async () => {
   await withPreviewStore(async ({ preview }) => {
     await preview.write(write(T1, { statements: [statement({ cycleStart: null, cycleEnd: null, closingDate: null })] }));
