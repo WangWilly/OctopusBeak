@@ -67,9 +67,13 @@
     list: overviewBlockData(blocks, "list"),
   });
   $: model = readOverview(data, { today: dateInTimeZone(new Date(), $systemTimezone) });
+  $: netMetric = data.summary.find((metric) => metric.label === "Net position");
+  $: liabilitiesMetric = data.summary.find((metric) => metric.label === "Liabilities");
   $: netAmounts = overview.summary[0]?.amounts ?? [];
   $: convertedNet = model.netWorth.value;
-  $: sideValue = convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1)) : formatTwd(convertedNet, $locale);
+  $: sideValue = netMetric?.incomplete
+    ? $t.preview.incomplete
+    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1)) : formatTwd(convertedNet, $locale);
   $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") : "";
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
@@ -126,6 +130,7 @@
   {sideValue}
   {sideSub}
   {sideSubSensitive}
+  sideValueSensitive={!netMetric?.incomplete}
   {sideIncludesPreview}
   syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
@@ -165,6 +170,7 @@
           netWorth={model.netWorth}
           series={model.series}
           asOfLabel={model.netWorth.asOf ? formatImportedAt(model.netWorth.asOf) : ""}
+          incomplete={netMetric?.incomplete === true}
         />
       </section>
     </ProgressiveBlock>
@@ -198,6 +204,8 @@
           title={$t.overview.liabilityAllocation}
           total={model.liabilityAllocation.slices.length > 0 ? model.liabilityAllocation.total : null}
           ratio={model.liabilityAllocation.ratio}
+          incomplete={liabilitiesMetric?.incomplete === true}
+          includesPreview={liabilitiesMetric?.includesPreview === true}
           note={unconvertedNote(model.liabilityAllocation.unconvertedCurrencies)}
           href="#/liabilities"
           linkLabel={$t.nav.liabilities}

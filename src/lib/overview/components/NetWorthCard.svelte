@@ -16,6 +16,8 @@
   export let netWorth: NetWorth;
   export let series: NetWorthPoint[] = [];
   export let asOfLabel = "";
+  /** A preview credit account owes an unknown amount, so the net position is not a figure. */
+  export let incomplete = false;
 
   const ranges: SeriesRange[] = ["30d", "90d", "all"];
   let range: SeriesRange = "all";
@@ -36,7 +38,10 @@
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
     {#if netWorth.includesPreview}<PreviewMarker />{/if}
   </p>
-  {#if netWorth.value === null}
+  {#if incomplete}
+    <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
+    <p class="net-worth-note">{$t.preview.incompleteNote}</p>
+  {:else if netWorth.value === null}
     <p class="net-worth-figure empty" aria-label={$t.overview.noDataYet}>—</p>
   {:else}
     <p class="net-worth-figure money" data-sensitive>{formatTwd(netWorth.value, $locale)}</p>
@@ -45,22 +50,24 @@
     <p class="net-worth-note">{$t.overview.unconverted(netWorth.unconvertedPreviewCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
-    <ul class="chips" aria-label={$t.overview.netWorth}>
-      {#each netWorth.chips as chip (chip.kind)}
-        <li class="change-chip" data-chip={chip.kind} data-direction={chip.change < 0 ? "down" : "up"}>
-          <span>{chipLabel(chip)}</span>
-          {#if chip.change < 0}
-            <ArrowDownRight size={13} strokeWidth={2.2} aria-hidden="true" />
-          {:else}
-            <ArrowUpRight size={13} strokeWidth={2.2} aria-hidden="true" />
-          {/if}
-          <strong class="money" data-sensitive>{formatTwdNumber(chip.change, $locale, true)}</strong>
-          {#if chip.pct !== null}<span class="pct" data-sensitive>{formatPct(chip.pct, $locale)}</span>{/if}
-        </li>
-      {:else}
-        <li class="change-chip pending"><CircleDashed size={13} strokeWidth={2.2} aria-hidden="true" />{$t.overview.noDataYet}</li>
-      {/each}
-    </ul>
+    {#if !incomplete}
+      <ul class="chips" aria-label={$t.overview.netWorth}>
+        {#each netWorth.chips as chip (chip.kind)}
+          <li class="change-chip" data-chip={chip.kind} data-direction={chip.change < 0 ? "down" : "up"}>
+            <span>{chipLabel(chip)}</span>
+            {#if chip.change < 0}
+              <ArrowDownRight size={13} strokeWidth={2.2} aria-hidden="true" />
+            {:else}
+              <ArrowUpRight size={13} strokeWidth={2.2} aria-hidden="true" />
+            {/if}
+            <strong class="money" data-sensitive>{formatTwdNumber(chip.change, $locale, true)}</strong>
+            {#if chip.pct !== null}<span class="pct" data-sensitive>{formatPct(chip.pct, $locale)}</span>{/if}
+          </li>
+        {:else}
+          <li class="change-chip pending"><CircleDashed size={13} strokeWidth={2.2} aria-hidden="true" />{$t.overview.noDataYet}</li>
+        {/each}
+      </ul>
+    {/if}
     <div class="filters range-filter" role="group" aria-label={$t.overview.rangeAria}>
       {#each ranges as option}
         <button
@@ -115,6 +122,11 @@
     font-size: clamp(30px, 3.6vw, 44px);
     font-weight: 750;
     line-height: 1.1;
+  }
+
+  .net-worth-figure.incomplete {
+    color: var(--warn);
+    font-size: clamp(24px, 2.6vw, 32px);
   }
 
   .net-worth-figure.empty {

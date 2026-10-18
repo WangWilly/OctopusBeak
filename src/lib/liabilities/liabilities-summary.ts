@@ -55,6 +55,8 @@ export type LiabilitiesSummary =
     utilization: CardUtilization | null;
     unconvertedCurrencies: string[];
     shares: ReadonlyMap<string, number>;
+    /** The total counts a Preview source balance. */
+    includesPreview: boolean;
   };
 
 const MAX_PAYMENTS = 3;
@@ -88,6 +90,10 @@ export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: 
     utilization: cardUtilization(input.accounts, rates, valuationDate),
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
+    includesPreview: input.accounts.some((account) =>
+      account.preview !== undefined
+      && account.amountLines.length > 0
+      && convertToTwd(account.amountLines, valuationDate, rates) !== null),
   };
 }
 
