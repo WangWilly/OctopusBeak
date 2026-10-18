@@ -12,6 +12,18 @@ test("liabilities exposes canonical coverage gaps and keeps awaiting ahead of pa
   assert.match(source, /<ProjectionStateBanner projection=\{liabilities\} \/>/);
 });
 
+test("an incomplete liabilities total shows the incomplete copy in the card and the side value, never a figure", () => {
+  assert.match(source, /\$: incomplete = totalIncomplete\(summaryInput\.accounts\)/);
+  assert.match(source, /: incomplete\s*\? \$t\.preview\.incomplete/);
+  assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}[\s\S]*?\{includesPreview\}/);
+});
+
+test("chart and list read their settled block, as Assets does, so a visibility change drops preview rows", () => {
+  assert.doesNotMatch(source, /label="(chart|list)"[^>]*let:data/);
+  assert.match(source, /\$: chartBlock = settledBlock\(blocks, "chart"\)/);
+  assert.match(source, /\$: listBlock = settledBlock\(blocks, "list"\)/);
+});
+
 test("margin exposure keeps an independent investment-kind filter", () => {
   assert.match(source, /let marginFilter: AccountKind \| "all" = "all"/);
   assert.match(source, /accounts=\{detailsDataBlock\.marginAccounts\}[\s\S]*mode="liability"[\s\S]*bind:filter=\{marginFilter\}/);

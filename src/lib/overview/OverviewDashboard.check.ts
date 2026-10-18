@@ -75,3 +75,11 @@ test("overview leaves incomplete collection to the automation run details", () =
 test("overview does not render balance-basis notices", () => {
   assert.doesNotMatch(source, /usesAvailableBalance|usesEstimatedCredit|data-balance-basis=/);
 });
+
+test("an incomplete Net position or Liabilities metric replaces its figure with the incomplete copy", () => {
+  assert.match(source, /netMetric = data\.summary\.find\(\(metric\) => metric\.label === "Net position"\)/);
+  assert.match(source, /liabilitiesMetric = data\.summary\.find\(\(metric\) => metric\.label === "Liabilities"\)/);
+  assert.match(source, /sideValue = netMetric\?\.incomplete\s*\? \$t\.preview\.incomplete/);
+  assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{netMetric\?\.incomplete === true\}/);
+  assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\?\.incomplete === true\}/);
+});
