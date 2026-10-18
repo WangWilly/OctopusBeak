@@ -251,6 +251,7 @@ Every source below has never run against a live account. Each was built from the
   - The balance and every operand are per currency. Whether Mega bills foreign-currency spending in its own `CURR_CODE` rows is taken from all-set-tw's grouping, not observed.
 ### Taishin (台新銀行), `taishin-deposit`
 
+- Products: `deposit` and `credit_card`, collected after one sign-in. `web/common/sessioncheck` is the `assertSession` check before each product; a check that shows no session ends the run as `session-conflict`. The bullets below describe sign-in and deposits. Credit cards have their own part after them.
 - Transport: the online-banking JSON endpoints under `https://my.taishinbank.com.tw/TIBNetBank/svc/`, sent as same-origin in-page `fetch` from the RWD page `https://my.taishinbank.com.tw/TIBNetBank/svc/rwd/index.html`. The web origin is kept. A call without parameters sends an empty form body, as the official axios helper does.
 - Sign-in: national ID, user code, and password, plus an image CAPTCHA. The page script builds the login request, so sign-in works only by driving the login form. That step is the `TaishinLoginForm` seam: it reads the CAPTCHA and submits the form, then the source classifies the page dialog and confirms the session with `web/common/sessioncheck`. No device OTP step is documented for the website login.
 - Login form: `taishinBrowserSession` in `taishin-login-form.ts` opens the RWD page and gives the source one page for both the form and the API calls. It records the `NonSessionShuffle` response that `img._field_item__verify-code` loaded and hands its bytes to the solver, as calibration did. It fills the ID, user code, password, and CAPTCHA inputs, clicks 「登入網銀」 once, and returns the text of the page's message popup or native dialog. With no message, it closes the post-login password reminder (`#popupLoginChangePwd`) when one appears. The selectors follow all-set-tw and a local fixture page. They have not been checked against the live login form.
@@ -265,6 +266,38 @@ Every source below has never run against a live account. Each was built from the
   - `RESULT` `EBF0015` on `web1/rb0101/query` marks an account online banking cannot query. Its `rb0100` balance is kept and its transactions are skipped.
   - No logout endpoint is documented, so the session is left to expire.
   - The session-takeover notice is a precaution. The login dialog `USER 正在線上，無法登入` suggests one web session at a time. The effect on the phone App is unconfirmed.
+
+#### Taishin credit cards (`credit_card`)
+
+Built from all-set-tw commit `f05dd30` (`apps/worker/src/sources/taishin/protocol.ts` and `connector.ts`).
+
+- Transport: the same page and session as deposits. The card endpoints are under `web4/` and answer `{ error, value }`. The source calls them in the order the official page does: `web4/rb0708rwd/doXTPA` (summary), `web4/rb0708rwd/init` for the current bill, `web4/rb0760/getCardOverviewData` (payment overview), `web4/rb0708rwd/queryRealTime` (authorizations), `web4/rb0708rwd/qryUnposted` (unbilled purchases), then `init` for the three earlier months. `init` sends `org`, `byear`, `bmonth`, `cardHolderFlagSelected` `1`, and an empty `cardNo`. `queryRealTime` and `qryUnposted` send an empty form body.
+- Collected: one credit account (`cards:TWD`) with the credit limit from the summary's `OUT-CRLIMIT-PERM`, one card per card name that ends in four digits, and these purchases:
+  - Each `value.fmtRealTxListMap` row whose column `[5]` is exactly `成功` is `pending`. Column `[0]` and `[1]` are the consume date and time, `[3]` is the amount, and `[6]` is the description.
+  - Each `value.unpostedTx` row is `posted` and `unbilled`. Column `[0]` is the consume date, `[1]` the posting date, `[2]` the description, and `[3]` the amount.
+  - Each `newAcctDetailList` detail of a bill is `posted` and `billed`, with the bill's period as its statement key.
+- Used credit: the basis is `statement-minus-paid-plus-unbilled`. The operands are the overview's `carInfoList.<org>.StmtBalance` and `LstPymtAmt` and the unbilled response's `showRB0712_SUBTOTAL`, as exact lexemes. The result is never clamped. It is as of the unbilled response's HTTP `Date` header.
+- Statements: one per bill (`showAccoutnYM`) whose previous month's bill was also read. The cycle starts the day after that bill's `showStmtDate` and ends on its own `showStmtDate`. The amount is `showCbalance`, the minimum is `showMinPay`, and the due date is `showDueDate`. The current bill's paid amount is `LstPymtAmt`. The paid and no-payment-needed flags are not set, because no source field states them. A `showDueDate` that is not a date, such as a status text, means that statement is not written; its purchases still are.
+- Not held: an `error` (text or `error.message`) on any card endpoint that opens by saying the person holds no card, such as 「您目前沒有本行信用卡」, reports `not_held`. The same check as all-set-tw's `isNoCreditCardMessage` applies, so an application hint is not a no-card answer. `(CRXTIKE004)無消費資料` as the whole `queryRealTime` or `qryUnposted` answer, or as a currency group's `ErrMsg`, is a complete empty list. It is never a no-card answer.
+- Fail-closed: the product fails, and deposits are kept, when:
+  - the summary has no `001`, `055`, or `100` ledger, or its `OUT-DTE-LST-STMT` is not a `YYYYMMDD` date;
+  - the last statement month has no bill, or a bill reports another period than the one requested;
+  - the overview's `BillYear` and `BillMon` name another period than the current bill (all-set-tw skips the balance instead);
+  - `StmtBalance`, `LstPymtAmt`, or `showRB0712_SUBTOTAL` is missing or not a decimal, `LstPymtAmt` is negative, or the subtotal is `(CRXTIKE004)無消費資料`;
+  - `fmtRealTxListMap` or `unpostedTx` is missing, a row is shorter than its documented columns, or a currency group's `ErrMsg` is anything other than `(CRXTIKE004)無消費資料` (`incomplete-data`);
+  - an unbilled group key such as `001TWD` or `USD` holds no ISO code, a row's column `[7]` names another currency than its group, or a bill detail has no `showOutCurrency` (`missing-currency`);
+  - any amount, date, or time does not parse.
+- Assumptions:
+  - The statement, the overview, realtime column `[3]` (新臺幣消費金額), and `showRB0712_SUBTOTAL` are NT-dollar figures, so their currency is fixed to TWD. None of them carries a currency field. Unbilled rows take their group's currency, and bill details take `showOutCurrency`.
+  - The NT-dollar subtotal leaves out unbilled foreign-currency groups. Each such group is its own account (`cards:<ISO>`) with no used-credit balance, so its used credit shows as unknown.
+  - `LstPymtAmt` is the amount paid toward the overview's bill, as a non-negative figure. all-set-tw takes absolute values of every operand and clamps the remainder at zero; this source does neither.
+  - An amount keeps its source sign. Card cells may wrap the amount in tags such as `<font>`, which are stripped; an accounting `(12.50)` is read as `-12.50`.
+  - Direction comes from the sign, only when the collection holds both positive and negative amounts: a negative amount is an inflow, a positive amount an outflow. Otherwise every direction is `unknown`. Zero-amount rows, such as a card-verification authorization, are skipped, because they move no money.
+  - An unbilled row that matches a billed row on card, consume date, currency, amount, and description is the same purchase, and only the billed copy is written. all-set-tw de-duplicates the same overlap.
+  - A card's key is the last four digits of its card name (`****1234` or `末四碼 1234`). A card name without them, such as a payments group, leaves the purchase without a card. No row carries an authorization code, so `bankReference` is never set.
+  - Rows carry no transaction id. A row key is the feed, the statement period for billed rows, the card, the consume time, the currency, the amount, a hash of the description (realtime column `[2]`, which all-set-tw keeps for identity), and an occurrence counter for identical rows.
+  - all-set-tw retries a busy `queryRealTime` up to three times. This source does not retry; the product fails and the next run reads it again.
+  - `OUT-STMT-BALANCE` and `OUT-AVAIL-CREDIT` are not used.
 ### O-Bank (王道銀行), `obank-deposit`
 
 Built from all-set-tw commit `f05dd30` and O-Bank's public web banking page code.
