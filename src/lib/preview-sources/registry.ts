@@ -8,7 +8,7 @@ import type { InstitutionKey } from "../institutions/institutions.ts";
 import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
 import { PREVIEW_PRODUCTS, PREVIEW_SOURCE_ID } from "./source-id.ts";
 import { previewStatementSelectionKey, type PreviewWorkflowRun } from "./workflow.ts";
-import { PREVIEW_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-source.ts";
+import { PREVIEW_FIXTURE_SOURCE, PREVIEW_PRODUCTS_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-source.ts";
 import { NEXTBANK_PREVIEW_SOURCE } from "./nextbank-source.ts";
 import { SKBANK_PREVIEW_SOURCE } from "./skbank-source.ts";
 import { RAKUTEN_PREVIEW_SOURCE } from "./rakuten-source.ts";
@@ -36,7 +36,7 @@ const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_S
 
 function previewSourcesForEnvironment(environment: NodeJS.ProcessEnv = process.env): readonly PreviewSource[] {
   return previewSourceFixtureEnabled(environment)
-    ? [...PRODUCTION_PREVIEW_SOURCES, PREVIEW_FIXTURE_SOURCE]
+    ? [...PRODUCTION_PREVIEW_SOURCES, PREVIEW_FIXTURE_SOURCE, PREVIEW_PRODUCTS_FIXTURE_SOURCE]
     : PRODUCTION_PREVIEW_SOURCES;
 }
 
