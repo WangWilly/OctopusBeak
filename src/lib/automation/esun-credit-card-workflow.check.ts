@@ -459,13 +459,37 @@ test("no attached selection never touches the deposit portal", () => withManaged
   assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "skipped", "not_selected"]]);
 }));
 
-test("a card failure still keeps the attached deposit's data, then fails the run", () => withManagedSecret(async () => {
-  const deposit = depositPortal();
-  const harness = createContext(createPage({ monthCount: 11, portal: deposit.portal }));
+test("a card failure reports the card failed with its classified code beside the written deposit", () => withManagedSecret(async () => {
+  const cases: ReadonlyArray<[string, Parameters<typeof createPage>[0], string]> = [
+    ["incomplete timeline", { monthCount: 11 }, "source-collection-failed"],
+    ["malformed text", { timelineBytes: new Uint8Array([0xc3, 0x28]) }, "source-integrity-failed"],
+  ];
+  for (const [name, page, errorCode] of cases) {
+    const harness = createContext(createPage({ ...page, portal: depositPortal().portal }));
+    const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    assert.equal(harness.committed.length, 0, name);
+    assert.equal(harness.previewWrites.length, 1, name);
+    assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
+    assert.equal((output as Output).status, "partial", name);
+    assert.equal((output as Output).canonicalAdmission, "failed", name);
+  }
+}));
+
+test("a card failure with no deposit data fails the run with the card's own error", () => withManagedSecret(async () => {
+  const failedDeposit = createContext(createPage({
+    monthCount: 11,
+    portal: depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } }).portal,
+  }));
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    esunCreditCardStatementsWorkflow.run(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
     /timeline did not reach a complete/u,
   );
-  assert.equal(harness.committed.length, 0);
-  assert.equal(harness.previewWrites.length, 1);
+  assert.equal(failedDeposit.previewWrites.length, 0);
+
+  const cardOnly = createContext(createPage({ monthCount: 11, portal: depositPortal().portal }));
+  await assert.rejects(
+    esunCreditCardStatementsWorkflow.run(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
+    /timeline did not reach a complete/u,
+  );
+  assert.equal(cardOnly.previewWrites.length, 0);
 }));
