@@ -124,12 +124,28 @@ The person's opt-in setting, labelled 「預覽測試功能」 in the Traditiona
 _Avoid_: Beta mode, experimental flag, unverified mode
 
 **Preview source**:
-A supported source, shown as 「預覽來源」, whose collection has no live-verified source contract and is offered only while Preview Features are on. It writes only Preview Financial Data, never a Source Capture or any canonical fact, and is hidden and not collected while a verified source covers the same Institution and product.
+A supported source, shown as 「預覽來源」, whose collection has no live-verified source contract and is offered only while Preview Features are on, with its own Sign-in Details. It writes only Preview Financial Data, never a Source Capture or any canonical fact, and is hidden and not collected while a verified source covers the same Institution and product.
 _Avoid_: Unverified source, beta connector, provisional canonical source
 
 **Preview financial data**:
-Account balances and transactions collected by a Preview Source and kept apart from canonical financial data. Its balances count toward assets, liabilities, and net worth with a visible preview marker; its transactions appear only in their own account view, outside spending, classification, transfer pairing, and deduplication. It still refuses missing currencies and keeps source amounts exactly rather than filling defaults.
+Account balances, transactions, and card statements collected by a Preview Source or an Attached Preview Product and kept apart from canonical financial data. Its balances count toward assets, liabilities, and net worth with a visible preview marker, a credit balance being the used credit that is negative when overpaid; its transactions appear only in their own account view, outside spending, classification, transfer pairing, and cross-source deduplication. It still refuses missing currencies and keeps source amounts exactly rather than filling defaults.
 _Avoid_: Canonical assertion, verified data, low-confidence canonical record
+
+**Preview authorization pairing**:
+The lasting link, inside one preview credit account, between a pending card authorization and the posted purchase it became. A paired authorization is shown only through its posted purchase; an unpaired one stays visible as pending, and a pending authorization that vanishes from the source is not treated as cancelled. It never links two posted purchases, crosses accounts or sources, or reassigns an established link.
+_Avoid_: Preview deduplication, transaction merge, cross-source match
+
+**Preview billing supersession**:
+The lasting link, inside one preview credit account, from an unbilled posted purchase to the billed purchase that replaced it when the source changed the purchase's identity at billing. The unbilled purchase is then shown only through its billed replacement. Like Preview Authorization Pairing, it never links two billed purchases, crosses accounts or sources, or reassigns an established link.
+_Avoid_: Unbilled duplicate merge, statement deduplication, pending-to-posted pairing
+
+**Preview time deposit closure**:
+The judgment that a preview time deposit has matured or been terminated because a complete time-deposit list from its source no longer contains it. A closed deposit stops counting toward assets; a list that cannot be shown complete fails the run rather than closing or keeping any deposit.
+_Avoid_: Stale balance, inferred maturity date, missing-account carry-forward
+
+**Attached preview product**:
+A product without a live-verified source contract that a verified source collects during its own sign-in while Preview Features are on, writing only Preview Financial Data for that product. A product whose collection cannot share the verified source's sign-in is offered as its own Preview Source instead.
+_Avoid_: Partially verified source, preview mode of a verified source
 
 **Preview source promotion**:
 The replacement of a Preview Source by a verified source contract for one Institution and product. Its Preview Financial Data is deleted and the data is recollected through canonical admission; preview records are never migrated into the canonical model.
