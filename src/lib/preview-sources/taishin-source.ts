@@ -640,9 +640,9 @@ async function readCreditCards(api: Client, collectedAt: string): Promise<Previe
   const realtime = await cardCall(api, CARD_PATH.realtime, "", true);
   const unbilled = await cardCall(api, CARD_PATH.unbilled, "", true);
   const subtotal = unbilled.value?.showRB0712_SUBTOTAL;
-  if (subtotal === undefined || subtotal === null || subtotal === "" || subtotal === NO_CONSUMPTION)
+  if (subtotal === undefined || subtotal === null || subtotal === "")
     return fail("unexpected-response", `${CARD_PATH.unbilled}.showRB0712_SUBTOTAL is missing`);
-  const unbilledAmount = cardAmount(subtotal, `${CARD_PATH.unbilled}.showRB0712_SUBTOTAL`);
+  const unbilledAmount = subtotal === NO_CONSUMPTION ? "0" : cardAmount(subtotal, `${CARD_PATH.unbilled}.showRB0712_SUBTOTAL`);
 
   const bills = [current];
   for (const month of months.slice(1)) {

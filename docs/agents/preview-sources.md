@@ -292,12 +292,13 @@ Built from all-set-tw commit `f05dd30` (`apps/worker/src/sources/taishin/protoco
   - the summary has no `001`, `055`, or `100` ledger, or its `OUT-DTE-LST-STMT` is not a `YYYYMMDD` date;
   - the last statement month has no bill, or a bill reports another period than the one requested;
   - the overview's `BillYear` and `BillMon` name another period than the current bill (all-set-tw skips the balance instead);
-  - `StmtBalance`, `LstPymtAmt`, or `showRB0712_SUBTOTAL` is missing or not a decimal, `LstPymtAmt` is negative, or the subtotal is `(CRXTIKE004)無消費資料`;
+  - `StmtBalance`, `LstPymtAmt`, or `showRB0712_SUBTOTAL` is missing or not a decimal, or `LstPymtAmt` is negative;
   - `fmtRealTxListMap` or `unpostedTx` is missing, a row is shorter than its documented columns, or a currency group's `ErrMsg` is anything other than `(CRXTIKE004)無消費資料` (`incomplete-data`);
   - an unbilled group key such as `001TWD` or `USD` holds no ISO code, a row's column `[7]` names another currency than its group, or a bill detail has no `showOutCurrency` (`missing-currency`);
   - any amount, date, or time does not parse.
 - Assumptions:
   - The statement, the overview, realtime column `[3]` (新臺幣消費金額), and `showRB0712_SUBTOTAL` are NT-dollar figures, so their currency is fixed to TWD. None of them carries a currency field. Unbilled rows take their group's currency, and bill details take `showOutCurrency`.
+  - A `showRB0712_SUBTOTAL` of `(CRXTIKE004)無消費資料` states that there are no unbilled purchases, so its operand is `0`. The source reads the same code as an empty list on `queryRealTime` and `qryUnposted`. Any other text that is not a decimal still fails the product.
   - The NT-dollar subtotal leaves out unbilled foreign-currency groups. Each such group is its own account (`cards:<ISO>`) with no used-credit balance, so its used credit shows as unknown.
   - `LstPymtAmt` is the amount paid toward the overview's bill, as a non-negative figure. all-set-tw takes absolute values of every operand and clamps the remainder at zero; this source does neither.
   - An amount keeps its source sign. Card cells may wrap the amount in tags such as `<font>`, which are stripped; an accounting `(12.50)` is read as `-12.50`.
