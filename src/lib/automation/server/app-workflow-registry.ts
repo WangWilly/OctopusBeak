@@ -340,6 +340,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           sinopac_account: environment.LIBRETTO_CLOUD_SINOPAC_ACCOUNT ?? "",
           sinopac_password: environment.LIBRETTO_CLOUD_SINOPAC_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("sinopac", environment),
         attachedPreviewProducts: selectedAttachedPreviewProducts("sinopac", environment),
       };
     },

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PreviewCreditCollection } from "../ledger/pglite/preview-financial-data.ts";
+import type { Page } from "playwright";
+import type { PreviewCreditCollection, PreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
+import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import {
@@ -15,6 +20,7 @@ import {
   sumDecimals,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
+import { runSinopacProviderWorkflow } from "./sinopac-statements.ts";
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
@@ -249,4 +255,145 @@ test("exact decimal sums keep scale and sign", () => {
   assert.equal(sumDecimals([{ value: "2000" }, { value: "0", negate: true }, { value: "1412" }]), "3412");
   assert.equal(sumDecimals([{ value: "-137" }, { value: "0", negate: true }, { value: "100" }]), "-37");
   assert.equal(sumDecimals([{ value: "10.5" }, { value: "10.75", negate: true }, { value: "0" }]), "-0.25");
+});
+
+const accountId = ["1410", "1800", "0822", "21"].join("");
+
+function signedInPage(): Page {
+  return {
+    url: () => "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx",
+    locator: (selector: string) => ({ isVisible: async () => selector.includes("user-logout"), waitFor: async () => undefined, first() { return this; } }),
+  } as unknown as Page;
+}
+
+function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContext {
+  const financialCommit: WorkflowFinancialCommitPort = {
+    async execute(items) {
+      const received = [];
+      for await (const item of items) received.push(item);
+      commits.push(received);
+      return {
+        status: "completed",
+        items: received.map((item) => ({
+          itemKey: item.itemKey, provider: item.provider, product: item.product, status: "committed" as const,
+          admissionSummaries: [], value: null, relationWarnings: [],
+        })),
+        diagnostics: [], committedCount: received.length, failedCount: 0,
+      };
+    },
+  };
+  return {
+    runId: "sinopac-card-check",
+    signal: new AbortController().signal,
+    now: () => COLLECTED_AT,
+    browser: { withPage: async (run) => await run(signedInPage()) },
+    text: strictSourceText,
+    humanAssistance: { request: async () => "entered" },
+    financialCommit,
+    previewWrite: {
+      async write(input) {
+        if (input.product === "credit_card") parsePreviewCreditCollection(input.collection);
+        writes.push(input);
+        return previewReceipt(input);
+      },
+    },
+    event: async () => undefined,
+  };
+}
+
+const workflowInput = (selection: Readonly<{ statementTypes: string[]; attachedPreviewProducts: string[] }>) => ({
+  credentials: { sinopac_user_id: "synthetic-user", sinopac_account: "synthetic-account", sinopac_password: "synthetic-password" },
+  startDate: "20260903",
+  endDate: "20260903",
+  ...selection,
+});
+
+const verifiedOverrides = {
+  readAccounts: async () => [{ DataText: "Synthetic TWD account", DataValue: accountId, DisplayText: "TWD" }],
+  queryTransactions: async () => ({
+    Header: "SUCCESS",
+    SubInfo: [{ DataText1: "2026/09/03 09:21", DataText2: "2026/09/03", DataText3: "Synthetic salary", DataText4: "-100", DataText5: "900", DataText7: "", DataText8: "" }],
+  }),
+  readCurrentDepositBalances: async () => [],
+};
+
+test("the SinoPac workflow writes attached cards only through the preview port, after its verified commit", async () => {
+  const writes: PreviewWrite[] = [];
+  const commits: unknown[][] = [];
+  const { transport } = fakeTransport(bodies());
+  const output = await runSinopacProviderWorkflow(
+    workflowContext(writes, commits),
+    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    { ...verifiedOverrides, cardTransport: transport },
+  );
+  assert.equal(output.status, "financial-admitted");
+  assert.equal(commits.length, 1);
+  assert.ok(commits[0]!.every((item) => (item as { provider: string }).provider === "sinopac"));
+  assert.deepEqual(writes.map((write) => [write.sourceId, write.institution, write.product]), [["sinopac", "sinopac", "credit_card"]]);
+  assert.deepEqual(output.products, [{ typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 }]);
+});
+
+test("a failing attached card product leaves the verified SinoPac result intact", async () => {
+  const writes: PreviewWrite[] = [];
+  const commits: unknown[][] = [];
+  const { transport } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
+  const output = await runSinopacProviderWorkflow(
+    workflowContext(writes, commits),
+    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    { ...verifiedOverrides, cardTransport: transport },
+  );
+  assert.equal(output.status, "financial-admitted");
+  assert.equal(output.rowCount, 1);
+  assert.equal(commits.length, 1);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(output.products, [{ typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" }]);
+});
+
+test("an attached-only SinoPac selection signs in, commits nothing canonical, and collects the cards", async () => {
+  const writes: PreviewWrite[] = [];
+  const commits: unknown[][] = [];
+  const { transport } = fakeTransport(bodies());
+  const output = await runSinopacProviderWorkflow(
+    workflowContext(writes, commits),
+    workflowInput({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }),
+    { cardTransport: transport },
+  );
+  assert.deepEqual(commits, []);
+  assert.equal(writes.length, 1);
+  assert.equal(output.status, "completed");
+  assert.equal(output.products?.[0]?.status, "success");
+
+  const { transport: failing } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
+  await assert.rejects(runSinopacProviderWorkflow(
+    workflowContext([], []),
+    workflowInput({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }),
+    { cardTransport: failing },
+  ), PreviewSourceFailure);
+});
+
+test("the SinoPac workflow collects no attached product when none is selected", async () => {
+  const writes: PreviewWrite[] = [];
+  const commits: unknown[][] = [];
+  const { transport, calls } = fakeTransport(bodies());
+  const output = await runSinopacProviderWorkflow(
+    workflowContext(writes, commits),
+    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: [] }),
+    { ...verifiedOverrides, cardTransport: transport },
+  );
+  assert.deepEqual(calls, []);
+  assert.deepEqual(writes, []);
+  assert.equal(output.products, undefined);
+});
+
+test("a session loss during the attached card product ends the SinoPac run after the verified commit", async () => {
+  const commits: unknown[][] = [];
+  const { transport } = fakeTransport(edit((source) => {
+    source[SINOPAC_CARD_SUMMARY_PATH] = [{ SubInfo: null, Header: "TIMEOUT", Message: "您尚未登入網銀" }];
+  }));
+  await assert.rejects(runSinopacProviderWorkflow(
+    workflowContext([], commits),
+    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    { ...verifiedOverrides, cardTransport: transport },
+  ), (error) => error instanceof ProductCollectionInterruptedError && error.errorCode === "authentication-failed");
+  assert.equal(commits.length, 1);
 });

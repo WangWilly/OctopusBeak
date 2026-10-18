@@ -47,6 +47,8 @@ const input: SinopacWorkflowInput = {
   endDate: "20260903",
   accountFilters: [],
   currencyFilters: [],
+  statementTypes: ["accounts"],
+  attachedPreviewProducts: [],
 };
 
 function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dialogMessage?: string; dismissalFails?: boolean } = {}) {
