@@ -11,6 +11,7 @@ import {
   CATHAY_CARD_OVERVIEW_TEXT as OVERVIEW_TEXT,
   CATHAY_PREVIEW_NOW as NOW,
   CATHAY_PREVIEW_RESPONSES as RESPONSES,
+  cathayCardTotals,
   cathayEnvelope as envelope,
   fakeCathayAttachedPreviewPort as fakePort,
 } from "./cathay-attached-preview.fixtures.ts";
@@ -23,7 +24,7 @@ async function rejectsWith(promise: Promise<unknown>, reason: PreviewSourceFailu
 }
 
 
-test("Cathay credit cards write an NT-dollar account with balance, cards, billed purchases, and a statement per currency", async () => {
+test("Cathay credit cards write one NT-dollar account with balance, cards, billed purchases, and a statement per currency", async () => {
   const { port, seen } = fakePort();
   const collection = await collectCathayCreditCards(port, NOW);
   assert.ok(!("absent" in collection));
@@ -32,8 +33,9 @@ test("Cathay credit cards write an NT-dollar account with balance, cards, billed
     "cardStatus", "latestBill", "C_BILL_Q_RecentBillInfo", "C_BILL_Q_BillInfo", "C_BILL_Q_HistoryBillList",
     "detail:2026-09-20", "detail:2026-08-20",
   ]);
-  const [twd, usd] = collection.accounts;
-  assert.equal(collection.accounts.length, 2);
+  assert.deepEqual(collection.accounts.map((account) => [account.sourceAccountKey, account.currency]), [["card-portfolio:TWD", "TWD"]],
+    "the foreign bill writes no account of its own");
+  const [twd] = collection.accounts;
   assert.deepEqual(twd!.cards.map((card) => card.cardMask), ["****-1234", "****-5678"]);
   assert.equal(twd!.creditLimit, "100000");
   assert.deepEqual(twd!.balances, [{
@@ -62,10 +64,29 @@ test("Cathay credit cards write an NT-dollar account with balance, cards, billed
     paidAmount: "34.5",
     paid: false,
     noPaymentNeeded: null,
+  }, {
+    statementKey: "2026-09:USD",
+    cycleStart: "2026-08-21",
+    cycleEnd: "2026-09-20",
+    closingDate: "2026-09-20",
+    dueDate: "2026-10-05",
+    amount: "12.30",
+    currency: "USD",
+    minimumPayment: "12.30",
+    billingPeriod: "2026-09",
+    paidAmount: "0",
+    paid: false,
+    noPaymentNeeded: null,
   }]);
-  assert.equal(usd!.currency, "USD");
-  assert.deepEqual(usd!.balances, []);
-  assert.deepEqual(usd!.statements.map((statement) => [statement.amount, statement.minimumPayment, statement.currency]), [["12.30", "12.30", "USD"]]);
+  assert.deepEqual(cathayCardTotals(collection).net, { includesPreview: true }, "the foreign bill leaves the totals complete");
+});
+
+test("a Cathay bill without a foreign part writes only the NT-dollar statement", async () => {
+  const collection = await collectCathayCreditCards(fakePort({
+    C_BILL_Q_RecentBillInfo: RESPONSES.C_BILL_Q_RecentBillInfo.replace(/,"foreignBillInfo":\{[^}]*\}/u, ""),
+  }).port, NOW);
+  assert.ok(!("absent" in collection));
+  assert.deepEqual(collection.accounts.flatMap((account) => account.statements.map((statement) => statement.statementKey)), ["2026-09"]);
 });
 
 test("Cathay card row keys are stable across collections", async () => {

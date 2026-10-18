@@ -155,7 +155,8 @@ function latestBill(response: CathayPreviewResponse | null): LatestBill {
 /**
  * The current statement of one currency. A statement needs a due date and a
  * cycle start, which is the day after the previous closing date, so without
- * either it is not written.
+ * either it is not written. A foreign-currency statement's key names its
+ * currency, so it stays distinct from the NT-dollar statement of the same period.
  */
 function currentStatement(
   bill: CurrencyBill,
@@ -169,7 +170,7 @@ function currentStatement(
   const unpaidZero = isZeroDecimal(bill.unpaid);
   const unpaidOwed = !unpaidZero && !bill.unpaid.startsWith("-");
   return {
-    statementKey: closingDate.slice(0, 7),
+    statementKey: bill.currency === "TWD" ? closingDate.slice(0, 7) : `${closingDate.slice(0, 7)}:${bill.currency}`,
     cycleStart: nextDay(previousClosing),
     cycleEnd: closingDate,
     closingDate,
@@ -241,9 +242,11 @@ function purchases(trades: readonly TradeRow[]): readonly PreviewPurchase[] {
 }
 
 /**
- * Cathay credit cards: one account per billing currency. Only the NT-dollar
- * account has a used-credit balance, from the overview's permanent credit
- * limit minus its available credit; Cathay pools the limit in NT dollars.
+ * Cathay credit cards: one NT-dollar account. Cathay pools the credit limit in
+ * NT dollars, so the used-credit balance, the permanent credit limit minus the
+ * available credit, already covers foreign spending. A foreign-currency bill
+ * is only a statement in its own currency on that account, never an account
+ * of its own, which would count that spending twice.
  */
 export async function collectCathayCreditCards(
   port: CathayAttachedPreviewPort,
@@ -273,8 +276,14 @@ export async function collectCathayCreditCards(
 
   const noPaymentNeeded = overview.text.includes("無需繳費");
   const twdBill = billSummary(recent.twBillInfo, "twBillInfo", "TWD");
-  const twdStatement = currentStatement(twdBill, closingDate, previousClosing, latest, minimumPayment(billInfo, "TWD"), noPaymentNeeded);
-  const accounts: PreviewCreditAccount[] = [{
+  const statements = [currentStatement(twdBill, closingDate, previousClosing, latest, minimumPayment(billInfo, "TWD"), noPaymentNeeded)];
+  if (recent.foreignBillInfo !== null && recent.foreignBillInfo !== undefined) {
+    const foreignCurrency = currencyCode(record(recent.foreignBillInfo, "foreignBillInfo").currency, "foreignBillInfo currency", CURRENCY_ALIASES);
+    if (foreignCurrency === "TWD") fail("unexpected-response", "foreignBillInfo is in NT dollars");
+    const foreignBill = billSummary(recent.foreignBillInfo, "foreignBillInfo", foreignCurrency);
+    statements.push(currentStatement(foreignBill, closingDate, previousClosing, latest, minimumPayment(billInfo, foreignCurrency), false));
+  }
+  const account: PreviewCreditAccount = {
     sourceAccountKey: "card-portfolio:TWD",
     displayLabel: "國泰世華信用卡",
     currency: "TWD",
@@ -287,26 +296,9 @@ export async function collectCathayCreditCards(
       basis: { kind: "credit-limit-minus-available", creditLimit: limit.amount, availableCredit: available.amount },
     }],
     purchases: purchases(trades),
-    statements: twdStatement ? [twdStatement] : [],
-  }];
-
-  if (recent.foreignBillInfo !== null && recent.foreignBillInfo !== undefined) {
-    const foreignCurrency = currencyCode(record(recent.foreignBillInfo, "foreignBillInfo").currency, "foreignBillInfo currency", CURRENCY_ALIASES);
-    if (foreignCurrency === "TWD") fail("unexpected-response", "foreignBillInfo is in NT dollars");
-    const foreignBill = billSummary(recent.foreignBillInfo, "foreignBillInfo", foreignCurrency);
-    const statement = currentStatement(foreignBill, closingDate, previousClosing, latest, minimumPayment(billInfo, foreignCurrency), false);
-    if (statement) accounts.push({
-      sourceAccountKey: `card-portfolio:${foreignCurrency}`,
-      displayLabel: `國泰世華信用卡（${foreignCurrency}）`,
-      currency: foreignCurrency,
-      creditLimit: null,
-      cards: [],
-      balances: [],
-      purchases: [],
-      statements: [statement],
-    });
-  }
-  return { collectedAt, accounts };
+    statements: statements.filter((statement) => statement !== null),
+  };
+  return { collectedAt, accounts: [account] };
 }
 
 const TIME_DEPOSIT_RATE_FIELDS = ["interestRate", "rate"] as const;

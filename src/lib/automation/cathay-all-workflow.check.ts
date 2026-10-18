@@ -32,10 +32,11 @@ import type {
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
-import { parsePreviewWrite, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import { parsePreviewWrite, type PreviewCreditCollection, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
 import {
   CATHAY_PREVIEW_RESPONSES,
+  cathayCardTotals,
   fakeCathayAttachedPreviewPort,
 } from "../../workflows/cathay-attached-preview.fixtures.ts";
 
@@ -752,6 +753,13 @@ test("a Cathay run with only an attached product signs in and collects only that
   assert.equal(signIns, 1);
   assert.equal(harness.committed.length, 0);
   assert.deepEqual(harness.writes.map((write) => [write.sourceId, write.product]), [["cathay", "credit_card"]]);
+  const cards = harness.writes[0]!.collection as PreviewCreditCollection;
+  assert.deepEqual(cards.accounts.map((account) => account.sourceAccountKey), ["card-portfolio:TWD"], "no USD account is written");
+  assert.deepEqual(cards.accounts[0]!.statements.map((statement) => [statement.statementKey, statement.currency]), [
+    ["2026-09", "TWD"],
+    ["2026-09:USD", "USD"],
+  ]);
+  assert.equal(cathayCardTotals(cards).liabilities.incomplete, undefined, "the foreign bill leaves the totals complete");
   assert.ok(!fake.seen.includes("domesticOverview"));
   assert.deepEqual(outcomes(output.products), [
     ["domestic", "skipped", "not_selected"],
