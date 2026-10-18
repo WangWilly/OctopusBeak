@@ -6,8 +6,7 @@ import type {
 } from "../automation/types.ts";
 import type { InstitutionKey } from "../institutions/institutions.ts";
 import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
-import { PREVIEW_PRODUCTS } from "../../ledger/pglite/preview-financial-data.ts";
-import { PREVIEW_SOURCE_ID } from "./source-id.ts";
+import { PREVIEW_PRODUCTS, PREVIEW_SOURCE_ID } from "./source-id.ts";
 import { previewStatementSelectionKey, type PreviewWorkflowRun } from "./workflow.ts";
 import { PREVIEW_FIXTURE_SOURCE, previewSourceFixtureEnabled } from "./fixture-source.ts";
 import { NEXTBANK_PREVIEW_SOURCE } from "./nextbank-source.ts";
