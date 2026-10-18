@@ -16,6 +16,7 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -385,29 +386,6 @@ async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankP
   });
 }
 
-/** Exact decimal arithmetic on source lexemes; the result keeps the widest scale of its operands. */
-function decimalUnits(values: readonly string[]): { scale: number; units: bigint[] } {
-  const scale = Math.max(0, ...values.map((value) => value.split(".")[1]?.length ?? 0));
-  const units = values.map((value) => {
-    const [whole = "0", fraction = ""] = value.replace(/^-/u, "").split(".");
-    const magnitude = BigInt(whole + fraction.padEnd(scale, "0"));
-    return value.startsWith("-") ? -magnitude : magnitude;
-  });
-  return { scale, units };
-}
-
-function formatUnits(units: bigint, scale: number): string {
-  const digits = (units < 0n ? -units : units).toString().padStart(scale + 1, "0");
-  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return units < 0n ? `-${body}` : body;
-}
-
-/** `terms` are added; each `[value, -1]` pair is subtracted. */
-function decimalSum(terms: readonly (readonly [string, 1 | -1])[]): string {
-  const { scale, units } = decimalUnits(terms.map(([value]) => value));
-  return formatUnits(units.reduce((total, unit, index) => total + unit * BigInt(terms[index]![1]), 0n), scale);
-}
-
 const decimalSign = (value: string) => (isZeroDecimal(value) ? 0 : value.startsWith("-") ? -1 : 1);
 
 /** First Bank card amounts may end in `-` or sit in parentheses when negative, such as `1,200-` or `(1,200)`. */
@@ -677,8 +655,8 @@ async function collectCards(
     const latest = ownBills.at(-1);
     // A payment counts toward the latest statement once that statement has closed.
     const paidAmount = latest === undefined ? null
-      : decimalSum(paid.filter((payment) => payment.currency === currency && payment.date > latest.closingDate).map((payment) => [payment.amount, 1] as const));
-    const unbilledAmount = decimalSum(ownPending.map((row) => [row.amount, 1] as const));
+      : decimalSum(paid.filter((payment) => payment.currency === currency && payment.date > latest.closingDate).map((payment) => [1, payment.amount] as const));
+    const unbilledAmount = decimalSum(ownPending.map((row) => [1, row.amount] as const));
     const cards = [...new Set([
       ...ownBills.flatMap((bill) => [bill.card, ...bill.rows.map((row) => row.card)]),
       ...ownPending.map((row) => row.card),
@@ -691,7 +669,7 @@ async function collectCards(
       creditLimit: latest?.creditLimit ?? null,
       cards: cards.map((card) => ({ sourceCardKey: card, cardMask: cardMask(card), displayLabel: null })),
       balances: latest === undefined || paidAmount === null ? [] : [{
-        amount: decimalSum([[latest.amount, 1], [paidAmount, -1], [unbilledAmount, 1]]),
+        amount: decimalSum([[1, latest.amount], [-1, paidAmount], [1, unbilledAmount]]),
         currency,
         observedAt: { at: collectedAt, source: "collection-time" },
         basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: latest.amount, paidAmount, unbilledAmount },
@@ -708,7 +686,7 @@ async function collectCards(
         minimumPayment: bill.minimumPayment,
         billingPeriod: bill.period,
         paidAmount: bill === latest ? paidAmount : null,
-        paid: bill === latest && paidAmount !== null ? decimalSign(decimalSum([[paidAmount, 1], [bill.amount, -1]])) >= 0 : null,
+        paid: bill === latest && paidAmount !== null ? decimalSign(decimalSum([[1, paidAmount], [-1, bill.amount]])) >= 0 : null,
         noPaymentNeeded: null,
       }]),
     };

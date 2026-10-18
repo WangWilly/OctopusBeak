@@ -16,6 +16,7 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -396,21 +397,6 @@ function dayAfterPreviousClosing(closingDate: string): string {
   return addDays(previous, 1);
 }
 
-/** Exact sum of signed decimal lexemes, kept at the widest scale among them. */
-export function sumDecimals(values: readonly string[]): string {
-  const scale = Math.max(0, ...values.map((value) => value.split(".")[1]?.length ?? 0));
-  const total = values.reduce((sum, value) => {
-    const [whole, fraction = ""] = value.split(".");
-    return sum + BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-  }, 0n);
-  const negative = total < 0n;
-  const digits = (negative ? -total : total).toString().padStart(scale + 1, "0");
-  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return negative ? `-${body}` : body;
-}
-
-const negate = (value: string) => value.startsWith("-") ? value.slice(1) : `-${value}`;
-
 type Bill = Readonly<{
   currency: string;
   period: string;
@@ -605,9 +591,9 @@ function balance(bill: Bill, unbilled: readonly string[], observed: PreviewCredi
   const paidAmount = exactDecimal(bill.summary.pmtAmt, `${bill.field}.pmtAmt`);
   const adjust = exactDecimal(bill.summary.adjust, `${bill.field}.adjust`);
   if (!isZeroDecimal(adjust)) return fail("unexpected-response", `${bill.field}.adjust is nonzero and the basis has no operand for it`);
-  const unbilledAmount = sumDecimals(unbilled.length === 0 ? ["0"] : unbilled);
+  const unbilledAmount = decimalSum(unbilled.map((amount) => [1, amount] as const));
   return {
-    amount: sumDecimals([statementAmount, negate(paidAmount), unbilledAmount]),
+    amount: decimalSum([[1, statementAmount], [-1, paidAmount], [1, unbilledAmount]]),
     currency: bill.currency,
     observedAt: observed,
     basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount, paidAmount, unbilledAmount },

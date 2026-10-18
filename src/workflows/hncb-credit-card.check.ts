@@ -9,7 +9,6 @@ import type { PreviewProductRun } from "../lib/preview-sources/product-collectio
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import {
   collectHncbCreditCards,
-  decimalSum,
   type HncbCardPage,
   type HncbCardRange,
 } from "./hncb-credit-card.ts";
@@ -74,11 +73,6 @@ const creditCollection = (write: PreviewWrite | undefined): PreviewCreditCollect
   return (write as Extract<PreviewWrite, { product: "credit_card" }>).collection;
 };
 
-test("decimalSum is exact and signed", () => {
-  assert.equal(decimalSum([[1, "3000"], [-1, "1000"], [1, "1530"]]), "3530");
-  assert.equal(decimalSum([[1, "0.1"], [1, "0.2"]]), "0.3");
-  assert.equal(decimalSum([[1, "100"], [-1, "250.50"]]), "-150.50");
-});
 
 test("HNCB card collection writes the portfolio through the HNCB-bound preview writer", async () => {
   const { run, writes, observations } = await attachedRun(PAGES);

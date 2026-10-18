@@ -15,6 +15,7 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -371,20 +372,6 @@ async function collectDeposits(api: Client, now: string): Promise<PreviewAccount
 const UNBILLED_MONTH = "999912";
 const BILLING_MONTH = /^\d{4}(?:0[1-9]|1[0-2])$/u;
 
-function decimalSum(terms: readonly string[]): string {
-  const scale = Math.max(0, ...terms.map((term) => term.split(".")[1]?.length ?? 0));
-  const total = terms.reduce((sum, term) => {
-    const [whole = "", fraction = ""] = term.replace(/^[+-]/u, "").split(".");
-    const value = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-    return sum + (term.startsWith("-") ? -value : value);
-  }, 0n);
-  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
-  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return total < 0n ? `-${body}` : body;
-}
-
-const negated = (amount: string) => (amount.startsWith("-") ? amount.slice(1) : `-${amount}`);
-
 type StatementBasis = Extract<PreviewCreditBasis, { kind: "statement-minus-paid-plus-unbilled" }>;
 type BillGroup = { billed: { month: string; total: string; paid: string }[]; unbilled: string[] };
 
@@ -428,9 +415,9 @@ function creditBases(list: readonly SourceRecord[]): ReadonlyMap<string, Stateme
     }
     bases.set(currency, {
       kind: "statement-minus-paid-plus-unbilled",
-      statementAmount: decimalSum(statements),
-      paidAmount: decimalSum(paid),
-      unbilledAmount: decimalSum(unbilled),
+      statementAmount: decimalSum(statements.map((amount) => [1, amount] as const)),
+      paidAmount: decimalSum(paid.map((amount) => [1, amount] as const)),
+      unbilledAmount: decimalSum(unbilled.map((amount) => [1, amount] as const)),
     });
   }
   return bases;
@@ -532,7 +519,7 @@ async function collectCards(api: Client, now: string): Promise<PreviewCreditColl
       creditLimit: null,
       cards: [...cards.values()],
       balances: [{
-        amount: decimalSum([basis.statementAmount, negated(basis.paidAmount), basis.unbilledAmount]),
+        amount: decimalSum([[1, basis.statementAmount], [-1, basis.paidAmount], [1, basis.unbilledAmount]]),
         currency,
         observedAt: asOf,
         basis,

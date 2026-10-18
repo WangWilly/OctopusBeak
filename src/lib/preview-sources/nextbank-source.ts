@@ -5,8 +5,10 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
+  isZeroDecimal,
   localDate,
   observedAt,
   optionalText,
@@ -228,17 +230,6 @@ async function demandPockets(api: ReturnType<typeof client>, list: PocketList): 
   return accounts;
 }
 
-function units(amount: string, scale: number): bigint {
-  const [whole = "", fraction = ""] = amount.replace(/^-/u, "").split(".");
-  const value = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-  return amount.startsWith("-") ? -value : value;
-}
-
-function sumsTo(amounts: readonly string[], total: string): boolean {
-  const scale = Math.max(0, ...[...amounts, total].map((amount) => amount.split(".")[1]?.length ?? 0));
-  return amounts.reduce((sum, amount) => sum + units(amount, scale), 0n) === units(total, scale);
-}
-
 type TermPocket = Readonly<{ arrngId: string; name: string | null; currency: string; amount: string }>;
 
 function termPocket(pocket: SourceRecord, field: string): TermPocket {
@@ -276,7 +267,7 @@ async function termPockets(api: ReturnType<typeof client>, list: PocketList, col
   const total = exactDecimal(list.termTotal, "PocketInfo.termDepositTotalAmount");
   if (new Set(pockets.map((pocket) => pocket.currency)).size > 1)
     return fail("incomplete-data", "term pockets in several currencies cannot be reconciled with termDepositTotalAmount");
-  if (!sumsTo(pockets.map((pocket) => pocket.amount), total))
+  if (!isZeroDecimal(decimalSum([...pockets.map((pocket) => [1, pocket.amount] as const), [-1, total]])))
     return fail("incomplete-data", "term pockets do not add up to termDepositTotalAmount");
   const deposits: PreviewTimeDeposit[] = [];
   for (const pocket of pockets) deposits.push(await termDeposit(api, pocket, list.asOf));

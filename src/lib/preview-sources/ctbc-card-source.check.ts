@@ -4,7 +4,7 @@ import test from "node:test";
 import type { PreviewCreditCollection } from "../../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
 import type { PreviewHttpRequest } from "./browser-http.ts";
-import { CTBC_APP_VERSION, createCtbcCardSource, encryptCtbcPin, sumDecimals } from "./ctbc-card-source.ts";
+import { CTBC_APP_VERSION, createCtbcCardSource, encryptCtbcPin } from "./ctbc-card-source.ts";
 import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
 
 const credentials = {
@@ -212,13 +212,6 @@ test("encryptCtbcPin XORs the value with random digits and seals it with AES-CBC
   const xorText = clear.slice(5);
   assert.equal([...xorText].map((char, index) => String.fromCharCode(char.charCodeAt(0) ^ xorKey.charCodeAt(index))).join(""), "ab1");
   assert.equal(sealed.split("|")[1]!.length, 512);
-});
-
-test("sumDecimals adds signed lexemes exactly at the widest scale", () => {
-  assert.equal(sumDecimals(["12000", "-2000", "1034.5"]), "11034.5");
-  assert.equal(sumDecimals(["-12.50", "-0", "0"]), "-12.50");
-  assert.equal(sumDecimals(["0.1", "0.2"]), "0.3");
-  assert.equal(sumDecimals(["-0.05", "0.01"]), "-0.04");
 });
 
 test("a handshake that rejects the pinned App version ends the run as provider-protocol-outdated before sign-in", async () => {

@@ -12,6 +12,7 @@ import type {
 import type { PreviewProductAbsence } from "../lib/preview-sources/product-collection.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -138,22 +139,6 @@ const last4 = (value: unknown): string | null => {
   const match = /(\d{4})\D*$/u.exec(typeof value === "string" ? value : "");
   return match ? match[1]! : null;
 };
-
-/** Exact `a + b + ...` over decimal lexemes; never passes through a float. */
-export function sumDecimals(terms: readonly Readonly<{ value: string; negate?: boolean }>[]): string {
-  const scale = Math.max(0, ...terms.map(({ value }) => value.split(".")[1]?.length ?? 0));
-  const scaled = (value: string) => {
-    const negative = value.startsWith("-");
-    const [whole, fraction = ""] = value.replace(/^[+-]/u, "").split(".");
-    const units = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
-    return negative ? -units : units;
-  };
-  const total = terms.reduce((sum, { value, negate }) => sum + (negate ? -scaled(value) : scaled(value)), 0n);
-  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
-  const whole = digits.slice(0, digits.length - scale);
-  const fraction = scale === 0 ? "" : `.${digits.slice(-scale)}`;
-  return `${total < 0n ? "-" : ""}${whole}${fraction}`;
-}
 
 const isPositive = (value: string) => !isZeroDecimal(value) && !value.startsWith("-");
 
@@ -368,7 +353,7 @@ export async function collectSinopacCreditCards(input: SinopacCardCollectionInpu
     // Every Detail currency has a SubTotal whose Count matched, so a currency without one has nothing unbilled.
     const unbilledAmount = unbilled.get(currency) ?? "0";
     const balances: PreviewCreditBalance[] = bill === undefined ? [] : [{
-      amount: sumDecimals([{ value: bill.statement }, { value: bill.paid, negate: true }, { value: unbilledAmount }]),
+      amount: decimalSum([[1, bill.statement], [-1, bill.paid], [1, unbilledAmount]]),
       currency,
       observedAt: balanceAt,
       basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: bill.statement, paidAmount: bill.paid, unbilledAmount },
@@ -384,7 +369,7 @@ export async function collectSinopacCreditCards(input: SinopacCardCollectionInpu
       minimumPayment: bill.minimum,
       billingPeriod: closing.slice(0, 7),
       paidAmount: bill.paid,
-      paid: isPositive(bill.statement) ? !sumDecimals([{ value: bill.paid }, { value: bill.statement, negate: true }]).startsWith("-") : null,
+      paid: isPositive(bill.statement) ? !decimalSum([[1, bill.paid], [-1, bill.statement]]).startsWith("-") : null,
       noPaymentNeeded: !isPositive(bill.statement),
     }];
     return {

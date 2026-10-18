@@ -111,19 +111,17 @@ export function exactDecimal(value: unknown, field: string): string {
   return lexeme.replaceAll(",", "").replace(/^\+/u, "");
 }
 
-/** `minuend - subtrahend` for two exact decimal lexemes, at the larger scale, never rounded. */
-export function decimalDifference(minuend: string, subtrahend: string): string {
-  const parse = (lexeme: string) => {
-    const [whole, fraction = ""] = lexeme.split(".");
-    return { coefficient: BigInt(`${whole}${fraction}`), scale: fraction.length };
-  };
-  const left = parse(minuend);
-  const right = parse(subtrahend);
-  const scale = Math.max(left.scale, right.scale);
-  const coefficient = left.coefficient * 10n ** BigInt(scale - left.scale) - right.coefficient * 10n ** BigInt(scale - right.scale);
-  const digits = (coefficient < 0n ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
-  const sign = coefficient < 0n ? "-" : "";
-  return scale === 0 ? `${sign}${digits}` : `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+/** Exact signed sum of decimal lexemes at the widest operand scale, never rounded. */
+export function decimalSum(terms: readonly (readonly [1 | -1, string])[]): string {
+  const scale = Math.max(0, ...terms.map(([, value]) => value.split(".")[1]?.length ?? 0));
+  const total = terms.reduce((sum, [sign, value]) => {
+    const [whole = "", fraction = ""] = value.replace(/^[+-]/u, "").split(".");
+    const units = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
+    return sum + BigInt(sign) * (value.startsWith("-") ? -units : units);
+  }, 0n);
+  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
+  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return total < 0n ? `-${body}` : body;
 }
 
 export function isZeroDecimal(amount: string): boolean {
