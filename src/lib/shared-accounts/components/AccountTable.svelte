@@ -17,11 +17,12 @@
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
-  import PreviewTransactionsModal from "./PreviewTransactionsModal.svelte";
+  import PreviewAccountModal from "./PreviewAccountModal.svelte";
   import TransactionModal from "./TransactionModal.svelte";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
+  import { groupDigits, previewRowValue, timeDepositTerms, type TimeDepositTerm } from "$lib/shared-ledger/preview-account.ts";
 
   type Filter = {
     id: AccountKind | "all";
@@ -55,7 +56,7 @@
   let selectedAccountId: string | null = null;
   let handledFocusAccountId: string | null = null;
   let transactionsOpen = false;
-  let previewTransactionsOpen = false;
+  let previewAccountOpen = false;
   let positionsOpen = false;
   let historyOpen = false;
   let statementsOpen = false;
@@ -244,8 +245,14 @@
   }
 
   function openTransactions() {
-    if (selectedAccount?.preview) previewTransactionsOpen = true;
+    if (selectedAccount?.preview) previewAccountOpen = true;
     else transactionsOpen = true;
+  }
+
+  function termText(term: TimeDepositTerm, dictionary: Translation) {
+    if (term.kind === "maturity") return `${dictionary.preview.maturityDate} ${term.date}`;
+    if (term.kind === "principal") return `${dictionary.preview.principal} ${groupDigits(term.amount)}`;
+    return dictionary.preview.ratePercent(term.percent);
   }
 
   function translateKnownLabel(value: string, dictionary: Translation) {
@@ -262,6 +269,8 @@
   {@const estimatedCreditBasis = account.amountLines.some((amount) =>
     amount.traces?.some((trace) => trace.estimateKind === "estimate"),
   )}
+  {@const previewValue = previewRowValue(account)}
+  {@const terms = account.preview?.timeDeposit ? timeDepositTerms(account.preview.timeDeposit) : []}
   <tr
     class:selected={account.id === selectedAccountId}
     class:covered
@@ -281,6 +290,9 @@
         <span class="account-meta covered-by">{$t.accounts.coveredBy(coveredByName(account, $t))}</span>
       {:else if account.preview}
         <span class="account-meta">{translateKnownLabel(account.product, $t)} / {$t.preview.collectedAt(formatTime(account.preview.lastCollectedAt))}</span>
+        {#if terms.length}
+          <span class="account-meta preview-terms" data-time-deposit-terms>{terms.map((term) => termText(term, $t)).join(" · ")}</span>
+        {/if}
       {:else}
         <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
       {/if}
@@ -296,7 +308,11 @@
         data-balance-basis={estimatedCreditBasis ? "credit-card-estimate" : undefined}
         title={estimatedCreditBasis ? $t.accounts.creditCardEstimateBasis : undefined}
       >
-        {#if account.valueAvailability === "awaiting"}
+        {#if previewValue?.kind === "credit-unknown"}
+          <span class="preview-unknown" data-preview-value="credit-unknown">{$t.preview.creditUnknown}</span>
+        {:else if previewValue?.kind === "closed"}
+          <span class="chip preview-closed" data-preview-value="closed">{$t.preview.closed}</span>
+        {:else if account.valueAvailability === "awaiting"}
           <span>{$t.overview.currentAwaiting}</span>
         {:else if account.valueAvailability === "unavailable"}
           <span>{$t.accounts.noAvailableData}</span>
@@ -312,7 +328,7 @@
           formatTime(account.preview.balanceTime.at),
           account.preview.balanceTime.source === "reported" ? $t.preview.balanceTimeReported : $t.preview.balanceTimeCollected,
         )}</span>
-      {:else if estimatedCreditBasis || account.lastUpdated !== latestUpdated}
+      {:else if !account.preview && (estimatedCreditBasis || account.lastUpdated !== latestUpdated)}
         <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
       {/if}
     </td>
@@ -342,7 +358,9 @@
         <strong>{selectedAccount.label}</strong>
       </div>
       <div class="action-group">
-        <button class="button secondary" type="button" on:click={openTransactions}>{$t.accounts.tx}</button>
+        <button class="button secondary" type="button" on:click={openTransactions}>
+          {selectedAccount.preview && selectedAccount.preview.product !== "deposit" ? $t.preview.accountDetails : $t.accounts.tx}
+        </button>
         {#if !selectedAccount.preview}
           <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
         {/if}
@@ -442,7 +460,7 @@
 </section>
 
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
-<PreviewTransactionsModal bind:open={previewTransactionsOpen} account={selectedAccount} />
+<PreviewAccountModal bind:open={previewAccountOpen} account={selectedAccount} />
 <AssetModal
   bind:open={positionsOpen}
   account={selectedAccount}
@@ -548,8 +566,21 @@
   }
 
   .covered-by,
-  .via-source {
+  .via-source,
+  .preview-terms {
     display: block;
+  }
+
+  .preview-unknown {
+    color: var(--warn);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .preview-closed {
+    min-height: 24px;
+    font-size: 11px;
+    color: var(--muted);
   }
 
   .table-updated {

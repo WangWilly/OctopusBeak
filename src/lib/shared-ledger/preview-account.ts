@@ -55,6 +55,14 @@ export function localTime(value: Readonly<{ value: string }>): string {
 
 export type StatementPayment = "paid" | "partially-paid" | "unpaid" | "no-payment-needed";
 
+/** Groups the integer digits of an exact decimal lexeme without converting it to a number. */
+export function groupDigits(amount: string): string {
+  const match = /^([+-]?)(\d+)(\.\d+)?$/u.exec(amount);
+  if (!match) return amount;
+  const [, sign, whole, fraction = ""] = match;
+  return `${sign}${whole!.replace(/\B(?=(\d{3})+$)/gu, ",")}${fraction}`;
+}
+
 /** The payment state when the source reported one; `null` when it is unknown. */
 export function statementPayment(statement: PreviewStatementRowDto): StatementPayment | null {
   if (statement.noPaymentNeeded === true) return "no-payment-needed";

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  groupDigits,
   localTime,
   previewRowValue,
   purchaseState,
@@ -79,6 +80,13 @@ test("purchase state follows posting and billing", () => {
   assert.equal(purchaseState(purchase({ status: "posted", billing: "billed", postingDate: "2026-10-06" })), "billed");
   assert.equal(localTime({ value: "2026-10-04T09:30" }), "2026-10-04 09:30");
   assert.equal(localTime({ value: "2026-10-04" }), "2026-10-04");
+});
+
+test("exact amounts group their digits without losing precision", () => {
+  assert.equal(groupDigits("1234567.891"), "1,234,567.891");
+  assert.equal(groupDigits("-49700"), "-49,700");
+  assert.equal(groupDigits("+300"), "+300");
+  assert.equal(groupDigits("12345678901234567890.01"), "12,345,678,901,234,567,890.01");
 });
 
 test("statement payment state is shown only when the source reported it", () => {
