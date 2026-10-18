@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { amountKey } from "../../ledger/pglite/preview-core.ts";
+import { amountKey } from "./source-id.ts";
 import type {
   PreviewAccount,
   PreviewCard,

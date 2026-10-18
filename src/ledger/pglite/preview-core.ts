@@ -1,6 +1,6 @@
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
-import { isPreviewProduct, PREVIEW_PRODUCTS, PreviewDataRejected, type PreviewProduct } from "../../lib/preview-sources/source-id.ts";
+import { amountKey, isPreviewProduct, PREVIEW_PRODUCTS, PreviewDataRejected, type PreviewProduct } from "../../lib/preview-sources/source-id.ts";
 
 export { isPreviewProduct, PREVIEW_PRODUCTS, type PreviewProduct };
 
@@ -43,7 +43,7 @@ export const LOCAL_DATE: Readonly<Record<PreviewLocalDate["precision"], RegExp>>
   second: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/u,
 };
 
-export { PreviewDataRejected };
+export { amountKey, PreviewDataRejected };
 
 export function nonEmpty(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new PreviewDataRejected(`${field} is missing`);
@@ -116,15 +116,6 @@ export function unique(values: Iterable<string>, field: string): void {
 
 export function observedAt(at: string, reported: boolean): PreviewObservedAt {
   return { at, source: reported ? "reported" : "collection-time" };
-}
-
-/** `"100"`, `"100.00"`, and `"+100.0"` are the same amount. */
-export function amountKey(value: PreviewAmount): string {
-  const negative = value.startsWith("-");
-  const [whole = "", fraction = ""] = value.replace(/^[+-]/u, "").split(".");
-  const digits = `${whole.replace(/^0+(?=\d)/u, "")}${fraction ? `.${fraction.replace(/0+$/u, "")}` : ""}`.replace(/\.$/u, "");
-  if (/^0*(?:\.0*)?$/u.test(digits) || digits === "") return "0";
-  return `${negative ? "-" : ""}${digits}`;
 }
 
 /**
