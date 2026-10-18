@@ -157,6 +157,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       sinopac_account: "synthetic-account",
       sinopac_password: "synthetic-password",
     },
+    attachedPreviewProducts: [],
   });
 
   const root = await mkdtemp(join(tmpdir(), "sinopac-app-workflow-"));

@@ -345,12 +345,14 @@ async function executeInlineAppWorkflow(
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
     let previewWrite = injectedPorts.previewWrite;
-    if (workflowUsesPreviewWrite(definition) && !previewWrite) {
+    if (definition.requiresPreviewWrite && !previewWrite) {
       childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
         workflowId: execution.task.workflowId,
         taskRunId: execution.run.taskRunId,
       });
       await childRpc.ready;
+      previewWrite = childRpc.operationalProvider.preview;
+    } else if (workflowUsesPreviewWrite(definition) && !previewWrite && childRpc) {
       previewWrite = childRpc.operationalProvider.preview;
     }
     let accountIdentity = injectedPorts.accountIdentity;
