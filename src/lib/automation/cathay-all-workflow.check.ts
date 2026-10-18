@@ -32,6 +32,12 @@ import type {
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
+import { parsePreviewWrite, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
+import {
+  CATHAY_PREVIEW_RESPONSES,
+  fakeCathayAttachedPreviewPort,
+} from "../../workflows/cathay-attached-preview.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -708,5 +714,133 @@ test("Cathay all workflow cancellation stops later products and retains prior re
       return true;
     },
   );
+  assert.equal(harness.committed.length, 1);
+});
+
+function attachedHarness() {
+  const harness = contextHarness();
+  const writes: PreviewWrite[] = [];
+  const context: WorkflowContext = {
+    ...harness.context,
+    previewWrite: {
+      async write(input) {
+        writes.push(parsePreviewWrite(input));
+        return previewReceipt(input);
+      },
+    },
+  };
+  return { ...harness, context, writes };
+}
+
+const outcomes = (products: readonly { typeId: string; status: string; skipReason?: string; errorCode?: string }[]) =>
+  products.map((product) => [product.typeId, product.status, product.skipReason ?? product.errorCode]);
+
+test("a Cathay run with only an attached product signs in and collects only that product", async () => {
+  const harness = attachedHarness();
+  const fake = fakeCathayAttachedPreviewPort();
+  let signIns = 0;
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["credit_card"] },
+    {
+      ...collectionDependencies({ signIn: async () => { signIns += 1; return { usedExistingSession: true }; } }),
+      collectDomestic: async () => { throw new Error("domestic must not run"); },
+      collectForeign: async () => { throw new Error("foreign must not run"); },
+      attachedPreviewPort: () => fake.port,
+    },
+  );
+  assert.equal(signIns, 1);
+  assert.equal(harness.committed.length, 0);
+  assert.deepEqual(harness.writes.map((write) => [write.sourceId, write.product]), [["cathay", "credit_card"]]);
+  assert.ok(!fake.seen.includes("domesticOverview"));
+  assert.deepEqual(outcomes(output.products), [
+    ["domestic", "skipped", "not_selected"],
+    ["foreign_currency", "skipped", "not_selected"],
+    ["credit_card", "success", undefined],
+    ["time_deposit", "skipped", "not_selected"],
+  ]);
+  assert.deepEqual(output.statementTypes, []);
+  assert.equal(output.status, "financial-admitted");
+});
+
+test("a failing attached product leaves the verified and other attached outcomes intact", async () => {
+  const harness = attachedHarness();
+  const fake = fakeCathayAttachedPreviewPort({
+    C_BILL_Q_RecentBillInfo: CATHAY_PREVIEW_RESPONSES.C_BILL_Q_RecentBillInfo.replace(`"unPaidAmount":1200`, `"unPaidAmount":"x"`),
+  });
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: ["credit_card", "time_deposit"] },
+    { ...collectionDependencies(), attachedPreviewPort: () => fake.port },
+  );
+  assert.equal(harness.committed.length, 1);
+  assert.deepEqual(harness.writes.map((write) => [write.sourceId, write.product]), [["cathay", "time_deposit"]]);
+  assert.deepEqual(outcomes(output.products), [
+    ["domestic", "success", undefined],
+    ["foreign_currency", "skipped", "not_selected"],
+    ["credit_card", "failed", "source-validation-failed"],
+    ["time_deposit", "success", undefined],
+  ]);
+  assert.equal(output.status, "partial");
+});
+
+test("an empty attached selection collects nothing and keeps the verified summary", async () => {
+  const harness = attachedHarness();
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: [] },
+    { ...collectionDependencies(), attachedPreviewPort: () => { throw new Error("attached port must not open"); } },
+  );
+  assert.deepEqual(harness.writes, []);
+  assert.deepEqual(outcomes(output.products), [
+    ["domestic", "success", undefined],
+    ["foreign_currency", "skipped", "not_selected"],
+  ]);
+  assert.equal(output.status, "financial-admitted");
+});
+
+test("a Cathay run with neither verified nor attached products is invalid input", async () => {
+  const harness = attachedHarness();
+  await assert.rejects(
+    runCathayAllProviderWorkflow(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: [] }, collectionDependencies()),
+    /input are invalid/u,
+  );
+  await assert.rejects(
+    runCathayAllProviderWorkflow(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["deposit"] }, collectionDependencies()),
+    /input are invalid/u,
+  );
+});
+
+test("a session lost during an attached product ends the run with the verified outcomes kept", async () => {
+  const harness = attachedHarness();
+  let sessionChecks = 0;
+  const fake = fakeCathayAttachedPreviewPort({ cardStatus: null });
+  await assert.rejects(
+    runCathayAllProviderWorkflow(
+      harness.context,
+      { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: ["credit_card", "time_deposit"] },
+      {
+        ...collectionDependencies(),
+        createSession: async () => {
+          sessionChecks += 1;
+          if (sessionChecks > 4) throw new Error("expired");
+          return { jwtToken: "fixture-token", customerId: "fixture", idType: "fixture" };
+        },
+        attachedPreviewPort: () => fake.port,
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "authentication-failed");
+      assert.deepEqual(outcomes(error.summary.products), [
+        ["domestic", "success", undefined],
+        ["foreign_currency", "skipped", "not_selected"],
+        ["credit_card", "failed", "source-collection-failed"],
+        ["time_deposit", "skipped", "not_attempted"],
+      ]);
+      return true;
+    },
+  );
+  assert.deepEqual(harness.writes, []);
   assert.equal(harness.committed.length, 1);
 });
