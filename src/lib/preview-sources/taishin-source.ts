@@ -10,7 +10,6 @@ import type {
   PreviewStatement,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
-import { addExact, type ExactAmount } from "../shared-money/exact.ts";
 import type { PreviewHttp } from "./browser-http.ts";
 import type { PreviewProductAbsence } from "./product-collection.ts";
 import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
@@ -19,6 +18,7 @@ import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -399,20 +399,6 @@ function cardAmount(value: unknown, field: string): string {
   return negative ? `-${exactDecimal(negative[1], field).replace(/^-/u, "")}` : exactDecimal(cell, field);
 }
 
-function exact(lexeme: string): ExactAmount {
-  const [whole = "", fraction = ""] = lexeme.replace(/^[+-]/u, "").split(".");
-  return { coefficient: `${lexeme.startsWith("-") ? "-" : ""}${whole}${fraction}`, scale: fraction.length };
-}
-
-function lexeme({ coefficient, scale }: ExactAmount): string {
-  const negative = coefficient.startsWith("-");
-  const digits = coefficient.replace(/^-/u, "").padStart(scale + 1, "0");
-  const unsigned = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
-  return negative ? `-${unsigned}` : unsigned;
-}
-
-const negated = (amount: string) => amount.startsWith("-") ? amount.slice(1) : `-${amount}`;
-
 function dayOf(value: unknown, field: string): string {
   return localDate(value, field).value.slice(0, 10);
 }
@@ -689,7 +675,7 @@ async function readCreditCards(api: Client, collectedAt: string): Promise<Previe
         displayLabel: "台新銀行 信用卡",
         creditLimit: ledger["OUT-CRLIMIT-PERM"] === undefined ? null : cardAmount(ledger["OUT-CRLIMIT-PERM"], `${CARD_PATH.summary}.OUT-CRLIMIT-PERM`),
         balances: [{
-          amount: lexeme(addExact(addExact(exact(statementAmount), exact(negated(paidAmount))), exact(unbilledAmount))),
+          amount: decimalSum([[1, statementAmount], [-1, paidAmount], [1, unbilledAmount]]),
           currency,
           observedAt: observedAt(unbilled.date, collectedAt),
           basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount, paidAmount, unbilledAmount },
