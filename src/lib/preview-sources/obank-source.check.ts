@@ -3,7 +3,9 @@ import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import test from "node:test";
 import type { PreviewHttpRequest } from "./browser-http.ts";
 import { createObankSource, obankDate } from "./obank-source.ts";
+import type { PreviewTimeDepositCollection, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
+import { withPreviewStore } from "./preview-store-harness.ts";
 
 const credentials = {
   PREVIEW_OBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -57,7 +59,30 @@ const NO_SEC: ResourceRoutes = {
   "common/EndToEnd/020": () => jsonResponse(envelope({ timeFactor: TIME_FACTOR })),
 };
 
+const TD_TWD = { tdAccountNumber: "TD-0001-2345", currency: "TWD" };
+const TD_USD = { tdAccountNumber: "TD-0009-8765", currency: "USD" };
+const TD_DETAILS: Readonly<Record<string, Record<string, unknown>>> = {
+  "TD-0001-2345": {
+    ...TD_TWD, displayProductType: "一般定存", displayWorkingBalance: "100,000", displayRate: "1.725%",
+    isTierIntrstFlg: false, contractDate: "2026/01/15", maturityDate: "2027/01/15",
+  },
+  "TD-0009-8765": {
+    ...TD_USD, displayProductType: "外幣定存", displayWorkingBalance: "5,000.00", displayRate: "4.1%",
+    isTierIntrstFlg: true, contractDate: "115/4/1", maturityDate: "116/4/1",
+  },
+};
+
+function timeDepositRoute(repeats: readonly unknown[] | undefined, details = TD_DETAILS) {
+  return ({ rqData }: Resource) => {
+    if (rqData.page === "td") return jsonResponse(envelope(repeats === undefined ? { useCcyList: [] } : { repeats, useCcyList: [] }));
+    const detail = details[String(rqData.tdAccountNumber)];
+    if (!detail) throw new Error(`no fixture detail for ${String(rqData.tdAccountNumber)}`);
+    return jsonResponse(envelope({ repeats, tdDetail: detail }), { date: "Thu, 15 Oct 2026 01:59:30 GMT" });
+  };
+}
+
 const SECURE: ResourceRoutes = {
+  "fao/FAO01022/020": timeDepositRoute([TD_TWD, TD_USD]),
   "fao/FAO01012/010": ({ rqData }) => {
     if (rqData.initQuery === "Y") return jsonResponse(LIST, { date: "Thu, 15 Oct 2026 01:59:00 GMT" });
     return jsonResponse(rqData.curry === "TWD"
@@ -81,11 +106,17 @@ function routes(overrides: Record<string, FakeRoute> = {}, secure: ResourceRoute
 
 const solveCaptcha = async () => "AB12";
 
-async function run(overrides: Record<string, FakeRoute> = {}, secure: ResourceRoutes = {}) {
+async function run(overrides: Record<string, FakeRoute> = {}, secure: ResourceRoutes = {}, products: readonly PreviewWrite["product"][] = ["deposit"]) {
   const http = fakeHttpOpener(routes(overrides, secure));
-  const result = await runPreviewSource(createObankSource({ http, solveCaptcha }), credentials);
+  const result = await runPreviewSource(createObankSource({ http, solveCaptcha }), credentials, undefined, products);
   return { ...result, http };
 }
+
+const BOTH = ["deposit", "time_deposit"] as const;
+const outcomes = (result: Awaited<ReturnType<typeof run>>) =>
+  result.output?.products.map((product) => [product.typeId, product.status, product.errorCode ?? null]);
+const timeDeposits = (writes: readonly PreviewWrite[]): PreviewTimeDepositCollection[] =>
+  writes.flatMap((write) => write.product === "time_deposit" ? [write.collection] : []);
 
 const loginBody = (requests: readonly PreviewHttpRequest[]) =>
   (JSON.parse(requests.find((request) => request.url.endsWith("/submitCredentials"))!.body!) as [{ rqData: Record<string, string> }])[0].rqData;
@@ -203,4 +234,106 @@ test("a history answer in another currency or without its row list fails", async
 test("O-Bank dates accept Gregorian and ROC years with unpadded parts", () => {
   assert.deepEqual(obankDate("2026/10/03", "d"), { precision: "day", value: "2026-10-03" });
   assert.deepEqual(obankDate("115/1/2", "d"), { precision: "day", value: "2026-01-02" });
+});
+
+test("an O-Bank run writes the complete time-deposit list with each deposit's balance, rate, and maturity", async () => {
+  const result = await run({}, {}, BOTH);
+  assert.deepEqual(outcomes(result), [["deposit", "success", null], ["time_deposit", "success", null]]);
+  assert.deepEqual(result.writes.map((write) => write.product), ["deposit", "time_deposit"]);
+  const asOf = { at: "2026-10-15T01:59:30.000Z", source: "reported" } as const;
+  assert.deepEqual(timeDeposits(result.writes), [{
+    collectedAt: "2026-10-15T02:00:00.000Z",
+    completeness: "complete",
+    deposits: [
+      {
+        sourceAccountKey: "td:TD-0001-2345",
+        displayLabel: "王道銀行 一般定存 2345",
+        currency: "TWD",
+        balances: [{ kind: "current", amount: "100000", currency: "TWD", observedAt: asOf }],
+        principal: null,
+        interestRate: "1.725",
+        maturityDate: "2027-01-15",
+      },
+      {
+        sourceAccountKey: "td:TD-0009-8765",
+        displayLabel: "王道銀行 外幣定存 8765 (USD)",
+        currency: "USD",
+        balances: [{ kind: "current", amount: "5000.00", currency: "USD", observedAt: asOf }],
+        principal: null,
+        interestRate: null,
+        maturityDate: "2027-04-01",
+      },
+    ],
+  }], "the detail's working balance as of its HTTP Date, its rate unless tiered, and its maturity in Gregorian");
+  const tdQueries = result.http.requests.filter((request) => request.url.endsWith("/sendAndReceive"))
+    .map(resourceOf).filter((request) => request.resource === "fao/FAO01022/020").map((request) => request.rqData);
+  assert.deepEqual(tdQueries, [
+    { page: "td", linkFromTxnId: "FAO01012_010" },
+    { tdAccountNumber: "TD-0001-2345", linkFromTxnId: "FAO01012_010" },
+    { tdAccountNumber: "TD-0009-8765", linkFromTxnId: "FAO01012_010" },
+  ], "one list query, then one detail query per listed deposit");
+  assert.equal(result.observations.filter((entry) => entry.endpoint === "fao/FAO01022/020" && entry.status === 200).length, 3,
+    "observe() saw the list and both details");
+});
+
+test("a time-deposit list or detail that cannot be read in full fails only time_deposit, before its write", async () => {
+  const td = (route: (request: Resource) => ReturnType<FakeRoute>): ResourceRoutes => ({ "fao/FAO01022/020": route });
+  const detail = (patch: Record<string, unknown>) =>
+    td(timeDepositRoute([TD_TWD, TD_USD], { ...TD_DETAILS, "TD-0009-8765": { ...TD_DETAILS["TD-0009-8765"], ...patch } }));
+  const cases: Record<string, readonly [ResourceRoutes, string]> = {
+    "missing currency": [td(timeDepositRoute([TD_TWD, { tdAccountNumber: "TD-0009-8765" }])), "source-validation-failed"],
+    "malformed amount": [detail({ displayWorkingBalance: "5.000,00" }), "source-validation-failed"],
+    "missing balance": [detail({ displayWorkingBalance: undefined }), "source-validation-failed"],
+    "malformed rate": [detail({ isTierIntrstFlg: false, displayRate: "見公告" }), "source-validation-failed"],
+    "detail for another deposit": [detail({ tdAccountNumber: "TD-0001-2345" }), "source-validation-failed"],
+    "detail in another currency": [detail({ currency: "JPY" }), "source-validation-failed"],
+    "failed detail": [td(({ rqData }) => rqData.page === "td"
+      ? jsonResponse(envelope({ repeats: [TD_TWD, TD_USD] }))
+      : jsonResponse({ isSuccessful: false, statusCode: "9999", statusDesc: "系統忙碌" })), "source-validation-failed"],
+    "missing list": [td(timeDepositRoute(undefined)), "source-validation-failed"],
+    "repeated deposit": [td(timeDepositRoute([TD_TWD, TD_TWD])), "source-validation-failed"],
+  };
+  for (const [name, [secure, code]] of Object.entries(cases)) {
+    const result = await run({}, secure, BOTH);
+    assert.deepEqual(outcomes(result), [["deposit", "success", null], ["time_deposit", "failed", code]], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no time deposit and keeps the deposit write`);
+  }
+});
+
+test("time deposits are not_held only for an explicit empty list", async () => {
+  const empty = await run({}, { "fao/FAO01022/020": timeDepositRoute([]) }, BOTH);
+  assert.deepEqual(outcomes(empty), [["deposit", "success", null], ["time_deposit", "not_held", null]]);
+  assert.deepEqual(timeDeposits(empty.writes), [{ collectedAt: "2026-10-15T02:00:00.000Z", completeness: "complete", deposits: [] }],
+    "the empty complete list is written, so it closes earlier deposits");
+  const missing = await run({}, { "fao/FAO01022/020": timeDepositRoute(undefined) }, BOTH);
+  assert.equal(outcomes(missing)![1]![1], "failed", "a response without repeats is no evidence of holding nothing");
+});
+
+test("a deposit failure leaves the time_deposit outcome intact", async () => {
+  const result = await run({}, { "fao/FAO01012/010": () => jsonResponse(LIST.replace('"curr":"USD",', "")) }, BOTH);
+  assert.deepEqual(outcomes(result), [["deposit", "failed", "source-validation-failed"], ["time_deposit", "success", null]]);
+  assert.deepEqual(result.writes.map((write) => write.product), ["time_deposit"]);
+});
+
+test("a time deposit absent from the next complete list is closed, and an incomplete list closes nothing", async () => {
+  await withPreviewStore(async (port) => {
+    const visible = { visible: [{ sourceId: "obank-deposit", product: "time_deposit" as const }] };
+    const closedAt = async () => Object.fromEntries((await port.accounts(visible)).map((account) => [account.displayLabel, account.timeDeposit?.closedAt ?? null]));
+    const collect = async (secure: ResourceRoutes) => {
+      const result = await run({}, secure, ["time_deposit"]);
+      for (const write of result.writes) await port.write(write);
+      return result;
+    };
+    await collect({});
+    const open = { "王道銀行 一般定存 2345": null, "王道銀行 外幣定存 8765 (USD)": null };
+    assert.deepEqual(await closedAt(), open);
+    const incomplete = await collect({
+      "fao/FAO01022/020": timeDepositRoute([TD_TWD], { "TD-0001-2345": { ...TD_DETAILS["TD-0001-2345"], tdAccountNumber: "TD-0009-8765" } }),
+    });
+    assert.equal(incomplete.writes.length, 0);
+    assert.deepEqual(await closedAt(), open, "a list whose detail failed closes nothing");
+    await collect({ "fao/FAO01022/020": timeDepositRoute([TD_TWD]) });
+    assert.deepEqual(await closedAt(), { "王道銀行 一般定存 2345": null, "王道銀行 外幣定存 8765 (USD)": "2026-10-15T02:00:00.000Z" },
+      "the USD deposit left the complete list");
+  });
 });
