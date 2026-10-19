@@ -111,6 +111,19 @@ export function exactDecimal(value: unknown, field: string): string {
   return lexeme.replaceAll(",", "").replace(/^\+/u, "");
 }
 
+/** Exact signed sum of decimal lexemes at the widest operand scale, never rounded. */
+export function decimalSum(terms: readonly (readonly [1 | -1, string])[]): string {
+  const scale = Math.max(0, ...terms.map(([, value]) => value.split(".")[1]?.length ?? 0));
+  const total = terms.reduce((sum, [sign, value]) => {
+    const [whole = "", fraction = ""] = value.replace(/^[+-]/u, "").split(".");
+    const units = BigInt(`${whole}${fraction.padEnd(scale, "0")}`);
+    return sum + BigInt(sign) * (value.startsWith("-") ? -units : units);
+  }, 0n);
+  const digits = (total < 0n ? -total : total).toString().padStart(scale + 1, "0");
+  const body = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return total < 0n ? `-${body}` : body;
+}
+
 export function isZeroDecimal(amount: string): boolean {
   return /^[+-]?0+(?:\.0+)?$/u.test(amount);
 }

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PreviewHttpOpener } from "./browser-http.ts";
 import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import type { PreviewCreditCollection, PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { createTaishinSource, type TaishinCredentials, type TaishinLoginForm, type TaishinSessionOpener } from "./taishin-source.ts";
 
 const credentials = {
@@ -22,8 +23,37 @@ const twdList = (rows: readonly string[], inNo = rows.length, outNo = 0) => twd(
 const fxRow = (time: string, dep: string, drw: string, ccy = '"USD"') =>
   `{"TRANSACTION_DATE_TIME":"x","TRANSACTION_DATE_TIME_DSC":"${time}","TX_DATE":"2026/10/05","CCY_CODE":${ccy},"DRWAMT":${drw},"DEPAMT":${dep},"ACCT_BAL":"812.34","REMARKS":"外幣轉入"}`;
 
+const card = (value: unknown, headers: Record<string, string> = {}) => jsonResponse({ error: null, value }, headers);
+const realtimeRow = (amount: string, result = "成功", time = "09:15:30") => ["2026/10/14", time, "DEMO SHOP", amount, "TW", result, "DEMO SHOP TAIPEI"];
+const unbilledRow = (date: string, description: string, amount: string, currency = "TWD") => [date, "2026/10/13", description, amount, "", "TW", "", currency];
+const bill = (period: string, closing: string, due: string, balance: string, details: unknown[] = []) => card({
+  showAccoutnYM: period, showStmtDate: closing, showDueDate: due, showCbalance: balance, showMinPay: "100",
+  newAcctDetailList: details.length === 0 ? [] : [{ order: "測試信用卡 ****1234", detail: details }],
+});
+const billDetail = (amount: string, currency = "TWD") =>
+  ({ showOutTXNDate: "2026/10/01", showOutPostDate: "2026/10/02", showOutDesc: "STORE A", showOutAmt: amount, showOutCurrency: currency, showOutCountry: "TW" });
+
+const cardRoutes = {
+  [`${P}/web4/rb0708rwd/doXTPA`]: () => card({ "001": { "OUT-DTE-LST-STMT": "20261010", "OUT-CRLIMIT-PERM": "100,000", "OUT-STMT-BALANCE": "1000" } }),
+  [`${P}/web4/rb0708rwd/init`]: (request: { body?: string }) => {
+    const { bmonth } = JSON.parse(request.body!);
+    if (bmonth === "10") return bill("2026/10", "2026/10/10", "2026/10/25", "1,000", [billDetail("1000")]);
+    if (bmonth === "09") return bill("2026/09", "2026/09/10", "2026/09/25", "800");
+    return card({ showAccoutnYM: "" });
+  },
+  [`${P}/web4/rb0760/getCardOverviewData`]: () => card({ carInfoList: { "001": { BillYear: "2026", BillMon: "10", StmtBalance: "1,000", LstPymtAmt: "400" } } }),
+  [`${P}/web4/rb0708rwd/queryRealTime`]: () => card({ fmtRealTxListMap: [{ cardname: "測試信用卡 ****1234", txlist: [
+    realtimeRow('<font color="red" >252</font>'), realtimeRow("900", "未成功"), realtimeRow("0"),
+  ] }] }),
+  [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "1,430", unpostedTx: { "001TWD": { data: [{ cardname: "測試信用卡 ****1234", txlist: [
+    unbilledRow("2026/10/12", "DEMO SHOP", "1,442.50"), unbilledRow("2026/10/11", "退款", "-12.50"),
+    ["2026/10/01", "2026/10/02", "STORE A", "1000", "", "TW", "", "TWD"],
+  ] }] } } }, { date: "Thu, 15 Oct 2026 01:58:00 GMT" }),
+} satisfies Record<string, FakeRoute>;
+
 function routes(overrides: Record<string, FakeRoute> = {}): Record<string, FakeRoute> {
   return {
+    ...cardRoutes,
     [`${P}/web/common/sessioncheck`]: () => jsonResponse({ RESULT: "NORMAL", DBSESSIONID: "session-1" }),
     [`${P}/web1/rb0100/query`]: () => twd('{"SavingAccount":[{"accountNo":"TS-7788","accountTypeName":"綜合存款","balance":"9,999.00"}]}'),
     [`${P}/web1/rb0102/listaccount`]: () => twd('[{"value":"TS7788"}]'),
@@ -52,17 +82,17 @@ function session(http: PreviewHttpOpener, form: TaishinLoginForm): TaishinSessio
 
 const solveCaptcha = async () => "123456";
 
-async function run(overrides: Record<string, FakeRoute> = {}, form = loginForm()) {
+async function run(overrides: Record<string, FakeRoute> = {}, form = loginForm(), products: readonly PreviewProduct[] = ["deposit"]) {
   const http = fakeHttpOpener(routes(overrides));
-  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha }), credentials);
+  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha }), credentials, undefined, products);
   return { ...result, http, form };
 }
 
 test("a Taishin run writes NT-dollar and foreign-currency accounts with exact amounts and in/out directions", async () => {
   const { receipt, writes, observations, http, form } = await run();
   assert.equal(writes.length, 1, `run failed: ${String(receipt)}`);
-  assert.deepEqual(receipt, { accounts: 2, balances: 3, transactions: 3 });
-  const [ntd, usd] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 2, balances: 3, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [ntd, usd] = depositCollection(writes[0]!).accounts;
   assert.equal(ntd!.sourceAccountKey, "TS7788:TWD");
   assert.deepEqual(ntd!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -97,7 +127,7 @@ async function runCalibrated(results: readonly { text: string; confidence: numbe
   const http = fakeHttpOpener(routes());
   const form = loginForm(null, image);
   const engine = scriptedOcrEngine(results);
-  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha: calibratedCaptchaSolver(TAISHIN_CAPTCHA_FAMILY, engine) }), credentials);
+  const result = await runPreviewSource(createTaishinSource({ open: session(http, form), solveCaptcha: calibratedCaptchaSolver(TAISHIN_CAPTCHA_FAMILY, engine) }), credentials, undefined, ["deposit"]);
   return { ...result, http, form, engine };
 }
 
@@ -149,7 +179,7 @@ test("a truncated NT-dollar list is split and requeried, and a short single day 
     },
   });
   assert.equal(split.writes.length, 1);
-  assert.equal(split.writes[0]!.collection.accounts[0]!.transactions.length, 1);
+  assert.equal(depositCollection(split.writes[0]!).accounts[0]!.transactions.length, 1);
 
   const short = await run({ [`${P}/web1/rb0102/query`]: () => twdList([twdRow("1", '"5"', '"-"')], 3, 0) });
   assert.equal(short.errorCode, "source-collection-failed");
@@ -197,8 +227,169 @@ test("an account online banking cannot query (EBF0015) keeps its overview balanc
   const { writes, http } = await run({
     [`${P}/web1/rb0101/query`]: () => jsonResponse({ RESULT: "ERROR", ERRORMSG: "(EBF0015)無交易權限" }),
   });
-  const [ntd] = writes[0]!.collection.accounts;
+  const [ntd] = depositCollection(writes[0]!).accounts;
   assert.deepEqual(ntd!.balances.map(({ kind, amount }) => ({ kind, amount })), [{ kind: "current", amount: "9999.00" }]);
   assert.equal(ntd!.transactions.length, 0);
   assert.ok(!http.requests.some((request) => request.url.endsWith("rb0102/query")));
+});
+
+function creditCollection(writes: readonly PreviewWrite[]): PreviewCreditCollection | undefined {
+  const write = writes.find((entry) => entry.product === "credit_card");
+  return write?.product === "credit_card" ? write.collection : undefined;
+}
+
+const outcomes = (result: Awaited<ReturnType<typeof run>>) =>
+  result.output?.products.map(({ typeId, status, errorCode }) => ({ typeId, status, ...errorCode ? { errorCode } : {} }));
+
+const BOTH: readonly PreviewProduct[] = ["deposit", "credit_card"];
+const CARD_ONLY: readonly PreviewProduct[] = ["credit_card"];
+
+test("one Taishin sign-in writes deposits and the card account with statement-minus-paid-plus-unbilled used credit", async () => {
+  const result = await run({}, loginForm(), BOTH);
+  assert.equal(result.errorCode, null, String(result.error));
+  assert.deepEqual(result.writes.map((write) => write.product), ["deposit", "credit_card"]);
+  assert.deepEqual(outcomes(result), [{ typeId: "deposit", status: "success" }, { typeId: "credit_card", status: "success" }]);
+  assert.equal(result.form.submitted.length, 1, "both products share one sign-in");
+  const [account, ...others] = creditCollection(result.writes)!.accounts;
+  assert.equal(others.length, 0);
+  const { purchases, ...rest } = account!;
+  assert.deepEqual(rest, {
+    sourceAccountKey: "cards:TWD",
+    displayLabel: "台新銀行 信用卡",
+    currency: "TWD",
+    creditLimit: "100000",
+    cards: [{ sourceCardKey: "1234", cardMask: "****1234", displayLabel: "測試信用卡 ****1234" }],
+    balances: [{
+      amount: "2030",
+      currency: "TWD",
+      observedAt: { at: "2026-10-15T01:58:00.000Z", source: "reported" },
+      basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "1000", paidAmount: "400", unbilledAmount: "1430" },
+    }],
+    statements: [{
+      statementKey: "2026-10", cycleStart: "2026-09-11", cycleEnd: "2026-10-10", closingDate: "2026-10-10", dueDate: "2026-10-25",
+      amount: "1000", currency: "TWD", minimumPayment: "100", billingPeriod: "2026-10", paidAmount: "400", paid: null, noPaymentNeeded: null,
+    }],
+  }, "1000 - 400 + 1430 from the source lexemes; 2026-09 has no earlier closing date read, so it is not a statement");
+  assert.deepEqual(purchases.map(({ amount, direction, posting, consumedAt, sourceCardKey, statementKey, description }) =>
+    ({ amount, direction, posting, consumedAt: consumedAt.value, sourceCardKey, statementKey, description })), [
+    { amount: "252", direction: "outflow", posting: { status: "pending" }, consumedAt: "2026-10-14T09:15:30", sourceCardKey: "1234", statementKey: null, description: "DEMO SHOP TAIPEI" },
+    { amount: "1442.50", direction: "outflow", posting: { status: "posted", billing: "unbilled", postingDate: "2026-10-13" }, consumedAt: "2026-10-12", sourceCardKey: "1234", statementKey: null, description: "DEMO SHOP" },
+    { amount: "-12.50", direction: "inflow", posting: { status: "posted", billing: "unbilled", postingDate: "2026-10-13" }, consumedAt: "2026-10-11", sourceCardKey: "1234", statementKey: null, description: "退款" },
+    { amount: "1000", direction: "outflow", posting: { status: "posted", billing: "billed", postingDate: "2026-10-02" }, consumedAt: "2026-10-01", sourceCardKey: "1234", statementKey: "2026-10", description: "STORE A" },
+  ], "only 成功 authorizations count, the zero authorization is skipped, the unbilled copy of a billed row is dropped, and both signs give the direction");
+  const endpoints = new Set(result.observations.map((entry) => entry.endpoint));
+  for (const path of ["/web4/rb0708rwd/doXTPA", "/web4/rb0708rwd/init", "/web4/rb0760/getCardOverviewData", "/web4/rb0708rwd/queryRealTime", "/web4/rb0708rwd/qryUnposted"])
+    assert.ok(endpoints.has(path), `${path} is observed`);
+  assert.equal(result.observations.length, result.http.requests.length, "every response is observed");
+  const months = result.http.requests.filter((request) => request.url.endsWith("/rb0708rwd/init")).map((request) => JSON.parse(request.body!));
+  assert.deepEqual(months.map(({ org, byear, bmonth }) => `${org}:${byear}-${bmonth}`), ["001:2026-10", "001:2026-09", "001:2026-08", "001:2026-07"]);
+});
+
+test("a card row key stays the same across collections, and identical rows take an occurrence", async () => {
+  const twice = { [`${P}/web4/rb0708rwd/queryRealTime`]: () => card({ fmtRealTxListMap: [{ cardname: "測試信用卡 ****1234", txlist: [realtimeRow("252"), realtimeRow("252")] }] }) };
+  const first = creditCollection((await run(twice, loginForm(), CARD_ONLY)).writes)!;
+  const second = creditCollection((await run(twice, loginForm(), CARD_ONLY)).writes)!;
+  const keys = (collection: PreviewCreditCollection) => collection.accounts[0]!.purchases.map((purchase) => purchase.sourceRowKey);
+  assert.deepEqual(keys(first), keys(second));
+  const pending = keys(first).filter((key) => key.startsWith("pending:"));
+  assert.equal(pending.length, 2);
+  assert.deepEqual(pending.map((key) => key.split(":").at(-1)), ["1", "2"]);
+});
+
+test("without both signs in the collection, card directions are unknown", async () => {
+  const result = await run({
+    [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "1,442.50", unpostedTx: { "001TWD": { data: [{ cardname: "測試信用卡 ****1234", txlist: [unbilledRow("2026/10/12", "DEMO SHOP", "1,442.50")] }] } } }),
+  }, loginForm(), CARD_ONLY);
+  const purchases = creditCollection(result.writes)!.accounts[0]!.purchases;
+  assert.ok(purchases.length > 0);
+  assert.ok(purchases.every((purchase) => purchase.direction === "unknown"));
+});
+
+test("an unbilled foreign-currency group is its own account without a used-credit balance", async () => {
+  const result = await run({
+    [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "1,430", unpostedTx: {
+      "001TWD": { ErrMsg: "(CRXTIKE004)無消費資料" },
+      USD: { data: [{ cardname: "測試卡 ****5678", txlist: [unbilledRow("2026/10/04", "退款", "-12.50", "USD")] }] },
+    } }),
+  }, loginForm(), CARD_ONLY);
+  const [twd, usd] = creditCollection(result.writes)!.accounts;
+  assert.equal(twd!.balances.length, 1);
+  assert.deepEqual({ key: usd!.sourceAccountKey, currency: usd!.currency, balances: usd!.balances, statements: usd!.statements, cards: usd!.cards.map((entry) => entry.sourceCardKey) },
+    { key: "cards:USD", currency: "USD", balances: [], statements: [], cards: ["5678"] });
+  assert.deepEqual(usd!.purchases.map(({ amount, currency }) => ({ amount, currency })), [{ amount: "-12.50", currency: "USD" }]);
+});
+
+test("a no-consumption subtotal is a zero unbilled operand", async () => {
+  const result = await run({
+    [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "(CRXTIKE004)無消費資料", unpostedTx: {} }),
+  }, loginForm(), CARD_ONLY);
+  assert.equal(result.errorCode, null, String(result.error));
+  assert.deepEqual(creditCollection(result.writes)!.accounts[0]!.balances.map(({ amount, basis }) => ({ amount, basis })), [{
+    amount: "600",
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "1000", paidAmount: "400", unbilledAmount: "0" },
+  }]);
+});
+
+test("each card defect fails the card product before write and keeps the deposit write", async () => {
+  const cases: Record<string, [Record<string, FakeRoute>, string, RegExp]> = {
+    "missing currency": [{ [`${P}/web4/rb0708rwd/init`]: (request) => JSON.parse(request.body!).bmonth === "10"
+      ? bill("2026/10", "2026/10/10", "2026/10/25", "1000", [billDetail("1000", "")]) : card({ showAccoutnYM: "" }) },
+    "source-validation-failed", /missing-currency/u],
+    "malformed amount": [{ [`${P}/web4/rb0708rwd/queryRealTime`]: () => card({ fmtRealTxListMap: [{ cardname: "卡 ****1234", txlist: [realtimeRow("1.2.3")] }] }) },
+      "source-validation-failed", /malformed-amount/u],
+    "missing paid operand": [{ [`${P}/web4/rb0760/getCardOverviewData`]: () => card({ carInfoList: { "001": { BillYear: "2026", BillMon: "10", StmtBalance: "1000" } } }) },
+      "source-validation-failed", /LstPymtAmt/u],
+    "non-decimal subtotal": [{ [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "(CRXTIKE999)查詢失敗", unpostedTx: {} }) },
+      "source-validation-failed", /SUBTOTAL/u],
+    "overview for another bill": [{ [`${P}/web4/rb0760/getCardOverviewData`]: () => card({ carInfoList: { "001": { BillYear: "2026", BillMon: "09", StmtBalance: "1000", LstPymtAmt: "0" } } }) },
+      "source-validation-failed", /not the current bill/u],
+    "incomplete unbilled list": [{ [`${P}/web4/rb0708rwd/qryUnposted`]: () => card({ showRB0712_SUBTOTAL: "1,430", unpostedTx: { "001TWD": { ErrMsg: "無法取得資料" } } }) },
+      "source-collection-failed", /could not be read/u],
+    "realtime list missing": [{ [`${P}/web4/rb0708rwd/queryRealTime`]: () => card({}) }, "source-validation-failed", /fmtRealTxListMap is not a list/u],
+  };
+  for (const [name, [overrides, errorCode, reason]] of Object.entries(cases)) {
+    const result = await run(overrides, loginForm(), BOTH);
+    assert.equal(result.errorCode, null, `${name}: the deposit success keeps the run`);
+    assert.deepEqual(outcomes(result), [{ typeId: "deposit", status: "success" }, { typeId: "credit_card", status: "failed", errorCode }], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no card data`);
+    const alone = await run(overrides, loginForm(), CARD_ONLY);
+    assert.match(String(alone.error), reason, name);
+  }
+});
+
+test("a deposit failure leaves the card write in place", async () => {
+  const result = await run({ [`${P}/web1/rb0102/query`]: () => twdList([twdRow("1", '"5"', '"-"')], 3, 0) }, loginForm(), BOTH);
+  assert.equal(result.errorCode, null);
+  assert.deepEqual(outcomes(result), [{ typeId: "deposit", status: "failed", errorCode: "source-collection-failed" }, { typeId: "credit_card", status: "success" }]);
+  assert.deepEqual(result.writes.map((write) => write.product), ["credit_card"]);
+});
+
+test("not_held only on an explicit no-card message; no consumption is an empty list", async () => {
+  const noCard = await run({ [`${P}/web4/rb0708rwd/doXTPA`]: () => jsonResponse({ error: { message: "您目前沒有本行信用卡。" }, value: null }) }, loginForm(), BOTH);
+  assert.deepEqual(outcomes(noCard), [{ typeId: "deposit", status: "success" }, { typeId: "credit_card", status: "not_held" }]);
+  assert.deepEqual(noCard.writes.map((write) => write.product), ["deposit"]);
+
+  const hint = await run({ [`${P}/web4/rb0708rwd/doXTPA`]: () => jsonResponse({ error: "未持有信用卡者請先申辦", value: null }) }, loginForm(), BOTH);
+  assert.deepEqual(outcomes(hint), [{ typeId: "deposit", status: "success" }, { typeId: "credit_card", status: "failed", errorCode: "source-validation-failed" }],
+    "an application hint is not a no-card answer");
+
+  const quiet = await run({
+    [`${P}/web4/rb0708rwd/queryRealTime`]: () => jsonResponse({ error: "(CRXTIKE004)無消費資料" }),
+  }, loginForm(), CARD_ONLY);
+  const account = creditCollection(quiet.writes)!.accounts[0]!;
+  assert.equal(account.purchases.filter((purchase) => purchase.posting.status === "pending").length, 0);
+  assert.equal(account.balances.length, 1, "no consumption is a complete empty realtime list, not no card");
+});
+
+test("a statement whose due date is a status text is not written, and a session lost before the card product ends the run", async () => {
+  const status = await run({ [`${P}/web4/rb0708rwd/init`]: (request) => JSON.parse(request.body!).bmonth === "10"
+    ? bill("2026/10", "2026/10/10", "已繳清", "1000", [billDetail("1000")])
+    : JSON.parse(request.body!).bmonth === "09" ? bill("2026/09", "2026/09/10", "2026/09/25", "800") : card({ showAccoutnYM: "" }) }, loginForm(), CARD_ONLY);
+  assert.deepEqual(creditCollection(status.writes)!.accounts[0]!.statements, []);
+
+  const lost = await run({
+    [`${P}/web/common/sessioncheck`]: (_request, call) => jsonResponse(call < 2 ? { RESULT: "NORMAL", DBSESSIONID: "session-1" } : { RESULT: "EXPIRED" }),
+  }, loginForm(), BOTH);
+  assert.equal(lost.errorCode, "authentication-failed");
+  assert.deepEqual(lost.writes.map((write) => write.product), ["deposit"], "the deposit written before the session loss stays");
 });

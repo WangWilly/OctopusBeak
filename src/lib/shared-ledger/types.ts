@@ -45,6 +45,8 @@ export type SummaryMetricDto = {
   amounts: CurrencyAmountDto[];
   breakdown: string[];
   includesPreview?: boolean;
+  /** A visible preview credit account's used credit is unknown, so this total is not a figure. */
+  incomplete?: boolean;
 };
 
 export type DailyHistoryRowDto = {
@@ -105,11 +107,70 @@ export type AccountRowDto = {
   preview?: PreviewAccountDto;
 };
 
+export type PreviewProductDto = "deposit" | "credit_card" | "time_deposit";
+
 export type PreviewAccountDto = Readonly<{
   sourceId: string;
+  product: PreviewProductDto;
   lastCollectedAt: string;
   balanceTime: Readonly<{ at: string; source: "reported" | "collection-time" }> | null;
   transactions: readonly PreviewTransactionRowDto[];
+  /** Present for a `time_deposit` row; `closedAt` set means the deposit shows as closed and counts toward nothing. */
+  timeDeposit?: PreviewTimeDepositDto;
+  /** Present for a `credit_card` row. */
+  credit?: PreviewCreditDto;
+}>;
+
+export type PreviewTimeDepositDto = Readonly<{
+  principal: string | null;
+  interestRate: string | null;
+  maturityDate: string | null;
+  closedAt: string | null;
+}>;
+
+export type PreviewCreditBasisDto = Readonly<
+  | { kind: "provider-used-credit"; usedCredit: string }
+  | { kind: "credit-limit-minus-available"; creditLimit: string; availableCredit: string }
+  | { kind: "statement-minus-paid-plus-unbilled"; statementAmount: string; paidAmount: string; unbilledAmount: string }
+>;
+
+export type PreviewCreditDto = Readonly<{
+  creditLimit: string | null;
+  /** `null` is an unknown used credit: show 「剩餘應繳金額未取得」, never zero. */
+  usedCredit: Readonly<{ amount: string; currency: string; basis: PreviewCreditBasisDto }> | null;
+  cards: readonly Readonly<{ sourceCardKey: string; cardMask: string; displayLabel: string | null }>[];
+  /** Visible purchases only: paired authorizations and superseded unbilled rows are already hidden. */
+  purchases: readonly PreviewPurchaseRowDto[];
+  statements: readonly PreviewStatementRowDto[];
+}>;
+
+export type PreviewPurchaseRowDto = Readonly<{
+  sourceRowKey: string;
+  amount: string;
+  currency: string;
+  direction: "inflow" | "outflow" | "unknown";
+  posting: Readonly<{ status: "pending" } | { status: "posted"; billing: "billed" | "unbilled"; postingDate: string | null }>;
+  consumedAt: Readonly<{ precision: "day" | "minute" | "second"; value: string }>;
+  /** The paired authorization's time on the posted purchase that replaced it. */
+  authorizedAt: Readonly<{ precision: "day" | "minute" | "second"; value: string }> | null;
+  sourceCardKey: string | null;
+  statementKey: string | null;
+  description: string | null;
+}>;
+
+export type PreviewStatementRowDto = Readonly<{
+  statementKey: string;
+  billingPeriod: string;
+  cycleStart: string | null;
+  cycleEnd: string | null;
+  closingDate: string | null;
+  dueDate: string;
+  amount: string;
+  currency: string;
+  minimumPayment: string | null;
+  paidAmount: string | null;
+  paid: boolean | null;
+  noPaymentNeeded: boolean | null;
 }>;
 
 export type PreviewTransactionRowDto = Readonly<{

@@ -188,6 +188,30 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
       esun_password: "synthetic-password",
     },
     managedIdentitySecret: "synthetic-esun-managed-secret",
+    statementTypes: ["credit_card"],
+    attachedPreviewProducts: [],
+  });
+  assert.deepEqual(workflowInputForTask(task.workflowId, {
+    ...testEnvironment(),
+    [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "deposit",
+  }), {
+    credentials: {
+      esun_user_id: "synthetic-user-id",
+      esun_account: "synthetic-account",
+      esun_password: "synthetic-password",
+    },
+    managedIdentitySecret: "synthetic-esun-managed-secret",
+    statementTypes: [],
+    attachedPreviewProducts: [],
+  }, "an attached-only selection selects no verified product, and Preview features off drop the attachment");
+  assert.deepEqual((workflowInputForTask(task.workflowId, {
+    ...testEnvironment(),
+    PREVIEW_FEATURES_ENABLED: "true",
+    [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "credit_card,deposit",
+  }) as { statementTypes?: unknown; attachedPreviewProducts?: unknown }), {
+    ...workflowInputForTask(task.workflowId, testEnvironment()) as object,
+    statementTypes: ["credit_card"],
+    attachedPreviewProducts: ["deposit"],
   });
 
   const root = await mkdtemp(join(tmpdir(), "esun-app-workflow-"));

@@ -1,12 +1,14 @@
 import { constants, publicEncrypt } from "node:crypto";
-import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewAccount, PreviewTimeDeposit, PreviewTimeDepositCollection, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
+  isZeroDecimal,
   localDate,
   observedAt,
   optionalText,
@@ -211,30 +213,65 @@ async function demandPocket(api: ReturnType<typeof client>, pocket: SourceRecord
   };
 }
 
-function termPocket(pocket: SourceRecord, field: string, asOf: ReturnType<typeof observedAt>): PreviewAccount {
-  const arrngId = text(pocket.arrngId, `${field}.arrngId`);
-  const currency = sourceCurrency(pocket.currency, `${field}.currency`);
+type PocketList = Readonly<{ pockets: readonly SourceRecord[]; termTotal: unknown; asOf: ReturnType<typeof observedAt> }>;
+
+async function pocketList(api: ReturnType<typeof client>, now: string): Promise<PocketList> {
+  const response = await api.post("/ap1/api/v3.0/AppMainPage/PocketInfo", {});
+  const pockets = records(response.data.pocketDetails, "PocketInfo.pocketDetails");
+  for (const [index, pocket] of pockets.entries())
+    if (pocket.depositType !== "DEPOSIT" && pocket.depositType !== "TERMDEPOSIT") return fail("unexpected-response", `PocketInfo.pocketDetails[${index}].depositType`);
+  return { pockets, termTotal: response.data.termDepositTotalAmount, asOf: observedAt(response.date, now) };
+}
+
+async function demandPockets(api: ReturnType<typeof client>, list: PocketList): Promise<PreviewAccount[]> {
+  const accounts: PreviewAccount[] = [];
+  for (const [index, pocket] of list.pockets.entries())
+    if (pocket.depositType === "DEPOSIT") accounts.push(await demandPocket(api, pocket, `PocketInfo.pocketDetails[${index}]`, list.asOf));
+  return accounts;
+}
+
+type TermPocket = Readonly<{ arrngId: string; name: string | null; currency: string; amount: string }>;
+
+function termPocket(pocket: SourceRecord, field: string): TermPocket {
   return {
-    sourceAccountKey: `term:${arrngId}`,
-    displayLabel: `將來銀行 ${optionalText(pocket.name) ?? "定存口袋"}`,
-    currency,
-    type: "depository",
-    balances: [{ kind: "current", amount: exactDecimal(pocket.amount, `${field}.amount`), currency, observedAt: asOf }],
-    transactions: [],
+    arrngId: text(pocket.arrngId, `${field}.arrngId`),
+    name: optionalText(pocket.name),
+    currency: sourceCurrency(pocket.currency, `${field}.currency`),
+    amount: exactDecimal(pocket.amount, `${field}.amount`),
   };
 }
 
-async function pocketAccounts(api: ReturnType<typeof client>, now: string): Promise<PreviewAccount[]> {
-  const response = await api.post("/ap1/api/v3.0/AppMainPage/PocketInfo", {});
-  const asOf = observedAt(response.date, now);
-  const accounts: PreviewAccount[] = [];
-  for (const [index, pocket] of records(response.data.pocketDetails, "PocketInfo.pocketDetails").entries()) {
-    const field = `PocketInfo.pocketDetails[${index}]`;
-    if (pocket.depositType === "DEPOSIT") accounts.push(await demandPocket(api, pocket, field, asOf));
-    else if (pocket.depositType === "TERMDEPOSIT") accounts.push(termPocket(pocket, field, asOf));
-    else return fail("unexpected-response", `${field}.depositType`);
-  }
-  return accounts;
+async function termDeposit(api: ReturnType<typeof client>, pocket: TermPocket, asOf: ReturnType<typeof observedAt>): Promise<PreviewTimeDeposit> {
+  const detail = await api.post("/ap1/api/v2.3/termdeposit/GetTermDepositDetail", { arrngId: pocket.arrngId });
+  const end = detail.data.endDate;
+  return {
+    // The v1 deposit product wrote term pockets under this key, so the same row moves to time_deposit.
+    sourceAccountKey: `term:${pocket.arrngId}`,
+    displayLabel: `將來銀行 ${pocket.name ?? "定存口袋"}`,
+    currency: pocket.currency,
+    balances: [{ kind: "current", amount: pocket.amount, currency: pocket.currency, observedAt: asOf }],
+    principal: pocket.amount,
+    interestRate: null,
+    maturityDate: end === undefined || end === null || end === "" ? null : localDate(end, "GetTermDepositDetail.endDate").value.slice(0, 10),
+  };
+}
+
+/**
+ * PocketInfo is one unpaged list. It is complete when its term-deposit total
+ * equals the exact sum of the term pockets it lists, as all-set-tw reconciles.
+ */
+async function termPockets(api: ReturnType<typeof client>, list: PocketList, collectedAt: string): Promise<PreviewTimeDepositCollection> {
+  const pockets = list.pockets.flatMap((pocket, index) =>
+    pocket.depositType === "TERMDEPOSIT" ? [termPocket(pocket, `PocketInfo.pocketDetails[${index}]`)] : []);
+  if (list.termTotal === undefined || list.termTotal === null) return fail("incomplete-data", "PocketInfo has no termDepositTotalAmount");
+  const total = exactDecimal(list.termTotal, "PocketInfo.termDepositTotalAmount");
+  if (new Set(pockets.map((pocket) => pocket.currency)).size > 1)
+    return fail("incomplete-data", "term pockets in several currencies cannot be reconciled with termDepositTotalAmount");
+  if (!isZeroDecimal(decimalSum([...pockets.map((pocket) => [1, pocket.amount] as const), [-1, total]])))
+    return fail("incomplete-data", "term pockets do not add up to termDepositTotalAmount");
+  const deposits: PreviewTimeDeposit[] = [];
+  for (const pocket of pockets) deposits.push(await termDeposit(api, pocket, list.asOf));
+  return { collectedAt, completeness: "complete", deposits };
 }
 
 export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpener; solveCaptcha?: PreviewCaptchaSolver }> = {}): PreviewSource {
@@ -242,7 +279,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
   return {
     id: "nextbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["nextbank-deposit"],
-    product: "deposit",
+    products: ["deposit", "time_deposit"],
     displayName: { en: "Next Bank deposits (preview)", "zh-TW": "將來銀行存款（預覽）" },
     searchAliases: ["Next Bank", "NextBank", "將來", "將來銀行"],
     credentialFields: [
@@ -292,11 +329,13 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
         api.setToken(text(login.data.acstkn, "CaptchaLogin.acstkn"));
         await context.event("authentication", "authentication-completed");
         try {
-          await context.event("collection", "collection-started");
           const collectedAt = context.now();
-          const accounts = [await mainAccount(api, collectedAt), ...await pocketAccounts(api, collectedAt)];
-          await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          let pockets: Promise<PocketList> | null = null;
+          const list = () => pockets ??= pocketList(api, collectedAt);
+          return await context.preview.collect({
+            deposit: async () => ({ collectedAt, accounts: [await mainAccount(api, collectedAt), ...await demandPockets(api, await list())] }),
+            time_deposit: async () => termPockets(api, await list(), collectedAt),
+          });
         } finally {
           await api.post("/ap2/api/v1.0/membership/Logout", {}, true).catch(() => undefined);
         }

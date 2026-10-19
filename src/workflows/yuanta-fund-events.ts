@@ -16,7 +16,9 @@ export function yuantaFundAdditionalEventRows(
   scopeKey: string,
   decode: YuantaFundEventDecoder,
 ): YuantaCanonicalInvestmentRow[] {
-  const fingerprint = Object.keys(row).sort().flatMap(key => [key,
+  const fingerprint = Object.keys(row)
+    .filter(key => label !== "cash-dividend-details" || !["已扣稅款", "補充保費", "入帳金額"].includes(key))
+    .sort().flatMap(key => [key,
     ["基金名稱", "轉出基金", "轉入基金"].includes(key)
       ? resolveYuantaFundIdentity(row[key]!).name : row[key]!]);
   const record = (name: string, action: YuantaCanonicalInvestmentRow["action"],

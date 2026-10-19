@@ -2,8 +2,10 @@ import { z } from "zod";
 import type { Page, Response } from "playwright";
 import {
   collectSelectedProducts,
+  type CollectionProductOutcome,
   type CollectionProductTypeId,
   ProductCollectionFatalError,
+  ProductCollectionInterruptedError,
   type ProductCollectionRunSummary,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
@@ -47,6 +49,16 @@ import {
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import {
+  ATTACHED_PREVIEW_PRODUCTS,
+  collectAttachedPreviewProducts,
+} from "../lib/preview-sources/attached-products.ts";
+import { previewRunSummary } from "../lib/preview-sources/product-collection.ts";
+import {
+  cathayAttachedPreviewCollectors,
+  type CathayAttachedPreviewPort,
+} from "./cathay-attached-preview.ts";
+import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 
 const statementTypeSchema = z
   .enum(["domestic", "foreign_currency", "foreign"])
@@ -67,13 +79,19 @@ const typedCathayInputSchema = z.object({
     cathay_account: z.string().trim().min(1),
     cathay_password: z.string().trim().min(1),
   }),
-  statementTypes: z.array(statementTypeSchema).min(1),
+  statementTypes: z.array(statementTypeSchema).default([]),
+  attachedPreviewProducts: z
+    .array(z.enum(ATTACHED_PREVIEW_PRODUCTS.cathay.products))
+    .default([]),
   dateRange: dateRangeSchema.default("one_year"),
   accountFilters: z.array(z.string()).default([]),
   domesticAccountFilters: z.array(z.string()).optional(),
   foreignAccountFilters: z.array(z.string()).optional(),
   currencyFilters: z.array(z.string()).default([]),
-});
+}).refine(
+  (input) =>
+    input.statementTypes.length + input.attachedPreviewProducts.length > 0,
+);
 
 export type CathayAllProviderWorkflowInput = z.infer<
   typeof typedCathayInputSchema
@@ -124,6 +142,11 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
     foreign: CathayForeignFinancialCollection | undefined,
     context: WorkflowContext,
   ) => Promise<readonly PGliteWorkflowRunItem[]>;
+  attachedPreviewPort?: (
+    page: Page,
+    session: () => CathaySession,
+    source: CathayStrictSourceOptions,
+  ) => CathayAttachedPreviewPort;
 }>;
 
 function withCathayAbort<T>(
@@ -244,6 +267,58 @@ function currentBalanceItems(
   }));
 }
 
+function noVerifiedProducts(
+  productIds: readonly CollectionProductTypeId[],
+): ProductCollectionRunSummary {
+  return {
+    products: productIds.map((typeId) => ({
+      typeId,
+      status: "skipped",
+      itemCount: 0,
+      committedCount: 0,
+      skipReason: "not_selected",
+    })),
+    sourceCaptureCount: 0,
+    rowCount: 0,
+    itemCount: 0,
+    committedCount: 0,
+    status: "completed",
+  };
+}
+
+/**
+ * The verified summary with the attached preview products appended. An
+ * attached failure only adds its own failed outcome; a session loss during an
+ * attached product ends the run like one during a verified product.
+ */
+function withAttachedProducts(
+  verified: ProductCollectionRunSummary,
+  attached: Awaited<ReturnType<typeof collectAttachedPreviewProducts>>,
+): ProductCollectionRunSummary {
+  const preview = previewRunSummary(attached);
+  const products: readonly CollectionProductOutcome[] = [
+    ...verified.products,
+    ...preview.products,
+  ];
+  const committedCount = verified.committedCount + preview.committedCount;
+  const failed = products.some((product) => product.status === "failed");
+  const summary: ProductCollectionRunSummary = {
+    products,
+    sourceCaptureCount: verified.sourceCaptureCount,
+    rowCount: verified.rowCount + preview.rowCount,
+    itemCount: verified.itemCount + preview.itemCount,
+    committedCount,
+    status: failed ? (committedCount > 0 ? "partial" : "failed") : "completed",
+  };
+  if (attached.interrupted) {
+    throw new ProductCollectionInterruptedError(
+      attached.interrupted.errorCode,
+      summary,
+    );
+  }
+  return summary;
+}
+
 /** App-owned Cathay group workflow. Every selected statement and balance
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
@@ -297,9 +372,11 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    await context.event("collection", "statement-collection-started", {
-      total: selectedIds.length,
-    });
+    if (selectedIds.length > 0) {
+      await context.event("collection", "statement-collection-started", {
+        total: selectedIds.length,
+      });
+    }
     const readCurrent =
       dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
     const collectCurrentBalanceItems = async (
@@ -395,32 +472,38 @@ export async function runCathayAllProviderWorkflow(
       return items;
     };
 
-    const summary = await collectSelectedProducts({
+    const assertSession = async () => {
+      // Cathay's GetJWT request is the authenticated session health check.
+      // A source failure must not be mistaken for an independent product
+      // failure when the browser session itself has expired.
+      let checkedSession: CathaySession;
+      try {
+        checkedSession = await withCathayAbort(
+          createSession(page, source),
+          context.signal,
+        );
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        throw new ProductCollectionFatalError("authentication-failed");
+      }
+      if (
+        checkedSession.customerId !== session.customerId ||
+        checkedSession.idType !== session.idType
+      ) {
+        throw new ProductCollectionFatalError("authentication-failed");
+      }
+      session = checkedSession;
+    };
+
+    // A person may select only attached preview products. The run then signs
+    // in and reports every verified product as not selected.
+    const summary = selectedIds.length === 0
+      ? noVerifiedProducts(productIds)
+      : await collectSelectedProducts({
       productIds,
       selectedIds,
       signal: context.signal,
-      assertSession: async () => {
-        // Cathay's GetJWT request is the authenticated session health check.
-        // A source failure must not be mistaken for an independent product
-        // failure when the browser session itself has expired.
-        let checkedSession: CathaySession;
-        try {
-          checkedSession = await withCathayAbort(
-            createSession(page, source),
-            context.signal,
-          );
-        } catch (error) {
-          if (context.signal.aborted) throw error;
-          throw new ProductCollectionFatalError("authentication-failed");
-        }
-        if (
-          checkedSession.customerId !== session.customerId ||
-          checkedSession.idType !== session.idType
-        ) {
-          throw new ProductCollectionFatalError("authentication-failed");
-        }
-        session = checkedSession;
-      },
+      assertSession,
       event: (stage, code, counts) => context.event(stage, code, counts),
       productFailure: context.productFailure,
       collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
@@ -560,34 +643,50 @@ export async function runCathayAllProviderWorkflow(
         }),
     });
 
-    const completedProducts = summary.products.filter(
-      (product) =>
-        product.status === "success" ||
-        product.status === "no_data" ||
-        product.status === "not_held",
-    ).length;
-    await context.event("collection", "statement-collection-completed", {
-      completed: completedProducts,
-      total: selectedIds.length,
-    });
-    if (
-      summary.products
-        .filter((product) => product.status !== "skipped")
-        .every((product) => product.status !== "failed")
-    ) {
-      await context.event("validation", "all-source-admission-completed", {
-        completed: summary.itemCount,
-        total: summary.itemCount,
+    if (selectedIds.length > 0) {
+      const completedProducts = summary.products.filter(
+        (product) =>
+          product.status === "success" ||
+          product.status === "no_data" ||
+          product.status === "not_held",
+      ).length;
+      await context.event("collection", "statement-collection-completed", {
+        completed: completedProducts,
+        total: selectedIds.length,
       });
-    }
-    if (summary.status === "completed" && summary.committedCount > 0) {
-      await context.event("commit", "canonical-commit-completed", {
-        completed: summary.committedCount,
-        total: summary.itemCount,
-      });
+      if (
+        summary.products
+          .filter((product) => product.status !== "skipped")
+          .every((product) => product.status !== "failed")
+      ) {
+        await context.event("validation", "all-source-admission-completed", {
+          completed: summary.itemCount,
+          total: summary.itemCount,
+        });
+      }
+      if (summary.status === "completed" && summary.committedCount > 0) {
+        await context.event("commit", "canonical-commit-completed", {
+          completed: summary.committedCount,
+          total: summary.itemCount,
+        });
+      }
     }
 
-    const hasSuccessfulProduct = summary.products.some(
+    const overall = input.attachedPreviewProducts.length === 0
+      ? summary
+      : withAttachedProducts(summary, await collectAttachedPreviewProducts({
+          context,
+          source: ATTACHED_PREVIEW_PRODUCTS.cathay,
+          selected: input.attachedPreviewProducts,
+          collectors: cathayAttachedPreviewCollectors(
+            (dependencies.attachedPreviewPort ??
+              playwrightCathayAttachedPreviewPort)(page, () => session, source),
+            context.now,
+          ),
+          assertSession,
+        }));
+
+    const hasSuccessfulProduct = overall.products.some(
       (product) => product.status === "success",
     );
     return {
@@ -597,14 +696,14 @@ export async function runCathayAllProviderWorkflow(
       count: statementCaptureCount,
       rowCount: summary.rowCount,
       sourceCaptureCount: summary.sourceCaptureCount,
-      committedCount: summary.committedCount,
-      products: summary.products,
+      committedCount: overall.committedCount,
+      products: overall.products,
       status:
-        summary.status === "completed"
+        overall.status === "completed"
           ? hasSuccessfulProduct
             ? "financial-admitted"
             : "no-data"
-          : summary.status,
+          : overall.status,
     };
   });
 }

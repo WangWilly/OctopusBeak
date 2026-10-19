@@ -21,7 +21,7 @@ import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
-import { createWorkflowExecutor } from "../workflow-executor.ts";
+import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
 import type {
   WorkflowBrowserPort,
   WorkflowExecutorPorts,
@@ -351,6 +351,8 @@ async function executeInlineAppWorkflow(
         taskRunId: execution.run.taskRunId,
       });
       await childRpc.ready;
+      previewWrite = childRpc.operationalProvider.preview;
+    } else if (workflowUsesPreviewWrite(definition) && !previewWrite && childRpc) {
       previewWrite = childRpc.operationalProvider.preview;
     }
     let accountIdentity = injectedPorts.accountIdentity;

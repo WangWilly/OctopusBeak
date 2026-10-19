@@ -182,7 +182,7 @@ test("a failed preview run sanitizes its observations inside the worker and rele
       },
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
-      previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0 }) },
+      previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 }) },
     });
     const frame = await terminal;
     assert.equal(frame.kind, "failed");

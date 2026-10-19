@@ -54,6 +54,18 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
+import {
+  ProductCollectionInterruptedError,
+  type CollectionProductOutcome,
+} from "../lib/automation/product-collection.ts";
+import {
+  ATTACHED_PREVIEW_PRODUCTS,
+  collectAttachedPreviewProducts,
+} from "../lib/preview-sources/attached-products.ts";
+import { previewRunSummary, type PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
+import { fail } from "../lib/preview-sources/source-kit.ts";
+import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -70,7 +82,13 @@ const typedWorkflowInputSchema = z.object({
     hncb_account: z.string().trim().min(1),
     hncb_password: z.string().trim().min(1),
   }),
-});
+  /** The verified products selected; HNCB has only `deposit`. */
+  statementTypes: z.array(z.literal("deposit")).default(["deposit"]),
+  attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
+}).refine(
+  (input) => input.statementTypes.length > 0 || input.attachedPreviewProducts.length > 0,
+  "Select at least one HNCB product.",
+);
 
 type BrowserScope = Page | Frame;
 type HncbCredentials = {
@@ -92,9 +110,11 @@ type WorkflowOutput = Readonly<{
 }>;
 export type HncbWorkflowOutput = Readonly<{
   usedExistingSession: boolean;
-  dateRange: HncbDateRange;
+  /** Absent when only attached preview products were selected. */
+  dateRange?: HncbDateRange;
   accountCount: number;
-  status: "financial-admitted" | "source-only";
+  status: "financial-admitted" | "source-only" | "completed" | "partial";
+  products: readonly CollectionProductOutcome[];
 }>;
 
 type DateParts = {
@@ -1492,38 +1512,93 @@ export async function runHncbProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "authentication-completed");
 
-    const firstResultFrame = await openFirstStatementDetail(page);
-    const result = await runHncbStatements(
-      page,
-      parsed.data,
-      {
-        usedExistingSession,
-        text: context.text,
-        signal: context.signal,
-        event: context.event,
-        financialCommit,
-        readAccountOptions: async (_candidatePage, filters) =>
-          readAccountOptions(firstResultFrame, filters),
-        downloadStatement: async (candidatePage, account, resultFrame, text) =>
-          downloadCurrentStatementInMemory(
-            candidatePage,
-            account,
-            resultFrame,
-            text ?? context.text,
-            60_000,
-            context.signal,
-          ),
-        readCurrentDepositBalances: readHncbCurrentDepositBalances,
-        readCurrentDepositOverviewBalances:
-          readHncbCurrentDepositOverviewBalances,
-      },
-    );
+    let deposit: WorkflowOutput | null = null;
+    if (parsed.data.statementTypes.includes("deposit")) {
+      const firstResultFrame = await openFirstStatementDetail(page);
+      deposit = await runHncbStatements(
+        page,
+        parsed.data,
+        {
+          usedExistingSession,
+          text: context.text,
+          signal: context.signal,
+          event: context.event,
+          financialCommit,
+          readAccountOptions: async (_candidatePage, filters) =>
+            readAccountOptions(firstResultFrame, filters),
+          downloadStatement: async (candidatePage, account, resultFrame, text) =>
+            downloadCurrentStatementInMemory(
+              candidatePage,
+              account,
+              resultFrame,
+              text ?? context.text,
+              60_000,
+              context.signal,
+            ),
+          readCurrentDepositBalances: readHncbCurrentDepositBalances,
+          readCurrentDepositOverviewBalances:
+            readHncbCurrentDepositOverviewBalances,
+        },
+      );
+    }
     context.signal.throwIfAborted();
-    return {
-      usedExistingSession,
-      dateRange: result.dateRange,
-      accountCount: result.count,
-      status: result.status,
-    };
+    const attached = await collectAttachedPreviewProducts({
+      context,
+      source: ATTACHED_PREVIEW_PRODUCTS.hncb,
+      selected: parsed.data.attachedPreviewProducts,
+      collectors: {
+        credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(page), { now: context.now() }),
+      },
+      assertSession: async () => {
+        if (!(await isSignedIn(page))) fail("session-conflict", "the HNCB session ended");
+      },
+    });
+    return hncbRunOutput(usedExistingSession, deposit, attached);
   });
+}
+
+/**
+ * The run's product summary: the verified deposit product, then the attached
+ * preview products. An attached failure never changes the deposit outcome; a
+ * session loss in an attached product ends the run with every outcome kept.
+ */
+export function hncbRunOutput(
+  usedExistingSession: boolean,
+  deposit: WorkflowOutput | null,
+  attached: PreviewProductRun,
+): HncbWorkflowOutput {
+  const products: readonly CollectionProductOutcome[] = [
+    deposit
+      ? { typeId: "deposit", status: "success", itemCount: deposit.count, committedCount: deposit.count }
+      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
+    ...attached.products,
+  ];
+  const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
+  const failed = products.find((product) => product.status === "failed");
+  const summary = {
+    products,
+    sourceCaptureCount: 0,
+    rowCount: previewRunSummary(attached).rowCount,
+    itemCount: products.reduce((total, product) => total + product.itemCount, 0),
+    committedCount,
+    status: failed ? committedCount > 0 ? "partial" : "failed" : "completed",
+  } as const;
+  if (attached.interrupted) {
+    throw Object.assign(
+      new ProductCollectionInterruptedError(attached.interrupted.errorCode, summary),
+      { cause: attached.interrupted.error },
+    );
+  }
+  if (!deposit && committedCount === 0 && failed) {
+    const attempted = attached.products.filter((product) => product.status !== "skipped");
+    if (attempted.length === 1) throw attached.firstFailure;
+    throw new ProductCollectionInterruptedError(failed.errorCode ?? "source-collection-failed", summary);
+  }
+  return {
+    usedExistingSession,
+    ...(deposit ? { dateRange: deposit.dateRange } : {}),
+    accountCount: committedCount,
+    status: deposit?.status ?? "completed",
+    products,
+  };
 }

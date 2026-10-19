@@ -1,11 +1,24 @@
-import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import { createHash } from "node:crypto";
+import { amountKey } from "./source-id.ts";
+import type {
+  PreviewAccount,
+  PreviewCard,
+  PreviewCreditAccount,
+  PreviewCreditCollection,
+  PreviewLocalDate,
+  PreviewPurchase,
+  PreviewStatement,
+  PreviewTransaction,
+} from "../../ledger/pglite/preview-financial-data.ts";
 import type { PreviewHttp } from "./browser-http.ts";
+import type { PreviewProductAbsence } from "./product-collection.ts";
 import { calibratedCaptchaSolver, TAISHIN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import { taishinBrowserSession } from "./taishin-login-form.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
   isZeroDecimal,
@@ -336,13 +349,357 @@ async function fxAccounts(api: Client, now: string): Promise<PreviewAccount[]> {
   return accounts;
 }
 
+const CARD_PATH = {
+  summary: "/web4/rb0708rwd/doXTPA",
+  bill: "/web4/rb0708rwd/init",
+  overview: "/web4/rb0760/getCardOverviewData",
+  realtime: "/web4/rb0708rwd/queryRealTime",
+  unbilled: "/web4/rb0708rwd/qryUnposted",
+} as const;
+const CARD_ORGS = ["001", "055", "100"] as const;
+// Statement, overview, realtime column [3], and showRB0712_SUBTOTAL are NT-dollar
+// figures (org 001 is the NT-dollar ledger). None of them carries a currency field.
+const CARD_STATEMENT_CURRENCY = "TWD";
+const BILL_MONTHS = 4;
+const NO_CONSUMPTION = "(CRXTIKE004)無消費資料";
+
+class NoCreditCard extends Error {}
+
+/** Only a message that opens by saying the person holds no card; never an application hint. */
+function isNoCreditCardMessage(message: string): boolean {
+  return /^(?:您)?(?:目前)?(?:(?:尚未|未|沒有|無)(?:持有|申辦|申請)?(?:本行)?信用卡|沒有(?:本行)?有效卡|非(?:本行)?(?:信用卡)?(?:持卡人|卡友)|非(?:本行)?信用卡客戶)(?=[，,。.!！；;]|$)/u
+    .test(message.replace(/\s+/gu, "").replace(/^\d{4}[:：]/u, ""));
+}
+
+function errorMessage(error: unknown): string | null {
+  if (error === null || error === undefined || error === false || error === "") return null;
+  if (typeof error === "string") return error.trim();
+  if (typeof error === "object" && !Array.isArray(error)) return optionalText((error as SourceRecord).message) ?? "";
+  return String(error);
+}
+
+/** A web4 `{ error, value }` envelope. `null` is the explicit no-consumption answer, where allowed. */
+async function cardCall(api: Client, path: string, body: Record<string, unknown> | "", noConsumption = false) {
+  const response = await api.raw(path, body);
+  if (response.payload.RESULT === "EXPIRED" || response.payload.RESULT === "RESUME") return fail("session-conflict", `${path} session expired`);
+  const message = errorMessage(response.payload.error);
+  if (message !== null) {
+    if (/請重新登入|登入逾時/u.test(message)) return fail("session-conflict", `${path} session expired`);
+    if (isNoCreditCardMessage(message)) throw new NoCreditCard();
+    if (noConsumption && message === NO_CONSUMPTION) return { value: null, date: response.date };
+    return fail("unexpected-response", `${path} returned an error`);
+  }
+  return { value: record(response.payload.value, `${path}.value`), date: response.date };
+}
+
+/** A card cell lexeme: tags such as `<font>` are stripped, and an accounting `(12.50)` is negative. */
+function cardAmount(value: unknown, field: string): string {
+  const cell = typeof value === "string" ? value.replace(/<[^>]*>/gu, "").trim() : value;
+  const negative = typeof cell === "string" ? /^\((.+)\)$/u.exec(cell) : null;
+  return negative ? `-${exactDecimal(negative[1], field).replace(/^-/u, "")}` : exactDecimal(cell, field);
+}
+
+function dayOf(value: unknown, field: string): string {
+  return localDate(value, field).value.slice(0, 10);
+}
+
+function cardOf(name: unknown): PreviewCard | null {
+  const label = plainText(name);
+  const last4 = label === null ? undefined : /(?:末四碼\s*[:：]?\s*|[*xX])(\d{4})\D*$/u.exec(label)?.[1];
+  if (label === null || last4 === undefined) return null;
+  return { sourceCardKey: last4, cardMask: `****${last4}`, displayLabel: label.replace(/\d(?:[ -]?\d){7,}/gu, (run) => `****${run.replace(/\D/gu, "").slice(-4)}`) };
+}
+
+type Period = Readonly<{ year: number; month: number }>;
+const periodLabel = ({ year, month }: Period) => `${year}-${String(month).padStart(2, "0")}`;
+
+function sourcePeriod(value: unknown, field: string): string {
+  const match = /^(\d{4})[/-]?(\d{1,2})$/u.exec(text(value, field));
+  if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) return fail("unexpected-response", `${field} is not a billing period`);
+  return `${match[1]}-${match[2]!.padStart(2, "0")}`;
+}
+
+/** A purchase before its key and direction, which depend on the whole collection. */
+type CardRow = Readonly<{
+  feed: "pending" | "unbilled" | "billed";
+  card: PreviewCard | null;
+  consumedAt: PreviewLocalDate;
+  postingDate: string | null;
+  amount: string;
+  currency: string;
+  /** The text that keys the row; realtime keeps column [2] while it displays column [6]. */
+  identity: string;
+  description: string | null;
+  statementKey: string | null;
+}>;
+
+type Bill = Readonly<{ period: string; value: SourceRecord }>;
+
+async function readBill(api: Client, org: string, period: Period): Promise<Bill | null> {
+  const { value } = await cardCall(api, CARD_PATH.bill, {
+    org, byear: String(period.year), bmonth: String(period.month).padStart(2, "0"), cardHolderFlagSelected: "1", cardNo: "",
+  });
+  // The page answers a month without a statement with an empty showAccoutnYM.
+  if (optionalText(value!.showAccoutnYM) === null) return null;
+  const billed = sourcePeriod(value!.showAccoutnYM, "bill.showAccoutnYM");
+  if (billed !== periodLabel(period)) return fail("unexpected-response", `the ${periodLabel(period)} bill reports period ${billed}`);
+  return { period: billed, value: value! };
+}
+
+function billRows(bill: Bill): CardRow[] {
+  const field = `bill[${bill.period}]`;
+  return records(bill.value.newAcctDetailList ?? [], `${field}.newAcctDetailList`).flatMap((group, groupIndex) =>
+    records(group.detail, `${field}.newAcctDetailList[${groupIndex}].detail`).map((detail, index) => {
+      const at = `${field}.newAcctDetailList[${groupIndex}].detail[${index}]`;
+      const description = plainText(detail.showOutDesc);
+      return {
+        feed: "billed" as const,
+        card: cardOf(group.order),
+        consumedAt: localDate(detail.showOutTXNDate, `${at}.showOutTXNDate`),
+        postingDate: detail.showOutPostDate === undefined || detail.showOutPostDate === "" ? null : dayOf(detail.showOutPostDate, `${at}.showOutPostDate`),
+        amount: cardAmount(detail.showOutAmt, `${at}.showOutAmt`),
+        currency: currencyCode(detail.showOutCurrency, `${at}.showOutCurrency`, CURRENCY_ALIASES),
+        identity: description ?? "",
+        description,
+        statementKey: bill.period,
+      };
+    }));
+}
+
+function realtimeRows(value: SourceRecord | null): CardRow[] {
+  if (value === null) return [];
+  const path = CARD_PATH.realtime;
+  return records(value.fmtRealTxListMap, `${path}.fmtRealTxListMap`).flatMap((group, groupIndex) => {
+    const card = cardOf(group.cardname);
+    const rows = group.txlist;
+    if (!Array.isArray(rows)) return fail("unexpected-response", `${path}.fmtRealTxListMap[${groupIndex}].txlist is not a list`);
+    return rows.flatMap((row: unknown, index): CardRow[] => {
+      const at = `${path}.fmtRealTxListMap[${groupIndex}].txlist[${index}]`;
+      if (!Array.isArray(row) || row.length < 7) return fail("unexpected-response", `${at} is not a seven-column row`);
+      // The official page counts only an exact 成功; 未成功, declined, and cancelled rows are no spending.
+      if (typeof row[5] !== "string" || row[5].trim() !== "成功") return [];
+      const time = optionalText(row[1]);
+      return [{
+        feed: "pending",
+        card,
+        consumedAt: localDate(time === null ? row[0] : `${text(row[0], `${at}[0]`)} ${time}`, `${at}[0..1]`),
+        postingDate: null,
+        amount: cardAmount(row[3], `${at}[3]`),
+        currency: CARD_STATEMENT_CURRENCY,
+        identity: plainText(row[2]) ?? "",
+        description: plainText(row[6]) ?? plainText(row[2]),
+        statementKey: null,
+      }];
+    });
+  });
+}
+
+function unbilledRows(value: SourceRecord | null): CardRow[] {
+  if (value === null) return [];
+  const path = CARD_PATH.unbilled;
+  const groups = Array.isArray(value.unpostedTx) && value.unpostedTx.length === 0 ? {} : record(value.unpostedTx, `${path}.unpostedTx`);
+  return Object.entries(groups).flatMap(([key, entry]) => {
+    const field = `${path}.unpostedTx[${key}]`;
+    const group = record(entry, field);
+    const message = errorMessage(group.ErrMsg);
+    if (message === NO_CONSUMPTION) return [];
+    if (message !== null) return fail("incomplete-data", `${field} could not be read`);
+    const currency = currencyCode(/^(?:\d{3})?([A-Z]{3})$/u.exec(key)?.[1], `${field} key`);
+    return records(group.data, `${field}.data`).flatMap((cardGroup, groupIndex) => {
+      const card = cardOf(cardGroup.cardname);
+      const rows = cardGroup.txlist;
+      if (!Array.isArray(rows)) return fail("unexpected-response", `${field}.data[${groupIndex}].txlist is not a list`);
+      return rows.map((row: unknown, index): CardRow => {
+        const at = `${field}.data[${groupIndex}].txlist[${index}]`;
+        if (!Array.isArray(row) || row.length < 8) return fail("unexpected-response", `${at} is not an eight-column row`);
+        if (optionalText(row[7]) !== null && currencyCode(row[7], `${at}[7]`, CURRENCY_ALIASES) !== currency)
+          return fail("unexpected-response", `${at}[7] does not match its currency group`);
+        const description = plainText(row[2]);
+        return {
+          feed: "unbilled",
+          card,
+          consumedAt: localDate(row[0], `${at}[0]`),
+          postingDate: dayOf(row[1], `${at}[1]`),
+          amount: cardAmount(row[3], `${at}[3]`),
+          currency,
+          identity: description ?? "",
+          description,
+          statementKey: null,
+        };
+      });
+    });
+  });
+}
+
+const rowIdentity = (row: CardRow) =>
+  [row.card?.sourceCardKey ?? "-", row.consumedAt.value.slice(0, 10), row.currency, amountKey(row.amount), row.identity].join("\u0000");
+
+/** A row the latest bill already lists is the same purchase, not a second one, so its unbilled copy is dropped. */
+function withoutBilledCopies(unbilled: readonly CardRow[], billed: readonly CardRow[]): CardRow[] {
+  const remaining = new Map<string, number>();
+  for (const row of billed) remaining.set(rowIdentity(row), (remaining.get(rowIdentity(row)) ?? 0) + 1);
+  return unbilled.filter((row) => {
+    const left = remaining.get(rowIdentity(row)) ?? 0;
+    if (left === 0) return true;
+    remaining.set(rowIdentity(row), left - 1);
+    return false;
+  });
+}
+
+/**
+ * Keys and directions need the whole collection: identical rows take an
+ * occurrence count, and the sign gives the direction only when both signs occur.
+ */
+function purchases(rows: readonly CardRow[]): { row: CardRow; purchase: PreviewPurchase }[] {
+  // A zero row moves no money (such as a card-verification authorization), and the store refuses it.
+  const moving = rows.filter((row) => !isZeroDecimal(row.amount));
+  const signed = moving.some((row) => row.amount.startsWith("-")) && moving.some((row) => !row.amount.startsWith("-"));
+  const occurrences = new Map<string, number>();
+  return moving.map((row) => {
+    const base = [row.feed, row.statementKey ?? "-", row.card?.sourceCardKey ?? "-", row.consumedAt.value, row.currency, amountKey(row.amount),
+      createHash("sha256").update(row.identity).digest("hex").slice(0, 12)].join(":");
+    const occurrence = (occurrences.get(base) ?? 0) + 1;
+    occurrences.set(base, occurrence);
+    return {
+      row,
+      purchase: {
+        sourceRowKey: `${base}:${occurrence}`,
+        amount: row.amount,
+        currency: row.currency,
+        direction: signed ? row.amount.startsWith("-") ? "inflow" : "outflow" : "unknown",
+        posting: row.feed === "pending" ? { status: "pending" } : { status: "posted", billing: row.feed, postingDate: row.postingDate },
+        consumedAt: row.consumedAt,
+        sourceCardKey: row.card?.sourceCardKey ?? null,
+        statementKey: row.statementKey,
+        bankReference: null,
+        description: row.description,
+      },
+    };
+  });
+}
+
+function previousPeriod(period: string): string {
+  const [year, month] = period.split("-").map(Number) as [number, number];
+  return month === 1 ? `${year - 1}-12` : periodLabel({ year, month: month - 1 });
+}
+
+/** A statement needs the previous month's closing date for its cycle start, and a due date that is a date. */
+function statement(bill: Bill, previous: Bill | undefined, paidAmount: string | null): PreviewStatement | null {
+  const field = `bill[${bill.period}]`;
+  const closingDate = dayOf(bill.value.showStmtDate, `${field}.showStmtDate`);
+  const due = optionalText(bill.value.showDueDate);
+  if (previous === undefined || due === null || !/^\d{4}[-/]?\d{1,2}[-/]?\d{1,2}$/u.test(due)) return null;
+  return {
+    statementKey: bill.period,
+    cycleStart: shiftDay(dayOf(previous.value.showStmtDate, `bill[${previous.period}].showStmtDate`), 1),
+    cycleEnd: closingDate,
+    closingDate,
+    dueDate: dayOf(due, `${field}.showDueDate`),
+    amount: cardAmount(bill.value.showCbalance, `${field}.showCbalance`),
+    currency: CARD_STATEMENT_CURRENCY,
+    minimumPayment: optionalText(bill.value.showMinPay) === null ? null : cardAmount(bill.value.showMinPay, `${field}.showMinPay`),
+    billingPeriod: bill.period,
+    paidAmount,
+    paid: null,
+    noPaymentNeeded: null,
+  };
+}
+
+async function creditCards(api: Client, collectedAt: string): Promise<PreviewCreditCollection | PreviewProductAbsence> {
+  try {
+    return await readCreditCards(api, collectedAt);
+  } catch (error) {
+    if (error instanceof NoCreditCard) return { absent: "not_held" };
+    throw error;
+  }
+}
+
+async function readCreditCards(api: Client, collectedAt: string): Promise<PreviewCreditCollection> {
+  const summary = (await cardCall(api, CARD_PATH.summary, {})).value!;
+  const org = CARD_ORGS.find((candidate) => summary[candidate] !== null && typeof summary[candidate] === "object");
+  if (org === undefined) return fail("unexpected-response", `${CARD_PATH.summary} lists no card ledger`);
+  const ledger = record(summary[org], `${CARD_PATH.summary}.${org}`);
+  const lastStatement = /^(\d{4})(\d{2})\d{2}$/u.exec(text(ledger["OUT-DTE-LST-STMT"], `${CARD_PATH.summary}.OUT-DTE-LST-STMT`));
+  if (!lastStatement) return fail("unexpected-response", `${CARD_PATH.summary}.OUT-DTE-LST-STMT is not a date`);
+  const months = Array.from({ length: BILL_MONTHS }, (_, index) => {
+    const date = new Date(Date.UTC(Number(lastStatement[1]), Number(lastStatement[2]) - 1 - index, 1));
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 };
+  });
+
+  // The official page opens the current bill and the overview before the purchase lists.
+  const current = await readBill(api, org, months[0]!);
+  if (current === null) return fail("unexpected-response", `no bill for the last statement month ${periodLabel(months[0]!)}`);
+  const overview = (await cardCall(api, CARD_PATH.overview, {})).value!;
+  const paying = record(record(overview.carInfoList, `${CARD_PATH.overview}.carInfoList`)[org], `${CARD_PATH.overview}.carInfoList.${org}`);
+  const overviewPeriod = sourcePeriod(`${text(paying.BillYear, "BillYear")}/${text(paying.BillMon, "BillMon")}`, `${CARD_PATH.overview}.BillYear/BillMon`);
+  if (overviewPeriod !== current.period) return fail("unexpected-response", `the payment overview is for ${overviewPeriod}, not the current bill ${current.period}`);
+  const statementAmount = cardAmount(paying.StmtBalance, `${CARD_PATH.overview}.StmtBalance`);
+  const paidAmount = cardAmount(paying.LstPymtAmt, `${CARD_PATH.overview}.LstPymtAmt`);
+  if (paidAmount.startsWith("-")) return fail("unexpected-response", `${CARD_PATH.overview}.LstPymtAmt is negative`);
+
+  const realtime = await cardCall(api, CARD_PATH.realtime, "", true);
+  const unbilled = await cardCall(api, CARD_PATH.unbilled, "", true);
+  const subtotal = unbilled.value?.showRB0712_SUBTOTAL;
+  if (subtotal === undefined || subtotal === null || subtotal === "")
+    return fail("unexpected-response", `${CARD_PATH.unbilled}.showRB0712_SUBTOTAL is missing`);
+  const unbilledAmount = subtotal === NO_CONSUMPTION ? "0" : cardAmount(subtotal, `${CARD_PATH.unbilled}.showRB0712_SUBTOTAL`);
+
+  const bills = [current];
+  for (const month of months.slice(1)) {
+    const bill = await readBill(api, org, month);
+    if (bill !== null) bills.push(bill);
+  }
+  const billed = bills.flatMap(billRows);
+  const rows = [...realtimeRows(realtime.value), ...withoutBilledCopies(unbilledRows(unbilled.value), billed), ...billed];
+  const statements = bills.flatMap((bill) => {
+    const previous = bills.find((candidate) => candidate.period === previousPeriod(bill.period));
+    const written = statement(bill, previous, bill === current ? paidAmount : null);
+    return written === null ? [] : [written];
+  });
+
+  // Unbilled foreign-currency groups are not in the NT-dollar subtotal, so each is its own account with no known used credit.
+  const accountOf = (row: CardRow) => row.feed === "unbilled" ? row.currency : CARD_STATEMENT_CURRENCY;
+  const keyed = purchases(rows);
+  const currencies = [CARD_STATEMENT_CURRENCY, ...new Set(rows.map(accountOf).filter((code) => code !== CARD_STATEMENT_CURRENCY))];
+  return {
+    collectedAt,
+    accounts: currencies.map((currency): PreviewCreditAccount => {
+      const accountPurchases = keyed.filter(({ row }) => accountOf(row) === currency).map(({ purchase }) => purchase);
+      const cards = new Map(rows.filter((row) => accountOf(row) === currency)
+        .flatMap((row) => row.card === null ? [] : [[row.card.sourceCardKey, row.card] as const]));
+      const account = { sourceAccountKey: `cards:${currency}`, currency, cards: [...cards.values()], purchases: accountPurchases };
+      if (currency !== CARD_STATEMENT_CURRENCY)
+        return { ...account, displayLabel: `台新銀行 信用卡 ${currency}`, creditLimit: null, balances: [], statements: [] };
+      return {
+        ...account,
+        displayLabel: "台新銀行 信用卡",
+        creditLimit: ledger["OUT-CRLIMIT-PERM"] === undefined ? null : cardAmount(ledger["OUT-CRLIMIT-PERM"], `${CARD_PATH.summary}.OUT-CRLIMIT-PERM`),
+        balances: [{
+          amount: decimalSum([[1, statementAmount], [-1, paidAmount], [1, unbilledAmount]]),
+          currency,
+          observedAt: observedAt(unbilled.date, collectedAt),
+          basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount, paidAmount, unbilledAmount },
+        }],
+        statements,
+      };
+    }),
+  };
+}
+
 async function signIn(api: Client, form: TaishinLoginForm, solve: PreviewCaptchaSolver, context: PreviewWorkflowContext, credentials: TaishinCredentials) {
   const answer = await solveChallengeRound(context, solve, () => form.captcha(), 1);
   const dialog = await form.submit(credentials, answer);
   if (dialog !== null) classifyLoginDialog(dialog);
-  const path = "/web/common/sessioncheck";
-  const session = (await api.raw(path, {})).payload;
-  if (session.RESULT === "EXPIRED" || optionalText(session.DBSESSIONID) === null) fail("unexpected-response", "the login outcome is unknown: sessioncheck shows no session");
+  if (!await hasSession(api)) fail("unexpected-response", "the login outcome is unknown: sessioncheck shows no session");
+}
+
+async function hasSession(api: Client): Promise<boolean> {
+  const session = (await api.raw("/web/common/sessioncheck", {})).payload;
+  return session.RESULT !== "EXPIRED" && optionalText(session.DBSESSIONID) !== null;
+}
+
+async function assertSession(api: Client): Promise<void> {
+  if (!await hasSession(api)) fail("session-conflict", "sessioncheck shows the session ended");
 }
 
 export function createTaishinSource(options: Readonly<{
@@ -354,8 +711,8 @@ export function createTaishinSource(options: Readonly<{
   return {
     id: "taishin-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["taishin-deposit"],
-    product: "deposit",
-    displayName: { en: "Taishin Bank deposits (preview)", "zh-TW": "台新銀行存款（預覽）" },
+    products: ["deposit", "credit_card"],
+    displayName: { en: "Taishin Bank deposits and credit cards (preview)", "zh-TW": "台新銀行存款與信用卡（預覽）" },
     searchAliases: ["Taishin", "Taishin Bank", "台新", "台新銀行", "Richart"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -393,9 +750,12 @@ export function createTaishinSource(options: Readonly<{
         await context.event("authentication", "authentication-completed");
         await context.event("collection", "collection-started");
         const collectedAt = context.now();
-        const accounts = [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)];
+        const output = await context.preview.collect({
+          deposit: async () => ({ collectedAt, accounts: [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)] }),
+          credit_card: () => creditCards(api, collectedAt),
+        }, { assertSession: () => assertSession(api) });
         await context.event("collection", "collection-completed");
-        return await context.preview.write({ collectedAt, accounts });
+        return output;
       });
     },
   };

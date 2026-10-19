@@ -5,6 +5,8 @@ import type { WorkflowContext } from "./workflow-executor.ts";
 import { strictSourceText } from "./source-text.ts";
 import { esunCreditCardStatementsWorkflow } from "./esun-credit-card-workflow.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
+import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import type { EsunPortalReply } from "../preview-sources/esun-portal.ts";
 
 const timelineEndpoint = "/GW/creditLastYear/getFilterResult";
 const summaryEndpoint = "/GW/creditBill/getSummaryResult";
@@ -82,6 +84,7 @@ function createPage(options: {
   monthCount?: number;
   cursor?: number;
   initialSignedIn?: boolean;
+  portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply;
 } = {}): Page {
   const now = new Date(2026, 8, 25);
   const newestPeriod = monthAtOffset(now, 1);
@@ -148,6 +151,11 @@ function createPage(options: {
     }),
     goto: async () => undefined,
     on: () => undefined,
+    waitForFunction: async () => undefined,
+    evaluate: async (_inPage: unknown, call: { path: string; requestBody: Readonly<Record<string, unknown>> }) => {
+      if (!options.portal) throw new Error("The E.SUN portal was called without an attached product.");
+      return options.portal(call.path, call.requestBody);
+    },
   };
   return page as unknown as Page;
 }
@@ -155,6 +163,7 @@ function createPage(options: {
 function createContext(page: Page) {
   const events: Array<{ stage: string; code: string; counts?: unknown }> = [];
   const committed: unknown[][] = [];
+  const previewWrites: PreviewWrite[] = [];
   let withPageCount = 0;
   let assistanceCount = 0;
   const context: WorkflowContext = {
@@ -172,6 +181,13 @@ function createContext(page: Page) {
       async request() {
         assistanceCount += 1;
         return "verified";
+      },
+    },
+    previewWrite: {
+      async write(input) {
+        previewWrites.push(input);
+        const accounts = input.product === "deposit" ? input.collection.accounts.length : 0;
+        return { accounts, balances: accounts, transactions: 0, purchases: 0, statements: 0, closedAccounts: [] } as never;
       },
     },
     financialCommit: {
@@ -194,6 +210,7 @@ function createContext(page: Page) {
     context,
     events,
     committed,
+    previewWrites,
     get withPageCount() { return withPageCount; },
     get assistanceCount() { return assistanceCount; },
   };
@@ -317,3 +334,162 @@ test("E.SUN typed workflow fails closed on a sign-in challenge without requestin
     else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;
   }
 });
+
+const DEPOSIT_INIT = "mib-ctw-portal/ctw01/ctw01002/home/init";
+const portalOk = (resultBody: unknown): EsunPortalReply =>
+  ({ kind: "json", httpStatus: 200, text: JSON.stringify({ resultCode: "0000", resultBody }), date: null });
+const portalNotHeld = (description: string): EsunPortalReply =>
+  ({ kind: "json", httpStatus: 200, text: JSON.stringify({ resultCode: "S001", resultDescription: description }), date: null });
+
+function depositPortal(overrides: Readonly<Record<string, EsunPortalReply>> = {}) {
+  const calls: string[] = [];
+  const portal = (path: string): EsunPortalReply => {
+    calls.push(path.split("/").pop()!);
+    const override = overrides[path.split("/").pop()!];
+    if (override) return override;
+    if (path === DEPOSIT_INIT) return portalOk({});
+    if (path.endsWith("preQueryTWTransactionDetail")) return portalOk({
+      demandDeptAcc: "SYN-TW-0001",
+      twAccountList: [{ accountNo: "SYN-TW-0001" }],
+      twCurrInfo: { realBalance: "500.00" },
+    });
+    if (path.endsWith("queryTWTransactionDetail")) return portalOk({
+      queryDeptTxDtlResult: { detailListData: [{ detailInfo: [{ txDate: "2026/09/20", amount: "50", debitCredit: "DR" }] }] },
+    });
+    if (path.endsWith("preQueryFRTransactionDetail")) return portalNotHeld("查無外幣帳號，或您尚未開立外幣帳戶");
+    throw new Error(`unexpected portal path ${path}`);
+  };
+  return { portal, calls };
+}
+
+const workflowInput = (extra: Readonly<Record<string, unknown>> = {}) => ({
+  managedIdentitySecret: "synthetic-esun-managed-secret",
+  credentials: {
+    esun_user_id: "synthetic-user",
+    esun_account: "synthetic-account",
+    esun_password: "synthetic-password",
+  },
+  ...extra,
+});
+
+async function withManagedSecret<T>(run: () => Promise<T>): Promise<T> {
+  const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+  process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = "synthetic-esun-managed-secret";
+  try {
+    return await run();
+  } finally {
+    if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+    else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;
+  }
+}
+
+type Output = Readonly<{ products: readonly { typeId: string; status: string; errorCode?: string; skipReason?: string }[]; status: string; canonicalAdmission: string }>;
+const outcomes = (output: unknown) => (output as Output).products.map(({ typeId, status, errorCode, skipReason }) =>
+  [typeId, status, errorCode ?? skipReason ?? null]);
+
+test("the attached deposit writes Preview Financial Data for the E.SUN group after the card commits", () => withManagedSecret(async () => {
+  const deposit = depositPortal();
+  const harness = createContext(createPage({ portal: deposit.portal }));
+  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+
+  assert.equal(harness.committed.length, 1, "the card still commits canonically");
+  assert.deepEqual(harness.committed.flat().map((item) => (item as { product?: string }).product), ["credit-card"]);
+  assert.deepEqual(harness.previewWrites.map(({ sourceId, institution, product }) => [sourceId, institution, product]), [["esun", "esun", "deposit"]]);
+  const [write] = harness.previewWrites;
+  assert.ok(write?.product === "deposit");
+  assert.deepEqual(write.collection.accounts.map(({ sourceAccountKey, balances, transactions }) =>
+    [sourceAccountKey, balances[0]!.amount, transactions.map(({ amount, direction }) => [amount, direction])]), [
+    ["SYN-TW-0001:TWD", "500.00", [["50", "outflow"]]],
+  ]);
+  assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "success", null]]);
+  assert.equal((output as Output).status, "completed");
+  assert.deepEqual(deposit.calls, ["init", "preQueryTWTransactionDetail", "queryTWTransactionDetail", "init", "preQueryFRTransactionDetail"]);
+  const eventCodes = harness.events.map(({ code }) => code);
+  assert.ok(eventCodes.indexOf("canonical-commit-completed") < eventCodes.indexOf("deposit-collection-started"));
+}));
+
+test("a failing attached deposit leaves the card committed and reported", () => withManagedSecret(async () => {
+  const deposit = depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } });
+  const harness = createContext(createPage({ portal: deposit.portal }));
+  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+
+  assert.equal(harness.committed.length, 1);
+  assert.equal(harness.previewWrites.length, 0, "a failed product writes nothing");
+  assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "failed", "source-validation-failed"]]);
+  assert.equal((output as Output).status, "partial");
+  assert.equal((output as Output).canonicalAdmission, "admitted");
+}));
+
+test("an attached-only selection signs in, skips the card, and writes the deposit", () => withManagedSecret(async () => {
+  const deposit = depositPortal();
+  const harness = createContext(createPage({ portal: deposit.portal }));
+  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+
+  assert.equal(harness.committed.length, 0, "no canonical commit without the card");
+  assert.equal(harness.previewWrites.length, 1);
+  assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "success", null]]);
+  assert.equal((output as Output).canonicalAdmission, "not-selected");
+  assert.equal(harness.events.some(({ code }) => code === "timeline-collected"), false);
+}));
+
+test("an attached-only run fails with the deposit's own error and reports a stated absence as not_held", () => withManagedSecret(async () => {
+  const failing = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("系統維護中") }).portal }));
+  await assert.rejects(
+    esunCreditCardStatementsWorkflow.run(failing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
+    (error: unknown) => (error as { reason?: string }).reason === "unexpected-response",
+  );
+
+  const absent = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("查無臺幣帳號，或您尚未開立臺幣帳戶") }).portal }));
+  const output = await esunCreditCardStatementsWorkflow.run(absent.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+  assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "not_held", null]]);
+  assert.equal(absent.previewWrites.length, 0, "not_held writes no account and no zero balance");
+
+  const nothing = createContext(createPage());
+  await assert.rejects(
+    esunCreditCardStatementsWorkflow.run(nothing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: [] })),
+    (error: unknown) => (error as { errorCode?: string }).errorCode === "collection-scope-changed",
+  );
+  assert.equal(nothing.withPageCount, 0);
+}));
+
+test("no attached selection never touches the deposit portal", () => withManagedSecret(async () => {
+  const harness = createContext(createPage());
+  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: [] }));
+  assert.equal(harness.previewWrites.length, 0);
+  assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "skipped", "not_selected"]]);
+}));
+
+test("a card failure reports the card failed with its classified code beside the written deposit", () => withManagedSecret(async () => {
+  const cases: ReadonlyArray<[string, Parameters<typeof createPage>[0], string]> = [
+    ["incomplete timeline", { monthCount: 11 }, "source-collection-failed"],
+    ["malformed text", { timelineBytes: new Uint8Array([0xc3, 0x28]) }, "source-integrity-failed"],
+  ];
+  for (const [name, page, errorCode] of cases) {
+    const harness = createContext(createPage({ ...page, portal: depositPortal().portal }));
+    const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    assert.equal(harness.committed.length, 0, name);
+    assert.equal(harness.previewWrites.length, 1, name);
+    assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
+    assert.equal((output as Output).status, "partial", name);
+    assert.equal((output as Output).canonicalAdmission, "failed", name);
+  }
+}));
+
+test("a card failure with no deposit data fails the run with the card's own error", () => withManagedSecret(async () => {
+  const failedDeposit = createContext(createPage({
+    monthCount: 11,
+    portal: depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } }).portal,
+  }));
+  await assert.rejects(
+    esunCreditCardStatementsWorkflow.run(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    /timeline did not reach a complete/u,
+  );
+  assert.equal(failedDeposit.previewWrites.length, 0);
+
+  const cardOnly = createContext(createPage({ monthCount: 11, portal: depositPortal().portal }));
+  await assert.rejects(
+    esunCreditCardStatementsWorkflow.run(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
+    /timeline did not reach a complete/u,
+  );
+  assert.equal(cardOnly.previewWrites.length, 0);
+}));

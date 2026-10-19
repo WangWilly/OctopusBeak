@@ -3,9 +3,12 @@ import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from
 import test from "node:test";
 import { createMegaSource, encryptMegaLogin, megaVirtualDevice } from "./mega-source.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
+import type { PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
+import type { PreviewRunOutput } from "./product-collection.ts";
 
 const credentials = {
   PREVIEW_MEGA_DEPOSIT_ID_NUMBER: "a000000001",
@@ -29,6 +32,18 @@ type ResourceRoute = (rqData: Record<string, unknown>, call: number) => PreviewH
 const row = (txDate: string, drcr: string, amount: string, item = "轉帳") =>
   `{"txDate":"${txDate}","DRCR":"${drcr}","amount":${amount},"paymentItem":"${item}","serialNo":"1"}`;
 
+const CARD_A = "0000000000006789";
+const CARD_B = "0000000000004321";
+const CARD_UNLISTED = "0000000000009999";
+const bill = (type: string, month: string, currency: string, total: string, paid: string) =>
+  `{"ACCT_TYPE":"${type}","ACCT_MON":"${month}","CURR_CODE":"${currency}","THIS_TTL_AMT":${total},"PAYMENT_AMT":${paid}}`;
+const statementRow = (month: string, currency: string, total: string, minimum: string, due?: string) =>
+  JSON.stringify({ acctMon: month, currCode: currency, thisTtlAmt: total, minPay: minimum, thisPayAmt: "0", ...(due === undefined ? {} : { lastpayDate: due }) });
+const billLists = (general: readonly string[], fancy: readonly string[] = [], rido: readonly string[] = []): ResourceRoute => () =>
+  ok(`{"generalRecordList":[${general.join(",")}],"fancyRecordList":[${fancy.join(",")}],"ridoRecordList":[${rido.join(",")}]}`);
+const purchase = (fields: Record<string, string>) =>
+  JSON.stringify({ cardNo: CARD_A, sourceCurr: "TWD", destinationCurr: "TWD", ...fields });
+
 const defaults: Record<string, ResourceRoute> = {
   "/fco/fco00001/initialize": () => ok("{}"),
   "/fco/fco00001/captcha": () => ok(JSON.stringify({ image: `data:image/jpeg;base64,${Buffer.from("jpg").toString("base64")}` })),
@@ -42,6 +57,26 @@ const defaults: Record<string, ResourceRoute> = {
     ? `{"list":[${row("2026/10/03", "D", "250.00")},${row("2026/10/03", "D", "250.00")}],"tsqName":"Q2"}`
     : `{"list":[${row("20261004", "C", "1000", "薪資")}],"tsqName":""}`),
   "/fco/fco02011/logout": () => ok("{}"),
+  "/fco/fco10007/home": () => jsonResponse(`{"code":"0000","rsData":{"creditCardBillInfoList":[${[
+    bill("01", "202609", "TWD", '"1,000"', "200"),
+    bill("01", "202608", "TWD", "900", "900"),
+    bill("01", "999912", "TWD", "300.50", "0"),
+    bill("05", "202609", "TWD", "200", "0"),
+    bill("05", "999912", "TWD", "0", "0"),
+    bill("01", "202609", "USD", '"10.25"', '"20"'),
+    bill("01", "999912", "USD", '"0"', '"0"'),
+  ].join(",")}]}}`, { date: "Thu, 15 Oct 2026 01:58:00 GMT" }),
+  "/fao/fao01009/home": billLists(
+    [statementRow("202609", "TWD", "1,000", "100", "2026/10/15"), statementRow("202608", "TWD", "900", "90", "2026/09/15"), statementRow("202609", "USD", "10.25", "1", "2026/10/15")],
+    [statementRow("202609", "TWD", "200", "20", "2026/10/15")],
+    [statementRow("999912", "TWD", "300", "0")],
+  ),
+  "/fao/fao01010/home": () => ok(`{"cardNumbers":[{"cardNo":"${CARD_A}","cardName":"測試正卡"},{"cardNo":"${CARD_B}","cardName":"測試副卡"}]}`),
+  "/fao/fao01010/query": () => ok(`{"detailList":[{"cardNo":"${CARD_A}","detailList":[${[
+    purchase({ purchaseDate: "2026/10/03", merchantChiName: "測試商店", destinationAmt: "300", acctMon: "999912" }),
+    purchase({ purchaseDate: "2026/10/03", merchantChiName: "測試商店", destinationAmt: "300", acctMon: "999912" }),
+    purchase({ purchaseDate: "2026/09/24", merchantChiName: "測試退款", destinationAmt: "-50", acctMon: "202609", postDate: "2026/09/26" }),
+  ].join(",")}]},${purchase({ cardNo: CARD_B, purchaseDate: "2026/10/05", merchantChiName: "海外商店", sourceAmt: "12", sourceCurr: "USD", destinationAmt: "12.00", destinationCurr: "USD", acctMon: "999912" })}]}`),
 };
 
 function routes(overrides: Record<string, ResourceRoute> = {}, extra: Record<string, FakeRoute> = {}): Record<string, FakeRoute> {
@@ -68,17 +103,17 @@ function routes(overrides: Record<string, ResourceRoute> = {}, extra: Record<str
 
 const solveCaptcha = async () => "12345";
 
-async function run(overrides: Record<string, ResourceRoute> = {}, extra: Record<string, FakeRoute> = {}) {
+async function run(overrides: Record<string, ResourceRoute> = {}, extra: Record<string, FakeRoute> = {}, products: readonly PreviewProduct[] = ["deposit"]) {
   const http = fakeHttpOpener(routes(overrides, extra));
-  const result = await runPreviewSource(createMegaSource({ http, solveCaptcha }), credentials);
+  const result = await runPreviewSource(createMegaSource({ http, solveCaptcha }), credentials, undefined, products);
   const resources = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body).resource : undefined);
   return { ...result, http, resources };
 }
 
 test("a Mega run writes each account and currency with exact amounts, DRCR directions, and paged NT-dollar history", async () => {
   const { receipt, writes, observations, http, resources } = await run();
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3 });
-  const [twd, usd] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [twd, usd] = depositCollection(writes[0]!).accounts;
   assert.equal(twd!.sourceAccountKey, "MG-7788:TWD");
   assert.deepEqual(twd!.balances, [
     { kind: "available", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -139,7 +174,7 @@ const unsure = { text: "12345", confidence: 0.9 };
 async function runCalibrated(results: readonly { text: string; confidence: number }[], image = blankPng(100, 49)) {
   const engine = scriptedOcrEngine(results);
   const http = fakeHttpOpener(routes({ "/fco/fco00001/captcha": captchaImage(image) }));
-  const result = await runPreviewSource(createMegaSource({ http, solveCaptcha: calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY, engine) }), credentials);
+  const result = await runPreviewSource(createMegaSource({ http, solveCaptcha: calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY, engine) }), credentials, undefined, ["deposit"]);
   const resources = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body).resource : undefined);
   return { ...result, http, engine, resources };
 }
@@ -153,7 +188,7 @@ test("an unaccepted CAPTCHA is refreshed through the captcha API without a login
     unsure, unsure, unsure,
     { text: "24680", confidence: 0.995 }, unsure, unsure,
   ]);
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3 });
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
   assert.equal(engine.calls.length, 9, "three strategies on each of three challenges");
   assert.deepEqual(signInResources(resources), [
     "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/e2ee", "/fco/fco02003/login",
@@ -173,7 +208,7 @@ test("five unaccepted challenges end the round as verification-failed without a 
 
 test("a CAPTCHA outside the Mega family is refused after the captcha request and before any login", async () => {
   const http = fakeHttpOpener(routes({ "/fco/fco00001/captcha": captchaImage(blankPng(120, 40)) }));
-  const result = await runPreviewSource(createMegaSource({ http }), credentials);
+  const result = await runPreviewSource(createMegaSource({ http }), credentials, undefined, ["deposit"]);
   assert.equal(result.errorCode, "verification-configuration-failed");
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
   const resources = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body).resource : undefined);
@@ -235,4 +270,160 @@ test("a missing currency, a malformed amount, a signed amount, and an unknown DR
     assert.equal((result.error as PreviewSourceFailure).reason, reason, name);
     assert.equal(result.writes.length, 0, `${name} writes nothing`);
   }
+});
+
+const BOTH: readonly PreviewProduct[] = ["deposit", "credit_card"];
+const creditWrites = (writes: readonly PreviewWrite[]) => writes.flatMap((write) => write.product === "credit_card" ? [write.collection] : []);
+const outcomes = (output: PreviewRunOutput | null) => Object.fromEntries((output?.products ?? []).map((product) => [product.typeId, product.status]));
+
+test("one Mega sign-in writes deposits and a credit account per currency with an unclamped statement-minus-paid-plus-unbilled balance", async () => {
+  const { writes, output, observations, http, resources } = await run({}, {}, BOTH);
+  assert.deepEqual(outcomes(output), { deposit: "success", credit_card: "success" });
+  assert.equal(resources.filter((resource) => resource === "/fco/fco02003/login").length, 1, "one sign-in serves both products");
+  const [collection] = creditWrites(writes);
+  assert.ok(collection, "a credit collection is written");
+  assert.deepEqual(parsePreviewCreditCollection(collection), collection, "the collection satisfies the preview credit contract");
+  assert.equal(collection.collectedAt, "2026-10-15T02:00:00.000Z");
+  const [twd, usd] = collection.accounts;
+  assert.equal(twd!.sourceAccountKey, "credit:TWD");
+  assert.deepEqual(twd!.balances, [{
+    amount: "1300.50",
+    currency: "TWD",
+    observedAt: { at: "2026-10-15T01:58:00.000Z", source: "reported" },
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "1200", paidAmount: "200", unbilledAmount: "300.50" },
+  }], "each ACCT_TYPE contributes its latest billed month and its 999912 row; the older 202608 bill is ignored");
+  assert.deepEqual(usd!.balances.map(({ amount, basis }) => ({ amount, basis })), [{
+    amount: "-9.75",
+    basis: { kind: "statement-minus-paid-plus-unbilled", statementAmount: "10.25", paidAmount: "20", unbilledAmount: "0" },
+  }], "an overpaid account stays negative");
+  const statement = (billingPeriod: string, currency: string, amount: string, minimumPayment: string, dueDate: string) => ({
+    statementKey: `${billingPeriod.replace("-", "")}:${currency}`, cycleStart: null, cycleEnd: null, closingDate: null, dueDate,
+    amount, currency, minimumPayment, billingPeriod, paidAmount: null, paid: null, noPaymentNeeded: null,
+  });
+  assert.deepEqual(twd!.statements, [
+    statement("2026-09", "TWD", "1200", "120", "2026-10-15"),
+    statement("2026-08", "TWD", "900", "90", "2026-09-15"),
+  ], "a month's rows across bill lists sum into one statement; 999912 is no statement; cycle dates and the paid amount stay unknown");
+  assert.deepEqual(usd!.statements, [statement("2026-09", "USD", "10.25", "1", "2026-10-15")]);
+  assert.deepEqual(twd!.cards.map(({ cardMask, displayLabel }) => ({ cardMask, displayLabel })), [
+    { cardMask: "****-6789", displayLabel: "測試正卡" },
+    { cardMask: "****-4321", displayLabel: "測試副卡" },
+  ]);
+  assert.ok(!JSON.stringify(collection).includes(CARD_A) && !JSON.stringify(collection).includes(CARD_B), "full card numbers are never written");
+  const cardA = twd!.cards[0]!.sourceCardKey;
+  const unbilled = { status: "posted", billing: "unbilled", postingDate: null } as const;
+  assert.deepEqual(twd!.purchases.map(({ sourceRowKey, amount, direction, posting, consumedAt, sourceCardKey, description }) => ({ sourceRowKey, amount, direction, posting, consumedAt, sourceCardKey, description })), [
+    { sourceRowKey: `${cardA}:2026-10-03:TWD::TWD:300:測試商店#0`, amount: "300", direction: "outflow", posting: unbilled, consumedAt: { precision: "day", value: "2026-10-03" }, sourceCardKey: cardA, description: "測試商店" },
+    { sourceRowKey: `${cardA}:2026-10-03:TWD::TWD:300:測試商店#1`, amount: "300", direction: "outflow", posting: unbilled, consumedAt: { precision: "day", value: "2026-10-03" }, sourceCardKey: cardA, description: "測試商店" },
+    {
+      sourceRowKey: `${cardA}:2026-09-24:TWD::TWD:-50:測試退款#0`, amount: "-50", direction: "inflow",
+      posting: { status: "posted", billing: "billed", postingDate: "2026-09-26" }, consumedAt: { precision: "day", value: "2026-09-24" }, sourceCardKey: cardA, description: "測試退款",
+    },
+  ], "999912 is unbilled, a billing month is billed, identical rows take an occurrence, and the sign is the direction because both signs occur");
+  assert.deepEqual(twd!.purchases.map((row) => row.statementKey), [null, null, "202609:TWD"], "a billed purchase links to its acctMon's statement");
+  assert.deepEqual(usd!.purchases.map(({ amount, currency, direction, sourceCardKey }) => ({ amount, currency, direction, sourceCardKey })), [
+    { amount: "12.00", currency: "USD", direction: "outflow", sourceCardKey: twd!.cards[1]!.sourceCardKey },
+  ], "a flat row is its own card group and lands in its settlement currency's account");
+  const query = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body) : null).find((body) => body?.resource === "/fao/fao01010/query");
+  assert.deepEqual(query.rqData, { cardNo: "0", flag: "0", startDate: "2026/08/01", endDate: "2026/10/15" });
+  for (const endpoint of ["/fco/fco10007/home", "/fao/fao01009/home", "/fao/fao01010/home", "/fao/fao01010/query"])
+    assert.ok(observations.some((entry) => entry.endpoint === endpoint && entry.status === 200), `observe() saw ${endpoint}`);
+});
+
+test("a status-text due date leaves its statement unwritten and its purchases unlinked", async () => {
+  const { writes } = await run({
+    "/fao/fao01009/home": billLists(
+      [statementRow("202609", "TWD", "1000", "100", "免繳款"), statementRow("202608", "TWD", "900", "90", "2026/09/15")],
+      [statementRow("202609", "TWD", "200", "20", "2026/10/15")],
+    ),
+  }, {}, ["credit_card"]);
+  const [twd] = creditWrites(writes)[0]!.accounts;
+  assert.deepEqual(twd!.statements.map((row) => row.statementKey), ["202608:TWD"], "one status-text row skips the whole 202609 statement");
+  assert.deepEqual(twd!.purchases.map((row) => row.statementKey), [null, null, null], "no purchase points at an unwritten statement");
+});
+
+test("empty bill lists write no statement but keep the card product", async () => {
+  const { writes, output } = await run({ "/fao/fao01009/home": billLists([]) }, {}, BOTH);
+  assert.deepEqual(outcomes(output), { deposit: "success", credit_card: "success" }, "an empty bill list is not not_held");
+  assert.deepEqual(creditWrites(writes)[0]!.accounts.map((account) => account.statements), [[], []]);
+});
+
+test("card row keys survive volatile sequence fields and billing", async () => {
+  const keys = async (seq: string, month: string) => {
+    const { writes } = await run({
+      "/fao/fao01010/query": () => ok(`{"detailList":[${purchase({ purchaseDate: "2026/10/03", merchantChiName: "測試商店", destinationAmt: "300", acctMon: month, seqNo: seq, serialNo: seq })}]}`),
+    }, {}, ["credit_card"]);
+    return creditWrites(writes)[0]!.accounts[0]!.purchases.map((row) => row.sourceRowKey);
+  };
+  const unbilled = await keys("1", "999912");
+  assert.equal(unbilled.length, 1);
+  assert.deepEqual(await keys("7", "999912"), unbilled, "a renumbered sequence keeps the key");
+  assert.deepEqual(await keys("2", "202610"), unbilled, "billing moves acctMon but keeps the key");
+});
+
+test("card directions stay unknown unless the collection holds both signs", async () => {
+  const { writes } = await run({
+    "/fao/fao01010/query": () => ok(`{"detailList":[${purchase({ purchaseDate: "2026/10/03", destinationAmt: "300", acctMon: "999912" })},${purchase({ purchaseDate: "2026/10/04", destinationAmt: "20", acctMon: "999912" })}]}`),
+  }, {}, ["credit_card"]);
+  assert.deepEqual(creditWrites(writes)[0]!.accounts[0]!.purchases.map((row) => row.direction), ["unknown", "unknown"]);
+});
+
+test("an empty card overview is not_held, while a missing list or an empty card list fails", async () => {
+  const empty = await run({ "/fco/fco10007/home": () => ok('{"creditCardBillInfoList":[]}') }, {}, BOTH);
+  assert.deepEqual(outcomes(empty.output), { deposit: "success", credit_card: "not_held" });
+  assert.deepEqual(creditWrites(empty.writes), [], "not_held writes no credit account and no zero balance");
+  assert.ok(!empty.resources.includes("/fao/fao01010/home"), "no card list is read without cards");
+
+  for (const body of ["{}", '{"creditCardBillInfoList":null}']) {
+    const missing = await run({ "/fco/fco10007/home": () => ok(body) }, {}, BOTH);
+    assert.deepEqual(outcomes(missing.output), { deposit: "success", credit_card: "failed" }, body);
+  }
+  const noCards = await run({ "/fao/fao01010/home": () => ok('{"cardNumbers":[]}') }, {}, BOTH);
+  assert.deepEqual(outcomes(noCards.output), { deposit: "success", credit_card: "failed" }, "bills without a card list are not a no-card signal");
+});
+
+const overview = (...rows: string[]): ResourceRoute => () => ok(`{"creditCardBillInfoList":[${rows.join(",")}]}`);
+const query = (...rows: string[]): ResourceRoute => () => ok(`{"detailList":[${rows.join(",")}]}`);
+
+test("card failures stop before the credit write and leave the deposit write in place", async () => {
+  const cases: Record<string, readonly [PreviewFailureReason, Record<string, ResourceRoute>]> = {
+    "missing overview currency": ["missing-currency", { "/fco/fco10007/home": overview(bill("01", "202609", "", "1", "0"), bill("01", "999912", "TWD", "0", "0")) }],
+    "missing purchase currency": ["missing-currency", { "/fao/fao01010/query": query(purchase({ purchaseDate: "2026/10/03", destinationAmt: "5", destinationCurr: "", acctMon: "999912" })) }],
+    "malformed statement amount": ["malformed-amount", { "/fco/fco10007/home": overview(bill("01", "202609", "TWD", '"1.2.3"', "0"), bill("01", "999912", "TWD", "0", "0")) }],
+    "malformed purchase amount": ["malformed-amount", { "/fao/fao01010/query": query(purchase({ purchaseDate: "2026/10/03", destinationAmt: "12a", acctMon: "999912" })) }],
+    "missing paid operand": ["malformed-amount", { "/fco/fco10007/home": overview('{"ACCT_TYPE":"01","ACCT_MON":"202609","CURR_CODE":"TWD","THIS_TTL_AMT":"1"}', bill("01", "999912", "TWD", "0", "0")) }],
+    "missing unbilled operand": ["incomplete-data", { "/fco/fco10007/home": overview(bill("01", "202609", "TWD", "1", "0")) }],
+    "missing statement operand": ["incomplete-data", { "/fco/fco10007/home": overview(bill("01", "999912", "TWD", "1", "0")) }],
+    "unknown billing month": ["unexpected-response", { "/fco/fco10007/home": overview(bill("01", "2026-09", "TWD", "1", "0"), bill("01", "999912", "TWD", "0", "0")) }],
+    "malformed bill thisTtlAmt": ["malformed-amount", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1.2.3", "100", "2026/10/15")]) }],
+    "malformed bill minPay": ["malformed-amount", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "1O0", "2026/10/15")]) }],
+    "missing bill currency": ["missing-currency", { "/fao/fao01009/home": billLists([statementRow("202609", "", "1000", "100", "2026/10/15")]) }],
+    "missing bill lists": ["unexpected-response", { "/fao/fao01009/home": () => ok("{}") }],
+    "non-list bill list": ["unexpected-response", { "/fao/fao01009/home": () => ok('{"generalRecordList":null}') }],
+    "repeated bill": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100", "2026/10/15"), statementRow("202609", "TWD", "1000", "100", "2026/10/15")]) }],
+    "conflicting bill due dates": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1", "1", "2026/10/15")], [statementRow("202609", "TWD", "1", "1", "2026/10/16")]) }],
+    "missing bill due date": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100")]) }],
+    "invalid bill due date": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "TWD", "1000", "100", "2026/02/30")]) }],
+    "bill currency without an account": ["unexpected-response", { "/fao/fao01009/home": billLists([statementRow("202609", "JPY", "1000", "100", "2026/10/15")]) }],
+    "incomplete purchase list": ["unexpected-response", { "/fao/fao01010/query": () => ok("{}") }],
+    "zero purchase amount": ["unexpected-response", { "/fao/fao01010/query": query(purchase({ purchaseDate: "2026/10/03", destinationAmt: "0.00", acctMon: "999912" })) }],
+    "unlisted card": ["unexpected-response", { "/fao/fao01010/query": query(purchase({ cardNo: CARD_UNLISTED, purchaseDate: "2026/10/03", destinationAmt: "5", acctMon: "999912" })) }],
+    "purchase currency without an account": ["unexpected-response", { "/fao/fao01010/query": query(purchase({ purchaseDate: "2026/10/03", destinationAmt: "5", destinationCurr: "JPY", acctMon: "999912" })) }],
+  };
+  for (const [name, [reason, overrides]] of Object.entries(cases)) {
+    const result = await run(overrides, {}, BOTH);
+    assert.deepEqual(outcomes(result.output), { deposit: "success", credit_card: "failed" }, name);
+    assert.deepEqual(creditWrites(result.writes), [], `${name} writes no credit collection`);
+    assert.equal(result.deposits.length, 1, `${name} keeps the deposit write`);
+    const alone = await run(overrides, {}, ["credit_card"]);
+    assert.equal((alone.error as PreviewSourceFailure).reason, reason, name);
+  }
+});
+
+test("a deposit failure leaves the credit write in place", async () => {
+  const result = await run({ "/fco/fco10001/home": () => ok('{"depositInfoList":[{"DRACT":"MG-7788","AVLBA":"1"}]}') }, {}, BOTH);
+  assert.deepEqual(outcomes(result.output), { deposit: "failed", credit_card: "success" });
+  assert.equal(result.output!.status, "partial");
+  assert.equal(creditWrites(result.writes).length, 1);
+  assert.equal(result.deposits.length, 0);
 });

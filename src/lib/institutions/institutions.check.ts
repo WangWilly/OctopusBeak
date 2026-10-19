@@ -20,6 +20,7 @@ import {
   sourceInstitution,
 } from "./institutions.ts";
 import { PREVIEW_SOURCES } from "../preview-sources/registry.ts";
+import { VERIFIED_SOURCE_COVERAGE } from "../preview-sources/visibility.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS, previewTaskId } from "../preview-sources/source-id.ts";
 
 const logoExists = (key: Parameters<typeof institutionLogoFile>[0]) =>
@@ -179,9 +180,14 @@ test("every Preview source's task, sign-in group, and accounts show its Institut
   assert.equal(sourceLogoForTask("preview-unknown"), null);
 });
 
-test("a Preview source's Institution never becomes a direct source's Institution", () => {
-  for (const [id, institution] of Object.entries(PREVIEW_SOURCE_INSTITUTIONS)) {
-    assert.ok(!(INSTITUTION_KEYS as readonly string[]).includes(institution), `${institution} has no supported source of its own`);
+test("a Preview source never becomes a direct source, and shares an Institution only for products no verified source covers", () => {
+  const covered = new Set(Object.values(VERIFIED_SOURCE_COVERAGE).flat().map(({ institution, product }) => `${institution}:${product}`));
+  for (const source of PREVIEW_SOURCES) {
+    if (!(INSTITUTION_KEYS as readonly string[]).includes(source.institution)) continue;
+    for (const product of source.products)
+      assert.ok(!covered.has(`${source.institution}:${product}`), `${source.id} ${product} is not covered by a verified source of ${source.institution} (ADR 0051)`);
+  }
+  for (const id of Object.keys(PREVIEW_SOURCE_INSTITUTIONS)) {
     assert.equal(sourceInstitution(id), null, `${id} is not an integration namespace`);
     assert.equal(institutionForNamespace(id), null);
   }

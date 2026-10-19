@@ -99,6 +99,22 @@ test("upcoming payments list unpaid-due statements by date, then estimates for c
   assert.equal(summary.total, 12_870 + 38_452 + 1_280_000);
 });
 
+test("a counted preview credit balance marks the total; an unknown one adds nothing and leaves the total unmarked", () => {
+  const preview = (id: string, value: number | null): AccountRowDto => ({
+    ...account(id, "credit-card", value ?? 0),
+    amountLines: value === null ? [] : twd(value),
+    valueAvailability: value === null ? "unavailable" : "available",
+    preview: {
+      sourceId: "synthetic", product: "credit_card", lastCollectedAt: "2026-10-05T03:00:00.000Z",
+      balanceTime: null, transactions: [],
+    },
+  });
+  const known = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), preview("known", 300)] }), { today: TODAY });
+  assert.ok(known.state === "ready" && known.includesPreview && known.total === 400);
+  const unknown = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), preview("unknown", null)] }), { today: TODAY });
+  assert.ok(unknown.state === "ready" && !unknown.includesPreview && unknown.total === 100);
+});
+
 test("utilization counts only cards that report a limit", () => {
   const withLimit = account("a", "credit-card", 51_322, { statements: [], currentUsedCredit: used(51_322, 230_000) });
   const withoutLimit = account("b", "credit-card", 9_000, { statements: [], currentUsedCredit: used(9_000, null) });

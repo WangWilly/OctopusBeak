@@ -175,8 +175,8 @@ export function selectStatementTypes(
   const enabled = automationFlagEnabled(settings[group.enabledKey]);
   const raw = settings[group.statementSelectionKey];
   if (raw === undefined) {
-    const selectedIds =
-      group.statementTypes.length === 1 ? [group.statementTypes[0].id] : [];
+    const verified = group.statementTypes.filter((type) => !type.preview);
+    const selectedIds = verified.length === 1 ? [verified[0]!.id] : [];
     if (enabled && !selectedIds.length && mode === "strict") {
       throw new StatementSelectionError(group.id, "missing-selection", group);
     }

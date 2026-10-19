@@ -191,3 +191,18 @@ function keys(value: unknown, prefix = ""): string[] {
 }
 
 assert.deepEqual(keys(translations["zh-TW"]).sort(), keys(translations.en).sort());
+
+assert.equal(translations["zh-TW"].preview.incomplete, "資料不完整");
+assert.equal(translations["zh-TW"].preview.creditUnknown, "剩餘應繳金額未取得");
+assert.equal(translations["zh-TW"].preview.purchaseStates.pending, "待入帳");
+assert.equal(translations["zh-TW"].preview.closed, "已結束");
+assert.equal(translations["zh-TW"].automation.previewStatementType, "預覽");
+for (const locale of ["en", "zh-TW"] as const) {
+  const labels = translations[locale].automation.statementTypeLabels;
+  for (const product of ["deposit", "credit_card", "time_deposit"])
+    assert.ok(labels[product], `${locale} labels the ${product} preview product`);
+}
+assert.equal(
+  translations.en.preview.usedCreditBasis["credit-limit-minus-available"]("50,000", "49,700"),
+  "Credit limit 50,000 minus available credit 49,700",
+);

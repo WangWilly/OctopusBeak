@@ -1,13 +1,25 @@
 import { constants, createCipheriv, createHash, publicEncrypt, randomUUID } from "node:crypto";
-import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type {
+  PreviewAccount,
+  PreviewCard,
+  PreviewCreditAccount,
+  PreviewCreditBasis,
+  PreviewCreditCollection,
+  PreviewPurchase,
+  PreviewStatement,
+  PreviewTransaction,
+} from "../../ledger/pglite/preview-financial-data.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import type { PreviewProductAbsence } from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
+  isZeroDecimal,
   localDate,
   MAX_CHALLENGES_PER_ROUND,
   observedAt,
@@ -339,7 +351,7 @@ async function depositTransactions(api: Client, deposit: Deposit, window: Readon
   }
 }
 
-async function collect(api: Client, now: string): Promise<PreviewAccount[]> {
+async function collectDeposits(api: Client, now: string): Promise<PreviewAccount[]> {
   const overview = await api.resource("megapmb", "/fco/fco10001/home", { type: "1", refresh: true }, { pageId: "fco10001", pageNo: "home" });
   const asOf = observedAt(overview.date, now);
   const window = taipeiMonthWindow(now, MONTHS);
@@ -358,14 +370,244 @@ async function collect(api: Client, now: string): Promise<PreviewAccount[]> {
   return accounts;
 }
 
+const UNBILLED_MONTH = "999912";
+const BILLING_MONTH = /^\d{4}(?:0[1-9]|1[0-2])$/u;
+
+type StatementBasis = Extract<PreviewCreditBasis, { kind: "statement-minus-paid-plus-unbilled" }>;
+type BillGroup = { billed: { month: string; total: string; paid: string }[]; unbilled: string[] };
+
+/**
+ * The used-credit basis per currency from the fco10007 overview: for each
+ * ACCT_TYPE, the latest billed row's THIS_TTL_AMT and PAYMENT_AMT, plus the
+ * 999912 row's THIS_TTL_AMT, summed over the currency's types. A type without
+ * either row lacks an operand, so the product fails instead of reading zero.
+ */
+function creditBases(list: readonly SourceRecord[]): ReadonlyMap<string, StatementBasis> {
+  const groups = new Map<string, Map<string, BillGroup>>();
+  for (const [index, row] of list.entries()) {
+    const field = `creditCardBillInfoList[${index}]`;
+    const currency = currencyCode(row.CURR_CODE, `${field}.CURR_CODE`);
+    const type = text(row.ACCT_TYPE, `${field}.ACCT_TYPE`);
+    const month = text(row.ACCT_MON, `${field}.ACCT_MON`);
+    const byType = groups.get(currency) ?? new Map<string, BillGroup>();
+    const group = byType.get(type) ?? { billed: [], unbilled: [] };
+    if (month === UNBILLED_MONTH) group.unbilled.push(exactDecimal(row.THIS_TTL_AMT, `${field}.THIS_TTL_AMT`));
+    else if (BILLING_MONTH.test(month))
+      group.billed.push({ month, total: exactDecimal(row.THIS_TTL_AMT, `${field}.THIS_TTL_AMT`), paid: exactDecimal(row.PAYMENT_AMT, `${field}.PAYMENT_AMT`) });
+    else return fail("unexpected-response", `${field}.ACCT_MON is neither a billing month nor ${UNBILLED_MONTH}`);
+    byType.set(type, group);
+    groups.set(currency, byType);
+  }
+  const bases = new Map<string, StatementBasis>();
+  for (const [currency, byType] of groups) {
+    const statements: string[] = [];
+    const paid: string[] = [];
+    const unbilled: string[] = [];
+    for (const [type, group] of byType) {
+      const at = `fco10007 ${currency} ACCT_TYPE ${type}`;
+      if (new Set(group.billed.map((bill) => bill.month)).size !== group.billed.length) return fail("unexpected-response", `${at} repeats a billing month`);
+      if (group.unbilled.length > 1) return fail("unexpected-response", `${at} has more than one ${UNBILLED_MONTH} row`);
+      const latest = group.billed.toSorted((left, right) => right.month.localeCompare(left.month))[0];
+      if (!latest) return fail("incomplete-data", `${at} has no billed row, so its statement amount is unknown`);
+      const pending = group.unbilled[0] ?? fail("incomplete-data", `${at} has no ${UNBILLED_MONTH} row, so its unbilled amount is unknown`);
+      statements.push(latest.total);
+      paid.push(latest.paid);
+      unbilled.push(pending);
+    }
+    bases.set(currency, {
+      kind: "statement-minus-paid-plus-unbilled",
+      statementAmount: decimalSum(statements.map((amount) => [1, amount] as const)),
+      paidAmount: decimalSum(paid.map((amount) => [1, amount] as const)),
+      unbilledAmount: decimalSum(unbilled.map((amount) => [1, amount] as const)),
+    });
+  }
+  return bases;
+}
+
+const BILL_LISTS = ["generalRecordList", "fancyRecordList", "ridoRecordList"] as const;
+type BillRow = Readonly<{ key: string; month: string; currency: string; amount: string; minimum: string | null; due: string | null }>;
+
+/** `lastpayDate` is a date, or a status text that means the bill has no due date to write. */
+function dueDate(value: unknown, field: string): string | null {
+  const raw = text(value, field);
+  return /^\d/u.test(raw) ? localDate(raw, field).value.slice(0, 10) : null;
+}
+
+/**
+ * One statement per billing month and currency from the fao01009 bill lists.
+ * The lists split bills by card family, so a month's rows across lists sum
+ * into one statement, as all-set-tw does. A status-text due date on any of
+ * them leaves that statement unwritten.
+ */
+function statementsFrom(data: SourceRecord): PreviewStatement[] {
+  const present = BILL_LISTS.filter((name) => data[name] !== undefined);
+  if (present.length === 0) return fail("unexpected-response", `fao01009 has none of ${BILL_LISTS.join(", ")}`);
+  const groups = new Map<string, BillRow[]>();
+  for (const name of present) {
+    const seen = new Set<string>();
+    for (const [index, row] of records(data[name], `fao01009.${name}`).entries()) {
+      const field = `fao01009.${name}[${index}]`;
+      const month = text(row.acctMon, `${field}.acctMon`);
+      if (month === UNBILLED_MONTH) continue;
+      if (!BILLING_MONTH.test(month)) return fail("unexpected-response", `${field}.acctMon is neither a billing month nor ${UNBILLED_MONTH}`);
+      const currency = currencyCode(row.currCode, `${field}.currCode`);
+      const key = `${month}:${currency}`;
+      if (seen.has(key)) return fail("unexpected-response", `fao01009.${name} repeats the ${key} bill`);
+      seen.add(key);
+      const bill: BillRow = {
+        key,
+        month,
+        currency,
+        amount: exactDecimal(row.thisTtlAmt, `${field}.thisTtlAmt`),
+        minimum: row.minPay === undefined || row.minPay === null ? null : exactDecimal(row.minPay, `${field}.minPay`),
+        due: dueDate(row.lastpayDate, `${field}.lastpayDate`),
+      };
+      groups.set(key, [...(groups.get(key) ?? []), bill]);
+    }
+  }
+  return [...groups.values()].flatMap((bills): PreviewStatement[] => {
+    const dues = new Set(bills.map((bill) => bill.due));
+    const [first] = bills;
+    const [due] = dues;
+    if (!first || !due || dues.has(null)) return [];
+    if (dues.size > 1) return fail("unexpected-response", `fao01009 gives the ${first.key} bill more than one lastpayDate`);
+    const minimums = bills.flatMap((bill) => bill.minimum === null ? [] : [bill.minimum]);
+    return [{
+      statementKey: first.key,
+      cycleStart: null,
+      cycleEnd: null,
+      closingDate: null,
+      dueDate: due,
+      amount: decimalSum(bills.map((bill) => [1, bill.amount] as const)),
+      currency: first.currency,
+      minimumPayment: minimums.length === bills.length ? decimalSum(minimums.map((minimum) => [1, minimum] as const)) : null,
+      billingPeriod: `${first.month.slice(0, 4)}-${first.month.slice(4)}`,
+      paidAmount: null,
+      paid: null,
+      noPaymentNeeded: null,
+    }];
+  });
+}
+
+/** The card number is only a request value; the stored key is its digest. */
+function cardKey(cardNo: string): string {
+  return `card-${createHash("sha256").update(`octopusbeak-mega-card\u0000${cardNo}`).digest("hex").slice(0, 16)}`;
+}
+
+function cardsFrom(list: readonly SourceRecord[]): ReadonlyMap<string, PreviewCard> {
+  const cards = new Map<string, PreviewCard>();
+  for (const [index, row] of list.entries()) {
+    const field = `fao01010.cardNumbers[${index}]`;
+    const cardNo = text(row.cardNo, `${field}.cardNo`);
+    const last4 = /(\d{4})$/u.exec(cardNo)?.[1] ?? fail("unexpected-response", `${field}.cardNo does not end in four digits`);
+    if (!cards.has(cardNo)) cards.set(cardNo, { sourceCardKey: cardKey(cardNo), cardMask: `****-${last4}`, displayLabel: optionalText(row.cardName) });
+  }
+  return cards;
+}
+
+type PurchaseRow = Readonly<{ row: SourceRecord; cardNo: unknown; field: string }>;
+
+/** fao01010/query nests each card's rows under a group's detailList; a group without one is itself a row. */
+function purchaseRows(groups: readonly SourceRecord[]): readonly PurchaseRow[] {
+  return groups.flatMap((group, index): PurchaseRow[] => {
+    const field = `fao01010.detailList[${index}]`;
+    if (group.detailList === undefined) return [{ row: group, cardNo: group.cardNo, field }];
+    return records(group.detailList, `${field}.detailList`)
+      .map((row, inner) => ({ row, cardNo: row.cardNo ?? group.cardNo, field: `${field}.detailList[${inner}]` }));
+  });
+}
+
+function purchasesFrom(groups: readonly SourceRecord[], cards: ReadonlyMap<string, PreviewCard>, statementKeys: ReadonlySet<string>): PreviewPurchase[] {
+  const occurrences = new Map<string, number>();
+  const purchases = purchaseRows(groups).map(({ row, cardNo, field }): PreviewPurchase => {
+    const card = cards.get(text(cardNo, `${field}.cardNo`)) ?? fail("unexpected-response", `${field}.cardNo is not in fao01010.cardNumbers`);
+    const amount = exactDecimal(row.destinationAmt, `${field}.destinationAmt`);
+    if (isZeroDecimal(amount)) return fail("unexpected-response", `${field}.destinationAmt is zero`);
+    const currency = currencyCode(row.destinationCurr, `${field}.destinationCurr`);
+    const original = row.sourceAmt === undefined ? "" : exactDecimal(row.sourceAmt, `${field}.sourceAmt`);
+    const originalCurrency = row.sourceCurr === undefined ? "" : currencyCode(row.sourceCurr, `${field}.sourceCurr`);
+    const consumedAt = localDate(row.purchaseDate, `${field}.purchaseDate`);
+    const month = text(row.acctMon, `${field}.acctMon`);
+    if (month !== UNBILLED_MONTH && !BILLING_MONTH.test(month)) return fail("unexpected-response", `${field}.acctMon is neither a billing month nor ${UNBILLED_MONTH}`);
+    const posted = row.postDate ?? row.accountDate;
+    const description = optionalText(row.merchantChiName);
+    // acctMon changes from 999912 to the billing month at billing, so it stays out of the key and the row is updated in place.
+    const content = [card.sourceCardKey, consumedAt.value, originalCurrency, original, currency, amount, description ?? ""].join(":");
+    const occurrence = occurrences.get(content) ?? 0;
+    occurrences.set(content, occurrence + 1);
+    return {
+      sourceRowKey: `${content}#${occurrence}`,
+      amount,
+      currency,
+      direction: "unknown",
+      posting: {
+        status: "posted",
+        billing: month === UNBILLED_MONTH ? "unbilled" : "billed",
+        postingDate: posted === undefined || posted === null ? null : localDate(posted, `${field}.postDate`).value.slice(0, 10),
+      },
+      consumedAt,
+      sourceCardKey: card.sourceCardKey,
+      statementKey: statementKeys.has(`${month}:${currency}`) ? `${month}:${currency}` : null,
+      bankReference: null,
+      description,
+    };
+  });
+  // No debit/credit field is documented, so the sign is the direction only when the collection holds both signs.
+  if (new Set(purchases.map((purchase) => purchase.amount.startsWith("-"))).size < 2) return purchases;
+  return purchases.map((purchase) => ({ ...purchase, direction: purchase.amount.startsWith("-") ? "inflow" : "outflow" }));
+}
+
+async function collectCards(api: Client, now: string): Promise<PreviewCreditCollection | PreviewProductAbsence> {
+  const overview = await api.resource("megapmb", "/fco/fco10007/home", {}, { pageId: "fco10007", pageNo: "home" });
+  const bills = records(rsData(overview.body, "fco10007").creditCardBillInfoList, "fco10007.creditCardBillInfoList");
+  if (bills.length === 0) return { absent: "not_held" };
+  const asOf = observedAt(overview.date, now);
+  const bases = creditBases(bills);
+  const billing = await api.resource("megapmb", "/fao/fao01009/home", {}, { pageId: "fao01009", pageNo: "home" });
+  const statements = statementsFrom(rsData(billing.body, "fao01009"));
+  const unmatched = statements.find((statement) => !bases.has(statement.currency));
+  if (unmatched) return fail("unexpected-response", `a ${unmatched.currency} bill has no ${unmatched.currency} row in fco10007`);
+  const home = await api.resource("megapmb", "/fao/fao01010/home", {}, { pageId: "fao01010", pageNo: "home" });
+  const cards = cardsFrom(records(rsData(home.body, "fao01010").cardNumbers, "fao01010.cardNumbers"));
+  if (cards.size === 0) return fail("unexpected-response", "fco10007 lists card bills but fao01010 lists no card");
+  const window = taipeiMonthWindow(now, MONTHS);
+  const query = await api.resource("megapmb", "/fao/fao01010/query", {
+    cardNo: "0",
+    flag: "0",
+    startDate: window.start.replaceAll("-", "/"),
+    endDate: window.end.replaceAll("-", "/"),
+  }, { pageId: "fao01010", pageNo: "query" });
+  const purchases = purchasesFrom(records(rsData(query.body, "fao01010").detailList, "fao01010.detailList"), cards, new Set(statements.map((statement) => statement.statementKey)));
+  const orphan = purchases.find((purchase) => !bases.has(purchase.currency));
+  if (orphan) return fail("unexpected-response", `a ${orphan.currency} purchase has no ${orphan.currency} row in fco10007`);
+  return {
+    collectedAt: now,
+    accounts: [...bases].map(([currency, basis]): PreviewCreditAccount => ({
+      sourceAccountKey: `credit:${currency}`,
+      displayLabel: `兆豐銀行 信用卡 ${currency}`,
+      currency,
+      creditLimit: null,
+      cards: [...cards.values()],
+      balances: [{
+        amount: decimalSum([[1, basis.statementAmount], [-1, basis.paidAmount], [1, basis.unbilledAmount]]),
+        currency,
+        observedAt: asOf,
+        basis,
+      }],
+      purchases: purchases.filter((purchase) => purchase.currency === currency),
+      statements: statements.filter((statement) => statement.currency === currency),
+    })),
+  };
+}
+
 export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; solveCaptcha?: PreviewCaptchaSolver }> = {}): PreviewSource {
   const open = options.http ?? browserHttp;
   const solve = options.solveCaptcha ?? calibratedCaptchaSolver(MEGA_CAPTCHA_FAMILY);
   return {
     id: "mega-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["mega-deposit"],
-    product: "deposit",
-    displayName: { en: "Mega Bank deposits (preview)", "zh-TW": "兆豐銀行存款（預覽）" },
+    products: ["deposit", "credit_card"],
+    displayName: { en: "Mega Bank deposits and credit cards (preview)", "zh-TW": "兆豐銀行存款與信用卡（預覽）" },
     searchAliases: ["Mega Bank", "Mega International Commercial Bank", "MegaBank", "兆豐", "兆豐銀行", "兆豐國際商業銀行"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -407,9 +649,12 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
           await context.event("authentication", "authentication-completed");
           await context.event("collection", "collection-started");
           const collectedAt = context.now();
-          const accounts = await collect(api, collectedAt);
+          const output = await context.preview.collect({
+            deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, collectedAt) }),
+            credit_card: () => collectCards(api, collectedAt),
+          });
           await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return output;
         } finally {
           await api.resource("megapmb", "/fco/fco02011/logout", {}, null, false).catch(() => undefined);
         }

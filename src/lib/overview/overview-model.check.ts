@@ -258,7 +258,7 @@ test("an account recorded for the first time is new coverage, not a change in ne
 function previewAccount(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {
   return {
     ...account(id, amountLines[0]?.currency === "TWD" ? "bank" : "foreign", amountLines),
-    preview: { sourceId: "synthetic", lastCollectedAt: "2026-10-05T00:00:00Z", balanceTime: null, transactions: [] },
+    preview: { sourceId: "synthetic", product: "deposit", lastCollectedAt: "2026-10-05T00:00:00Z", balanceTime: null, transactions: [] },
   };
 }
 
