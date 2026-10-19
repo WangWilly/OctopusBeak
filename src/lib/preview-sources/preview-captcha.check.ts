@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
+import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY, nextbankAudioCaptchaSolver, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
 import { blankPng, scriptedOcrEngine } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewCaptchaChallenge } from "./source-kit.ts";
+import type { SpeechRecognitionEngine } from "../automation/server/audio-captcha-solver.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 
 function solve(family: PreviewCaptchaFamily, challenge: PreviewCaptchaChallenge, results: readonly { text: string; confidence: number }[] = []) {
@@ -75,4 +76,55 @@ test("Taishin accepts a confidence of exactly 0.5 and prefers the first strategy
     { text: "123456", confidence: 0.49 },
     { text: "1234567", confidence: 0.99 },
   ]).answer, null, "a page without a declared length still needs six digits");
+});
+
+function scriptedSpeechEngine(texts: readonly string[]): SpeechRecognitionEngine {
+  let index = 0;
+  return {
+    async transcribe() {
+      const text = texts[index] ?? texts[texts.length - 1] ?? "";
+      index += 1;
+      return { text };
+    },
+  };
+}
+
+const audioChallenge = (expectedLength = 5): PreviewCaptchaChallenge =>
+  ({ audio: [Buffer.from("clip-1"), Buffer.from("clip-2"), Buffer.from("clip-3"), Buffer.from("clip-4"), Buffer.from("clip-5")], expectedLength });
+
+function audioContext(): PreviewWorkflowContext & { events: string[] } {
+  const events: string[] = [];
+  const context = { event: async (_stage: string, code: string) => { events.push(code); } } as unknown as PreviewWorkflowContext & { events: string[] };
+  context.events = events;
+  return context;
+}
+
+test("the NextBank audio solver maps each spoken clip to one digit", async () => {
+  const answer = await nextbankAudioCaptchaSolver(scriptedSpeechEngine(["一", "二", "三", "四", "五"]))(audioContext(), audioChallenge());
+  assert.equal(answer, "12345");
+});
+
+test("the NextBank audio solver recovers the digit 二 from the 嗯 confusion", async () => {
+  const answer = await nextbankAudioCaptchaSolver(scriptedSpeechEngine(["八", "嗯", "四", "八", "九"]))(audioContext(), audioChallenge());
+  assert.equal(answer, "82489");
+});
+
+test("a clip that does not map to exactly one digit is not accepted", async () => {
+  const answer = await nextbankAudioCaptchaSolver(scriptedSpeechEngine(["一", "二", "三", "四 五"]))(audioContext(), audioChallenge());
+  assert.equal(answer, null, "one clip speaking two digits fails closed");
+});
+
+test("an empty clip transcription is not accepted", async () => {
+  const answer = await nextbankAudioCaptchaSolver(scriptedSpeechEngine(["一", "二", "三", "四", ""]))(audioContext(), audioChallenge());
+  assert.equal(answer, null);
+});
+
+test("the NextBank audio solver refuses an image challenge as unsupported", async () => {
+  const context = audioContext();
+  const challenge: PreviewCaptchaChallenge = { image: blankPng(302, 96), charset: "digits", expectedLength: 5 };
+  await assert.rejects(
+    nextbankAudioCaptchaSolver(scriptedSpeechEngine(["一", "二", "三", "四", "五"]))(context, challenge),
+    (error) => error instanceof PreviewSourceFailure && error.reason === "verification-unsupported",
+  );
+  assert.deepEqual(context.events, ["solver-challenge-unsupported"]);
 });

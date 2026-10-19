@@ -4,7 +4,6 @@ import type { ChallengeCharacterSet } from "../../src/lib/automation/human-assis
 import { strictSourceText } from "../../src/lib/automation/source-text.ts";
 import type { WorkflowBrowserPort } from "../../src/lib/automation/workflow-executor.ts";
 import { createMegaSource } from "../../src/lib/preview-sources/mega-source.ts";
-import { createNextBankSource } from "../../src/lib/preview-sources/nextbank-source.ts";
 import { createRakutenSource } from "../../src/lib/preview-sources/rakuten-source.ts";
 import type { PreviewSource } from "../../src/lib/preview-sources/registry.ts";
 import type { PreviewCaptchaSolver } from "../../src/lib/preview-sources/source-kit.ts";
@@ -12,7 +11,7 @@ import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-log
 import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
 
-export const CALIBRATION_BANKS = ["mega", "taishin", "nextbank", "rakuten"] as const;
+export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten"] as const;
 export type CalibrationBank = typeof CALIBRATION_BANKS[number];
 
 export function isCalibrationBank(value: string): value is CalibrationBank {
@@ -130,14 +129,6 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     contextOptions: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },
     denyRules: [{ name: "taishin-login", method: "POST", path: /^\/TIBNetBank\/svc\/web\/login\/login$/u }],
     capture: captureTaishin,
-  },
-  nextbank: {
-    id: "nextbank",
-    displayName: "Next Bank",
-    charset: "alphanumeric",
-    method: "preview-source",
-    denyRules: [{ name: "nextbank-login", path: /\/membership\/CaptchaLogin$/u }],
-    capture: (browser, signal) => captureThroughSource(createNextBankSource, browser, signal),
   },
   rakuten: {
     id: "rakuten",

@@ -41,6 +41,7 @@
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
     "workflow:dev": "node --no-warnings --experimental-strip-types scripts/workflow-dev.ts",
     "calibrate:captcha": "node --no-warnings --experimental-strip-types scripts/captcha-calibration.ts",
+    "validate:nextbank-audio": "node --no-warnings --experimental-strip-types scripts/nextbank-audio-validation.ts",
     "probe:esun-deposit": "node --no-warnings --experimental-strip-types scripts/esun-deposit-probe.ts",
     "probe:tdcc": "NODE_OPTIONS=\"--experimental-strip-types --no-warnings\" electron scripts/tdcc-probe.mjs",
     "run:seed-desktop-cdp-fixture": "node --no-warnings --experimental-strip-types scripts/seed-desktop-cdp-fixture.ts",

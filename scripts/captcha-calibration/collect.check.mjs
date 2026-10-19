@@ -20,31 +20,15 @@ const LOGIN_REQUEST = [
 ];
 
 let browser;
-let jpeg;
 
 before(async () => {
   browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-  const dataUrl = await page.evaluate(() => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 120;
-    canvas.height = 40;
-    const context = canvas.getContext("2d");
-    context.fillStyle = "#fff";
-    context.fillRect(0, 0, 120, 40);
-    context.fillStyle = "#000";
-    context.fillText("A1B2", 10, 25);
-    return canvas.toDataURL("image/jpeg");
-  });
-  await page.close();
-  jpeg = Buffer.from(dataUrl.split(",")[1], "base64");
 });
 
 after(async () => { await browser?.close(); });
 
 const json = (body, headers = {}) => ({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
 const html = (body) => ({ status: 200, contentType: "text/html", body });
-const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type,x-ncb-channel,channel", "access-control-allow-methods": "POST" };
 
 function megaSite(image) {
   return (method, url, body) => {
@@ -55,18 +39,6 @@ function megaSite(image) {
     if (url.pathname.endsWith("/resource/ixtein-pmbinit")) return json({ code: "0000", rsData: {} });
     if (url.pathname.endsWith("/resource/prelogin") && JSON.parse(body).resource === "/fco/fco00001/captcha") {
       return json({ code: "0000", rsData: { image: `data:image/png;base64,${image.toString("base64")}` } });
-    }
-    return null;
-  };
-}
-
-function nextbankSite(image) {
-  return (method, url) => {
-    if (url.host === "www.nextbank.com.tw" && method === "GET") return html("<html><body>nextbank</body></html>");
-    if (url.host !== "api.nextbank.com.tw") return null;
-    if (method === "OPTIONS") return { status: 204, headers: CORS, body: "" };
-    if (url.pathname === "/ap2/open/common/v1.0/Captcha") {
-      return json({ success: true, data: { captchaImage: image.toString("base64"), uuid: "challenge-uuid" } }, CORS);
     }
     return null;
   };
@@ -134,7 +106,6 @@ function fakeBrowserPort(site, contextOptions = {}) {
 
 const BANK_CASES = [
   { bank: "mega", site: megaSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
-  { bank: "nextbank", site: nextbankSite, image: () => jpeg, size: [120, 40], mediaType: "image/jpeg" },
   { bank: "rakuten", site: rakutenSite, image: () => solidPng(80, 30), size: [80, 30], mediaType: "image/png" },
   { bank: "taishin", site: taishinSite, image: () => solidPng(90, 35), size: [90, 35], mediaType: "image/png", declaredLength: 6 },
 ];
@@ -218,7 +189,7 @@ test("a denied request is aborted before it leaves the browser and stops the col
 });
 
 test("three consecutive capture failures stop the collection", async () => {
-  const bank = CALIBRATION_BANK_SPECS.nextbank;
+  const bank = CALIBRATION_BANK_SPECS.mega;
   const port = fakeBrowserPort(() => null);
   const log = [];
   const result = await collectCorpus({

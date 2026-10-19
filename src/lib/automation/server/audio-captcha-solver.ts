@@ -54,6 +54,25 @@ const CHINESE_NUMERALS: Record<string, string> = {
   "玖": "9",
 };
 
+// ASR confusions for a single spoken decimal digit, observed in NextBank's
+// distorted clip audio. The paraformer-zh-small recogniser reads the digit 二
+// as the filler 嗯 when the clip is noisy; the maintainer confirmed by ear that
+// the clip speaks 二. Each entry is one misheard token to its decimal digit.
+const DIGIT_ASR_CONFUSIONS: Readonly<Record<string, string>> = {
+  "嗯": "2",
+};
+
+/**
+ * Recover decimal digits from an ASR transcription: numerals map directly, and
+ * a transcription that is not a numeral falls back to the observed confusion
+ * table. Returns "" when nothing maps.
+ */
+export function recoverDigits(text: string): string {
+  const direct = chineseNumeralsToDigits(text);
+  if (direct) return direct;
+  return DIGIT_ASR_CONFUSIONS[text.trim()] ?? "";
+}
+
 export const stubSpeechRecognitionEngine: SpeechRecognitionEngine = {
   async transcribe() {
     return { text: "" };

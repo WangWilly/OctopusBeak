@@ -1,12 +1,14 @@
 # How to calibrate a preview source CAPTCHA
 
-ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin and Mega preview sources have calibrated families. The Next Bank and Rakuten sources have none, so their production runs stop at sign-in. The measured results are in [the calibration record](../research/2026-10-15-preview-captcha-calibration.md). `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin and Mega preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. The Rakuten source has none, so its production runs stop at sign-in. The measured results are in [the calibration record](../research/2026-10-15-preview-captcha-calibration.md). `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
 
 You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
 
+A separate tool validates the Next Bank audio CAPTCHA: `npm run validate:nextbank-audio` collects the spoken clips, transcribes them with the same local speech recogniser the source uses, and serves a page where you listen to each clip and confirm the recognised digits.
+
 ## Run the four steps for a bank
 
-Replace `mega` with `taishin`, `nextbank`, or `rakuten` for the other banks.
+Replace `mega` with `taishin` or `rakuten` for the other banks.
 
 1. Collect the images. The browser window opens on your screen. Add `--headless` to hide it.
 
@@ -43,7 +45,6 @@ To collect more images, run `collect` again. It appends to the corpus. Run `prel
 | Bank | Method | Requests before the image |
 | --- | --- | --- |
 | `mega` | Preview source | OAuth client credentials, `/main/init`, the App initialize call, then `/fco/fco00001/captcha`. The image comes back as base64 in the JSON response. |
-| `nextbank` | Preview source | One `POST /ap2/open/common/v1.0/Captcha`. The response binds the image to a `uuid`. |
 | `rakuten` | Preview source page driver | The login page. The image is a data URI in `div.pic_veri captcha-image img`. |
 | `taishin` | Preview source login form | The RWD login page. `form.captcha()` takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
 
