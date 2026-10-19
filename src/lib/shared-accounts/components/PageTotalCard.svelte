@@ -12,6 +12,8 @@
   export let notes: string[] = [];
   export let ariaLabel = label;
   export let includesPreview = false;
+  /** An account in the total owes an unknown amount, so no figure is shown. */
+  export let incomplete = false;
 
   $: tone = trailing === null || Math.round(trailing.change) === 0
     ? "flat"
@@ -24,7 +26,10 @@
       {label}
       {#if includesPreview}<PreviewMarker />{/if}
     </p>
-    {#if total === null}
+    {#if incomplete}
+      <p class="figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
+      <p class="note">{$t.preview.incompleteNote}</p>
+    {:else if total === null}
       <p class="figure empty">—</p>
     {:else}
       <p class="figure money" data-sensitive>{formatTwd(total, $locale)}</p>
@@ -89,6 +94,11 @@
 
   .figure.empty {
     color: var(--muted);
+  }
+
+  .figure.incomplete {
+    color: var(--warn);
+    font-size: clamp(20px, 2vw, 26px);
   }
 
   .change {

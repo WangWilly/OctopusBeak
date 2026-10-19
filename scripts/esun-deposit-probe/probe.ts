@@ -1,4 +1,11 @@
 import { inventoryFields, safeResultCode, type FieldInventory } from "../../src/lib/preview-sources/response-shape.ts";
+import {
+  ESUN_DEPOSIT_INIT_PATH,
+  ESUN_DEPOSIT_NOT_HELD,
+  ESUN_DEPOSIT_PREQUERY_PATHS,
+  ESUN_DEPOSIT_SEARCH_PATHS,
+  type EsunDepositKind,
+} from "../../src/lib/preview-sources/esun-deposit.ts";
 
 export type PortalReply =
   | Readonly<{ kind: "json"; httpStatus: number; json: unknown }>
@@ -12,7 +19,7 @@ export type PortalTransport = (
   resetFlow: boolean,
 ) => Promise<PortalReply>;
 
-export type DepositKind = "tw" | "fr";
+export type DepositKind = EsunDepositKind;
 
 export type FailureReason =
   | "http-status" | "non-json" | "network-error" | "portal-session-missing" | "envelope-invalid" | "result-code";
@@ -40,19 +47,10 @@ export type ProbeReport = Readonly<{
   observedRequests: readonly string[];
 }>;
 
-export const DEPOSIT_INIT_PATH = "mib-ctw-portal/ctw01/ctw01002/home/init";
-export const PREQUERY_PATHS: Readonly<Record<DepositKind, string>> = {
-  tw: "mib-ctw-portal/ctw01/ctw01002/home/preQueryTWTransactionDetail",
-  fr: "mib-ctw-portal/ctw01/ctw01002/home/preQueryFRTransactionDetail",
-};
-export const SEARCH_PATHS: Readonly<Record<DepositKind, string>> = {
-  tw: "mib-ctw-portal/ctw01/ctw01002/search/queryTWTransactionDetail",
-  fr: "mib-ctw-portal/ctw01/ctw01002/search/queryFRTransactionDetail",
-};
-const NOT_HELD_DESCRIPTIONS: Readonly<Record<DepositKind, RegExp>> = {
-  tw: /查無臺幣帳號|尚未開立臺幣帳戶/u,
-  fr: /查無外幣帳號|尚未開立外幣帳戶/u,
-};
+export const DEPOSIT_INIT_PATH = ESUN_DEPOSIT_INIT_PATH;
+export const PREQUERY_PATHS = ESUN_DEPOSIT_PREQUERY_PATHS;
+export const SEARCH_PATHS = ESUN_DEPOSIT_SEARCH_PATHS;
+const NOT_HELD_DESCRIPTIONS = ESUN_DEPOSIT_NOT_HELD;
 const SUCCESS = "0000";
 const NOT_HELD = "S001";
 export const SEARCH_PAGE_SIZE = 100;

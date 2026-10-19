@@ -8,7 +8,10 @@ import {
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
-import { previewVisibility } from "../../preview-sources/visibility.ts";
+import { attachedPreviewSource, attachedStatementType } from "../../preview-sources/attached-products.ts";
+import { previewVisibility, visibleProducts } from "../../preview-sources/visibility.ts";
+import type { PreviewProduct, PreviewVisibility } from "../../../ledger/pglite/preview-financial-data.ts";
+import type { AutomationCredentialGroup } from "../types.ts";
 import { automationFlagEnabled } from "../statement-selection.ts";
 import { systemSettings } from "../../settings/system-settings.ts";
 
@@ -44,15 +47,37 @@ export function automationGroupEnabledStatus(
   );
 }
 
+/**
+ * The Statement Selection a group offers under a visibility: a Preview
+ * Source lists its uncovered products, and a verified group adds its
+ * uncovered Attached Preview Products, marked preview.
+ */
+export function offeredStatementTypes(group: AutomationCredentialGroup, visibility: PreviewVisibility): AutomationCredentialGroup {
+  if (group.preview) {
+    const products = visibleProducts(visibility, {
+      sourceId: group.id,
+      products: (group.statementTypes ?? []).map((type) => type.id as PreviewProduct),
+    });
+    return { ...group, statementTypes: products.map((id) => ({ id })) };
+  }
+  const attached = attachedPreviewSource(group.id);
+  if (!attached || !group.statementSelectionKey) return group;
+  const products = visibleProducts(visibility, attached);
+  return { ...group, statementTypes: [...(group.statementTypes ?? []), ...products.map(attachedStatementType)] };
+}
+
 export function offeredAutomationSources(settings: AutomationSettingsFile = readAutomationSettings()) {
-  const offeredPreviewIds = new Set(currentPreviewVisibility(settings).sourceIds);
+  const visibility = currentPreviewVisibility(settings);
+  const offeredPreviewIds = new Set(visibility.visible.map((entry) => entry.sourceId));
   const enabled = automationGroupEnabledStatus(settings);
-  const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.filter((group) => !group.preview || offeredPreviewIds.has(group.id));
+  const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS
+    .filter((group) => !group.preview || offeredPreviewIds.has(group.id))
+    .map((group) => offeredStatementTypes(group, visibility));
   return {
     credentialGroups,
     enabledGroups: Object.fromEntries(AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
       group.id,
-      credentialGroups.includes(group) && enabled[group.id] === true,
+      credentialGroups.some((offered) => offered.id === group.id) && enabled[group.id] === true,
     ])),
   };
 }

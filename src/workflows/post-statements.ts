@@ -451,10 +451,13 @@ export async function dismissPostNoticeIfPresent(
     .locator('button.css_btn_class[ng-click="closeBox()"]:visible')
     .filter({ hasText: /^\s*關閉\s*$/ });
   const closeButton = closeButtons.first();
-  if (!(await waitForSignal(
-    closeButton.isVisible({ timeout: 2_000 }).catch(() => false),
+  // isVisible ignores its timeout; iPost opens this notice about a second
+  // after the login form, over the CAPTCHA image.
+  const appeared = await waitForSignal(
+    closeButton.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false),
     signal,
-  ))) {
+  );
+  if (!appeared || !(await waitForSignal(closeButton.isVisible().catch(() => false), signal))) {
     return false;
   }
 

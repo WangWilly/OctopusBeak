@@ -1,12 +1,23 @@
 import { constants, createHash, createHmac, publicEncrypt } from "node:crypto";
-import type { PreviewAccount, PreviewLocalDate, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type {
+  PreviewAccount,
+  PreviewCard,
+  PreviewCreditCollection,
+  PreviewDepositCollection,
+  PreviewLocalDate,
+  PreviewStatement,
+  PreviewTransaction,
+} from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewProductAbsence } from "./product-collection.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
   currencyCode,
+  decimalSum,
   exactDecimal,
   fail,
+  isZeroDecimal,
   localDate,
   observedAt,
   optionalText,
@@ -30,6 +41,11 @@ const PATH = {
   transactions: "/api/v1/Account/FetchTransactionDetails",
   foreignTransactions: "/api/v1/Account/FetchForeignCurrencyTransactionDetails",
   logout: "/api/v1/Authentication/Logout",
+  assetsOverview: "/api/v1/Account/GetAssetsOverview",
+  cardSummary: "/api/v1/CreditCard/GetSummary",
+  cards: "/api/v1/CreditCard/GetMyCreditCardsInformation",
+  billingHistory: "/api/v1/CreditCard/GetBillingHistory",
+  remainingDue: "/api/v1/CreditCard/GetRemainingDue",
 } as const;
 const APP_VERSION = "5.8.5";
 const DEVICE_INFO = "Android;15;Google-Pixel 8";
@@ -40,6 +56,8 @@ const MAX_PAGES = 100;
 const SUCCESS = "0000";
 const APP_VERSION_REJECTED = "MB433";
 const NO_TRANSACTIONS = "查無資料";
+const NO_STATEMENT_DEBT = "本期帳單無欠款";
+const CARD_CURRENCY = "TWD";
 
 const KEY = {
   idNumber: "PREVIEW_SKBANK_DEPOSIT_ID_NUMBER",
@@ -277,9 +295,7 @@ async function transactionPages(api: Api, deposit: DepositAccount, range: Readon
   return transactionsFrom(details, `${path}.Details`, deposit.currency);
 }
 
-async function collect(api: Api, collectedAt: string): Promise<PreviewAccount[]> {
-  await api.get(PATH.userInformation);
-  await api.get(PATH.megaMenu);
+async function collectDeposits(api: Api, collectedAt: string): Promise<PreviewDepositCollection> {
   const deposits = [
     ...depositAccounts(await api.get(PATH.accountSummary), "GetAccountSummary", "TWD", collectedAt),
     ...depositAccounts(await api.get(PATH.foreignAccountSummary), "GetForeignCurrencyAccountSummary", "FX", collectedAt),
@@ -296,7 +312,135 @@ async function collect(api: Api, collectedAt: string): Promise<PreviewAccount[]>
       ? deposit.account
       : { ...deposit.account, transactions: await transactionPages(api, deposit, range) });
   }
-  return accounts;
+  return { collectedAt, accounts };
+}
+
+const isBlank = (value: unknown) => value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+
+function requiredAmount(value: unknown, field: string): string {
+  if (isBlank(value)) return fail("unexpected-response", `${field} is missing`);
+  return exactDecimal(value, field);
+}
+
+function integer(value: unknown, field: string): number {
+  if (typeof value !== "string" || !/^\d+$/u.test(value.trim())) return fail("unexpected-response", `${field} is not an integer`);
+  return Number(value.trim());
+}
+
+type Bill = Readonly<{ billingPeriod: string; amount: string }>;
+
+function bills(data: SourceRecord, field: string): Bill[] {
+  const parsed = records(data.Bills, `${field}.Bills`).map((bill, index) => {
+    const billField = `${field}.Bills[${index}]`;
+    const year = integer(bill.Year, `${billField}.Year`);
+    const month = integer(bill.Month, `${billField}.Month`);
+    if (month < 1 || month > 12) return fail("unexpected-response", `${billField}.Month is not a month`);
+    const gregorian = year < 1911 ? year + 1911 : year;
+    return {
+      billingPeriod: `${gregorian}-${String(month).padStart(2, "0")}`,
+      amount: exactDecimal(bill.StatementBalance, `${billField}.StatementBalance`),
+    };
+  });
+  if (new Set(parsed.map((bill) => bill.billingPeriod)).size !== parsed.length) return fail("unexpected-response", `${field} repeats a billing period`);
+  return parsed;
+}
+
+type RemainingDue = Readonly<{ kind: "amount"; amount: string } | { kind: "no-statement-debt" }>;
+
+function remainingDue(value: unknown, field: string): RemainingDue {
+  const raw = typeof value === "string" ? value.trim() : value;
+  if (raw === NO_STATEMENT_DEBT) return { kind: "no-statement-debt" };
+  if (raw === "NA") return fail("unexpected-response", `${field} is NA, whose meaning is undocumented`);
+  return { kind: "amount", amount: requiredAmount(value, field) };
+}
+
+const isoDay = (year: number, month: number, day: number) => new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
+const daysIn = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+/**
+ * Only the current statement is written: the billing history has no due
+ * date, and GetSummary names the current statement only by its month.
+ */
+function currentStatement(summary: SourceRecord, history: readonly Bill[], due: RemainingDue, currency: string): PreviewStatement | null {
+  if (isBlank(summary.StatementMonth)) return null;
+  const month = integer(summary.StatementMonth, "GetSummary.StatementMonth");
+  const bill = history
+    .filter((entry) => Number(entry.billingPeriod.slice(5)) === month)
+    .sort((left, right) => right.billingPeriod.localeCompare(left.billingPeriod))[0];
+  const dueText = optionalText(summary.PaymentDueDate);
+  // A due date given only as status text, such as 已繳清, means the statement is not written.
+  if (!bill || dueText === null || !/\d/u.test(dueText) || isBlank(summary.ClosingDate)) return null;
+  const closingDay = integer(summary.ClosingDate, "GetSummary.ClosingDate");
+  if (closingDay < 1 || closingDay > 31) return fail("unexpected-response", "GetSummary.ClosingDate is not a day of the month");
+  const [year, periodMonth] = bill.billingPeriod.split("-").map(Number) as [number, number];
+  const previous = periodMonth === 1 ? [year - 1, 12] as const : [year, periodMonth - 1] as const;
+  const closingDate = isoDay(year, periodMonth, Math.min(closingDay, daysIn(year, periodMonth)));
+  const cycleStart = isoDay(previous[0], previous[1], Math.min(closingDay, daysIn(...previous)) + 1);
+  return {
+    statementKey: bill.billingPeriod,
+    cycleStart,
+    cycleEnd: closingDate,
+    closingDate,
+    dueDate: skbankDate(dueText, "GetSummary.PaymentDueDate").value.slice(0, 10),
+    amount: isBlank(summary.CurrentStatementBalance) ? bill.amount : exactDecimal(summary.CurrentStatementBalance, "GetSummary.CurrentStatementBalance"),
+    currency,
+    minimumPayment: isBlank(summary.MinimumPaymentDue) ? null : exactDecimal(summary.MinimumPaymentDue, "GetSummary.MinimumPaymentDue"),
+    billingPeriod: bill.billingPeriod,
+    paidAmount: null,
+    paid: due.kind === "amount" ? due.amount.startsWith("-") || isZeroDecimal(due.amount) : null,
+    noPaymentNeeded: due.kind === "no-statement-debt" ? true : null,
+  };
+}
+
+function cards(data: SourceRecord): PreviewCard[] {
+  const seen = new Map<string, number>();
+  return records(data.CreditCardList, "GetMyCreditCardsInformation.CreditCardList").map((card, index) => {
+    const field = `GetMyCreditCardsInformation.CreditCardList[${index}]`;
+    const digits = text(card.CardNumber, `${field}.CardNumber`).replace(/\D/gu, "");
+    if (digits.length < 4) return fail("unexpected-response", `${field}.CardNumber has no last four digits`);
+    const last4 = digits.slice(-4);
+    const occurrence = (seen.get(last4) ?? 0) + 1;
+    seen.set(last4, occurrence);
+    return {
+      sourceCardKey: occurrence === 1 ? last4 : `${last4}:${occurrence}`,
+      cardMask: `****-${last4}`,
+      displayLabel: optionalText(card.CardName)?.replace(/\d(?:[\s-]*\d){4,}/gu, (run) => `****${run.replace(/\D/gu, "").slice(-4)}`) ?? null,
+    };
+  });
+}
+
+async function collectCreditCards(api: Api, collectedAt: string): Promise<PreviewCreditCollection | PreviewProductAbsence> {
+  const overview = record((await api.get(PATH.assetsOverview)).data, "GetAssetsOverview.Data");
+  if (typeof overview.HasValidCreditCard !== "boolean") return fail("unexpected-response", "GetAssetsOverview.HasValidCreditCard is not a boolean");
+  if (!overview.HasValidCreditCard) return { absent: "not_held" };
+  const summaryEnvelope = await api.get(PATH.cardSummary);
+  const summary = record(summaryEnvelope.data, "GetSummary.Data");
+  const cardList = cards(record((await api.get(PATH.cards)).data, "GetMyCreditCardsInformation.Data"));
+  const history = bills(record((await api.get(PATH.billingHistory)).data, "GetBillingHistory.Data"), "GetBillingHistory");
+  const due = remainingDue(record((await api.get(PATH.remainingDue)).data, "GetRemainingDue.Data").RemainingDue, "GetRemainingDue.RemainingDue");
+  const currency = summary.CurrencyCode === undefined ? CARD_CURRENCY : currencyCode(summary.CurrencyCode, "GetSummary.CurrencyCode");
+  const creditLimit = requiredAmount(summary.CurrentCredit, "GetSummary.CurrentCredit");
+  const availableCredit = requiredAmount(summary.AvailableCredit, "GetSummary.AvailableCredit");
+  const statement = currentStatement(summary, history, due, currency);
+  return {
+    collectedAt,
+    accounts: [{
+      sourceAccountKey: `credit:${currency}`,
+      displayLabel: `新光銀行 信用卡${currency === "TWD" ? "" : ` (${currency})`}`,
+      currency,
+      creditLimit,
+      cards: cardList,
+      balances: [{
+        amount: decimalSum([[1, creditLimit], [-1, availableCredit]]),
+        currency,
+        observedAt: observedAt(summaryEnvelope.date, collectedAt),
+        basis: { kind: "credit-limit-minus-available", creditLimit, availableCredit },
+      }],
+      // all-set-tw documents no SKBank card-transaction feed, only the summary and statements.
+      purchases: [],
+      statements: statement === null ? [] : [statement],
+    }],
+  };
 }
 
 export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener }> = {}): PreviewSource {
@@ -304,8 +448,8 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
   return {
     id: "skbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["skbank-deposit"],
-    product: "deposit",
-    displayName: { en: "Shin Kong Bank deposits (preview)", "zh-TW": "新光銀行存款（預覽）" },
+    products: ["deposit", "credit_card"],
+    displayName: { en: "Shin Kong Bank deposits and credit cards (preview)", "zh-TW": "新光銀行存款與信用卡（預覽）" },
     searchAliases: ["Shin Kong Bank", "SKBank", "新光", "新光銀行"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -344,11 +488,13 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
         await signIn(api, credentials);
         await context.event("authentication", "authentication-completed");
         try {
-          await context.event("collection", "collection-started");
+          await api.get(PATH.userInformation);
+          await api.get(PATH.megaMenu);
           const collectedAt = context.now();
-          const accounts = await collect(api, collectedAt);
-          await context.event("collection", "collection-completed");
-          return await context.preview.write({ collectedAt, accounts });
+          return await context.preview.collect({
+            deposit: () => collectDeposits(api, collectedAt),
+            credit_card: () => collectCreditCards(api, collectedAt),
+          });
         } finally {
           if (api.signedIn()) await api.send("POST", PATH.logout).catch(() => undefined);
         }

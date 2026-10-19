@@ -10,7 +10,7 @@ import type {
   WorkflowTdccPort,
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
-import { createWorkflowExecutor } from "../workflow-executor.ts";
+import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
@@ -46,6 +46,16 @@ import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rp
 import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
 import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
+
+function previewWritePort(
+  definition: WorkflowDefinition,
+  injected: WorkflowPreviewWritePort | undefined,
+  fromChild: WorkflowPreviewWritePort | undefined,
+): { previewWrite?: WorkflowPreviewWritePort } {
+  if (!workflowUsesPreviewWrite(definition)) return {};
+  const port = injected ?? fromChild;
+  return port ? { previewWrite: port } : {};
+}
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
@@ -327,7 +337,7 @@ export async function runAppWorkflowWorker(
       if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
-    const previewWrite = definition.requiresPreviewWrite ? options.previewWrite : undefined;
+    const previewWrite = workflowUsesPreviewWrite(definition) ? options.previewWrite : undefined;
     if (definition.requiresPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
@@ -388,7 +398,7 @@ export async function runAppWorkflowWorker(
       ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       ...(tdcc ? { tdcc } : {}),
       ...(accountIdentity ? { accountIdentity } : {}),
-      ...(definition.requiresPreviewWrite ? { previewWrite: previewWrite ?? childRpc!.operationalProvider.preview } : {}),
+      ...(previewWritePort(definition, previewWrite, childRpc?.operationalProvider.preview)),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,

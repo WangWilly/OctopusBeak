@@ -4,7 +4,10 @@ import {
   isStatementSelectionGroup,
   selectStatementTypes,
 } from "../statement-selection.ts";
+import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
+import { previewVisibilityFromEnvironment } from "../../preview-sources/visibility.ts";
 import { automationConfigEnv } from "./config-files.ts";
+import { offeredStatementTypes } from "./settings.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, type AutomationTask } from "./tasks.ts";
 
 type ScopeEnvironment = Readonly<Record<string, string | undefined>>;
@@ -13,7 +16,8 @@ export function collectionScopeFingerprint(
   task: Pick<AutomationTask, "credentialGroupId">,
   environment: ScopeEnvironment,
 ): string {
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId);
+  const registered = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId);
+  const group = registered && offeredStatementTypes(registered, previewVisibilityFromEnvironment(environment, PREVIEW_SOURCES));
   const scope = group
     ? {
       enabled: automationFlagEnabled(environment[group.enabledKey]),

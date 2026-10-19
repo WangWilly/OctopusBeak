@@ -1163,7 +1163,7 @@ export async function prepareCathayDomesticStatementQuery(
   }
 }
 
-function functionSeqNo(): string {
+export function functionSeqNo(): string {
   return `${Date.now()}${randomUUID()}`;
 }
 

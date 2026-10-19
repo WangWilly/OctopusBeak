@@ -10,6 +10,8 @@ import {
   removeDesktopCdpFixture,
   seedDesktopCdpFixture,
 } from "./seed-desktop-cdp-fixture.ts";
+import { createPGlitePreviewFinancialData } from "../src/ledger/pglite/preview-financial-data.ts";
+import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
   automationCredentialKeyIsSecret,
@@ -155,6 +157,44 @@ assert.equal(institutions.length, 8, "Cathay, Fubon, Yuanta Trade, and five TDCC
 assert.equal(institutions.filter((key) => key === "cathay").length, 2, "a direct Cathay account and the TDCC account it covers");
 assert.equal(institutions.filter((key) => key === "fubon").length, 3, "a direct Fubon account and TDCC's TWD and USD Fubon accounts");
 await tdccDb.close();
+
+removeDesktopCdpFixture(root);
+await seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"), { previewData: true });
+assert.equal(JSON.parse(await readFile(join(root, "settings.json"), "utf8")).PREVIEW_FEATURES_ENABLED, true);
+const previewDb = await PGlite.create({ dataDir: join(root, "data", "pglite") });
+const preview = createPGlitePreviewFinancialData(new PGliteStore(previewDb));
+const visibility = {
+  visible: ["deposit", "credit_card", "time_deposit"].flatMap((product) =>
+    ["synthetic", "synthetic-products"].map((sourceId) => ({ sourceId, product }))),
+};
+const deposits = await preview.accounts(visibility);
+assert.deepEqual(
+  deposits.map((view) => [view.displayLabel, view.product, view.timeDeposit?.closedAt ?? null]).sort(),
+  [
+    ["Fixture 12-month deposit", "time_deposit", null],
+    ["Fixture matured deposit", "time_deposit", "2026-09-14T04:00:00.000Z"],
+    ["Fixture savings", "deposit", null],
+  ],
+  "the second complete time-deposit list closes the deposit it lacks",
+);
+const cards = await preview.creditAccounts(visibility);
+assert.deepEqual(cards.map((view) => [view.displayLabel, view.latestBalance?.amount ?? null]).sort(), [
+  ["Fixture rewards card", "18840"],
+  ["Fixture travel card", null],
+]);
+const rewards = cards.find((view) => view.displayLabel === "Fixture rewards card");
+const purchases = await preview.purchases(visibility, rewards.previewAccountId);
+assert.deepEqual(
+  purchases.map((row) => [row.sourceRowKey, row.posting.status, row.authorizedAt?.value ?? null]).sort(),
+  [
+    ["auth-train", "pending", null],
+    ["posted-coffee", "posted", "2026-09-13T12:41"],
+    ["posted-grocer", "posted", null],
+  ],
+  "the paired authorization is hidden and its time moves to the posted purchase",
+);
+assert.equal((await preview.statements(visibility, rewards.previewAccountId)).length, 1);
+await previewDb.close();
 } finally {
   removeDesktopCdpFixture(root);
 }

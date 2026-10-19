@@ -533,3 +533,9 @@ assert.match(
   /unvaluedAccountLabels\(task\.id, runDetailsOverview, \$t\)[\s\S]*?class="unvalued-accounts"/,
   "run details list the task's accounts without a current value",
 );
+
+assert.match(
+  source,
+  /\{#each group\.statementTypes as type \(type\.id\)\}[\s\S]*?\{#if type\.preview\}\s*<span class="statement-type-preview"[^>]*>\{\$t\.automation\.previewStatementType\}<\/span>/,
+  "an attached preview statement type carries the Preview badge inside its own checkbox label",
+);

@@ -23,6 +23,8 @@
   export let ratio: number | null | undefined = undefined;
   export let rateNote = "";
   export let includesPreview = false;
+  /** An account in the total owes an unknown amount, so the total and ratio are not figures. */
+  export let incomplete = false;
   export let note = "";
   export let href: string;
   export let linkLabel: string;
@@ -44,11 +46,11 @@
       <h2>{title}</h2>
       <p>
         {$t.overview.allocationTotal}
-        {#if total === null}—{:else}<span class="money" data-sensitive>{formatTwd(total, $locale)}</span>{/if}
+        {#if incomplete}<span class="incomplete" data-total-incomplete>{$t.preview.incomplete}</span>{:else if total === null}—{:else}<span class="money" data-sensitive>{formatTwd(total, $locale)}</span>{/if}
         {#if ratio !== undefined}
           <span aria-hidden="true">·</span>
           {$t.overview.debtRatio}
-          {#if ratio === null}—{:else}<span class="num" data-sensitive>{formatShare(ratio, $locale)}</span>{/if}
+          {#if incomplete}<span class="incomplete">{$t.preview.incomplete}</span>{:else if ratio === null}—{:else}<span class="num" data-sensitive>{formatShare(ratio, $locale)}</span>{/if}
         {/if}
         {#if rateNote}<span aria-hidden="true">·</span> {rateNote}{/if}
         {#if includesPreview}<PreviewMarker />{/if}
@@ -88,6 +90,11 @@
 </article>
 
 <style>
+  .incomplete {
+    color: var(--warn);
+    font-weight: 650;
+  }
+
   .allocation-card {
     display: grid;
     align-content: start;

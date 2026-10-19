@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteOperationalBaseline, createPgliteOperationalStore } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import {
+  applyPglitePreviewFinancialDataSchema,
+  createPGlitePreviewFinancialData,
+} from "../src/ledger/pglite/preview-financial-data.ts";
+import { PREVIEW_FIXTURE_SOURCE, PREVIEW_PRODUCTS_FIXTURE_SOURCE, previewProductsFixtureWrites } from "../src/lib/preview-sources/fixture-source.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import type { TypedWorkflowOutcome } from "../src/lib/automation/server/typed-workflow-outcome.ts";
 import {
@@ -72,6 +77,14 @@ export type DesktopCdpFixtureOptions = Readonly<{
    * counted TDCC USD account that the TWD-only Fubon source does not cover.
    */
   tdccOutcome?: DesktopCdpTdccOutcome;
+  /**
+   * Turn Preview features on and write preview data for the two fixture
+   * sources: a deposit, an open and a closed time deposit, a credit card
+   * with a paired authorization, a pending purchase, and a statement, and a
+   * credit card whose used credit is unknown. The App must run with
+   * OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE=1 for the fixture sources to be visible.
+   */
+  previewData?: boolean;
 }>;
 
 const tdccFixtureCredentials = Object.fromEntries(
@@ -160,6 +173,7 @@ export async function seedDesktopCdpFixture(
     ...(options.tdccOutcome
       ? { LIBRETTO_CLOUD_TDCC_ENABLED: true, LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "securities,fund,settlement" }
       : {}),
+    ...(options.previewData ? { PREVIEW_FEATURES_ENABLED: true } : {}),
   };
   writeAutomationSettingsFile(join(root, "settings.json"), fixtureSettings);
   writeAutomationCredentialsFile(
@@ -184,6 +198,7 @@ export async function seedDesktopCdpFixture(
       await commitTdccYuantaBroker(store);
     }
     await applyPgliteOperationalBaseline(store);
+    if (options.previewData) await seedPreviewData(store, referenceDate);
     const automation = createPgliteOperationalStore(store);
     const day = referenceDate.toISOString().slice(0, 10);
     const fubonRun = await automation.createTaskRun({
@@ -288,6 +303,28 @@ export async function seedDesktopCdpFixture(
   return dataDir;
 }
 
+async function seedPreviewData(store: PGliteStore, referenceDate: Date) {
+  await applyPglitePreviewFinancialDataSchema(store);
+  const preview = createPGlitePreviewFinancialData(store);
+  const collectedAt = referenceDate.toISOString();
+  await preview.write({
+    sourceId: PREVIEW_FIXTURE_SOURCE.id,
+    institution: PREVIEW_FIXTURE_SOURCE.institution,
+    product: "deposit",
+    collection: {
+      collectedAt,
+      accounts: [{
+        sourceAccountKey: "fixture-account", displayLabel: "Fixture savings", currency: "TWD", type: "depository",
+        balances: [{ kind: "current", amount: "86420.00", currency: "TWD", observedAt: { at: collectedAt, source: "reported" } }],
+        transactions: [],
+      }],
+    },
+  });
+  for (const write of previewProductsFixtureWrites(referenceDate)) {
+    await preview.write({ sourceId: PREVIEW_PRODUCTS_FIXTURE_SOURCE.id, institution: PREVIEW_PRODUCTS_FIXTURE_SOURCE.institution, ...write });
+  }
+}
+
 /** Remove only the named disposable fixture root. */
 export function removeDesktopCdpFixture(userData: string) {
   rmSync(assertDisposableFixtureRoot(userData), {
@@ -306,6 +343,7 @@ async function main() {
   console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData, new Date(), {
     includeCathayDeviceRegistrationFailure: process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1",
     ...(tdccOutcome ? { tdccOutcome } : {}),
+    previewData: process.env.OCTOPUSBEAK_CDP_PREVIEW_FIXTURE === "1",
   })}`);
 }
 

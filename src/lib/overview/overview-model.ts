@@ -221,7 +221,7 @@ function currentNetWorth(
     }
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
-    total += value;
+    total += account.group === "liability" ? -value : value;
     if (account.amountLines.length > 0) includesPreview = true;
   }
   return { value: total, unconvertedPreviewCurrencies: [...unconverted].sort(), includesPreview };

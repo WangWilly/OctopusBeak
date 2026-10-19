@@ -12,7 +12,12 @@ import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
-import { previewWorkflowDefinition, previewWorkflowInput } from "../../preview-sources/workflow.ts";
+import { ATTACHED_PREVIEW_PRODUCTS, attachedStatementType } from "../../preview-sources/attached-products.ts";
+import {
+  previewWorkflowDefinition,
+  previewWorkflowInput,
+  selectedAttachedPreviewProducts,
+} from "../../preview-sources/workflow.ts";
 import type {
   FubonAllWorkflowInput,
   FubonAllWorkflowOutput,
@@ -74,25 +79,34 @@ export type AppWorkflowRegistryDependencies = Readonly<{
 const cathayAllStatementsWorkflow: WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> = {
   id: "cathay-all-statements",
   requiresFinancialCommit: true,
+  attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.cathay,
   async run(context, input) {
     const { runCathayAllProviderWorkflow } = await import("../../../workflows/cathay-all-statements.ts");
     return await runCathayAllProviderWorkflow(context, input);
   },
 };
 
+/**
+ * The verified products the person selected. Attached preview products share
+ * the selection key, so they are tolerated here and read separately by
+ * `selectedAttachedPreviewProducts`.
+ */
 function statementTypeIdsFromEnvironment(
   groupId: keyof typeof BANK_STATEMENT_CAPABILITIES,
   environment: NodeJS.ProcessEnv,
 ) {
   const group = BANK_STATEMENT_CAPABILITIES[groupId];
+  const attached = Object.hasOwn(ATTACHED_PREVIEW_PRODUCTS, groupId)
+    ? ATTACHED_PREVIEW_PRODUCTS[groupId as keyof typeof ATTACHED_PREVIEW_PRODUCTS].products.map(attachedStatementType)
+    : [];
   return selectStatementTypes(
-    group,
+    { ...group, statementTypes: [...group.statementTypes, ...attached] },
     {
       [group.enabledKey]: true,
       [group.statementSelectionKey]: environment[group.statementSelectionKey],
     },
     "strict",
-  ).selectedIds;
+  ).selectedIds.filter((id) => !attached.some((type) => type.id === id));
 }
 
 const fubonAllStatementsWorkflow: WorkflowDefinition<
@@ -205,7 +219,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
     },
   },
   {
-    definition: esunCreditCardStatementsWorkflow,
+    definition: { ...esunCreditCardStatementsWorkflow, attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.esun },
     runtime: browser("https://ebank.esunbank.com.tw/index.jsp", "esun-login"),
     inputFromEnvironment(environment) {
       return {
@@ -215,6 +229,8 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
           esun_password: environment.LIBRETTO_CLOUD_ESUN_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("esun", environment),
+        attachedPreviewProducts: selectedAttachedPreviewProducts("esun", environment),
       };
     },
   },
@@ -259,7 +275,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
     },
   },
   {
-    definition: hncbDomesticDepositWorkflow,
+    definition: { ...hncbDomesticDepositWorkflow, attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.hncb },
     runtime: browser("https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private"),
     inputFromEnvironment(environment) {
       return {
@@ -268,6 +284,8 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           hncb_account: environment.LIBRETTO_CLOUD_HNCB_ACCOUNT ?? "",
           hncb_password: environment.LIBRETTO_CLOUD_HNCB_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("hncb", environment),
+        attachedPreviewProducts: selectedAttachedPreviewProducts("hncb", environment),
       };
     },
   },
@@ -313,7 +331,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
     },
   },
   {
-    definition: sinopacStatementsWorkflow,
+    definition: { ...sinopacStatementsWorkflow, attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.sinopac },
     runtime: browser(SINOPAC_LOGIN_URL),
     inputFromEnvironment(environment) {
       return {
@@ -322,6 +340,8 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           sinopac_account: environment.LIBRETTO_CLOUD_SINOPAC_ACCOUNT ?? "",
           sinopac_password: environment.LIBRETTO_CLOUD_SINOPAC_PASSWORD ?? "",
         },
+        statementTypes: statementTypeIdsFromEnvironment("sinopac", environment),
+        attachedPreviewProducts: selectedAttachedPreviewProducts("sinopac", environment),
       };
     },
   },
@@ -336,6 +356,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
           cathay_password: environment.LIBRETTO_CLOUD_CATHAY_PASSWORD ?? "",
         },
         statementTypes: statementTypeIdsFromEnvironment("cathay", environment),
+        attachedPreviewProducts: selectedAttachedPreviewProducts("cathay", environment),
       };
     },
   },

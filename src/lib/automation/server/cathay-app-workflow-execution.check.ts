@@ -62,6 +62,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       cathay_password: "synthetic-password",
     },
     statementTypes: ["domestic", "foreign_currency"],
+    attachedPreviewProducts: [],
   });
   assert.throws(
     () => workflowInputForTask(task.workflowId, {

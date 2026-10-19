@@ -19,6 +19,7 @@
     type AccountRowDto,
   } from "$lib/shared-ledger/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
+  import { totalIncomplete } from "$lib/shared-ledger/preview-account.ts";
   import { accountShares, dateInTimeZone, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
   import { currencyCount, formatMoney } from "$lib/shared-money/money.ts";
@@ -31,6 +32,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type {
@@ -71,13 +73,15 @@
       : undefined;
   }
 
-  function settledSummaryBlock(states: typeof blocks) {
-    const state = states.summary;
-    return liabilitiesBlockData("summary", state && "data" in state ? state.data : undefined);
+  function settledBlock<Key extends keyof DashboardBlockValueMap["liabilities"]>(states: typeof blocks, key: Key) {
+    const state = states[key];
+    return liabilitiesBlockData(key, state && "data" in state ? state.data : undefined);
   }
 
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: summaryInput = resolveLiabilitiesSummary(liabilities, settledSummaryBlock(blocks));
+  $: summaryInput = resolveLiabilitiesSummary(liabilities, settledBlock(blocks, "summary"));
+  $: chartBlock = settledBlock(blocks, "chart");
+  $: listBlock = settledBlock(blocks, "list");
   $: summary = readLiabilitiesSummary(summaryInput, { today });
   $: liabilityAccounts = liabilities.accounts;
   $: isEmpty = awaitingFirstData(liabilities);
@@ -86,7 +90,13 @@
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: sideValue = isEmpty ? "—" : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
+  $: incomplete = totalIncomplete(summaryInput.accounts);
+  $: includesPreview = summary.state === "ready" && summary.includesPreview;
+  $: sideValue = isEmpty
+    ? "—"
+    : incomplete
+      ? $t.preview.incomplete
+      : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
   $: sideSub = isEmpty ? $t.liabilities.empty.side : $t.liabilities.sideSub(
     liabilityAccounts.length,
     currencyCount(liabilityAccounts.map((account) => account.amountLines)),
@@ -146,6 +156,8 @@
   sideLabel={$t.liabilities.sideLabel}
   {sideValue}
   {sideSub}
+  sideValueSensitive={!incomplete}
+  sideIncludesPreview={!isEmpty && includesPreview}
   searchPlaceholder={$t.liabilities.searchPlaceholder}
   bind:search
 >
@@ -164,6 +176,8 @@
         goodWhen="down"
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
+        {incomplete}
+        {includesPreview}
         notes={isEmpty ? [$t.liabilities.empty.totalNote] : [
           summary.state === "ready" && summary.unconvertedCurrencies.length > 0
             ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
@@ -204,8 +218,7 @@
       </PageTotalCard>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
-      {@const chartBlock = liabilitiesBlockData("chart", data)}
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
       {@const chartDataBlock = resolveLiabilitiesChart(liabilities, chartBlock)}
       {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
         accounts: localizeAccounts(chartDataBlock.accounts, $t),
@@ -235,6 +248,7 @@
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
+        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}
@@ -250,8 +264,7 @@
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
-      {@const listBlock = liabilitiesBlockData("list", data)}
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
       {@const listDataBlock = resolveLiabilitiesList(liabilities, listBlock)}
       <AccountTable
         accounts={listDataBlock.accounts}

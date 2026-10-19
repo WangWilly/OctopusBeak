@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runPreviewSource } from "./preview-source-harness.ts";
+import { depositCollection, runPreviewSource } from "./preview-source-harness.ts";
 import { createRakutenSource, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
 
 const credentials = {
@@ -58,8 +58,8 @@ async function run(script: Script = {}) {
 
 test("a Rakuten run writes the NT-dollar demand deposit with exact amounts, pk row keys, and per-row currency", async () => {
   const { receipt, writes, observations, fake } = await run();
-  assert.deepEqual(receipt, { accounts: 1, balances: 1, transactions: 3 });
-  const [deposit] = writes[0]!.collection.accounts;
+  assert.deepEqual(receipt, { accounts: 1, balances: 1, transactions: 3, statements: 0, closedAccounts: 0 });
+  const [deposit] = depositCollection(writes[0]!).accounts;
   assert.equal(deposit!.sourceAccountKey, "twd-demand:RK7788");
   assert.deepEqual(deposit!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
@@ -105,7 +105,7 @@ test("a pk that repeats with different content fails, and an identical repeat is
   assert.equal(conflict.errorCode, "source-validation-failed");
   assert.equal(conflict.writes.length, 0);
   const repeat = await run({ months: [month([row(PK.a, "1")]), month([row(PK.a, "1")]), month([])] });
-  assert.equal(repeat.writes[0]!.collection.accounts[0]!.transactions.length, 1);
+  assert.equal(depositCollection(repeat.writes[0]!).accounts[0]!.transactions.length, 1);
 });
 
 test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before opening the page", async () => {

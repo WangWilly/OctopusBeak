@@ -27,8 +27,8 @@ process.env.OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE = "1";
 const { currentPreviewVisibility } = await import("../src/lib/automation/server/settings.ts");
 
 const token = (value: string): string => `sha256:${value.padEnd(64, value.at(-1) ?? "x").slice(0, 64)}`;
-const VISIBLE: PreviewVisibility = { sourceIds: ["synthetic"] };
-const HIDDEN: PreviewVisibility = { sourceIds: [] };
+const VISIBLE: PreviewVisibility = { visible: [{ sourceId: "synthetic", product: "deposit" }] };
+const HIDDEN: PreviewVisibility = { visible: [] };
 const TODAY = "2026-10-15";
 
 function depositCommit(): PGliteCanonicalFinancialCommitRequest {
@@ -164,6 +164,7 @@ async function withLedger(run: (input: {
   store: PGliteStore;
   registry: (visibility: () => PreviewVisibility) => ReturnType<typeof createPGliteFinancialRegistry>;
   writePreview: (...accounts: PreviewAccount[]) => Promise<void>;
+  preview: ReturnType<typeof createPGlitePreviewFinancialData>;
   addUsdRate: () => Promise<void>;
 }) => Promise<void>, database?: PGlite) {
   const store = new PGliteStore(database ?? await createBaselinePGlite());
@@ -177,6 +178,7 @@ async function withLedger(run: (input: {
     const preview = createPGlitePreviewFinancialData(store);
     await run({
       store,
+      preview,
       registry: (visibility) => createPGliteFinancialRegistry(store, operational.exchangeRates, visibility),
       writePreview: async (...accounts) => {
         await preview.write({
@@ -286,6 +288,43 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     assert.equal(rated.assetAllocation.includesPreview, true);
     assert.deepEqual(rated.assetAllocation.unconvertedCurrencies, []);
     assert.equal(rated.series.at(-1)!.includesPreview, true);
+  });
+});
+
+test("preview credit accounts list on Liabilities only, and an unknown used credit counts as no amount", async () => {
+  await withLedger(async ({ registry, preview }) => {
+    await preview.write({
+      sourceId: "synthetic",
+      institution: "bank-017",
+      product: "credit_card",
+      collection: {
+        collectedAt: "2026-10-05T03:00:00.000Z",
+        accounts: [
+          {
+            sourceAccountKey: "known", displayLabel: "Known card", currency: "TWD", creditLimit: "50000",
+            cards: [{ sourceCardKey: "c1", cardMask: "****-1111", displayLabel: null }],
+            balances: [{
+              amount: "300", currency: "TWD", observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" },
+              basis: { kind: "provider-used-credit", usedCredit: "300" },
+            }],
+            purchases: [], statements: [],
+          },
+          {
+            sourceAccountKey: "unknown", displayLabel: "Unknown card", currency: "TWD", creditLimit: null,
+            cards: [], balances: [], purchases: [], statements: [],
+          },
+        ],
+      },
+    });
+    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "credit_card" }] }));
+    const liabilities = await shown.liabilitiesCurrent();
+    const rows = liabilities.accounts.filter((account) => account.preview);
+    assert.deepEqual(rows.map((account) => [account.label, account.valueAvailability]), [
+      ["Known card", "available"],
+      ["Unknown card", "unavailable"],
+    ]);
+    assert.equal(liabilities.dailyHistory.at(-1)!.liabilities[0]!.value, 300);
+    assert.equal((await shown.assetsCurrent()).accounts.some((account) => account.preview), false);
   });
 });
 

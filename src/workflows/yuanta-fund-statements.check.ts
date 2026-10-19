@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { canonicalYuantaFundCurrency } from "./yuanta-fund-currency.ts";
+import { canonicalYuantaFundCurrency, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
+import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryScope,
   yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes } from "./yuanta-fund-account-history.ts";
 import { PGlite } from "@electric-sql/pglite";
@@ -94,7 +95,7 @@ const redemptionAccountHeader = [
 ];
 const redemptionAccountData = [["2026/08/20", "2026/08/21"], ["SANITIZED CLOSED FUND", "FS00000009"],
   ["台幣 100", "10"], ["10", "1"], ["台幣 0", "台幣 0"],
-  ["SANITIZED ACCOUNT DESCRIPTION", "123456789012", "台幣 100"], ["台幣 0", "0%"], []];
+  ["SANITIZED ACCOUNT DESCRIPTION", "1234", "台幣 100"], ["台幣 0", "0%"], []];
 const redemptionAccountFooter = ["合計", "贖回投資金額", "台幣 100", "贖回參考損益", "台幣 0", "贖回參考報酬率", "0%", ""];
 const redemptionAccountTable = {
   category: "historical-transactions", fund: "account-history:single", period: null, tableLabel: "redemption-account-details",
@@ -104,7 +105,7 @@ const redemptionAccountTable = {
 };
 const redemptionAccountResult = yuantaFundModule.normalizedRowsForTable(redemptionAccountTable);
 assert.equal(redemptionAccountResult.length, 1);
-assert.equal(redemptionAccountResult[0]?.values[11], "SANITIZED ACCOUNT DESCRIPTION 123456789012");
+assert.equal(redemptionAccountResult[0]?.values[11], "SANITIZED ACCOUNT DESCRIPTION 1234");
 assert.equal(redemptionAccountResult[0]?.values[12], "台幣 100");
 const splitHkdRedemptionData = redemptionAccountData.map((lines, column) => column === 5
   ? [lines[0]!, lines[1]!, "HKD", "100"] : lines);
@@ -311,6 +312,58 @@ assert.throws(() => yuantaFundModule.normalizedRowsForTable({
 assert.throws(() => yuantaFundModule.normalizedRowsForTable({
   ...buyTable, rows: [...buyTable.rows, ["查無資料"]],
 }), /contradicts its explicit empty result/u);
+const cashDividendLegacyHeader = ["入帳日期", "基金名稱 交易編號", "基準日期 計價幣別", "基準單位數 分配金額", "匯率 分配率", "入帳帳號"];
+const cashDividendTaxHeader = [...cashDividendLegacyHeader.slice(0, 5), "已扣稅款 補充保費", "入帳金額 入帳帳號"];
+const cashDividendOutputHeaders = ["入帳日期", "基金名稱", "交易編號", "基準日期", "計價幣別", "基準單位數", "分配金額",
+  "匯率", "分配率", "入帳帳號", "已扣稅款", "補充保費", "入帳金額"];
+const cashDividendTable = (rows: string[][]) => ({
+  category: "historical-transactions", fund: "account-history:single", period: null, tableLabel: "cash-dividend-details", rows,
+});
+const legacyDividendCells = ["2026/08/12", "SANITIZED FUND FS00000001", "2026/08/11 美金", "20 4.2", "1 0.21", "SYNTHETIC-ACCOUNT"];
+const taxDividendCells = [...legacyDividendCells.slice(0, 5), "0.3 0.1", "3.8 SYNTHETIC-ACCOUNT"];
+const taxDividendRows = yuantaFundModule.normalizedRowsForTable(cashDividendTable([cashDividendTaxHeader, taxDividendCells]));
+assert.deepEqual(taxDividendRows.map(row => row.values), [[
+  "2026/08/12", "SANITIZED FUND", "FS00000001", "2026/08/11", "美金", "20", "4.2", "1", "0.21", "SYNTHETIC-ACCOUNT",
+  "0.3", "0.1", "3.8",
+]], "The seven-column cash dividend layout splits its paired tax and credited-amount cells");
+const legacyDividendRows = yuantaFundModule.normalizedRowsForTable(cashDividendTable([cashDividendLegacyHeader, legacyDividendCells]));
+assert.deepEqual(legacyDividendRows.map(row => row.values), [[...taxDividendRows[0]!.values.slice(0, 10), "", "", ""]],
+  "The six-column cash dividend layout keeps its positions and leaves the tax columns empty");
+const dividendEventDecode = {
+  amount: (value: string) => {
+    const match = /^(\d+)(?:\.(\d+))?$/u.exec(value);
+    if (!match) throw new Error("Invalid check source amount");
+    return { coefficient: match[1]! + (match[2] ?? ""), scale: match[2]?.length ?? 0 };
+  },
+  date: (value: string) => value.replaceAll("/", "-"),
+  currency: canonicalYuantaFundCurrency,
+  cashCurrency: yuantaFundSourceAmountCurrency,
+};
+const dividendEventFor = (rows: ReturnType<typeof yuantaFundModule.normalizedRowsForTable>) =>
+  yuantaFundAdditionalEventRows("cash-dividend-details",
+    Object.fromEntries(cashDividendOutputHeaders.map((header, index) => [header, rows[0]!.values[index] ?? ""])),
+    "scope", dividendEventDecode)[0]!;
+assert.deepEqual(dividendEventFor(taxDividendRows).cashEffect, { coefficient: "42", scale: 1, currency: "USD" });
+assert.deepEqual(dividendEventFor(taxDividendRows).cashEffect, dividendEventFor(legacyDividendRows).cashEffect,
+  "The dividend cash event stays the distribution amount in the pricing currency under both layouts");
+const originalDividendEvent = yuantaFundAdditionalEventRows("cash-dividend-details",
+  Object.fromEntries(cashDividendOutputHeaders.slice(0, 10).map((header, index) => [header, legacyDividendRows[0]!.values[index] ?? ""])),
+  "scope", dividendEventDecode)[0]!;
+assert.deepEqual(dividendEventFor(legacyDividendRows), originalDividendEvent,
+  "Empty new columns must not change an existing dividend's source key or occurrence fingerprint");
+assert.deepEqual(dividendEventFor(taxDividendRows), originalDividendEvent,
+  "New tax and credited-amount columns must not change an existing dividend's source key or occurrence fingerprint");
+assert.throws(() => yuantaFundModule.normalizedRowsForTable(cashDividendTable([cashDividendTaxHeader,
+  [...taxDividendCells, "EXTRA"]])), /unsupported source column count/u);
+assert.throws(() => yuantaFundModule.normalizedRowsForTable(cashDividendTable([
+  [...cashDividendLegacyHeader.slice(0, 5), "未知欄位"], legacyDividendCells,
+])), /supported source headers/u);
+assert.throws(() => yuantaFundModule.normalizedRowsForTable(cashDividendTable([
+  [...cashDividendLegacyHeader.slice(0, 5), "未知欄位 補充保費", "入帳金額 入帳帳號"], taxDividendCells,
+])), /supported source headers/u);
+assert.deepEqual(yuantaFundModule.normalizedRowsForTable(cashDividendTable([["查無資料"]])), []);
+assert.throws(() => yuantaFundModule.normalizedRowsForTable(cashDividendTable([["查無資料"], taxDividendCells])),
+  /contradicts its explicit empty result/u);
 assert.deepEqual(parseYuantaFundValuationBasis(basisTable), {
   fundKey,
   navEffectiveOn: "2026-09-01",
