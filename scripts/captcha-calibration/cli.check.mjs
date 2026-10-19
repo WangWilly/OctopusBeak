@@ -34,9 +34,9 @@ for (const args of [
 }
 
 test("evaluate on an empty corpus says so and creates nothing", async () => {
-  const result = await runCli(["evaluate", "nextbank"]);
+  const result = await runCli(["evaluate", "rakuten"]);
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /No captures in .*OctopusBeakCalibration\/nextbank/u);
+  assert.match(result.stderr, /No captures in .*OctopusBeakCalibration\/rakuten/u);
   assert.equal(result.corpusCreated, false);
 });
 
@@ -45,8 +45,8 @@ test("collect needs --allow-live-source and keeps the count and delay within the
   assert.deepEqual(parseArguments(["collect", "mega", "--allow-live-source"]), {
     kind: "collect", bank: "mega", count: 60, delayMs: 3000, headless: false,
   });
-  assert.deepEqual(parseArguments(["collect", "nextbank", "--allow-live-source", "--count", "200", "--delay-ms", "2000", "--headless", "--corpus", "/tmp/x"]), {
-    kind: "collect", bank: "nextbank", corpus: "/tmp/x", count: 200, delayMs: 2000, headless: true,
+  assert.deepEqual(parseArguments(["collect", "rakuten", "--allow-live-source", "--count", "200", "--delay-ms", "2000", "--headless", "--corpus", "/tmp/x"]), {
+    kind: "collect", bank: "rakuten", corpus: "/tmp/x", count: 200, delayMs: 2000, headless: true,
   });
   for (const args of [["--count", "201"], ["--count", "0"], ["--count", "1.5"], ["--delay-ms", "1999"], ["--delay-ms", "fast"], ["--count"]]) {
     assert.equal(parseArguments(["collect", "mega", "--allow-live-source", ...args]).kind, "usage-error", args.join(" "));

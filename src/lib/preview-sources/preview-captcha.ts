@@ -5,6 +5,11 @@ import {
   textCaptchaSolver,
   type TextRecognitionEngine,
 } from "../automation/server/text-captcha-solver.ts";
+import {
+  recoverDigits,
+  type SpeechRecognitionEngine,
+} from "../automation/server/audio-captcha-solver.ts";
+import { createSherpaOnnxSpeechRecognitionEngine } from "../automation/server/speech-recognition.ts";
 import { solveVerificationChallenge } from "../automation/server/verification-solver.ts";
 import { sniffImageType } from "./browser-http.ts";
 import { refuseUnsupportedVerification, type PreviewCaptchaChallenge, type PreviewCaptchaSolver } from "./source-kit.ts";
@@ -55,6 +60,7 @@ function pngSize(image: Buffer): Readonly<{ width: number; height: number }> | n
 }
 
 function fitsFamily(family: PreviewCaptchaFamily, challenge: PreviewCaptchaChallenge): boolean {
+  if (!("image" in challenge)) return false;
   const size = pngSize(challenge.image);
   return size !== null
     && size.width === family.geometry.width
@@ -69,7 +75,7 @@ export function calibratedCaptchaSolver(
 ): PreviewCaptchaSolver {
   const solver = textCaptchaSolver(engine);
   return async (context, challenge) => {
-    if (!fitsFamily(family, challenge)) return refuseUnsupportedVerification(context, `${family.name} capture outside its calibrated family`);
+    if (!("image" in challenge) || !fitsFamily(family, challenge)) return refuseUnsupportedVerification(context, `${family.name} capture outside its calibrated family`);
     let accepted = null as string | null;
     await solveVerificationChallenge({
       challengeKind: "text-captcha",
@@ -83,5 +89,34 @@ export function calibratedCaptchaSolver(
       expectedAnswerLength: family.expectedAnswerLength,
     });
     return accepted !== null && family.answerPattern.test(accepted) ? accepted : null;
+  };
+}
+
+/**
+ * Solve NextBank's 5-digit login CAPTCHA from its spoken audio. NextBank's
+ * CAPTCHA endpoint answers `isAudio: true` with `captchaAudio`, a list of five
+ * base64 clips, one spoken Chinese numeral each. The local sherpa-onnx
+ * recogniser (paraformer-zh-small, the same one behind the Yuanta Trade audio
+ * verification) transcribes each clip, and each clip must map to exactly one
+ * decimal digit. Acceptance is structural (five clips, five digits); correctness
+ * is left to the login outcome, as Yuanta Trade's audio verification does.
+ */
+const nextbankSpeechEngine = createSherpaOnnxSpeechRecognitionEngine();
+
+export function nextbankAudioCaptchaSolver(
+  engine: SpeechRecognitionEngine = nextbankSpeechEngine,
+): PreviewCaptchaSolver {
+  return async (context, challenge) => {
+    if (!("audio" in challenge)) return refuseUnsupportedVerification(context, "nextbank-audio-captcha");
+    const digits: string[] = [];
+    for (const clip of challenge.audio) {
+      const { text } = await engine.transcribe(clip);
+      const digit = recoverDigits(text);
+      if (digit.length !== 1) return null;
+      digits.push(digit);
+    }
+    const answer = digits.join("");
+    if (challenge.expectedLength !== undefined && answer.length !== challenge.expectedLength) return null;
+    return answer;
   };
 }
