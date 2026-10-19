@@ -11,16 +11,6 @@ import type {
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
 import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
-
-function previewWritePort(
-  definition: WorkflowDefinition,
-  injected: WorkflowPreviewWritePort | undefined,
-  fromChild: WorkflowPreviewWritePort | undefined,
-): { previewWrite?: WorkflowPreviewWritePort } {
-  if (!workflowUsesPreviewWrite(definition)) return {};
-  const port = injected ?? fromChild;
-  return port ? { previewWrite: port } : {};
-}
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
@@ -56,6 +46,16 @@ import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rp
 import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
 import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
+
+function previewWritePort(
+  definition: WorkflowDefinition,
+  injected: WorkflowPreviewWritePort | undefined,
+  fromChild: WorkflowPreviewWritePort | undefined,
+): { previewWrite?: WorkflowPreviewWritePort } {
+  if (!workflowUsesPreviewWrite(definition)) return {};
+  const port = injected ?? fromChild;
+  return port ? { previewWrite: port } : {};
+}
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
