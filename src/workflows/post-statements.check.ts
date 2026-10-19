@@ -42,6 +42,9 @@ function fakeNoticePage(visible: boolean) {
         first() {
           return this;
         },
+        async waitFor() {
+          if (!visible) throw new Error("notice not shown");
+        },
         async isVisible() {
           return visible;
         },
@@ -64,8 +67,11 @@ function visibilityRacingNoticePage(page: import("playwright").Page) {
     first() {
       return wrapLocator(locator.first());
     },
-    async isVisible(visibilityOptions: { timeout: number }) {
-      const visible = await locator.isVisible(visibilityOptions);
+    waitFor(waitOptions: { state: "visible"; timeout: number }) {
+      return locator.waitFor(waitOptions);
+    },
+    async isVisible() {
+      const visible = await locator.isVisible();
       if (visible && !probeCompleted) {
         probeCompleted = true;
         await page.locator("#racing-primary").evaluate((button) => {
@@ -281,6 +287,26 @@ try {
   );
   assert.equal(await duplicateNoticePage.locator("#hidden-post-notice").isVisible(), false);
   await duplicateNoticePage.close();
+
+  const lateNoticePage = await browser.newPage();
+  await lateNoticePage.setContent(`<main data-post-login="ready"></main>
+    <script>
+      setTimeout(() => {
+        const notice = document.createElement("div");
+        notice.id = "late-notice";
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "css_btn_class";
+        close.setAttribute("ng-click", "closeBox()");
+        close.textContent = "關閉";
+        close.addEventListener("click", () => notice.remove());
+        notice.append(close);
+        document.body.append(notice);
+      }, 800);
+    </script>`);
+  assert.equal(await dismissPostNoticeIfPresent(lateNoticePage), true, "a notice that opens after the login form is still closed");
+  assert.equal(await lateNoticePage.locator("#late-notice").count(), 0);
+  await lateNoticePage.close();
 
   const goneNoticePage = await browser.newPage();
   await goneNoticePage.setContent(`<main data-post-login="ready"></main>`);
