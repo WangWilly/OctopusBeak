@@ -101,6 +101,59 @@ const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   one_year: 364,
 };
 
+const cashDividendHeaders = [
+  "入帳日期",
+  "基金名稱",
+  "交易編號",
+  "基準日期",
+  "計價幣別",
+  "基準單位數",
+  "分配金額",
+  "匯率",
+  "分配率",
+  "入帳帳號",
+  "已扣稅款",
+  "補充保費",
+  "入帳金額",
+];
+
+function normalizeCashDividendColumns(columns: Record<string, string>): string[] {
+  const [fundName, transactionNo] = splitFundNameAndTransactionNo(
+    columns["基金名稱 交易編號"] ?? "",
+  );
+  const [recordDate, currency] = splitWhitespacePair(
+    columns["基準日期 計價幣別"] ?? "",
+  );
+  const [baseUnits, dividendAmount] = splitWhitespacePair(
+    columns["基準單位數 分配金額"] ?? "",
+  );
+  const [exchangeRate, dividendRate] = splitWhitespacePair(
+    columns["匯率 分配率"] ?? "",
+  );
+  const [withheldTax, supplementaryPremium] = splitWhitespacePair(
+    columns["已扣稅款 補充保費"] ?? "",
+  );
+  const [creditedAmount, depositAccount] = "入帳金額 入帳帳號" in columns
+    ? splitWhitespacePair(columns["入帳金額 入帳帳號"] ?? "")
+    : ["", columns["入帳帳號"] ?? ""];
+
+  return [
+    columns["入帳日期"] ?? "",
+    fundName,
+    transactionNo,
+    recordDate,
+    currency,
+    baseUnits,
+    dividendAmount,
+    exchangeRate,
+    dividendRate,
+    depositAccount,
+    withheldTax,
+    supplementaryPremium,
+    creditedAmount,
+  ];
+}
+
 const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
   "portfolio-summary": simpleTableConfig([
     "基金名稱",
@@ -363,45 +416,8 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       "匯率 分配率",
       "入帳帳號",
     ],
-    headers: [
-      "入帳日期",
-      "基金名稱",
-      "交易編號",
-      "基準日期",
-      "計價幣別",
-      "基準單位數",
-      "分配金額",
-      "匯率",
-      "分配率",
-      "入帳帳號",
-    ],
-    normalize: (columns) => {
-      const [fundName, transactionNo] = splitFundNameAndTransactionNo(
-        columns["基金名稱 交易編號"] ?? "",
-      );
-      const [recordDate, currency] = splitWhitespacePair(
-        columns["基準日期 計價幣別"] ?? "",
-      );
-      const [baseUnits, dividendAmount] = splitWhitespacePair(
-        columns["基準單位數 分配金額"] ?? "",
-      );
-      const [exchangeRate, dividendRate] = splitWhitespacePair(
-        columns["匯率 分配率"] ?? "",
-      );
-
-      return [
-        columns["入帳日期"] ?? "",
-        fundName,
-        transactionNo,
-        recordDate,
-        currency,
-        baseUnits,
-        dividendAmount,
-        exchangeRate,
-        dividendRate,
-        columns["入帳帳號"] ?? "",
-      ];
-    },
+    headers: cashDividendHeaders,
+    normalize: normalizeCashDividendColumns,
   },
   "unit-dividend-details": simpleTableConfig([
     "分配日期",
@@ -475,6 +491,25 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
   ]),
 };
 
+const cashDividendTaxLayout: TableOutputConfig = {
+  rawColumns: [
+    "入帳日期",
+    "基金名稱 交易編號",
+    "基準日期 計價幣別",
+    "基準單位數 分配金額",
+    "匯率 分配率",
+    "已扣稅款 補充保費",
+    "入帳金額 入帳帳號",
+  ],
+  headers: cashDividendHeaders,
+  normalize: normalizeCashDividendColumns,
+};
+const tableOutputLayoutsByLabel: Record<string, readonly TableOutputConfig[]> = {
+  "cash-dividend-details": [
+    tableOutputConfigsByLabel["cash-dividend-details"],
+    cashDividendTaxLayout,
+  ],
+};
 tableOutputConfigsByLabel["redemption-account-details"] = {
   rawColumns: ["贖回日期 分配日期", "基金名稱 交易編號", "贖回投資金額 單位數", "贖回價格 贖回匯率",
     "信託管理費 短線費用", "入帳帳號 入帳淨額", "贖回參考損益 參考贖回報酬率", "預計入帳"],
@@ -1324,8 +1359,21 @@ function assertYuantaFundHistoryQueryResult(
     throw new Error("Yuanta fund history query did not report rows or an explicit empty result.");
 }
 
+function tableOutputConfigForTable(table: ParsedTable): TableOutputConfig | undefined {
+  const layouts = tableOutputLayoutsByLabel[table.tableLabel];
+  const exactLayout = layouts?.find(layout => table.rows.some(row => {
+    const headers = alignValuesToHeaders(row, layout.rawColumns)
+      .map(value => cleanText(value).replace(/\s*\?/gu, ""));
+    return headers.length === layout.rawColumns.length &&
+      headers.every((header, index) => header === layout.rawColumns[index]);
+  }));
+  if (layouts && !exactLayout && !tableHasNoData(table))
+    throw new Error("YuanTa history table requires supported source headers.");
+  return exactLayout ?? tableOutputConfigsByLabel[table.tableLabel];
+}
+
 export function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
-  const config = tableOutputConfigsByLabel[table.tableLabel];
+  const config = tableOutputConfigForTable(table);
   if (!config) return [];
   if (tableHasNoData(table)) {
     if (fundFinancialHistoryTableLabels.includes(table.tableLabel) &&
@@ -1542,7 +1590,7 @@ function canonicalExactAmount(value: string): {
 function normalizedColumnRecords(
   table: ParsedTable,
 ): Array<Record<string, string>> {
-  const config = tableOutputConfigsByLabel[table.tableLabel];
+  const config = tableOutputConfigForTable(table);
   if (!config) return [];
   return normalizedRowsForTable(table).map((row) =>
     Object.fromEntries(
