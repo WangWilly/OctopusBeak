@@ -885,6 +885,10 @@ _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 A named, versioned browser environment required by an automation source, applied consistently throughout an Automation Task Run. A run uses its selected profile without silently trying alternative profiles when the source rejects access.
 _Avoid_: Solver profile, browser engine selection, arbitrary launch settings
 
+**Active automation task run**:
+An Automation Task Run that has not yet reached a terminal outcome, from the moment its task is claimed until its finalization. At most one exists per automation task, and it alone accepts status changes, cancellation, force-quit, and finalization for that run.
+_Avoid_: Pending run, running task, in-flight execution
+
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session.
 
@@ -895,7 +899,7 @@ The stated outcome and safe result summary that guide how an automation task run
 The decision to retain an automation session for verification or relinquish it after a task run.
 
 **Automation task run force-quit**:
-An operator-initiated action that ends a task run, including one waiting on a verification stage, and records the run as cancelled.
+An operator-initiated action that ends a task run immediately, without the cleanup grace an ordinary cancellation allows, including one waiting on a verification stage, and records the run as cancelled.
 
 **Verification target**:
 A workflow-declared browser control or verification modal area that the solver route may act on during an automation session. Each target has a workflow-owned semantic identity and current geometry for coordinate mapping. The host acts only on declared targets, and an undeclared control never counts as completed verification.
