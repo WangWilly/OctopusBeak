@@ -437,21 +437,6 @@ export async function runCaptchaRetryCampaign(
       );
       return { status: "failed" as const };
     }
-    if (
-      execution.status === "waiting_for_human"
-      && (!appWorkflow || taskRunId === undefined)
-    ) {
-      if (taskRunId !== undefined) {
-        await finalizeCaptchaRetryExecution(
-          provider,
-          taskRunId,
-          execution,
-          "Nonbrowser workflow cannot pause for human assistance.",
-        );
-      }
-      return { status: "failed" as const };
-    }
-
     const routeRetry = routed.routing?.kind === "retryable"
       ? routed.routing.reason
       : null;
@@ -552,7 +537,7 @@ export async function runCaptchaRetryCampaign(
         outcome: { kind: "succeeded" },
       });
     }
-    if (taskRunId !== undefined && execution.status !== "waiting_for_human") {
+    if (taskRunId !== undefined) {
       const finalized = await finalizeCaptchaRetryExecution(
         provider,
         taskRunId,

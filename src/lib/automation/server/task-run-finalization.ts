@@ -74,20 +74,6 @@ export async function finalizeTaskRunTransition(
     || (current.status === "queued" && intent.status !== "interrupted")) {
     return { status: current.status, skipped: true } as const;
   }
-  if (intent.status === "waiting_for_human") {
-    await persistence.updateTaskRun(run.taskRunId, {
-      status: intent.status,
-      finishedAt: null,
-      exitCode: intent.exitCode,
-      signal: intent.signal,
-      ...(intent.appWorkflowOutcome === undefined
-        ? {}
-        : { appWorkflowOutcome: intent.appWorkflowOutcome }),
-    });
-    const persisted = await persistence.taskRunById(run.taskRunId);
-    if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-    return { status: persisted.status, skipped: false } as const;
-  }
   if (!isTerminalTaskRunStatus(intent.status)) {
     return { status: current.status, skipped: true } as const;
   }

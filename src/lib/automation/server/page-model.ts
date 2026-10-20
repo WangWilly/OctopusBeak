@@ -65,21 +65,15 @@ function rowStatus(
   if (run?.appWorkflowOutcome?.errorCode === "cancelled") return "cancelled";
   if (run?.appWorkflowOutcome?.errorCode) return "failed";
   if (run?.status === "waiting_for_human") return "waiting_for_human";
-  if (isActive) return run?.status === "retrying" ? "retrying" : "running";
+  if (isActive) return "running";
   if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
-  if (
-    run &&
-    (run.status === "running" || run.status === "retrying")
-  ) {
-    return "failed";
-  }
+  if (run?.status === "running") return "failed";
   return run?.status ?? "queued";
 }
 
 function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts: number, progress: number | null) {
   if (progress !== null) return `${progress}%`;
   if (status === "running") return `Running attempt ${attempt}/${maxAttempts}`;
-  if (status === "retrying") return `Retrying attempt ${attempt}/${maxAttempts}`;
   if (status === "waiting_for_human") return "Waiting for human";
   if (status === "completed") return "Completed";
   if (status === "partial") return "Partial";

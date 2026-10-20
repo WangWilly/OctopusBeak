@@ -1029,7 +1029,6 @@ const en = {
       preparing: "preparing",
       running: "running",
       waiting_for_human: "verifying",
-      retrying: "retrying",
       cancelling: "cancelling",
       completed: "completed",
       partial: "partial",
@@ -1048,8 +1047,6 @@ const en = {
     },
     progressRunning: (attempt: number, maxAttempts: number) =>
       `Running attempt ${attempt}/${maxAttempts}`,
-    progressRetrying: (attempt: number, maxAttempts: number) =>
-      `Retrying attempt ${attempt}/${maxAttempts}`,
     progressAutomaticVerification: "Verifying",
     progressCompleted: "Completed",
     progressPartial: "Partially completed",
@@ -2296,7 +2293,6 @@ const zh: typeof en = {
       preparing: "準備中",
       running: "執行中",
       waiting_for_human: "驗證中",
-      retrying: "重試中",
       cancelling: "取消中",
       completed: "已完成",
       partial: "部分完成",
@@ -2315,8 +2311,6 @@ const zh: typeof en = {
     },
     progressRunning: (attempt, maxAttempts) =>
       `執行第 ${attempt}/${maxAttempts} 次`,
-    progressRetrying: (attempt, maxAttempts) =>
-      `重試第 ${attempt}/${maxAttempts} 次`,
     progressAutomaticVerification: "自動驗證中",
     progressCompleted: "已完成",
     progressPartial: "部分完成",

@@ -59,7 +59,6 @@ export type AutomationTaskStatus =
   | "preparing"
   | "running"
   | "waiting_for_human"
-  | "retrying"
   | "cancelling"
   | "completed"
   | "partial"

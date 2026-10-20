@@ -14,7 +14,6 @@ const RUNTIME_STATUSES = new Set<AutomationRuntimeTaskStatus>([
   "queued",
   "preparing",
   "running",
-  "retrying",
   "waiting_for_human",
   "cancelling",
   "completed",

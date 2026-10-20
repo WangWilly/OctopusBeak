@@ -13,7 +13,6 @@ test("automation store exports provider-neutral run state semantics", () => {
     "queued",
     "preparing",
     "running",
-    "retrying",
     "cancelling",
     "waiting_for_human",
   ]);

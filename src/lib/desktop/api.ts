@@ -70,7 +70,6 @@ export type AutomationRuntimeTaskStatus =
   | "queued"
   | "preparing"
   | "running"
-  | "retrying"
   | "waiting_for_human"
   | "cancelling"
   | "completed"
