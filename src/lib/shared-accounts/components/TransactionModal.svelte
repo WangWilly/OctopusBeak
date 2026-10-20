@@ -134,7 +134,7 @@
         {#if account}
           <div class="balance">
             <span>{$t.transactions.currentBalance}</span>
-            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
+            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines, $locale)}</strong>
           </div>
         {/if}
       </AccountModalHeader>
