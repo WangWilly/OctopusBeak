@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { blankPng, depositCollection, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
 import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { createRakutenSource, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
+import { createRakutenSource, playwrightRakutenPage, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
+import { PreviewSourceFailure } from "./source-kit.ts";
 
 const credentials = {
   PREVIEW_RAKUTEN_DEPOSIT_ID_NUMBER: "A000000001",
@@ -51,6 +52,43 @@ function fakePage(script: Script = {}) {
 }
 
 const solveCaptcha = async () => "AB12";
+
+test("Rakuten reports undecodable CAPTCHA media as a typed source failure before OCR or sign-in", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  const startUrl = "https://rakuten-fixture.invalid/";
+  try {
+    for (const bytes of [Buffer.from("invalid-image-fixture"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0])]) {
+      const page = await browser.newPage();
+      const requests: string[] = [];
+      let solverCalled = false;
+      await page.route("**/*", async (route) => {
+        requests.push(route.request().url());
+        if (route.request().url() !== startUrl) return route.abort();
+        await route.fulfill({ status: 200, contentType: "text/html", body: `<input id="captcha">
+          <div class="pic_veri"><captcha-image><img style="width:152px;height:60px" src="data:image/jpeg;base64,${bytes.toString("base64")}"></captcha-image></div>` });
+      });
+      try {
+        const source = createRakutenSource({
+          page: (context, _url, use) => playwrightRakutenPage({ ...context, browser: { withPage: (run) => run(page) } }, startUrl, use),
+          solveCaptcha: async () => { solverCalled = true; return "AB12"; },
+        });
+        const result = await runPreviewSource(source, credentials);
+        assert.ok(result.error instanceof PreviewSourceFailure);
+        assert.equal(result.error.reason, "unexpected-response");
+        assert.match(result.error.message, /the CAPTCHA is not a decodable image/u);
+        assert.equal(result.errorCode, "source-validation-failed");
+        assert.equal(solverCalled, false);
+        assert.deepEqual(requests, [startUrl], "no sign-in request leaves the fixture page");
+        assert.equal(result.writes.length, 0);
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+});
 
 async function run(script: Script = {}) {
   const fake = fakePage(script);
