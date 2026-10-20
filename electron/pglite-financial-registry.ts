@@ -175,9 +175,6 @@ type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Req
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
 
-/** Version-bound Spending reads multiplexed over financial.spending.current. */
-type SpendingTaggedRead = "record-page" | "candidate-page" | "pending-overview" | "merge-log" | "month-insight" | "merchant-stats";
-
 export type PGliteFinancialPageClient = Readonly<{
   loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
   loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
@@ -596,15 +593,12 @@ export function createPGliteFinancialRegistry(
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
   const previewVisibilityListeners = new Set<() => void>();
-  const readTaggedSpendingPage = (read: SpendingTaggedRead, request: unknown) => {
-    switch (read) {
-      case "record-page": return spending.recordPage(request as SpendingRecordPageRequest);
-      case "candidate-page": return spending.candidatePage(request as SpendingCandidatePageRequest);
-      case "pending-overview": return spending.pendingOverview(request as SpendingPendingOverviewRequest);
-      case "merge-log": return spending.mergeLog(request as SpendingMergeLogRequest);
-      case "month-insight": return spending.monthInsight(request as SpendingMonthInsightRequest);
-      case "merchant-stats": return spending.merchantStats(request as SpendingMerchantStatsRequest);
-      default: throw new TypeError("Unknown Spending page read.");
+  const versioned = async <T>(read: () => Promise<T>): Promise<SpendingPageReadResult<T>> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof SpendingPageVersionError)) throw error;
+      return { stale: true, knowledgeAt: error.knowledgeAt };
     }
   };
   return Object.freeze({
@@ -664,22 +658,13 @@ export function createPGliteFinancialRegistry(
         };
       });
     },
-    async spendingCurrent(input = {}) {
-      const tagged = input as SpendingLoadInput & Readonly<{
-        __spendingRead?: SpendingTaggedRead;
-        request?: unknown;
-      }>;
-      if (tagged.__spendingRead) {
-        try {
-          const result = await readTaggedSpendingPage(tagged.__spendingRead, tagged.request);
-          return result as unknown as SpendingPageDto;
-        } catch (error) {
-          if (!(error instanceof SpendingPageVersionError)) throw error;
-          return { stale: true, knowledgeAt: error.knowledgeAt } as unknown as SpendingPageDto;
-        }
-      }
-      return spending.summaryPage(input);
-    },
+    spendingCurrent: (input = {}) => spending.summaryPage(input),
+    spendingRecordPage: (request) => versioned(() => spending.recordPage(request)),
+    spendingCandidatePage: (request) => versioned(() => spending.candidatePage(request)),
+    spendingPendingOverview: (request) => versioned(() => spending.pendingOverview(request)),
+    spendingMergeLog: (request) => versioned(() => spending.mergeLog(request)),
+    spendingMonthInsight: (request) => versioned(() => spending.monthInsight(request)),
+    spendingMerchantStats: (request) => versioned(() => spending.merchantStats(request)),
     async spendingVersion() {
       const result = await store.query<{ value: number | string }>(
         "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
@@ -703,31 +688,28 @@ export function createPGliteFinancialRegistry(
     async previewVisibilityChanged() {
       for (const listener of previewVisibilityListeners) listener();
     },
-    confirmCandidate(input) {
-      const tagged = input as SpendingConfirmActionInput & Readonly<{
-        __spendingPageAction?: SpendingPageActionRequest;
-      }>;
-      if (tagged.__spendingPageAction) {
-        if (spendingPageActionCount === 0) latestSettledPageAction = null;
-        spendingPageActionCount += 1;
-        return commands.pageAction(tagged.__spendingPageAction).then((result) => {
-          if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
-            latestSettledPageAction = result;
-          return result as unknown as SpendingPurchaseActionResult;
-        }).finally(() => {
-          spendingPageActionCount -= 1;
-          if (spendingPageActionCount !== 0) return;
-          const publication = latestSettledPageAction;
-          latestSettledPageAction = null;
-          for (const listener of pageActionListeners) {
-            try {
-              listener(publication);
-            } catch {
-              // A live view cannot change the action result or other listeners.
-            }
+    spendingPageAction(request) {
+      if (spendingPageActionCount === 0) latestSettledPageAction = null;
+      spendingPageActionCount += 1;
+      return commands.pageAction(request).then((result) => {
+        if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
+          latestSettledPageAction = result;
+        return result;
+      }).finally(() => {
+        spendingPageActionCount -= 1;
+        if (spendingPageActionCount !== 0) return;
+        const publication = latestSettledPageAction;
+        latestSettledPageAction = null;
+        for (const listener of pageActionListeners) {
+          try {
+            listener(publication);
+          } catch {
+            // A live view cannot change the action result or other listeners.
           }
-        });
-      }
+        }
+      });
+    },
+    confirmCandidate(input) {
       return commands.confirmCandidate(input);
     },
     denyCandidate(input) {
@@ -788,6 +770,34 @@ const FINANCIAL_OPERATION_HANDLERS: Readonly<Record<PGliteFinancialOperation, Fi
   "financial.spending.current": {
     accepts: (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
     run: (registry, args) => registry.spendingCurrent(args[0] as SpendingLoadInput | undefined),
+  },
+  "financial.spending.recordPage": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingRecordPage(args[0] as SpendingRecordPageRequest),
+  },
+  "financial.spending.candidatePage": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingCandidatePage(args[0] as SpendingCandidatePageRequest),
+  },
+  "financial.spending.pendingOverview": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingPendingOverview(args[0] as SpendingPendingOverviewRequest),
+  },
+  "financial.spending.mergeLog": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingMergeLog(args[0] as SpendingMergeLogRequest),
+  },
+  "financial.spending.monthInsight": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingMonthInsight(args[0] as SpendingMonthInsightRequest),
+  },
+  "financial.spending.merchantStats": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingMerchantStats(args[0] as SpendingMerchantStatsRequest),
+  },
+  "financial.spending.pageAction": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.spendingPageAction(args[0] as SpendingPageActionRequest),
   },
   "financial.spending.version": {
     accepts: (args) => args.length === 0,
@@ -1057,28 +1067,28 @@ export function createPGliteFinancialPageClient(
 ): PGliteFinancialPageClient & { subscribe?: typeof subscribe } {
   const page = {
     loadSpendingRecordPage(request: SpendingRecordPageRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
+      return rpc.request("financial.spending.recordPage", [request]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
     },
     loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options: { signal?: AbortSignal } = {}) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "candidate-page", request }], options) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
+      return rpc.request("financial.spending.candidatePage", [request], options) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
     },
     applySpendingPageAction(request: SpendingPageActionRequest) {
-      return rpc.request("financial.spending.confirmCandidate", [{ __spendingPageAction: request }]) as Promise<SpendingPageActionResult>;
+      return rpc.request("financial.spending.pageAction", [request]) as Promise<SpendingPageActionResult>;
     },
     setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest) {
       return rpc.registry.setPurchaseCategory(request);
     },
     loadSpendingPendingOverview(request: SpendingPendingOverviewRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "pending-overview", request }]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
+      return rpc.request("financial.spending.pendingOverview", [request]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
     },
     loadSpendingMergeLog(request: SpendingMergeLogRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "merge-log", request }]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
+      return rpc.request("financial.spending.mergeLog", [request]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
     },
     loadSpendingMonthInsight(request: SpendingMonthInsightRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "month-insight", request }]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
+      return rpc.request("financial.spending.monthInsight", [request]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
     },
     loadSpendingMerchantStats(request: SpendingMerchantStatsRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "merchant-stats", request }]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
+      return rpc.request("financial.spending.merchantStats", [request]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
     },
     confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest) {
       return rpc.registry.confirmStrongCandidates(request);
