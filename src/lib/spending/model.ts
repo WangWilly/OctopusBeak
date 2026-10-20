@@ -298,7 +298,8 @@ export type SpendingMerchantStatsDto = Readonly<{
   schemaVersion: 1;
   knowledgeAt: number;
   purchaseId: string;
-  month: string;
+  /** Null, with a zero count, when the purchase is no longer current at this version. */
+  month: string | null;
   /** Null when the purchase has no merchant identity (no tax ID or blank description). */
   merchant: SpendingMerchantIdentity | null;
   merchantLabel: string | null;

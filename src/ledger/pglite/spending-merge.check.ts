@@ -329,7 +329,10 @@ test("month insights find the largest purchase per currency and same-merchant to
       count: 2,
       totals: [{ currency: "TWD", coefficient: "250", scale: 0, count: 2 }],
     }, "bank-only purchases match by exact normalized description within the month");
-    await assert.rejects(query.merchantStats({ knowledgeAt, purchaseId: "transaction:00000000-0000-0000-0000-000000000000" }), /not a current purchase/u);
+    const gone = await query.merchantStats({ knowledgeAt, purchaseId: "transaction:00000000-0000-0000-0000-000000000000" });
+    assert.deepEqual({ month: gone.month, merchant: gone.merchant, count: gone.count, totals: gone.totalsByCurrency }, {
+      month: null, merchant: null, count: 0, totals: [],
+    });
     await assert.rejects(query.monthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-09" }), /data version is stale/u);
   } finally {
     await fixture.close();

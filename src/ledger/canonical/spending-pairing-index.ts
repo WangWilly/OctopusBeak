@@ -2,7 +2,7 @@ import type {
   SpendingMatchingMoney,
   SpendingMatchingTransaction,
 } from "../../lib/spending/purchase-matching.ts";
-import type { SpendingManualPaymentCandidate } from "./spending-manual-pairing.ts";
+import type { SpendingManualPaymentRanking } from "./spending-manual-pairing.ts";
 
 /**
  * The renderer should not repeatedly inspect the complete transaction DTO when
@@ -23,7 +23,7 @@ export type SpendingPairingIndex = Readonly<{
   entries: readonly SpendingPairingIndexEntry[];
 }>;
 
-type RankCache = Map<string, readonly SpendingManualPaymentCandidate[]>;
+type RankCache = Map<string, SpendingManualPaymentRanking>;
 
 const rankCaches = new WeakMap<object, RankCache>();
 
@@ -84,15 +84,15 @@ export function createSpendingPairingIndexFromEntries(
 export function cachedSpendingPairingRank(
   index: SpendingPairingIndex,
   key: string,
-): readonly SpendingManualPaymentCandidate[] | undefined {
+): SpendingManualPaymentRanking | undefined {
   return rankCaches.get(index)?.get(key);
 }
 
 export function cacheSpendingPairingRank(
   index: SpendingPairingIndex,
   key: string,
-  value: readonly SpendingManualPaymentCandidate[],
-): readonly SpendingManualPaymentCandidate[] {
+  value: SpendingManualPaymentRanking,
+): SpendingManualPaymentRanking {
   const cache = rankCaches.get(index);
   if (!cache) throw new Error("Spending pairing index is not initialized.");
   cache.set(key, value);
