@@ -88,7 +88,7 @@ import {
   type PGliteCanonicalSourceAdmissionRequest,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
-  executePGliteCanonicalDepositCommit,
+  commitPGliteCanonicalDepositCapture,
   type PGliteCanonicalDepositCommitRequest,
 } from "../src/ledger/pglite/deposit.ts";
 import {
@@ -96,27 +96,26 @@ import {
   type PGliteCanonicalMixedCommitRequest,
 } from "../src/ledger/pglite/mixed-commit.ts";
 import {
-  executePGliteCanonicalBalanceCapture,
+  commitPGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
 } from "../src/ledger/pglite/balance.ts";
 import {
-  executePGliteCanonicalEInvoiceCommit,
+  commitPGliteCanonicalEInvoiceCapture,
   PGliteCanonicalEInvoiceAdmissionError,
 } from "../src/ledger/pglite/einvoice.ts";
 import {
-  executePGliteCanonicalCreditCardCommand,
+  commitPGliteCanonicalCreditCardBalanceCapture,
+  commitPGliteCanonicalCreditCardCapture,
   PGliteCanonicalCreditCardAdmissionError,
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   type PGliteCanonicalCreditCardBalanceCaptureRequest,
   type PGliteCanonicalCreditCardCaptureRequest,
 } from "../src/ledger/pglite/credit-card.ts";
 import {
-  executePGliteCanonicalLoanCommand,
+  commitPGliteCanonicalLoanCapture,
   type PGliteCanonicalLoanCommitRequest,
 } from "../src/ledger/pglite/loan.ts";
 import {
-  executePGliteCanonicalInvestmentCommand,
+  commitPGliteCanonicalInvestmentCapture,
   listPGliteTdccFundAccounts,
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
@@ -125,8 +124,8 @@ import {
   type AccountIdentityContinuityRequest,
 } from "../src/ledger/pglite/account-identity-continuity.ts";
 import {
-  executePGliteCanonicalLoanRelationCommand,
-  executePGliteCanonicalInvestmentRelationCommand,
+  resolvePGliteCanonicalLoanRepaymentRelations,
+  resolvePGliteCanonicalInvestmentFundingRelations,
   queryPGliteCurrentLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentSettlementGroups,
   queryPGliteCurrentInvestmentFundingRelations,
@@ -146,6 +145,7 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
 type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
@@ -756,16 +756,16 @@ export function createPGliteFinancialRegistry(
     sourceAdmit: (request, options) => source.admit(request, options),
     sourceCommit: (request, options) => source.commit(request, options),
     sourceCommitBatch: (request, options) => source.commitBatch(request, options),
-    depositCommit: (request, options) => executePGliteCanonicalDepositCommit(store, request, options),
+    depositCommit: (request, options) => commitPGliteCanonicalDepositCapture(store, request, options),
     mixedCommit: (request, options) => commitPGliteCanonicalMixedCapture(store, request, options),
-    balanceCapture: (request, options) => executePGliteCanonicalBalanceCapture(store, request, options),
-    einvoiceCommit: (request, options) => executePGliteCanonicalEInvoiceCommit(store, request, options),
-    creditCardCommit: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request }, options),
-    creditCardBalance: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND, request }, options),
-    loanCommit: (request, options) => executePGliteCanonicalLoanCommand(store, request, options),
-    investmentCommit: (request, options) => executePGliteCanonicalInvestmentCommand(store, request, options),
-    resolveLoanRelations: (request, options) => executePGliteCanonicalLoanRelationCommand(store, request, options),
-    resolveInvestmentRelations: (request, options) => executePGliteCanonicalInvestmentRelationCommand(store, request, options),
+    balanceCapture: (request, options) => commitPGliteCanonicalBalanceCapture(store, request, options),
+    einvoiceCommit: (request, options) => commitPGliteCanonicalEInvoiceCapture(store, request, options),
+    creditCardCommit: (request, options) => commitPGliteCanonicalCreditCardCapture(store, request, options),
+    creditCardBalance: (request, options) => commitPGliteCanonicalCreditCardBalanceCapture(store, request, options),
+    loanCommit: (request, options) => commitPGliteCanonicalLoanCapture(store, request, options),
+    investmentCommit: (request, options) => commitPGliteCanonicalInvestmentCapture(store, request, options),
+    resolveLoanRelations: (request, options) => resolvePGliteCanonicalLoanRepaymentRelations(store, request, options),
+    resolveInvestmentRelations: (request, options) => resolvePGliteCanonicalInvestmentFundingRelations(store, request, options),
     currentLoanRelations: (options) => queryPGliteCurrentLoanRepaymentRelations(store, options),
     currentLoanSettlementGroups: (options) => queryPGliteCurrentLoanRepaymentSettlementGroups(store, options),
     currentInvestmentRelations: (sourceConnectionKey) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
@@ -886,7 +886,7 @@ const FINANCIAL_OPERATION_HANDLERS: Readonly<Record<PGliteFinancialOperation, Fi
   },
   "financial.einvoice.commit": {
     accepts: (args) => args.length === 1 && einvoiceCaptureShape(args[0]),
-    run: (registry, args, options) => registry.einvoiceCommit(args[0] as Parameters<typeof executePGliteCanonicalEInvoiceCommit>[1], options),
+    run: (registry, args, options) => registry.einvoiceCommit(args[0] as CanonicalEInvoiceCaptureInput, options),
     canonicalCommit: true,
   },
   "financial.creditCard.commit": {

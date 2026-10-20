@@ -30,10 +30,6 @@ import {
   TDCC_SETTLEMENT_DEPOSIT_PROFILE,
   TDCC_SETTLEMENT_DEPOSIT_ROUTE,
 } from "../canonical/tdcc-settlement-contract.ts";
-import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "./workflow-commands.ts";
-
-/** Named worker command for a typed domestic or foreign-currency deposit run. */
-export { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND };
 
 export type PGliteCanonicalDepositCommitRequest = Readonly<{
   capture: CanonicalFinancialDepositCapture;
@@ -41,11 +37,6 @@ export type PGliteCanonicalDepositCommitRequest = Readonly<{
   balanceObservations?: readonly PGliteCanonicalBalanceObservationInput[];
   sourceSyncCursor?: string | null;
   recordedAtUtcUs?: number;
-}>;
-
-export type PGliteCanonicalDepositCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND;
-  request: PGliteCanonicalDepositCommitRequest;
 }>;
 
 export type PGliteCanonicalDepositCommitResult = Readonly<{
@@ -731,15 +722,3 @@ export async function commitPGliteCanonicalDepositCaptureInTransaction(
   return readDepositCommit(transaction, normalized, result);
 }
 
-/** Execute a serializable named deposit command on the worker-owned store. */
-export function executePGliteCanonicalDepositCommit(
-  store: PGliteStore,
-  command:
-    | PGliteCanonicalDepositCommitCommand
-    | PGliteCanonicalDepositCommitRequest
-    | CanonicalFinancialDepositCapture,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalDepositCommitResult> {
-  const request = "kind" in command ? command.request : command;
-  return commitPGliteCanonicalDepositCapture(store, request, options);
-}

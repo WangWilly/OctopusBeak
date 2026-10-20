@@ -25,19 +25,10 @@ import {
   canonicalOccurrenceGroupKey,
 } from "../canonical/occurrence-groups.ts";
 import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
-import { PGLITE_CANONICAL_LOAN_COMMIT_COMMAND } from "./workflow-commands.ts";
-
-/** Named worker command for a source-admitted loan statement. */
-export { PGLITE_CANONICAL_LOAN_COMMIT_COMMAND };
 
 export type PGliteCanonicalLoanCommitRequest = Readonly<{
   capture: LoanCaptureInput;
   recordedAtUtcUs?: number;
-}>;
-
-export type PGliteCanonicalLoanCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_LOAN_COMMIT_COMMAND;
-  request: PGliteCanonicalLoanCommitRequest;
 }>;
 
 export type PGliteCanonicalLoanCommitResult = Readonly<{
@@ -680,10 +671,3 @@ export async function commitPGliteCanonicalLoanCapture(
   );
 }
 
-export function executePGliteCanonicalLoanCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalLoanCommitCommand | PGliteCanonicalLoanCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalLoanCommitResult> {
-  return commitPGliteCanonicalLoanCapture(store, "kind" in command ? command.request : command, options);
-}
