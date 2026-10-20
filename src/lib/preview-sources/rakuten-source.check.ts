@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { depositCollection, runPreviewSource } from "./preview-source-harness.ts";
+import { blankPng, depositCollection, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
+import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import { createRakutenSource, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
 
 const credentials = {
@@ -20,6 +21,7 @@ const PK = { a: "20261003091500001", b: "20261003091500002", c: "202609151200000
 type Script = Readonly<{
   signIn?: RakutenSignInOutcome;
   months?: readonly string[];
+  image?: Buffer;
 }>;
 
 function fakePage(script: Script = {}) {
@@ -31,7 +33,7 @@ function fakePage(script: Script = {}) {
     month([], '{"dataEnd":false,"dataLimit":false,"noData":true}'),
   ];
   const page: RakutenPage = {
-    async captchaImage() { calls.push("captcha"); return Buffer.from("png"); },
+    async captchaImage() { calls.push("captcha"); return script.image ?? blankPng(152, 60); },
     async signIn(input) { calls.push(`signIn:${input.idNumber}:${input.captcha}`); return script.signIn ?? { kind: "signed-in" }; },
     async depositMonth(back): Promise<RakutenCapture> {
       calls.push(`month:${back}`);
@@ -108,13 +110,27 @@ test("a pk that repeats with different content fails, and an identical repeat is
   assert.equal(depositCollection(repeat.writes[0]!).accounts[0]!.transactions.length, 1);
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before opening the page", async () => {
-  const fake = fakePage();
+test("the default calibrated solver refuses an unsupported capture before sign-in", async () => {
+  const fake = fakePage({ image: blankPng(151, 60) });
   const result = await runPreviewSource(createRakutenSource({ page: fake.opener }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(fake.opens(), 0);
-  assert.deepEqual(fake.calls, []);
+  assert.equal(fake.opens(), 1);
+  assert.deepEqual(fake.calls, ["captcha"]);
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+});
+
+test("Rakuten signs in only on calibrated agreement and submits nothing on disagreement", async () => {
+  for (const [other, accepted] of [["AB29", true], ["AB28", false], ["", false]] as const) {
+    const fake = fakePage();
+    const engine = scriptedOcrEngine([{ text: "AB29", confidence: 1 }, { text: other, confidence: 1 }]);
+    const result = await runPreviewSource(createRakutenSource({ page: fake.opener,
+      solveCaptcha: calibratedCaptchaSolver(RAKUTEN_CAPTCHA_FAMILY, engine) }), credentials);
+    assert.equal(fake.calls.filter((c) => c.startsWith("signIn:")).length, accepted ? 1 : 0);
+    if (!accepted) {
+      assert.equal(result.errorCode, "verification-failed");
+      assert.equal(result.writes.length, 0);
+    }
+  }
 });
 
 test("sign-in refusals are typed and collect nothing", async () => {

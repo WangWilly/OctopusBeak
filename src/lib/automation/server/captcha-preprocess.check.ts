@@ -4,6 +4,7 @@ import { PNG } from "pngjs";
 import {
   binarize,
   boxBlur,
+  closeForeground,
   decodeGrayImage,
   denoise,
   encodeGrayImage,
@@ -82,6 +83,64 @@ test("otsuThreshold plus binarize separates a bimodal image", () => {
 test("binarize maps pixels to black or white around the threshold", () => {
   const image = grayImage(3, 1, [10, 128, 200]);
   assert.deepEqual(Array.from(binarize(image, 128).data), [0, 0, 255]);
+});
+
+test("foreground closing fills a small hole and restores stroke bounds without mutating the input", () => {
+  const image = solidGray(9, 9, 255);
+  for (let y = 3; y <= 5; y += 1) {
+    for (let x = 3; x <= 5; x += 1) image.data[y * image.width + x] = 0;
+  }
+  image.data[4 * image.width + 4] = 255;
+  const original = new Uint8Array(image.data);
+  const closed = closeForeground(image);
+  assert.deepEqual([closed.width, closed.height], [9, 9]);
+  assert.equal(closed.data[4 * image.width + 4], 0, "a hole is filled in the black foreground");
+  assert.equal(closed.data.filter((value) => value === 0).length, 9, "the final erosion restores the outer bounds");
+  assert.deepEqual(image.data, original);
+});
+
+test("foreground closing treats the border as white and does not join distant strokes", () => {
+  const image = solidGray(11, 9, 255);
+  for (let y = 3; y <= 5; y += 1) {
+    image.data[y * image.width + 3] = 0;
+    image.data[y * image.width + 7] = 0;
+  }
+  const closed = closeForeground(image);
+  assert.equal(closed.data[4 * image.width + 5], 255);
+  assert.deepEqual(closeForeground(solidGray(4, 4, 255)).data, new Uint8Array(16).fill(255));
+  const border = closeForeground(solidGray(4, 4, 0));
+  assert.equal(border.data[0], 255);
+  assert.equal(border.data[5], 0);
+});
+
+test("Rakuten closed mode extracts teal before closing, excluding neutral interference", () => {
+  const png = new PNG({ width: 152, height: 60 });
+  png.data.fill(255);
+  for (let y = 20; y <= 22; y += 1) {
+    for (let x = 40; x <= 42; x += 1) png.data.set([20, 150, 170, 255], (y * png.width + x) * 4);
+  }
+  png.data.set([130, 130, 130, 255], (21 * png.width + 41) * 4);
+  png.data.set([130, 130, 130, 255], (30 * png.width + 70) * 4);
+  const input = PNG.sync.write(png);
+  const teal = decodeGrayImage(preprocessCaptchaImage(input, undefined, { imagePreprocessing: ["rakuten-teal-foreground"] }));
+  const steps: string[] = [];
+  const closed = decodeGrayImage(preprocessCaptchaImage(input, (step) => steps.push(step), { imagePreprocessing: ["rakuten-teal-closed"] }));
+  assert.equal(teal.data[21 * png.width + 41], 255);
+  assert.equal(closed.data[21 * png.width + 41], 0);
+  assert.equal(closed.data[30 * png.width + 70], 255);
+  assert.equal(closed.data.filter((value) => value === 0).length, 9);
+  assert.deepEqual([closed.width, closed.height], [152, 60]);
+  assert.deepEqual(steps, ["grayscale", "binarized", "foreground-closed"]);
+});
+
+test("both Rakuten foreground modes fail closed outside 152 by 60", () => {
+  const png = new PNG({ width: 151, height: 60 });
+  for (let i = 0; i < png.data.length; i += 4) png.data.set([20, 150, 170, 255], i);
+  for (const mode of ["rakuten-teal-foreground", "rakuten-teal-closed"] as const) {
+    const output = decodeGrayImage(preprocessCaptchaImage(PNG.sync.write(png), undefined, { imagePreprocessing: [mode] }));
+    assert.deepEqual([output.width, output.height], [151, 60]);
+    assert.ok(output.data.every((value) => value === 255));
+  }
 });
 
 test("maskBottomInterferenceBand clears six rows without changing calibrated geometry", () => {

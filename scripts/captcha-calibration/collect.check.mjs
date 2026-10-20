@@ -17,6 +17,8 @@ const LOGIN_REQUEST = [
   /\/membership\/CaptchaLogin$/u,
   /\/CGNOT0001\/login/iu,
   /\/web\/login\/login$/u,
+  /\/gateway\/prod-oidc\/connect\/token$/u,
+  /\/NetBank\/login\.html$/iu,
 ];
 
 let browser;
@@ -72,6 +74,31 @@ function taishinSite(image, { beforeImage = "Promise.resolve()" } = {}) {
   };
 }
 
+function kgibankSite(image) {
+  return (method, url) => {
+    if (url.host !== "ib.kgibank.com.tw" || method !== "GET" || url.pathname !== "/ibank/") return null;
+    return html(`<html><body>
+      <input id="loginInputIdNo"><input id="loginInputUserNo"><input id="loginInputPassword"><input formcontrolname="verifyCode">
+      <img src="data:image/png;base64,${image.toString("base64")}">
+      <button class="btn btn-primary w-100">登入</button></body></html>`);
+  };
+}
+
+function firstbankSite(image) {
+  return (method, url) => {
+    if (url.host !== "ibank.firstbank.com.tw" || method !== "GET") return null;
+    if (url.pathname === "/NetBank/index103.html") {
+      return html(`<html><body>
+        <input id="loginCustIdFake"><input id="usrIdInput"><input id="pwd" type="password"><input id="vrfyCode" maxlength="4">
+        <img id="code_verify" src="/NetBank/code_verify1.jpg"></body></html>`);
+    }
+    if (url.pathname === "/NetBank/code_verify1.jpg") {
+      return { status: 200, contentType: "image/png", body: image };
+    }
+    return null;
+  };
+}
+
 function fakeBrowserPort(site, contextOptions = {}) {
   const sent = [];
   const served = [];
@@ -107,13 +134,19 @@ function fakeBrowserPort(site, contextOptions = {}) {
 const BANK_CASES = [
   { bank: "mega", site: megaSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
   { bank: "rakuten", site: rakutenSite, image: () => solidPng(80, 30), size: [80, 30], mediaType: "image/png" },
+  { bank: "rakuten", inputFormat: "JPEG", site: rakutenSite, image: async () => {
+    const page = await browser.newPage({ viewport: { width: 152, height: 60 } });
+    try { return await page.screenshot({ type: "jpeg" }); } finally { await page.close(); }
+  }, size: [152, 60], mediaType: "image/png" },
   { bank: "taishin", site: taishinSite, image: () => solidPng(90, 35), size: [90, 35], mediaType: "image/png", declaredLength: 6 },
+  { bank: "kgibank", site: kgibankSite, image: () => solidPng(120, 40), size: [120, 40], mediaType: "image/png" },
+  { bank: "firstbank", site: firstbankSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
 ];
 
-for (const { bank: id, site, image, size, mediaType, declaredLength } of BANK_CASES) {
-  test(`${id}: collects two PNG captures and sends no sign-in request`, async () => {
+for (const { bank: id, site, image, size, mediaType, declaredLength, inputFormat } of BANK_CASES) {
+  test(`${id}${inputFormat ? ` (${inputFormat})` : ""}: collects two PNG captures and sends no sign-in request`, async () => {
     const bank = CALIBRATION_BANK_SPECS[id];
-    const port = fakeBrowserPort(site(image()), bank.contextOptions);
+    const port = fakeBrowserPort(site(await image()), bank.contextOptions);
     const corpusDirectory = await mkdtemp(join(tmpdir(), `captcha-collect-${id}-`));
     const log = [];
     const sleeps = [];
@@ -204,6 +237,24 @@ test("three consecutive capture failures stop the collection", async () => {
   });
   assert.deepEqual(result, { captured: 0, failed: 3 });
   assert.equal(log.filter((line) => line.includes("failed")).length, 3);
+});
+
+test("capture failures log their class without raw error messages", async () => {
+  const log = [];
+  const detail = "raw challenge payload must not enter the log";
+  const result = await collectCorpus({
+    bank: { ...CALIBRATION_BANK_SPECS.rakuten, capture: async () => { throw new Error(detail); } },
+    count: 3, delayMs: 0,
+    corpusDirectory: await mkdtemp(join(tmpdir(), "captcha-collect-private-error-")),
+    browser: { withPage: async () => { throw new Error("unexpected browser use"); } },
+    signal: new AbortController().signal,
+    sleep: async () => {}, log: (line) => log.push(line),
+  });
+  assert.deepEqual(result, { captured: 0, failed: 3 });
+  const failures = log.filter((line) => line.includes("failed:"));
+  assert.equal(failures.length, 3);
+  assert.ok(failures.every((line) => line.includes("Error")));
+  assert.ok(log.every((line) => !line.includes(detail)));
 });
 
 test("the guard route lets the CDP origin strip still apply to allowed requests", async () => {

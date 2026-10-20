@@ -1013,6 +1013,10 @@ _Avoid_: Unrestricted Mega CAPTCHA, lowered Mega confidence threshold, mixed-lay
 The supported CAPTCHA family on the Next Bank preview source: the audio challenge that NextBank's CAPTCHA endpoint returns for `isAudio: true`, a list of five base64 MPEG clips, one spoken Chinese numeral each. The local speech recogniser (sherpa-onnx running the paraformer-zh-small model) transcribes each clip and maps it to one decimal digit, then joins the five digits into the answer, as the Yuanta Trade audio verification does. Acceptance is structural (every clip one digit, five digits total); correctness is left to the login outcome. The audio shape was confirmed against the live endpoint. A clip that transcribes to anything other than one digit is unsupported and must not be submitted automatically.
 _Avoid_: Next Bank image OCR, a non-five-digit Next Bank audio answer
 
+**Rakuten Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Rakuten Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between the declared whole-image and per-character readings; missing agreement or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Confidence-only Rakuten submission, repeated identical Rakuten OCR attempt, mixed-layout Rakuten CAPTCHA corpus
+
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge goes to its solver route.
 _Avoid_: Assumed challenge, unconditional solve

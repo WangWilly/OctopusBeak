@@ -31,12 +31,18 @@ const EINVOICE_DIRECTIONAL_KERNEL = [
 const CALIBRATED_FUBON_WIDTH = 158;
 const CALIBRATED_FUBON_HEIGHT = 30;
 const FUBON_FOREGROUND_THRESHOLD = 190;
+const CALIBRATED_RAKUTEN_WIDTH = 152;
+const CALIBRATED_RAKUTEN_HEIGHT = 60;
+const RAKUTEN_TEAL_RED_BLUE_GAP = 40;
+const RAKUTEN_TEAL_GREEN_MIN = 70;
+const RAKUTEN_TEAL_BLUE_MIN = 90;
 
 export type CaptchaPreprocessStep =
   | "grayscale"
   | "upscaled"
   | "blurred"
   | "binarized"
+  | "foreground-closed"
   | "lines-removed"
   | "interference-band-masked"
   | "horizontal-interference-suppressed"
@@ -372,6 +378,65 @@ function preprocessFubonForeground(
   return output;
 }
 
+/**
+ * Rakuten's CAPTCHA text is teal (low red, high green and blue) while its
+ * interference strokes are neutral grey. Grayscale merges the two, so the OCR
+ * cannot separate them. Keep only the teal foreground and drop everything
+ * else: a pixel is teal when blue leads red by more than the calibrated gap
+ * and both green and blue are bright enough to exclude dark single-channel
+ * noise.
+ */
+function rakutenTealForeground(
+  buffer: Buffer,
+  onStep?: (step: CaptchaPreprocessStep, image: Buffer) => void,
+): Buffer {
+  const png = PNG.sync.read(buffer);
+  if (png.width !== CALIBRATED_RAKUTEN_WIDTH || png.height !== CALIBRATED_RAKUTEN_HEIGHT) {
+    return encodeGrayImage(blankImageLike({ width: png.width, height: png.height, data: new Uint8Array(png.width * png.height) }));
+  }
+  const data = new Uint8Array(png.width * png.height);
+  for (let i = 0; i < data.length; i += 1) {
+    const r = png.data[i * 4]!;
+    const g = png.data[i * 4 + 1]!;
+    const b = png.data[i * 4 + 2]!;
+    const isTeal = (b - r) > RAKUTEN_TEAL_RED_BLUE_GAP
+      && g > RAKUTEN_TEAL_GREEN_MIN
+      && b > RAKUTEN_TEAL_BLUE_MIN;
+    data[i] = isTeal ? 0 : 255;
+  }
+  const output = encodeGrayImage({ width: png.width, height: png.height, data });
+  onStep?.("binarized", output);
+  return output;
+}
+
+/** Black pixels are foreground. Dilation grows them; erosion shrinks them.
+ * Each pass reads an immutable input and treats pixels outside it as white. */
+function morphForeground(image: GrayImage, operation: "dilate" | "erode"): GrayImage {
+  const data = new Uint8Array(image.data.length);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      let value = operation === "dilate" ? 255 : 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = x + dx;
+          const ny = y + dy;
+          const neighbor = nx < 0 || nx >= image.width || ny < 0 || ny >= image.height
+            ? 255
+            : image.data[ny * image.width + nx]!;
+          value = operation === "dilate" ? Math.min(value, neighbor) : Math.max(value, neighbor);
+        }
+      }
+      data[y * image.width + x] = value;
+    }
+  }
+  return { width: image.width, height: image.height, data };
+}
+
+/** One 3×3 square closing fills small gaps without retaining dilation's thicker strokes. */
+export function closeForeground(image: GrayImage): GrayImage {
+  return morphForeground(morphForeground(image, "dilate"), "erode");
+}
+
 export function maskBottomInterferenceBand(image: GrayImage): GrayImage {
   if (!isCalibratedEinvoiceGeometry(image)) return blankImageLike(image);
   const data = new Uint8Array(image.data);
@@ -604,6 +669,14 @@ export function preprocessCaptchaImage(
       useFubonMinChannel ? decodeMinChannelImage(buffer) : decoded,
       onStep,
     );
+  }
+  const closeRakutenForeground = imagePreprocessing.includes("rakuten-teal-closed");
+  if (imagePreprocessing.includes("rakuten-teal-foreground") || closeRakutenForeground) {
+    const foreground = rakutenTealForeground(buffer, onStep);
+    if (!closeRakutenForeground) return foreground;
+    const output = encodeGrayImage(closeForeground(decodeGrayImage(foreground)));
+    onStep?.("foreground-closed", output);
+    return output;
   }
   if (imagePreprocessing.includes("mask-bottom-interference-band")) {
     const masked = maskBottomInterferenceBand(decoded);

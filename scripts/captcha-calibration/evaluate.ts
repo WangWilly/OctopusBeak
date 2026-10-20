@@ -235,7 +235,11 @@ const STRATEGY_BY_LABEL = new Map(STRATEGY_GRID.map(({ label, strategy }) => [la
 function strategyLiteral(label: string): string {
   const strategy = STRATEGY_BY_LABEL.get(label)!;
   const preprocessing = `[${(strategy.imagePreprocessing ?? []).map((mode) => `"${mode}"`).join(", ")}]`;
-  return `{ imagePreprocessing: ${preprocessing}, ocrPageSegmentationMode: "${strategy.ocrPageSegmentationMode}" }`;
+  const fields = [`imagePreprocessing: ${preprocessing}`];
+  if (strategy.ocrPageSegmentationMode !== undefined) fields.push(`ocrPageSegmentationMode: "${strategy.ocrPageSegmentationMode}"`);
+  if (strategy.ocrCharacterSegmentation !== undefined) fields.push(`ocrCharacterSegmentation: "${strategy.ocrCharacterSegmentation}"`);
+  if (strategy.ocrOutputStage !== undefined) fields.push(`ocrOutputStage: "${strategy.ocrOutputStage}"`);
+  return `{ ${fields.join(", ")} }`;
 }
 
 export function familyDeclaration(

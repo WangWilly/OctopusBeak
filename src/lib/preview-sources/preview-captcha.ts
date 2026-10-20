@@ -54,6 +54,22 @@ export const MEGA_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
   solverConfidenceThreshold: 0.99,
 };
 
+/** Selection 123 images: 59/60 accepted correct. Held-out 60: 29/29 correct.
+ * Keep this fixed pair even if a later grid sweep ranks another combination higher. */
+export const RAKUTEN_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
+  name: "rakuten-login-captcha",
+  geometry: { width: 152, height: 60 },
+  charset: "alphanumeric",
+  expectedAnswerLength: 4,
+  answerPattern: /^[0-9A-Z]{4}$/u,
+  ocrAttemptPlan: [
+    { imagePreprocessing: ["rakuten-teal-closed"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+  ],
+  solveAcceptancePolicy: { mode: "agreement-only" },
+  solverConfidenceThreshold: 0,
+};
+
 function pngSize(image: Buffer): Readonly<{ width: number; height: number }> | null {
   if (sniffImageType(image) !== "image/png" || image.length < 24) return null;
   return { width: image.readUInt32BE(16), height: image.readUInt32BE(20) };

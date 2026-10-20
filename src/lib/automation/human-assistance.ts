@@ -61,12 +61,16 @@ export const CAPTCHA_OCR_OUTPUT_STAGES = [
 
 export type CaptchaOcrOutputStage = typeof CAPTCHA_OCR_OUTPUT_STAGES[number];
 
+export type CaptchaOcrCharacterSegmentation = "rakuten-four-slots";
+
 export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "remove-interference-lines",
   "mask-bottom-interference-band",
   "suppress-horizontal-interference",
   "fubon-luminance-foreground",
   "fubon-min-channel-foreground",
+  "rakuten-teal-foreground",
+  "rakuten-teal-closed",
 ] as const;
 
 export type CaptchaImagePreprocessingMode =
@@ -148,6 +152,8 @@ export type CaptchaOcrAttemptStrategy = {
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
   ocrOutputStage?: CaptchaOcrOutputStage;
+  /** Fixed per-character pipeline; owns its page segmentation and output stage. */
+  ocrCharacterSegmentation?: CaptchaOcrCharacterSegmentation;
 };
 
 export type HumanAssistanceContract = HumanAssistanceContractInput & {
@@ -222,6 +228,9 @@ export function projectHumanAssistanceContract(
           ...(strategy.ocrOutputStage === undefined
             ? {}
             : { ocrOutputStage: strategy.ocrOutputStage }),
+          ...(strategy.ocrCharacterSegmentation === undefined
+            ? {}
+            : { ocrCharacterSegmentation: strategy.ocrCharacterSegmentation }),
         })),
       }),
     ...(contract.solveAcceptancePolicy === undefined
@@ -275,6 +284,9 @@ export function projectHumanAssistanceSolverMetadata(
           ...(strategy.ocrOutputStage === undefined
             ? {}
             : { ocrOutputStage: strategy.ocrOutputStage }),
+          ...(strategy.ocrCharacterSegmentation === undefined
+            ? {}
+            : { ocrCharacterSegmentation: strategy.ocrCharacterSegmentation }),
         })),
       }),
     ...(contract.solveAcceptancePolicy === undefined
@@ -429,6 +441,7 @@ export function createHumanAssistanceContract(
         strategy.imagePreprocessing === undefined
         && strategy.ocrPageSegmentationMode === undefined
         && strategy.ocrOutputStage === undefined
+        && strategy.ocrCharacterSegmentation === undefined
       ) {
         throw new Error(
           `Invalid human assistance contract: OCR attempt strategy ${index + 1} must override at least one OCR setting.`,
@@ -460,14 +473,23 @@ export function createHumanAssistanceContract(
           `Invalid human assistance contract: unknown OCR attempt output stage ${strategy.ocrOutputStage}.`,
         );
       }
+      if (strategy.ocrCharacterSegmentation !== undefined) {
+        if (strategy.ocrCharacterSegmentation !== "rakuten-four-slots") {
+          throw new Error("Invalid human assistance contract: unknown OCR character segmentation.");
+        }
+        if (strategy.ocrPageSegmentationMode !== undefined || strategy.ocrOutputStage !== undefined) {
+          throw new Error("Invalid human assistance contract: character segmentation owns its page segmentation and output stage.");
+        }
+      }
       const fingerprint = JSON.stringify({
         imagePreprocessing: strategy.imagePreprocessing
           ?? input.imagePreprocessing
           ?? [],
-        ocrPageSegmentationMode: strategy.ocrPageSegmentationMode
+        ocrPageSegmentationMode: strategy.ocrCharacterSegmentation ? "single-character" : strategy.ocrPageSegmentationMode
           ?? input.ocrPageSegmentationMode
           ?? "single-line",
         ocrOutputStage: strategy.ocrOutputStage ?? "final",
+        ocrCharacterSegmentation: strategy.ocrCharacterSegmentation,
       });
       if (fingerprints.has(fingerprint)) {
         throw new Error(
@@ -570,6 +592,9 @@ export function createHumanAssistanceContract(
           ...(strategy.ocrOutputStage === undefined
             ? {}
             : { ocrOutputStage: strategy.ocrOutputStage }),
+          ...(strategy.ocrCharacterSegmentation === undefined
+            ? {}
+            : { ocrCharacterSegmentation: strategy.ocrCharacterSegmentation }),
         })),
       }),
     ...(input.solveAcceptancePolicy === undefined
