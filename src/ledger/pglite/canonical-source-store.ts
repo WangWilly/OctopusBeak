@@ -91,8 +91,6 @@ export type PGliteCanonicalCommitOptions = Readonly<{
   recordedAtUtcUs?: number;
   /** Worker-local current projection hook; never crosses the named IPC seam. */
   projection?: PGliteCanonicalProjectionHook;
-  /** Internal nested-domain marker; extension commands project once at the end. */
-  skipProjection?: boolean;
 }>;
 
 export type PGliteCanonicalFinancialTransactionResult = Readonly<{
@@ -1839,6 +1837,47 @@ export async function commitPGliteCanonicalFinancialCaptureInTransaction(
   return commitFinancialRequestInTransaction(transaction, snapshot, options);
 }
 
+/** What the shared financial commit wrote, for a domain command that adds its own rows before projecting. */
+export type PGliteAdmittedFinancialCapture = Readonly<{
+  result: PGliteCanonicalFinancialCommitResult;
+  capture: PGliteCanonicalSourceCaptureTransactionResult;
+  accountId: Uint8Array;
+}>;
+
+/**
+ * Run the shared financial commit without refreshing the current projection.
+ * The caller writes its domain rows and then calls
+ * refreshPGliteAdmittedFinancialProjection once for everything it admitted.
+ */
+export async function admitPGliteCanonicalFinancialCaptureInTransaction(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+  options: PGliteCanonicalCommitOptions = {},
+): Promise<PGliteAdmittedFinancialCapture> {
+  const snapshot = cloneFinancialRequest(request);
+  validateFinancialRequest(snapshot);
+  return admitFinancialRequestInTransaction(transaction, snapshot, options);
+}
+
+/** Refresh the current projection once for every admitted capture, cut off at the latest commit. */
+export async function refreshPGliteAdmittedFinancialProjection(
+  transaction: PGliteTransaction,
+  admitted: readonly PGliteAdmittedFinancialCapture[],
+  options: PGliteCanonicalCommitOptions,
+  refresh: Readonly<{ refreshEnrichmentAll?: true }> = {},
+): Promise<void> {
+  const latest = admitted.reduce((current, candidate) =>
+    candidate.result.commitSequence >= current.result.commitSequence ? candidate : current);
+  await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
+    commitId: latest.capture.commitId,
+    cutoffSequence: latest.result.commitSequence,
+    captureIds: admitted.map((entry) => entry.capture.captureId),
+    transactionIds: admitted.flatMap((entry) => entry.result.transactions.map((row) =>
+      Uint8Array.from(Buffer.from(row.transactionId.replaceAll("-", ""), "hex")))),
+    ...refresh,
+  });
+}
+
 function validateFinancialRequest(
   request: PGliteCanonicalFinancialCommitRequest,
 ): void {
@@ -1920,6 +1959,17 @@ async function commitFinancialRequestInTransaction(
   request: PGliteCanonicalFinancialCommitRequest,
   options: PGliteCanonicalCommitOptions,
 ): Promise<PGliteCanonicalFinancialCommitResult> {
+  const admitted = await admitFinancialRequestInTransaction(transaction, request, options);
+  await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options);
+  throwIfCancelled(options.signal);
+  return admitted.result;
+}
+
+async function admitFinancialRequestInTransaction(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+  options: PGliteCanonicalCommitOptions,
+): Promise<PGliteAdmittedFinancialCapture> {
   throwIfCancelled(options.signal);
   const attestation = getPGliteHumanAttestationRoute(request.capture.routeKey);
   if (attestation) {
@@ -1955,21 +2005,14 @@ async function commitFinancialRequestInTransaction(
   );
   await persistSourceSyncState(transaction, request, capture, accountId);
   throwIfCancelled(transactionOptions.signal);
-  if (!options.skipProjection) {
-    await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
-      commitId: capture.commitId,
-      cutoffSequence: capture.receipt.knowledgePoint,
-      captureIds: [capture.captureId],
-      transactionIds: transactions.map((result) =>
-        Uint8Array.from(Buffer.from(result.transactionId.replaceAll("-", ""), "hex")),
-      ),
-    });
-  }
-  throwIfCancelled(transactionOptions.signal);
   return {
-    captureId: capture.receipt.captureId,
-    commitSequence: capture.receipt.knowledgePoint,
-    transactions,
+    result: {
+      captureId: capture.receipt.captureId,
+      commitSequence: capture.receipt.knowledgePoint,
+      transactions,
+    },
+    capture,
+    accountId,
   };
 }
 

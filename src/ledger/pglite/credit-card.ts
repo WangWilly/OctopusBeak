@@ -7,13 +7,13 @@ import type {
 } from "./source-admission-validation.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
-  commitPGliteCanonicalFinancialCaptureInTransaction,
+  admitPGliteCanonicalFinancialCaptureInTransaction,
+  refreshPGliteAdmittedFinancialProjection,
   findPGliteSourceSubjectId,
   listPGliteExpectedOccurrences,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalOccurrenceSupersessionInput,
 } from "./canonical-source-store.ts";
-import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 export type PGliteCanonicalCreditCardAmount = Readonly<{
@@ -712,7 +712,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
     const snapshot = input;
     await assertFubonBillingProgression(transaction, snapshot);
     const supersessions = await resolveUnbilledToBilledSupersessions(transaction, snapshot);
-    const generic = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
+    const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: snapshot.capture,
       account: snapshot.account,
       transactions: snapshot.transactions,
@@ -720,15 +720,10 @@ export async function commitPGliteCanonicalCreditCardCapture(
       requireExistingAccount: snapshot.requireExistingAccount ?? false,
       withdrawalPolicy: "never-infer",
       occurrenceSupersessions: supersessions,
-    }, { ...options, skipProjection: true });
-    const admittedCapture = await first<{ capture_id: unknown; commit_id: unknown; account_id: unknown }>(transaction, `SELECT capture.capture_id, capture.commit_id, scope.account_id
-      FROM source_captures capture
-      JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
-      WHERE capture.capture_key = ?`, [snapshot.capture.captureId]);
-    if (!admittedCapture?.capture_id || !admittedCapture.commit_id || !admittedCapture.account_id) throw new Error("Credit-card source capture scope was not attached to an account.");
-    const sourceRecords = await query<{ occurrence_key: string; source_record_id: unknown }>(transaction, "SELECT occurrence_key, source_record_id FROM source_records WHERE capture_id = ?", [admittedCapture.capture_id]);
-    const sourceRecordByOccurrence = new Map(sourceRecords.map((row) => [row.occurrence_key, bytes(row.source_record_id)]));
-    const extension = await persistExtensions(transaction, snapshot, snapshot.capture.integrationNamespace, bytes(admittedCapture.account_id), bytes(admittedCapture.capture_id), generic.transactions, sourceRecordByOccurrence);
+    }, options);
+    const generic = admitted.result;
+    const sourceRecordByOccurrence = admitted.capture.sourceRecordIdsByOccurrence;
+    const extension = await persistExtensions(transaction, snapshot, snapshot.capture.integrationNamespace, admitted.accountId, admitted.capture.captureId, generic.transactions, sourceRecordByOccurrence);
     for (const supersession of supersessions) {
       const successor = generic.transactions.find((result) => result.sourceOccurrenceKey === supersession.successorOccurrenceKey);
       const evidence = sourceRecordByOccurrence.get(supersession.successorOccurrenceKey);
@@ -737,22 +732,16 @@ export async function commitPGliteCanonicalCreditCardCapture(
         relation_id, integration_namespace, account_id, relation_kind, from_transaction_id,
         to_transaction_id, capture_id, evidence_source_record_id
       ) VALUES (?, ?, ?, 'unbilled_to_billed', ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
-        uuidBytes(), snapshot.capture.integrationNamespace, bytes(admittedCapture.account_id),
-        bytes(supersession.withdrawnTransactionId), bytes(successor.transactionId), bytes(admittedCapture.capture_id), evidence,
+        uuidBytes(), snapshot.capture.integrationNamespace, admitted.accountId,
+        bytes(supersession.withdrawnTransactionId), bytes(successor.transactionId), admitted.capture.captureId, evidence,
       ]);
     }
-    await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
-      commitId: bytes(admittedCapture.commit_id),
-      cutoffSequence: generic.commitSequence,
-      captureIds: [bytes(admittedCapture.capture_id)],
-      transactionIds: generic.transactions.map((result) => bytes(Buffer.from(result.transactionId.replaceAll("-", ""), "hex"))),
-      refreshEnrichmentAll: true,
-    });
+    await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options, { refreshEnrichmentAll: true });
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {
       status: "committed" as const,
       captureId: snapshot.capture.captureId,
-      accountId: idText(admittedCapture.account_id),
+      accountId: idText(admitted.accountId),
       commitSequence: generic.commitSequence,
       transactionCount: snapshot.transactions.length,
       instrumentCount: extension.instrumentCount,
