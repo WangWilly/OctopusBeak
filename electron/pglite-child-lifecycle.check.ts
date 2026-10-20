@@ -29,14 +29,14 @@ function startChild(environment: NodeJS.ProcessEnv): ChildOutput {
     const run = async () => {
       const first = rpc.requirePGliteChildRpcClientFromEnv();
       await first.ready;
-      const overview = await first.financial.overviewCurrent();
+      const overview = await first.financial.request("financial.overview.current", []);
       process.stdout.write("READY:first:" + overview.availability + "\\n");
       await nextCommand();
       first.close();
 
       const resumed = rpc.requirePGliteChildRpcClientFromEnv();
       await resumed.ready;
-      const resumedOverview = await resumed.financial.overviewCurrent();
+      const resumedOverview = await resumed.financial.request("financial.overview.current", []);
       process.stdout.write("READY:resumed:" + resumedOverview.availability + "\\n");
       const pending = resumed.request("financial.source.commit", [{
         capture: {
@@ -174,9 +174,8 @@ test("PGlite child RPC launches, reconnects, and fails closed when its parent cl
   let providerSettled = false;
   const blockedOperation = new Promise<void>((resolve) => { reachBlockedOperation = resolve; });
   const financial: PGliteChildProvider["financial"] = {
-    ...workerClient.financial.registry,
-    sourceCommit: async (request, options) => {
-      if (!blockNextOperation) return workerClient.financial.registry.sourceCommit(request, options);
+    request: async (operation, args, options) => {
+      if (operation !== "financial.source.commit" || !blockNextOperation) return workerClient.financial.request(operation, args, options);
       blockNextOperation = false;
       reachBlockedOperation();
       await new Promise<never>((_resolve, reject) => {
@@ -210,7 +209,7 @@ test("PGlite child RPC launches, reconnects, and fails closed when its parent cl
   let serverClosed = false;
   try {
     await server.ready;
-    await workerClient.financial.registry.overviewCurrent();
+    await workerClient.financial.request("financial.overview.current", []);
     assert.equal(await child.waitForLine("READY:first:"), "READY:first:empty");
 
     blockNextOperation = true;

@@ -302,7 +302,7 @@ export async function runAppWorkflowWorker(
       ...(start.workflowId === "exchange-rates" && childRpc ? {
         exchangeRateSyncService: createExchangeRateSyncService({
           exchangeRates: childRpc.operationalProvider.exchangeRates,
-          financial: childRpc.financial,
+          financial: { overviewCurrent: () => childRpc!.financial.request("financial.overview.current", []) },
         }),
         exchangeRateProgress: (event) => {
           progressQueue = progressQueue.then(async () => {
@@ -350,11 +350,11 @@ export async function runAppWorkflowWorker(
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
-        admittedFundAccounts: (connection) => childRpc!.financial.listTdccFundAccounts(connection),
+        admittedFundAccounts: (connection) => childRpc!.financial.request("financial.tdccFundAccounts.list", [connection]),
       }
       : undefined;
     const accountIdentity: WorkflowAccountIdentityPort | undefined = definition.requiresAccountIdentity
-      ? { continuity: (request) => childRpc!.financial.accountIdentityContinuity(request) }
+      ? { continuity: (request) => childRpc!.financial.request("financial.accountIdentity.continuity", [request]) }
       : undefined;
 
     const eventsPort: WorkflowExecutorPorts["events"] = {

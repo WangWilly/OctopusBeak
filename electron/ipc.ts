@@ -79,7 +79,10 @@ import { automationRuntimeState } from "../src/lib/automation/server/runtime-sta
 import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import type { PGliteFinancialPageClient } from "./pglite-financial-registry.ts";
+import {
+  prewarmPGlitePairingCandidates,
+  type PGliteFinancialPort,
+} from "./pglite-financial-registry.ts";
 import type {
   SpendingCandidatePageRequest,
   SpendingPageActionRequest,
@@ -134,7 +137,7 @@ export function registerOctopusBeakIpc({
     dataDir?: string;
     workerPath?: string;
   };
-  pgliteFinancial: PGliteFinancialPageClient;
+  pgliteFinancial: PGliteFinancialPort;
 }) {
   const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
     const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
@@ -206,7 +209,7 @@ export function registerOctopusBeakIpc({
     const result = write();
     if (!sameVisibility(currentPreviewVisibility(), before)) {
       dataVersionStore.markStale("preview-data-changed");
-      void financialPages.previewVisibilityChanged()
+      void financialPages.request("financial.preview.visibilityChanged", [])
         .catch((error) => console.error("preview-visibility-refresh-failed", error));
     }
     return result;
@@ -227,7 +230,7 @@ export function registerOctopusBeakIpc({
     deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
   );
   ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
-    return pgliteFinancial.loadSpendingRecordPage(request);
+    return pgliteFinancial.request("financial.spending.recordPage", [request]);
   });
   ipcMain.handle("spending:candidate-page", async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
     if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
@@ -237,7 +240,7 @@ export function registerOctopusBeakIpc({
     const controller = new AbortController();
     spendingCandidatePageControllers.set(requestId, controller);
     try {
-      return await pgliteFinancial.loadSpendingCandidatePage(request, { signal: controller.signal });
+      return await pgliteFinancial.request("financial.spending.candidatePage", [request], { signal: controller.signal });
     } finally {
       if (spendingCandidatePageControllers.get(requestId) === controller)
         spendingCandidatePageControllers.delete(requestId);
@@ -251,40 +254,40 @@ export function registerOctopusBeakIpc({
     return true;
   });
   ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
-    return pgliteFinancial.applySpendingPageAction(request);
+    return pgliteFinancial.request("financial.spending.pageAction", [request]);
   });
   ipcMain.handle("spending:set-purchase-category", async (_event, request: SpendingPurchaseCategoryRequest) => {
-    return pgliteFinancial.setSpendingPurchaseCategory(request);
+    return pgliteFinancial.request("financial.spending.setPurchaseCategory", [request]);
   });
   ipcMain.handle("spending:pending-overview", async (_event, request: SpendingPendingOverviewRequest) => {
-    return pgliteFinancial.loadSpendingPendingOverview(request);
+    return pgliteFinancial.request("financial.spending.pendingOverview", [request]);
   });
   ipcMain.handle("spending:merge-log", async (_event, request: SpendingMergeLogRequest) => {
-    return pgliteFinancial.loadSpendingMergeLog(request);
+    return pgliteFinancial.request("financial.spending.mergeLog", [request]);
   });
   ipcMain.handle("spending:month-insight", async (_event, request: SpendingMonthInsightRequest) => {
-    return pgliteFinancial.loadSpendingMonthInsight(request);
+    return pgliteFinancial.request("financial.spending.monthInsight", [request]);
   });
   ipcMain.handle("spending:merchant-stats", async (_event, request: SpendingMerchantStatsRequest) => {
-    return pgliteFinancial.loadSpendingMerchantStats(request);
+    return pgliteFinancial.request("financial.spending.merchantStats", [request]);
   });
   ipcMain.handle("spending:confirm-strong-candidates", async (_event, request: SpendingStrongConfirmRequest) => {
-    return pgliteFinancial.confirmSpendingStrongCandidates(request);
+    return pgliteFinancial.request("financial.spending.confirmStrongCandidates", [request]);
   });
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
-    financialPages.rankPairingCandidates(input),
+    financialPages.request("financial.spending.pairing", [input]),
   );
   ipcMain.handle("spending:pairing-prewarm", (_event, input) =>
-    financialPages.prewarmPairingCandidates(input),
+    prewarmPGlitePairingCandidates(financialPages, input),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
-    financialPages.confirmCandidate(input),
+    financialPages.request("financial.spending.confirmCandidate", [input]),
   );
   ipcMain.handle("spending:denyCandidate", (_event, input) =>
-    financialPages.denyCandidate(input),
+    financialPages.request("financial.spending.denyCandidate", [input]),
   );
   ipcMain.handle("spending:revokeLink", (_event, input) =>
-    financialPages.revokeLink(input),
+    financialPages.request("financial.spending.revokeLink", [input]),
   );
   ipcMain.handle(
     "automation:block",

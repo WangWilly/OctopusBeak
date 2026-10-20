@@ -79,50 +79,253 @@ import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
 import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
-/** Stable named query/command registry identifiers. */
-export const PGLITE_FINANCIAL_OPERATIONS = [
-  "financial.overview.current",
-  "financial.assets.current",
-  "financial.liabilities.current",
-  "financial.spending.current",
-  "financial.spending.recordPage",
-  "financial.spending.candidatePage",
-  "financial.spending.pendingOverview",
-  "financial.spending.mergeLog",
-  "financial.spending.monthInsight",
-  "financial.spending.merchantStats",
-  "financial.spending.pageAction",
-  "financial.spending.version",
-  "financial.preview.visibilityChanged",
-  "financial.spending.pairing",
-  "financial.spending.confirmCandidate",
-  "financial.spending.denyCandidate",
-  "financial.spending.revokeLink",
-  "financial.spending.setPurchaseCategory",
-  "financial.spending.confirmStrongCandidates",
-  "financial.source.admit",
-  "financial.source.commit",
-  "financial.source.commitBatch",
-  "financial.deposit.commit",
-  "financial.mixed.commit",
-  "financial.balance.capture",
-  "financial.einvoice.commit",
-  "financial.creditCard.commit",
-  "financial.creditCard.balance",
-  "financial.loan.commit",
-  "financial.investment.commit",
-  "financial.loanRelations.resolve",
-  "financial.investmentRelations.resolve",
-  "financial.loanRelations.current",
-  "financial.loanSettlementGroups.current",
-  "financial.investmentRelations.current",
-  "financial.exchangeRates.read",
-  "financial.tdccFundAccounts.list",
-  "financial.accountIdentity.continuity",
-  "financial.exchangeRates.upsert",
-] as const;
+type FinancialOperationContract<Args extends readonly unknown[], Result> = Readonly<{
+  accepts(args: readonly unknown[]): boolean;
+  /** Canonical writes from a workflow run must pass assertCommitAdmissible first. */
+  canonicalCommit?: true;
+  /** Type-only: the argument tuple a caller sends and the result it receives. */
+  contract?: (args: Args) => Result;
+}>;
 
-export type PGliteFinancialOperation = typeof PGLITE_FINANCIAL_OPERATIONS[number];
+function operation<Args extends readonly unknown[], Result>(
+  accepts: (args: readonly unknown[]) => boolean,
+  flags: Readonly<{ canonicalCommit?: true }> = {},
+): FinancialOperationContract<Args, Result> {
+  return Object.freeze({ accepts, ...flags });
+}
+
+function nonNegativeSafeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+function stringField(value: unknown, key: string): boolean {
+  const field = plainRecord(value) ? value[key] : undefined;
+  return typeof field === "string" && field.length > 0;
+}
+function accountIdentityContinuityRequestShape(value: unknown): boolean {
+  return plainRecord(value)
+    && Object.keys(value).length === 5
+    && stringField(value, "integrationNamespace")
+    && stringField(value, "sourceConnectionKey")
+    && stringField(value, "identityEpochKey")
+    && stringField(value, "stream")
+    && plainRecord(value.identifier)
+    && Object.keys(value.identifier).length === 2
+    && stringField(value.identifier, "kind")
+    && stringField(value.identifier, "value");
+}
+function sourceEvidenceShape(value: unknown): boolean {
+  return plainRecord(value)
+    && [
+      "captureId",
+      "integrationNamespace",
+      "sourceConnectionKey",
+      "identityEpoch",
+      "stream",
+      "recordKind",
+      "routeKey",
+      "contractVersion",
+      "subjectDigest",
+      "observedAt",
+    ].every((key) => stringField(value, key))
+    && plainRecord(value.scope)
+    && Array.isArray(value.pages)
+    && Array.isArray(value.records);
+}
+function sourceCommitShape(value: unknown): boolean {
+  return plainRecord(value)
+    && sourceEvidenceShape(value.capture)
+    && plainRecord(value.account)
+    && Array.isArray(value.transactions);
+}
+function einvoiceCaptureShape(value: unknown): boolean {
+  return plainRecord(value)
+    && ["captureId", "sourceConnectionKey", "identityEpoch", "subjectDigest", "observedAt"]
+      .every((key) => stringField(value, key))
+    && plainRecord(value.scope)
+    && Array.isArray(value.pages)
+    && Array.isArray(value.invoices);
+}
+
+/** Every named financial operation: what it accepts, what it returns, and whether it writes canonical data. */
+export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
+  "financial.overview.current": operation<[expectedSources?: PGliteFinancialExpectedSources], OverviewPageDto>(
+    (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]))
+  ),
+  "financial.assets.current": operation<[expectedSources?: PGliteFinancialExpectedSources], AssetsPageDto>(
+    (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]))
+  ),
+  "financial.liabilities.current": operation<[expectedSources?: PGliteFinancialExpectedSources], LiabilitiesPageDto>(
+    (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]))
+  ),
+  "financial.spending.current": operation<[input?: SpendingLoadInput], SpendingPageDto>(
+    (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0]))
+  ),
+  "financial.spending.recordPage": operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.candidatePage": operation<[request: SpendingCandidatePageRequest], SpendingPageReadResult<SpendingCandidatePageDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.pendingOverview": operation<[request: SpendingPendingOverviewRequest], SpendingPageReadResult<SpendingPendingOverviewDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.mergeLog": operation<[request: SpendingMergeLogRequest], SpendingPageReadResult<SpendingMergeLogDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.monthInsight": operation<[request: SpendingMonthInsightRequest], SpendingPageReadResult<SpendingMonthInsightDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.merchantStats": operation<[request: SpendingMerchantStatsRequest], SpendingPageReadResult<SpendingMerchantStatsDto>>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.pageAction": operation<[request: SpendingPageActionRequest], SpendingPageActionResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.version": operation<[], number>(
+    (args) => args.length === 0
+  ),
+  "financial.preview.visibilityChanged": operation<[], void>(
+    (args) => args.length === 0
+  ),
+  "financial.spending.pairing": operation<[input: SpendingPairingCandidatesInput], SpendingPairingCandidatesResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion)
+  ),
+  "financial.spending.confirmCandidate": operation<[input: SpendingConfirmActionInput], SpendingPurchaseActionResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.denyCandidate": operation<[input: SpendingCandidateActionInput], SpendingPurchaseActionResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.revokeLink": operation<[input: SpendingLinkActionInput], SpendingPurchaseActionResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+  ),
+  "financial.spending.setPurchaseCategory": operation<[input: SpendingPurchaseCategoryRequest], SpendingPurchaseCategoryResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && stringField(args[0], "purchaseId")
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
+      && ((args[0] as Record<string, unknown>).categoryCode === null
+        || typeof (args[0] as Record<string, unknown>).categoryCode === "string")
+  ),
+  "financial.spending.confirmStrongCandidates": operation<[input: SpendingStrongConfirmRequest], SpendingStrongConfirmResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
+      && Array.isArray((args[0] as Record<string, unknown>).pairs)
+  ),
+  "financial.source.admit": operation<[request: PGliteCanonicalSourceAdmissionRequest], PGliteCanonicalSourceAdmissionReceipt>(
+    (args) => args.length === 1 && sourceEvidenceShape(args[0])
+  ),
+  "financial.source.commit": operation<[request: PGliteCanonicalFinancialCommitRequest], PGliteCanonicalFinancialCommitResult>(
+    (args) => args.length === 1 && sourceCommitShape(args[0]),
+    { canonicalCommit: true },
+  ),
+  "financial.source.commitBatch": operation<[request: PGliteCanonicalFinancialCommitBatchRequest], readonly PGliteCanonicalFinancialCommitResult[]>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && Array.isArray((args[0] as Record<string, unknown>).commits)
+      && ((args[0] as Record<string, unknown>).commits as unknown[]).length > 0
+      && ((args[0] as Record<string, unknown>).commits as unknown[]).every(sourceCommitShape),
+    { canonicalCommit: true },
+  ),
+  "financial.deposit.commit": operation<[request: PGliteCanonicalDepositCommitRequest], PGliteCanonicalDepositCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    { canonicalCommit: true },
+  ),
+  "financial.mixed.commit": operation<[request: PGliteCanonicalMixedCommitRequest], PGliteCanonicalMixedCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && Array.isArray((args[0] as Record<string, unknown>).steps)
+      && ((args[0] as Record<string, unknown>).steps as unknown[]).length > 0
+      && ((args[0] as Record<string, unknown>).steps as unknown[]).every((step) =>
+        plainRecord(step)
+        && (step.kind === "source" && sourceEvidenceShape(step.request)
+          || step.kind === "financial" && sourceCommitShape(step.request)
+          || step.kind === "deposit" && plainRecord(step.request)
+            && plainRecord(step.request.capture))),
+    { canonicalCommit: true },
+  ),
+  "financial.balance.capture": operation<[request: PGliteCanonicalBalanceCaptureRequest], PGliteCanonicalBalanceCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && Array.isArray((args[0] as Record<string, unknown>).observations),
+    { canonicalCommit: true },
+  ),
+  "financial.einvoice.commit": operation<[request: CanonicalEInvoiceCaptureInput], PGliteCanonicalEInvoiceCommitResult>(
+    (args) => args.length === 1 && einvoiceCaptureShape(args[0]),
+    { canonicalCommit: true },
+  ),
+  "financial.creditCard.commit": operation<[request: PGliteCanonicalCreditCardCaptureRequest], PGliteCanonicalCreditCardCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && plainRecord((args[0] as Record<string, unknown>).identity)
+      && Array.isArray((args[0] as Record<string, unknown>).instruments)
+      && Array.isArray((args[0] as Record<string, unknown>).transactions)
+      && Array.isArray((args[0] as Record<string, unknown>).statements),
+    { canonicalCommit: true },
+  ),
+  "financial.creditCard.balance": operation<[request: PGliteCanonicalCreditCardBalanceCaptureRequest], PGliteCanonicalCreditCardCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && plainRecord((args[0] as Record<string, unknown>).identity)
+      && plainRecord((args[0] as Record<string, unknown>).balance),
+    { canonicalCommit: true },
+  ),
+  "financial.loan.commit": operation<[request: PGliteCanonicalLoanCommitRequest], PGliteCanonicalLoanCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    { canonicalCommit: true },
+  ),
+  "financial.investment.commit": operation<[request: PGliteCanonicalInvestmentCommitRequest], PGliteCanonicalInvestmentCommitResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    { canonicalCommit: true },
+  ),
+  "financial.loanRelations.resolve": operation<[request: PGliteCanonicalLoanRelationResolutionRequest], PGliteCanonicalLoanRelationResolutionResult>(
+    (args) => args.length === 1 && plainRecord(args[0])
+      && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string"
+  ),
+  "financial.investmentRelations.resolve": operation<[request: PGliteCanonicalInvestmentRelationResolutionRequest], PGliteCanonicalInvestmentRelationResolutionResult>(
+    (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0]))
+  ),
+  "financial.loanRelations.current": operation<[options?: { sourceConnectionKey?: string; integrationNamespace?: string }], readonly Readonly<Record<string, unknown>>[]>(
+    (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0]))
+  ),
+  "financial.loanSettlementGroups.current": operation<[options?: { sourceConnectionKey?: string; integrationNamespace?: string }], readonly Readonly<Record<string, unknown>>[]>(
+    (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0]))
+  ),
+  "financial.investmentRelations.current": operation<[sourceConnectionKey?: string], readonly Readonly<Record<string, unknown>>[]>(
+    (args) => args.length === 0 || (args.length === 1 && typeof args[0] === "string")
+  ),
+  "financial.exchangeRates.read": operation<[currencies?: string[]], ExchangeRateRecord[]>(
+    (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"))
+  ),
+  "financial.tdccFundAccounts.list": operation<[connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>], readonly TdccAdmittedFundAccount[]>(
+    (args) => args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey")
+  ),
+  "financial.accountIdentity.continuity": operation<[request: AccountIdentityContinuityRequest], AccountIdentityContinuity>(
+    (args) => args.length === 1 && accountIdentityContinuityRequestShape(args[0])
+  ),
+  "financial.exchangeRates.upsert": operation<[rows: readonly ExchangeRateRecord[]], void>(
+    (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row))
+  ),
+});
+
+export type PGliteFinancialOperation = keyof typeof PGLITE_FINANCIAL_CONTRACTS;
+export type PGliteFinancialArgs<Op extends PGliteFinancialOperation> =
+  NonNullable<(typeof PGLITE_FINANCIAL_CONTRACTS)[Op]["contract"]> extends (args: infer Args) => unknown ? Args : never;
+export type PGliteFinancialResult<Op extends PGliteFinancialOperation> =
+  NonNullable<(typeof PGLITE_FINANCIAL_CONTRACTS)[Op]["contract"]> extends (args: never) => infer Result ? Result : never;
+
+export const PGLITE_FINANCIAL_OPERATIONS = Object.freeze(
+  Object.keys(PGLITE_FINANCIAL_CONTRACTS) as PGliteFinancialOperation[],
+);
+
+export function isPGliteFinancialOperation(value: unknown): value is PGliteFinancialOperation {
+  return typeof value === "string" && Object.hasOwn(PGLITE_FINANCIAL_CONTRACTS, value);
+}
 
 export type PGliteFinancialExpectedSources = readonly CanonicalOverviewExpectedSource[];
 
@@ -179,51 +382,24 @@ export type PGliteFinancialFailureCategory =
   | "conflict"
   | "fatal";
 
+/** The worker-owned implementation of every financial operation. */
 export type PGliteFinancialRegistry = Readonly<{
-  overviewCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<OverviewPageDto>;
-  assetsCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<AssetsPageDto>;
-  liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
-  spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
-  spendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
-  spendingCandidatePage(request: SpendingCandidatePageRequest): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
-  spendingPendingOverview(request: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
-  spendingMergeLog(request: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
-  spendingMonthInsight(request: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
-  spendingMerchantStats(request: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
-  spendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
-  spendingVersion(): Promise<number>;
-  previewVisibilityChanged(): Promise<void>;
-  spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
-  confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
-  denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
-  revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
-  setPurchaseCategory(input: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
-  confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
-  sourceAdmit(request: PGliteCanonicalSourceAdmissionRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalSourceAdmissionReceipt>;
-  sourceCommit(request: PGliteCanonicalFinancialCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalFinancialCommitResult>;
-  sourceCommitBatch(request: PGliteCanonicalFinancialCommitBatchRequest, options?: PGliteCanonicalCommitOptions): Promise<readonly PGliteCanonicalFinancialCommitResult[]>;
-  depositCommit(request: PGliteCanonicalDepositCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalDepositCommitResult>;
-  mixedCommit(request: PGliteCanonicalMixedCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalMixedCommitResult>;
-  balanceCapture(request: PGliteCanonicalBalanceCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalBalanceCommitResult>;
-  einvoiceCommit(request: CanonicalEInvoiceCaptureInput, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalEInvoiceCommitResult>;
-  creditCardCommit(request: PGliteCanonicalCreditCardCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalCreditCardCommitResult>;
-  creditCardBalance(request: PGliteCanonicalCreditCardBalanceCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalCreditCardCommitResult>;
-  loanCommit(request: PGliteCanonicalLoanCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalLoanCommitResult>;
-  investmentCommit(request: PGliteCanonicalInvestmentCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalInvestmentCommitResult>;
-  resolveLoanRelations(request: PGliteCanonicalLoanRelationResolutionRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalLoanRelationResolutionResult>;
-  resolveInvestmentRelations(request: PGliteCanonicalInvestmentRelationResolutionRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalInvestmentRelationResolutionResult>;
-  currentLoanRelations(options?: { sourceConnectionKey?: string; integrationNamespace?: string }): Promise<readonly Readonly<Record<string, unknown>>[]>;
-  currentLoanSettlementGroups(options?: { sourceConnectionKey?: string; integrationNamespace?: string }): Promise<readonly Readonly<Record<string, unknown>>[]>;
-  currentInvestmentRelations(sourceConnectionKey?: string): Promise<readonly Readonly<Record<string, unknown>>[]>;
-  readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
-  listTdccFundAccounts(connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>): Promise<readonly TdccAdmittedFundAccount[]>;
-  accountIdentityContinuity(request: AccountIdentityContinuityRequest): Promise<AccountIdentityContinuity>;
-  upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
+  [Op in PGliteFinancialOperation]: (
+    args: PGliteFinancialArgs<Op>,
+    options?: PGliteCanonicalCommitOptions,
+  ) => Promise<PGliteFinancialResult<Op>>;
 }>;
 
-export type PGliteFinancialRpcClient = Readonly<{
-  request<K extends PGliteFinancialOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown>;
-  registry: PGliteFinancialRegistry;
+/** Named financial operations, served in-process or across a worker port. */
+export type PGliteFinancialPort = Readonly<{
+  request<Op extends PGliteFinancialOperation>(
+    operation: Op,
+    args: PGliteFinancialArgs<Op>,
+    options?: PGliteFinancialRequestOptions,
+  ): Promise<PGliteFinancialResult<Op>>;
+}>;
+
+export type PGliteFinancialRpcClient = PGliteFinancialPort & Readonly<{
   close(error?: Error): void;
 }>;
 
@@ -286,7 +462,7 @@ export function createPGliteFinancialRpcClient(
     }
   };
   port.on("message", onMessage);
-  const request = <K extends PGliteFinancialOperation>(operation: K, args: readonly unknown[], options: PGliteFinancialRequestOptions = {}): Promise<unknown> => {
+  const send = (operation: PGliteFinancialOperation, args: readonly unknown[], options: PGliteFinancialRequestOptions = {}): Promise<unknown> => {
     if (closed) return Promise.reject(new PGliteFinancialError("worker-closed"));
     return new Promise((resolve, reject) => {
       if (options.signal?.aborted) {
@@ -353,48 +529,7 @@ export function createPGliteFinancialRpcClient(
       else send();
     });
   };
-  const call = <K extends PGliteFinancialOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions) => request(operation, args, options);
-  const registry: PGliteFinancialRegistry = {
-    overviewCurrent: (expectedSources) => call("financial.overview.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<OverviewPageDto>,
-    assetsCurrent: (expectedSources) => call("financial.assets.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<AssetsPageDto>,
-    liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
-    spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
-    spendingRecordPage: (request) => call("financial.spending.recordPage", [request]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>,
-    spendingCandidatePage: (request) => call("financial.spending.candidatePage", [request]) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>,
-    spendingPendingOverview: (request) => call("financial.spending.pendingOverview", [request]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>,
-    spendingMergeLog: (request) => call("financial.spending.mergeLog", [request]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>,
-    spendingMonthInsight: (request) => call("financial.spending.monthInsight", [request]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>,
-    spendingMerchantStats: (request) => call("financial.spending.merchantStats", [request]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>,
-    spendingPageAction: (request) => call("financial.spending.pageAction", [request]) as Promise<SpendingPageActionResult>,
-    spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
-    previewVisibilityChanged: () => call("financial.preview.visibilityChanged", []).then(() => undefined),
-    spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,
-    confirmCandidate: (input) => call("financial.spending.confirmCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
-    denyCandidate: (input) => call("financial.spending.denyCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
-    revokeLink: (input) => call("financial.spending.revokeLink", [input]) as Promise<SpendingPurchaseActionResult>,
-    setPurchaseCategory: (input) => call("financial.spending.setPurchaseCategory", [input]) as Promise<SpendingPurchaseCategoryResult>,
-    confirmStrongCandidates: (input) => call("financial.spending.confirmStrongCandidates", [input]) as Promise<SpendingStrongConfirmResult>,
-    sourceAdmit: (input, options) => call("financial.source.admit", [input], options) as Promise<PGliteCanonicalSourceAdmissionReceipt>,
-    sourceCommit: (input, options) => call("financial.source.commit", [input], options) as Promise<PGliteCanonicalFinancialCommitResult>,
-    sourceCommitBatch: (input, options) => call("financial.source.commitBatch", [input], options) as Promise<readonly PGliteCanonicalFinancialCommitResult[]>,
-    depositCommit: (input, options) => call("financial.deposit.commit", [input], options) as Promise<PGliteCanonicalDepositCommitResult>,
-    mixedCommit: (input, options) => call("financial.mixed.commit", [input], options) as Promise<PGliteCanonicalMixedCommitResult>,
-    balanceCapture: (input, options) => call("financial.balance.capture", [input], options) as Promise<PGliteCanonicalBalanceCommitResult>,
-    einvoiceCommit: (input, options) => call("financial.einvoice.commit", [input], options) as Promise<PGliteCanonicalEInvoiceCommitResult>,
-    creditCardCommit: (input, options) => call("financial.creditCard.commit", [input], options) as Promise<PGliteCanonicalCreditCardCommitResult>,
-    creditCardBalance: (input, options) => call("financial.creditCard.balance", [input], options) as Promise<PGliteCanonicalCreditCardCommitResult>,
-    loanCommit: (input, options) => call("financial.loan.commit", [input], options) as Promise<PGliteCanonicalLoanCommitResult>,
-    investmentCommit: (input, options) => call("financial.investment.commit", [input], options) as Promise<PGliteCanonicalInvestmentCommitResult>,
-    resolveLoanRelations: (input, options) => call("financial.loanRelations.resolve", [input], options) as Promise<PGliteCanonicalLoanRelationResolutionResult>,
-    resolveInvestmentRelations: (input, options) => call("financial.investmentRelations.resolve", [input], options) as Promise<PGliteCanonicalInvestmentRelationResolutionResult>,
-    currentLoanRelations: (input) => call("financial.loanRelations.current", input ? [input] : []) as Promise<readonly Readonly<Record<string, unknown>>[]>,
-    currentLoanSettlementGroups: (input) => call("financial.loanSettlementGroups.current", input ? [input] : []) as Promise<readonly Readonly<Record<string, unknown>>[]>,
-    currentInvestmentRelations: (input) => call("financial.investmentRelations.current", input ? [input] : []) as Promise<readonly Readonly<Record<string, unknown>>[]>,
-    readExchangeRates: (currencies) => call("financial.exchangeRates.read", currencies === undefined ? [] : [currencies]) as Promise<ExchangeRateRecord[]>,
-    upsertExchangeRates: (rows) => call("financial.exchangeRates.upsert", [rows]).then(() => undefined),
-    listTdccFundAccounts: (connection) => call("financial.tdccFundAccounts.list", [connection]) as Promise<readonly TdccAdmittedFundAccount[]>,
-    accountIdentityContinuity: (request) => call("financial.accountIdentity.continuity", [request]) as Promise<AccountIdentityContinuity>,
-  };
+
   const close = (error = new PGliteFinancialError("worker-closed")): void => {
     if (closed) return;
     closed = true;
@@ -405,5 +540,6 @@ export function createPGliteFinancialRpcClient(
     }
     pending.clear();
   };
-  return { request, registry: Object.freeze(registry), close };
+  const request = send as PGliteFinancialPort["request"];
+  return { request, close };
 }

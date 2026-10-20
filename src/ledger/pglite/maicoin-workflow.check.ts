@@ -9,7 +9,10 @@ import {
   type MaicoinStatementBatch,
 } from "../canonical/maicoin-crypto-adapters.ts";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
+import {
+  createPGliteFinancialLocalPort,
+  createPGliteFinancialRegistry,
+} from "../../../electron/pglite-financial-registry.ts";
 import { createMaicoinWorkflow } from "../../lib/automation/maicoin-workflow.ts";
 import { createWorkflowFinancialCommitPort } from "../../lib/automation/workflow-financial-commit.ts";
 import { strictSourceText } from "../../lib/automation/source-text.ts";
@@ -27,7 +30,7 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;
