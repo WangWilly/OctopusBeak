@@ -19,7 +19,7 @@ import {
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occurrence-groups.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { resolveYuantaFundIdentity } from "./yuanta-fund-identity.ts";

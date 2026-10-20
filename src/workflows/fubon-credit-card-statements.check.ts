@@ -20,9 +20,6 @@ registerHooks({
     if (specifier === "./fubon-auth.js") {
       return nextResolve("./fubon-auth.ts", context);
     }
-    if (specifier === "./run-selected-statements.js") {
-      return nextResolve("./run-selected-statements.ts", context);
-    }
     return nextResolve(specifier, context);
   },
 });

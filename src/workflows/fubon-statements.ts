@@ -58,7 +58,7 @@ import type {
   TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   readFubonCurrentDepositBalances,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,

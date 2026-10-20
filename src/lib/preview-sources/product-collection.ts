@@ -14,6 +14,7 @@ import {
   type CollectionProductOutcome,
   type ProductCollectionRunSummary,
 } from "../automation/product-collection.ts";
+import { productRunStatus } from "../automation/product-run-status.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { WorkflowEventCounts, WorkflowStage } from "../automation/workflow-executor.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
@@ -177,14 +178,13 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
 
 export function previewRunSummary(run: PreviewProductRun): ProductCollectionRunSummary {
   const committed = run.products.reduce((total, product) => total + product.committedCount, 0);
-  const failed = run.products.some((product) => product.status === "failed");
   return Object.freeze({
     products: run.products,
     sourceCaptureCount: 0,
     rowCount: run.receipts.reduce((total, receipt) => total + receipt.transactions, 0),
     itemCount: run.products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
-    status: failed ? committed > 0 ? "partial" : "failed" : "completed",
+    status: productRunStatus(run.products, committed),
   });
 }
 

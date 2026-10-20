@@ -44,7 +44,7 @@ const {
   yuantaForeignCurrencyStatementsInputSchema,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
-  await import("./run-selected-statements.ts");
+  await import("../lib/automation/product-collection.ts");
 
 const foreignWorkflowSource = await readFile(
   new URL("./yuanta-foreign-currency-statements.ts", import.meta.url),
