@@ -137,6 +137,29 @@ function loanRequest(captureId: string, amount = "1000", fixtureKey = "primary")
   };
 }
 
+test("a loan commit refreshes the current projection once for its own and counterpart captures", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    const request = loanRequestWithRepaymentDeposit("loan-projection-pin", "projection-pin");
+    assert.ok(request.capture.counterpartTransactions.length > 0, "the fixture writes a counterpart capture");
+    const refreshes: { captureIds?: readonly Uint8Array[]; transactionIds?: readonly Uint8Array[]; cutoffSequence: number; refreshEnrichmentAll?: boolean }[] = [];
+    const result = await commitPGliteCanonicalLoanCapture(store, request, {
+      clock: () => 100,
+      projection: async (_transaction, refresh) => { refreshes.push(refresh); },
+    });
+    assert.equal(refreshes.length, 1, "one refresh covers the whole loan commit");
+    assert.equal(refreshes[0]!.captureIds?.length, 1 + request.capture.counterpartTransactions.length);
+    assert.equal(refreshes[0]!.transactionIds?.length, result.transactions.length + result.counterpartTransactionCount);
+    const sequences = (await store.query<{ commit_sequence: number }>(
+      "SELECT commit_sequence FROM canonical_commits ORDER BY commit_sequence",
+    )).rows.map((row) => Number(row.commit_sequence));
+    assert.equal(refreshes[0]!.cutoffSequence, Math.max(...sequences), "the cutoff is the latest commit the loan wrote");
+  } finally {
+    await store.close();
+  }
+});
+
 function loanGroupRequest(captureId: string, memberCount: number): PGliteCanonicalLoanCommitRequest {
   const base = loanRequest(captureId);
   const firstRecord = base.capture.records[0]!;
