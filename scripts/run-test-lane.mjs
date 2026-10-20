@@ -125,7 +125,7 @@ function runNodeTests(files, options = {}) {
 
 function readReport(path) {
   try {
-    return readFileSync(join(ROOT, path), "utf8");
+    return readFileSync(path, "utf8");
   } catch {
     return "";
   }
@@ -139,8 +139,8 @@ function reportPrefixOf(lane, shard) {
 }
 
 /** Merge every per-lane report in `reports/`, whichever job or shard wrote it. */
-export function combineCiReports() {
-  const prefixes = readdirSync(join(ROOT, "reports"))
+export function combineCiReports(reports = join(ROOT, "reports")) {
+  const prefixes = readdirSync(reports)
     .map((file) => file.match(/^test-summary-(.+)\.txt$/u)?.[1])
     .filter((prefix) => prefix !== undefined)
     .sort((left, right) => {
@@ -148,16 +148,16 @@ export function combineCiReports() {
       return rank(left) - rank(right) || left.localeCompare(right, "en", { numeric: true });
     });
   const summaries = prefixes.map(
-    (prefix) => `# ${prefix} lane\n${readReport(`reports/test-summary-${prefix}.txt`)}\n`,
+    (prefix) => `# ${prefix} lane\n${readReport(join(reports, `test-summary-${prefix}.txt`))}\n`,
   );
-  writeFileSync(join(ROOT, "reports/test-summary.txt"), summaries.join(""));
+  writeFileSync(join(reports, "test-summary.txt"), summaries.join(""));
 
   const suites = prefixes.map((prefix) => {
-    const xml = readReport(`reports/junit-${prefix}.xml`);
+    const xml = readReport(join(reports, `junit-${prefix}.xml`));
     const match = xml.match(/<testsuites(?:\s[^>]*)?>([\s\S]*?)<\/testsuites>/u);
     return match?.[1] ?? "";
   });
-  writeFileSync(join(ROOT, "reports/junit.xml"), `<testsuites>${suites.join("")}</testsuites>\n`);
+  writeFileSync(join(reports, "junit.xml"), `<testsuites>${suites.join("")}</testsuites>\n`);
 }
 
 async function runLane(lane, options = {}) {
