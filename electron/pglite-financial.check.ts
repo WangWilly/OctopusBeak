@@ -178,11 +178,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   }
 }
 
-test("pairing prewarm checks the commit version without materializing Spending", async () => {
-  let versionReads = 0;
+test("pairing prewarm builds the version's pairing index without materializing Spending", async () => {
+  const prewarmed: number[] = [];
   const page = createPGliteFinancialPageClient({
     registry: {
-      spendingVersion: async () => { versionReads += 1; return 7; },
+      spendingPrewarmPairing: async (dataVersion: number) => { prewarmed.push(dataVersion); return 7; },
       spendingCurrent: async () => { throw new Error("full Spending read is not prewarm"); },
     },
   } as unknown as PGliteFinancialRpcClient);
@@ -192,7 +192,7 @@ test("pairing prewarm checks the commit version without materializing Spending",
   assert.deepEqual(await page.prewarmPairingCandidates({ dataVersion: 6 }), {
     status: "stale", dataVersion: 7, requestedVersion: 6,
   });
-  assert.equal(versionReads, 2);
+  assert.deepEqual(prewarmed, [7, 6]);
 });
 
 test("one worker exposes named financial reads/writes and complete live snapshots", async () => {

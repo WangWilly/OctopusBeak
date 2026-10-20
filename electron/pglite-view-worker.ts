@@ -22,6 +22,7 @@ import {
   createPGliteFinancialLiveViews,
   createPGliteFinancialRegistry,
   createPGliteFinancialRpcServer,
+  createPGliteWorkScheduler,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
@@ -74,10 +75,14 @@ export async function startPGliteViewWorker(
     operationalProvider.exchangeRates,
     () => currentPreviewVisibility(),
   );
+  // Renderer requests and live-view recomputes share the database; one queue
+  // lets a Pairing click start before refreshes that are still waiting.
+  const scheduler = createPGliteWorkScheduler();
   const financialViews = createPGliteFinancialLiveViews(
     db,
     financialRegistry,
     () => configuredOverviewSources(),
+    scheduler,
   );
   const source = {
     subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {
@@ -91,7 +96,7 @@ export async function startPGliteViewWorker(
       );
     },
   };
-  const financialServer = createPGliteFinancialRpcServer(port, financialRegistry);
+  const financialServer = createPGliteFinancialRpcServer(port, financialRegistry, undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
     port,
