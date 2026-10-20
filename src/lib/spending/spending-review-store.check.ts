@@ -29,7 +29,10 @@ async function settle() {
   for (let index = 0; index < 5; index += 1) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function harness(overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {}) {
+function harness(
+  overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {},
+  monthSettleMs = 0,
+) {
   const calls: Record<string, any[]> = { overview: [], insight: [], candidates: [], records: [], strong: [], category: [], cancels: [] };
   let refreshes = 0;
   const transport = {
@@ -49,7 +52,7 @@ function harness(overrides: Partial<Record<keyof SpendingReviewTransport, (...ar
     setPurchaseCategory: async (input: any) => { calls.category!.push(input); return { purchaseId: input.purchaseId, subject: "transaction", categoryCode: input.categoryCode, baseKnowledgeAt: input.knowledgeAt, knowledgeAt: input.knowledgeAt + 1 }; },
     ...overrides,
   } as unknown as SpendingReviewTransport;
-  const store = createSpendingReviewStore({ transport, refreshSummary: async () => { refreshes += 1; } });
+  const store = createSpendingReviewStore({ transport, refreshSummary: async () => { refreshes += 1; }, monthSettleMs });
   let snapshot!: SpendingReviewSnapshot;
   store.state.subscribe((next) => { snapshot = next; });
   return { store, calls, current: () => snapshot, refreshes: () => refreshes };
@@ -71,6 +74,22 @@ test("the month overview and month insight follow the page version and month", a
   store.sync(2, "2026-09");
   await settle();
   assert.deepEqual(calls.overview!.map((input) => input.knowledgeAt), [1, 1, 2]);
+});
+
+test("stepping through months reads only the month that stays chosen", async () => {
+  const { store, calls, current } = harness({}, 20);
+  store.sync(1, "2026-10");
+  await settle();
+  assert.deepEqual(calls.insight!.map((input) => input.month), ["2026-10"], "a new version reads at once");
+  store.sync(1, "2026-09");
+  store.sync(1, "2026-08");
+  store.sync(1, "2026-07");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await settle();
+  assert.deepEqual(calls.insight!.map((input) => input.month), ["2026-10", "2026-07"]);
+  assert.deepEqual(calls.overview!.map((input) => input.month), ["2026-10", "2026-07"]);
+  assert.equal(current().monthInsight?.month, "2026-07");
+  store.dispose();
 });
 
 test("a reply for an older version never replaces the newer overview", async () => {
