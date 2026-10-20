@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
-test("workflow assistance stages send resolved contracts through an injected typed publisher", async () => {
+test("a workflow assistance stage resolves to a contract that never carries the captured answer", async () => {
   const contract = await emitHumanAssistanceStage({
       stageId: "yuanta-bank-captcha",
       title: "Complete the CAPTCHA",

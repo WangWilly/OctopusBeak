@@ -1,7 +1,6 @@
 import type { AutomationRunManyResult, AutomationRunManyTaskResult } from "$lib/desktop/api.ts";
 import {
   assertAutomationTaskCanStartInModel,
-  loadAutomationCoreSnapshot,
   loadAutomationDesktopModel,
   type AutomationLiveRuns,
 } from "./desktop-api.ts";
@@ -42,10 +41,6 @@ export function createAutomationRuntime(
     upsertRuntimeTask: state.upsert,
     live,
     desktopModel,
-    coreSnapshot: (
-      credentialStatus: Parameters<typeof loadAutomationCoreSnapshot>[2],
-      credentialStates?: Parameters<typeof loadAutomationCoreSnapshot>[3],
-    ) => loadAutomationCoreSnapshot(provider, live(), credentialStatus, credentialStates),
     /** Finish rows a previous process left active, then publish the persisted runs. */
     async recover() {
       await recoverInterruptedAutomationRuns(provider);
