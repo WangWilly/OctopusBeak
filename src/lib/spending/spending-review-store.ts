@@ -67,7 +67,8 @@ export interface SpendingReviewStore {
   morePending(): Promise<void>;
   moreMerged(): Promise<void>;
   moreLog(): Promise<void>;
-  showMerchantStats(purchaseId: string | null): void;
+  /** `month` is where the purchase is shown; it lets the worker read only that month. */
+  showMerchantStats(purchaseId: string | null, month?: string | null): void;
   confirmStrong(): Promise<void>;
   setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<boolean>;
   dispose(): void;
@@ -228,6 +229,7 @@ export function createSpendingReviewStore(options: Readonly<{
   let listsVisible = false;
   let logVisible = false;
   let merchantPurchaseId: string | null = null;
+  let merchantMonth: string | null = null;
   let overviewToken = 0;
   let insightToken = 0;
   let merchantToken = 0;
@@ -264,7 +266,7 @@ export function createSpendingReviewStore(options: Readonly<{
   async function loadMerchantStats(knowledgeAt: number, purchaseId: string) {
     const token = ++merchantToken;
     try {
-      const stats = await reader.read(knowledgeAt, () => transport.loadMerchantStats({ knowledgeAt, purchaseId }));
+      const stats = await reader.read(knowledgeAt, () => transport.loadMerchantStats({ knowledgeAt, purchaseId, month: merchantMonth }));
       if (stats && token === merchantToken) publish({ merchantStats: stats });
     } catch {
       if (token === merchantToken) publish({ merchantStats: null });
@@ -327,8 +329,9 @@ export function createSpendingReviewStore(options: Readonly<{
     morePending: () => pending.more(),
     moreMerged: () => merged.more(),
     moreLog: () => log.more(),
-    showMerchantStats(purchaseId) {
+    showMerchantStats(purchaseId, purchaseMonth = null) {
       merchantPurchaseId = purchaseId;
+      merchantMonth = purchaseMonth;
       merchantToken += 1;
       publish({ merchantStats: null, categoryError: "" });
       if (purchaseId && value.knowledgeAt !== null) void loadMerchantStats(value.knowledgeAt, purchaseId);

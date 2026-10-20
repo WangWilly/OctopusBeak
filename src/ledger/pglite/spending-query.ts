@@ -942,6 +942,7 @@ function deterministicCandidateKey(invoiceId: string, transactionId: string): st
  */
 async function queryDeterministicCandidatePairs(
   reader: PGliteSpendingReader,
+  pairingTransactions?: readonly PairingTransaction[],
 ): Promise<readonly DeterministicCandidatePairRow[]> {
   const invoiceRows = rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
@@ -963,7 +964,7 @@ async function queryDeterministicCandidatePairs(
        FROM ranked
       WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL`,
   ));
-  const transactions = await queryPairingTransactionsDirect(reader);
+  const transactions = pairingTransactions ?? await queryPairingTransactionsDirect(reader);
   const byMoney = new Map<string, PairingTransaction[]>();
   for (const transaction of transactions) {
     const key = exactMoneyKey(transaction.amount);
@@ -2222,8 +2223,21 @@ function sqlUuid(expression: string): string {
  * of an account Direct source precedence covers is not eligible, and neither
  * is a refund of one.
  */
-const PURCHASE_ROWS_CTE = `
-    WITH covered_transactions AS MATERIALIZED (
+/**
+ * Every current purchase, or with "month" only the purchases dated in the
+ * month passed as the first parameter. Scoping drops unlinked payments of
+ * other months before any join; every linked transaction, active invoice, and
+ * refund still decides link validity and refund exclusion as for the whole
+ * set. The branches avoid joins whose row estimates a month filter would
+ * skew: a link carries its invoice and payment columns, and the exclusions are
+ * hashed NOT IN lookups (every id involved is NOT NULL).
+ */
+function purchaseRowsCte(scope: "all" | "month"): string {
+  const inMonth = (expression: string) => scope === "month"
+    ? `AND SUBSTRING(${expression}, 1, 7) = (SELECT month FROM purchase_scope)`
+    : "";
+  return `
+    WITH ${scope === "month" ? "purchase_scope AS MATERIALIZED (SELECT CAST(? AS text) AS month), " : ""}covered_transactions AS MATERIALIZED (
       SELECT transaction_id FROM financial_transactions WHERE NOT (${COUNTED_ACCOUNT_SQL("account_id")})
     ), invoice_ranked AS (
       SELECT revision.invoice_id, revision.revision_id, revision.amount_coefficient,
@@ -2273,13 +2287,18 @@ const PURCHASE_ROWS_CTE = `
              COALESCE(consume_date, posting_date, effective_on) AS occurrence_value
         FROM current_spending_pairing_entries
        WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
+         ${inMonth("COALESCE(consume_date, posting_date, effective_on)")}
       UNION ALL
       SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
         FROM linked_transactions
        WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
     ), valid_links AS MATERIALIZED (
       SELECT active_link.invoice_id, active_link.transaction_id,
-             active_link.confirmed_event_id AS event_id
+             active_link.confirmed_event_id AS event_id,
+             invoice.occurrence_value AS invoice_occurrence_value, invoice.revision_id AS invoice_revision_id,
+             invoice.amount_coefficient AS invoice_amount_coefficient, invoice.amount_scale AS invoice_amount_scale,
+             invoice.currency AS invoice_currency,
+             transaction_row.amount_coefficient, transaction_row.amount_scale, transaction_row.currency
         FROM current_spending_dedup_links active_link
         JOIN active_invoices invoice ON invoice.invoice_id = active_link.invoice_id
         JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = active_link.transaction_id
@@ -2303,18 +2322,15 @@ const PURCHASE_ROWS_CTE = `
          AND amount_coefficient IS NOT NULL AND occurrence_value IS NOT NULL
          AND transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
     ), purchase_rows AS MATERIALIZED (
-      SELECT 'linked' AS basis, invoice.occurrence_value,
-             transaction_row.amount_coefficient, transaction_row.amount_scale, transaction_row.currency,
-             invoice.amount_coefficient AS invoice_amount_coefficient,
-             invoice.amount_scale AS invoice_amount_scale,
-             invoice.currency AS invoice_currency,
-             invoice.invoice_id, invoice.revision_id AS invoice_revision_id,
-             transaction_row.transaction_id, link.event_id,
+      SELECT 'linked' AS basis, link.invoice_occurrence_value AS occurrence_value,
+             link.amount_coefficient, link.amount_scale, link.currency,
+             link.invoice_amount_coefficient, link.invoice_amount_scale, link.invoice_currency,
+             link.invoice_id, link.invoice_revision_id,
+             link.transaction_id, link.event_id,
              NULL::bytea AS refund_id,
              'link:' || ${sqlUuid("link.event_id")} AS purchase_id
         FROM valid_links link
-        JOIN active_invoices invoice ON invoice.invoice_id = link.invoice_id
-        JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = link.transaction_id
+       WHERE TRUE ${inMonth("link.invoice_occurrence_value")}
       UNION ALL
       SELECT 'invoice', invoice.occurrence_value,
              invoice.amount_coefficient, invoice.amount_scale, invoice.currency,
@@ -2322,7 +2338,8 @@ const PURCHASE_ROWS_CTE = `
              invoice.invoice_id, invoice.revision_id, NULL::bytea, NULL::bytea, NULL::bytea,
              'invoice:' || ${sqlUuid("invoice.invoice_id")}
         FROM active_invoices invoice
-       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.invoice_id = invoice.invoice_id)
+       WHERE invoice.invoice_id NOT IN (SELECT invoice_id FROM valid_links)
+         ${inMonth("invoice.occurrence_value")}
       UNION ALL
       SELECT 'bank-transaction', transaction_row.occurrence_value,
              transaction_row.amount_coefficient, transaction_row.amount_scale, transaction_row.currency,
@@ -2330,8 +2347,9 @@ const PURCHASE_ROWS_CTE = `
              NULL::bytea, NULL::bytea, transaction_row.transaction_id, NULL::bytea, NULL::bytea,
              'transaction:' || ${sqlUuid("transaction_row.transaction_id")}
         FROM eligible_transactions transaction_row
-       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.transaction_id = transaction_row.transaction_id)
-         AND NOT EXISTS (SELECT 1 FROM active_refunds refund WHERE refund.transaction_id = transaction_row.transaction_id)
+       WHERE transaction_row.transaction_id NOT IN (SELECT transaction_id FROM valid_links)
+         AND transaction_row.transaction_id NOT IN (SELECT transaction_id FROM active_refunds)
+         ${inMonth("transaction_row.occurrence_value")}
       UNION ALL
       SELECT 'refund', refund.occurrence_value,
              refund.amount_coefficient, refund.amount_scale, refund.currency,
@@ -2339,11 +2357,19 @@ const PURCHASE_ROWS_CTE = `
              NULL::bytea, NULL::bytea, refund.transaction_id, NULL::bytea, refund.refund_id,
              'refund:' || ${sqlUuid("refund.refund_id")}
         FROM active_refunds refund
+       WHERE TRUE ${inMonth("refund.occurrence_value")}
     )`;
-
-async function purchaseRowsParams(reader: PGliteSpendingReader, knowledgeAt: number): Promise<unknown[]> {
-  return [await readPGliteCoveredAccountIds(reader, knowledgeAt), knowledgeAt, knowledgeAt];
 }
+
+const PURCHASE_ROWS_CTE = purchaseRowsCte("all");
+const MONTH_PURCHASE_ROWS_CTE = purchaseRowsCte("month");
+
+/** Parameters for purchaseRowsCte; a month selects its "month" scope. */
+async function purchaseRowsParams(reader: PGliteSpendingReader, knowledgeAt: number, month?: string | null): Promise<unknown[]> {
+  const params = [await readPGliteCoveredAccountIds(reader, knowledgeAt), knowledgeAt, knowledgeAt];
+  return month ? [month, ...params] : params;
+}
+
 
 type PurchaseCategoryRow = Readonly<{
   purchaseId: string;
@@ -2401,12 +2427,10 @@ async function queryPurchaseCategoryRows(
   knowledgeAt: number,
   scope: Readonly<{ month?: string | null; day?: string | null }> = {},
 ): Promise<readonly PurchaseCategoryRow[]> {
-  const params: unknown[] = await purchaseRowsParams(reader, knowledgeAt);
-  const monthFilter = scope.month ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?" : "";
-  if (scope.month) params.push(scope.month);
+  const params: unknown[] = await purchaseRowsParams(reader, knowledgeAt, scope.month);
   const dayFilter = scope.day ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) = ?" : "";
   if (scope.day) params.push(scope.day);
-  const result = await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}
+  const result = await pgliteQuery<Row>(reader, `${scope.month ? MONTH_PURCHASE_ROWS_CTE : PURCHASE_ROWS_CTE}
     SELECT purchase_rows.basis, purchase_rows.occurrence_value, purchase_rows.purchase_id,
            purchase_rows.amount_coefficient, purchase_rows.amount_scale, purchase_rows.currency,
            purchase_rows.invoice_amount_coefficient, purchase_rows.invoice_amount_scale, purchase_rows.invoice_currency,
@@ -2451,7 +2475,7 @@ async function queryPurchaseCategoryRows(
                 ON categorization.invoice_id = purchase_rows.invoice_id AND categorization.item_sequence = item.sequence
              WHERE item.revision_id = purchase_rows.invoice_revision_id) AS item_rows
       FROM purchase_rows
-     WHERE TRUE ${monthFilter} ${dayFilter}
+     WHERE TRUE ${dayFilter}
   `, params);
   return rows(result).map((row) => {
     const basis = stringValue(row.basis, "Purchase basis") as PurchaseCategoryRow["basis"];
@@ -2562,7 +2586,6 @@ export async function queryCurrentSpendingRecordPage(
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
     ? Math.min(request.limit ?? 50, 100)
     : 50;
-  const monthFilter = month === null ? "" : "AND SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?";
   const dayFilter = day === null ? "" : "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) = ?";
   const cursorFilter = cursor === null
     ? ""
@@ -2589,18 +2612,17 @@ export async function queryCurrentSpendingRecordPage(
            strpos(LOWER(COALESCE(search_invoice.seller_name, '')), ?) > 0
         OR strpos(LOWER(COALESCE(search_transaction.description, '')), ?) > 0
         ${search.amount === null ? "" : "OR (purchase_rows.amount_coefficient IS NOT NULL AND purchase_rows.amount_coefficient::numeric = CAST(? AS numeric) * POWER(10::numeric, purchase_rows.amount_scale))"})`;
-  const params: unknown[] = await purchaseRowsParams(reader, current);
-  if (month !== null) params.push(month);
+  const params: unknown[] = await purchaseRowsParams(reader, current, month);
   if (day !== null) params.push(day);
   if (cursor !== null) params.push(cursor.occurrence, cursor.occurrence, cursor.purchaseId);
   if (matchingPurchaseIds !== null) params.push(...matchingPurchaseIds);
   if (basis !== null) params.push(basis);
   if (search !== null) params.push(search.text, search.text, ...(search.amount === null ? [] : [search.amount]));
   params.push(limit + 1);
-  const result = await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}, selected_rows AS (
+  const result = await pgliteQuery<Row>(reader, `${month === null ? PURCHASE_ROWS_CTE : MONTH_PURCHASE_ROWS_CTE}, selected_rows AS (
       SELECT purchase_rows.*
         FROM purchase_rows ${searchJoins}
-       WHERE TRUE ${monthFilter} ${dayFilter} ${cursorFilter} ${categoryFilter} ${basisFilter} ${searchFilter}
+       WHERE TRUE ${dayFilter} ${cursorFilter} ${categoryFilter} ${basisFilter} ${searchFilter}
        ORDER BY purchase_rows.occurrence_value DESC, purchase_rows.purchase_id ASC
        LIMIT ?
     )
@@ -2721,9 +2743,11 @@ export type PGlitePendingSpendingCandidates = Readonly<{
 export async function queryPendingSpendingCandidates(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
+  /** The version's eligible pairing transactions, when the caller already read them. */
+  pairingTransactions?: readonly PairingTransaction[],
 ): Promise<PGlitePendingSpendingCandidates> {
   const [deterministic, linkRows, decisionRows, durableRows] = await Promise.all([
-    queryDeterministicCandidatePairs(reader),
+    queryDeterministicCandidatePairs(reader, pairingTransactions),
     pgliteQuery<Row>(reader, "SELECT invoice_id, transaction_id FROM current_spending_dedup_links").then(rows),
     pgliteQuery<Row>(reader, "SELECT DISTINCT invoice_id, transaction_id FROM spending_dedup_decision_events").then(rows),
     pgliteQuery<Row>(reader,
@@ -3202,6 +3226,7 @@ export async function queryCurrentSpendingSummaryPage(
 /** Eligible pairing transactions of one data version and their rank index. */
 export type PGlitePairingIndex = Readonly<{
   knowledgeAt: number;
+  transactions: readonly PairingTransaction[];
   byId: ReadonlyMap<string, PairingTransaction>;
   index: ReturnType<typeof createSpendingManualPairingIndex>;
 }>;
@@ -3210,6 +3235,7 @@ async function queryPGlitePairingIndex(reader: PGliteSpendingReader, knowledgeAt
   const transactions = await queryPairingTransactionsDirect(reader);
   return Object.freeze({
     knowledgeAt,
+    transactions,
     byId: new Map(transactions.map((transaction) => [transaction.transactionId, transaction])),
     index: createSpendingManualPairingIndex(knowledgeAt, transactions),
   });
@@ -3318,10 +3344,10 @@ async function queryMonthPurchaseFacts(
   scope: MonthPurchaseFactsScope,
 ): Promise<readonly MonthPurchaseFact[]> {
   const monthFilter = "month" in scope
-    ? "SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?"
+    ? "TRUE"
     : `SUBSTRING(purchase_rows.occurrence_value, 1, 7) = (
          SELECT SUBSTRING(target.occurrence_value, 1, 7) FROM purchase_rows target WHERE target.purchase_id = ?)`;
-  const result = rows(await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}
+  const result = rows(await pgliteQuery<Row>(reader, `${"month" in scope ? MONTH_PURCHASE_ROWS_CTE : PURCHASE_ROWS_CTE}
     SELECT purchase_rows.basis, purchase_rows.purchase_id, purchase_rows.occurrence_value,
            purchase_rows.amount_coefficient, purchase_rows.amount_scale, purchase_rows.currency,
            invoice_revision.seller_tax_id, invoice_revision.seller_name,
@@ -3331,7 +3357,9 @@ async function queryMonthPurchaseFacts(
       LEFT JOIN current_transactions current_row ON current_row.transaction_id = purchase_rows.transaction_id
       LEFT JOIN transaction_revisions transaction_revision ON transaction_revision.revision_id = current_row.revision_id
      WHERE purchase_rows.basis <> 'refund' AND ${monthFilter}`,
-    [...await purchaseRowsParams(reader, knowledgeAt), "month" in scope ? scope.month : scope.purchaseId],
+    "month" in scope
+      ? await purchaseRowsParams(reader, knowledgeAt, scope.month)
+      : [...await purchaseRowsParams(reader, knowledgeAt), scope.purchaseId],
   ));
   return result.map((row) => Object.freeze({
     purchaseId: stringValue(row.purchase_id, "Month purchase identity"),
@@ -3375,7 +3403,13 @@ export async function queryCurrentSpendingMerchantStats(
   if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
     throw new TypeError("Spending merchant stats purchase id is required.");
   const purchaseId = request.purchaseId.trim();
-  const facts = await readFacts(reader, current, { purchaseId });
+  // The caller's month usually holds the purchase, and month insight reads it too.
+  const hinted = request.month && validSpendingMonth(request.month)
+    ? await readFacts(reader, current, { month: request.month })
+    : null;
+  const facts = hinted?.some((fact) => fact.purchaseId === purchaseId)
+    ? hinted
+    : await readFacts(reader, current, { purchaseId });
   const target = facts.find((fact) => fact.purchaseId === purchaseId);
   // The modal can still show a purchase that the last merge or revoke replaced.
   if (!target) return Object.freeze({
@@ -3507,7 +3541,11 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
   let pendingCache: PGlitePendingSpendingCandidates | null = null;
   const pendingAt = async (transaction: PGliteSpendingReader, knowledgeAt: number) => {
     if (pendingCache?.knowledgeAt !== knowledgeAt)
-      pendingCache = await queryPendingSpendingCandidates(transaction, knowledgeAt);
+      pendingCache = await queryPendingSpendingCandidates(
+        transaction,
+        knowledgeAt,
+        (await pairingIndexAt(transaction, knowledgeAt)).transactions,
+      );
     return pendingCache;
   };
   let pairingCache: Promise<PGlitePairingIndex> | null = null;

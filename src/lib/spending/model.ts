@@ -288,7 +288,12 @@ export type SpendingMonthInsightDto = Readonly<{
   largestByCurrency: readonly SpendingLargestPurchaseDto[];
 }>;
 
-export type SpendingMerchantStatsRequest = Readonly<{ knowledgeAt: number; purchaseId: string }>;
+export type SpendingMerchantStatsRequest = Readonly<{
+  knowledgeAt: number;
+  purchaseId: string;
+  /** `YYYY-MM` the caller saw the purchase in; lets the read scope to one month. */
+  month?: string | null;
+}>;
 
 /** Exact merchant identity: seller tax ID for invoice-backed purchases, normalized bank text otherwise. */
 export type SpendingMerchantIdentity = MerchantIdentity;
