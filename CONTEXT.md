@@ -1017,6 +1017,18 @@ _Avoid_: Next Bank image OCR, a non-five-digit Next Bank audio answer
 The calibrated CAPTCHA family on the Rakuten Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between the declared whole-image and per-character readings; missing agreement or a capture outside the family's dimensions, answer length, or character set fails closed.
 _Avoid_: Confidence-only Rakuten submission, repeated identical Rakuten OCR attempt, mixed-layout Rakuten CAPTCHA corpus
 
+**KGI Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the KGI Bank preview source: a 98-by-25-pixel image whose answer is exactly six decimal digits. Three declared whole-image strategies compare the generic preprocessing with two dark-foreground preparations. Automatic submission requires OCR Agreement or confidence at or above 0.99, and conflicting eligible answers are rejected. A capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted KGI CAPTCHA submission, lowered KGI confidence threshold, mixed-layout KGI CAPTCHA corpus
+
+**First Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the First Bank preview source: a 67-by-29-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires confidence at or above 0.97 from the best of three declared whole-image strategies, including dark-foreground extraction. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted First Bank CAPTCHA submission, lowered First Bank confidence threshold, mixed-layout First Bank CAPTCHA corpus
+
+**O-Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the O-Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between its declared whole-image and per-character teal-foreground readings. Confidence alone never permits submission, and a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Confidence-only O-Bank submission, unrestricted O-Bank CAPTCHA submission, mixed-layout O-Bank CAPTCHA corpus
+
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge goes to its solver route.
 _Avoid_: Assumed challenge, unconditional solve

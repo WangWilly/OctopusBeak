@@ -71,6 +71,9 @@ export const CAPTCHA_IMAGE_PREPROCESSING_MODES = [
   "fubon-min-channel-foreground",
   "rakuten-teal-foreground",
   "rakuten-teal-closed",
+  "firstbank-dark-foreground",
+  "kgibank-dark-foreground",
+  "kgibank-dark-padded",
 ] as const;
 
 export type CaptchaImagePreprocessingMode =

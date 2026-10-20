@@ -4,7 +4,6 @@ import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit
 import type { PreviewCreditCollection, PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import {
   createFirstbankSource,
-  FIRSTBANK_PREVIEW_SOURCE,
   type FirstbankCapture,
   type FirstbankCardPages,
   type FirstbankPage,
@@ -12,7 +11,8 @@ import {
   type FirstbankQueryAccount,
   type FirstbankSignInOutcome,
 } from "./firstbank-source.ts";
-import { depositCollection, runPreviewSource } from "./preview-source-harness.ts";
+import { blankPng, depositCollection, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
+import { calibratedCaptchaSolver, FIRSTBANK_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 
 const credentials = {
   PREVIEW_FIRSTBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -97,6 +97,7 @@ const cardCaptures = (parts: Readonly<{ dates?: unknown; bill?: unknown; payment
 ];
 
 type Script = Readonly<{
+  image?: Buffer;
   signIn?: FirstbankSignInOutcome;
   overview?: string;
   query?: readonly FirstbankQueryAccount[];
@@ -110,7 +111,7 @@ function fakePage(script: Script = {}) {
   let opens = 0;
   const capture = (endpoint: string, text: string, date: string | null = null): FirstbankCapture => ({ endpoint, status: 200, date, text });
   const page: FirstbankPage = {
-    async captchaImage() { calls.push("captcha"); return Buffer.from("png"); },
+    async captchaImage() { calls.push("captcha"); return script.image ?? Buffer.from("png"); },
     async signIn(input) { calls.push(`signIn:${input.idNumber}:${input.userCode}:${input.captcha}`); return script.signIn ?? { kind: "signed-in" }; },
     async depositOverview() {
       calls.push("overview");
@@ -399,16 +400,28 @@ test("a deposit failure leaves the card product collected in the same run", asyn
   assert.ok(result.fake.calls.includes("cardPages"));
 });
 
-test("production refuses the image CAPTCHA before opening any page", async () => {
-  const result = await runPreviewSource(FIRSTBANK_PREVIEW_SOURCE, credentials);
-  assert.equal(result.errorCode, "verification-configuration-failed", "the harness page throws if the source opens one");
-  assert.match(String(result.error), /firstbank-image-captcha/u);
-  assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+test("production refuses an unsupported First Bank capture without sign-in or logout", async () => {
   const fake = fakePage();
   const injected = await runPreviewSource(createFirstbankSource({ page: fake.opener }), credentials);
   assert.equal(injected.errorCode, "verification-configuration-failed");
-  assert.equal(fake.opens(), 0);
-  assert.deepEqual(fake.calls, []);
+  assert.ok(injected.events.some((event) => event.code === "solver-challenge-unsupported"));
+  assert.equal(fake.opens(), 1);
+  assert.deepEqual(fake.calls, ["captcha"]);
+});
+
+test("First Bank submits once after calibrated acceptance and never submits a low-confidence answer", async () => {
+  for (const confidence of [0.97, 0.969]) {
+    const fake = fakePage({ image: blankPng(67, 29) });
+    const engine = scriptedOcrEngine([{ text: "AB12", confidence }, { text: "", confidence: 0 }, { text: "", confidence: 0 }]);
+    const result = await runPreviewSource(createFirstbankSource({ page: fake.opener,
+      solveCaptcha: calibratedCaptchaSolver(FIRSTBANK_CAPTCHA_FAMILY, engine) }), credentials, undefined, ["deposit"]);
+    assert.equal(fake.calls.filter((call) => call.startsWith("signIn:")).length, confidence >= 0.97 ? 1 : 0);
+    if (confidence < 0.97) {
+      assert.equal(result.errorCode, "verification-failed");
+      assert.deepEqual(fake.calls, ["captcha"]);
+      assert.equal(result.writes.length, 0);
+    } else assert.equal(result.errorCode, null);
+  }
 });
 
 test("sign-in refusals are typed, collect nothing, and still attempt the logout", async () => {

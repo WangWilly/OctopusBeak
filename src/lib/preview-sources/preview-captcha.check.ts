@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY, nextbankAudioCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
+import { calibratedCaptchaSolver, FIRSTBANK_CAPTCHA_FAMILY, KGIBANK_CAPTCHA_FAMILY, MEGA_CAPTCHA_FAMILY, nextbankAudioCaptchaSolver, OBANK_CAPTCHA_FAMILY, RAKUTEN_CAPTCHA_FAMILY, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
 import { blankPng, scriptedOcrEngine } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewCaptchaChallenge } from "./source-kit.ts";
 import type { SpeechRecognitionEngine } from "../automation/server/audio-captcha-solver.ts";
@@ -17,6 +17,27 @@ const mega = (overrides: Partial<PreviewCaptchaChallenge> = {}): PreviewCaptchaC
   ({ image: blankPng(100, 49), charset: "digits", expectedLength: 5, ...overrides });
 const taishin = (overrides: Partial<PreviewCaptchaChallenge> = {}): PreviewCaptchaChallenge =>
   ({ image: blankPng(120, 36), charset: "digits", expectedLength: 6, ...overrides });
+
+test("KGI accepts agreement or 0.99 confidence, rejecting conflicts and incomplete answers", async () => {
+  const challenge: PreviewCaptchaChallenge = { image: blankPng(98, 25), charset: "digits", expectedLength: 6 };
+  const agreed = solve(KGIBANK_CAPTCHA_FAMILY, challenge, [
+    { text: "123456", confidence: 0.1 }, { text: "123456", confidence: 0.2 }, { text: "", confidence: 0 },
+  ]);
+  assert.equal(await agreed.answer, "123456");
+  assert.deepEqual(agreed.engine.calls, [
+    { imagePreprocessing: [], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["kgibank-dark-foreground"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["kgibank-dark-padded"], ocrPageSegmentationMode: "single-word" },
+  ]);
+  assert.equal(await solve(KGIBANK_CAPTCHA_FAMILY, challenge, [
+    { text: "123456", confidence: 0.99 }, { text: "", confidence: 0 }, { text: "", confidence: 0 },
+  ]).answer, "123456");
+  for (const results of [
+    [{ text: "123456", confidence: 0.989 }, { text: "", confidence: 0 }, { text: "", confidence: 0 }],
+    [{ text: "123456", confidence: 0.1 }, { text: "123456", confidence: 0.2 }, { text: "654321", confidence: 1 }],
+    [{ text: "12345", confidence: 1 }, { text: "12345", confidence: 1 }, { text: "", confidence: 0 }],
+  ]) assert.equal(await solve(KGIBANK_CAPTCHA_FAMILY, challenge, results).answer, null);
+});
 
 test("Rakuten accepts only whole-string / character agreement, including at low confidence", async () => {
   const challenge: PreviewCaptchaChallenge = { image: blankPng(152, 60), charset: "alphanumeric", expectedLength: 4 };
@@ -43,6 +64,15 @@ test("a capture outside the family is refused as unsupported before any OCR runs
     "Rakuten at another width": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(151, 60), charset: "alphanumeric", expectedLength: 4 }],
     "Rakuten with another length": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "alphanumeric", expectedLength: 5 }],
     "Rakuten with digits-only charset": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "digits", expectedLength: 4 }],
+    "KGI at another width": [KGIBANK_CAPTCHA_FAMILY, { image: blankPng(99, 25), charset: "digits", expectedLength: 6 }],
+    "KGI with another length": [KGIBANK_CAPTCHA_FAMILY, { image: blankPng(98, 25), charset: "digits", expectedLength: 4 }],
+    "KGI with letters": [KGIBANK_CAPTCHA_FAMILY, { image: blankPng(98, 25), charset: "alphanumeric", expectedLength: 6 }],
+    "First Bank at another size": [FIRSTBANK_CAPTCHA_FAMILY, { image: blankPng(68, 29), charset: "alphanumeric", expectedLength: 4 }],
+    "First Bank with another length": [FIRSTBANK_CAPTCHA_FAMILY, { image: blankPng(67, 29), charset: "alphanumeric", expectedLength: 5 }],
+    "First Bank with digits only": [FIRSTBANK_CAPTCHA_FAMILY, { image: blankPng(67, 29), charset: "digits", expectedLength: 4 }],
+    "O-Bank at another size": [OBANK_CAPTCHA_FAMILY, { image: blankPng(152, 61), charset: "alphanumeric", expectedLength: 4 }],
+    "O-Bank with another length": [OBANK_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "alphanumeric", expectedLength: 5 }],
+    "O-Bank with digits only": [OBANK_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "digits", expectedLength: 4 }],
   };
   for (const [name, [family, challenge]] of Object.entries(cases)) {
     const { engine, events, answer } = solve(family, challenge);

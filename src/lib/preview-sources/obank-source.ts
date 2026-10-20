@@ -6,8 +6,9 @@ import type {
   PreviewTimeDepositCollection,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
-import type { PreviewHttp, PreviewHttpOpener, PreviewImageDecoder } from "./browser-http.ts";
+import { decodeImageToPng, sniffImageType, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
 import { nodeHttp } from "./node-http.ts";
+import { calibratedCaptchaSolver, OBANK_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
@@ -20,7 +21,6 @@ import {
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
   solveChallengeRound,
   taipeiMonthWindow,
   text,
@@ -185,6 +185,13 @@ function client(context: PreviewWorkflowContext, http: PreviewHttp) {
 }
 
 type Api = ReturnType<typeof client>;
+
+// Public APIs accept Node HTTP, but the live challenge is JPEG. Decode media
+// in an isolated browser page; the bank app and its redirects are unnecessary.
+const obankHttp: PreviewHttpOpener = (context, session, use) =>
+  nodeHttp(context, session, (http, decode) => use(http, (image) =>
+    sniffImageType(image) === "image/png" ? decode(image)
+      : context.browser.withPage((page) => decodeImageToPng(page, image))));
 
 /** RSA PKCS#1 v1.5 over the value followed by the server time factor, base64. */
 export function encryptObankLoginValue(publicKeyPem: string, value: string, timeFactor: string): string {
@@ -378,7 +385,7 @@ async function signIn(
 }
 
 export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; solveCaptcha?: PreviewCaptchaSolver }> = {}): PreviewSource {
-  const open = options.http ?? nodeHttp;
+  const open = options.http ?? obankHttp;
   return {
     id: "obank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["obank-deposit"],
@@ -392,8 +399,8 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live O-Bank account. Its data may be incomplete or wrong. O-Bank's sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的王道銀行帳戶執行過，資料可能不完整或有誤。王道銀行登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live O-Bank account. Its data may be incomplete or wrong. Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
+        "zh-TW": "預覽來源，從未以真實的王道銀行帳戶執行過，資料可能不完整或有誤。圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
       },
       requirements: [{ en: "An O-Bank account with online banking sign-in.", "zh-TW": "可登入網路銀行的王道銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to O-Bank online banking.", "zh-TW": "輸入登入王道銀行網路銀行使用的身分證字號、使用者代號與密碼。" }],
@@ -411,8 +418,7 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
     startUrl: WEB_PAGE,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "obank-image-captcha");
+      const solve = options.solveCaptcha ?? calibratedCaptchaSolver(OBANK_CAPTCHA_FAMILY);
       return open(context, { pageUrl: input.startUrl }, async (http, decodeImage) => {
         const api = client(context, http);
         await signIn(context, api, decodeImage, solve, input.credentials);

@@ -4,7 +4,9 @@ import test from "node:test";
 import type { PreviewHttpRequest } from "./browser-http.ts";
 import { createObankSource, obankDate } from "./obank-source.ts";
 import type { PreviewTimeDepositCollection, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { calibratedCaptchaSolver, OBANK_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import type { PreviewWorkflowContext } from "./workflow.ts";
 import { withPreviewStore } from "./preview-store-harness.ts";
 
 const credentials = {
@@ -182,12 +184,67 @@ test("the user code and password leave only RSA-sealed with the server time fact
   assert.match(adapterCall.headers!.checksum!, /^[0-9a-f]{32}$/u);
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before any request", async () => {
+test("an unsupported O-Bank capture fails before credential sealing or sign-in", async () => {
   const http = fakeHttpOpener(routes());
   const result = await runPreviewSource(createObankSource({ http }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(http.requests.length, 0);
+  assert.ok(http.requests.length > 0);
+  assert.ok(http.requests.every((request) => !/submitCredentials|sendAndReceive$/u.test(request.url)));
+  assert.ok(!http.requests.some((request) => request.body?.includes("common/EndToEnd/020")));
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+});
+
+test("O-Bank calibrated disagreement stops before credentials, while agreement signs in once", async () => {
+  for (const [second, accepted] of [["AB12", true], ["AB13", false], ["", false]] as const) {
+    const http = fakeHttpOpener(routes({}, {}, {
+      "common/CMN01001/010": () => jsonResponse(envelope({ img: `data:image/png;base64,${blankPng(152, 60).toString("base64")}` })),
+    }));
+    const engine = scriptedOcrEngine([{ text: "AB12", confidence: 1 }, { text: second, confidence: 1 }]);
+    const result = await runPreviewSource(createObankSource({ http, solveCaptcha: calibratedCaptchaSolver(OBANK_CAPTCHA_FAMILY, engine) }), credentials);
+    assert.equal(http.requests.filter((request) => request.url.endsWith("/submitCredentials")).length, accepted ? 1 : 0);
+    if (!accepted) {
+      assert.equal(result.errorCode, "verification-failed");
+      assert.ok(!http.requests.some((request) => request.body?.includes("common/EndToEnd/020")));
+      assert.equal(result.writes.length, 0);
+    }
+  }
+});
+
+test("O-Bank's default Node transport decodes a JPEG challenge to PNG before solving", async (t) => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 152, height: 60 } });
+    const jpeg = await page.screenshot({ type: "jpeg" });
+    const transport = routes({}, {}, {
+      "common/CMN01001/010": () => jsonResponse(envelope({ img: `data:image/jpeg;base64,${jpeg.toString("base64")}` })),
+    });
+    const requests: PreviewHttpRequest[] = [];
+    t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input);
+      const request = { method: init!.method as "GET" | "POST", url, body: init!.body as string, headers: Object.fromEntries(new Headers(init!.headers)) };
+      requests.push(request);
+      const reply = await transport[`${request.method} ${new URL(url).pathname}`]!(request, 0);
+      return new Response(reply.text, { status: reply.status, headers: reply.headers });
+    });
+    let captured = false;
+    const source = createObankSource({ solveCaptcha: async (_context, challenge) => {
+      assert.ok("image" in challenge);
+      assert.equal(challenge.image.readUInt32BE(16), 152);
+      assert.equal(challenge.image.readUInt32BE(20), 60);
+      assert.equal(challenge.image.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+      captured = true;
+      return null;
+    } });
+    const context = { signal: new AbortController().signal, now: () => "2026-10-20T00:00:00Z", event: async () => {},
+      browser: { withPage: async (use: (value: typeof page) => unknown) => use(page) }, preview: { observe: () => {} } } as unknown as PreviewWorkflowContext;
+    await assert.rejects(source.run(context, { startUrl: source.startUrl, credentials: {}, products: source.products }));
+    assert.ok(captured);
+    assert.ok(!requests.some((request) => request.url.endsWith("/submitCredentials")));
+    assert.equal(page.url(), "about:blank", "image decoding never opens the bank app");
+  } finally {
+    await browser.close();
+  }
 });
 
 test("another signed-in session ends the run as session-conflict without forcing a takeover", async () => {

@@ -77,7 +77,7 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
     const captures = await readCaptures(corpusDirectory);
     const { entries } = await readLabels(corpusDirectory, bank.id);
     return {
-      bank: { id: bank.id, displayName: bank.displayName, charset: bank.charset, declaredLength: bank.declaredLength?.value ?? null, preprocessing: bank.preprocessing ?? null },
+      bank: { id: bank.id, displayName: bank.displayName, charset: bank.charset, declaredLength: bank.declaredLength?.value ?? null, authoritativeLength: bank.declaredLength?.authority === "source" ? bank.declaredLength.value : null, preprocessing: bank.preprocessing ?? null },
       captures: captures.map(({ id, width, height }) => ({ id, width, height })),
       entries,
       progress: { confirmed: captures.filter(({ id }) => entries[id]?.confirmed).length, total: captures.length },
@@ -103,6 +103,9 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
     } else {
       const answer = normalizeCaptchaText(body.answer, bank.charset);
       if (!answer) throw new HttpError(400, "The answer is empty after normalization.");
+      if (bank.declaredLength?.authority === "source" && answer.length !== bank.declaredLength.value) {
+        throw new HttpError(400, `The source requires exactly ${bank.declaredLength.value} characters. Correct the answer or mark it unreadable with Esc.`);
+      }
       confirmation = { answer, at };
     }
     const labels = await updateLabels(corpusDirectory, bank.id, (entries) => withConfirmation(entries, body.id, confirmation));
@@ -218,12 +221,16 @@ let index = 0;
 const $ = (id) => document.getElementById(id);
 
 function entry(id) { return state.entries[id] || {}; }
-function confirmedCount() { return state.captures.filter(({ id }) => entry(id).confirmed).length; }
+function validConfirmation(id) {
+  const confirmed = entry(id).confirmed;
+  return confirmed && (confirmed.unreadable || state.bank.authoritativeLength === null || confirmed.answer.length === state.bank.authoritativeLength);
+}
+function confirmedCount() { return state.captures.filter(({ id }) => validConfirmation(id)).length; }
 function nextUnconfirmed(from) {
   const total = state.captures.length;
   for (let step = 1; step <= total; step += 1) {
     const candidate = (from + step) % total;
-    if (!entry(state.captures[candidate].id).confirmed) return candidate;
+    if (!validConfirmation(state.captures[candidate].id)) return candidate;
   }
   return -1;
 }
@@ -265,6 +272,10 @@ function render() {
   const status = $("status");
   status.className = confirmed ? (confirmed.unreadable ? "status-unreadable" : "status-confirmed") : "";
   status.textContent = confirmed ? (confirmed.unreadable ? "Marked unreadable" : "Confirmed " + confirmed.answer) : "Not confirmed";
+  if (confirmed && !validConfirmation(capture.id)) {
+    status.className = "status-unreadable";
+    status.textContent = "The confirmed answer has the wrong length. Please correct it, or press Esc if unreadable.";
+  }
   const input = $("answer");
   input.value = confirmed && !confirmed.unreadable ? confirmed.answer : (suggested ? suggested.answer : "");
   input.inputMode = state.bank.charset === "digits" ? "numeric" : "text";
@@ -315,7 +326,7 @@ $("next").addEventListener("click", () => move(1));
 fetch("/api/state").then((response) => response.json()).then((loaded) => {
   state = loaded;
   $("title").textContent = state.bank.displayName + " CAPTCHA labelling";
-  const first = state.captures.findIndex(({ id }) => !entry(id).confirmed);
+  const first = state.captures.findIndex(({ id }) => !validConfirmation(id));
   index = first === -1 ? 0 : first;
   render();
 });

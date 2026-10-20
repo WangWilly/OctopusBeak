@@ -19,6 +19,8 @@ const LOGIN_REQUEST = [
   /\/web\/login\/login$/u,
   /\/gateway\/prod-oidc\/connect\/token$/u,
   /\/NetBank\/login\.html$/iu,
+  /\/AuthenticationAdapter\/submitCredentials$/u,
+  /\/AuthenticationAdapter\/sendAndReceive$/u,
 ];
 
 let browser;
@@ -99,6 +101,23 @@ function firstbankSite(image) {
   };
 }
 
+function obankSite(image) {
+  return (method, url, body) => {
+    if (url.host !== "www.o-bank.com") return null;
+    if (method === "GET" && url.pathname.endsWith("/default/index.html")) return html("<html><body>obank</body></html>");
+    if (url.pathname.endsWith("/ChannelAdapter/getChannel")) return json({ channel: "" });
+    if (url.pathname.endsWith("/oauth/token")) return json({ access_token: "public-token" });
+    if (url.pathname.endsWith("/AuthenticationAdapter/emptyLogin")) return json({ authStatus: "required" });
+    if (url.pathname.endsWith("/AuthenticationAdapter/sendAndReceiveNoSec")) {
+      const [resource] = JSON.parse(body);
+      const rsData = resource === "common/CMN01003/010" ? { params: { e2e: "unused-before-capture" } }
+        : resource === "common/CMN01001/010" ? { img: `data:image/png;base64,${image.toString("base64")}` } : {};
+      return json({ isSuccessful: true, statusCode: "0000", rsData });
+    }
+    return null;
+  };
+}
+
 function fakeBrowserPort(site, contextOptions = {}) {
   const sent = [];
   const served = [];
@@ -141,6 +160,7 @@ const BANK_CASES = [
   { bank: "taishin", site: taishinSite, image: () => solidPng(90, 35), size: [90, 35], mediaType: "image/png", declaredLength: 6 },
   { bank: "kgibank", site: kgibankSite, image: () => solidPng(120, 40), size: [120, 40], mediaType: "image/png" },
   { bank: "firstbank", site: firstbankSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
+  { bank: "obank", site: obankSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
 ];
 
 for (const { bank: id, site, image, size, mediaType, declaredLength, inputFormat } of BANK_CASES) {

@@ -94,6 +94,24 @@ test("digit banks keep digits only and an empty answer is rejected", async () =>
   });
 });
 
+test("source lengths reject incomplete ground truth while hints allow other lengths", async () => {
+  await withServer("firstbank", async (url, directory) => {
+    const short = await postLabel(url, { id: "first", answer: "1" });
+    assert.equal(short.status, 400);
+    assert.match(JSON.parse(short.body).error, /exactly 4 characters/);
+    assert.equal((await labelsIn(directory)).first.confirmed, undefined);
+    assert.equal((await postLabel(url, { id: "first", answer: "ab12" })).status, 200);
+    assert.equal((await postLabel(url, { id: "second", unreadable: true })).status, 200);
+    const state = JSON.parse((await send(url, { path: "/api/state" })).body);
+    assert.equal(state.bank.authoritativeLength, 4);
+  });
+  await withServer("taishin", async (url) => {
+    assert.equal((await postLabel(url, { id: "first", answer: "12345" })).status, 200);
+    const state = JSON.parse((await send(url, { path: "/api/state" })).body);
+    assert.equal(state.bank.authoritativeLength, null);
+  });
+});
+
 test("cross-site label posts are refused", async () => {
   await withServer("mega", async (url, directory) => {
     assert.equal((await postLabel(url, { id: "first", answer: "12345" }, { origin: "https://evil.example" })).status, 403);
