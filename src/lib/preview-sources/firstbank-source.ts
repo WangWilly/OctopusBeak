@@ -736,7 +736,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
       return open(context, input.startUrl, async (page) => {
         try {
           const captcha = await solveChallengeRound(context, solve, async () =>
-            ({ image: await page.captchaImage(), charset: "digits", expectedLength: CAPTCHA_LENGTH }), 1);
+            ({ image: await page.captchaImage(), charset: "alphanumeric", expectedLength: CAPTCHA_LENGTH }), 1);
           const outcome = await page.signIn({
             idNumber: input.credentials[KEY.idNumber] ?? "",
             userCode: input.credentials[KEY.userCode] ?? "",

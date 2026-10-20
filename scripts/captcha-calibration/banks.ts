@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { BrowserContextOptions } from "playwright";
-import type { ChallengeCharacterSet } from "../../src/lib/automation/human-assistance.ts";
+import type { CaptchaImagePreprocessingMode, ChallengeCharacterSet } from "../../src/lib/automation/human-assistance.ts";
 import { strictSourceText } from "../../src/lib/automation/source-text.ts";
 import type { WorkflowBrowserPort } from "../../src/lib/automation/workflow-executor.ts";
+import { createFirstbankSource } from "../../src/lib/preview-sources/firstbank-source.ts";
+import { createKgibankSource } from "../../src/lib/preview-sources/kgibank-source.ts";
 import { createMegaSource } from "../../src/lib/preview-sources/mega-source.ts";
 import { createRakutenSource } from "../../src/lib/preview-sources/rakuten-source.ts";
 import type { PreviewSource } from "../../src/lib/preview-sources/registry.ts";
@@ -11,7 +13,7 @@ import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-log
 import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
 
-export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten"] as const;
+export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten", "kgibank", "firstbank"] as const;
 export type CalibrationBank = typeof CALIBRATION_BANKS[number];
 
 export function isCalibrationBank(value: string): value is CalibrationBank {
@@ -36,6 +38,8 @@ export type CalibrationBankSpec = Readonly<{
   declaredLength?: DeclaredLength;
   method: CaptureMethod;
   contextOptions?: BrowserContextOptions;
+  /** The preprocessing shown beside the raw image on the labelling page. */
+  preprocessing?: readonly CaptchaImagePreprocessingMode[];
   denyRules: readonly DenyRule[];
   capture(browser: WorkflowBrowserPort, signal: AbortSignal): Promise<CapturedChallenge>;
 }>;
@@ -137,7 +141,28 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     // rakuten-source CAPTCHA_LENGTH.
     declaredLength: { value: 4, authority: "source" },
     method: "preview-source",
+    preprocessing: ["rakuten-teal-foreground"],
     denyRules: [{ name: "rakuten-login", path: /\/channel-cgn\/CGNOT0001\/login/iu }],
     capture: (browser, signal) => captureThroughSource(createRakutenSource, browser, signal),
+  },
+  kgibank: {
+    id: "kgibank",
+    displayName: "KGI Bank",
+    charset: "digits",
+    // kgibank-login-form CAPTCHA_LENGTH.
+    declaredLength: { value: 6, authority: "source" },
+    method: "preview-source",
+    denyRules: [{ name: "kgibank-login", method: "POST", path: /\/gateway\/prod-oidc\/connect\/token$/u }],
+    capture: (browser, signal) => captureThroughSource(createKgibankSource, browser, signal),
+  },
+  firstbank: {
+    id: "firstbank",
+    displayName: "First Bank",
+    charset: "alphanumeric",
+    // firstbank-source CAPTCHA_LENGTH.
+    declaredLength: { value: 4, authority: "source" },
+    method: "preview-source",
+    denyRules: [{ name: "firstbank-login", method: "POST", path: /\/NetBank\/login\.html$/iu }],
+    capture: (browser, signal) => captureThroughSource(createFirstbankSource, browser, signal),
   },
 };

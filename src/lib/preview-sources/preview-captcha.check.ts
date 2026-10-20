@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY, nextbankAudioCaptchaSolver, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
+import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY, nextbankAudioCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY, TAISHIN_CAPTCHA_FAMILY, type PreviewCaptchaFamily } from "./preview-captcha.ts";
 import { blankPng, scriptedOcrEngine } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewCaptchaChallenge } from "./source-kit.ts";
 import type { SpeechRecognitionEngine } from "../automation/server/audio-captcha-solver.ts";
@@ -18,6 +18,19 @@ const mega = (overrides: Partial<PreviewCaptchaChallenge> = {}): PreviewCaptchaC
 const taishin = (overrides: Partial<PreviewCaptchaChallenge> = {}): PreviewCaptchaChallenge =>
   ({ image: blankPng(120, 36), charset: "digits", expectedLength: 6, ...overrides });
 
+test("Rakuten accepts only whole-string / character agreement, including at low confidence", async () => {
+  const challenge: PreviewCaptchaChallenge = { image: blankPng(152, 60), charset: "alphanumeric", expectedLength: 4 };
+  const result = solve(RAKUTEN_CAPTCHA_FAMILY, challenge, [{ text: "AB29", confidence: 0.01 }, { text: "ab29", confidence: 0.02 }]);
+  assert.equal(await result.answer, "AB29");
+  assert.deepEqual(result.engine.calls, [
+    { imagePreprocessing: ["rakuten-teal-closed"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrPageSegmentationMode: undefined, ocrCharacterSegmentation: "rakuten-four-slots" },
+  ]);
+  for (const second of ["AB28", "", "AB299", "AB2"]) {
+    assert.equal(await solve(RAKUTEN_CAPTCHA_FAMILY, challenge, [{ text: "AB29", confidence: 1 }, { text: second, confidence: 1 }]).answer, null);
+  }
+});
+
 test("a capture outside the family is refused as unsupported before any OCR runs", async () => {
   const cases: Record<string, readonly [PreviewCaptchaFamily, PreviewCaptchaChallenge]> = {
     "Mega at another width": [MEGA_CAPTCHA_FAMILY, mega({ image: blankPng(101, 49) })],
@@ -27,6 +40,9 @@ test("a capture outside the family is refused as unsupported before any OCR runs
     "Mega as undecoded JPEG": [MEGA_CAPTCHA_FAMILY, mega({ image: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]) })],
     "Taishin at another height": [TAISHIN_CAPTCHA_FAMILY, taishin({ image: blankPng(120, 40) })],
     "Taishin with a page that declares four digits": [TAISHIN_CAPTCHA_FAMILY, taishin({ expectedLength: 4 })],
+    "Rakuten at another width": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(151, 60), charset: "alphanumeric", expectedLength: 4 }],
+    "Rakuten with another length": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "alphanumeric", expectedLength: 5 }],
+    "Rakuten with digits-only charset": [RAKUTEN_CAPTCHA_FAMILY, { image: blankPng(152, 60), charset: "digits", expectedLength: 4 }],
   };
   for (const [name, [family, challenge]] of Object.entries(cases)) {
     const { engine, events, answer } = solve(family, challenge);

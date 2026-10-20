@@ -225,7 +225,19 @@ test("the OCR solver applies a planned strategy over the base metadata", async (
     },
   });
   assert.deepEqual(result, { answer: "123456", confidence: 0.95 });
-  assert.deepEqual(received.slice(2), [[], "single-line", "grayscale"]);
+  assert.deepEqual(received.slice(2), [[], "single-line", "grayscale", undefined]);
+});
+
+test("a character strategy reaches the engine without inheriting the whole-image page mode", async () => {
+  let received: unknown[] = [];
+  const result = await textCaptchaSolver({ recognize: async (...args) => {
+    received = args;
+    return { text: "ab29", confidence: 0.7 };
+  } }).solve({ image: fixtureImage, challengeKind: "text-captcha", charset: "alphanumeric", expectedAnswerLength: 4,
+    ocrPageSegmentationMode: "single-word",
+    strategy: { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" } });
+  assert.deepEqual(received.slice(2), [["rakuten-teal-foreground"], undefined, undefined, "rakuten-four-slots"]);
+  assert.deepEqual(result, { answer: "AB29", confidence: 0.7 });
 });
 
 test("a planned wrong-length strategy does not run an undeclared fallback pipeline", async () => {

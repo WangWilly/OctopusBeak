@@ -1,6 +1,6 @@
 # How to calibrate a preview source CAPTCHA
 
-ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin and Mega preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. The Rakuten source has none, so its production runs stop at sign-in. The measured results are in [the calibration record](../research/2026-10-15-preview-captcha-calibration.md). `npm run calibrate:captcha` is the development-only tool for phase 1 of issue #224. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin, Mega, and Rakuten preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. See [the initial calibration record](../research/2026-10-15-preview-captcha-calibration.md) and [Rakuten's calibration and held-out validation](../research/2026-10-20-rakuten-captcha-calibration.md). `npm run calibrate:captcha` is the development-only calibration tool. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
 
 You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
 
@@ -8,7 +8,7 @@ A separate tool validates the Next Bank audio CAPTCHA: `npm run validate:nextban
 
 ## Run the four steps for a bank
 
-Replace `mega` with `taishin` or `rakuten` for the other banks.
+Replace `mega` with `taishin`, `rakuten`, `kgibank`, or `firstbank` for the other banks.
 
 1. Collect the images. The browser window opens on your screen. Add `--headless` to hide it.
 
@@ -47,6 +47,8 @@ To collect more images, run `collect` again. It appends to the corpus. Run `prel
 | `mega` | Preview source | OAuth client credentials, `/main/init`, the App initialize call, then `/fco/fco00001/captcha`. The image comes back as base64 in the JSON response. |
 | `rakuten` | Preview source page driver | The login page. The image is a data URI in `div.pic_veri captcha-image img`. |
 | `taishin` | Preview source login form | The RWD login page. `form.captcha()` takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
+| `kgibank` | Preview source | The Ionic login page (`/ibank/`). `form.captcha()` reads the CAPTCHA data URL from `img[src^="data:image"]` (or `ion-img.recaptcha-image`) and decodes it to PNG. Use `--headless`: KGI's landing page rejects a visible Playwright browser with 「瀏覽器不支援」. |
+| `firstbank` | Preview source page driver | The iBank login page. `page.captchaImage()` takes the `code_verify1.jpg` response bytes and decodes them to PNG. |
 
 Two guards keep `collect` from signing in:
 
@@ -90,13 +92,21 @@ The page shows each image at six times its size with `image-rendering: pixelated
 
 The **Previous** and **Next** buttons also move between images. The server stores the answer after the production normalization: digits only for a digit bank, and uppercase letters and digits for an alphanumeric bank. The page shows how many OCR strategies agree with the suggestion and how many images you have confirmed.
 
+When the source declares an authoritative answer length, prelabel suggests only answers of that length. A bank's length hint does not filter suggestions. All OCR candidates, including other lengths, stay in `labels.json` for evaluation, and rerunning prelabel preserves confirmed labels.
+
 Mark an image unreadable when you cannot read it with confidence. Evaluate counts any answer the solver would submit for an unreadable image as a false accept.
 
 ## Read the evaluate output
 
 `evaluate` uses only confirmed labels and the stored OCR candidates. It does not run OCR again. For each configuration, it calls the production `solveVerificationChallenge` with the cached candidates.
 
-It tries each of the 18 strategies alone with confidence only. It tries every pair and triple of strategies with confidence only, with agreement only, and with confidence or agreement that rejects conflicts. Thresholds run from 0.50 to 0.95 in steps of 0.05, plus 0.97 and 0.99. Agreement only ignores the threshold, so it appears once with threshold `n/a`.
+It tries each strategy in `scripts/captcha-calibration/strategies.ts` alone with confidence only. It tries every pair and triple of strategies with confidence only, with agreement only, and with confidence or agreement that rejects conflicts. Thresholds run from 0.50 to 0.95 in steps of 0.05, plus 0.97 and 0.99. Agreement only ignores the threshold, so it appears once with threshold `n/a`.
+
+Rakuten has two foreground strategies: `rakuten-teal-foreground` extracts teal pixels and removes neutral interference; `rakuten-teal-closed` then applies one 3×3 square dilation followed by erosion to the black foreground. Closing fills small holes and gaps while restoring the outer stroke bounds away from the image border. Both require 152×60 input. They are separate candidates, so evaluate can compare the original filtering with closing. Rerun `prelabel rakuten` before `evaluate rakuten` to measure the added strategy on your corpus.
+
+The grid also includes `pre=rakuten-teal-foreground|split=rakuten-four-slots`. It uses the same teal extraction, chooses cuts near four character slots from the column ink projection, tightly crops each glyph, doubles it, adds a 10px white border, and runs Tesseract's single-character mode. Every glyph must normalize to exactly one character; otherwise the whole strategy returns no answer. The four internal OCR calls constitute one Solve Attempt, not four agreement votes. Unsupported geometry and empty slots fail closed.
+
+This fixed pipeline is declared with `ocrCharacterSegmentation: "rakuten-four-slots"`; it owns its page segmentation and output stage, so those two overrides must be omitted. Rerun `prelabel` after adding a strategy: `evaluate` uses cached candidates and cannot run a missing strategy itself. The Rakuten production family keeps the whole-image/per-character agreement pair validated on held-out images even if a later grid sweep ranks another configuration higher.
 
 - Coverage is accepted images divided by confirmed images.
 - FAR (false-accept rate) is wrong accepted answers divided by accepted images. The output also shows wrong answers divided by all confirmed images.
@@ -115,7 +125,7 @@ The recommendation is the configuration with the highest coverage among those wi
 
 ## Use the result in phase 2
 
-Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY` and `MEGA_CAPTCHA_FAMILY` show the result.
+Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY`, `MEGA_CAPTCHA_FAMILY`, and `RAKUTEN_CAPTCHA_FAMILY` show the result.
 
 1. Copy the recommended declaration, or a configuration you choose from the evaluate output, into a `PreviewCaptchaFamily` in `src/lib/preview-sources/preview-captcha.ts`.
 2. Add the family entry to `CONTEXT.md`, and record the measured numbers under `docs/research/`.
