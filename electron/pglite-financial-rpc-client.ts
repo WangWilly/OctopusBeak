@@ -13,7 +13,22 @@ import type {
   SpendingPageDto,
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
+  SpendingCandidatePageDto,
+  SpendingCandidatePageRequest,
+  SpendingMergeLogDto,
+  SpendingMergeLogRequest,
+  SpendingMerchantStatsDto,
+  SpendingMerchantStatsRequest,
+  SpendingMonthInsightDto,
+  SpendingMonthInsightRequest,
+  SpendingPageActionRequest,
+  SpendingPageActionResult,
+  SpendingPendingOverviewDto,
+  SpendingPendingOverviewRequest,
+  SpendingRecordPageDto,
+  SpendingRecordPageRequest,
 } from "../src/lib/spending/model.ts";
+import type { SpendingPageReadResult } from "../src/lib/spending/page-reader.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
 import type {
@@ -70,6 +85,13 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.assets.current",
   "financial.liabilities.current",
   "financial.spending.current",
+  "financial.spending.recordPage",
+  "financial.spending.candidatePage",
+  "financial.spending.pendingOverview",
+  "financial.spending.mergeLog",
+  "financial.spending.monthInsight",
+  "financial.spending.merchantStats",
+  "financial.spending.pageAction",
   "financial.spending.version",
   "financial.preview.visibilityChanged",
   "financial.spending.pairing",
@@ -162,6 +184,13 @@ export type PGliteFinancialRegistry = Readonly<{
   assetsCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<AssetsPageDto>;
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  spendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
+  spendingCandidatePage(request: SpendingCandidatePageRequest): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
+  spendingPendingOverview(request: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
+  spendingMergeLog(request: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
+  spendingMonthInsight(request: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
+  spendingMerchantStats(request: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
+  spendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
   spendingVersion(): Promise<number>;
   previewVisibilityChanged(): Promise<void>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
@@ -330,6 +359,13 @@ export function createPGliteFinancialRpcClient(
     assetsCurrent: (expectedSources) => call("financial.assets.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<AssetsPageDto>,
     liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
     spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
+    spendingRecordPage: (request) => call("financial.spending.recordPage", [request]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>,
+    spendingCandidatePage: (request) => call("financial.spending.candidatePage", [request]) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>,
+    spendingPendingOverview: (request) => call("financial.spending.pendingOverview", [request]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>,
+    spendingMergeLog: (request) => call("financial.spending.mergeLog", [request]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>,
+    spendingMonthInsight: (request) => call("financial.spending.monthInsight", [request]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>,
+    spendingMerchantStats: (request) => call("financial.spending.merchantStats", [request]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>,
+    spendingPageAction: (request) => call("financial.spending.pageAction", [request]) as Promise<SpendingPageActionResult>,
     spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
     previewVisibilityChanged: () => call("financial.preview.visibilityChanged", []).then(() => undefined),
     spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,

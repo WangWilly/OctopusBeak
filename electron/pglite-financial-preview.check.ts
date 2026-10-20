@@ -334,7 +334,7 @@ test("preview transactions stay out of Spending reads", async () => {
       const knowledgeAt = await shown.spendingVersion();
       return {
         summary: await shown.spendingCurrent(),
-        records: await shown.spendingCurrent({ __spendingRead: "record-page", request: { knowledgeAt, month: "2026-10" } } as never),
+        records: await shown.spendingRecordPage({ knowledgeAt, month: "2026-10" }),
       };
     };
     const before = await readSpending();
