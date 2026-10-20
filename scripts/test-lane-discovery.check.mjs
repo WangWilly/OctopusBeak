@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   BROWSER_CHECK_FILES,
   ELECTRON_CDP_FILES,
   HARD_PERFORMANCE_FILES,
+  combineCiReports,
   discoverBrowserTestFiles,
   discoverElectronCdpTestFiles,
   discoverPerformanceTestFiles,
@@ -50,5 +53,35 @@ test("a CI shard names one slice of the unit lane or is rejected", () => {
   assert.deepEqual(parseShard(["unit", "--shard=2/4"]), { index: 2, total: 4 });
   for (const value of ["0/4", "5/4", "2", "a/b"]) {
     assert.throws(() => parseShard([`--shard=${value}`]), /Invalid shard/u);
+  }
+});
+
+test("combined CI reports keep lane order, order shards numerically, and stitch every test case", () => {
+  const reports = mkdtempSync(join(tmpdir(), "combine-ci-reports-"));
+  try {
+    for (const prefix of ["performance", "unit-10-of-12", "browser", "unit-2-of-12", "electron-cdp"]) {
+      writeFileSync(join(reports, `test-summary-${prefix}.txt`), `${prefix} summary\n`);
+      writeFileSync(
+        join(reports, `junit-${prefix}.xml`),
+        `<?xml version="1.0" encoding="utf-8"?>\n<testsuites>\n\t<testcase name="${prefix}"/>\n</testsuites>\n`,
+      );
+    }
+    combineCiReports(reports);
+
+    const summary = readFileSync(join(reports, "test-summary.txt"), "utf8");
+    assert.deepEqual(
+      [...summary.matchAll(/^# (.+) lane$/gmu)].map((match) => match[1]),
+      ["unit-2-of-12", "unit-10-of-12", "electron-cdp", "browser", "performance"],
+    );
+    assert.match(summary, /# browser lane\nbrowser summary\n/u);
+    const junit = readFileSync(join(reports, "junit.xml"), "utf8");
+    assert.match(junit, /^<testsuites>[\s\S]*<\/testsuites>\n$/u);
+    assert.equal(junit.match(/<testsuites>/gu)?.length, 1, "the merged report has one root");
+    assert.deepEqual(
+      [...junit.matchAll(/<testcase name="([^"]+)"/gu)].map((match) => match[1]),
+      ["unit-2-of-12", "unit-10-of-12", "electron-cdp", "browser", "performance"],
+    );
+  } finally {
+    rmSync(reports, { recursive: true, force: true });
   }
 });
