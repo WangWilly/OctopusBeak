@@ -11,13 +11,13 @@
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
-  import { historyPointKey } from "$lib/shared-ledger/types.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import { currencyCount } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
     buildStackedBalanceChartData,
+    chartCurrenciesFor,
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -55,10 +55,7 @@
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
   );
-  $: chartRows = [...assets.dailyHistory].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
-  $: chartCurrencies = [
-    ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
-  ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
+  $: chartCurrencies = chartCurrenciesFor(assets.dailyHistory, "assets");
   $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
 
   function totalLabel(current: AssetsSummary) {
@@ -67,9 +64,6 @@
       : $t.assets.total;
   }
 
-  function currencyOrder(value: string) {
-    return value === "TWD" ? 0 : value === "USD" ? 1 : value === "JPY" ? 2 : 3;
-  }
 
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;

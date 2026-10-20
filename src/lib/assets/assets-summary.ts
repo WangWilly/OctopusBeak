@@ -1,14 +1,10 @@
-import { convertToTwd, indexExchangeRates } from "../shared-money/exchange-rates.ts";
 import {
-  accountLedger,
   accountShares,
   accountTwdValues,
   readAssetAllocation,
-  TRAILING_DAYS,
-  trailingChange,
-  valuationDateFor,
   type AssetAllocation,
   type SpanChange,
+  readSideValuation,
 } from "../shared-ledger/twd-valuation.ts";
 import type { AssetsPageDto } from "./types.ts";
 
@@ -36,20 +32,10 @@ export type AssetsSummary =
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
-  const valuationDate = valuationDateFor(input.dailyHistory, input.accounts, options.today);
-  if (input.accounts.length === 0 || !valuationDate) return { state: "empty" };
-  const rates = indexExchangeRates(input.exchangeRates);
+  const side = readSideValuation(input, "assets", options.today);
+  if (!side) return { state: "empty" };
+  const { valuationDate, rates, trailing } = side;
   const allocation = readAssetAllocation(input.accounts, rates, valuationDate);
-  const ownIds = new Set(input.accounts.map((account) => account.id));
-  const ledger = accountLedger(
-    Object.fromEntries(Object.entries(input.dailyHistoryByAccount).filter(([id]) => ownIds.has(id))),
-    rates,
-  );
-  const dates = input.dailyHistory
-    .filter((row) => convertToTwd(row.assets, row.date, rates))
-    .map((row) => row.date)
-    .sort();
-  const trailing = trailingChange(dates, ledger, TRAILING_DAYS);
   return {
     state: "ready",
     total: allocation.total,

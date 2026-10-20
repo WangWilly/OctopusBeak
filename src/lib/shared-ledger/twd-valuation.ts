@@ -1,4 +1,4 @@
-import { convertToTwd, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
+import { convertToTwd, indexExchangeRates, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
 import type { AccountKind, AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "./types.ts";
 
 export type Change = { change: number; pct: number | null };
@@ -229,4 +229,35 @@ export function convertAccount(
   for (const amount of account.amountLines)
     if (!rateOnOrBefore(rates, amount.currency, date)) unconverted.add(amount.currency);
   return null;
+}
+
+export type SideValuationInput = Readonly<{
+  accounts: readonly AccountRowDto[];
+  dailyHistory: readonly DailyHistoryRowDto[];
+  dailyHistoryByAccount: Parameters<typeof accountLedger>[0];
+  exchangeRates: Parameters<typeof indexExchangeRates>[0];
+}>;
+
+/**
+ * The valuation date, rates, and trailing change of one side of the ledger,
+ * counting only that side's own accounts. Null when the side has nothing to value.
+ */
+export function readSideValuation(
+  input: SideValuationInput,
+  side: "assets" | "liabilities",
+  today: string,
+): Readonly<{ valuationDate: string; rates: ExchangeRateIndex; trailing: SpanChange | null }> | null {
+  const valuationDate = valuationDateFor(input.dailyHistory, input.accounts, today);
+  if (input.accounts.length === 0 || !valuationDate) return null;
+  const rates = indexExchangeRates(input.exchangeRates);
+  const ownIds = new Set(input.accounts.map((account) => account.id));
+  const ledger = accountLedger(
+    Object.fromEntries(Object.entries(input.dailyHistoryByAccount).filter(([id]) => ownIds.has(id))),
+    rates,
+  );
+  const dates = input.dailyHistory
+    .filter((row) => convertToTwd(row[side], row.date, rates))
+    .map((row) => row.date)
+    .sort();
+  return { valuationDate, rates, trailing: trailingChange(dates, ledger, TRAILING_DAYS) };
 }
