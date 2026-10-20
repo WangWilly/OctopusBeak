@@ -12,6 +12,7 @@ import {
   assembleStableSourceLoginScope,
   deriveSourceConnectionIdentityKey,
 } from "../ledger/canonical/source-connection-identity.ts";
+import { withAbort } from "./abort.ts";
 
 export const YUANTA_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const YUANTA_BANK_ORIGIN = new URL(YUANTA_ENTRY_URL).origin;
@@ -473,31 +474,6 @@ async function waitForSignedInState(
   );
 }
 
-function withYuantaAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  if (signal.aborted)
-    return Promise.reject(signal.reason ?? new Error("Workflow cancelled."));
-  return new Promise<T>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", abort);
-    const abort = () => {
-      cleanup();
-      reject(signal.reason ?? new Error("Workflow cancelled."));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
 
 /** Yuanta authentication through the App-owned browser and human-assistance ports. */
 export async function authenticateYuantaBankWithAssistance(
@@ -522,7 +498,7 @@ export async function authenticateYuantaBankWithAssistance(
 > {
   const { signal, request } = options;
   signal.throwIfAborted();
-  if (await withYuantaAbort(isYuantaSignedIn(page), signal))
+  if (await withAbort(isYuantaSignedIn(page), signal))
     return { usedExistingSession: true, replacedActiveSession: false };
 
   let lastBankDialogState: YuantaBankDialogState | null = null;
@@ -535,19 +511,16 @@ export async function authenticateYuantaBankWithAssistance(
   page.on("dialog", acceptBankDialog);
   try {
     signal.throwIfAborted();
-    await withYuantaAbort(fillLoginForm(page, credentials), signal);
-    let loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
-    await withYuantaAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
-    const contract = await withYuantaAbort(
-      emitHumanAssistanceStage(
-        yuantaBankCaptchaAssistanceStage(loginFrame),
-        (value) => value,
-      ),
+    await withAbort(fillLoginForm(page, credentials), signal);
+    let loginFrame = await withAbort(waitForMainFrame(page), signal);
+    await withAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
+    const contract = await withAbort(
+      emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame)),
       signal,
     );
     signal.throwIfAborted();
     await event("human-assistance-requested");
-    const assistanceStatus = await withYuantaAbort(
+    const assistanceStatus = await withAbort(
       request(contract, signal),
       signal,
     );
@@ -560,16 +533,16 @@ export async function authenticateYuantaBankWithAssistance(
 
     // Navigation may recreate the login frame while Assist is open. Rebind
     // before inspecting the answer or submitting.
-    loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
+    loginFrame = await withAbort(waitForMainFrame(page), signal);
     if (
       !(
-        await withYuantaAbort(loginFrame.locator("#gcode").inputValue(), signal)
+        await withAbort(loginFrame.locator("#gcode").inputValue(), signal)
       ).trim()
     )
       throw new Error(
         "Yuanta Bank CAPTCHA is empty. Enter it before resuming.",
       );
-    const loginButtonVisible = await withYuantaAbort(
+    const loginButtonVisible = await withAbort(
       loginFrame
         .locator('a[href="javascript:doPreLogin();"]')
         .isVisible()
@@ -577,9 +550,9 @@ export async function authenticateYuantaBankWithAssistance(
       signal,
     );
     if (loginButtonVisible) {
-      await withYuantaAbort(submitLogin(page, credentials), signal);
+      await withAbort(submitLogin(page, credentials), signal);
     }
-    replacedActiveSession = await withYuantaAbort(
+    replacedActiveSession = await withAbort(
       waitForSignedInState(
         page,
         () => lastBankDialogState,

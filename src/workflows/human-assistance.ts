@@ -1,5 +1,6 @@
 import {
   type HumanAssistanceCompletionInput,
+  type HumanAssistanceCompletionStatus,
   type HumanAssistanceContractInput,
   type HumanVerificationTarget,
   type VerificationContextRegion,
@@ -14,6 +15,7 @@ import {
   type SolveAcceptancePolicy,
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
+import { withAbort } from "./abort.ts";
 
 export type WorkflowHumanAssistanceTarget = Omit<HumanVerificationTarget, "rect"> & {
   locator: Pick<Locator, "boundingBox">;
@@ -47,19 +49,8 @@ export type WorkflowHumanAssistanceStage = {
   prompt?: string;
 };
 
-export type HumanAssistanceContractPublisher = (contract: HumanAssistanceContractInput) => void;
-
-export function publishHumanAssistanceContract(
-  contract: HumanAssistanceContractInput,
-  publish: HumanAssistanceContractPublisher,
-) {
-  publish(contract);
-  return contract;
-}
-
 export async function emitHumanAssistanceStage(
   stage: WorkflowHumanAssistanceStage,
-  publish: HumanAssistanceContractPublisher,
 ): Promise<HumanAssistanceContractInput> {
   const targets: HumanVerificationTarget[] = [];
   for (const target of stage.targets) {
@@ -104,5 +95,30 @@ export async function emitHumanAssistanceStage(
     contextRegions,
     ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
   };
-  return publishHumanAssistanceContract(contract, publish);
+  return contract;
+}
+
+export type HumanAssistanceRequest = (
+  contract: HumanAssistanceContractInput,
+  signal: AbortSignal,
+) => Promise<HumanAssistanceCompletionStatus>;
+
+/**
+ * Show a sign-in CAPTCHA stage to the person and wait for their answer.
+ * Cancellation ends the wait at once; any status but entered or verified
+ * fails the sign-in.
+ */
+export async function requestCaptchaAssistance(
+  sourceName: string,
+  stage: WorkflowHumanAssistanceStage,
+  request: HumanAssistanceRequest,
+  signal: AbortSignal,
+): Promise<Extract<HumanAssistanceCompletionStatus, "entered" | "verified">> {
+  signal.throwIfAborted();
+  const contract = await withAbort(emitHumanAssistanceStage(stage), signal);
+  const status = await withAbort(request(contract, signal), signal);
+  signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified")
+    throw new Error(`${sourceName} human assistance ended with status ${status}.`);
+  return status;
 }

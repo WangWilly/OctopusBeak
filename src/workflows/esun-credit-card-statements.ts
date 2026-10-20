@@ -45,6 +45,7 @@ import type { PreviewProductRun } from "../lib/preview-sources/product-collectio
 import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
+import { withAbort } from "./abort.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -580,27 +581,6 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("E.SUN workflow was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 function waitForOptionalResponse(
   response: Promise<Response | undefined>,

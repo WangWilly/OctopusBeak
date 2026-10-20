@@ -1,5 +1,5 @@
 // Pure CTBC attestation contract and process-local manifest state. Database
-// event persistence lives in ctbc-human-attestation.ts.
+// event persistence lives in ledger/pglite/attestation.ts.
 export type CtbcOpaqueToken = `sha256:${string}`;
 
 export function freezeCtbcHumanAttestationManifest<T>(value: T, seen = new WeakSet<object>()): T {

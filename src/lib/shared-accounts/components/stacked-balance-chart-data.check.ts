@@ -6,6 +6,7 @@ import type {
 } from "$lib/shared-ledger/types.ts";
 import {
   buildStackedBalanceChartData,
+  chartCurrenciesFor,
   selectStackedBalanceChartSeries,
   stackedBalanceChartState,
 } from "./stacked-balance-chart-data.ts";
@@ -180,4 +181,18 @@ function row(date: string, assets: number, liabilities: number, pointAt?: string
     accountChanges: [],
     positionCount: 0,
   };
+}
+
+{
+  const point = (date: string, assets: string[], liabilities: string[]) => ({
+    date,
+    assets: assets.map((currency) => ({ currency, value: 1 })),
+    liabilities: liabilities.map((currency) => ({ currency, value: 1 })),
+  }) as unknown as DailyHistoryRowDto;
+  const history = [
+    point("2026-01-01", ["EUR"], []),
+    ...Array.from({ length: 30 }, (_, day) => point(`2026-02-${String(day + 1).padStart(2, "0")}`, ["AUD", "JPY", "TWD"], ["USD"])),
+  ];
+  assert.deepEqual(chartCurrenciesFor(history, "assets"), ["TWD", "JPY", "AUD"], "TWD, USD, and JPY lead; older points drop out");
+  assert.deepEqual(chartCurrenciesFor(history, "liabilities"), ["USD"]);
 }

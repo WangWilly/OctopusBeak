@@ -376,10 +376,7 @@ try {
       />
     </div>
   `);
-  const captchaContract = await emitHumanAssistanceStage(
-    postCaptchaAssistanceStage(captchaPage),
-    (contract) => contract,
-  );
+  const captchaContract = await emitHumanAssistanceStage(postCaptchaAssistanceStage(captchaPage));
   assert.equal(captchaContract.stageId, "ipost-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");

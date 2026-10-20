@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fubon from "./fubon-domestic-deposit-admission.ts";
-import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "./fubon-human-attestation.ts";
+import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "./fubon-human-attestation-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
 const accountDigits = "12345678901234";

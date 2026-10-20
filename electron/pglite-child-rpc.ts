@@ -3,7 +3,6 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
-import { StringDecoder } from "node:string_decoder";
 import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcServer,
@@ -16,7 +15,10 @@ import {
   PGLITE_CHILD_RPC_TOKEN_ENV,
   PGLITE_CHILD_RPC_TOKEN_BYTES,
   PGLITE_CHILD_RPC_VERSION,
+  LineSocketPort,
+  plainRecord,
   PGliteChildTransportError,
+  validToken,
 } from "./pglite-child-rpc-client.ts";
 export * from "./pglite-child-rpc-client.ts";
 
@@ -42,21 +44,6 @@ type AuthResponse = {
   readonly code?: "invalid-authentication" | "worker-closed";
 };
 
-type SocketMessageListener = (value: unknown) => void;
-
-type SocketMessagePort = {
-  on(event: "message", listener: SocketMessageListener): unknown;
-  off(event: "message", listener: SocketMessageListener): unknown;
-  postMessage(value: unknown): void;
-  close(): void;
-};
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 function isNamedPipeEndpoint(endpoint: string): boolean {
   return endpoint.startsWith("\\\\.\\pipe\\");
 }
@@ -74,10 +61,6 @@ async function removeEndpoint(endpoint: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-}
-
-function validToken(token: string): boolean {
-  return /^[A-Za-z0-9_-]{32,128}$/u.test(token);
 }
 
 function equalToken(actual: string, expected: string): boolean {
@@ -104,114 +87,6 @@ function validRpcEnvelope(value: unknown): boolean {
     && (value.id as number) >= 0
     && (value.kind === "pglite-financial-cancel"
       || (typeof value.operation === "string" && Array.isArray(value.args)));
-}
-
-function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChildTransportError {
-  return new PGliteChildTransportError(code);
-}
-
-/** A bounded, newline-delimited JSON socket adapter for the existing RPC ports. */
-class LineSocketPort implements SocketMessagePort {
-  #listeners = new Set<SocketMessageListener>();
-  #buffer = "";
-  #decoder = new StringDecoder("utf8");
-  #closed = false;
-  #writeQueue = Promise.resolve();
-  private readonly socket: Socket;
-  private readonly onProtocolError: (reason: string) => void;
-
-  constructor(
-    socket: Socket,
-    onProtocolError: (reason: string) => void,
-  ) {
-    this.socket = socket;
-    this.onProtocolError = onProtocolError;
-    socket.on("data", (chunk: Buffer) => this.#read(chunk));
-  }
-
-  on(_event: "message", listener: SocketMessageListener): void {
-    this.#listeners.add(listener);
-  }
-
-  off(_event: "message", listener: SocketMessageListener): void {
-    this.#listeners.delete(listener);
-  }
-
-  postMessage(value: unknown): void {
-    if (this.#closed || this.socket.destroyed) throw safeTransportError("closed");
-    let frame: string;
-    try {
-      const serialized = JSON.stringify(value);
-      if (typeof serialized !== "string") {
-        this.onProtocolError("frame-serialization-failed");
-        this.close();
-        return;
-      }
-      frame = serialized;
-    } catch {
-      this.onProtocolError("frame-serialization-failed");
-      return;
-    }
-    if (Buffer.byteLength(frame, "utf8") > MAX_FRAME_BYTES) {
-      this.onProtocolError("frame-too-large");
-      this.close();
-      return;
-    }
-    this.#writeQueue = this.#writeQueue
-      .then(() => new Promise<void>((resolve, reject) => {
-        if (this.#closed || this.socket.destroyed) {
-          reject(safeTransportError("closed"));
-          return;
-        }
-        this.socket.write(`${frame}\n`, (error) => error ? reject(error) : resolve());
-      }))
-      .catch(() => {
-        this.onProtocolError("socket-write-failed");
-        this.close();
-      });
-  }
-
-  close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#listeners.clear();
-    this.socket.destroy();
-  }
-
-  /** Let an authentication response reach the peer before destroying it. */
-  async drain(): Promise<void> {
-    await this.#writeQueue.catch(() => undefined);
-  }
-
-  #read(chunk: Buffer): void {
-    if (this.#closed) return;
-    this.#buffer += this.#decoder.write(chunk);
-    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_FRAME_BYTES) {
-      this.onProtocolError("frame-too-large");
-      this.close();
-      return;
-    }
-    let newline = this.#buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = this.#buffer.slice(0, newline).replace(/\r$/u, "");
-      this.#buffer = this.#buffer.slice(newline + 1);
-      if (line.length > 0) {
-        try {
-          const value = JSON.parse(line) as unknown;
-          for (const listener of this.#listeners) {
-            try {
-              listener(value);
-            } catch {
-              this.onProtocolError("message-listener-failed");
-            }
-          }
-        } catch {
-          this.onProtocolError("invalid-json-frame");
-        }
-      }
-      newline = this.#buffer.indexOf("\n");
-    }
-  }
 }
 
 export type PGliteChildRpcServer = Readonly<{

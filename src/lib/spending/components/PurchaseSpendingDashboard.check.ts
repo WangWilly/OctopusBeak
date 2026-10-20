@@ -9,10 +9,9 @@ const detailSource = readFileSync(new URL("./SpendingPurchaseModal.svelte", impo
 const chartSources = [["pace", paceSource], ["trend", trendSource]] as const;
 const dictionarySource = readFileSync(new URL("../../i18n/i18n.ts", import.meta.url), "utf8");
 const matchingSource = readFileSync(new URL("../purchase-matching.ts", import.meta.url), "utf8");
-const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.url), "utf8");
+const entry = readFileSync(new URL("../../../routes/+page.svelte", import.meta.url), "utf8");
 
-assert.match(entry, /spending\.purchaseReport/);
-assert.match(entry, /<PurchaseSpendingDashboard/);
+assert.match(entry, /<PurchaseSpendingDashboard\s+purchaseReport=\{spendingRenderValue\.purchaseReport\}/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
 // An empty page is still the purchase page; each card reads its own empty state.
 assert.doesNotMatch(entry, /isEmptySpendingPage/);
