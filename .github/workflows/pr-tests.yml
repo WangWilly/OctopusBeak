@@ -11,9 +11,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Tests
+  lane:
+    name: Test lane (${{ matrix.name }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: unit 1/4, args: unit --shard=1/4 }
+          - { name: unit 2/4, args: unit --shard=2/4 }
+          - { name: unit 3/4, args: unit --shard=3/4 }
+          - { name: unit 4/4, args: unit --shard=4/4 }
+          - { name: browser, args: browser }
+          - { name: electron-cdp and performance, args: electron-cdp performance }
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -46,27 +56,51 @@ jobs:
 
       - name: Run tests
         timeout-minutes: 15
-        run: dbus-run-session -- xvfb-run --auto-servernum bash scripts/run-linux-ci-tests.sh
+        run: dbus-run-session -- xvfb-run --auto-servernum bash scripts/run-linux-ci-tests.sh ${{ matrix.args }}
+
+      - name: Upload lane reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lane-reports-${{ strategy.job-index }}
+          path: |
+            reports/test-summary-*.txt
+            reports/junit-*.xml
+          if-no-files-found: error
+          retention-days: 14
+
+  test:
+    name: Tests
+    needs: lane
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 25.9.0
+
+      - name: Download lane reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: lane-reports-*
+          path: reports
+          merge-multiple: true
+
+      - name: Combine reports
+        run: node scripts/run-test-lane.mjs combine
 
       - name: Publish job summary
-        if: always()
         run: |
-          if [ ! -f reports/test-summary.txt ]; then
-            echo '## Partial test reports' >> "$GITHUB_STEP_SUMMARY"
-            for report in reports/test-summary-*.txt; do
-              if [ -f "$report" ]; then
-                cat "$report" >> "$GITHUB_STEP_SUMMARY"
-              fi
-            done
-            exit 0
-          fi
           echo '## Test and coverage report' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           cat reports/test-summary.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test reports
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports
@@ -77,3 +111,9 @@ jobs:
             reports/junit-*.xml
           if-no-files-found: error
           retention-days: 14
+
+      - name: Require every lane to pass
+        if: needs.lane.result != 'success'
+        run: |
+          echo "Test lanes finished with: ${{ needs.lane.result }}"
+          exit 1

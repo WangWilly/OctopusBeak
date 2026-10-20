@@ -102,6 +102,7 @@ function runNodeTests(files, options = {}) {
   args.push("--test");
   if (options.forceExit) args.push("--test-force-exit");
   if (options.serial) args.push("--test-concurrency=1");
+  if (options.shard) args.push(`--test-shard=${options.shard.index}/${options.shard.total}`);
   if (options.reportPrefix) {
     args.push(
       "--test-reporter=spec",
@@ -130,21 +131,29 @@ function readReport(path) {
   }
 }
 
-function combineCiReports() {
-  const summaries = [
-    "# Unit test lane\n",
-    readReport("reports/test-summary-unit.txt"),
-    "\n# Serial Electron/CDP lane\n",
-    readReport("reports/test-summary-electron-cdp.txt"),
-    "\n# Serial browser lane\n",
-    readReport("reports/test-summary-browser.txt"),
-    "\n# Serial performance lane\n",
-    readReport("reports/test-summary-performance.txt"),
-  ];
+const LANES = Object.freeze(["unit", "electron-cdp", "browser", "performance"]);
+
+/** `unit` or `unit-2-of-4`; a shard's reports must not overwrite its siblings'. */
+function reportPrefixOf(lane, shard) {
+  return shard ? `${lane}-${shard.index}-of-${shard.total}` : lane;
+}
+
+/** Merge every per-lane report in `reports/`, whichever job or shard wrote it. */
+export function combineCiReports() {
+  const prefixes = readdirSync(join(ROOT, "reports"))
+    .map((file) => file.match(/^test-summary-(.+)\.txt$/u)?.[1])
+    .filter((prefix) => prefix !== undefined)
+    .sort((left, right) => {
+      const rank = (prefix) => LANES.findIndex((lane) => prefix === lane || prefix.startsWith(`${lane}-`));
+      return rank(left) - rank(right) || left.localeCompare(right, "en", { numeric: true });
+    });
+  const summaries = prefixes.map(
+    (prefix) => `# ${prefix} lane\n${readReport(`reports/test-summary-${prefix}.txt`)}\n`,
+  );
   writeFileSync(join(ROOT, "reports/test-summary.txt"), summaries.join(""));
 
-  const suites = ["unit", "electron-cdp", "browser", "performance"].map((lane) => {
-    const xml = readReport(`reports/junit-${lane}.xml`);
+  const suites = prefixes.map((prefix) => {
+    const xml = readReport(`reports/junit-${prefix}.xml`);
     const match = xml.match(/<testsuites(?:\s[^>]*)?>([\s\S]*?)<\/testsuites>/u);
     return match?.[1] ?? "";
   });
@@ -170,7 +179,7 @@ async function runLane(lane, options = {}) {
     return await runNodeTests(files, {
       ...options,
       env: runtime?.env,
-      serial: lane === "browser" || lane === "electron-cdp" || lane === "performance",
+      serial: lane !== "unit",
       forceExit: lane === "electron-cdp",
     });
   } finally {
@@ -183,37 +192,45 @@ async function runLane(lane, options = {}) {
   }
 }
 
-async function main() {
-  const lane = process.argv[2] ?? "all";
-  if (!["all", "unit", "electron-cdp", "browser", "performance", "ci"].includes(lane)) {
-    throw new Error(`Unknown test lane: ${lane}`);
-  }
+/** `--shard=2/4` splits the unit lane's files; the serial lanes stay whole. */
+export function parseShard(args) {
+  const value = args.find((arg) => arg.startsWith("--shard="))?.slice("--shard=".length);
+  if (value === undefined) return null;
+  const match = value.match(/^(\d+)\/(\d+)$/u);
+  const index = Number(match?.[1]);
+  const total = Number(match?.[2]);
+  if (!match || index < 1 || index > total) throw new Error(`Invalid shard: ${value}`);
+  return { index, total };
+}
 
-  if (lane === "unit") process.exitCode = await runLane("unit");
-  else if (lane === "electron-cdp") process.exitCode = await runLane("electron-cdp");
-  else if (lane === "browser") process.exitCode = await runLane("browser");
-  else if (lane === "performance") process.exitCode = await runLane("performance");
-  else if (lane === "all") {
-    const unitStatus = await runLane("unit");
-    const electronCdpStatus = await runLane("electron-cdp");
-    const browserStatus = await runLane("browser");
-    const performanceStatus = await runLane("performance");
-    process.exitCode = unitStatus || electronCdpStatus || browserStatus || performanceStatus;
-  } else {
-    mkdirSync(join(ROOT, "reports"), { recursive: true });
-    const unitStatus = await runLane("unit", { coverage: true, reportPrefix: "unit" });
-    const electronCdpStatus = await runLane("electron-cdp", {
-      coverage: true,
-      reportPrefix: "electron-cdp",
-    });
-    const browserStatus = await runLane("browser", { coverage: true, reportPrefix: "browser" });
-    const performanceStatus = await runLane("performance", {
-      coverage: true,
-      reportPrefix: "performance",
-    });
-    combineCiReports();
-    process.exitCode = unitStatus || electronCdpStatus || browserStatus || performanceStatus;
+async function runLanes(lanes, options = {}) {
+  let status = 0;
+  for (const lane of lanes) {
+    const shard = lane === "unit" ? options.shard : null;
+    const reportPrefix = options.reports ? reportPrefixOf(lane, shard) : undefined;
+    const laneStatus = await runLane(lane, { coverage: options.reports, reportPrefix, shard });
+    status ||= laneStatus;
   }
+  return status;
+}
+
+async function main() {
+  const [command = "all", ...rest] = process.argv.slice(2);
+  const lanes = rest.filter((arg) => !arg.startsWith("--"));
+  for (const lane of lanes) {
+    if (!LANES.includes(lane)) throw new Error(`Unknown test lane: ${lane}`);
+  }
+  const shard = parseShard(rest);
+
+  if (LANES.includes(command)) process.exitCode = await runLanes([command], { shard });
+  else if (command === "all") process.exitCode = await runLanes(LANES);
+  else if (command === "ci") {
+    // `ci unit --shard=1/4` runs one CI job's slice; bare `ci` runs every lane here.
+    mkdirSync(join(ROOT, "reports"), { recursive: true });
+    process.exitCode = await runLanes(lanes.length > 0 ? lanes : LANES, { reports: true, shard });
+    if (lanes.length === 0) combineCiReports();
+  } else if (command === "combine") combineCiReports();
+  else throw new Error(`Unknown test command: ${command}`);
 }
 
 if (pathToFileURL(process.argv[1] ?? "").href === import.meta.url) {
