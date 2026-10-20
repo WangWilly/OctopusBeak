@@ -10,6 +10,7 @@ import {
   discoverElectronCdpTestFiles,
   discoverPerformanceTestFiles,
   discoverUnitTestFiles,
+  parseShard,
 } from "./run-test-lane.mjs";
 
 test("test lanes include each browser check exactly once and exclude hard performance checks", () => {
@@ -42,4 +43,12 @@ test("test lanes include each browser check exactly once and exclude hard perfor
   }
   assert.equal(new Set(all).size, all.length, "a test file must not be scheduled twice");
   assert.ok(unit.some((file) => file.startsWith("src/")), "unit lane should retain TypeScript checks");
+});
+
+test("a CI shard names one slice of the unit lane or is rejected", () => {
+  assert.equal(parseShard(["unit"]), null);
+  assert.deepEqual(parseShard(["unit", "--shard=2/4"]), { index: 2, total: 4 });
+  for (const value of ["0/4", "5/4", "2", "a/b"]) {
+    assert.throws(() => parseShard([`--shard=${value}`]), /Invalid shard/u);
+  }
 });
