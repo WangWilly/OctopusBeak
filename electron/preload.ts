@@ -73,20 +73,7 @@ const api: OctopusBeakApi = {
     save: (input) => ipcRenderer.invoke("settings:save", input),
     deletePreviewData: () => ipcRenderer.invoke("settings:deletePreviewData"),
   },
-  overview: {
-    load: (options) => ipcRenderer.invoke("overview:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("overview:block", block, options),
-  },
-  assets: {
-    load: (options) => ipcRenderer.invoke("assets:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("assets:block", block, options),
-  },
-  liabilities: {
-    load: (options) => ipcRenderer.invoke("liabilities:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("liabilities:block", block, options),
-  },
   spending: {
-    load: (input, options) => ipcRenderer.invoke("spending:load", input, options),
     loadRecordPage: (input) => ipcRenderer.invoke("spending:record-page", input),
     loadCandidatePage: (input, requestId) => ipcRenderer.invoke("spending:candidate-page", input, requestId),
     cancelCandidatePage: (requestId) => ipcRenderer.invoke("spending:candidate-page-cancel", requestId),
@@ -97,7 +84,6 @@ const api: OctopusBeakApi = {
     loadMonthInsight: (input) => ipcRenderer.invoke("spending:month-insight", input),
     loadMerchantStats: (input) => ipcRenderer.invoke("spending:merchant-stats", input),
     confirmStrongCandidates: (input) => ipcRenderer.invoke("spending:confirm-strong-candidates", input),
-    loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
     rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
     prewarmPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-prewarm", input),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),

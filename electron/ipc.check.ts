@@ -57,29 +57,13 @@ assert.match(source, /pgliteOperational: \{/);
 assert.match(source, /pgliteFinancial: PGliteFinancialPageClient/);
 assert.match(source, /withExpectedDataVersion/);
 assert.match(source, /options\?\.expectedVersion/);
-for (const channel of ["overview:block", "assets:block", "liabilities:block", "spending:block", "automation:block"])
-  assert.match(source, new RegExp(`ipcMain\\.handle\\(\\s*"${channel}"`));
+assert.match(source, /ipcMain\.handle\(\s*"automation:block"/);
 assert.doesNotMatch(source, /ipcMain\.handle\(\s*"automation:load"/);
 assert.match(source, /void automationCredentials\.prewarm\(\)\.catch/);
 assert.doesNotMatch(
   source,
   /ipcMain\.on\([\s\S]{0,240}automationCredentials\.prewarm\(\)/,
   "credential prewarm must not be launched from a click/input handler",
-);
-assert.doesNotMatch(
-  source,
-  /ipcMain\.handle\("overview:load", \(\) =>\s*loadOverview/,
-  "overview projection must not execute synchronously on Electron main",
-);
-assert.doesNotMatch(
-  source,
-  /ipcMain\.handle\("assets:load", \(\) => loadAssets/,
-  "assets projection must not execute synchronously on Electron main",
-);
-assert.doesNotMatch(
-  source,
-  /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
-  "liabilities projection must not execute synchronously on Electron main",
 );
 assert.match(source, /await pgliteViewRegistration\.close\(\)/);
 assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);

@@ -38,10 +38,6 @@ const gap = (namespace, stream) => ({
 function installAwaitingLedger(gaps) {
   const awaiting = (page) => ({ ...page, availability: "awaiting", coverage: "awaiting", sourceGaps: gaps });
   const bridge = window.octopusBeak;
-  for (const route of ["overview", "assets", "liabilities"]) {
-    const load = bridge[route].load;
-    bridge[route].load = async () => awaiting(await load());
-  }
   const subscribe = bridge.dataViews.subscribe;
   bridge.dataViews.subscribe = (view, params, onRows) =>
     subscribe(view, params, (rows) => onRows(view === "financial.spending.current" ? rows : rows.map(awaiting)));

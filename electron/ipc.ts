@@ -73,6 +73,7 @@ import {
   type DataReadOptions,
 } from "../src/lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+import { projectAutomationBlock } from "./automation-block.ts";
 import type { AutomationCredentialStatus } from "../src/lib/desktop/api.ts";
 import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
 import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
@@ -90,7 +91,6 @@ import type {
   SpendingPendingOverviewRequest,
   SpendingStrongConfirmRequest,
 } from "../src/lib/spending/model.ts";
-import { projectFinancialBlock } from "./financial-page-block-loader.ts";
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
@@ -226,82 +226,6 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("settings:deletePreviewData", () =>
     deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
   );
-  ipcMain.handle(
-    "overview:load",
-    (_event, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.load("overview", options),
-      ),
-  );
-  ipcMain.handle(
-    "overview:block",
-    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.loadBlock("overview", block, options),
-      ),
-  );
-  ipcMain.handle(
-    "assets:load",
-    (_event, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.load("assets", options),
-      ),
-  );
-  ipcMain.handle(
-    "assets:block",
-    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.loadBlock("assets", block, options),
-      ),
-  );
-  ipcMain.handle(
-    "liabilities:load",
-    (_event, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.load("liabilities", options),
-      ),
-  );
-  ipcMain.handle(
-    "liabilities:block",
-    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.loadBlock("liabilities", block, options),
-      ),
-  );
-  ipcMain.handle(
-    "spending:load",
-    (
-      _event,
-      input: SpendingLoadInput | undefined,
-      options: DataReadOptions | undefined,
-    ) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.load("spending", input, options),
-      ),
-  );
-  ipcMain.handle(
-    "spending:block",
-    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => financialPages.loadBlock("spending", block, options),
-      ),
-  );
   ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
     return pgliteFinancial.loadSpendingRecordPage(request);
   });
@@ -413,7 +337,7 @@ export function registerOctopusBeakIpc({
           const model = credentialState
             ? applyAutomationCredentialState(core, credentialState)
             : core;
-          return projectFinancialBlock(model, block as never, "automation" as never);
+          return projectAutomationBlock(model, block);
         },
       ),
   );
