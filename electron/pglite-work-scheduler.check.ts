@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPGliteWorkScheduler } from "./pglite-financial-registry.ts";
+import {
+  createPGliteFinancialRpcClient,
+  createPGliteFinancialRpcServer,
+  createPGliteWorkScheduler,
+  type PGliteFinancialRegistry,
+} from "./pglite-financial-registry.ts";
 
 test("queued interactive work starts before queued background work, one job at a time", async () => {
   const scheduler = createPGliteWorkScheduler();
@@ -44,4 +49,40 @@ test("a failed job rejects its caller and does not stop the queue", async () => 
   const next = scheduler.schedule("background", async () => "ok");
   await assert.rejects(failed, /query failed/u);
   assert.equal(await next, "ok");
+});
+
+test("queued month reads collapse into the newest request of their kind", async () => {
+  type Listener = (value: unknown) => void;
+  const listeners = { server: new Set<Listener>(), client: new Set<Listener>() };
+  const port = (self: keyof typeof listeners, peer: keyof typeof listeners) => ({
+    on: (_event: "message", listener: Listener) => { listeners[self].add(listener); },
+    off: (_event: "message", listener: Listener) => { listeners[self].delete(listener); },
+    postMessage: (value: unknown) => queueMicrotask(() => { for (const listener of listeners[peer]) listener(value); }),
+  });
+  const reads: string[] = [];
+  let releaseFirst!: () => void;
+  const firstRunning = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const registry = {
+    async spendingCurrent(input: { __spendingRead: string; request: { month: string } }) {
+      reads.push(`${input.__spendingRead}:${input.request.month}`);
+      if (reads.length === 1) await firstRunning;
+      return { month: input.request.month };
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const server = createPGliteFinancialRpcServer(port("server", "client") as never, registry);
+  const client = createPGliteFinancialRpcClient(port("client", "server") as never);
+  const insight = (month: string) => client.request("financial.spending.current", [{ __spendingRead: "month-insight", request: { knowledgeAt: 1, month } }]);
+  try {
+    const running = client.request("financial.spending.current", [{ __spendingRead: "record-page", request: { knowledgeAt: 1, month: "2026-12" } }]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const stepped = [insight("2026-11"), insight("2026-10"), insight("2026-09")];
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    releaseFirst();
+    await running;
+    assert.deepEqual(await Promise.all(stepped), [{ month: "2026-09" }, { month: "2026-09" }, { month: "2026-09" }]);
+    assert.deepEqual(reads, ["record-page:2026-12", "month-insight:2026-09"]);
+  } finally {
+    client.close(new Error("test done"));
+    await server.close();
+  }
 });
