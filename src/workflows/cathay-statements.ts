@@ -15,6 +15,7 @@ import {
 } from "../ledger/pglite/cathay-domestic-admission.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
+import { withAbort } from "./abort.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -768,7 +769,7 @@ export async function waitForCathayTrustedDeviceSignIn(
       dependencies.signal.throwIfAborted();
       throw new ProductCollectionFatalError("device-registration-required");
     }
-    await waitForCathaySignal(page.waitForTimeout(500), dependencies.signal);
+    await withAbort(page.waitForTimeout(500), dependencies.signal);
   } while (Date.now() < deadline);
   await dependencies.event?.("authentication-sign-in-unconfirmed");
   dependencies.signal.throwIfAborted();
@@ -782,12 +783,12 @@ export async function signInCathayForApp(
 ): Promise<{ usedExistingSession: boolean }> {
   dependencies.signal.throwIfAborted();
   if (await isCathaySignedIn(page)) return { usedExistingSession: true };
-  await waitForCathaySignal(
+  await withAbort(
     fillLoginForm(page, credentials, dependencies.event),
     dependencies.signal,
   );
   await waitForCathayTrustedDeviceSignIn(page, dependencies);
-  await waitForCathaySignal(
+  await withAbort(
     dismissPostLoginPrompts(page),
     dependencies.signal,
   );
@@ -1460,31 +1461,6 @@ export function decodeCathayApiSourceResponse(
   return decoded;
 }
 
-function waitForCathaySignal<T>(
-  operation: Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  if (!signal) return operation;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("Cathay workflow was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-    if (signal.aborted) onAbort();
-  });
-}
 
 export async function fetchCathayApiSourceText(
   page: Page,
@@ -1529,8 +1505,8 @@ export async function fetchCathayApiSourceText(
     { path, token, body },
   );
   const [browserStatus, response] = await Promise.all([
-    waitForCathaySignal(statusPromise, strictSource.signal),
-    waitForCathaySignal(responsePromise, strictSource.signal),
+    withAbort(statusPromise, strictSource.signal),
+    withAbort(responsePromise, strictSource.signal),
   ]);
   strictSource.signal?.throwIfAborted();
   if (browserStatus !== response.status()) {
@@ -1539,7 +1515,7 @@ export async function fetchCathayApiSourceText(
     );
   }
   const metadata = await cathayResponseMetadata(response);
-  const bytes = await waitForCathaySignal(response.body(), strictSource.signal);
+  const bytes = await withAbort(response.body(), strictSource.signal);
   return decodeCathayApiSourceResponse(
     metadata,
     path,
@@ -1578,15 +1554,15 @@ async function fetchCathaySessionSourceText(
     return response.status;
   });
   const [browserStatus, response] = await Promise.all([
-    waitForCathaySignal(statusPromise, strictSource.signal),
-    waitForCathaySignal(responsePromise, strictSource.signal),
+    withAbort(statusPromise, strictSource.signal),
+    withAbort(responsePromise, strictSource.signal),
   ]);
   strictSource.signal?.throwIfAborted();
   if (browserStatus !== response.status()) {
     throw new Error("Cathay session response status did not match.");
   }
   const metadata = await cathayResponseMetadata(response);
-  const bytes = await waitForCathaySignal(response.body(), strictSource.signal);
+  const bytes = await withAbort(response.body(), strictSource.signal);
   return decodeCathayApiSourceResponse(
     metadata,
     path,
@@ -1647,15 +1623,15 @@ export async function collectCathayDomesticFinancialRequests(
 ): Promise<CathayDomesticFinancialCollection> {
   options.source?.signal?.throwIfAborted();
   const client = options.client ?? new CathayApiClient(page, options.source);
-  const accounts = await waitForCathaySignal(
+  const accounts = await withAbort(
     client.fetchDomesticAccounts(cathaySession, accountFilters),
     options.source?.signal,
   );
-  await waitForCathaySignal(
+  await withAbort(
     openDomesticStatementsPage(page),
     options.source?.signal,
   );
-  await waitForCathaySignal(
+  await withAbort(
     (options.prepareStatementQuery ?? prepareCathayDomesticStatementQuery)(
       page,
       accounts,
@@ -1676,7 +1652,7 @@ export async function collectCathayDomesticFinancialRequests(
   const stagedStatements: CathayTransferResult[] = [];
   for (const account of accounts) {
     options.source?.signal?.throwIfAborted();
-    const rawResponse = await waitForCathaySignal(
+    const rawResponse = await withAbort(
       client.fetchTransferDetailsRaw(
         cathaySession,
         account.accountNo,

@@ -59,6 +59,7 @@ import {
   type CathayAttachedPreviewPort,
 } from "./cathay-attached-preview.ts";
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
+import { withAbort } from "./abort.ts";
 
 const statementTypeSchema = z
   .enum(["domestic", "foreign_currency", "foreign"])
@@ -151,30 +152,6 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
   ) => CathayAttachedPreviewPort;
 }>;
 
-function withCathayAbort<T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("Cathay workflow was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-    if (signal.aborted) onAbort();
-  });
-}
 
 function cathayBalanceResponseMatches(
   kind: "domestic" | "foreign",
@@ -208,7 +185,7 @@ async function readCathayCurrentBalancesForApp(
   page.on("response", listener);
   try {
     const observedAt = context.now();
-    const legacyReaderRows = await withCathayAbort(
+    const legacyReaderRows = await withAbort(
       readCathayCurrentDepositBalances(page, kind, { observedAt }),
       context.signal,
     );
@@ -219,11 +196,11 @@ async function readCathayCurrentBalancesForApp(
       );
     }
     const response = responses[0]!;
-    const metadata = await withCathayAbort(
+    const metadata = await withAbort(
       cathayResponseMetadata(response),
       context.signal,
     );
-    const bytes = await withCathayAbort(response.body(), context.signal);
+    const bytes = await withAbort(response.body(), context.signal);
     const rawBody = decodeCathayApiSourceResponse(
       metadata,
       kind === "domestic"
@@ -335,7 +312,7 @@ export async function runCathayAllProviderWorkflow(
       dependencies.createSession ??
       ((target, sourceOptions) =>
         new CathayApiClient(target, sourceOptions).createSession());
-    let session = await withCathayAbort(
+    let session = await withAbort(
       createSession(page, source),
       context.signal,
     );
@@ -362,7 +339,7 @@ export async function runCathayAllProviderWorkflow(
       let items: readonly PGliteWorkflowRunItem[];
       await reportActivity("query");
       if (dependencies.collectCurrentBalanceItems) {
-        items = await withCathayAbort(
+        items = await withAbort(
           dependencies.collectCurrentBalanceItems(
             page,
             domestic,
@@ -372,7 +349,7 @@ export async function runCathayAllProviderWorkflow(
           context.signal,
         );
       } else if (typeId === "domestic" && domestic) {
-        const rows = await withCathayAbort(
+        const rows = await withAbort(
           readCurrent(page, "domestic", context),
           context.signal,
         );
@@ -411,11 +388,11 @@ export async function runCathayAllProviderWorkflow(
           "domestic-current-balance",
         );
       } else if (typeId === "foreign_currency" && foreign) {
-        const rows = await withCathayAbort(
+        const rows = await withAbort(
           readCurrent(page, "foreign", context),
           context.signal,
         );
-        const captures = await withCathayAbort(
+        const captures = await withAbort(
           collectCathayCurrentForeignDepositBalanceCaptures(
             page,
             foreign.captures,
@@ -447,7 +424,7 @@ export async function runCathayAllProviderWorkflow(
       // failure when the browser session itself has expired.
       let checkedSession: CathaySession;
       try {
-        checkedSession = await withCathayAbort(
+        checkedSession = await withAbort(
           createSession(page, source),
           context.signal,
         );
@@ -478,7 +455,7 @@ export async function runCathayAllProviderWorkflow(
       collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
         if (typeId === "domestic") {
           await reportActivity("query");
-          const domestic = await withCathayAbort(
+          const domestic = await withAbort(
             (
               dependencies.collectDomestic ??
               ((target, selection, token, sourceOptions, captureTime) =>
@@ -541,7 +518,7 @@ export async function runCathayAllProviderWorkflow(
         }
 
         await reportActivity("query");
-        const foreign = await withCathayAbort(
+        const foreign = await withAbort(
           (
             dependencies.collectForeign ??
             ((target, selection, token, sourceOptions, captureTime) =>

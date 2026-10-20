@@ -260,10 +260,7 @@ test("declares the audio verification challenge with a six-digit answer", async 
       return locator;
     },
   } as unknown as Page;
-  const contract = await emitHumanAssistanceStage(
-    yuantaTradeAudioAssistanceStage(page),
-    () => undefined,
-  );
+  const contract = await emitHumanAssistanceStage(yuantaTradeAudioAssistanceStage(page));
 
   assert.equal(contract.challengeKind, "audio-captcha");
   assert.equal(contract.charset, "digits");
