@@ -8,7 +8,7 @@ import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from 
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAssertion,
-  type PGliteFinancialRegistry,
+  type PGliteFinancialPort,
 } from "./pglite-financial-registry.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../src/ledger/pglite/workflow-client.ts";
 import {
@@ -26,7 +26,7 @@ const AUTH_TIMEOUT_MS = 10_000;
 /** Environment values propagated to Libretto and other workflow children. */
 export type PGliteChildProvider = {
   readonly operational: PGliteOperationalDomains;
-  readonly financial: PGliteFinancialRegistry;
+  readonly financial: PGliteFinancialPort;
 };
 
 type AuthFrame = {

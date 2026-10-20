@@ -62,65 +62,76 @@ const dataViews = {
   },
 };
 
+/** The channel behind each bridge method that only forwards to an ipcMain handler. */
+const INVOKE_CHANNELS = {
+  settings: {
+    load: "settings:load",
+    save: "settings:save",
+    deletePreviewData: "settings:deletePreviewData",
+  },
+  spending: {
+    loadRecordPage: "spending:record-page",
+    loadCandidatePage: "spending:candidate-page",
+    cancelCandidatePage: "spending:candidate-page-cancel",
+    applyPageAction: "spending:page-action",
+    setPurchaseCategory: "spending:set-purchase-category",
+    loadPendingOverview: "spending:pending-overview",
+    loadMergeLog: "spending:merge-log",
+    loadMonthInsight: "spending:month-insight",
+    loadMerchantStats: "spending:merchant-stats",
+    confirmStrongCandidates: "spending:confirm-strong-candidates",
+    rankPairingCandidates: "spending:pairing-candidates",
+    prewarmPairingCandidates: "spending:pairing-prewarm",
+    confirmCandidate: "spending:confirmCandidate",
+    denyCandidate: "spending:denyCandidate",
+    revokeLink: "spending:revokeLink",
+  },
+  automation: {
+    loadBlock: "automation:block",
+    saveCredentials: "automation:saveCredentials",
+    deviceRegistrationStatus: "automation:deviceRegistrationStatus",
+    startDeviceRegistration: "automation:startDeviceRegistration",
+    submitDeviceRegistrationCode: "automation:submitDeviceRegistrationCode",
+    cancelDeviceRegistration: "automation:cancelDeviceRegistration",
+    selectCertificateFile: "automation:selectCertificateFile",
+    openSetupGuideLink: "automation:openSetupGuideLink",
+    run: "automation:run",
+    runMany: "automation:runMany",
+    cancel: "automation:cancel",
+    forceTerminate: "automation:forceTerminate",
+    runHistory: "automation:runHistory",
+    openExternalPrerequisite: "automation:openExternalPrerequisite",
+    runtimeSnapshot: "automation:runtimeSnapshot",
+    fatalRuntimeSnapshot: "automation:fatalRuntimeSnapshot",
+    takeSignInSettingsRequest: "automation:takeSignInSettingsRequest",
+    previewStructureReport: "automation:previewStructureReport",
+    openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
+  },
+  data: {
+    getVersion: "data:getVersion",
+    acknowledgeVersion: "data:acknowledgeVersion",
+  },
+} as const satisfies { readonly [Namespace in keyof OctopusBeakApi]?: { readonly [Method in keyof OctopusBeakApi[Namespace]]?: string } };
+
+export type OctopusBeakInvokeChannels = typeof INVOKE_CHANNELS;
+
+function invokers<Namespace extends keyof OctopusBeakInvokeChannels>(namespace: Namespace) {
+  return Object.fromEntries(Object.entries(INVOKE_CHANNELS[namespace]).map(([method, channel]) => [
+    method,
+    (...args: unknown[]) => ipcRenderer.invoke(channel, ...args),
+  ])) as unknown as Pick<OctopusBeakApi[Namespace], keyof OctopusBeakInvokeChannels[Namespace] & keyof OctopusBeakApi[Namespace]>;
+}
+
 const api: OctopusBeakApi = {
   display: {
     setScale(percent) {
       ipcRenderer.send("display:setScale", percent);
     },
   },
-  settings: {
-    load: () => ipcRenderer.invoke("settings:load"),
-    save: (input) => ipcRenderer.invoke("settings:save", input),
-    deletePreviewData: () => ipcRenderer.invoke("settings:deletePreviewData"),
-  },
-  overview: {
-    load: (options) => ipcRenderer.invoke("overview:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("overview:block", block, options),
-  },
-  assets: {
-    load: (options) => ipcRenderer.invoke("assets:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("assets:block", block, options),
-  },
-  liabilities: {
-    load: (options) => ipcRenderer.invoke("liabilities:load", options),
-    loadBlock: (block, options) => ipcRenderer.invoke("liabilities:block", block, options),
-  },
-  spending: {
-    load: (input, options) => ipcRenderer.invoke("spending:load", input, options),
-    loadRecordPage: (input) => ipcRenderer.invoke("spending:record-page", input),
-    loadCandidatePage: (input, requestId) => ipcRenderer.invoke("spending:candidate-page", input, requestId),
-    cancelCandidatePage: (requestId) => ipcRenderer.invoke("spending:candidate-page-cancel", requestId),
-    applyPageAction: (input) => ipcRenderer.invoke("spending:page-action", input),
-    setPurchaseCategory: (input) => ipcRenderer.invoke("spending:set-purchase-category", input),
-    loadPendingOverview: (input) => ipcRenderer.invoke("spending:pending-overview", input),
-    loadMergeLog: (input) => ipcRenderer.invoke("spending:merge-log", input),
-    loadMonthInsight: (input) => ipcRenderer.invoke("spending:month-insight", input),
-    loadMerchantStats: (input) => ipcRenderer.invoke("spending:merchant-stats", input),
-    confirmStrongCandidates: (input) => ipcRenderer.invoke("spending:confirm-strong-candidates", input),
-    loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
-    rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
-    prewarmPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-prewarm", input),
-    confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
-    denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
-    revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),
-  },
+  settings: invokers("settings"),
+  spending: invokers("spending"),
   automation: {
-    loadBlock: (block, options) => ipcRenderer.invoke("automation:block", block, options),
-    saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
-    deviceRegistrationStatus: (source) => ipcRenderer.invoke("automation:deviceRegistrationStatus", source),
-    startDeviceRegistration: (source) => ipcRenderer.invoke("automation:startDeviceRegistration", source),
-    submitDeviceRegistrationCode: (source, registrationId, code) => ipcRenderer.invoke("automation:submitDeviceRegistrationCode", source, registrationId, code),
-    cancelDeviceRegistration: (source, registrationId) => ipcRenderer.invoke("automation:cancelDeviceRegistration", source, registrationId),
-    selectCertificateFile: (locale) => ipcRenderer.invoke("automation:selectCertificateFile", locale),
-    openSetupGuideLink: (groupId, linkId, locale) => ipcRenderer.invoke("automation:openSetupGuideLink", groupId, linkId, locale),
-    run: (taskId) => ipcRenderer.invoke("automation:run", taskId),
-    runMany: (taskIds) => ipcRenderer.invoke("automation:runMany", taskIds),
-    cancel: (taskId, expectedRunId) => ipcRenderer.invoke("automation:cancel", taskId, expectedRunId),
-    forceTerminate: (taskId, expectedRunId) => ipcRenderer.invoke("automation:forceTerminate", taskId, expectedRunId),
-    runHistory: () => ipcRenderer.invoke("automation:runHistory"),
-    openExternalPrerequisite: (prerequisiteId) => ipcRenderer.invoke("automation:openExternalPrerequisite", prerequisiteId),
-    runtimeSnapshot: () => ipcRenderer.invoke("automation:runtimeSnapshot"),
-    fatalRuntimeSnapshot: () => ipcRenderer.invoke("automation:fatalRuntimeSnapshot"),
+    ...invokers("automation"),
     onRuntimeChanged(listener) {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: AutomationRuntimeSnapshot) => {
         listener(snapshot);
@@ -128,9 +139,6 @@ const api: OctopusBeakApi = {
       ipcRenderer.on("automation:runtime-changed", handler);
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
     },
-    takeSignInSettingsRequest: () => ipcRenderer.invoke("automation:takeSignInSettingsRequest"),
-    previewStructureReport: (taskId) => ipcRenderer.invoke("automation:previewStructureReport", taskId),
-    openPreviewStructureReportIssue: (taskId) => ipcRenderer.invoke("automation:openPreviewStructureReportIssue", taskId),
     onSignInSettingsRequested(listener) {
       const handler = () => listener();
       ipcRenderer.on("automation:sign-in-settings-requested", handler);
@@ -138,8 +146,7 @@ const api: OctopusBeakApi = {
     },
   },
   data: {
-    getVersion: () => ipcRenderer.invoke("data:getVersion"),
-    acknowledgeVersion: (version) => ipcRenderer.invoke("data:acknowledgeVersion", version),
+    ...invokers("data"),
     onInvalidated(listener) {
       const handler = (_event: Electron.IpcRendererEvent, event: DataInvalidationEvent) => {
         listener(event);

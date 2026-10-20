@@ -6,7 +6,10 @@ import test from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../../../../electron/pglite-financial-registry.ts";
+import {
+  createPGliteFinancialLocalPort,
+  createPGliteFinancialRegistry,
+} from "../../../../electron/pglite-financial-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
@@ -32,7 +35,7 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
   });
   const previousFetch = globalThis.fetch;
   const channel = new MessageChannel();

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createPGliteFinancialRpcClient,
+  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   type PGliteFinancialRegistry,
 } from "./pglite-financial-registry.ts";
@@ -71,9 +72,9 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
   };
   const financialPorts = memoryPair();
   const financialError = sqlStateFailure();
-  const financialServer = createPGliteFinancialRpcServer(financialPorts[1], {
-    sourceAdmit: async () => { throw financialError; },
-  } as unknown as PGliteFinancialRegistry);
+  const financialServer = createPGliteFinancialRpcServer(financialPorts[1], createPGliteFinancialLocalPort({
+    "financial.source.admit": async () => { throw financialError; },
+  } as unknown as PGliteFinancialRegistry));
   const financialClient = createPGliteFinancialRpcClient(financialPorts[0], undefined, correlation);
   const operationalPorts = memoryPair();
   const operationalError = sqlStateFailure();
@@ -87,7 +88,7 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
 
   try {
     await assert.rejects(
-      financialClient.registry.sourceAdmit({
+      financialClient.request("financial.source.admit", [{
         captureId: "capture",
         integrationNamespace: "synthetic",
         sourceConnectionKey: "synthetic-connection",
@@ -101,7 +102,7 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
         scope: {},
         pages: [],
         records: [],
-      } as never),
+      } as never]),
       /PGlite financial operation failed/u,
     );
     await assert.rejects(
@@ -147,12 +148,12 @@ test("financial original failure survives the uncorrelated inner worker and corr
   process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = path;
   process.env.OCTOPUSBEAK_APP_ROOT = process.cwd();
   const innerPorts = memoryPair();
-  const innerServer = createPGliteFinancialRpcServer(innerPorts[1], {
-    spendingVersion: async () => { throw sqlStateFailure(); },
-  } as unknown as PGliteFinancialRegistry);
+  const innerServer = createPGliteFinancialRpcServer(innerPorts[1], createPGliteFinancialLocalPort({
+    "financial.spending.version": async () => { throw sqlStateFailure(); },
+  } as unknown as PGliteFinancialRegistry));
   const innerClient = createPGliteFinancialRpcClient(innerPorts[0]);
   const outerPorts = memoryPair();
-  const outerServer = createPGliteFinancialRpcServer(outerPorts[1], innerClient.registry);
+  const outerServer = createPGliteFinancialRpcServer(outerPorts[1], innerClient);
   const outerClient = createPGliteFinancialRpcClient(outerPorts[0], undefined, {
     workflowId: "fubon-all-statements", taskRunId: "multihop-run",
   });
@@ -160,7 +161,7 @@ test("financial original failure survives the uncorrelated inner worker and corr
   innerPorts[0].on("message", (value) => wire.push(value));
   outerPorts[0].on("message", (value) => wire.push(value));
   try {
-    await assert.rejects(outerClient.registry.spendingVersion(), /PGlite financial operation failed/u);
+    await assert.rejects(outerClient.request("financial.spending.version", []), /PGlite financial operation failed/u);
     const row = JSON.parse((await readFile(path, "utf8")).trim());
     assert.equal(row.error.chain[0]?.sqlState, "23505");
     assert.ok(row.error.chain[0]?.frames.some((frame: { file: string }) =>
@@ -184,12 +185,12 @@ test("financial diagnostics stay absent by default and ignore hostile optional f
   const ports = memoryPair();
   const wire: unknown[] = [];
   ports[0].on("message", (value) => wire.push(value));
-  const server = createPGliteFinancialRpcServer(ports[1], {
-    spendingVersion: async () => { throw sqlStateFailure(); },
-  } as unknown as PGliteFinancialRegistry);
+  const server = createPGliteFinancialRpcServer(ports[1], createPGliteFinancialLocalPort({
+    "financial.spending.version": async () => { throw sqlStateFailure(); },
+  } as unknown as PGliteFinancialRegistry));
   const client = createPGliteFinancialRpcClient(ports[0]);
   try {
-    await assert.rejects(client.registry.spendingVersion(), /PGlite financial operation failed/u);
+    await assert.rejects(client.request("financial.spending.version", []), /PGlite financial operation failed/u);
     assert.equal(Object.hasOwn(wire[0] as object, "diagnosticError"), false);
     assert.doesNotMatch(JSON.stringify(wire), /SECRET-ACCT|private_ledger|23505/u);
     await server.close();
@@ -205,7 +206,7 @@ test("financial diagnostics stay absent by default and ignore hostile optional f
         },
       });
     });
-    await assert.rejects(client.registry.spendingVersion(), (error: unknown) => {
+    await assert.rejects(client.request("financial.spending.version", []), (error: unknown) => {
       const snapshot = captureSafeWorkflowFailureError(error, process.cwd());
       assert.equal(snapshot.chain[0]?.sqlState, "23505");
       assert.deepEqual(snapshot.chain[0]?.frames, [{ file: "electron/test.ts", line: 1, column: 1 }]);

@@ -108,13 +108,9 @@ const currentDataVersion = {
  * full bridge shape here prevents unrelated shell startup reads from becoming
  * console errors while the test focuses on the Spending view.
  */
-export function createSpendingDesktopApi(
-  model,
-  { spendingLoad } = {},
-) {
+export function createSpendingDesktopApi(model) {
   let version = { ...currentDataVersion };
   const spendingPage = model;
-  const loadSpending = spendingLoad ?? (async () => spendingPage);
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   return {
@@ -136,21 +132,7 @@ export function createSpendingDesktopApi(
       load: async () => settings,
       save: async (value) => value,
     },
-    overview: {
-      load: async () => emptyOverview,
-      loadBlock: blockValue,
-    },
-    assets: {
-      load: async () => emptyAssets,
-      loadBlock: blockValue,
-    },
-    liabilities: {
-      load: async () => emptyLiabilities,
-      loadBlock: blockValue,
-    },
     spending: {
-      load: loadSpending,
-      loadBlock: blockValue,
       loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
       loadCandidatePage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, items: [], totalCandidateCount: 0, strongCandidateCount: 0, nextOffset: null }),
       cancelCandidatePage: async () => true,
@@ -250,7 +232,6 @@ function installSpendingDesktopApi(model) {
   const spendingPage = model;
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
-  window.__spendingLoadCount = 0;
   window.__spendingLiveSubscribeCount = 0;
   localStorage.setItem("octopusbeak-welcome-v1", JSON.stringify({
     version: 1,
@@ -278,15 +259,7 @@ function installSpendingDesktopApi(model) {
       load: async () => fixtureSettings,
       save: async (value) => value,
     },
-    overview: { load: async () => fixtureOverview, loadBlock: blockValue },
-    assets: { load: async () => fixtureAssets, loadBlock: blockValue },
-    liabilities: { load: async () => fixtureLiabilities, loadBlock: blockValue },
     spending: {
-      load: async () => {
-        window.__spendingLoadCount += 1;
-        return spendingPage;
-      },
-      loadBlock: blockValue,
       loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
       loadCandidatePage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, items: [], totalCandidateCount: 0, strongCandidateCount: 0, nextOffset: null }),
       cancelCandidatePage: async () => true,
