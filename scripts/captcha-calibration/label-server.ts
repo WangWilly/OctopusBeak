@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { normalizeCaptchaText } from "../../src/lib/automation/server/text-captcha-solver.ts";
+import { preprocessCaptchaImage } from "../../src/lib/automation/server/captcha-preprocess.ts";
 import type { CalibrationBankSpec } from "./banks.ts";
 import {
   imagePath,
@@ -76,7 +77,7 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
     const captures = await readCaptures(corpusDirectory);
     const { entries } = await readLabels(corpusDirectory, bank.id);
     return {
-      bank: { id: bank.id, displayName: bank.displayName, charset: bank.charset, declaredLength: bank.declaredLength?.value ?? null },
+      bank: { id: bank.id, displayName: bank.displayName, charset: bank.charset, declaredLength: bank.declaredLength?.value ?? null, authoritativeLength: bank.declaredLength?.authority === "source" ? bank.declaredLength.value : null, preprocessing: bank.preprocessing ?? null },
       captures: captures.map(({ id, width, height }) => ({ id, width, height })),
       entries,
       progress: { confirmed: captures.filter(({ id }) => entries[id]?.confirmed).length, total: captures.length },
@@ -102,6 +103,9 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
     } else {
       const answer = normalizeCaptchaText(body.answer, bank.charset);
       if (!answer) throw new HttpError(400, "The answer is empty after normalization.");
+      if (bank.declaredLength?.authority === "source" && answer.length !== bank.declaredLength.value) {
+        throw new HttpError(400, `The source requires exactly ${bank.declaredLength.value} characters. Correct the answer or mark it unreadable with Esc.`);
+      }
       confirmation = { answer, at };
     }
     const labels = await updateLabels(corpusDirectory, bank.id, (entries) => withConfirmation(entries, body.id, confirmation));
@@ -127,6 +131,15 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
       const capture = await captureById(decodeURIComponent(image[1]!));
       if (!capture) throw new HttpError(404, "Unknown capture.");
       send(response, 200, "image/png", await readFile(imagePath(corpusDirectory, capture)));
+      return;
+    }
+    const processed = /^\/processed\/([^/]+)$/u.exec(pathname);
+    if (request.method === "GET" && processed) {
+      const capture = await captureById(decodeURIComponent(processed[1]!));
+      if (!capture || !bank.preprocessing) throw new HttpError(404, "Unknown capture.");
+      const raw = await readFile(imagePath(corpusDirectory, capture));
+      const output = preprocessCaptchaImage(raw, undefined, { imagePreprocessing: bank.preprocessing });
+      send(response, 200, "image/png", output);
       return;
     }
     if (request.method === "POST" && pathname === "/api/label") {
@@ -170,6 +183,8 @@ function labelPage(nonce: string): string {
   h1 { font-size: 18px; margin: 0; }
   #frame { padding: 16px; background: #fff; border: 1px solid #8884; }
   #challenge { display: block; image-rendering: pixelated; }
+  #processed-challenge { display: block; image-rendering: pixelated; background: #fff; }
+  #frame, #pframe { padding: 16px; background: #fff; border: 1px solid #8884; display: inline-block; }
   #answer { font: 32px ui-monospace, monospace; letter-spacing: 0.2em; width: 12ch; padding: 4px 8px; }
   .meta { color: #888; }
   .status-confirmed { color: #2a7d2a; }
@@ -185,6 +200,7 @@ function labelPage(nonce: string): string {
   <span id="position" class="meta"></span>
 </header>
 <div id="frame" hidden></div>
+<div id="pframe" hidden></div>
 <div class="meta" id="suggestion"></div>
 <input id="answer" autocomplete="off" spellcheck="false" aria-label="Answer">
 <div id="status"></div>
@@ -205,12 +221,16 @@ let index = 0;
 const $ = (id) => document.getElementById(id);
 
 function entry(id) { return state.entries[id] || {}; }
-function confirmedCount() { return state.captures.filter(({ id }) => entry(id).confirmed).length; }
+function validConfirmation(id) {
+  const confirmed = entry(id).confirmed;
+  return confirmed && (confirmed.unreadable || state.bank.authoritativeLength === null || confirmed.answer.length === state.bank.authoritativeLength);
+}
+function confirmedCount() { return state.captures.filter(({ id }) => validConfirmation(id)).length; }
 function nextUnconfirmed(from) {
   const total = state.captures.length;
   for (let step = 1; step <= total; step += 1) {
     const candidate = (from + step) % total;
-    if (!entry(state.captures[candidate].id).confirmed) return candidate;
+    if (!validConfirmation(state.captures[candidate].id)) return candidate;
   }
   return -1;
 }
@@ -234,12 +254,28 @@ function render() {
   image.height = capture.height * SCALE;
   $("frame").replaceChildren(image);
   $("frame").hidden = false;
+  const processed = state.bank.preprocessing ? document.createElement("img") : null;
+  if (processed) {
+    processed.id = "processed-challenge";
+    processed.alt = "Preprocessed CAPTCHA challenge";
+    processed.src = "/processed/" + encodeURIComponent(capture.id);
+    processed.width = capture.width * SCALE;
+    processed.height = capture.height * SCALE;
+    $("pframe").replaceChildren(processed);
+    $("pframe").hidden = false;
+  } else {
+    $("pframe").hidden = true;
+  }
   $("suggestion").textContent = suggested
     ? "Suggested " + (suggested.answer || "(none)") + ", " + suggested.agreementCount + " of " + suggested.candidates.length + " OCR strategies agree"
     : "No OCR suggestion. Run prelabel first, or type the answer.";
   const status = $("status");
   status.className = confirmed ? (confirmed.unreadable ? "status-unreadable" : "status-confirmed") : "";
   status.textContent = confirmed ? (confirmed.unreadable ? "Marked unreadable" : "Confirmed " + confirmed.answer) : "Not confirmed";
+  if (confirmed && !validConfirmation(capture.id)) {
+    status.className = "status-unreadable";
+    status.textContent = "The confirmed answer has the wrong length. Please correct it, or press Esc if unreadable.";
+  }
   const input = $("answer");
   input.value = confirmed && !confirmed.unreadable ? confirmed.answer : (suggested ? suggested.answer : "");
   input.inputMode = state.bank.charset === "digits" ? "numeric" : "text";
@@ -290,7 +326,7 @@ $("next").addEventListener("click", () => move(1));
 fetch("/api/state").then((response) => response.json()).then((loaded) => {
   state = loaded;
   $("title").textContent = state.bank.displayName + " CAPTCHA labelling";
-  const first = state.captures.findIndex(({ id }) => !entry(id).confirmed);
+  const first = state.captures.findIndex(({ id }) => !validConfirmation(id));
   index = first === -1 ? 0 : first;
   render();
 });

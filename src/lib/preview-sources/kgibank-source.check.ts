@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PreviewHttpOpener } from "./browser-http.ts";
-import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { createKgibankSource, type KgibankLoginForm, type KgibankLoginSignal, type KgibankSessionOpener } from "./kgibank-source.ts";
+import { calibratedCaptchaSolver, KGIBANK_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 
 const credentials = {
   PREVIEW_KGIBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -105,16 +106,36 @@ test("a KGI run writes the NT-dollar demand account with exact amounts, seconds-
   ], "every response is observed");
 });
 
-test("production refuses the KGI CAPTCHA before opening a page or sending a request", async () => {
+test("production refuses an unsupported KGI capture without submitting credentials", async () => {
   const http = fakeHttpOpener(routes());
   const form = loginForm();
   const opened: string[] = [];
   const result = await runPreviewSource(createKgibankSource({ open: session(http, form, opened) }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.match(String(result.error), /kgibank-image-captcha/u);
+  assert.match(String(result.error), /kgibank-login-captcha/u);
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
-  assert.deepEqual(opened, [], "no page is opened");
-  assert.deepEqual(form.calls, []);
+  assert.equal(opened.length, 1);
+  assert.deepEqual(form.calls, ["captcha"]);
+  assert.equal(http.requests.length, 0);
+  assert.equal(result.writes.length, 0);
+});
+
+test("a calibrated KGI rejection reads one challenge and never submits or logs out", async () => {
+  const http = fakeHttpOpener(routes());
+  const form = { ...loginForm() };
+  form.captcha = async () => {
+    form.calls.push("captcha");
+    return { image: blankPng(98, 25), charset: "digits", expectedLength: 6 };
+  };
+  const engine = scriptedOcrEngine([
+    { text: "123456", confidence: 1 }, { text: "654321", confidence: 1 }, { text: "", confidence: 0 },
+  ]);
+  const result = await runPreviewSource(createKgibankSource({
+    open: session(http, form), solveCaptcha: calibratedCaptchaSolver(KGIBANK_CAPTCHA_FAMILY, engine),
+  }), credentials);
+  assert.equal(result.errorCode, "verification-failed");
+  assert.deepEqual(form.calls, ["captcha"]);
+  assert.equal(engine.calls.length, 3);
   assert.equal(http.requests.length, 0);
   assert.equal(result.writes.length, 0);
 });

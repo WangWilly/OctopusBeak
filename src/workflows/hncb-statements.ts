@@ -55,15 +55,13 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import {
-  ProductCollectionInterruptedError,
-  type CollectionProductOutcome,
-} from "../lib/automation/product-collection.ts";
+import type { CollectionProductOutcome, ProductCollectionRunSummary } from "../lib/automation/product-collection.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
   collectAttachedPreviewProducts,
 } from "../lib/preview-sources/attached-products.ts";
-import { previewRunSummary, type PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
+import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
+import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
 import { fail } from "../lib/preview-sources/source-kit.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 
@@ -106,6 +104,10 @@ type WorkflowOutput = Readonly<{
   dateRange: HncbDateRange;
   usedExistingSession: boolean;
   count: number;
+  sourceCaptureCount: number;
+  rowCount: number;
+  itemCount: number;
+  committedCount: number;
   status: "financial-admitted" | "source-only";
 }>;
 export type HncbWorkflowOutput = Readonly<{
@@ -113,8 +115,13 @@ export type HncbWorkflowOutput = Readonly<{
   /** Absent when only attached preview products were selected. */
   dateRange?: HncbDateRange;
   accountCount: number;
+  sourceCaptureCount: number;
+  rowCount: number;
+  itemCount: number;
+  committedCount: number;
   status: "financial-admitted" | "source-only" | "completed" | "partial";
   products: readonly CollectionProductOutcome[];
+  productCollectionSummary: ProductCollectionRunSummary;
 }>;
 
 type DateParts = {
@@ -1469,6 +1476,10 @@ export async function runHncbStatements(
       dateRange,
       usedExistingSession: overrides.usedExistingSession ?? false,
       count: captures.length,
+      sourceCaptureCount: captures.length,
+      rowCount: captures.reduce((total, capture) => total + capture.downloads.reduce((sum, download) => sum + download.rows.length, 0), 0),
+      itemCount: items.length,
+      committedCount: committed.committedCount,
       status,
     };
   }
@@ -1541,7 +1552,6 @@ export async function runHncbProviderWorkflow(
         },
       );
     }
-    context.signal.throwIfAborted();
     const attached = await collectAttachedPreviewProducts({
       context,
       source: ATTACHED_PREVIEW_PRODUCTS.hncb,
@@ -1553,52 +1563,34 @@ export async function runHncbProviderWorkflow(
         if (!(await isSignedIn(page))) fail("session-conflict", "the HNCB session ended");
       },
     });
-    return hncbRunOutput(usedExistingSession, deposit, attached);
+    return hncbRunOutput(usedExistingSession, deposit, attached, context.signal);
   });
 }
 
-/**
- * The run's product summary: the verified deposit product, then the attached
- * preview products. An attached failure never changes the deposit outcome; a
- * session loss in an attached product ends the run with every outcome kept.
- */
+/** Adapt the shared whole-run result to HNCB's account count and admission status. */
 export function hncbRunOutput(
   usedExistingSession: boolean,
   deposit: WorkflowOutput | null,
   attached: PreviewProductRun,
+  signal?: AbortSignal,
 ): HncbWorkflowOutput {
-  const products: readonly CollectionProductOutcome[] = [
-    deposit
-      ? { typeId: "deposit", status: "success", itemCount: deposit.count, committedCount: deposit.count }
-      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
-    ...attached.products,
-  ];
-  const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
-  const failed = products.find((product) => product.status === "failed");
-  const summary = {
-    products,
-    sourceCaptureCount: 0,
-    rowCount: previewRunSummary(attached).rowCount,
-    itemCount: products.reduce((total, product) => total + product.itemCount, 0),
-    committedCount,
-    status: failed ? committedCount > 0 ? "partial" : "failed" : "completed",
-  } as const;
-  if (attached.interrupted) {
-    throw Object.assign(
-      new ProductCollectionInterruptedError(attached.interrupted.errorCode, summary),
-      { cause: attached.interrupted.error },
-    );
-  }
-  if (!deposit && committedCount === 0 && failed) {
-    const attempted = attached.products.filter((product) => product.status !== "skipped");
-    if (attempted.length === 1) throw attached.firstFailure;
-    throw new ProductCollectionInterruptedError(failed.errorCode ?? "source-collection-failed", summary);
-  }
+  const summary = finishAttachedProductRun({
+    products: [deposit
+      ? { typeId: "deposit", status: "success", itemCount: deposit.itemCount, committedCount: deposit.committedCount }
+      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }],
+    sourceCaptureCount: deposit?.sourceCaptureCount ?? 0,
+    rowCount: deposit?.rowCount ?? 0,
+  }, attached, signal);
   return {
     usedExistingSession,
     ...(deposit ? { dateRange: deposit.dateRange } : {}),
-    accountCount: committedCount,
-    status: deposit?.status ?? "completed",
-    products,
+    accountCount: (deposit?.count ?? 0) + attached.receipts.reduce((total, receipt) => total + receipt.accounts, 0),
+    sourceCaptureCount: summary.sourceCaptureCount,
+    rowCount: summary.rowCount,
+    itemCount: summary.itemCount,
+    committedCount: summary.committedCount,
+    status: summary.status === "completed" ? deposit?.status ?? "completed" : "partial",
+    products: summary.products,
+    productCollectionSummary: summary,
   };
 }

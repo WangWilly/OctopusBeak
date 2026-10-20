@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { depositCollection, runPreviewSource } from "./preview-source-harness.ts";
-import { createRakutenSource, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
+import { blankPng, depositCollection, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
+import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import { createRakutenSource, playwrightRakutenPage, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
+import { PreviewSourceFailure } from "./source-kit.ts";
 
 const credentials = {
   PREVIEW_RAKUTEN_DEPOSIT_ID_NUMBER: "A000000001",
@@ -20,6 +22,7 @@ const PK = { a: "20261003091500001", b: "20261003091500002", c: "202609151200000
 type Script = Readonly<{
   signIn?: RakutenSignInOutcome;
   months?: readonly string[];
+  image?: Buffer;
 }>;
 
 function fakePage(script: Script = {}) {
@@ -31,7 +34,7 @@ function fakePage(script: Script = {}) {
     month([], '{"dataEnd":false,"dataLimit":false,"noData":true}'),
   ];
   const page: RakutenPage = {
-    async captchaImage() { calls.push("captcha"); return Buffer.from("png"); },
+    async captchaImage() { calls.push("captcha"); return script.image ?? blankPng(152, 60); },
     async signIn(input) { calls.push(`signIn:${input.idNumber}:${input.captcha}`); return script.signIn ?? { kind: "signed-in" }; },
     async depositMonth(back): Promise<RakutenCapture> {
       calls.push(`month:${back}`);
@@ -49,6 +52,43 @@ function fakePage(script: Script = {}) {
 }
 
 const solveCaptcha = async () => "AB12";
+
+test("Rakuten reports undecodable CAPTCHA media as a typed source failure before OCR or sign-in", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  const startUrl = "https://rakuten-fixture.invalid/";
+  try {
+    for (const bytes of [Buffer.from("invalid-image-fixture"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0])]) {
+      const page = await browser.newPage();
+      const requests: string[] = [];
+      let solverCalled = false;
+      await page.route("**/*", async (route) => {
+        requests.push(route.request().url());
+        if (route.request().url() !== startUrl) return route.abort();
+        await route.fulfill({ status: 200, contentType: "text/html", body: `<input id="captcha">
+          <div class="pic_veri"><captcha-image><img style="width:152px;height:60px" src="data:image/jpeg;base64,${bytes.toString("base64")}"></captcha-image></div>` });
+      });
+      try {
+        const source = createRakutenSource({
+          page: (context, _url, use) => playwrightRakutenPage({ ...context, browser: { withPage: (run) => run(page) } }, startUrl, use),
+          solveCaptcha: async () => { solverCalled = true; return "AB12"; },
+        });
+        const result = await runPreviewSource(source, credentials);
+        assert.ok(result.error instanceof PreviewSourceFailure);
+        assert.equal(result.error.reason, "unexpected-response");
+        assert.match(result.error.message, /the CAPTCHA is not a decodable image/u);
+        assert.equal(result.errorCode, "source-validation-failed");
+        assert.equal(solverCalled, false);
+        assert.deepEqual(requests, [startUrl], "no sign-in request leaves the fixture page");
+        assert.equal(result.writes.length, 0);
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+});
 
 async function run(script: Script = {}) {
   const fake = fakePage(script);
@@ -108,13 +148,27 @@ test("a pk that repeats with different content fails, and an identical repeat is
   assert.equal(depositCollection(repeat.writes[0]!).accounts[0]!.transactions.length, 1);
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before opening the page", async () => {
-  const fake = fakePage();
+test("the default calibrated solver refuses an unsupported capture before sign-in", async () => {
+  const fake = fakePage({ image: blankPng(151, 60) });
   const result = await runPreviewSource(createRakutenSource({ page: fake.opener }), credentials);
   assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(fake.opens(), 0);
-  assert.deepEqual(fake.calls, []);
+  assert.equal(fake.opens(), 1);
+  assert.deepEqual(fake.calls, ["captcha"]);
   assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+});
+
+test("Rakuten signs in only on calibrated agreement and submits nothing on disagreement", async () => {
+  for (const [other, accepted] of [["AB29", true], ["AB28", false], ["", false]] as const) {
+    const fake = fakePage();
+    const engine = scriptedOcrEngine([{ text: "AB29", confidence: 1 }, { text: other, confidence: 1 }]);
+    const result = await runPreviewSource(createRakutenSource({ page: fake.opener,
+      solveCaptcha: calibratedCaptchaSolver(RAKUTEN_CAPTCHA_FAMILY, engine) }), credentials);
+    assert.equal(fake.calls.filter((c) => c.startsWith("signIn:")).length, accepted ? 1 : 0);
+    if (!accepted) {
+      assert.equal(result.errorCode, "verification-failed");
+      assert.equal(result.writes.length, 0);
+    }
+  }
 });
 
 test("sign-in refusals are typed and collect nothing", async () => {

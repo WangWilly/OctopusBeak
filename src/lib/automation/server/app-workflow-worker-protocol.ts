@@ -380,7 +380,7 @@ function validHumanContract(value: unknown): value is HumanAssistanceContractInp
   )) return false;
   if (contract.challengeAudioSource !== undefined && !allowNestedKeys(contract.challengeAudioSource, ["id", "label", "semanticId"])) return false;
   if (contract.solveAcceptancePolicy !== undefined && !allowNestedKeys(contract.solveAcceptancePolicy, ["mode", "conflictResolution"])) return false;
-  if (contract.ocrAttemptPlan !== undefined && !contract.ocrAttemptPlan.every((plan) => allowNestedKeys(plan, ["imagePreprocessing", "ocrPageSegmentationMode", "ocrOutputStage"]))) return false;
+  if (contract.ocrAttemptPlan !== undefined && !contract.ocrAttemptPlan.every((plan) => allowNestedKeys(plan, ["imagePreprocessing", "ocrPageSegmentationMode", "ocrOutputStage", "ocrCharacterSegmentation"]))) return false;
   try {
     createHumanAssistanceContract(contract, 1);
     return boundedJson(contract);

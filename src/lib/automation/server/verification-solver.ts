@@ -140,10 +140,11 @@ function strategyFingerprint(
     imagePreprocessing: strategy.imagePreprocessing
       ?? deps.imagePreprocessing
       ?? [],
-    ocrPageSegmentationMode: strategy.ocrPageSegmentationMode
+    ocrPageSegmentationMode: strategy.ocrCharacterSegmentation ? "single-character" : strategy.ocrPageSegmentationMode
       ?? deps.ocrPageSegmentationMode
       ?? "single-line",
     ocrOutputStage: strategy.ocrOutputStage ?? "final",
+    ocrCharacterSegmentation: strategy.ocrCharacterSegmentation,
   });
 }
 

@@ -53,7 +53,7 @@ import {
   ATTACHED_PREVIEW_PRODUCTS,
   collectAttachedPreviewProducts,
 } from "../lib/preview-sources/attached-products.ts";
-import { previewRunSummary } from "../lib/preview-sources/product-collection.ts";
+import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
 import {
   cathayAttachedPreviewCollectors,
   type CathayAttachedPreviewPort,
@@ -101,8 +101,10 @@ export type CathayAllProviderWorkflowOutput = Readonly<{
   count: number;
   rowCount: number;
   sourceCaptureCount: number;
+  itemCount: number;
   committedCount: number;
   products: ProductCollectionRunSummary["products"];
+  productCollectionSummary: ProductCollectionRunSummary;
   status:
     | "source-only"
     | "financial-admitted"
@@ -284,39 +286,6 @@ function noVerifiedProducts(
     committedCount: 0,
     status: "completed",
   };
-}
-
-/**
- * The verified summary with the attached preview products appended. An
- * attached failure only adds its own failed outcome; a session loss during an
- * attached product ends the run like one during a verified product.
- */
-function withAttachedProducts(
-  verified: ProductCollectionRunSummary,
-  attached: Awaited<ReturnType<typeof collectAttachedPreviewProducts>>,
-): ProductCollectionRunSummary {
-  const preview = previewRunSummary(attached);
-  const products: readonly CollectionProductOutcome[] = [
-    ...verified.products,
-    ...preview.products,
-  ];
-  const committedCount = verified.committedCount + preview.committedCount;
-  const failed = products.some((product) => product.status === "failed");
-  const summary: ProductCollectionRunSummary = {
-    products,
-    sourceCaptureCount: verified.sourceCaptureCount,
-    rowCount: verified.rowCount + preview.rowCount,
-    itemCount: verified.itemCount + preview.itemCount,
-    committedCount,
-    status: failed ? (committedCount > 0 ? "partial" : "failed") : "completed",
-  };
-  if (attached.interrupted) {
-    throw new ProductCollectionInterruptedError(
-      attached.interrupted.errorCode,
-      summary,
-    );
-  }
-  return summary;
 }
 
 /** App-owned Cathay group workflow. Every selected statement and balance
@@ -672,9 +641,9 @@ export async function runCathayAllProviderWorkflow(
       }
     }
 
-    const overall = input.attachedPreviewProducts.length === 0
-      ? summary
-      : withAttachedProducts(summary, await collectAttachedPreviewProducts({
+    const overall = finishAttachedProductRun(summary, input.attachedPreviewProducts.length === 0
+      ? null
+      : await collectAttachedPreviewProducts({
           context,
           source: ATTACHED_PREVIEW_PRODUCTS.cathay,
           selected: input.attachedPreviewProducts,
@@ -684,7 +653,7 @@ export async function runCathayAllProviderWorkflow(
             context.now,
           ),
           assertSession,
-        }));
+        }), context.signal);
 
     const hasSuccessfulProduct = overall.products.some(
       (product) => product.status === "success",
@@ -696,8 +665,10 @@ export async function runCathayAllProviderWorkflow(
       count: statementCaptureCount,
       rowCount: summary.rowCount,
       sourceCaptureCount: summary.sourceCaptureCount,
+      itemCount: overall.itemCount,
       committedCount: overall.committedCount,
       products: overall.products,
+      productCollectionSummary: overall,
       status:
         overall.status === "completed"
           ? hasSuccessfulProduct

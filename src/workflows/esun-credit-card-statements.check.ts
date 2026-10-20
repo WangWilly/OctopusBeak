@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import type { Page } from "playwright";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
+import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { PGlite } from "@electric-sql/pglite";
 import {
   buildEsunCanonicalCreditCardCapture,
+  runEsunCreditCardProviderWorkflow,
   classifyEsunPostLoginPage,
   buildEsunSettledPeriodsFromIssuerSummaries,
   attachEsunIssuerStatementPeriods,
@@ -850,3 +855,51 @@ test("an unexpected E.SUN post-login page is classified by kind, never by its te
     assert.match(`esun-post-login-${state}`, /^[a-z][a-z0-9-]{0,63}$/u);
   }
 });
+
+for (const scenario of ["unavailable portal", "cancellation while waiting for the portal"] as const) {
+  test(`E.SUN attached-only run handles ${scenario}`, async () => {
+    const controller = new AbortController();
+    let portalRequests = 0;
+    const page = {
+      on: () => undefined,
+      url: () => "https://ebank.esunbank.com.tw/index.jsp",
+      getByText: () => ({ isVisible: async () => true }),
+      waitForFunction: async () => {
+        if (scenario === "cancellation while waiting for the portal") {
+          controller.abort();
+          throw new Error("synthetic portal cancellation");
+        }
+      },
+      evaluate: async () => { portalRequests += 1; return { kind: "portal-session-missing" }; },
+    } as unknown as Page;
+    const context = {
+      runId: "esun-result-check",
+      signal: controller.signal,
+      now: () => "2026-10-15T02:00:00.000Z",
+      browser: { withPage: async (run: (page: Page) => Promise<unknown>) => run(page) },
+      event: async () => undefined,
+      previewWrite: { write: async () => { throw new Error("no incomplete product may write"); } },
+    } as unknown as WorkflowContext;
+    await assert.rejects(runEsunCreditCardProviderWorkflow(context, {
+      managedIdentitySecret: "synthetic-identity-secret",
+      credentials: { esun_user_id: "synthetic-user", esun_account: "synthetic-account", esun_password: "synthetic-password" },
+      statementTypes: [],
+      attachedPreviewProducts: ["deposit"],
+    }), (error: unknown) => {
+      if (scenario === "unavailable portal") {
+        assert.ok(error instanceof PreviewSourceFailure);
+        assert.equal(error.reason, "unexpected-response", "keep the sole product's existing failure classification");
+        return true;
+      }
+      assert.ok(error instanceof ProductCollectionInterruptedError, String(error));
+      assert.equal(error.errorCode, "cancelled");
+      assert.deepEqual(error.summary.products.map((p) => [p.typeId, p.status, p.skipReason]), [
+        ["credit_card", "skipped", "not_selected"],
+        ["deposit", "skipped", "not_attempted"],
+      ]);
+      assert.equal(error.summary.committedCount, 0);
+      return true;
+    });
+    assert.equal(portalRequests, scenario === "unavailable portal" ? 1 : 0);
+  });
+}

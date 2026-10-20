@@ -11,6 +11,7 @@ import type {
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
 import { FIRSTBANK_LOGIN_URL, playwrightFirstbankPage } from "./firstbank-page.ts";
+import { calibratedCaptchaSolver, FIRSTBANK_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewProductAbsence } from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
@@ -26,7 +27,6 @@ import {
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
   requireDeviceRegistration,
   solveChallengeRound,
   taipeiMonthWindow,
@@ -709,8 +709,8 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live First Bank account. Its data may be incomplete or wrong. First Bank's web sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的第一銀行帳戶執行過，資料可能不完整或有誤。第一銀行網路銀行登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live First Bank account. Its data may be incomplete or wrong. Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
+        "zh-TW": "預覽來源，從未以真實的第一銀行帳戶執行過，資料可能不完整或有誤。圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
       },
       requirements: [{
         en: "A First Bank iBank (個人網路銀行) login. Credit cards are read through iBank's 信用卡 functions.",
@@ -731,12 +731,13 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
     startUrl: FIRSTBANK_LOGIN_URL,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "firstbank-image-captcha");
+      const solve = options.solveCaptcha ?? calibratedCaptchaSolver(FIRSTBANK_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async (page) => {
+        let submitted = false;
         try {
           const captcha = await solveChallengeRound(context, solve, async () =>
-            ({ image: await page.captchaImage(), charset: "digits", expectedLength: CAPTCHA_LENGTH }), 1);
+            ({ image: await page.captchaImage(), charset: "alphanumeric", expectedLength: CAPTCHA_LENGTH }), 1);
+          submitted = true;
           const outcome = await page.signIn({
             idNumber: input.credentials[KEY.idNumber] ?? "",
             userCode: input.credentials[KEY.userCode] ?? "",
@@ -755,7 +756,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
           await context.event("collection", "collection-completed");
           return output;
         } finally {
-          await page.signOut().catch(() => undefined);
+          if (submitted) await page.signOut().catch(() => undefined);
         }
       });
     },

@@ -5,11 +5,13 @@ import { createWorker, OEM, PSM, type Page } from "tesseract.js";
 import type {
   CaptchaImagePreprocessingMode,
   CaptchaOcrOutputStage,
+  CaptchaOcrCharacterSegmentation,
   CaptchaOcrPageSegmentationMode,
   ChallengeCharacterSet,
 } from "../human-assistance.ts";
 import type { VerificationSolver, VerificationSolverResult } from "./verification-solver.ts";
 import { preprocessCaptchaImage } from "./captcha-preprocess.ts";
+import { recognizeRakutenCharacters } from "./character-captcha.ts";
 
 export type TextRecognitionEngine = {
   recognize(
@@ -18,6 +20,7 @@ export type TextRecognitionEngine = {
     imagePreprocessing?: readonly CaptchaImagePreprocessingMode[],
     ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode,
     ocrOutputStage?: CaptchaOcrOutputStage,
+    ocrCharacterSegmentation?: CaptchaOcrCharacterSegmentation,
   ): Promise<{ text: string; confidence: number }>;
 };
 
@@ -85,7 +88,7 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
       }
       const effectiveImagePreprocessing = strategy?.imagePreprocessing
         ?? imagePreprocessing;
-      const effectivePageSegmentationMode = strategy?.ocrPageSegmentationMode
+      const effectivePageSegmentationMode = strategy?.ocrCharacterSegmentation ? undefined : strategy?.ocrPageSegmentationMode
         ?? ocrPageSegmentationMode;
       const effectiveOutputStage = strategy?.ocrOutputStage;
       const recognition = await engine.recognize(
@@ -94,6 +97,7 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
         effectiveImagePreprocessing,
         effectivePageSegmentationMode,
         effectiveOutputStage,
+        strategy?.ocrCharacterSegmentation,
       );
       const answer = normalizeCaptchaText(recognition.text, charset);
       const expectedLengthMatches = expectedAnswerLength === undefined
@@ -226,12 +230,13 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
     imagePreprocessing,
     ocrPageSegmentationMode,
     ocrOutputStage,
+    ocrCharacterSegmentation,
   ) {
     return enqueueRecognition(async () => {
       const worker = await tesseractWorker();
       await worker.setParameters({
         tessedit_char_whitelist: tesseractWhitelist(charset ?? "alphanumeric"),
-        tessedit_pageseg_mode: tesseractPageSegmentationMode(ocrPageSegmentationMode),
+        tessedit_pageseg_mode: ocrCharacterSegmentation ? PSM.SINGLE_CHAR : tesseractPageSegmentationMode(ocrPageSegmentationMode),
       });
       const processed = preprocessCaptchaImage(
         image,
@@ -244,6 +249,18 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
           outputStage: ocrOutputStage,
         },
       );
+      if (ocrCharacterSegmentation) {
+        if (ocrCharacterSegmentation !== "rakuten-four-slots" || ocrPageSegmentationMode !== undefined || ocrOutputStage !== undefined) {
+          throw new Error("Invalid character OCR strategy.");
+        }
+        return recognizeRakutenCharacters(processed, async (character) => {
+          const result = await worker.recognize(character, {}, { text: true, blocks: true });
+          return {
+            answer: normalizeCaptchaText(result.data.text ?? "", charset),
+            confidence: clampConfidence((meanSymbolConfidence(result.data) ?? result.data.confidence ?? 0) / 100),
+          };
+        });
+      }
       const result = await worker.recognize(processed, {}, {
         text: true,
         blocks: true,

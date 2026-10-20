@@ -460,6 +460,25 @@ test("a planned solve breaks equal-confidence ties by declaration order", async 
   assert.deepEqual(injected, ["111111"]);
 });
 
+test("whole-image and character segmentation with the same preprocessing are distinct votes", async () => {
+  const injected: string[] = [];
+  let calls = 0;
+  const result = await solveVerificationChallenge({
+    challengeKind: "text-captcha", charset: "alphanumeric", expectedAnswerLength: 4, confidenceThreshold: 0,
+    solver: { solve: async () => { calls += 1; return { answer: "AB29", confidence: 0.1 }; } },
+    captureChallengeImage: async () => image,
+    injectAnswer: async (answer) => { injected.push(answer); },
+    ocrAttemptPlan: [
+      { imagePreprocessing: ["rakuten-teal-foreground"] },
+      { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+    ],
+    solveAcceptancePolicy: { mode: "agreement-only" },
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(injected, ["AB29"]);
+  assert.deepEqual(result, { status: "solved" });
+});
+
 test("two distinct low-confidence OCR strategies can establish agreement", async () => {
   const injected: string[] = [];
   const outcome = await solveVerificationChallenge({
