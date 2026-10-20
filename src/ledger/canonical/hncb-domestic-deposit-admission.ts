@@ -15,9 +15,8 @@ import { combineDomesticDepositDescription } from "./domestic-deposit-descriptio
 import {
   HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
-  getHncbHumanAttestedV1Manifest,
+  HNCB_HUMAN_ATTESTED_V1_MANIFEST,
   hncbHumanAttestedIdentityEpochKey,
-  isHncbHumanAttestedV1Active,
   isHncbHumanAttestedV1Manifest,
   type HncbHumanAttestedV1Manifest,
 } from "./hncb-human-attestation-contract.ts";
@@ -1012,7 +1011,7 @@ export type HncbDomesticDepositFinancialSemantics = {
 
 export function buildHncbHumanAttestedFinancialSemantics(
   capture: HncbDomesticDepositCaptureEvidence,
-  manifest: HncbHumanAttestedV1Manifest = getHncbHumanAttestedV1Manifest(),
+  manifest: HncbHumanAttestedV1Manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 ): HncbDomesticDepositFinancialSemantics {
   const identity = deriveHncbDomesticDepositAccountIdentity(capture.account);
   return {
@@ -1305,11 +1304,9 @@ function hncbFinancialDiagnosticsFor(
   if (!manifest) diagnostics.push("human-attestation-missing");
   else if (!isHncbHumanAttestedV1Manifest(manifest))
     diagnostics.push("human-attestation-mismatch");
-  if (!isHncbHumanAttestedV1Active())
-    diagnostics.push("human-attestation-revoked");
   if (!isAdmittedHncbDomesticDepositCaptureEvidence(input.capture))
     return { diagnostics: [...new Set(diagnostics)], semantics: null };
-  const current = manifest ?? getHncbHumanAttestedV1Manifest();
+  const current = manifest ?? HNCB_HUMAN_ATTESTED_V1_MANIFEST;
   const semantics =
     input.semantics ??
     buildHncbHumanAttestedFinancialSemantics(input.capture, current);

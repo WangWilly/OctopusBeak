@@ -16,8 +16,6 @@ import {
   POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
   POST_HUMAN_ATTESTED_V1_MANIFEST,
-  getPostHumanAttestedV1Manifest,
-  isPostHumanAttestedV1Active,
   isPostHumanAttestedV1Manifest,
   postHumanAttestedIdentityEpochKey,
   type PostHumanAttestedV1Manifest,
@@ -594,8 +592,6 @@ export function admitPostDomesticDepositFinancialCapture(
   if (!manifest) diagnostics.push("human-attestation-missing");
   else if (!isPostHumanAttestedV1Manifest(manifest))
     diagnostics.push("human-attestation-mismatch");
-  if (!isPostHumanAttestedV1Active())
-    diagnostics.push("human-attestation-revoked");
   if (!isAdmittedPostDomesticDepositCaptureEvidence(input.capture))
     return { status: "blocked", capture: null, diagnostics };
   if (
@@ -669,7 +665,7 @@ export function admitPostDomesticDepositFinancialCapture(
       integrationNamespace: "post",
       sourceConnectionKey,
       identityEpochKey: postHumanAttestedIdentityEpochKey(
-        manifest ?? getPostHumanAttestedV1Manifest(),
+        manifest ?? POST_HUMAN_ATTESTED_V1_MANIFEST,
       ),
       stream: "domestic-deposit",
       recordKind: "post-domestic-deposit",

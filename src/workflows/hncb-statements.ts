@@ -23,7 +23,9 @@ import {
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
-import { getHncbHumanAttestedV1Manifest } from "../ledger/canonical/hncb-human-attestation-contract.ts";
+import {
+  HNCB_HUMAN_ATTESTED_V1_MANIFEST,
+} from "../ledger/canonical/hncb-human-attestation-contract.ts";
 import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
@@ -1330,7 +1332,7 @@ export async function runHncbStatements(
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
     let status: WorkflowOutput["status"] = "source-only";
-    const manifest = getHncbHumanAttestedV1Manifest();
+    const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
     for (const [index, capture] of captures.entries()) {
       const input = {
         capture,

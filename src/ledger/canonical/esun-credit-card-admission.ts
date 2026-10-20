@@ -5,7 +5,6 @@ import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
   isEsunCreditCardHumanAttestedAccountKey,
-  isEsunCreditCardHumanAttestedV4Active,
 } from "./esun-credit-card-human-attestation-contract.ts";
 import {
   assignOccurrenceSlots,
@@ -796,8 +795,6 @@ const freezeDeep = <T>(value: T, seen = new WeakSet<object>()): T => {
 export function admitEsunCreditCardCapture(
   capture: EsunCreditCardCaptureInput,
 ): EsunCreditCardValidatedCapture {
-  if (!isEsunCreditCardHumanAttestedV4Active())
-    fail("E.SUN credit-card human-attested v4 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("E.SUN credit-card capture is required.");
   text(capture.captureId, "Capture ID");

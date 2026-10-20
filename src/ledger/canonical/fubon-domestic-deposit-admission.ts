@@ -18,8 +18,6 @@ import {
 } from "./source-connection-identity.ts";
 import {
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-  getFubonHumanAttestedV1Manifest,
-  isFubonHumanAttestedV1Active,
   isFubonHumanAttestedV1Manifest,
   type FubonHumanAttestedV1Manifest,
 } from "./fubon-human-attestation-contract.ts";
@@ -871,8 +869,8 @@ function hardSourceOnlyRowDiagnostics(
       const fence = opaqueToken(
         "fubon-observed-composite-fence-v2",
         identity.subjectDigest,
-        getFubonHumanAttestedV1Manifest().attestationId,
-        getFubonHumanAttestedV1Manifest().evidenceVersion,
+        FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
+        FUBON_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
         currency,
         `${time.localDate}T${time.localTime}`,
         direction,
@@ -1021,7 +1019,7 @@ export function createFubonDomesticDepositSourceEvidence(
     "Fubon source evidence",
     sourceIdentity,
   );
-  const manifest = getFubonHumanAttestedV1Manifest();
+  const manifest = FUBON_HUMAN_ATTESTED_V1_MANIFEST;
   const identity = deriveFubonDomesticDepositAccountIdentity(
     capture.account,
     manifest,
@@ -1122,9 +1120,7 @@ export const FUBON_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS =
   "canonical-human-attested" as const;
 export {
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-  getFubonHumanAttestedV1Manifest,
   isFubonHumanAttestedV1Manifest,
-  isFubonHumanAttestedV1Active,
 } from "./fubon-human-attestation-contract.ts";
 export type { FubonHumanAttestedV1Manifest } from "./fubon-human-attestation-contract.ts";
 export const FUBON_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY = "TWD" as const;
@@ -1441,7 +1437,7 @@ export type FubonDomesticDepositAccountIdentity = {
  */
 export function deriveFubonDomesticDepositAccountIdentity(
   account: FubonDomesticDepositCaptureEvidence["account"],
-  manifest: FubonHumanAttestedV1Manifest = getFubonHumanAttestedV1Manifest(),
+  manifest: FubonHumanAttestedV1Manifest = FUBON_HUMAN_ATTESTED_V1_MANIFEST,
   sourceConnectionKey?: `sha256:${string}`,
 ): FubonDomesticDepositAccountIdentity {
   const subjectDigest = sourceAccountDigest(account);
@@ -1660,8 +1656,6 @@ function normalizeFubonDomesticDepositFinancialCapture(
     diagnostics.push(
       attestation ? "human-attestation-mismatch" : "human-attestation-missing",
     );
-  if (!isFubonHumanAttestedV1Active())
-    diagnostics.push("human-attestation-revoked");
 
   const semantics = input.semantics;
   if (!semantics) {

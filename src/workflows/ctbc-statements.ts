@@ -20,7 +20,7 @@ import {
   type CtbcDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/ctbc-domestic-deposit-admission.ts";
 import {
-  getCtbcHumanAttestedV1Manifest,
+  CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -1201,7 +1201,7 @@ export async function runCtbcProviderWorkflow(
       validatedCaptures.push(admission.capture);
     }
 
-    const manifest = getCtbcHumanAttestedV1Manifest();
+    const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
     const financialCaptures: ExistingCtbcFinancialCapture[] = [];
     const items: PGliteWorkflowRunItem[] = [];
     await context.event("validation", "canonical-admission-started", {
