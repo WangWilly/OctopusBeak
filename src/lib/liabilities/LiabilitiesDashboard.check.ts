@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
 import type { LiabilitiesPageDto } from "./types.ts";
-import { resolveLiabilitiesDetails } from "../shared-shell/progressive-dashboard-data.ts";
 
 const source = readFileSync(new URL("./LiabilitiesDashboard.svelte", import.meta.url), "utf8");
 
@@ -13,21 +12,21 @@ test("liabilities exposes canonical coverage gaps and keeps awaiting ahead of pa
 });
 
 test("an incomplete liabilities total shows the incomplete copy in the card and the side value, never a figure", () => {
-  assert.match(source, /\$: incomplete = totalIncomplete\(summaryInput\.accounts\)/);
+  assert.match(source, /\$: incomplete = totalIncomplete\(liabilities\.accounts\)/);
   assert.match(source, /: incomplete\s*\? \$t\.preview\.incomplete/);
   assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}[\s\S]*?\{includesPreview\}/);
 });
 
-test("chart and list read their settled block, as Assets does, so a visibility change drops preview rows", () => {
-  assert.doesNotMatch(source, /label="(chart|list)"[^>]*let:data/);
-  assert.match(source, /\$: chartBlock = settledBlock\(blocks, "chart"\)/);
-  assert.match(source, /\$: listBlock = settledBlock\(blocks, "list"\)/);
+test("chart and list read the live page, as Assets does, so a visibility change drops preview rows", () => {
+  assert.doesNotMatch(source, /blocks|ProgressiveBlock|resolveLiabilities/);
+  assert.match(source, /localizeAccounts\(liabilities\.accounts, \$t\)/);
+  assert.match(source, /accounts=\{liabilities\.accounts\}/);
 });
 
 test("margin exposure keeps an independent investment-kind filter", () => {
   assert.match(source, /let marginFilter: AccountKind \| "all" = "all"/);
-  assert.match(source, /accounts=\{detailsDataBlock\.marginAccounts\}[\s\S]*mode="liability"[\s\S]*bind:filter=\{marginFilter\}/);
-  assert.match(source, /detailsDataBlock\.marginAccounts\.length > 0/);
+  assert.match(source, /accounts=\{liabilities\.marginAccounts\}[\s\S]*mode="liability"[\s\S]*bind:filter=\{marginFilter\}/);
+  assert.match(source, /liabilities\.marginAccounts\.length > 0/);
 
   const account = (id: string): AccountRowDto => ({
     id,
@@ -43,20 +42,4 @@ test("margin exposure keeps an independent investment-kind filter", () => {
     lastUpdated: null,
     valueAvailability: "available",
   });
-  const fallback = {
-    availability: "available",
-    coverage: "complete",
-    sourceGaps: [],
-    importedAt: null,
-    accounts: [],
-    marginAccounts: [account("fallback")],
-    transactionsByAccount: {},
-    dailyHistoryByAccount: {},
-    dailyHistory: [],
-    exchangeRates: [],
-  } as LiabilitiesPageDto;
-  const block = { marginAccounts: [account("block")], transactionsByAccount: { block: [] } };
-  assert.equal(resolveLiabilitiesDetails(fallback, block).marginAccounts[0]?.id, "block");
-  assert.equal(resolveLiabilitiesDetails(fallback).marginAccounts[0]?.id, "fallback");
-  assert.match(source, /resolveLiabilitiesDetails\(liabilities, detailsBlock\)/);
 });
