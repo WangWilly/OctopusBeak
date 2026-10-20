@@ -48,7 +48,7 @@
   $: if (record.purchaseId !== shownPurchaseId) {
     shownPurchaseId = record.purchaseId;
     pickerOpen = false;
-    review.showMerchantStats(record.purchaseId);
+    review.showMerchantStats(record.purchaseId, record.occurrence.value.slice(0, 7));
     void tick().then(() => panel?.focus());
   }
   onDestroy(() => review.showMerchantStats(null));
