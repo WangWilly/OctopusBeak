@@ -83,6 +83,7 @@ import {
 } from "../../lib/spending/pairing-presentation.ts";
 import {
   calendarDayDistance,
+  calendarDayNumber,
   exactMoneyEqual,
   exactMoneyKey,
   type SpendingMatchingInvoice,
@@ -965,12 +966,15 @@ async function queryDeterministicCandidatePairs(
       WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL`,
   ));
   const transactions = pairingTransactions ?? await queryPairingTransactionsDirect(reader);
-  const byMoney = new Map<string, PairingTransaction[]>();
+  // Parse each date once; the loop below compares every invoice with every same-amount payment.
+  const byMoney = new Map<string, { transaction: PairingTransaction; date: string; day: number }[]>();
   for (const transaction of transactions) {
     const key = exactMoneyKey(transaction.amount);
+    const date = transaction.consumeDate ?? transaction.postingDate ?? transaction.effectiveOn;
+    const entry = { transaction, date, day: calendarDayNumber(date) };
     const bucket = byMoney.get(key);
-    if (bucket) bucket.push(transaction);
-    else byMoney.set(key, [transaction]);
+    if (bucket) bucket.push(entry);
+    else byMoney.set(key, [entry]);
   }
   const pairs: DeterministicCandidatePairRow[] = [];
   for (const row of invoiceRows) {
@@ -978,10 +982,11 @@ async function queryDeterministicCandidatePairs(
     const invoiceId = idString(row.invoice_id, "Candidate invoice");
     const invoiceDate = stringValue(row.occurrence_value, "Candidate invoice occurrence");
     const invoiceDateBasis = row.occurrence_origin === "source-reported" ? "purchase-date" as const : "posting-date-fallback" as const;
+    const invoiceDay = calendarDayNumber(invoiceDate);
+    if (!Number.isFinite(invoiceDay)) continue;
     const candidates = byMoney.get(exactMoneyKey(amount)) ?? [];
-    for (const transaction of candidates) {
-      const transactionDate = transaction.consumeDate ?? transaction.postingDate ?? transaction.effectiveOn;
-      const dateDistanceDays = calendarDayDistance(invoiceDate, transactionDate);
+    for (const { transaction, date: transactionDate, day } of candidates) {
+      const dateDistanceDays = Math.abs(invoiceDay - day);
       if (!Number.isFinite(dateDistanceDays) || dateDistanceDays > 7) continue;
       pairs.push(Object.freeze({
         invoiceId,
