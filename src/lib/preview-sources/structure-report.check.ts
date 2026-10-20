@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MessageChannel, type WorkerOptions } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import { PREVIEW_SOURCE_FIXTURE_ENV } from "./fixture-source.ts";
 
 process.env[PREVIEW_SOURCE_FIXTURE_ENV] = "1";
@@ -28,7 +27,8 @@ const { runAppWorkflowWorker } = await import("../automation/server/app-workflow
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
 const { executeTaskRunForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
-const { applyPgliteOperationalBaseline, createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
+const { createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
+const { createTestPGlite } = await import("../../ledger/pglite/baseline-test-template.ts");
 const { PGliteStore } = await import("../../ledger/pglite/transaction.ts");
 const { PGLITE_CHILD_RPC_ENDPOINT_ENV, PGLITE_CHILD_RPC_TOKEN_ENV } = await import("../../../electron/pglite-child-rpc-client.ts");
 
@@ -218,10 +218,9 @@ class TerminalFakeWorker extends EventEmitter {
 }
 
 test("only a failed preview run keeps a report, and it keeps nothing but the sanitized report", async () => {
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const shapes: ResponseShapes = previewResponseShapes([{ endpoint: "/accounts", status: 200, body: syntheticBody }]);
     const run = async (taskId: string, terminal: (taskRunId: string) => Record<string, unknown>) => {

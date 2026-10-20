@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { hydrateAutomationRuntimeState, recoverInterruptedAutomationRuns } from "./runner.ts";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -16,12 +14,12 @@ import {
   type TaskRunStop,
 } from "./task-run-finalization.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 async function withProvider(check: (provider: AutomationPersistenceProvider) => Promise<void>) {
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     await check(createPgliteOperationalProvider(store));
   } finally {
     await store.close();

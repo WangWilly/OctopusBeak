@@ -3,10 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import type { Page, Response } from "playwright";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -20,6 +18,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -236,14 +235,13 @@ test("Post App task dispatches the typed provider with human assistance, complet
   assert.ok(task);
   const root = await mkdtemp(join(tmpdir(), "post-app-workflow-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const page = fakePostPage();
   const committed: unknown[][] = [];
   const commitPort = financialCommitPort(committed, () => page.sourceResponseReads === 2);
   let observedStartUrl: string | undefined;
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
@@ -304,11 +302,10 @@ test("Post App dispatch rejects malformed and incomplete EndBracket sources befo
   assert.ok(task);
   const root = await mkdtemp(join(tmpdir(), "post-app-invalid-source-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const committed: unknown[][] = [];
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     for (const source of [{ malformed: true }, { incomplete: true }]) {
       const taskRunId = await createRun(provider);
@@ -337,12 +334,11 @@ test("Post App dispatch cancellation during human assistance does not collect or
   assert.ok(task);
   const root = await mkdtemp(join(tmpdir(), "post-app-cancel-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const committed: unknown[][] = [];
   let cancellationRun: ActiveAutomationTaskRun | undefined;
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const page = fakePostPage();

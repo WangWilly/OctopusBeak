@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -13,6 +11,7 @@ import {
   resumeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const contract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -38,9 +37,8 @@ const contract: HumanAssistanceContractInput = {
 };
 
 test("App workflow assistance lets the host route and resume the same waiting run", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
@@ -80,9 +78,8 @@ test("App workflow assistance lets the host route and resume the same waiting ru
 });
 
 test("App workflow assistance rejects a failed host route instead of leaving a dead waiter", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
@@ -107,10 +104,9 @@ test("App workflow assistance rejects a failed host route instead of leaving a d
 });
 
 test("solver challenges fail when the App has no registered route", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const controller = new AbortController();
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "fubon-all-statements",
@@ -150,9 +146,8 @@ test("solver challenges fail when the App has no registered route", async () => 
 });
 
 test("App workflow assistance dispatches the registered route by task and live run ID", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
@@ -194,9 +189,8 @@ test("App workflow assistance dispatches the registered route by task and live r
 });
 
 test("a cancelled run cannot enter a verification stage", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",

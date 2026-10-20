@@ -3,10 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import type { Page, Response } from "playwright";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -15,6 +13,7 @@ import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const TRANSACTION_URL = "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx";
 const ACCOUNT_URL = "https://mma.sinopac.com/ws/bank/transdetail/ws_debitacct.ashx?1";
@@ -163,7 +162,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
 
   const root = await mkdtemp(join(tmpdir(), "sinopac-app-workflow-"));
   const previousDirectory = process.cwd();
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const committed: unknown[][] = [];
   const page = createPage();
@@ -171,7 +170,6 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
   let observedStartUrl: string | undefined;
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {

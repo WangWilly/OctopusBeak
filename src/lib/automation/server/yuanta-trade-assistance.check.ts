@@ -2,14 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import type {
   HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -21,6 +19,7 @@ import {
   routeYuantaTradeAppAssistanceRequest,
   registerYuantaTradeAppAssistanceHandler,
 } from "./yuanta-trade-assistance.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const TASK_ID = "yuanta-trade-statements";
 
@@ -183,8 +182,7 @@ function verificationHost(input: {
 }
 
 async function createRun() {
-  const store = new PGliteStore(await PGlite.create());
-  await applyPgliteOperationalBaseline(store);
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const provider = createPgliteOperationalProvider(store);
   const run = await provider.automation.createTaskRun({
     taskId: TASK_ID,

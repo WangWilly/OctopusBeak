@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -73,7 +72,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
 
   const root = await mkdtemp(join(tmpdir(), "yuanta-app-workflow-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   let observedStartUrl: string | undefined;
   let browserDispatches = 0;
   let commitCalls = 0;
@@ -91,7 +90,6 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   };
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: task.id,

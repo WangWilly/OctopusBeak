@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import {
@@ -110,7 +110,7 @@ export function fixtureInvoice(input: FixtureInvoiceInput): CanonicalEInvoiceInp
 }
 
 export async function createSpendingCategoryFixture() {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   const sourceCommit = uuidBytes();
   const sourceConnection = uuidBytes();

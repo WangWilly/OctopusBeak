@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
@@ -181,7 +181,7 @@ function investmentRequest(
 }
 
 test("independent margin accounts persist as balances without transaction slots and preserve funding relations", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const funding = await commitPGliteCanonicalFinancialCapture(store, fundingDepositRequest("margin-test-funding"));

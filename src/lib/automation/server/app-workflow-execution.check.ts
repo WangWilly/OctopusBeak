@@ -4,11 +4,9 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import { chromium } from "playwright";
 import type { BrowserContext } from "playwright";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -18,6 +16,7 @@ import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const middleHost = "https://uia.einvoice.nat.gov.tw";
 const bigHost = "https://upi.einvoice.nat.gov.tw";
@@ -135,12 +134,11 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
   assert.equal(task.workflowId, "einvoice-personal-invoices");
 
   const root = await mkdtemp(join(tmpdir(), "einvoice-app-workflow-"));
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const browser = await chromium.launch({ headless: true });
   const contexts = new Map<string, BrowserContext>();
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
 
     const launchContext = async (runId: string, loginDelayMs = 0) => {

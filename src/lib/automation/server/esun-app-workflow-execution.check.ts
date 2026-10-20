@@ -3,10 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import type { Page, Response } from "playwright";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -17,6 +15,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 const TIMELINE_URL = "https://ebank.esunbank.com.tw/GW/creditLastYear/getFilterResult";
@@ -218,14 +217,13 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
   const root = await mkdtemp(join(tmpdir(), "esun-app-workflow-"));
   const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const now = new Date("2026-09-25T12:00:00.000Z");
   const hostPage = fakePage(now);
   const committed: unknown[][] = [];
   let observedStartUrl: string | undefined;
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const financialCommit: WorkflowFinancialCommitPort = {
@@ -323,11 +321,10 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
   delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   const task = taskById("esun-credit-card-statements");
   assert.ok(task);
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const now = new Date("2026-09-25T12:00:00.000Z");
   const hostPage = fakePage(now, { signInWithCredentials: false });
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     let commits = 0;

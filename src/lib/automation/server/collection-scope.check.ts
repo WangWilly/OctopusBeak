@@ -5,9 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { WorkerOptions } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -30,6 +28,7 @@ import {
 import { automationConfigEnv } from "./config-files.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const fubon = taskById("fubon-all-statements")!;
 const key = (...parts: string[]) => ["LIBRETTO", "CLOUD", "FUBON", ...parts].join("_");
@@ -161,7 +160,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
 async function runWithMidRunEdit(edit: { settings?: Record<string, string>; credentials?: Record<string, string> }) {
   const root = await mkdtemp(join(tmpdir(), "collection-scope-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const writeConfig = async (settings: Record<string, string>, credentials: Record<string, string>) => {
     await writeFile(join(root, "settings.json"), JSON.stringify(settings));
     await writeFile(join(root, "credentials.json"), JSON.stringify(credentials));
@@ -176,7 +175,6 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
   try {
     process.chdir(root);
     await writeConfig(launchSettings, launchCredentials);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const { taskRunId } = await provider.automation.createTaskRun({
       taskId: fubon.id,

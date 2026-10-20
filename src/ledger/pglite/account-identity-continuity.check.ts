@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture, type PGliteCanonicalDepositCommitRequest } from "./deposit.ts";
 import {
   resolvePGliteAccountIdentityContinuity,
@@ -114,7 +114,7 @@ const request: AccountIdentityContinuityRequest = {
 };
 
 async function withStore(run: (store: PGliteStore) => Promise<void>): Promise<void> {
-  const store = new PGliteStore(await createBaselinePGlite());
+  const store = new PGliteStore(await createTestPGlite("ledger"));
   try {
     await run(store);
   } finally {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, relative, resolve } from "node:path";
 
@@ -96,6 +97,31 @@ export function discoverPerformanceTestFiles() {
   return [...HARD_PERFORMANCE_FILES].sort();
 }
 
+function spawnNode(args, env = {}) {
+  return new Promise((resolveResult) => {
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT,
+      env: { ...process.env, ...env },
+      stdio: "inherit",
+    });
+    child.once("error", () => resolveResult(1));
+    child.once("exit", (code, signal) => resolveResult(code ?? (signal ? 1 : 0)));
+  });
+}
+
+/** Install each PGlite test baseline once for every test process in this run. */
+async function writePGliteTemplates() {
+  const directory = mkdtempSync(join(tmpdir(), "octopusbeak-pglite-templates-"));
+  const status = await spawnNode([
+    "--no-warnings",
+    "--experimental-strip-types",
+    "src/ledger/pglite/baseline-test-template.ts",
+    directory,
+  ]);
+  if (status !== 0) throw new Error("Could not write the PGlite test templates");
+  return { directory, env: { OCTOPUSBEAK_TEST_PGLITE_TEMPLATES: directory } };
+}
+
 function runNodeTests(files, options = {}) {
   const args = ["--no-warnings", "--experimental-strip-types"];
   if (options.coverage) args.push("--experimental-test-coverage");
@@ -112,15 +138,7 @@ function runNodeTests(files, options = {}) {
     );
   }
   args.push(...files);
-  return new Promise((resolveResult) => {
-    const child = spawn(process.execPath, args, {
-      cwd: ROOT,
-      env: { ...process.env, ...options.env },
-      stdio: "inherit",
-    });
-    child.once("error", () => resolveResult(1));
-    child.once("exit", (code, signal) => resolveResult(code ?? (signal ? 1 : 0)));
-  });
+  return spawnNode(args, options.env);
 }
 
 function readReport(path) {
@@ -178,7 +196,7 @@ async function runLane(lane, options = {}) {
   try {
     return await runNodeTests(files, {
       ...options,
-      env: runtime?.env,
+      env: { ...options.env, ...runtime?.env },
       serial: lane !== "unit",
       forceExit: lane === "electron-cdp",
     });
@@ -204,14 +222,24 @@ export function parseShard(args) {
 }
 
 async function runLanes(lanes, options = {}) {
-  let status = 0;
-  for (const lane of lanes) {
-    const shard = lane === "unit" ? options.shard : null;
-    const reportPrefix = options.reports ? reportPrefixOf(lane, shard) : undefined;
-    const laneStatus = await runLane(lane, { coverage: options.reports, reportPrefix, shard });
-    status ||= laneStatus;
+  const templates = await writePGliteTemplates();
+  try {
+    let status = 0;
+    for (const lane of lanes) {
+      const shard = lane === "unit" ? options.shard : null;
+      const reportPrefix = options.reports ? reportPrefixOf(lane, shard) : undefined;
+      const laneStatus = await runLane(lane, {
+        coverage: options.reports,
+        reportPrefix,
+        shard,
+        env: templates.env,
+      });
+      status ||= laneStatus;
+    }
+    return status;
+  } finally {
+    rmSync(templates.directory, { recursive: true, force: true });
   }
-  return status;
 }
 
 async function main() {
