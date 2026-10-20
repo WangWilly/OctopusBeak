@@ -32,7 +32,7 @@ test("a PGlite page DTO makes every dashboard section renderable", () => {
   assert.match(source, /overviewRenderValue = overviewValue/);
   assert.match(source, /<OverviewDashboard\s+overview=\{overviewRenderValue\}/);
   assert.match(source, /setValue\(state\.data\);/);
-  assert.match(source, /<SpendingDashboard\s+spending=\{spendingRenderValue\}/);
+  assert.match(source, /<PurchaseSpendingDashboard\s+purchaseReport=\{spendingRenderValue\.purchaseReport\}/);
 });
 
 test("automation block refreshes are coordinated and stale responses are detected", () => {

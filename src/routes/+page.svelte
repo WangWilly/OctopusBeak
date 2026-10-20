@@ -44,7 +44,7 @@
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
-  import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
+  import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
   import {
     createFinancialPageLiveStores,
@@ -1076,8 +1076,9 @@
   {/if}
 {:else if route === "spending"}
   {#if spendingRenderValue}
-    <SpendingDashboard
-      spending={spendingRenderValue}
+    <PurchaseSpendingDashboard
+      purchaseReport={spendingRenderValue.purchaseReport}
+      fallbackCanonical={spendingRenderValue.canonical}
       refreshSummary={() => route === "spending" ? reloadFinancialLive("spending") : Promise.resolve()}
     />
     <RouteLoadNotice state={spending} retry={() => void loadRoute("spending", { force: true })} />
