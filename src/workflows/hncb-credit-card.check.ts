@@ -208,7 +208,7 @@ test("attachedPreviewProducts [] collects nothing", async () => {
   assert.deepEqual(run.products, [{ typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }]);
 });
 
-const depositResult = { dateRange: { startDate: "2025/10/15", endDate: "2026/10/15" }, usedExistingSession: false, count: 2, status: "source-only" } as const;
+const depositResult = { dateRange: { startDate: "2025/10/15", endDate: "2026/10/15" }, usedExistingSession: false, count: 2, sourceCaptureCount: 2, rowCount: 8, itemCount: 3, committedCount: 3, status: "source-only" } as const;
 const failedCard: PreviewProductRun = {
   products: [{ typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" }],
   receipts: [],
@@ -219,10 +219,13 @@ const failedCard: PreviewProductRun = {
 test("an attached card failure leaves the deposit outcome intact", () => {
   const output = hncbRunOutput(false, depositResult, failedCard);
   assert.deepEqual(output.products, [
-    { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
+    { typeId: "deposit", status: "success", itemCount: 3, committedCount: 3 },
     failedCard.products[0],
   ]);
-  assert.equal(output.status, "source-only");
+  assert.equal(output.status, "partial");
+  assert.equal(output.accountCount, 2);
+  assert.equal(output.committedCount, 3);
+  assert.equal(output.sourceCaptureCount, 2);
   assert.deepEqual(output.dateRange, depositResult.dateRange);
 });
 
@@ -231,7 +234,7 @@ test("a session loss in the card product ends the run and keeps the deposit outc
   assert.throws(() => hncbRunOutput(false, depositResult, interrupted), (error: unknown) => {
     assert.ok(error instanceof ProductCollectionInterruptedError);
     assert.equal(error.errorCode, "authentication-failed");
-    assert.deepEqual(error.summary.products[0], { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 });
+    assert.deepEqual(error.summary.products[0], { typeId: "deposit", status: "success", itemCount: 3, committedCount: 3 });
     assert.equal(error.summary.status, "partial");
     return true;
   });
@@ -261,4 +264,22 @@ test("the input accepts a card-only selection and refuses an empty one", async (
   await assert.rejects(runHncbProviderWorkflow(context, { credentials, statementTypes: [], attachedPreviewProducts: ["credit_card"] }), /page opened/u);
   await assert.rejects(runHncbProviderWorkflow(context, { credentials, statementTypes: [], attachedPreviewProducts: [] }), /input or sign-in details/u);
   await assert.rejects(runHncbProviderWorkflow(context, { credentials }), /page opened/u, "absent selections keep the deposit default");
+});
+
+test("HNCB cancellation after verified collection keeps actual commit-item counts", () => {
+  const controller = new AbortController();
+  controller.abort();
+  const unattempted: PreviewProductRun = {
+    products: [{ typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_attempted" }],
+    receipts: [], interrupted: { errorCode: "cancelled", error: controller.signal.reason }, firstFailure: null,
+  };
+  assert.throws(() => hncbRunOutput(false, depositResult, unattempted, controller.signal), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "cancelled");
+    assert.equal(error.summary.sourceCaptureCount, 2);
+    assert.equal(error.summary.rowCount, 8);
+    assert.equal(error.summary.committedCount, 3);
+    assert.equal(error.summary.products[1]?.skipReason, "not_attempted");
+    return true;
+  });
 });
