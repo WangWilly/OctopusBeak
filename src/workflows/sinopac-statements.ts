@@ -6,10 +6,6 @@ import {
   strictSourceText,
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
