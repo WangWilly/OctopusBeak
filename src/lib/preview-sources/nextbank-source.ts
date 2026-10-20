@@ -20,6 +20,7 @@ import {
   text,
   type PreviewCaptchaSolver,
   type SourceRecord,
+  uniqueTransactions,
 } from "./source-kit.ts";
 import { nextbankAudioCaptchaSolver } from "./preview-captcha.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
@@ -127,17 +128,6 @@ function transactionFrom(trade: SourceRecord, field: string, currency: string): 
   };
 }
 
-function uniqueTransactions(rows: readonly (PreviewTransaction | null)[]): PreviewTransaction[] {
-  const byKey = new Map<string, PreviewTransaction>();
-  for (const row of rows) {
-    if (!row) continue;
-    const previous = byKey.get(row.sourceRowKey);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(row)) return fail("unexpected-response", "a tradeID repeats with different content");
-    byKey.set(row.sourceRowKey, row);
-  }
-  return [...byKey.values()];
-}
-
 function sourceCurrency(value: unknown, field: string): string {
   return value === undefined ? ENDPOINT_CURRENCY : currencyCode(value, field);
 }
@@ -185,7 +175,7 @@ async function mainAccount(api: ReturnType<typeof client>, now: string): Promise
       { kind: "current", amount: exactDecimal(main.workingBalance, "mainAccount.workingBalance"), currency, observedAt: asOf },
       { kind: "available", amount: exactDecimal(main.availableBalance, "mainAccount.availableBalance"), currency, observedAt: asOf },
     ],
-    transactions: uniqueTransactions(rows),
+    transactions: uniqueTransactions(rows, "tradeID"),
   };
 }
 
@@ -219,7 +209,7 @@ async function demandPocket(api: ReturnType<typeof client>, pocket: SourceRecord
     currency,
     type: "depository",
     balances: [{ kind: "current", amount: exactDecimal(pocket.amount, `${field}.amount`), currency, observedAt: asOf }],
-    transactions: uniqueTransactions(rows),
+    transactions: uniqueTransactions(rows, "tradeID"),
   };
 }
 
