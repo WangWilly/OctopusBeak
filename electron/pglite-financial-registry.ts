@@ -992,6 +992,14 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
+/**
+ * Page reads whose caller only keeps the answer to its newest request. While
+ * one is still queued, a newer request of the same kind replaces its
+ * arguments, so stepping through months reads only the month reached; the
+ * earlier callers receive that answer and discard it as superseded.
+ */
+const LATEST_WINS_SPENDING_READS: ReadonlySet<string> = new Set(["month-insight", "pending-overview", "merchant-stats"]);
+
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
@@ -1002,6 +1010,7 @@ export function createPGliteFinancialRpcServer(
   let closed = false;
   const active = new Set<Promise<void>>();
   const controllers = new Map<number, AbortController>();
+  const queuedReads = new Map<string, { args: readonly unknown[]; outcome: Promise<unknown> }>();
   const onMessage = (value: unknown): void => {
     if (validCancelRequest(value)) {
       controllers.get(value.id)?.abort();
@@ -1027,15 +1036,30 @@ export function createPGliteFinancialRpcServer(
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const interactive = INTERACTIVE_OPERATIONS.has(operation)
-      || (operation === "financial.spending.current" && (value.args[0] as { __spendingRead?: unknown } | undefined)?.__spendingRead === "record-page");
-    const work = scheduler.schedule(interactive ? "interactive" : "background", async () => {
-      if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-      if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
-        assertCommitAdmissible(value.diagnosticContext);
-      }
-      return invoke(registry, operation, value.args, controller.signal);
-    }).then(
+    const spendingRead = operation === "financial.spending.current"
+      ? (value.args[0] as { __spendingRead?: unknown } | undefined)?.__spendingRead
+      : undefined;
+    const interactive = INTERACTIVE_OPERATIONS.has(operation) || spendingRead === "record-page";
+    const latestWins = typeof spendingRead === "string" && LATEST_WINS_SPENDING_READS.has(spendingRead) ? spendingRead : null;
+    const queuedRead = latestWins ? queuedReads.get(latestWins) : undefined;
+    let outcome: Promise<unknown>;
+    if (queuedRead) {
+      queuedRead.args = value.args;
+      outcome = queuedRead.outcome;
+    } else {
+      const read = { args: value.args, outcome: Promise.resolve() as Promise<unknown> };
+      outcome = scheduler.schedule(interactive ? "interactive" : "background", async () => {
+        if (latestWins && queuedReads.get(latestWins) === read) queuedReads.delete(latestWins);
+        if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+        if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
+          assertCommitAdmissible(value.diagnosticContext);
+        }
+        return invoke(registry, operation, read.args, controller.signal);
+      });
+      read.outcome = outcome;
+      if (latestWins) queuedReads.set(latestWins, read);
+    }
+    const work = outcome.then(
       (result) => {
         post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });
       },
