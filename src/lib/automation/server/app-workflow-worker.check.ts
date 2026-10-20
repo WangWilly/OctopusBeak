@@ -58,7 +58,7 @@ function runItem(): PGliteWorkflowRunItem {
     provider: "fixture",
     product: "fixture",
     itemKey: "fixture-item",
-    command: { kind: "canonical.source.admit", request: {} },
+    command: { kind: "financial.source.admit", request: {} },
   } as unknown as PGliteWorkflowRunItem;
 }
 

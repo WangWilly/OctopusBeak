@@ -18,8 +18,11 @@ import {
   PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND,
   PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "./workflow-commands.ts";
 import type {
   PGliteCanonicalCreditCardBalanceCaptureRequest,
@@ -41,13 +44,11 @@ import type {
   PGliteCanonicalLoanCommitRequest,
   PGliteCanonicalLoanCommitResult,
 } from "./loan.ts";
-import {
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-  type PGliteCanonicalLoanRelationResolutionRequest,
-  type PGliteCanonicalLoanRelationResolutionResult,
-  type PGliteCanonicalInvestmentRelationResolutionRequest,
-  type PGliteCanonicalInvestmentRelationResolutionResult,
+import type {
+  PGliteCanonicalLoanRelationResolutionRequest,
+  PGliteCanonicalLoanRelationResolutionResult,
+  PGliteCanonicalInvestmentRelationResolutionRequest,
+  PGliteCanonicalInvestmentRelationResolutionResult,
 } from "./relations.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
 import type { PGliteCanonicalMixedCommitRequest, PGliteCanonicalMixedCommitResult } from "./mixed-commit.ts";
@@ -61,103 +62,48 @@ export {
   PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND,
   PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 };
 
 /** Set only at the central activation boundary for a PGlite workflow run. */
 export const PGLITE_WORKFLOW_REQUIRED_ENV =
   "OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED" as const;
 
-/** The source-admission command has no worker-local implementation constant. */
-export const PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND =
-  "canonical.source.admit" as const;
+type CommandContract<Request, Result> = Readonly<{ request: Request; result: Result }>;
 
-export type PGliteWorkflowCommand =
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND;
-    request: PGliteCanonicalSourceAdmissionRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND;
-    request: PGliteCanonicalFinancialCommitRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND;
-    request: PGliteCanonicalFinancialCommitBatchRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND;
-    request: PGliteCanonicalDepositCommitRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND;
-    request: PGliteCanonicalBalanceCaptureRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND;
-    request: CanonicalEInvoiceCaptureInput;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND;
-    request: PGliteCanonicalCreditCardCaptureRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND;
-    request: PGliteCanonicalCreditCardBalanceCaptureRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_LOAN_COMMIT_COMMAND;
-    request: PGliteCanonicalLoanCommitRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND;
-    request: PGliteCanonicalInvestmentCommitRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_MIXED_COMMIT_COMMAND;
-    request: PGliteCanonicalMixedCommitRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND;
-    request: PGliteCanonicalLoanRelationResolutionRequest;
-  }>
-  | Readonly<{
-    kind: typeof PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND;
-    request: PGliteCanonicalInvestmentRelationResolutionRequest;
+/** One entry per worker command: what a child sends and what the worker returns. */
+type PGliteWorkflowCommandContracts = {
+  [PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND]: CommandContract<PGliteCanonicalSourceAdmissionRequest, PGliteCanonicalSourceAdmissionReceipt>;
+  [PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND]: CommandContract<PGliteCanonicalFinancialCommitRequest, PGliteCanonicalFinancialCommitResult>;
+  [PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND]: CommandContract<PGliteCanonicalFinancialCommitBatchRequest, readonly PGliteCanonicalFinancialCommitResult[]>;
+  [PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND]: CommandContract<PGliteCanonicalDepositCommitRequest, PGliteCanonicalDepositCommitResult>;
+  [PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND]: CommandContract<PGliteCanonicalBalanceCaptureRequest, PGliteCanonicalBalanceCommitResult>;
+  [PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND]: CommandContract<CanonicalEInvoiceCaptureInput, PGliteCanonicalEInvoiceCommitResult>;
+  [PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND]: CommandContract<PGliteCanonicalCreditCardCaptureRequest, PGliteCanonicalCreditCardCommitResult>;
+  [PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND]: CommandContract<PGliteCanonicalCreditCardBalanceCaptureRequest, PGliteCanonicalCreditCardCommitResult>;
+  [PGLITE_CANONICAL_LOAN_COMMIT_COMMAND]: CommandContract<PGliteCanonicalLoanCommitRequest, PGliteCanonicalLoanCommitResult>;
+  [PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND]: CommandContract<PGliteCanonicalInvestmentCommitRequest, PGliteCanonicalInvestmentCommitResult>;
+  [PGLITE_CANONICAL_MIXED_COMMIT_COMMAND]: CommandContract<PGliteCanonicalMixedCommitRequest, PGliteCanonicalMixedCommitResult>;
+  [PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND]: CommandContract<PGliteCanonicalLoanRelationResolutionRequest, PGliteCanonicalLoanRelationResolutionResult>;
+  [PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND]: CommandContract<PGliteCanonicalInvestmentRelationResolutionRequest, PGliteCanonicalInvestmentRelationResolutionResult>;
+};
+
+export type PGliteWorkflowCommandKind = keyof PGliteWorkflowCommandContracts;
+
+export type PGliteWorkflowCommand = {
+  [Kind in PGliteWorkflowCommandKind]: Readonly<{
+    kind: Kind;
+    request: PGliteWorkflowCommandContracts[Kind]["request"];
   }>;
+}[PGliteWorkflowCommandKind];
 
 export type PGliteWorkflowCommandResult<
   Command extends PGliteWorkflowCommand,
-> = Command extends { kind: typeof PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND }
-  ? PGliteCanonicalSourceAdmissionReceipt
-  : Command extends { kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND }
-    ? PGliteCanonicalFinancialCommitResult
-    : Command extends { kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND }
-      ? readonly PGliteCanonicalFinancialCommitResult[]
-      : Command extends { kind: typeof PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND }
-        ? PGliteCanonicalDepositCommitResult
-        : Command extends { kind: typeof PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND }
-          ? PGliteCanonicalBalanceCommitResult
-          : Command extends { kind: typeof PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND }
-            ? PGliteCanonicalEInvoiceCommitResult
-            : Command extends { kind: typeof PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND }
-              ? PGliteCanonicalCreditCardCommitResult
-              : Command extends { kind: typeof PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND }
-                ? PGliteCanonicalCreditCardCommitResult
-                : Command extends { kind: typeof PGLITE_CANONICAL_LOAN_COMMIT_COMMAND }
-                  ? PGliteCanonicalLoanCommitResult
-                : Command extends { kind: typeof PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND }
-                  ? PGliteCanonicalInvestmentCommitResult
-                  : Command extends { kind: typeof PGLITE_CANONICAL_MIXED_COMMIT_COMMAND }
-                    ? PGliteCanonicalMixedCommitResult
-                    : Command extends { kind: typeof PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND }
-                      ? PGliteCanonicalLoanRelationResolutionResult
-                      : Command extends { kind: typeof PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND }
-                        ? PGliteCanonicalInvestmentRelationResolutionResult
-                    : never;
+> = PGliteWorkflowCommandContracts[Command["kind"]]["result"];
 
 export type PGliteWorkflowRequestOptions = Readonly<{
   signal?: AbortSignal;
