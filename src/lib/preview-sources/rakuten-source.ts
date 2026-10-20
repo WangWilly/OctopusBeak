@@ -18,6 +18,7 @@ import {
   text,
   type PreviewCaptchaSolver,
   type SourceRecord,
+  uniqueTransactions,
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
@@ -118,16 +119,6 @@ function transactionFrom(row: SourceRecord, field: string, currency: string): Pr
   };
 }
 
-function uniqueTransactions(rows: readonly PreviewTransaction[]): PreviewTransaction[] {
-  const byKey = new Map<string, PreviewTransaction>();
-  for (const row of rows) {
-    const previous = byKey.get(row.sourceRowKey);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(row)) return fail("unexpected-response", "a pk repeats with different content");
-    byKey.set(row.sourceRowKey, row);
-  }
-  return [...byKey.values()];
-}
-
 function depositAccount(months: readonly Month[], collectedAt: string): PreviewAccount {
   const [current] = months as [Month];
   const accountNo = current.accountNo;
@@ -152,7 +143,7 @@ function depositAccount(months: readonly Month[], collectedAt: string): PreviewA
       currency,
       observedAt: observedAt(current.date, collectedAt),
     }],
-    transactions: uniqueTransactions(rows),
+    transactions: uniqueTransactions(rows, "pk"),
   };
 }
 

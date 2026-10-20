@@ -31,6 +31,7 @@ import {
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
+import { withAbort } from "./abort.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -41,27 +42,6 @@ export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
 const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
 
-function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("LINE Bank workflow was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 function linebankCanonicalToken(...parts: string[]): string {
   return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;

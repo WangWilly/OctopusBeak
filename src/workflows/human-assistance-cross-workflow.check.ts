@@ -106,7 +106,7 @@ test("provider workflows with verification publish a contract-backed stage", asy
         : source;
     assert.match(
       focusSource,
-      /emitHumanAssistanceStage/,
+      /emitHumanAssistanceStage|requestCaptchaAssistance/,
       `${file} must publish a human assistance stage`,
     );
     assert.doesNotMatch(

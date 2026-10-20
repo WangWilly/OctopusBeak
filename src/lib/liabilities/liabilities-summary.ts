@@ -1,14 +1,11 @@
 import type { AccountRowDto, CreditCardStatementDto, CurrencyAmountDto } from "../shared-ledger/types.ts";
-import { convertToTwd, indexExchangeRates, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
+import { convertToTwd, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
 import {
-  accountLedger,
   accountShares,
   daysBetween,
   readLiabilityAllocation,
-  TRAILING_DAYS,
-  trailingChange,
-  valuationDateFor,
   type SpanChange,
+  readSideValuation,
 } from "../shared-ledger/twd-valuation.ts";
 import type { LiabilitiesPageDto } from "./types.ts";
 
@@ -62,20 +59,10 @@ export type LiabilitiesSummary =
 const MAX_PAYMENTS = 3;
 
 export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: { today: string }): LiabilitiesSummary {
-  const valuationDate = valuationDateFor(input.dailyHistory, input.accounts, options.today);
-  if (input.accounts.length === 0 || !valuationDate) return { state: "empty" };
-  const rates = indexExchangeRates(input.exchangeRates);
+  const side = readSideValuation(input, "liabilities", options.today);
+  if (!side) return { state: "empty" };
+  const { valuationDate, rates, trailing: netChange } = side;
   const allocation = readLiabilityAllocation(input.accounts, rates, valuationDate, 0);
-  const ownIds = new Set(input.accounts.map((account) => account.id));
-  const ledger = accountLedger(
-    Object.fromEntries(Object.entries(input.dailyHistoryByAccount).filter(([id]) => ownIds.has(id))),
-    rates,
-  );
-  const dates = input.dailyHistory
-    .filter((row) => convertToTwd(row.liabilities, row.date, rates))
-    .map((row) => row.date)
-    .sort();
-  const netChange = trailingChange(dates, ledger, TRAILING_DAYS);
   return {
     state: "ready",
     total: allocation.total,
