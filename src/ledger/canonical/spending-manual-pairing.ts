@@ -15,7 +15,7 @@ import {
   createSpendingPairingIndex,
   type SpendingPairingIndex,
 } from "./spending-pairing-index.ts";
-import { merchantSimilarity } from "./spending-match-strength.ts";
+import { merchantSimilarityTo } from "./spending-match-strength.ts";
 
 export type { SpendingPairingIndex } from "./spending-pairing-index.ts";
 
@@ -105,6 +105,7 @@ function rankIndexedManualPaymentCandidates(
     distance: number;
     candidates: SpendingManualPaymentCandidate[];
   }>();
+  const similarityToSeller = merchantSimilarityTo(invoice.revision.seller.name);
   for (const entry of index.entries) {
     const sameCurrency = invoiceCurrency === entry.currency;
     const exactAmount = sameCurrency && invoiceAmountKey === entry.amountKey;
@@ -120,7 +121,7 @@ function rankIndexedManualPaymentCandidates(
       amountDifference: difference
         ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
         : null,
-      merchantSimilarity: merchantSimilarity(invoice.revision.seller.name, entry.transaction.description),
+      merchantSimilarity: similarityToSeller(entry.transaction.description),
     } satisfies SpendingManualPaymentCandidate;
     const key = `${tier}:${Number.isFinite(distance) ? distance : "infinity"}`;
     const bucket = buckets.get(key);
@@ -156,7 +157,7 @@ export function rankSpendingManualPaymentCandidates(
   if (isSpendingPairingIndex(transactions)) return rankIndexedManualPaymentCandidates(invoice, transactions);
   const invoiceAmount = invoiceMatchingMoney(invoice);
   if (!invoiceAmount) return Object.freeze([]);
-  const invoiceDescription = invoice.revision.seller.name;
+  const similarityToSeller = merchantSimilarityTo(invoice.revision.seller.name);
   const ranked = transactions.map((transaction) => {
     const sameCurrency = invoiceAmount.currency.trim().toUpperCase() === transaction.amount.currency.trim().toUpperCase();
     const exactAmount = sameCurrency && exactMoneyEqual(invoiceAmount, transaction.amount);
@@ -169,7 +170,7 @@ export function rankSpendingManualPaymentCandidates(
       amountDifference: difference
         ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
         : null,
-      merchantSimilarity: merchantSimilarity(invoiceDescription, transaction.description),
+      merchantSimilarity: similarityToSeller(transaction.description),
     } satisfies SpendingManualPaymentCandidate;
   });
   return Object.freeze(ranked.sort(compareManualCandidates));
