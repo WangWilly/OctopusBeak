@@ -6,6 +6,8 @@ import type { WorkflowBrowserPort } from "../../src/lib/automation/workflow-exec
 import { createFirstbankSource } from "../../src/lib/preview-sources/firstbank-source.ts";
 import { createKgibankSource } from "../../src/lib/preview-sources/kgibank-source.ts";
 import { createMegaSource } from "../../src/lib/preview-sources/mega-source.ts";
+import { createObankSource } from "../../src/lib/preview-sources/obank-source.ts";
+import { browserHttp } from "../../src/lib/preview-sources/browser-http.ts";
 import { createRakutenSource } from "../../src/lib/preview-sources/rakuten-source.ts";
 import type { PreviewSource } from "../../src/lib/preview-sources/registry.ts";
 import type { PreviewCaptchaSolver } from "../../src/lib/preview-sources/source-kit.ts";
@@ -13,7 +15,7 @@ import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-log
 import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
 
-export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten", "kgibank", "firstbank"] as const;
+export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten", "kgibank", "firstbank", "obank"] as const;
 export type CalibrationBank = typeof CALIBRATION_BANKS[number];
 
 export function isCalibrationBank(value: string): value is CalibrationBank {
@@ -109,6 +111,19 @@ async function captureTaishin(browser: WorkflowBrowserPort, signal: AbortSignal)
   });
 }
 
+async function captureObank(browser: WorkflowBrowserPort, signal: AbortSignal): Promise<CapturedChallenge> {
+  // Only the API bootstrap is needed. The site's app redirects while it loads,
+  // destroying the fetch context; a same-origin inert page avoids that race.
+  const inertBrowser: WorkflowBrowserPort = {
+    withPage: (run) => browser.withPage(async (page) => {
+      await page.route("https://www.o-bank.com/ebank/apps/services/www/ibmb/desktopbrowser/default/index.html", (route) =>
+        route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>CAPTCHA calibration</title>" }));
+      return run(page);
+    }),
+  };
+  return captureThroughSource((options) => createObankSource({ ...options, http: browserHttp }), inertBrowser, signal);
+}
+
 export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, CalibrationBankSpec>> = {
   mega: {
     id: "mega",
@@ -152,6 +167,7 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     // kgibank-login-form CAPTCHA_LENGTH.
     declaredLength: { value: 6, authority: "source" },
     method: "preview-source",
+    preprocessing: ["kgibank-dark-foreground"],
     denyRules: [{ name: "kgibank-login", method: "POST", path: /\/gateway\/prod-oidc\/connect\/token$/u }],
     capture: (browser, signal) => captureThroughSource(createKgibankSource, browser, signal),
   },
@@ -162,7 +178,21 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     // firstbank-source CAPTCHA_LENGTH.
     declaredLength: { value: 4, authority: "source" },
     method: "preview-source",
+    preprocessing: ["firstbank-dark-foreground"],
     denyRules: [{ name: "firstbank-login", method: "POST", path: /\/NetBank\/login\.html$/iu }],
     capture: (browser, signal) => captureThroughSource(createFirstbankSource, browser, signal),
+  },
+  obank: {
+    id: "obank",
+    displayName: "O-Bank",
+    charset: "alphanumeric",
+    declaredLength: { value: 4, authority: "source" },
+    method: "preview-source",
+    denyRules: [
+      { name: "obank-login", path: /\/AuthenticationAdapter\/submitCredentials$/u },
+      { name: "obank-authenticated-resource", path: /\/AuthenticationAdapter\/sendAndReceive$/u },
+    ],
+    // Use the guarded browser transport for calibration, including API calls.
+    capture: captureObank,
   },
 };

@@ -70,6 +70,55 @@ export const RAKUTEN_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
   solverConfidenceThreshold: 0,
 };
 
+/** Fixed on 62 labelled images: 56 accepted, all correct. New captures must
+ * validate this declaration rather than select a replacement from that set. */
+export const KGIBANK_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
+  name: "kgibank-login-captcha",
+  geometry: { width: 98, height: 25 },
+  charset: "digits",
+  expectedAnswerLength: 6,
+  answerPattern: /^\d{6}$/u,
+  ocrAttemptPlan: [
+    { imagePreprocessing: [], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["kgibank-dark-foreground"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["kgibank-dark-padded"], ocrPageSegmentationMode: "single-word" },
+  ],
+  solveAcceptancePolicy: { mode: "confidence-or-agreement", conflictResolution: "reject" },
+  solverConfidenceThreshold: 0.99,
+};
+
+/** O-Bank shares the 152×60 teal layout, but has its own measured acceptance
+ * pair: 24/60 accepted, all correct. Confidence alone never permits sign-in. */
+export const OBANK_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
+  name: "obank-login-captcha",
+  geometry: { width: 152, height: 60 },
+  charset: "alphanumeric",
+  expectedAnswerLength: 4,
+  answerPattern: /^[0-9A-Z]{4}$/u,
+  ocrAttemptPlan: [
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrPageSegmentationMode: "single-word" },
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+  ],
+  solveAcceptancePolicy: { mode: "agreement-only" },
+  solverConfidenceThreshold: 0,
+};
+
+/** 62 maintainer-confirmed images: 53 correct among 54 accepts (FAR 1.85%). */
+export const FIRSTBANK_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
+  name: "firstbank-login-captcha",
+  geometry: { width: 67, height: 29 },
+  charset: "alphanumeric",
+  expectedAnswerLength: 4,
+  answerPattern: /^[0-9A-Z]{4}$/u,
+  ocrAttemptPlan: [
+    { imagePreprocessing: ["remove-interference-lines"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["firstbank-dark-foreground"], ocrPageSegmentationMode: "single-line" },
+    { imagePreprocessing: ["firstbank-dark-foreground"], ocrPageSegmentationMode: "single-word" },
+  ],
+  solveAcceptancePolicy: { mode: "confidence-only" },
+  solverConfidenceThreshold: 0.97,
+};
+
 function pngSize(image: Buffer): Readonly<{ width: number; height: number }> | null {
   if (sniffImageType(image) !== "image/png" || image.length < 24) return null;
   return { width: image.readUInt32BE(16), height: image.readUInt32BE(20) };

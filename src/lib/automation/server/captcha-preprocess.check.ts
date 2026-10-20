@@ -26,6 +26,49 @@ function solidGray(width: number, height: number, value: number): GrayImage {
   return grayImage(width, height, new Array(width * height).fill(value));
 }
 
+for (const [mode, width, height, threshold, scale, border] of [
+  ["firstbank-dark-foreground", 67, 29, 64, 4, 10],
+  ["kgibank-dark-foreground", 98, 25, 96, 3, 0],
+  ["kgibank-dark-padded", 98, 25, 96, 4, 10],
+] as const) {
+  test(`${mode} separates dark text from interference before resizing`, () => {
+    const image = solidGray(width, height, 192);
+    for (let y = 10; y < 15; y += 1) {
+      for (let x = 10; x < 15; x += 1) image.data[y * width + x] = threshold;
+    }
+    image.data[10 * width + 50] = threshold + 1;
+    const buffer = encodeGrayImage(image);
+    let binary: GrayImage | undefined;
+    const processed = decodeGrayImage(preprocessCaptchaImage(buffer, (step, png) => {
+      if (step === "binarized") binary = decodeGrayImage(png);
+    }, { imagePreprocessing: [mode] }));
+    assert.deepEqual([processed.width, processed.height], [width * scale + border * 2, height * scale + border * 2]);
+    assert.equal(binary?.data[10 * width + 10], 0);
+    assert.equal(binary?.data[10 * width + 50], 255);
+    assert.equal(binary?.data.filter((value) => value === 0).length, 25);
+    assert.equal(processed.data[(12 * scale + border) * processed.width + 12 * scale + border], 0);
+    assert.equal(processed.data[(10 * scale + border) * processed.width + 50 * scale + border], 255);
+    assert.equal(processed.data[0], 255);
+    assert.deepEqual(decodeGrayImage(buffer).data, image.data);
+  });
+
+  test(`${mode} fails closed outside its geometry and with another mode`, () => {
+    for (const [image, modes] of [
+      [solidGray(width + 1, height, 0), [mode]],
+      [solidGray(width, height, 0), [mode, "remove-interference-lines"]],
+    ] as const) {
+      const processed = decodeGrayImage(preprocessCaptchaImage(encodeGrayImage(image), undefined, { imagePreprocessing: modes }));
+      assert.ok(processed.data.every((value) => value === 255));
+    }
+  });
+}
+
+test("dark foreground extraction composites transparent black against white", () => {
+  const png = new PNG({ width: 67, height: 29 });
+  const processed = decodeGrayImage(preprocessCaptchaImage(PNG.sync.write(png), undefined, { imagePreprocessing: ["firstbank-dark-foreground"] }));
+  assert.ok(processed.data.every((value) => value === 255));
+});
+
 test("decodeGrayImage converts color pixels to luminance grayscale", () => {
   const png = new PNG({ width: 2, height: 1 });
   png.data.set([255, 0, 0, 255, 0, 255, 0, 255]);

@@ -378,6 +378,32 @@ function preprocessFubonForeground(
   return output;
 }
 
+/** These small login images have much darker text than their interference.
+ * Threshold before resizing; blur and component removal would damage glyphs. */
+function preprocessDarkForeground(
+  image: GrayImage,
+  mode: "firstbank-dark-foreground" | "kgibank-dark-foreground" | "kgibank-dark-padded",
+  onStep?: (step: CaptchaPreprocessStep, image: Buffer) => void,
+): Buffer {
+  const firstbank = mode === "firstbank-dark-foreground";
+  if (image.width !== (firstbank ? 67 : 98) || image.height !== (firstbank ? 29 : 25)) {
+    return encodeGrayImage(blankImageLike(image));
+  }
+  const binary = binarize(image, firstbank ? 64 : 96);
+  onStep?.("binarized", encodeGrayImage(binary));
+  const padded = firstbank || mode === "kgibank-dark-padded";
+  const scaled = upscaleImage(binary, padded ? 4 : 3);
+  onStep?.("upscaled", encodeGrayImage(scaled));
+  if (!padded) return encodeGrayImage(scaled);
+  const width = scaled.width + 20;
+  const height = scaled.height + 20;
+  const data = new Uint8Array(width * height).fill(255);
+  for (let y = 0; y < scaled.height; y += 1) {
+    data.set(scaled.data.subarray(y * scaled.width, (y + 1) * scaled.width), (y + 10) * width + 10);
+  }
+  return encodeGrayImage({ width, height, data });
+}
+
 /**
  * Rakuten's CAPTCHA text is teal (low red, high green and blue) while its
  * interference strokes are neutral grey. Grayscale merges the two, so the OCR
@@ -655,6 +681,12 @@ export function preprocessCaptchaImage(
   const decoded = decodeGrayImage(buffer);
   onStep?.("grayscale", encodeGrayImage(decoded));
   const imagePreprocessing = options.imagePreprocessing ?? [];
+  const darkForeground = imagePreprocessing.filter((mode) => mode === "firstbank-dark-foreground"
+    || mode === "kgibank-dark-foreground" || mode === "kgibank-dark-padded");
+  if (darkForeground.length > 0) {
+    if (darkForeground.length !== 1 || imagePreprocessing.length !== 1) return encodeGrayImage(blankImageLike(decoded));
+    return preprocessDarkForeground(decoded, darkForeground[0]!, onStep);
+  }
   const useFubonLuminance = imagePreprocessing.includes(
     "fubon-luminance-foreground",
   );

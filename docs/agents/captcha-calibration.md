@@ -1,6 +1,6 @@
 # How to calibrate a preview source CAPTCHA
 
-ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin, Mega, and Rakuten preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. See [the initial calibration record](../research/2026-10-15-preview-captcha-calibration.md) and [Rakuten's calibration and held-out validation](../research/2026-10-20-rakuten-captcha-calibration.md). `npm run calibrate:captcha` is the development-only calibration tool. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin, Mega, Rakuten, First Bank, KGI, and O-Bank preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. See [the initial calibration record](../research/2026-10-15-preview-captcha-calibration.md), [Rakuten's calibration and held-out validation](../research/2026-10-20-rakuten-captcha-calibration.md), and [the First Bank, KGI, and O-Bank calibration record](../research/2026-10-20-three-bank-captcha-calibration.md). `npm run calibrate:captcha` is the development-only calibration tool. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
 
 You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
 
@@ -8,7 +8,7 @@ A separate tool validates the Next Bank audio CAPTCHA: `npm run validate:nextban
 
 ## Run the four steps for a bank
 
-Replace `mega` with `taishin`, `rakuten`, `kgibank`, or `firstbank` for the other banks.
+Replace `mega` with `taishin`, `rakuten`, `kgibank`, `firstbank`, or `obank` for the other banks.
 
 1. Collect the images. The browser window opens on your screen. Add `--headless` to hide it.
 
@@ -49,13 +49,14 @@ To collect more images, run `collect` again. It appends to the corpus. Run `prel
 | `taishin` | Preview source login form | The RWD login page. `form.captcha()` takes the bytes of the `NonSessionShuffle` response that `img._field_item__verify-code` loaded. It also records the `maxlength` of the CAPTCHA input when the page declares one. |
 | `kgibank` | Preview source | The Ionic login page (`/ibank/`). `form.captcha()` reads the CAPTCHA data URL from `img[src^="data:image"]` (or `ion-img.recaptcha-image`) and decodes it to PNG. Use `--headless`: KGI's landing page rejects a visible Playwright browser with 「瀏覽器不支援」. |
 | `firstbank` | Preview source page driver | The iBank login page. `page.captchaImage()` takes the `code_verify1.jpg` response bytes and decodes them to PNG. |
+| `obank` | Preview source through guarded browser HTTP | OAuth client credentials, public MobileFirst adapter bootstrap, `emptyLogin`, login-page metadata and audit, then `common/CMN01001/010`. The browser serves an inert same-origin page so the web app cannot redirect during those requests. No credentials are sent. Production retains its Node transport. |
 
 Two guards keep `collect` from signing in:
 
 - The preview sources run with a solver that records the image and then throws. The source never reaches its login request. The Taishin capture calls only `form.captcha()`, so it never fills or submits the form.
 - Each bank in `scripts/captcha-calibration/banks.ts` lists deny rules for its login requests. The browser aborts any request that matches a rule, and the whole collection stops with an error.
 
-The browser check `scripts/captcha-calibration/collect.check.mjs` runs all four captures against fake bank hosts. It asserts that no request matches a deny rule or a login path.
+The browser check `scripts/captcha-calibration/collect.check.mjs` runs each bank capture against fake bank hosts. It asserts that no request matches a deny rule or a login path, including O-Bank's `submitCredentials` and authenticated `sendAndReceive` adapter.
 
 ## Stay within the politeness limits
 
@@ -94,6 +95,8 @@ The **Previous** and **Next** buttons also move between images. The server store
 
 When the source declares an authoritative answer length, prelabel suggests only answers of that length. A bank's length hint does not filter suggestions. All OCR candidates, including other lengths, stay in `labels.json` for evaluation, and rerunning prelabel preserves confirmed labels.
 
+The label server also rejects answers that do not match an authoritative source length after normalization. Existing confirmations with a different length stay in the corpus and are selected for review before the page reports completion; it never turns them into unreadable labels automatically. A length hint does not restrict confirmation.
+
 Mark an image unreadable when you cannot read it with confidence. Evaluate counts any answer the solver would submit for an unreadable image as a false accept.
 
 ## Read the evaluate output
@@ -107,6 +110,8 @@ Rakuten has two foreground strategies: `rakuten-teal-foreground` extracts teal p
 The grid also includes `pre=rakuten-teal-foreground|split=rakuten-four-slots`. It uses the same teal extraction, chooses cuts near four character slots from the column ink projection, tightly crops each glyph, doubles it, adds a 10px white border, and runs Tesseract's single-character mode. Every glyph must normalize to exactly one character; otherwise the whole strategy returns no answer. The four internal OCR calls constitute one Solve Attempt, not four agreement votes. Unsupported geometry and empty slots fail closed.
 
 This fixed pipeline is declared with `ocrCharacterSegmentation: "rakuten-four-slots"`; it owns its page segmentation and output stage, so those two overrides must be omitted. Rerun `prelabel` after adding a strategy: `evaluate` uses cached candidates and cannot run a missing strategy itself. The Rakuten production family keeps the whole-image/per-character agreement pair validated on held-out images even if a later grid sweep ranks another configuration higher.
+
+The small First Bank and KGI images also have dark text separated from lighter interference. `firstbank-dark-foreground` requires 67×29, keeps luminance ≤64, resizes 4× with the shared interpolation, and adds a 10px white border. `kgibank-dark-foreground` requires 98×25, keeps luminance ≤96, and resizes 3×. `kgibank-dark-padded` uses the same threshold with 4× resizing and a 10px border. These filters threshold before resizing and skip the generic blur, line removal, and component removal. Other dimensions or a combination with another preprocessing mode produce blank output. A preprocessing mode alone does not authorize production submission; the source must use its calibrated family.
 
 - Coverage is accepted images divided by confirmed images.
 - FAR (false-accept rate) is wrong accepted answers divided by accepted images. The output also shows wrong answers divided by all confirmed images.
@@ -125,7 +130,7 @@ The recommendation is the configuration with the highest coverage among those wi
 
 ## Use the result in phase 2
 
-Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY`, `MEGA_CAPTCHA_FAMILY`, and `RAKUTEN_CAPTCHA_FAMILY` show the result.
+Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY`, `MEGA_CAPTCHA_FAMILY`, `RAKUTEN_CAPTCHA_FAMILY`, `FIRSTBANK_CAPTCHA_FAMILY`, `KGIBANK_CAPTCHA_FAMILY`, and `OBANK_CAPTCHA_FAMILY` show the result. O-Bank reuses the Rakuten-named teal and four-slot preprocessing, with its own measured acceptance pair.
 
 1. Copy the recommended declaration, or a configuration you choose from the evaluate output, into a `PreviewCaptchaFamily` in `src/lib/preview-sources/preview-captcha.ts`.
 2. Add the family entry to `CONTEXT.md`, and record the measured numbers under `docs/research/`.

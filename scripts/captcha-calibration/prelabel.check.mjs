@@ -33,9 +33,9 @@ test("prelabel records every grid strategy and keeps confirmed labels", async ()
   assert.deepEqual(await run(), { labelled: 2 });
   await run();
 
-  assert.equal(STRATEGY_GRID.length, 25);
-  assert.equal(new Set(engine.calls).size, 25, "each grid strategy reaches the engine");
-  assert.equal(engine.calls.length, 25 * 2 * 2);
+  assert.equal(STRATEGY_GRID.length, 34);
+  assert.equal(new Set(engine.calls).size, 34, "each grid strategy reaches the engine");
+  assert.equal(engine.calls.length, 34 * 2 * 2);
   assert.ok(engine.calls.every((call) => call.startsWith("digits|")));
   const labels = JSON.parse(await readFile(join(directory, "labels.json"), "utf8"));
   assert.deepEqual(labels.entries.one.confirmed, confirmed);
