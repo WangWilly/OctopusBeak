@@ -23,8 +23,6 @@ export type AutomationTaskRun = {
   maxAttempts: number;
   startedAt: string;
   finishedAt: string | null;
-  exitCode: number | null;
-  signal: string | null;
   events: readonly WorkflowRunEvent[];
   progress?: AutomationTaskProgress;
   terminationMode?: "forced";
@@ -46,8 +44,6 @@ export type AutomationTaskHistoryRow = Pick<
   | "status"
   | "startedAt"
   | "finishedAt"
-  | "exitCode"
-  | "signal"
   | "browserRuntime"
 > & {
   /** Null for legacy runs without an App typed outcome. */
@@ -75,8 +71,6 @@ export type CreateTaskRunInput = {
   maxAttempts: number;
   startedAt: string;
   finishedAt?: string | null;
-  exitCode?: number | null;
-  signal?: string | null;
   progress?: AutomationTaskProgress;
   humanAssistanceContract?: HumanAssistanceContract | null;
   scheduledAtUtc?: string;

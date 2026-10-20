@@ -52,8 +52,6 @@ function run(overrides: Partial<AutomationTaskRun>): AutomationTaskRun {
     maxAttempts: 1,
     startedAt: "2026-07-14T23:00:01.000Z",
     finishedAt: "2026-07-14T23:00:30.000Z",
-    exitCode: 1,
-    signal: null,
     events: [],
     recordJson: "{}",
     humanAssistanceContract: null,
