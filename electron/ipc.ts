@@ -10,10 +10,6 @@ import {
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
 import type { OctopusBeakInvokeChannels } from "./preload.ts";
 import {
-  automationCancel,
-  automationRun,
-  automationRunMany,
-  automationForceTerminate,
   automationRunHistory,
   automationSaveCredentials,
   automationSetupGuideLink,
@@ -24,7 +20,7 @@ import {
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
   assertKnownAutomationRuntimeTasks,
-  AutomationRuntimeInvariantError,
+  automationRuntimeFatalDetails,
 } from "../src/lib/automation/runtime-invariants.ts";
 import {
   cancelDeviceRegistration,
@@ -78,7 +74,7 @@ import {
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
 import { projectAutomationBlock } from "./automation-block.ts";
 import type { AutomationCredentialStatus } from "../src/lib/desktop/api.ts";
-import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
+import type { AutomationRuntime } from "../src/lib/automation/server/automation-runtime.ts";
 import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
@@ -135,6 +131,7 @@ function registrationId(value: unknown): string {
 }
 
 export function registerOctopusBeakIpc({
+  automationRuntime,
   onSystemSettingsChanged,
   onAutomationRuntimeFatal,
   onAutomationRuntimeReady,
@@ -142,6 +139,7 @@ export function registerOctopusBeakIpc({
   pgliteOperational,
   pgliteFinancial,
 }: {
+  automationRuntime: AutomationRuntime;
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
@@ -163,19 +161,7 @@ export function registerOctopusBeakIpc({
   pgliteFinancial: PGliteFinancialPort;
 }) {
   const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
-    const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
-    const details = {
-      code: invariant?.code ?? "automation-runtime-snapshot-failed",
-      stage,
-      ...(invariant
-        ? {
-          sessionId: invariant.sessionId,
-          revision: invariant.revision,
-          taskId: invariant.taskId,
-          runId: invariant.runId,
-        }
-        : {}),
-    };
+    const details = automationRuntimeFatalDetails(stage, error);
     console.error("automation-runtime-fatal", {
       ...details,
       ...(process.env.NODE_ENV === "development" && error instanceof Error
@@ -199,7 +185,7 @@ export function registerOctopusBeakIpc({
       if (!window.isDestroyed()) window.webContents.send("data:invalidated", event);
     }
   });
-  const unsubscribeFromAutomationRuntime = automationRuntimeState.subscribe((snapshot) => {
+  const unsubscribeFromAutomationRuntime = automationRuntime.subscribe((snapshot) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
     }
@@ -338,7 +324,7 @@ export function registerOctopusBeakIpc({
             }
             let runtimeSnapshot;
             try {
-              runtimeSnapshot = automationRuntimeState.snapshot();
+              runtimeSnapshot = automationRuntime.snapshot();
               assertKnownAutomationRuntimeTasks(
                 runtimeSnapshot,
                 new Set(AUTOMATION_TASKS.map((task) => task.id)),
@@ -348,8 +334,8 @@ export function registerOctopusBeakIpc({
             }
             const core = await loadAutomationCoreSnapshot(
               operationalProvider,
+              { snapshot: runtimeSnapshot!, activeTaskIds: automationRuntime.activeTaskIds() },
               credentialState.status,
-              runtimeSnapshot,
               credentialState.states,
             );
             const model = credentialState
@@ -411,16 +397,16 @@ export function registerOctopusBeakIpc({
       },
     "automation:run": async (_event, taskId: string) => {
       await ensureAutomationRuntimeReady("automation-run");
-      return automationRun(taskId, operationalProvider);
+      return automationRuntime.run(taskId);
     },
     "automation:runMany": async (_event, taskIds: string[]) => {
       await ensureAutomationRuntimeReady("automation-run-many");
-      return automationRunMany(taskIds, operationalProvider);
+      return automationRuntime.runMany(taskIds);
     },
     "automation:cancel": (_event, taskId: string, expectedRunId?: string) =>
-      automationCancel(taskId, expectedRunId),
+      automationRuntime.cancel(taskId, expectedRunId),
     "automation:forceTerminate": (_event, taskId: string, expectedRunId?: string) =>
-      automationForceTerminate(taskId, expectedRunId),
+      automationRuntime.forceTerminate(taskId, expectedRunId),
     "automation:runHistory": () => automationRunHistory(operationalProvider),
     "automation:takeSignInSettingsRequest": () => takeSignInSettingsRequest(),
     "automation:previewStructureReport": (_event, taskId: string) => {
@@ -443,7 +429,7 @@ export function registerOctopusBeakIpc({
     "automation:runtimeSnapshot": async () => {
       try {
         await ensureAutomationRuntimeReady("runtime-snapshot");
-        return automationRuntimeState.snapshot();
+        return automationRuntime.snapshot();
       } catch (error) {
         return reportAutomationRuntimeFatal("runtime-snapshot", error);
       }

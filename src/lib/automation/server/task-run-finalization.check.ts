@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { hydrateAutomationRuntimeState, recoverInterruptedAutomationRuns } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -61,7 +62,7 @@ for (const recovery of ["startup", "shutdown"] as const) {
     assert.equal(saved?.status, "interrupted");
     assert.ok(saved?.finishedAt);
     assert.deepEqual(await provider.automation.activeTaskRuns(), []);
-    const runtime = await hydrateAutomationRuntimeState(provider);
+    const runtime = await hydrateAutomationRuntimeState(provider, createAutomationRuntimeState());
     assert.equal(runtime.tasks.find((task) => task.taskId === "exchange-rates")?.status, "interrupted");
   }));
 }

@@ -22,7 +22,6 @@ import {
   offeredAutomationSources,
   readAutomationSettings,
 } from "./settings.ts";
-import { automationRunner, type StartAutomationTaskOptions } from "./runner.ts";
 import {
   type AutomationPersistenceProvider,
   type AutomationTaskHistoryRow,
@@ -42,7 +41,6 @@ import type {
   AutomationRunManyTaskResult,
   AutomationRuntimeSnapshot,
 } from "$lib/desktop/api.ts";
-import { automationRuntimeState } from "./runtime-state.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 const certificateFileCredentialKeys = new Set([
@@ -149,15 +147,21 @@ function coreCredentialGroup(
  * persistence reads are awaited before the page model is assembled, keeping
  * runtime state and persisted history from being published out of order.
  */
+/** What the App process knows about runs right now, beside the persisted history. */
+export type AutomationLiveRuns = Readonly<{
+  snapshot: AutomationRuntimeSnapshot;
+  activeTaskIds: readonly string[];
+}>;
+
 export async function loadAutomationCoreSnapshot(
   provider: AutomationPersistenceProvider,
+  live: AutomationLiveRuns,
   credentialStatus: Readonly<Record<string, boolean>> = {},
-  runtime: AutomationRuntimeSnapshot = automationRuntimeState.snapshot(),
   credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
 ): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
   const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
-  const activeTaskIds = automationRunner.activeTaskIds();
+  const { snapshot: runtime, activeTaskIds } = live;
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
     provider.automation.latestTaskRuns(),
@@ -230,6 +234,7 @@ export function applyAutomationCredentialState(
 
 export async function loadAutomationDesktopModel(
   provider: AutomationPersistenceProvider,
+  live: AutomationLiveRuns,
 ): Promise<AutomationDesktopModel> {
   const raw = currentCredentialState();
   const credentialState: AutomationCredentialStateDto = {
@@ -240,7 +245,7 @@ export async function loadAutomationDesktopModel(
     invalidFileReasons: raw.invalidFileReasons,
   };
   return applyAutomationCredentialState(
-    await loadAutomationCoreSnapshot(provider, raw.status),
+    await loadAutomationCoreSnapshot(provider, live, raw.status),
     credentialState,
   );
 }
@@ -296,7 +301,7 @@ function missingCredentialKeys(
   );
 }
 
-function assertAutomationTaskCanStartInModel(
+export function assertAutomationTaskCanStartInModel(
   taskId: string,
   model: AutomationDesktopModel,
 ) {
@@ -339,16 +344,6 @@ export function assertAutomationTasksCanStart(
   );
 }
 
-export async function assertAutomationTaskCanStart(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-) {
-  return assertAutomationTaskCanStartInModel(
-    taskId,
-    await loadAutomationDesktopModel(provider),
-  );
-}
-
 export function automationSaveCredentials(updates: Record<string, string>) {
   for (const key of certificateFileCredentialKeys) {
     if (!Object.hasOwn(updates, key)) continue;
@@ -382,67 +377,6 @@ export function automationSaveCredentials(updates: Record<string, string>) {
       : undefined;
   writeAutomationConfigFiles(nextSettings, nextCredentials);
   return { saved: true as const };
-}
-
-export async function automationRun(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-): Promise<{ started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
-  const current = await automationRunner.current(taskId);
-  if (current) {
-    return { started: taskId, runId: current.runId, runtime: current.runtime };
-  }
-  const model = await loadAutomationDesktopModel(provider);
-  const task = assertAutomationTaskCanStartInModel(taskId, model);
-  const started = await automationRunner.start(task.id, provider);
-  return { started: task.id, runId: started.runId, runtime: started.runtime };
-}
-
-export async function automationRunMany(
-  taskIds: string[],
-  provider: AutomationPersistenceProvider,
-  options: StartAutomationTaskOptions = {},
-): Promise<AutomationRunManyResult> {
-  if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
-    throw new TypeError("Task IDs must be an array of strings.");
-  }
-  if (taskIds.length === 0) return { started: [] as string[], results: {} };
-  const model = await loadAutomationDesktopModel(provider);
-  const started: string[] = [];
-  const errors: Record<string, string> = {};
-  const results: Record<string, AutomationRunManyTaskResult> = {};
-  for (const taskId of [...new Set(taskIds)]) {
-    try {
-      const existing = await automationRunner.current(taskId);
-      if (existing) {
-        results[taskId] = { status: "already_running", runId: existing.runId };
-        continue;
-      }
-      const task = assertAutomationTaskCanStartInModel(taskId, model);
-      const run = await automationRunner.start(task.id, provider, options);
-      started.push(task.id);
-      results[task.id] = { status: "started", runId: run.runId };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors[taskId] = message;
-      results[taskId] = { status: "error", error: message };
-    }
-  }
-  return { started, results, ...(Object.keys(errors).length ? { errors } : {}) };
-}
-
-export function automationCancel(
-  taskId: string,
-  expectedRunId?: string,
-): Promise<{ cancelled: string }> {
-  return automationRunner.cancel(taskId, expectedRunId);
-}
-
-export function automationForceTerminate(
-  taskId: string,
-  expectedRunId?: string,
-): Promise<{ cancelled: string }> {
-  return automationRunner.forceTerminate(taskId, expectedRunId);
 }
 
 export function automationRunHistory(

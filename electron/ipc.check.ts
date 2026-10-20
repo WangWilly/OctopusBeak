@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
-assert.match(source, /"automation:forceTerminate": [\s\S]*?automationForceTerminate\(taskId, expectedRunId\)/);
-assert.match(source, /"automation:cancel": [\s\S]*?automationCancel\(taskId, expectedRunId\)/);
+assert.match(source, /"automation:forceTerminate": [\s\S]*?automationRuntime\.forceTerminate\(taskId, expectedRunId\)/);
+assert.match(source, /"automation:cancel": [\s\S]*?automationRuntime\.cancel\(taskId, expectedRunId\)/);
 assert.doesNotMatch(source, /"automation:forceQuit"/);
 assert.doesNotMatch(source, /forceQuitHumanSessionForTask/);
 assert.doesNotMatch(source, /terminateAutomationTaskProcesses/);

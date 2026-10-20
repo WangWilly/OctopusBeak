@@ -20,20 +20,21 @@ import {
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
-import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
+import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
+  state: AutomationRuntimeState,
 ) {
   const runs = Object.values(await provider.automation.latestTaskRuns()).map((run) =>
     runtimeTaskSnapshotFromRun(run),
   );
-  automationRuntimeState.reset();
-  for (const run of runs) automationRuntimeState.upsert(run);
-  return automationRuntimeState.snapshot();
+  state.reset();
+  for (const run of runs) state.upsert(run);
+  return state.snapshot();
 }
 
 export type StartAutomationTaskOptions = {
@@ -77,7 +78,7 @@ export function pgliteWorkflowRuntimeEnv(
 export type StartedAutomationTask = {
   taskId: string;
   runId: string;
-  runtime: ReturnType<typeof automationRuntimeState.snapshot>;
+  runtime: ReturnType<AutomationRuntimeState["snapshot"]>;
 };
 
 type AutomationTask = NonNullable<ReturnType<typeof taskById>>;
@@ -147,10 +148,10 @@ export async function recoverInterruptedAutomationRuns(
 }
 
 export function createAutomationRunner(options: Readonly<{
-  runtime?: typeof automationRuntimeState;
+  runtime: AutomationRuntimeState;
   forceQuitAvailableAfterMs?: number;
-}> = {}) {
-  const runtime = options.runtime ?? automationRuntimeState;
+}>) {
+  const { runtime } = options;
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;
@@ -391,5 +392,3 @@ export function createAutomationRunner(options: Readonly<{
 
 export type AutomationRunner = ReturnType<typeof createAutomationRunner>;
 
-/** The main-process runner. Checks create their own with `createAutomationRunner`. */
-export const automationRunner = createAutomationRunner();
