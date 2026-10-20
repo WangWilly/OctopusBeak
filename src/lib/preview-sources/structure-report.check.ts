@@ -26,7 +26,7 @@ const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewWorkflowDefinition, takePreviewObservations } = await import("./workflow.ts");
 const { runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
-const { runAutomationTaskExecution } = await import("../automation/server/task-run-execution.ts");
+const { executeTaskRunForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
 const { applyPgliteOperationalBaseline, createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
 const { PGliteStore } = await import("../../ledger/pglite/transaction.ts");
@@ -227,8 +227,16 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
     const run = async (taskId: string, terminal: (taskRunId: string) => Record<string, unknown>) => {
       const task = taskById(taskId);
       assert.ok(task, `${taskId} is registered`);
-      let taskRunId = "";
-      const result = await runAutomationTaskExecution(task, provider.automation, {
+      const { taskRunId } = await provider.automation.createTaskRun({
+        taskId: task.id,
+        kind: task.kind,
+        status: "preparing",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+      });
+      const result = await executeTaskRunForCheck(task, provider.automation, {
+        taskRunId,
         launchEnv: {
           [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
           [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
@@ -236,7 +244,7 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
         workflowBrowserPortFactory: () => ({ async withPage(work) { return await work({} as never); } }),
         appWorkflowBrowserConnectionForRun: (runId) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${runId}` }),
         appWorkflowWorkerFactory: (_path, options) => new TerminalFakeWorker(options.workerData, terminal),
-      }, async (id) => { taskRunId = id; });
+      });
       return { result, taskRunId };
     };
     const failed = (taskRunId: string) => ({ kind: "failed", taskRunId, errorCode: "source-validation-failed", previewResponses: shapes });

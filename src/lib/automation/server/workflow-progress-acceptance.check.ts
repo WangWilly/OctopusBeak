@@ -21,6 +21,8 @@ import type {
   AppWorkflowWorkerOutboundFrame,
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 
 type ProgressSnapshot = Readonly<{
@@ -205,9 +207,20 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const snapshots: Array<{ runId: string; eventId: string; progress: ProgressSnapshot | null }> = [];
+    const startingProgress = new Map<string, ProgressSnapshot | null>();
     const persistence = new Proxy(provider.automation, {
       get(target, property) {
         if (property === "taskRunById") return target.taskRunById.bind(target);
+        if (property === "transitionTaskRunToActive") {
+          return async (...args: Parameters<typeof target.transitionTaskRunToActive>) => {
+            const [taskRunId, update] = args;
+            const result = await target.transitionTaskRunToActive(...args);
+            if (result.applied && update.status === "running" && !startingProgress.has(taskRunId)) {
+              startingProgress.set(taskRunId, update.progress as ProgressSnapshot | null ?? null);
+            }
+            return result;
+          };
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -228,23 +241,28 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
       [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
+    const createRun = async (runTask: NonNullable<ReturnType<typeof taskById>>) =>
+      (await persistence.createTaskRun({
+        taskId: runTask.id,
+        kind: runTask.kind,
+        status: "preparing",
+        attempt: 1,
+        maxAttempts: 3,
+        startedAt: new Date().toISOString(),
+      })).taskRunId;
+    const openRun = async () => await openTaskRunForCheck(persistence, await createRun(task));
     const execute = async (input: {
-      runId?: string;
+      run: ActiveAutomationTaskRun;
       attempt: number;
       steps: readonly WorkerStep[];
       terminal: TerminalFrameInput;
-      deferFinalization?: boolean;
     }) => {
-      const lifecycle: { taskRunId: string; initialProgress: ProgressSnapshot | null } = {
-        taskRunId: "",
-        initialProgress: null,
-      };
-      const result = await runAutomationTaskExecution(task, persistence, {
-        ...(input.runId ? { taskRunId: input.runId } : {}),
+      const taskRunId = input.run.taskRunId;
+      startingProgress.delete(taskRunId);
+      const outcome = await runAutomationTaskExecution(task, input.run, {
         attempt: input.attempt,
         maxAttempts: 3,
         launchEnv,
-        deferFinalization: input.deferFinalization,
         workflowBrowserPortFactory: () => ({
           async withPage(run) { return await run({} as never); },
         }),
@@ -259,19 +277,16 @@ test("runner progress spans selected product stages, survives a same-run retry, 
             input.terminal,
             onEventAcknowledged,
           ),
-      }, async (runId) => {
-        lifecycle.taskRunId = runId;
-        const run = await persistence.taskRunById(runId);
-        lifecycle.initialProgress = run?.progress as ProgressSnapshot | null ?? null;
       });
-      return { taskRunId: lifecycle.taskRunId, result, initialProgress: lifecycle.initialProgress };
+      return { taskRunId, outcome, initialProgress: startingProgress.get(taskRunId) ?? null };
     };
 
+    const retriedRun = await openRun();
     const firstAttempt = await execute({
+      run: retriedRun,
       attempt: 1,
       steps: makeSteps(false).slice(0, 5),
       terminal: { kind: "failed", errorCode: "workflow-failed" },
-      deferFinalization: true,
     });
     assert.ok(
       firstAttempt.initialProgress?.percent === null || firstAttempt.initialProgress?.percent === 0,
@@ -282,7 +297,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     const retryBaseline = firstProgress.percent;
 
     const retried = await execute({
-      runId: firstAttempt.taskRunId,
+      run: retriedRun,
       attempt: 2,
       steps: [
         { eventId: "retry-run-start", event: { stage: "preparation", code: "run-started" } },
@@ -330,14 +345,15 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     assert.ok(retryProgress?.percent !== null && retryProgress?.percent !== undefined);
     assert.ok(retryProgress.percent >= retryBaseline, "automatic retry keeps progress monotonic across execution calls");
     assert.equal(retryProgress.params?.retrying, true, "the current stage identifies its retry");
-    const retriedRun = await persistence.taskRunById(firstAttempt.taskRunId);
-    assert.equal(retriedRun?.status, "failed");
-    assert.equal(retriedRun?.appWorkflowOutcome?.summary?.status, "partial");
+    await retriedRun.finish(retried.outcome);
+    const retriedRecord = await persistence.taskRunById(firstAttempt.taskRunId);
+    assert.equal(retriedRecord?.status, "failed");
+    assert.equal(retriedRecord?.appWorkflowOutcome?.summary?.status, "partial");
     const prePartialPercent = snapshots.find(
       (snapshot) => snapshot.runId === firstAttempt.taskRunId && snapshot.eventId === "run-completed",
     )?.progress?.percent;
     assert.ok(prePartialPercent !== null && prePartialPercent !== undefined && prePartialPercent < 100);
-    assert.equal(retriedRun?.progress?.percent, prePartialPercent, "partial terminal outcome retains the last stage progress");
+    assert.equal(retriedRecord?.progress?.percent, prePartialPercent, "partial terminal outcome retains the last stage progress");
 
     const runProgress = snapshots.filter((snapshot) => snapshot.runId === firstAttempt.taskRunId && snapshot.progress?.percent !== null);
     assert.ok(runProgress.length >= 3, "each meaningful worker stage reaches persisted task progress");
@@ -358,7 +374,9 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     assert.ok((snapshots.find((snapshot) => snapshot.runId === firstAttempt.taskRunId && snapshot.eventId === "run-completed")?.progress?.percent ?? 100) < 100,
       "run-completed event alone cannot mark a partially successful run complete");
 
+    const successfulActive = await openRun();
     const successful = await execute({
+      run: successfulActive,
       attempt: 1,
       steps: makeSteps(false),
       terminal: {
@@ -373,6 +391,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
         },
       },
     });
+    await successfulActive.finish(successful.outcome);
     assert.ok(
       successful.initialProgress?.percent === null || successful.initialProgress?.percent === 0,
       "a separate run starts at zero instead of inheriting the previous run's progress",
@@ -386,7 +405,8 @@ test("runner progress spans selected product stages, survives a same-run retry, 
 
     const exchangeRateTask = taskById("exchange-rates");
     assert.ok(exchangeRateTask);
-    const exchangeRateResult = await runAutomationTaskExecution(exchangeRateTask, persistence, {
+    const exchangeRateResult = await executeTaskRunForCheck(exchangeRateTask, persistence, {
+      taskRunId: await createRun(exchangeRateTask),
       attempt: 1,
       maxAttempts: 1,
       launchEnv,
@@ -409,7 +429,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
             percent: 100,
           }],
         ),
-    }, async () => {});
+    });
     assert.equal(exchangeRateResult.status, "completed");
     const exchangeRunId = exchangeRateResult.taskRunId;
     assert.ok(exchangeRunId);
@@ -420,12 +440,14 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     assert.ok(exchangeProgressBeforeTerminal.percent < 100, "the exchange-rate complete phase is capped before terminal success");
     assert.equal((await persistence.taskRunById(exchangeRunId))?.status, "completed");
 
+    const cancelledActive = await openRun();
     const cancelled = await execute({
+      run: cancelledActive,
       attempt: 1,
       steps: makeSteps(false).slice(0, 3),
       terminal: { kind: "cancelled" },
     });
-    assert.equal(cancelled.result.status, "cancelled");
+    assert.equal((await cancelledActive.finish(cancelled.outcome)).status, "cancelled");
     const cancelledRun = await persistence.taskRunById(cancelled.taskRunId);
     const preCancelPercent = snapshots.filter((snapshot) => snapshot.runId === cancelled.taskRunId).at(-1)?.progress?.percent;
     assert.equal(cancelledRun?.status, "cancelled");

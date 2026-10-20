@@ -17,7 +17,8 @@ import {
   POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
 } from "../../../workflows/post-current-deposit-balances.ts";
 import { taskById } from "./tasks.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
@@ -248,7 +249,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -267,7 +268,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
         observedStartUrl = startUrl;
         return browser;
       },
-    }, async () => {});
+    });
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({
@@ -312,12 +313,12 @@ test("Post App dispatch rejects malformed and incomplete EndBracket sources befo
     for (const source of [{ malformed: true }, { incomplete: true }]) {
       const taskRunId = await createRun(provider);
       const page = fakePostPage({ signedIn: true, ...source });
-      const result = await runAutomationTaskExecution(task, provider.automation, {
+      const result = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         workflowPorts: { financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) },
         workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
-      }, async () => {});
+      });
       assert.equal(result.status, "failed");
       assert.equal(committed.length, 0);
       const run = await provider.automation.taskRunById(taskRunId);
@@ -338,29 +339,31 @@ test("Post App dispatch cancellation during human assistance does not collect or
   const previousDirectory = process.cwd();
   const store = new PGliteStore(await PGlite.create());
   const committed: unknown[][] = [];
-  let cancellationRequested = false;
+  let cancellationRun: ActiveAutomationTaskRun | undefined;
   try {
     process.chdir(root);
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const page = fakePostPage();
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      isCancellationRequested: () => cancellationRequested,
+      onRunOpened: (active) => {
+        cancellationRun = active;
+      },
       workflowPorts: {
         financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
         humanAssistance: {
           async request() {
-            cancellationRequested = true;
+            void cancellationRun?.requestStop("cancelled");
             await new Promise((resolve) => setTimeout(resolve, 100));
             return "verified";
           },
         },
       },
       workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
-    }, async () => {});
+    });
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
     assert.equal(page.sourceResponseReads, 0);

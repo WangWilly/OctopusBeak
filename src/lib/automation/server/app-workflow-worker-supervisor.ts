@@ -65,6 +65,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   browserConnection?: AppWorkflowWorkerStart["browserConnection"];
   pgliteRpc?: AppWorkflowWorkerStart["pgliteRpc"];
   signal: AbortSignal;
+  /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
+  forceSignal?: AbortSignal;
   appendEvent(event: WorkflowRunEvent, signal: AbortSignal): Promise<void>;
   appendExchangeRateProgress?(progress: Readonly<{
     phaseCode: "load-request" | "sync" | "complete";
@@ -239,6 +241,7 @@ export async function runSupervisedAppWorkflow(
       flushRotatedTdccSession();
       tdccSession = undefined;
       options.signal.removeEventListener("abort", onAbort);
+      options.forceSignal?.removeEventListener("abort", onForce);
       worker.off("message", onMessage);
       worker.off("error", onError);
       worker.off("exit", onExit);
@@ -519,6 +522,19 @@ export async function runSupervisedAppWorkflow(
       if (!signal.aborted) controller.abort();
       requestStop(CANCELLED, true);
     };
+    const onForce = () => {
+      if (settled) return;
+      if (!pendingOutcome) {
+        cancellationRequested = true;
+        pendingOutcome = CANCELLED;
+        if (!signal.aborted) controller.abort();
+      }
+      clearTimers();
+      const currentWorker = worker;
+      void Promise.resolve(currentWorker.terminate()).catch(() => undefined).finally(() => {
+        settle(pendingOutcome ?? CANCELLED);
+      });
+    };
 
     // Captured output is drained and discarded. It is never sent to a log.
     for (const stream of [worker.stdout, worker.stderr]) {
@@ -533,6 +549,8 @@ export async function runSupervisedAppWorkflow(
     worker.on("exit", onExit);
     worker.on("online", onOnline);
     options.signal.addEventListener("abort", onAbort, { once: true });
+    options.forceSignal?.addEventListener("abort", onForce, { once: true });
     if (options.signal.aborted) onAbort();
+    if (options.forceSignal?.aborted) onForce();
   });
 }

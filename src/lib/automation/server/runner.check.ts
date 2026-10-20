@@ -4,35 +4,64 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
-import {
-  cancelAutomationTask,
-  automationTaskCancellationRequested,
-  automationTaskForceTerminationRequested,
-  currentAutomationTaskRun,
-  hasActiveAutomationTask,
-  pgliteWorkflowRuntimeEnv,
-  forceTerminateAutomationTask,
-  runAutomationTask,
-  startAutomationTask,
-  shutdownAppAutomationWorkflows,
-} from "./runner.ts";
+import { createAutomationRunner, pgliteWorkflowRuntimeEnv } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 import type {
+  AutomationPersistencePort,
   AutomationPersistenceProvider,
   AutomationTaskRun,
 } from "./store.ts";
 import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../ledger/exchange-rates.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { SourceDeviceBusyError, sourceDeviceLocks } from "./source-device-lock.ts";
 
-function providerStub(automation: Record<string, unknown> = {}) {
-  return {
-    automation: {
-      async taskRunById() { return null; },
-      ...automation,
+function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
+  const runs = new Map<string, AutomationTaskRun>();
+  let next = 0;
+  const automation = {
+    async createTaskRun(input: Parameters<AutomationPersistencePort["createTaskRun"]>[0]) {
+      next += 1;
+      const taskRunId = `runner-check-${next}`;
+      runs.set(taskRunId, {
+        finishedAt: null,
+        exitCode: null,
+        signal: null,
+        events: [],
+        recordJson: "{}",
+        humanAssistanceContract: null,
+        ...input,
+        taskRunId,
+      } as AutomationTaskRun);
+      return { taskRunId };
     },
+    async taskRunById(taskRunId: string) {
+      const run = runs.get(taskRunId);
+      return run ? { ...run } : null;
+    },
+    async updateTaskRun(taskRunId: string, update: Partial<AutomationTaskRun>) {
+      Object.assign(runs.get(taskRunId)!, update);
+    },
+    async transitionTaskRunToActive(taskRunId: string, update: Partial<AutomationTaskRun>) {
+      Object.assign(runs.get(taskRunId)!, update);
+      return { status: runs.get(taskRunId)!.status, applied: true };
+    },
+    async transitionTaskRunToTerminal(taskRunId: string, update: Partial<AutomationTaskRun>) {
+      Object.assign(runs.get(taskRunId)!, update);
+      return { status: runs.get(taskRunId)!.status, applied: true };
+    },
+    async resolveTaskPrerequisiteNotices() {},
+    ...overrides,
+  } as unknown as AutomationPersistencePort;
+  return { runs, automation };
+}
+
+function providerStub(automation: Record<string, unknown> | AutomationPersistencePort = memoryAutomation().automation) {
+  return {
+    automation,
     pgliteWorkflow: {
       required: true,
       env: {
@@ -51,11 +80,20 @@ function providerStub(automation: Record<string, unknown> = {}) {
   } as unknown as AutomationPersistenceProvider;
 }
 
-function deferred<T>() {
+function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+function aborted(signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+const freshRunner = () => createAutomationRunner({ runtime: createAutomationRuntimeState() });
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
@@ -87,7 +125,7 @@ test("Fubon cannot start with missing or unknown statement selections", async ()
       LIBRETTO_CLOUD_FUBON_ENABLED: true,
     });
     await assert.rejects(
-      startAutomationTask("fubon-all-statements", providerStub()),
+      freshRunner().start("fubon-all-statements", providerStub()),
       /Select at least one Fubon statement type/u,
     );
 
@@ -96,10 +134,9 @@ test("Fubon cannot start with missing or unknown statement selections", async ()
       LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
     });
     await assert.rejects(
-      startAutomationTask("fubon-all-statements", providerStub()),
+      freshRunner().start("fubon-all-statements", providerStub()),
       /Unknown Fubon statement type: unknown/u,
     );
-    assert.equal(hasActiveAutomationTask(), false);
   } finally {
     process.chdir(previousDirectory);
     await rm(root, { recursive: true, force: true });
@@ -122,16 +159,17 @@ for (const { source, taskId, settings } of [
     const root = await mkdtemp(join(tmpdir(), `automation-runner-${source}-lock-`));
     const previousDirectory = process.cwd();
     const lock = sourceDeviceLocks[source];
+    const runner = freshRunner();
     try {
       process.chdir(root);
       writeAutomationSettingsFile("settings.json", settings);
       assert.equal(lock.claim("registration"), null);
       await assert.rejects(
-        startAutomationTask(taskId, providerStub()),
+        runner.start(taskId, providerStub()),
         (error: unknown) =>
           error instanceof SourceDeviceBusyError && error.source === source && error.holder === "registration",
       );
-      assert.equal(hasActiveAutomationTask(), false);
+      assert.equal(runner.hasActive(), false);
       assert.equal(lock.holder(), "registration", "the refused run leaves the registration holding the device");
     } finally {
       lock.release("registration");
@@ -268,221 +306,123 @@ test("the task catalog contains only typed workflows and the two typed nonbrowse
   }
 });
 
-test("runner cancellation aborts the typed execution without accessing a child process", async () => {
-  let markStarted!: () => void;
-  const started = new Promise<void>((resolve) => { markStarted = resolve; });
-  let cancellationObserved = false;
-  const runExecution: typeof runAutomationTaskExecution = async (
-    _task,
-    _persistence,
-    options,
-    onRunCreated,
-  ) => {
-    await onRunCreated("runner-cancellation-check");
-    markStarted();
-    return await new Promise<Awaited<ReturnType<typeof runAutomationTaskExecution>>>(
-      (_resolve, reject) => {
-        const poll = setInterval(() => {
-          if (!options.isCancellationRequested?.()) return;
-          cancellationObserved = true;
-          clearInterval(poll);
-          reject(new Error("typed workflow observed cancellation"));
-        }, 5);
-      },
-    );
+test("cancellation reaches the typed execution through the run's signal and ends the run cancelled", async () => {
+  const runner = freshRunner();
+  const { runs, automation } = memoryAutomation();
+  const provider = providerStub(automation);
+  const started = deferred();
+  const finished = deferred<AutomationTaskRun>();
+  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+    started.resolve();
+    await aborted(run.signal);
+    throw new Error("typed workflow observed cancellation");
   };
-  const provider = providerStub();
-  const run = runAutomationTask("exchange-rates", provider, { runExecution });
-  const rejectedRun = run.then(
-    () => assert.fail("the cancelled runner should propagate the typed execution result"),
-    (error: unknown) => error,
-  );
-  await started;
-  assert.equal(hasActiveAutomationTask(), true);
-  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-cancellation-check");
+  const { runId } = await runner.start("exchange-rates", provider, {
+    runExecution,
+    onFinished: finished.resolve,
+  });
+  await started.promise;
+  assert.equal(runner.hasActive(), true);
+  assert.equal((await runner.current("exchange-rates"))?.runId, runId);
   await assert.rejects(
-    cancelAutomationTask("exchange-rates", provider, "a-different-run"),
+    runner.cancel("exchange-rates", "a-different-run"),
     /run changed before cancellation/u,
   );
-  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
-  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
-  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-cancellation-check");
-  assert.deepEqual(await cancelAutomationTask("exchange-rates", provider, "runner-cancellation-check"), {
-    cancelled: "exchange-rates",
-  });
-  const error = await rejectedRun;
-  assert.match(String(error), /typed workflow observed cancellation/u);
-  assert.equal(cancellationObserved, true);
-  assert.equal(hasActiveAutomationTask(), false);
+  assert.notEqual(runs.get(runId)?.status, "cancelling", "a refused cancellation leaves the run alone");
+  assert.deepEqual(await runner.cancel("exchange-rates", runId), { cancelled: "exchange-rates" });
+
+  const run = await finished.promise;
+  assert.equal(run.status, "cancelled", "a workflow that throws after cancellation is still cancelled");
+  assert.equal(run.appWorkflowOutcome?.errorCode, "cancelled");
+  assert.equal(run.terminationMode, undefined);
+  assert.equal(runner.hasActive(), false);
 });
 
-test("force termination waits for typed cancellation to settle", async () => {
-  let markStarted!: () => void;
-  const started = new Promise<void>((resolve) => { markStarted = resolve; });
-  let markCancellationObserved!: () => void;
-  const cancellationObserved = new Promise<void>((resolve) => { markCancellationObserved = resolve; });
-  let releaseExecution!: () => void;
-  const executionRelease = new Promise<void>((resolve) => { releaseExecution = resolve; });
-  let forceRequested = false;
-  const runExecution: typeof runAutomationTaskExecution = async (
-    _task,
-    _persistence,
-    options,
-    onRunCreated,
-  ) => {
-    await onRunCreated("runner-force-check");
-    markStarted();
-    await new Promise<void>((_resolve, reject) => {
-      const poll = setInterval(() => {
-        if (!options.isCancellationRequested?.()) return;
-        forceRequested = options.isForceTerminationRequested?.() === true;
-        clearInterval(poll);
-        markCancellationObserved();
-        void executionRelease.then(() => reject(new Error("typed workflow force-cancelled")));
-      }, 5);
-    });
-    return null as never;
-  };
+test("force-quit aborts the run's force signal and settles only after the execution does", async () => {
+  const runner = freshRunner();
   const provider = providerStub();
-  const run = runAutomationTask("exchange-rates", provider, { runExecution });
-  const settledRun = run.then(() => undefined, () => undefined);
-  await started;
+  const started = deferred();
+  const forced = deferred();
+  const releaseExecution = deferred();
+  const finished = deferred<AutomationTaskRun>();
+  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+    started.resolve();
+    await aborted(run.forceSignal);
+    forced.resolve();
+    await releaseExecution.promise;
+    return { errorCode: "cancelled", summary: null };
+  };
+  const { runId } = await runner.start("exchange-rates", provider, {
+    runExecution,
+    onFinished: finished.resolve,
+  });
+  await started.promise;
   await assert.rejects(
-    forceTerminateAutomationTask("exchange-rates", provider, "a-different-run"),
+    runner.forceTerminate("exchange-rates", "a-different-run"),
     /run changed before force termination/u,
   );
-  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
-  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
-  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "runner-force-check");
   let forceSettled = false;
-  const force = forceTerminateAutomationTask("exchange-rates", provider, "runner-force-check").then(() => {
-    forceSettled = true;
-  });
-  await cancellationObserved;
+  const force = runner.forceTerminate("exchange-rates", runId).then(() => { forceSettled = true; });
+  await forced.promise;
   await new Promise<void>((resolve) => setTimeout(resolve, 15));
-  assert.equal(forceRequested, true);
   assert.equal(forceSettled, false);
-  releaseExecution();
+  releaseExecution.resolve();
   await force;
-  await settledRun;
-  assert.equal(forceSettled, true);
-  assert.equal(hasActiveAutomationTask(), false);
+  const run = await finished.promise;
+  assert.equal(run.status, "cancelled");
+  assert.equal(run.terminationMode, "forced");
+  assert.equal(runner.hasActive(), false);
 });
 
-test("late cancellation persistence cannot mutate a newer run under the same task id", async () => {
-  const persistenceRead = deferred<AutomationTaskRun | null>();
-  const persistenceStarted = deferred<void>();
-  let holdOldRunRead = false;
-  const provider = providerStub({
-    async taskRunById(runId: string) {
-      if (holdOldRunRead && runId === "old-run") {
-        holdOldRunRead = false;
-        persistenceStarted.resolve();
-        return persistenceRead.promise;
+test("a cancellation still persisting for a finished run never reaches the task's next run", async () => {
+  const runner = freshRunner();
+  const gate = deferred();
+  const gateReached = deferred();
+  const base = memoryAutomation();
+  let holdCancelling = true;
+  const automation = {
+    ...base.automation,
+    async transitionTaskRunToActive(taskRunId: string, update: Parameters<AutomationPersistencePort["transitionTaskRunToActive"]>[1]) {
+      if (update.status === "cancelling" && holdCancelling) {
+        holdCancelling = false;
+        gateReached.resolve();
+        await gate.promise;
       }
-      return null;
+      return base.automation.transitionTaskRunToActive(taskRunId, update);
     },
-  });
-  const oldStarted = deferred<void>();
-  const releaseOld = deferred<void>();
-  const oldRun = runAutomationTask("exchange-rates", provider, {
-    runExecution: async (_task, _persistence, _options, onRunCreated) => {
-      await onRunCreated("old-run");
-      oldStarted.resolve();
-      await releaseOld.promise;
-      return null as never;
-    },
-  });
-  const oldSettled = oldRun.then(() => undefined, () => undefined);
-  await oldStarted.promise;
-
-  holdOldRunRead = true;
-  const cancellation = cancelAutomationTask("exchange-rates", provider, "old-run");
-  await persistenceStarted.promise;
-  releaseOld.resolve();
-  await oldSettled;
-
-  const newStarted = deferred<void>();
-  const releaseNew = deferred<void>();
-  const newRun = runAutomationTask("exchange-rates", provider, {
-    runExecution: async (_task, _persistence, _options, onRunCreated) => {
-      await onRunCreated("new-run");
-      newStarted.resolve();
-      await releaseNew.promise;
-      return null as never;
-    },
-  });
-  const newSettled = newRun.then(() => undefined, () => undefined);
-  await newStarted.promise;
-  persistenceRead.resolve(null);
+  } as AutomationPersistencePort;
+  const provider = providerStub(automation);
+  const executions: ActiveAutomationTaskRun[] = [];
+  const releaseNext = deferred();
+  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+    executions.push(run);
+    if (executions.length === 1) await aborted(run.signal);
+    else await releaseNext.promise;
+    return { errorCode: null, summary: null };
+  };
+  const firstFinished = deferred<AutomationTaskRun>();
+  const first = await runner.start("exchange-rates", provider, { runExecution, onFinished: firstFinished.resolve });
+  while (executions.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  const cancellation = runner.cancel("exchange-rates", first.runId);
+  await gateReached.promise;
+  gate.resolve();
   await cancellation;
+  assert.equal((await firstFinished.promise).status, "cancelled");
 
-  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "new-run");
-  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
-  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
-  releaseNew.resolve();
-  await newSettled;
+  const second = await runner.start("exchange-rates", provider, { runExecution });
+  while (executions.length < 2) await new Promise<void>((resolve) => setImmediate(resolve));
+  await assert.rejects(runner.cancel("exchange-rates", first.runId), /run changed before cancellation/u);
+  await assert.rejects(runner.forceTerminate("exchange-rates", first.runId), /run changed before force termination/u);
+  assert.equal(executions[1]!.signal.aborted, false);
+  assert.notEqual(base.runs.get(second.runId)?.status, "cancelling");
+  releaseNext.resolve();
+  while (runner.hasActive()) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(base.runs.get(second.runId)?.status, "completed");
 });
 
-test("late force-termination persistence cannot mutate a newer run under the same task id", async () => {
-  const persistenceRead = deferred<AutomationTaskRun | null>();
-  const persistenceStarted = deferred<void>();
-  let holdOldRunRead = false;
-  const provider = providerStub({
-    async taskRunById(runId: string) {
-      if (holdOldRunRead && runId === "old-force-run") {
-        holdOldRunRead = false;
-        persistenceStarted.resolve();
-        return persistenceRead.promise;
-      }
-      return null;
-    },
-  });
-  const oldStarted = deferred<void>();
-  const releaseOld = deferred<void>();
-  const oldRun = runAutomationTask("exchange-rates", provider, {
-    runExecution: async (_task, _persistence, _options, onRunCreated) => {
-      await onRunCreated("old-force-run");
-      oldStarted.resolve();
-      await releaseOld.promise;
-      return null as never;
-    },
-  });
-  const oldSettled = oldRun.then(() => undefined, () => undefined);
-  await oldStarted.promise;
-
-  holdOldRunRead = true;
-  const forceTermination = forceTerminateAutomationTask("exchange-rates", provider, "old-force-run");
-  await persistenceStarted.promise;
-  releaseOld.resolve();
-  await oldSettled;
-
-  const newStarted = deferred<void>();
-  const releaseNew = deferred<void>();
-  const newRun = runAutomationTask("exchange-rates", provider, {
-    runExecution: async (_task, _persistence, _options, onRunCreated) => {
-      await onRunCreated("new-force-run");
-      newStarted.resolve();
-      await releaseNew.promise;
-      return null as never;
-    },
-  });
-  const newSettled = newRun.then(() => undefined, () => undefined);
-  await newStarted.promise;
-  persistenceRead.resolve(null);
-  await forceTermination;
-
-  assert.equal(currentAutomationTaskRun("exchange-rates")?.runId, "new-force-run");
-  assert.equal(automationTaskCancellationRequested("exchange-rates"), false);
-  assert.equal(automationTaskForceTerminationRequested("exchange-rates"), false);
-  releaseNew.resolve();
-  await newSettled;
-});
-
-test("shutdown finalizes persisted runs after aborting active App workflows", async () => {
+test("shutdown finalizes persisted runs after stopping active App workflows", async () => {
   const calls: string[] = [];
-  const provider = providerStub();
-  await shutdownAppAutomationWorkflows(provider, {
+  await freshRunner().shutdown(providerStub(), {
     finalizePersistedRuns: async (_provider, reason) => { calls.push(reason); },
   });
   assert.deepEqual(calls, ["App 關閉，人工操作未完成"]);

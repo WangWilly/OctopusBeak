@@ -24,14 +24,14 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { runAutomationTaskExecution }, {
+const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
   workflowBrowserProfileForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
 }] = await Promise.all([
   import("./tasks.ts"),
-  import("./task-run-execution.ts"),
+  import("./task-run-check-support.ts"),
   import("./app-workflow-registry.ts"),
 ]);
 
@@ -110,7 +110,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
@@ -119,7 +119,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
         observedBrowserProfile = browserProfile;
         return browser;
       },
-    }, async () => {});
+    });
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, LOGIN_URL);

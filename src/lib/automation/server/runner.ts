@@ -6,16 +6,12 @@ import {
 } from "./task-run-finalization.ts";
 import {
   automationProcessEnv as workflowEnvironmentFromSettings,
-  interruptActiveAppWorkflows,
   runAutomationTaskExecution,
 } from "./task-run-execution.ts";
-export { abortActiveAppWorkflowExecutions } from "./task-run-execution.ts";
-import {
-  isActiveTaskRunStatus,
-  isTerminalTaskRunStatus,
-  type AutomationPersistenceProvider,
-  type AutomationTaskRun,
-  type AutomationTaskStatus,
+import type {
+  AutomationPersistenceProvider,
+  AutomationTaskRun,
+  AutomationTaskStatus,
 } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import {
@@ -23,12 +19,11 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
-import {
-  runCaptchaRetryCampaign,
-} from "./captcha-retry-coordinator.ts";
-import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
+import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -41,25 +36,9 @@ export async function hydrateAutomationRuntimeState(
   return automationRuntimeState.snapshot();
 }
 
-const workflowRunQueue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
-const queuedTaskControllers = new Map<string, AbortController>();
-let appWorkflowShuttingDown = false;
-const activeTaskRunIds = new Map<string, string>();
-const activeTaskRunCompletions = new Map<string, Promise<void>>();
-const cancellationRequestedTaskIds = new Set<string>();
-const forceTerminationRequestedTaskIds = new Set<string>();
-const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function assertAppExecutorTask(
-  task: NonNullable<ReturnType<typeof taskById>>,
-) {
-  if (!task.workflowId) {
-    throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
-  }
-}
-
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
+  /** Adopt an existing persisted run instead of creating one. */
   taskRunId?: string;
   onFinished?: (run: AutomationTaskRun) => void;
   /** Test/worker seam for the async execution runner. */
@@ -95,53 +74,23 @@ export function pgliteWorkflowRuntimeEnv(
   return { ...workflow.env };
 }
 
-type PersistenceRunOptions = StartAutomationTaskOptions & {
-  claimed?: boolean;
-  runExecution?: typeof runAutomationTaskExecution;
-};
-
 export type StartedAutomationTask = {
   taskId: string;
   runId: string;
   runtime: ReturnType<typeof automationRuntimeState.snapshot>;
 };
 
-type AutomationTaskPersistenceExecutionRunnerInput = {
-  task: NonNullable<ReturnType<typeof taskById>>;
-  provider: AutomationPersistenceProvider;
-  baseWorkflowEnvironment: NodeJS.ProcessEnv;
-  currentTaskRunId: () => string | null;
-  onRunCreated: (taskRunId: string) => void | Promise<void>;
-  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
-  isCancellationRequested: () => boolean;
-  isForceTerminationRequested?: () => boolean;
-  runExecution?: typeof runAutomationTaskExecution;
-};
+type AutomationTask = NonNullable<ReturnType<typeof taskById>>;
 
-/** Build the async execution closure used by all App-owned workflow rounds. */
-export function createAutomationTaskExecutionRunnerWithPersistence(
-  input: AutomationTaskPersistenceExecutionRunnerInput,
-) {
-  const execute = input.runExecution ?? runAutomationTaskExecution;
-  return (executionOptions: AutomationTaskExecutionOptions) =>
-    execute(
-      input.task,
-      input.provider.automation,
-      {
-        ...executionOptions,
-        launchEnv: {
-          ...input.baseWorkflowEnvironment,
-          ...(executionOptions.launchEnv ?? {}),
-        },
-        taskRunId:
-          executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
-        isCancellationRequested: input.isCancellationRequested,
-        isForceTerminationRequested: input.isForceTerminationRequested,
-        onRuntimeUpdate: input.onRuntimeUpdate,
-        deferFinalization: true,
-      },
-      input.onRunCreated,
-    );
+const CANCELLED: TypedWorkflowOutcome = { errorCode: "cancelled", summary: null };
+
+function appExecutorTask(taskId: string): AutomationTask {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId) {
+    throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
+  }
+  return task;
 }
 
 function validateScheduledAtUtc(value: string | undefined) {
@@ -153,355 +102,20 @@ function validateScheduledAtUtc(value: string | undefined) {
   }
 }
 
-export function hasActiveAutomationTask() {
-  return activeTaskRunIds.size > 0;
-}
-
-export function activeAutomationTaskIds() {
-  return Array.from(activeTaskRunIds.keys());
-}
-
-export function currentAutomationTaskRun(taskId: string) {
-  const current = activeTaskRunIds.get(taskId);
-  if (!current) return null;
-  if (current === "pending") {
-    throw new Error(`Automation task is still preparing: ${taskId}`);
-  }
-  const runtime = automationRuntimeState.snapshot();
-  return {
-    runId: runtime.tasks.find((task) => task.taskId === taskId)?.runId ?? current,
-    runtime,
-  };
-}
-
-/** True after a user cancellation request until the current task exits. */
-export function automationTaskCancellationRequested(taskId: string) {
-  return cancellationRequestedTaskIds.has(taskId);
-}
-
-export function automationTaskForceTerminationRequested(taskId: string) {
-  return forceTerminationRequestedTaskIds.has(taskId);
-}
-
-function claimTask(taskId: string) {
-  if (activeTaskRunIds.has(taskId)) {
-    throw new Error(`Automation task is already running: ${taskId}`);
-  }
-  const device = sourceDeviceForTask(taskId);
-  const holder = device?.lock.claim("sync");
-  if (device && holder) throw new SourceDeviceBusyError(device.source, holder);
-  activeTaskRunIds.set(taskId, "pending");
-}
-
-function releaseTask(taskId: string) {
-  activeTaskRunIds.delete(taskId);
-  sourceDeviceForTask(taskId)?.lock.release("sync");
-}
-
-function runtimeForTask(taskId: string) {
-  return automationRuntimeState.snapshot().tasks.find((task) => task.taskId === taskId);
-}
-
-/** Persist cancellation through the async worker port before publishing UI state. */
-export async function persistCancellationTransitionForRunWithPersistence(
-  provider: AutomationPersistenceProvider,
-  runId: string,
-) {
-  const persistence = provider.automation;
-  const run = await persistence.taskRunById(runId);
-  if (!run || !isActiveTaskRunStatus(run.status)) return run;
-  await persistence.transitionTaskRunToActive(runId, { status: "cancelling" });
-  return persistence.taskRunById(runId);
-}
-
-async function preparedRunForTaskWithPersistence(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  provider: AutomationPersistenceProvider,
-  options: StartAutomationTaskOptions = {},
-  existingRun?: AutomationTaskRun,
-) {
-  if (existingRun) return existingRun;
-  const created = await provider.automation.createTaskRun({
-    taskId: task.id,
-    kind: task.kind,
-    status: "preparing",
-    attempt: 1,
-    maxAttempts: task.maxAttempts,
-    startedAt: new Date().toISOString(),
-    scheduledAtUtc: options.scheduledAtUtc,
-  });
-  const run = await provider.automation.taskRunById(created.taskRunId);
-  if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
-  return run;
-}
-
-async function startPreparedTaskWithPersistence(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  provider: AutomationPersistenceProvider,
-  options: StartAutomationTaskOptions = {},
-  existingRun?: AutomationTaskRun,
-): Promise<StartedAutomationTask> {
-  const run = await preparedRunForTaskWithPersistence(task, provider, options, existingRun);
-  activeTaskRunIds.set(task.id, run.taskRunId);
-  const runtime = automationRuntimeState.upsert(
-    runtimeTaskSnapshotFromRun(run, "preparing"),
-  );
-  void runAutomationTask(task.id, provider, {
-    claimed: true,
-    taskRunId: options.taskRunId ?? run.taskRunId,
-    scheduledAtUtc: options.scheduledAtUtc,
-    runExecution: options.runExecution,
-  }).then(async () => {
-    const finalRun = await provider.automation.taskRunById(run.taskRunId);
-    if (!finalRun) return;
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
-    options.onFinished?.(finalRun);
-  }).catch(async () => {
-    console.error("automation-task-run-failed");
-    const failed = await provider.automation.taskRunById(run.taskRunId);
-    if (!failed || isTerminalTaskRunStatus(failed.status)) return;
-    try {
-      await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
-        status: "failed",
-        finishedAt: new Date().toISOString(),
-        exitCode: 1,
-        signal: null,
-        appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
-      });
-      const finalized = await provider.automation.taskRunById(run.taskRunId);
-      if (finalized) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalized));
-    } catch {
-      console.error("automation-task-run-finalization-failed");
-    }
-  });
-  return { taskId: task.id, runId: run.taskRunId, runtime };
-}
-
-export async function startAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  options: StartAutomationTaskOptions = {},
-): Promise<StartedAutomationTask> {
-  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  assertAppExecutorTask(task);
-  validateScheduledAtUtc(options.scheduledAtUtc);
+function assertStatementSelection(task: AutomationTask) {
   const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find(
-        (candidate) => candidate.id === task.credentialGroupId,
-      )
+    ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
     : null;
   if (group && isStatementSelectionGroup(group)) {
-    selectStatementTypes(
-      group,
-      { ...readAutomationSettings(), [group.enabledKey]: true },
-      "strict",
-    );
-  }
-  const current = activeTaskRunIds.get(taskId);
-  if (current && current !== "pending") {
-    const snapshot = runtimeForTask(taskId);
-    if (snapshot) {
-      return {
-        taskId,
-        runId: snapshot.runId ?? current,
-        runtime: automationRuntimeState.snapshot(),
-      };
-    }
-  }
-  if (current === "pending") throw new Error(`Automation task is still preparing: ${taskId}`);
-  claimTask(taskId);
-  try {
-    let existingRun: AutomationTaskRun | undefined;
-    if (options.taskRunId) {
-      existingRun = await provider.automation.taskRunById(options.taskRunId) ?? undefined;
-      if (!existingRun) throw new Error(`Missing automation task run: ${options.taskRunId}`);
-    }
-    return await startPreparedTaskWithPersistence(task, provider, options, existingRun);
-  } catch (error) {
-    releaseTask(taskId);
-    throw error;
+    selectStatementTypes(group, { ...readAutomationSettings(), [group.enabledKey]: true }, "strict");
   }
 }
 
-export async function runWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  run: (item: T) => Promise<void>,
-) {
-  if (!Number.isInteger(limit) || limit < 1)
-    throw new RangeError("Concurrency limit must be a positive integer.");
-  const active = new Set<Promise<void>>();
-  const errors: unknown[] = [];
-  for (const item of items) {
-    if (active.size >= limit) await Promise.race(active);
-    const task = Promise.resolve()
-      .then(() => run(item))
-      .catch((error) => {
-        errors.push(error);
-      })
-      .finally(() => active.delete(task));
-    active.add(task);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  await Promise.all(active);
-  if (errors.length) throw errors[0];
-}
-
-export async function runAutomationBatch(
-  taskIds: readonly string[],
-  execute: (taskId: string) => Promise<void>,
-) {
-  const selectedTaskIds = [...new Set(taskIds)];
-  const errors: unknown[] = [];
-  await runWithConcurrency(selectedTaskIds, APP_WORKFLOW_CONCURRENCY, execute).catch((error) => {
-    errors.push(error);
-  });
-  if (errors.length) throw errors[0];
-}
-
-async function cancelAutomationTaskWithPersistence(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  expectedRunId?: string,
-) {
-  if (!activeTaskRunIds.has(taskId)) {
-    throw new Error(`Automation task is not running: ${taskId}`);
-  }
-  const requestedRunId = activeTaskRunIds.get(taskId)!;
-  if (expectedRunId !== undefined && (!expectedRunId || requestedRunId !== expectedRunId)) {
-    throw new Error(`Automation task run changed before cancellation: ${taskId}`);
-  }
-  cancellationRequestedTaskIds.add(taskId);
-  const cancellationRequestedAt = new Date().toISOString();
-  const queueController = queuedTaskControllers.get(taskId);
-  const activeRunId = requestedRunId;
-  const cancellingRun = activeRunId !== "pending"
-    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId)
-    : null;
-  // Persistence is asynchronous. The task may finish and a newer run may
-  // claim this task ID while it is in flight, so re-check before touching the
-  // runtime record, queue controller, or grace timer.
-  if (activeTaskRunIds.get(taskId) !== requestedRunId) return { cancelled: taskId };
-  const runtime = runtimeForTask(taskId);
-  if (cancellingRun) {
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
-  } else if (runtime) {
-    automationRuntimeState.upsert({
-      ...runtime,
-      status: "cancelling",
-      cancellationRequestedAt,
-      forceTerminateAvailable: false,
-      updatedAt: cancellationRequestedAt,
-    });
-  }
-  if (queueController && queuedTaskControllers.get(taskId) === queueController) {
-    queueController.abort(new Error("Workflow queue cancelled."));
-  }
-  const previousTimer = cancellationForceTimers.get(taskId);
-  if (previousTimer) clearTimeout(previousTimer);
-  cancellationForceTimers.set(taskId, setTimeout(() => {
-    cancellationForceTimers.delete(taskId);
-    if (
-      !activeTaskRunIds.has(taskId)
-      || activeTaskRunIds.get(taskId) !== requestedRunId
-    ) return;
-    const current = runtimeForTask(taskId);
-    if (!current || current.status !== "cancelling") return;
-    if (expectedRunId !== undefined && current.runId !== expectedRunId) return;
-    automationRuntimeState.upsert({
-      ...current,
-      forceTerminateAvailable: true,
-      updatedAt: new Date().toISOString(),
-    });
-  }, 10_000));
-  return { cancelled: taskId };
-}
-
-export async function startAutomationTasks(
-  taskIds: readonly string[],
-  provider: AutomationPersistenceProvider,
-): Promise<StartedAutomationTask[]> {
-  const uniqueTaskIds = [...new Set(taskIds)];
-  let settings: ReturnType<typeof readAutomationSettings> | undefined;
-  for (const taskId of uniqueTaskIds) {
-    const task = taskById(taskId);
-    if (!task) throw new Error("Unknown automation task: " + taskId);
-    assertAppExecutorTask(task);
-    const group = task.credentialGroupId
-      ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
-      : null;
-    if (group && isStatementSelectionGroup(group)) {
-      settings ??= readAutomationSettings();
-      selectStatementTypes(
-        group,
-        { ...settings, [group.enabledKey]: true },
-        "strict",
-      );
-    }
-  }
-  return Promise.all(uniqueTaskIds.map((taskId) => startAutomationTask(taskId, provider)));
-}
-
-export async function cancelAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  expectedRunId?: string,
-): Promise<{ cancelled: string }> {
-  return cancelAutomationTaskWithPersistence(taskId, provider, expectedRunId);
-}
-
-/** Force termination is available only after the normal cancellation grace period. */
-async function forceTerminateAutomationTaskWithPersistence(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  expectedRunId?: string,
-) {
-  if (!activeTaskRunIds.has(taskId)) {
-    throw new Error(`Automation task is not running: ${taskId}`);
-  }
-  const requestedRunId = activeTaskRunIds.get(taskId)!;
-  if (expectedRunId !== undefined && (!expectedRunId || requestedRunId !== expectedRunId)) {
-    throw new Error(`Automation task run changed before force termination: ${taskId}`);
-  }
-  const queueController = queuedTaskControllers.get(taskId);
-  const activeCompletion = activeTaskRunCompletions.get(taskId);
-  forceTerminationRequestedTaskIds.add(taskId);
-  cancellationRequestedTaskIds.add(taskId);
-  const timer = cancellationForceTimers.get(taskId);
-  if (timer) clearTimeout(timer);
-  cancellationForceTimers.delete(taskId);
-  const activeRunId = requestedRunId;
-  const cancellingRun = activeRunId !== "pending"
-    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId)
-    : null;
-  if (activeTaskRunIds.get(taskId) !== requestedRunId) return { cancelled: taskId };
-  const runtime = runtimeForTask(taskId);
-  if (cancellingRun) {
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
-  } else if (runtime) {
-    automationRuntimeState.upsert({
-      ...runtime,
-      status: "cancelling",
-      forceTerminateAvailable: true,
-      updatedAt: new Date().toISOString(),
-    });
-  }
-  if (queueController && queuedTaskControllers.get(taskId) === queueController) {
-    queueController.abort(new Error("Workflow queue force-cancelled."));
-  }
-  await activeCompletion;
-  return { cancelled: taskId };
-}
-
-export async function forceTerminateAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  expectedRunId?: string,
-) {
-  return forceTerminateAutomationTaskWithPersistence(taskId, provider, expectedRunId);
-}
+type ClaimedTask = {
+  opening: Promise<ActiveAutomationTaskRun>;
+  run?: ActiveAutomationTaskRun;
+  lifecycle?: Promise<void>;
+};
 
 export type InterruptedAutomationRecoveryDependencies = {
   finalizeRunWithPersistence?: (
@@ -532,137 +146,250 @@ export async function recoverInterruptedAutomationRuns(
   if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
-export async function shutdownAppAutomationWorkflows(
-  provider: AutomationPersistenceProvider,
-  dependencies: Partial<{
-    finalizePersistedRuns: typeof finalizePersistedActiveRuns;
-  }> = {},
-): Promise<void> {
-  appWorkflowShuttingDown = true;
-  for (const controller of queuedTaskControllers.values()) {
-    controller.abort(new Error("App closed before queued workflow started."));
-  }
-  const errors: unknown[] = [];
-  try {
-    await interruptActiveAppWorkflows(provider.automation);
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    await Promise.all([...activeTaskRunCompletions.values()]);
-  } catch (error) {
-    errors.push(error);
-  }
-  const finalizePersistedRuns = dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
-  try {
-    await finalizePersistedRuns(provider, "App 關閉，人工操作未完成");
-  } catch (error) {
-    errors.push(error);
-  }
-  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation workflows");
-}
+export function createAutomationRunner(options: Readonly<{
+  runtime?: typeof automationRuntimeState;
+  forceQuitAvailableAfterMs?: number;
+}> = {}) {
+  const runtime = options.runtime ?? automationRuntimeState;
+  const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
+  const claimed = new Map<string, ClaimedTask>();
+  let shuttingDown = false;
 
-export async function runAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  options: PersistenceRunOptions = {},
-) {
-  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  assertAppExecutorTask(task);
-  validateScheduledAtUtc(options.scheduledAtUtc);
-  if (!options.claimed) claimTask(taskId);
-  let completeRun!: () => void;
-  const runCompletion = new Promise<void>((resolve) => { completeRun = resolve; });
-  activeTaskRunCompletions.set(taskId, runCompletion);
-  let releaseSlot: (() => void) | undefined;
-  let slotReady: Promise<() => void> | undefined;
-  const queueController = new AbortController();
-  queuedTaskControllers.set(taskId, queueController);
-  try {
-    const ticket = workflowRunQueue.enter(queueController.signal);
-    slotReady = ticket.ready;
-    // Observe rejection before awaiting persistence to avoid an unhandled abort.
-    void ticket.ready.catch(() => undefined);
-    if (ticket.queued && options.taskRunId) {
-      await provider.automation.transitionTaskRunToActive(options.taskRunId, { status: "queued" });
-      const queued = await provider.automation.taskRunById(options.taskRunId);
-      if (queued) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(queued));
+  async function execute(
+    task: AutomationTask,
+    run: ActiveAutomationTaskRun,
+    provider: AutomationPersistenceProvider,
+    runOptions: StartAutomationTaskOptions,
+  ): Promise<TypedWorkflowOutcome> {
+    let ticket: ReturnType<typeof queue.enter>;
+    try {
+      ticket = queue.enter(run.signal);
+    } catch {
+      return CANCELLED;
+    }
+    let release: (() => void) | undefined;
+    try {
+      // Observe rejection before awaiting persistence to avoid an unhandled abort.
+      void ticket.ready.catch(() => undefined);
+      if (ticket.queued) await run.transition("queued");
+      try {
+        release = await ticket.ready;
+      } catch {
+        return CANCELLED;
+      }
+      if (run.signal.aborted) return CANCELLED;
+      const workflowEnvironment = {
+        ...workflowEnvironmentFromSettings(),
+        ...pgliteWorkflowRuntimeEnv(provider),
+      };
+      const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
+      return await runCaptchaRetryCampaign({
+        taskId: task.id,
+        appWorkflow: task.kind === "crawler",
+        provider,
+        run,
+        launchVerificationSettings: { ...readAutomationSettings() },
+        initialExecutionOptions: { scheduledAtUtc: runOptions.scheduledAtUtc },
+        execute: (executionOptions) => runExecution(task, run, {
+          ...executionOptions,
+          launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
+        }),
+      });
+    } finally {
+      if (release) release();
+      else void ticket.ready.then((admitted) => admitted(), () => undefined);
+    }
+  }
+
+  async function drive(
+    task: AutomationTask,
+    run: ActiveAutomationTaskRun,
+    provider: AutomationPersistenceProvider,
+    runOptions: StartAutomationTaskOptions,
+  ) {
+    let report: TypedWorkflowOutcome;
+    try {
+      report = await execute(task, run, provider, runOptions);
+    } catch {
+      console.error("automation-task-run-failed");
+      report = { errorCode: "workflow-failed", summary: null };
     }
     try {
-      releaseSlot = await ticket.ready;
-      queueController.signal.throwIfAborted();
-    } catch (error) {
-      if (options.taskRunId) {
-        await provider.automation.transitionTaskRunToTerminal(options.taskRunId, {
-          status: appWorkflowShuttingDown ? "interrupted" : "cancelled",
-          finishedAt: new Date().toISOString(),
-          appWorkflowOutcome: { errorCode: "cancelled", summary: null },
-        });
-        const ended = await provider.automation.taskRunById(options.taskRunId);
-        if (ended) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(ended));
-      }
-      throw error;
+      return await run.finish(report);
+    } catch {
+      console.error("automation-task-run-finalization-failed");
+      return null;
     }
-    queuedTaskControllers.delete(taskId);
-    const workflowEnvironment = {
-      ...workflowEnvironmentFromSettings(),
-      ...pgliteWorkflowRuntimeEnv(provider),
-    };
-    const launchVerificationSettings = { ...readAutomationSettings() };
-    let taskRunId: string | null = null;
-    const onRunCreated = async (createdTaskRunId: string) => {
-      taskRunId = createdTaskRunId;
-      activeTaskRunIds.set(taskId, createdTaskRunId);
-      const created = await provider.automation.taskRunById(createdTaskRunId);
-      if (created) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(created));
-    };
-    const execution = createAutomationTaskExecutionRunnerWithPersistence({
-      task,
-      provider,
-      baseWorkflowEnvironment: workflowEnvironment,
-      currentTaskRunId: () => taskRunId,
-      onRunCreated,
-      onRuntimeUpdate: async (updatedTaskRunId) => {
-        const updated = await provider.automation.taskRunById(updatedTaskRunId);
-        if (updated) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(updated));
-      },
-      isCancellationRequested: () => automationTaskCancellationRequested(taskId),
-      isForceTerminationRequested: () => automationTaskForceTerminationRequested(taskId),
-      runExecution: options.runExecution,
-    });
-    const result = await runCaptchaRetryCampaign({
-      taskId,
-      appWorkflow: Boolean(task.workflowId && task.kind === "crawler"),
-      provider,
-      launchVerificationSettings,
-      initialExecutionOptions: {
-        scheduledAtUtc: options.scheduledAtUtc,
-        taskRunId: options.taskRunId,
-      },
-      execute: execution,
-      isCancellationRequested: () => automationTaskCancellationRequested(taskId),
-    });
-    if (taskRunId) {
-      const finalRun = await provider.automation.taskRunById(taskRunId);
-      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
-    }
-    return result;
-  } finally {
-    queuedTaskControllers.delete(taskId);
-    queueController.abort();
-    if (releaseSlot) releaseSlot();
-    else await slotReady?.then((release) => release(), () => undefined);
-    releaseTask(taskId);
-    if (activeTaskRunCompletions.get(taskId) === runCompletion) {
-      activeTaskRunCompletions.delete(taskId);
-    }
-    completeRun();
-    cancellationRequestedTaskIds.delete(taskId);
-    forceTerminationRequestedTaskIds.delete(taskId);
-    const forceTimer = cancellationForceTimers.get(taskId);
-    if (forceTimer) clearTimeout(forceTimer);
-    cancellationForceTimers.delete(taskId);
   }
+
+  async function open(
+    task: AutomationTask,
+    provider: AutomationPersistenceProvider,
+    runOptions: StartAutomationTaskOptions,
+  ): Promise<ActiveAutomationTaskRun> {
+    let row: AutomationTaskRun | null;
+    if (runOptions.taskRunId) {
+      row = await provider.automation.taskRunById(runOptions.taskRunId);
+      if (!row) throw new Error(`Missing automation task run: ${runOptions.taskRunId}`);
+    } else {
+      const created = await provider.automation.createTaskRun({
+        taskId: task.id,
+        kind: task.kind,
+        status: "preparing",
+        attempt: 1,
+        maxAttempts: task.maxAttempts,
+        startedAt: new Date().toISOString(),
+        scheduledAtUtc: runOptions.scheduledAtUtc,
+      });
+      row = await provider.automation.taskRunById(created.taskRunId);
+      if (!row) throw new Error(`Failed to create automation task run: ${task.id}`);
+    }
+    return openActiveTaskRun({
+      run: row,
+      persistence: provider.automation,
+      runtime,
+      forceQuitAvailableAfterMs: options.forceQuitAvailableAfterMs,
+    });
+  }
+
+  function release(taskId: string, entry: ClaimedTask) {
+    if (claimed.get(taskId) !== entry) return;
+    claimed.delete(taskId);
+    sourceDeviceForTask(taskId)?.lock.release("sync");
+  }
+
+  /** The Active Automation Task Run claimed for a task, checked against the caller's run. */
+  async function activeRun(taskId: string, expectedRunId: string | undefined, action: string) {
+    const entry = claimed.get(taskId);
+    if (!entry) throw new Error(`Automation task is not running: ${taskId}`);
+    if (expectedRunId !== undefined && !expectedRunId) {
+      throw new Error(`Automation task run changed before ${action}: ${taskId}`);
+    }
+    const run = await entry.opening.catch(() => {
+      throw new Error(`Automation task is not running: ${taskId}`);
+    });
+    if (expectedRunId !== undefined && run.taskRunId !== expectedRunId) {
+      throw new Error(`Automation task run changed before ${action}: ${taskId}`);
+    }
+    return { run, entry };
+  }
+
+  return {
+    async start(
+      taskId: string,
+      provider: AutomationPersistenceProvider,
+      runOptions: StartAutomationTaskOptions = {},
+    ): Promise<StartedAutomationTask> {
+      if (shuttingDown) throw new Error("App workflow runtime is shutting down.");
+      const task = appExecutorTask(taskId);
+      validateScheduledAtUtc(runOptions.scheduledAtUtc);
+      assertStatementSelection(task);
+      const existing = claimed.get(taskId);
+      if (existing) {
+        const run = await existing.opening;
+        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
+      }
+      const device = sourceDeviceForTask(taskId);
+      const holder = device?.lock.claim("sync");
+      if (device && holder) throw new SourceDeviceBusyError(device.source, holder);
+      const entry: ClaimedTask = { opening: open(task, provider, runOptions) };
+      claimed.set(taskId, entry);
+      let run: ActiveAutomationTaskRun;
+      try {
+        run = await entry.opening;
+      } catch (error) {
+        release(taskId, entry);
+        throw error;
+      }
+      entry.run = run;
+      // Release before notifying so an observer may start the task again.
+      entry.lifecycle = drive(task, run, provider, runOptions).then((finished) => {
+        release(taskId, entry);
+        if (!finished) return;
+        try {
+          runOptions.onFinished?.(finished);
+        } catch {
+          console.error("automation-task-run-finished-observer-failed");
+        }
+      });
+      return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
+    },
+
+    /** Start a task and wait for its terminal run. */
+    async run(
+      taskId: string,
+      provider: AutomationPersistenceProvider,
+      runOptions: StartAutomationTaskOptions = {},
+    ): Promise<AutomationTaskRun> {
+      const started = await this.start(taskId, provider, runOptions);
+      await claimed.get(taskId)?.lifecycle;
+      const finished = await provider.automation.taskRunById(started.runId);
+      if (!finished) throw new Error(`Missing automation task run: ${started.runId}`);
+      return finished;
+    },
+
+    async current(taskId: string) {
+      const entry = claimed.get(taskId);
+      if (!entry) return null;
+      const run = await entry.opening.catch(() => null);
+      return run ? { runId: run.taskRunId, runtime: runtime.snapshot() } : null;
+    },
+
+    hasActive() {
+      return claimed.size > 0;
+    },
+
+    activeTaskIds() {
+      return [...claimed.keys()];
+    },
+
+    async cancel(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }> {
+      const { run } = await activeRun(taskId, expectedRunId, "cancellation");
+      await run.requestStop("cancelled");
+      return { cancelled: taskId };
+    },
+
+    async forceTerminate(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }> {
+      const { run, entry } = await activeRun(taskId, expectedRunId, "force termination");
+      await run.requestStop("forced");
+      await entry.lifecycle;
+      return { cancelled: taskId };
+    },
+
+    /** Stop every run without waiting, for a fatal exit. */
+    abortAll() {
+      for (const { run } of claimed.values()) void run?.requestStop("shutdown");
+    },
+
+    async shutdown(
+      provider: AutomationPersistenceProvider,
+      dependencies: Partial<{
+        finalizePersistedRuns: typeof finalizePersistedActiveRuns;
+      }> = {},
+    ): Promise<void> {
+      shuttingDown = true;
+      const entries = [...claimed.values()];
+      const errors: unknown[] = [];
+      // Stop opened runs synchronously so a slot freed meanwhile admits no queued run.
+      await Promise.all(entries.map((entry) => (entry.run
+        ? entry.run.requestStop("shutdown")
+        : entry.opening.then((run) => run.requestStop("shutdown"), () => undefined)
+      ).catch((error: unknown) => { errors.push(error); })));
+      await Promise.all(entries.map((entry) => entry.lifecycle));
+      try {
+        await (dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns)(
+          provider,
+          "App 關閉，人工操作未完成",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) throw new AggregateError(errors, "Failed to shut down automation workflows");
+    },
+  };
 }
+
+export type AutomationRunner = ReturnType<typeof createAutomationRunner>;
+
+/** The main-process runner. Checks create their own with `createAutomationRunner`. */
+export const automationRunner = createAutomationRunner();

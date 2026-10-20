@@ -28,7 +28,7 @@ import {
   registerCollectionScope,
 } from "./collection-scope.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 
 const fubon = taskById("fubon-all-statements")!;
@@ -178,8 +178,16 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
     await writeConfig(launchSettings, launchCredentials);
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    const result = await runAutomationTaskExecution(fubon, provider.automation, {
+    const { taskRunId } = await provider.automation.createTaskRun({
+      taskId: fubon.id,
+      kind: fubon.kind,
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const result = await executeTaskRunForCheck(fubon, provider.automation, {
+      taskRunId,
       launchEnv: {
         ...automationConfigEnv({ baseEnv: {} }),
         [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
@@ -200,7 +208,7 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
           { ...launchCredentials, ...edit.credentials },
         ),
       ),
-    }, async (id) => { taskRunId = id; });
+    });
     const run = await provider.automation.taskRunById(taskRunId);
     return { result, run, commits };
   } finally {

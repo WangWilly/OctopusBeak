@@ -1,233 +1,112 @@
-import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import type {
   TypedWorkflowErrorCode,
+  TypedWorkflowOutcome,
   TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
 import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import {
-  isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
+  type AutomationPersistencePort,
   type AutomationPersistenceProvider,
   type AutomationTaskRun,
-  type AutomationTaskStatus,
+  type TerminalTaskRunStatus,
 } from "./store.ts";
-import { taskById, type AutomationTaskKind } from "./tasks.ts";
-import type { AutomationTaskProgress } from "../types.ts";
 import {
   dataVersionStore,
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
 
-export type AutomationTaskRunExecution = {
-  task: NonNullable<ReturnType<typeof taskById>>;
-  persistence: AutomationPersistenceProvider["automation"];
-  run: Pick<AutomationTaskRun, "taskRunId" | "attempt" | "progress">;
-  executionId: string;
-  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
-};
+/** Why an Active Automation Task Run was asked to stop before it ended on its own. */
+export type TaskRunStop = "cancelled" | "forced" | "shutdown";
 
-export type AutomationTaskRunFinalizationContext = {
-  provider: AutomationPersistenceProvider;
-  taskId: string;
-  taskKind: AutomationTaskKind;
-  taskRunId: string;
-  forceTerminated?: boolean;
-  dataVersionStore?: DataVersionStore;
-};
+export type TaskRunOutcome = Readonly<{
+  status: TerminalTaskRunStatus;
+  errorCode: TypedWorkflowErrorCode | null;
+  summary: TypedWorkflowOutcomeSummary | null;
+  forced: boolean;
+}>;
 
-/** In-memory result from one App workflow execution. Provider text is never persisted. */
-export type AutomationTaskExecutionResult = {
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  error: Error | null;
-  appWorkflowOutcome?: Readonly<{
-    errorCode: TypedWorkflowErrorCode | null;
-    summary: TypedWorkflowOutcomeSummary | null;
-  }>;
-  outputPersistenceWarnings: string[];
-  externalPrerequisiteIds: string[];
-};
-
-export type AsyncTaskRunFinalizationIntent = {
-  status: AutomationTaskStatus;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  appWorkflowOutcome?: AutomationTaskExecutionResult["appWorkflowOutcome"];
-  progress?: AutomationTaskProgress;
-  terminationMode?: "forced";
-};
-
-export async function finalizeTaskRunTransition(
-  provider: AutomationPersistenceProvider,
-  run: Pick<AutomationTaskRun, "taskRunId">,
-  intent: AsyncTaskRunFinalizationIntent,
-) {
-  const persistence = provider.automation;
-  const current = await persistence.taskRunById(run.taskRunId);
-  if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-  if (isTerminalTaskRunStatus(current.status)) {
-    return { status: current.status, skipped: true } as const;
-  }
-  // Recovery owns abandoned queued runs too: their in-memory queue no longer
-  // exists after shutdown/restart. Other execution outcomes require admission.
-  if (!isActiveTaskRunStatus(current.status)
-    || (current.status === "queued" && intent.status !== "interrupted")) {
-    return { status: current.status, skipped: true } as const;
-  }
-  if (!isTerminalTaskRunStatus(intent.status)) {
-    return { status: current.status, skipped: true } as const;
-  }
-  const transition = await persistence.transitionTaskRunToTerminal(run.taskRunId, {
-    status: intent.status,
-    finishedAt: new Date().toISOString(),
-    exitCode: intent.exitCode,
-    signal: intent.signal,
-    ...(intent.progress === undefined ? {} : { progress: intent.progress }),
-    ...(intent.appWorkflowOutcome === undefined
-      ? {}
-      : { appWorkflowOutcome: intent.appWorkflowOutcome }),
-    ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
-  });
-  if (!transition.applied) {
-    return { status: transition.status, skipped: true } as const;
-  }
-  const persisted = await persistence.taskRunById(run.taskRunId);
-  if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-  return { status: persisted.status, skipped: false } as const;
-}
-
-/** Decide the terminal status and safe code together, before any persistence.
- * Deferred execution and persisted finalization must use the same precedence.
+/**
+ * Resolve a run's terminal outcome from what its execution reported and why it
+ * was stopped. An unknown commit outcome outranks every stop so an uncertain
+ * financial write is never hidden; a person's cancellation outranks shutdown.
  */
 export function decideAutomationTaskRunOutcome(
-  result: AutomationTaskExecutionResult,
-  options: { forceTerminated?: boolean } = {},
-): Readonly<{
-  status: Extract<AutomationTaskStatus, "completed" | "partial" | "failed" | "cancelled">;
-  errorCode: TypedWorkflowErrorCode | null;
-}> {
-  const outcome = result.appWorkflowOutcome;
-  const commitOutcomeUnknown = outcome?.errorCode === "commit-outcome-unknown";
-  const cancelled = !commitOutcomeUnknown && (options.forceTerminated === true
-    || result.signal === "SIGTERM"
-    || result.error?.message === "Automation task cancelled."
-    || outcome?.errorCode === "cancelled");
-  const tdccPartial = tdccIncompleteCollectionHasDurableReceipts(outcome?.summary, outcome?.errorCode);
-  const partial = outcome?.summary?.status === "partial"
-    || tdccPartial;
-  const typedFailureCode = outcome?.errorCode
-    ?? (result.error || (result.exitCode !== 0 && !partial)
-      ? "workflow-failed"
-      : null);
-  let status: "completed" | "partial" | "failed" | "cancelled";
-  if (cancelled) {
-    status = "cancelled";
-  } else if (tdccPartial) {
-    status = "partial";
-  } else if (typedFailureCode !== null || outcome?.summary?.status === "failed") {
-    status = "failed";
-  } else if (partial) {
-    status = "partial";
-  } else {
-    status = result.exitCode === 0 ? "completed" : "failed";
-  }
-  return {
-    status,
-    errorCode: cancelled ? "cancelled" as const : typedFailureCode,
-  };
+  report: TypedWorkflowOutcome,
+  stop: TaskRunStop | null,
+): TaskRunOutcome {
+  const { errorCode, summary } = report;
+  const outcome = (
+    status: TerminalTaskRunStatus,
+    code: TypedWorkflowErrorCode | null,
+    forced = false,
+  ): TaskRunOutcome => ({ status, errorCode: code, summary, forced });
+  if (errorCode === "commit-outcome-unknown") return outcome("failed", errorCode);
+  if (stop === "forced") return outcome("cancelled", "cancelled", true);
+  if (stop === "cancelled") return outcome("cancelled", "cancelled");
+  if (stop === "shutdown") return outcome("interrupted", "cancelled");
+  if (errorCode === "cancelled") return outcome("cancelled", "cancelled");
+  if (tdccIncompleteCollectionHasDurableReceipts(summary, errorCode)) return outcome("partial", errorCode);
+  if (errorCode !== null || summary?.status === "failed") return outcome("failed", errorCode);
+  if (summary?.status === "partial") return outcome("partial", null);
+  return outcome("completed", null);
 }
 
-/** Persist typed outcome codes and bounded summaries through the operational port. */
+/** Persist a terminal outcome once. A run that is already terminal is returned unchanged. */
 export async function finalizeAutomationTaskRun(
-  context: AutomationTaskRunFinalizationContext,
-  result: AutomationTaskExecutionResult,
-) {
-  const { status, errorCode } = decideAutomationTaskRunOutcome(result, context);
-  const outcome = result.appWorkflowOutcome;
-  const appWorkflowOutcome = {
-    errorCode,
-    summary: outcome?.summary ?? null,
-  };
-  const committedProductCount = outcome?.summary?.counts.committedCount
-    ?? outcome?.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
-    ?? 0;
-  const prerequisiteError = status === "cancelled"
-    ? "Workflow cancelled."
-    : status === "failed"
-      ? `Workflow failed (${errorCode ?? "workflow-failed"}).`
-      : null;
-  const persistence = context.provider.automation;
-  const currentRun = await persistence.taskRunById(context.taskRunId);
-  if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
-  if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
-  const commitCompletedEvent = currentRun.events.some((event) => event.stage === "commit"
-    && /(?:canonical-)?commit-completed$/u.test(event.code)
-    && (event.completed ?? 0) > 0);
-  const transition = await finalizeTaskRunTransition(
-    context.provider,
-    { taskRunId: context.taskRunId },
-    {
-      status,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      appWorkflowOutcome,
-      ...(status === "completed" ? {
-        progress: currentRun.progress?.phaseCode === "complete"
-          ? { ...currentRun.progress, percent: 100, attempt: currentRun.attempt }
-          : {
-            ...currentRun.progress,
-            phaseCode: "workflow-finalization",
-            completed: 1,
-            total: 1,
-            percent: 100,
-            attempt: currentRun.attempt,
-          },
-      } : {}),
-      ...(status === "cancelled" && context.forceTerminated
-        ? { terminationMode: "forced" as const }
-        : {}),
-    },
-  );
-  if (!transition.skipped) {
-    if (transition.status === "completed" || transition.status === "partial"
-      || committedProductCount > 0 || commitCompletedEvent) {
-      (context.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
+  persistence: AutomationPersistencePort,
+  taskRunId: string,
+  outcome: TaskRunOutcome,
+  options: { dataVersionStore?: DataVersionStore } = {},
+): Promise<AutomationTaskRun> {
+  const current = await persistence.taskRunById(taskRunId);
+  if (!current) throw new Error(`Missing automation task run: ${taskRunId}`);
+  if (isTerminalTaskRunStatus(current.status)) return current;
+  const finishedAt = new Date().toISOString();
+  const transition = await persistence.transitionTaskRunToTerminal(taskRunId, {
+    status: outcome.status,
+    finishedAt,
+    appWorkflowOutcome: { errorCode: outcome.errorCode, summary: outcome.summary },
+    ...(outcome.status === "completed" ? {
+      progress: current.progress?.phaseCode === "complete"
+        ? { ...current.progress, percent: 100, attempt: current.attempt }
+        : {
+          ...current.progress,
+          phaseCode: "workflow-finalization",
+          completed: 1,
+          total: 1,
+          percent: 100,
+          attempt: current.attempt,
+        },
+    } : {}),
+    ...(outcome.forced ? { terminationMode: "forced" as const } : {}),
+  });
+  if (transition.applied) {
+    const committedProductCount = outcome.summary?.counts.committedCount
+      ?? outcome.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
+      ?? 0;
+    const commitCompleted = current.events.some((event) => event.stage === "commit"
+      && /(?:canonical-)?commit-completed$/u.test(event.code)
+      && (event.completed ?? 0) > 0);
+    if (outcome.status === "completed" || outcome.status === "partial"
+      || committedProductCount > 0 || commitCompleted) {
+      (options.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
     }
-    const task = taskById(context.taskId);
-    const prerequisites = new Map(
-      (task?.externalPrerequisites ?? [])
-        .filter(isValidExternalPrerequisiteMetadata)
-        .map((prerequisite) => [prerequisite.id, prerequisite]),
-    );
-    if (transition.status === "completed") {
-      await persistence.resolveTaskPrerequisiteNotices(
-        context.taskId,
-        context.taskRunId,
-        new Date().toISOString(),
-      );
-    } else if (transition.status === "failed" || transition.status === "partial") {
-      const detectedAt = new Date().toISOString();
-      for (const prerequisiteId of result.externalPrerequisiteIds) {
-        if (!prerequisites.has(prerequisiteId)) continue;
-        await persistence.upsertTaskPrerequisiteNotice({
-          taskId: context.taskId,
-          prerequisiteId,
-          taskRunId: context.taskRunId,
-          detectedAt,
-          // Prerequisite notices keep their separate, sanitized display contract.
-          errorMessage: prerequisiteError,
-        });
-      }
+    if (outcome.status === "completed") {
+      await persistence.resolveTaskPrerequisiteNotices(current.taskId, taskRunId, finishedAt);
     }
   }
-  return { status: transition.status };
+  const finalized = await persistence.taskRunById(taskRunId);
+  if (!finalized) throw new Error(`Missing automation task run: ${taskRunId}`);
+  return finalized;
 }
 
+/** Record a run left active by a previous process. No Active Automation Task Run owns it. */
 export async function finalizePersistedRun(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
   _reason: string,
-  status: Extract<AutomationTaskStatus, "failed" | "interrupted"> = "failed",
+  status: Extract<TerminalTaskRunStatus, "failed" | "interrupted"> = "failed",
 ): Promise<void> {
   const current = await provider.automation.taskRunById(run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
@@ -235,10 +114,9 @@ export async function finalizePersistedRun(
     ?? (status === "failed"
       ? { errorCode: "workflow-failed" as const, summary: null }
       : undefined);
-  await finalizeTaskRunTransition(provider, run, {
+  await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
     status,
-    exitCode: null,
-    signal: null,
+    finishedAt: new Date().toISOString(),
     ...(appWorkflowOutcome === undefined ? {} : { appWorkflowOutcome }),
   });
 }

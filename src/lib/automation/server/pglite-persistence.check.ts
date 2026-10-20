@@ -12,14 +12,14 @@ import {
   automationRunHistory,
 } from "./desktop-api.ts";
 import {
+  createAutomationRunner,
   hydrateAutomationRuntimeState,
-  persistCancellationTransitionForRunWithPersistence,
   recoverInterruptedAutomationRuns,
-  runAutomationTask,
-  startAutomationTask,
 } from "./runner.ts";
-import { finalizePersistedActiveRuns, finalizeTaskRunTransition } from "./task-run-finalization.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
+import { finalizePersistedActiveRuns } from "./task-run-finalization.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
@@ -159,22 +159,12 @@ try {
   assert.equal(hydrated.tasks.find((task) => task.taskId === "ctbc-statements")?.runId, run.taskRunId);
   assert.equal((await automationRunHistory(provider))[0]?.taskRunId, run.taskRunId);
 
-  const cancelling = await persistCancellationTransitionForRunWithPersistence(
-    provider,
-    run.taskRunId,
-  );
-  assert.equal(cancelling?.status, "cancelling");
-  const cancelled = await finalizeTaskRunTransition(
-    provider,
-    { taskRunId: run.taskRunId },
-    {
-      status: "cancelled",
-      exitCode: null,
-      signal: null,
-      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
-    },
-  );
-  assert.deepEqual(cancelled, { status: "cancelled", skipped: false });
+  const active = await openTaskRunForCheck(provider.automation, run.taskRunId);
+  await active.requestStop("cancelled");
+  assert.equal((await provider.automation.taskRunById(run.taskRunId))?.status, "cancelling");
+  const cancelled = await active.finish({ errorCode: null, summary: null });
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.appWorkflowOutcome?.errorCode, "cancelled");
 
   const abandoned = await provider.automation.createTaskRun({
     taskId: "ctbc-statements",
@@ -216,14 +206,10 @@ try {
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeWorkerStarts = 0;
-  const exchangeExecution = async (
-    task: Parameters<typeof runAutomationTaskExecution>[0],
-    persistence: Parameters<typeof runAutomationTaskExecution>[1],
-    options: Parameters<typeof runAutomationTaskExecution>[2],
-    onRunCreated: Parameters<typeof runAutomationTaskExecution>[3],
-  ) => runAutomationTaskExecution(
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  const exchangeExecution: typeof runAutomationTaskExecution = (task, activeRun, options) => runAutomationTaskExecution(
     task,
-    persistence,
+    activeRun,
     {
       ...options,
       appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
@@ -235,9 +221,8 @@ try {
         return new ExchangeRateWorkerFixture(start);
       },
     },
-    onRunCreated,
   );
-  const exchangeExecutionResult = await runAutomationTask("exchange-rates", provider, {
+  const exchangeExecutionResult = await runner.run("exchange-rates", provider, {
     runExecution: exchangeExecution,
   });
   assert.equal(exchangeExecutionResult.status, "completed");
@@ -248,45 +233,17 @@ try {
   );
 
   // Exercise the App runner boundary with a deterministic execution seam.
-  const deterministicExecution = async (
-    _task: Parameters<typeof runAutomationTaskExecution>[0],
-    persistence: Parameters<typeof runAutomationTaskExecution>[1],
-    options: Parameters<typeof runAutomationTaskExecution>[2],
-    onRunCreated: Parameters<typeof runAutomationTaskExecution>[3],
-  ) => {
-    const created = options.taskRunId
-      ? await persistence.taskRunById(options.taskRunId)
-      : null;
-    const taskRun = created ?? await persistence.createTaskRun({
-      taskId: "exchange-rates",
-      kind: "sync",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    await onRunCreated(taskRun.taskRunId);
-    await options.onRuntimeUpdate?.(taskRun.taskRunId);
-    return {
-      status: "completed" as const,
-      taskRunId: taskRun.taskRunId,
-      executionId: "pglite-runner-execution",
-      result: {
-        exitCode: 0,
-        signal: null,
-        error: null,
-        outputPersistenceWarnings: [],
-        externalPrerequisiteIds: [],
-      },
-    };
+  const deterministicExecution: typeof runAutomationTaskExecution = async (_task, activeRun) => {
+    await activeRun.transition("running");
+    return { errorCode: null, summary: null };
   };
-  const executionResult = await runAutomationTask("exchange-rates", provider, {
+  const executionResult = await runner.run("exchange-rates", provider, {
     runExecution: deterministicExecution,
   });
   assert.equal(executionResult.status, "completed");
   assert.equal((await provider.automation.latestTaskRuns())["exchange-rates"]?.status, "completed");
 
-  const started = await startAutomationTask("exchange-rates", provider, {
+  const started = await runner.start("exchange-rates", provider, {
     runExecution: deterministicExecution,
   });
   assert.equal(started.taskId, "exchange-rates");
@@ -306,7 +263,7 @@ try {
     },
   });
   const delayedProvider: AutomationPersistenceProvider = { ...provider, automation: delayedAutomation };
-  const delayedResult = await runAutomationTask("exchange-rates", delayedProvider, {
+  const delayedResult = await runner.run("exchange-rates", delayedProvider, {
     runExecution: deterministicExecution,
   });
   assert.equal(delayedResult.status, "completed");
@@ -330,14 +287,12 @@ try {
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    await assert.rejects(
-      runAutomationTask("exchange-rates", rejectedProvider, {
-        runExecution: deterministicExecution,
-      }),
-      /deliberate lookup rejection/,
-    );
+    await runner.run("exchange-rates", rejectedProvider, {
+      runExecution: deterministicExecution,
+    });
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(unhandled, []);
+    assert.equal(runner.hasActive(), false, "a failed finalization still releases the task");
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }

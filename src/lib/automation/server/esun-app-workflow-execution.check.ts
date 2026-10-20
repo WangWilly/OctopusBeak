@@ -14,7 +14,8 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
@@ -246,7 +247,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         return run(hostPage.page);
       },
     };
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -257,7 +258,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         observedStartUrl = startUrl;
         return browserPort;
       },
-    }, async () => {});
+    });
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({ events: run?.events.map(({ stage, code, completed, total }) => [stage, code, completed, total]), committed: committed.length }));
@@ -282,11 +283,13 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         return runPage(cancelPage.page);
       },
     };
-    let cancellationRequested = false;
-    const cancelledResult = await runAutomationTaskExecution(task, provider.automation, {
+    let cancellationRun: ActiveAutomationTaskRun | undefined;
+    const cancelledResult = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: cancelRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      isCancellationRequested: () => cancellationRequested,
+      onRunOpened: (active) => {
+        cancellationRun = active;
+      },
       workflowPorts: {
         financialCommit,
         now: () => now.toISOString(),
@@ -294,14 +297,14 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
           async append(event) {
             await provider.automation.appendRunEvent(event);
             if (event.code === "collection-started") {
-              cancellationRequested = true;
+              void cancellationRun?.requestStop("cancelled");
               await new Promise((resolve) => setTimeout(resolve, 75));
             }
           },
         },
       },
       workflowBrowserPortFactory: () => cancelBrowser,
-    }, async () => {});
+    });
     assert.equal(cancelledResult.status, "cancelled");
     assert.equal((await provider.automation.taskRunById(cancelRunId))?.status, "cancelled");
     assert.equal(committed.length, 1, "cancelled E.SUN run does not reach financial commit");
@@ -328,7 +331,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     let commits = 0;
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -336,7 +339,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
         now: () => now.toISOString(),
       },
       workflowBrowserPortFactory: () => ({ async withPage(run) { return run(hostPage.page); } }),
-    }, async () => {});
+    });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "failed");
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");

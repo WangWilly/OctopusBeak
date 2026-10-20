@@ -12,7 +12,8 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowBrowserProfileForTask, workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
@@ -197,7 +198,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         return run(app.page);
       },
     };
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -214,14 +215,13 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         observedBrowserProfile = browserProfile;
         return browser;
       },
-    }, async () => {});
+    });
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
-    assert.ok(result.result);
-    assert.equal(result.result.appWorkflowOutcome?.errorCode, null);
+    assert.equal(result.outcome.errorCode, null);
     assert.deepEqual(
-      Object.keys(result.result.appWorkflowOutcome?.summary?.counts ?? {}).sort(),
+      Object.keys(result.outcome.summary?.counts ?? {}).sort(),
       ["count", "rowCount", "sourceCaptureCount"],
     );
     assert.equal(observedStartUrl, LOGIN_URL);
@@ -232,7 +232,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(committed.length, 1);
     assert.equal((committed[0]?.[0] as { provider?: string }).provider, "ctbc");
     assert.equal(run?.status, "completed");
-    assert.deepEqual(run?.appWorkflowOutcome, result.result.appWorkflowOutcome);
+    assert.deepEqual(run?.appWorkflowOutcome, result.outcome);
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(!run?.events.some((event) => event.code === "human-assistance-requested"));
@@ -247,15 +247,14 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     const incompleteRunId = await createRun(provider);
-    const incomplete = await runAutomationTaskExecution(task, provider.automation, {
+    const incomplete = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: () => incompleteBrowser,
-    }, async () => {});
+    });
     assert.equal(incomplete.status, "failed");
-    assert.ok(incomplete.result);
-    assert.equal(incomplete.result.appWorkflowOutcome?.errorCode, "source-validation-failed");
+    assert.equal(incomplete.outcome.errorCode, "source-validation-failed");
     assert.equal(committed.length, 1, "incomplete CTBC source is rejected before commit");
     const rejectedRun = await provider.automation.taskRunById(incompleteRunId);
     assert.equal(rejectedRun?.appWorkflowOutcome?.errorCode, "source-validation-failed");
@@ -268,23 +267,22 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     const malformedRunId = await createRun(provider);
-    const malformed = await runAutomationTaskExecution(task, provider.automation, {
+    const malformed = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: () => malformedBrowser,
-    }, async () => {});
+    });
     assert.equal(malformed.status, "failed");
-    assert.ok(malformed.result);
-    assert.equal(malformed.result.appWorkflowOutcome?.errorCode, "source-integrity-failed");
+    assert.equal(malformed.outcome.errorCode, "source-integrity-failed");
     assert.equal(committed.length, 1, "undecodable CTBC source is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
     assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
     assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
 
-    let cancellationRequested = false;
+    let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancellationPage = createPage({ onPoll: async () => {
-      cancellationRequested = true;
+      void cancellationRun?.requestStop("cancelled");
       await new Promise((resolve) => setTimeout(resolve, 75));
     } });
     const cancellationBrowser: WorkflowBrowserPort = {
@@ -293,10 +291,12 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     const cancellationRunId = await createRun(provider);
-    const cancelled = await runAutomationTaskExecution(task, provider.automation, {
+    const cancelled = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: cancellationRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      isCancellationRequested: () => cancellationRequested,
+      onRunOpened: (active) => {
+        cancellationRun = active;
+      },
       workflowPorts: {
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -307,10 +307,9 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         },
       },
       workflowBrowserPortFactory: () => cancellationBrowser,
-    }, async () => {});
+    });
     assert.equal(cancelled.status, "cancelled");
-    assert.ok(cancelled.result);
-    assert.equal(cancelled.result.appWorkflowOutcome?.errorCode, "cancelled");
+    assert.equal(cancelled.outcome.errorCode, "cancelled");
     assert.equal((await provider.automation.taskRunById(cancellationRunId))?.appWorkflowOutcome?.errorCode, "cancelled");
     assert.equal(committed.length, 1, "cancelled CTBC run does not commit");
     assert.deepEqual(await readdir(root), []);
@@ -323,7 +322,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     };
     let commitAttempts = 0;
     const ambiguousRunId = await createRun(provider);
-    const ambiguous = await runAutomationTaskExecution(task, provider.automation, {
+    const ambiguous = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: ambiguousRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -335,10 +334,9 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         },
       },
       workflowBrowserPortFactory: () => ambiguousBrowser,
-    }, async () => {});
+    });
     assert.equal(ambiguous.status, "failed");
-    assert.ok(ambiguous.result);
-    assert.equal(ambiguous.result.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+    assert.equal(ambiguous.outcome.errorCode, "commit-outcome-unknown");
     assert.equal(commitAttempts, 1, "an ambiguous commit is not replayed by task execution");
     assert.equal((await provider.automation.taskRunById(ambiguousRunId))?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
   } finally {

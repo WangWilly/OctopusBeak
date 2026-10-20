@@ -10,10 +10,7 @@ import {
   packagedBrowserFixtureExpectedVersion,
   packagedBrowserFixtureStartUrl,
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
-import {
-  cancelAutomationTask,
-  startAutomationTask,
-} from "../src/lib/automation/server/runner.ts";
+import { automationRunner } from "../src/lib/automation/server/runner.ts";
 
 export type PackagedBrowserFixtureRunResult = Readonly<{
   status: "completed" | "cancelled";
@@ -38,8 +35,8 @@ export type PackagedBrowserFixtureResult = Readonly<{
 }>;
 
 type FixtureDependencies = Readonly<{
-  startTask?: typeof startAutomationTask;
-  cancelTask?: typeof cancelAutomationTask;
+  startTask?: typeof automationRunner.start;
+  cancelTask?: typeof automationRunner.cancel;
   pageForRun?: (runId: string) => Page | null;
   pathExists?: typeof existsSync;
   wait?: (milliseconds: number) => Promise<void>;
@@ -214,8 +211,8 @@ export async function runPackagedBrowserWorkerFixture(
 ): Promise<PackagedBrowserFixtureResult> {
   const expectedVersion = packagedBrowserFixtureExpectedVersion(environment);
   const startUrl = packagedBrowserFixtureStartUrl(environment);
-  const startTask = dependencies.startTask ?? startAutomationTask;
-  const cancelTask = dependencies.cancelTask ?? cancelAutomationTask;
+  const startTask = dependencies.startTask ?? ((taskId, taskProvider) => automationRunner.start(taskId, taskProvider));
+  const cancelTask = dependencies.cancelTask ?? ((taskId) => automationRunner.cancel(taskId));
   const requiredDependencies = {
     pageForRun: dependencies.pageForRun ?? appWorkflowPageForSession,
     pathExists: dependencies.pathExists ?? existsSync,
@@ -251,7 +248,7 @@ export async function runPackagedBrowserWorkerFixture(
     expectedVersion,
     requiredDependencies,
   );
-  await cancelTask(cancelTaskId, provider);
+  await cancelTask(cancelTaskId);
   const cancelledRun = await waitForTerminalRun(provider, cancelStarted.runId, requiredDependencies);
   const cancel = summarizeFixtureRun(
     cancelledRun,

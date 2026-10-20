@@ -7,509 +7,240 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { createDataVersionStore } from "../../shared-shell/data-version.ts";
-import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
+import { createDataVersionStore, type DataVersionStore } from "../../shared-shell/data-version.ts";
+import type { AutomationPersistenceProvider, AutomationTaskStatus } from "./store.ts";
 import {
+  decideAutomationTaskRunOutcome,
   finalizeAutomationTaskRun,
   finalizePersistedActiveRuns,
-  finalizeTaskRunTransition,
-  type AutomationTaskExecutionResult,
+  type TaskRunStop,
 } from "./task-run-finalization.ts";
+import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
-function result(overrides: Partial<AutomationTaskExecutionResult> = {}): AutomationTaskExecutionResult {
-  return {
-    exitCode: 0,
-    signal: null,
-    error: null,
-    outputPersistenceWarnings: [],
-    externalPrerequisiteIds: [],
-    ...overrides,
-  };
+async function withProvider(check: (provider: AutomationPersistenceProvider) => Promise<void>) {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    await check(createPgliteOperationalProvider(store));
+  } finally {
+    await store.close();
+  }
+}
+
+async function createRun(
+  provider: AutomationPersistenceProvider,
+  taskId: string,
+  status: AutomationTaskStatus = "running",
+) {
+  const kind = taskId.startsWith("sync-") || taskId === "exchange-rates" ? "sync" : "crawler";
+  const { taskRunId } = await provider.automation.createTaskRun({
+    taskId, kind, status, attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
+  });
+  return taskRunId;
+}
+
+async function finalize(
+  provider: AutomationPersistenceProvider,
+  taskRunId: string,
+  report: TypedWorkflowOutcome,
+  options: { stop?: TaskRunStop; dataVersionStore?: DataVersionStore } = {},
+) {
+  return finalizeAutomationTaskRun(
+    provider.automation,
+    taskRunId,
+    decideAutomationTaskRunOutcome(report, options.stop ?? null),
+    { dataVersionStore: options.dataVersionStore ?? createDataVersionStore() },
+  );
 }
 
 for (const recovery of ["startup", "shutdown"] as const) {
-  test(`${recovery} interrupts abandoned queued runs before hydrating the runtime`, async () => {
-    const database = await PGlite.create();
-    const store = new PGliteStore(database);
-    try {
-      await applyPgliteOperationalBaseline(store);
-      const provider = createPgliteOperationalProvider(store);
-      const created = await provider.automation.createTaskRun({
-        taskId: "exchange-rates", kind: "sync", status: "queued",
-        attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
-      });
-      if (recovery === "startup") await recoverInterruptedAutomationRuns(provider);
-      else await finalizePersistedActiveRuns(provider, "App closed");
-      const saved = await provider.automation.taskRunById(created.taskRunId);
-      assert.equal(saved?.status, "interrupted");
-      assert.ok(saved?.finishedAt);
-      assert.deepEqual(await provider.automation.activeTaskRuns(), []);
-      const runtime = await hydrateAutomationRuntimeState(provider);
-      assert.equal(runtime.tasks.find((task) => task.taskId === "exchange-rates")?.status, "interrupted");
-    } finally {
-      await store.close();
-    }
-  });
+  test(`${recovery} interrupts abandoned queued runs before hydrating the runtime`, () => withProvider(async (provider) => {
+    const taskRunId = await createRun(provider, "exchange-rates", "queued");
+    if (recovery === "startup") await recoverInterruptedAutomationRuns(provider);
+    else await finalizePersistedActiveRuns(provider, "App closed");
+    const saved = await provider.automation.taskRunById(taskRunId);
+    assert.equal(saved?.status, "interrupted");
+    assert.ok(saved?.finishedAt);
+    assert.deepEqual(await provider.automation.activeTaskRuns(), []);
+    const runtime = await hydrateAutomationRuntimeState(provider);
+    assert.equal(runtime.tasks.find((task) => task.taskId === "exchange-rates")?.status, "interrupted");
+  }));
 }
 
-test("provider partial status invalidates once without retaining log output", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const invalidations = createDataVersionStore();
-    const summary = {
-      status: "partial" as const,
-      counts: { itemCount: 1, committedCount: 1 },
-      products: [
-        { typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 },
-        { typeId: "loan" as const, status: "failed" as const, itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" as const },
-      ],
-    };
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "fubon-all-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-      dataVersionStore: invalidations,
-    }, result({ appWorkflowOutcome: { errorCode: null, summary } })), { status: "partial" });
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.status, "partial");
-    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: null, summary });
-    assert.equal(invalidations.snapshot().version, 1);
-  } finally {
-    await store.close();
-  }
-});
+test("provider partial status invalidates once without retaining log output", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "fubon-all-statements");
+  const invalidations = createDataVersionStore();
+  const summary = {
+    status: "partial" as const,
+    counts: { itemCount: 1, committedCount: 1 },
+    products: [
+      { typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 },
+      { typeId: "loan" as const, status: "failed" as const, itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" as const },
+    ],
+  };
+  const saved = await finalize(provider, taskRunId, { errorCode: null, summary }, { dataVersionStore: invalidations });
+  assert.equal(saved.status, "partial");
+  assert.deepEqual(saved.appWorkflowOutcome, { errorCode: null, summary });
+  assert.equal(invalidations.snapshot().version, 1);
+}));
 
-test("cancelled typed outcome retains product receipts and invalidates fresh data", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const invalidations = createDataVersionStore();
-    const summary = {
-      status: "completed" as const,
-      counts: { itemCount: 1, committedCount: 1 },
-      products: [{ typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 }],
-    } as const;
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "fubon-all-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-      forceTerminated: true,
-      dataVersionStore: invalidations,
-    }, result({
-      exitCode: null,
-      signal: "SIGTERM",
-      appWorkflowOutcome: { errorCode: "cancelled", summary },
-    })), { status: "cancelled" });
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: "cancelled", summary });
-    assert.equal(invalidations.snapshot().version, 1, "a verified earlier product commit makes data stale after forced stop");
-  } finally {
-    await store.close();
-  }
-});
+test("a forced cancellation retains product receipts, records force and invalidates fresh data", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "fubon-all-statements");
+  const invalidations = createDataVersionStore();
+  const summary = {
+    status: "completed" as const,
+    counts: { itemCount: 1, committedCount: 1 },
+    products: [{ typeId: "deposit" as const, status: "success" as const, itemCount: 1, committedCount: 1 }],
+  } as const;
+  const saved = await finalize(provider, taskRunId, { errorCode: "cancelled", summary }, {
+    stop: "forced",
+    dataVersionStore: invalidations,
+  });
+  assert.equal(saved.status, "cancelled");
+  assert.equal(saved.terminationMode, "forced");
+  assert.deepEqual(saved.appWorkflowOutcome, { errorCode: "cancelled", summary });
+  assert.equal(invalidations.snapshot().version, 1, "a verified earlier product commit makes data stale after forced stop");
+}));
 
-test("TDCC incomplete receipt outcomes finalize partial, with cancellation and unknown-commit precedence", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const summary = {
-      status: "partial" as const,
-      counts: { committedCount: 1, itemCount: 1, excludedUnknownInstitutionCount: 1 },
-      products: [{
-        typeId: "settlement" as const,
-        status: "success" as const,
-        itemCount: 1,
-        committedCount: 1,
-        collection: {
-          status: "incomplete" as const,
-          exclusionCounts: { excludedUnknownInstitutionCount: 1 },
-        },
-      }],
-    };
-    const scenarios = [
-      { errorCode: "source-unavailable" as const, expectedStatus: "partial" as const },
-      { errorCode: "cancelled" as const, expectedStatus: "cancelled" as const },
-      { errorCode: "commit-outcome-unknown" as const, expectedStatus: "failed" as const },
-    ];
-    for (const [index, scenario] of scenarios.entries()) {
-      const created = await provider.automation.createTaskRun({
-        taskId: "sync-tdcc",
-        kind: "sync",
-        status: "running",
-        attempt: 1,
-        maxAttempts: 1,
-        startedAt: new Date().toISOString(),
-      });
-      assert.deepEqual(await finalizeAutomationTaskRun({
-        provider,
-        taskId: "sync-tdcc",
-        taskKind: "sync",
-        taskRunId: created.taskRunId,
-      }, result({
-        exitCode: 1,
-        error: new Error("handled typed interruption"),
-        appWorkflowOutcome: { errorCode: scenario.errorCode, summary },
-      })), { status: scenario.expectedStatus });
-      const saved = await provider.automation.taskRunById(created.taskRunId);
-      assert.equal(saved?.status, scenario.expectedStatus, `scenario ${index + 1} persists its agreed terminal status`);
-      assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: scenario.errorCode, summary });
-    }
-  } finally {
-    await store.close();
-  }
-});
-
-test("persisted product commit event invalidates freshness when a later worker crash has no summary", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "yuanta-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    await provider.automation.appendRunEvent({
-      runId: created.taskRunId,
-      stage: "commit",
-      code: "deposit-canonical-commit-completed",
-      occurredAt: new Date().toISOString(),
-      completed: 1,
-      total: 1,
-    });
-    const invalidations = createDataVersionStore();
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "yuanta-all-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-      dataVersionStore: invalidations,
-    }, result({
-      exitCode: 1,
-      error: new Error("worker crashed after product commit"),
-      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
-    })), { status: "failed" });
-    assert.equal(invalidations.snapshot().version, 1, "only a persisted commit-completed event proves earlier progress");
-  } finally {
-    await store.close();
-  }
-});
-
-test("typed App outcome is retained in run metadata without using log tail", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "ctbc-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "ctbc-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-    }, result({
-      appWorkflowOutcome: {
-        errorCode: null,
-        summary: {
-          status: "financial-admitted",
-          counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
-        },
+test("TDCC incomplete receipt outcomes finalize partial, with cancellation and unknown-commit precedence", () => withProvider(async (provider) => {
+  const summary = {
+    status: "partial" as const,
+    counts: { committedCount: 1, itemCount: 1, excludedUnknownInstitutionCount: 1 },
+    products: [{
+      typeId: "settlement" as const,
+      status: "success" as const,
+      itemCount: 1,
+      committedCount: 1,
+      collection: {
+        status: "incomplete" as const,
+        exclusionCounts: { excludedUnknownInstitutionCount: 1 },
       },
-    })), { status: "completed" });
-
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.deepEqual(saved?.appWorkflowOutcome, {
-      errorCode: null,
-      summary: {
-        status: "financial-admitted",
-        counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
-      },
-    });
-    assert.ok(saved?.recordJson.includes('"appWorkflowOutcome"'));
-  } finally {
-    await store.close();
+    }],
+  };
+  const scenarios = [
+    { errorCode: "source-unavailable" as const, expectedStatus: "partial" as const },
+    { errorCode: "cancelled" as const, expectedStatus: "cancelled" as const },
+    { errorCode: "commit-outcome-unknown" as const, expectedStatus: "failed" as const },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const taskRunId = await createRun(provider, "sync-tdcc");
+    const saved = await finalize(provider, taskRunId, { errorCode: scenario.errorCode, summary });
+    assert.equal(saved.status, scenario.expectedStatus, `scenario ${index + 1} persists its agreed terminal status`);
+    assert.deepEqual(saved.appWorkflowOutcome, { errorCode: scenario.errorCode, summary });
   }
-});
+}));
 
-test("typed failure persists only its stable error code and aggregate summary", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "ctbc-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
+test("persisted product commit event invalidates freshness when a later worker crash has no summary", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "yuanta-all-statements");
+  await provider.automation.appendRunEvent({
+    runId: taskRunId,
+    stage: "commit",
+    code: "deposit-canonical-commit-completed",
+    occurredAt: new Date().toISOString(),
+    completed: 1,
+    total: 1,
+  });
+  const invalidations = createDataVersionStore();
+  const saved = await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, {
+    dataVersionStore: invalidations,
+  });
+  assert.equal(saved.status, "failed");
+  assert.equal(invalidations.snapshot().version, 1, "only a persisted commit-completed event proves earlier progress");
+}));
 
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "ctbc-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-    }, result({
-      exitCode: 0,
-      error: new Error("private account detail 123456789"),
-      outputPersistenceWarnings: ["private output path /Users/person/statement.csv"],
-      appWorkflowOutcome: {
-        errorCode: "source-integrity-failed",
-        summary: { status: "failed", counts: { rowCount: 6 } },
-      },
-    })), { status: "failed" });
+test("a failure without receipts leaves fresh data alone", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "yuanta-all-statements");
+  const invalidations = createDataVersionStore();
+  await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, { dataVersionStore: invalidations });
+  assert.equal(invalidations.snapshot().version, 0);
+}));
 
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.deepEqual(saved?.appWorkflowOutcome, {
-      errorCode: "source-integrity-failed",
-      summary: { status: "failed", counts: { rowCount: 6 } },
-    });
-    assert.equal(saved?.recordJson.includes("123456789"), false);
-    assert.equal(saved?.recordJson.includes("statement.csv"), false);
-  } finally {
-    await store.close();
-  }
-});
+test("typed App outcome is retained in run metadata without using log tail", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "ctbc-statements");
+  const summary = { status: "financial-admitted" as const, counts: { accountCount: 2, rowCount: 18, itemCount: 12 } };
+  const saved = await finalize(provider, taskRunId, { errorCode: null, summary });
+  assert.equal(saved.status, "completed");
+  assert.deepEqual(saved.appWorkflowOutcome, { errorCode: null, summary });
+  assert.ok(saved.recordJson.includes('"appWorkflowOutcome"'));
+}));
 
-test("typed cancellation code produces a cancelled terminal run", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "ctbc-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
+test("typed failure persists its stable error code and aggregate summary", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "ctbc-statements");
+  const report = {
+    errorCode: "source-integrity-failed" as const,
+    summary: { status: "failed" as const, counts: { rowCount: 6 } },
+  };
+  const saved = await finalize(provider, taskRunId, report);
+  assert.equal(saved.status, "failed");
+  assert.deepEqual(saved.appWorkflowOutcome, report);
+}));
 
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "ctbc-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-    }, result({
-      exitCode: 1,
-      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
-    })), { status: "cancelled" });
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.appWorkflowOutcome?.errorCode, "cancelled");
-  } finally {
-    await store.close();
-  }
-});
+test("typed cancellation code produces a cancelled terminal run", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "ctbc-statements");
+  const saved = await finalize(provider, taskRunId, { errorCode: "cancelled", summary: null });
+  assert.equal(saved.status, "cancelled");
+  assert.equal(saved.appWorkflowOutcome?.errorCode, "cancelled");
+  assert.equal(saved.terminationMode, undefined);
+}));
 
-test("App-close interruption preserves typed outcome without a file-log contract", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "exchange-rates",
-      kind: "sync",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    await provider.automation.updateTaskRun(created.taskRunId, {
-      appWorkflowOutcome: {
-        errorCode: null,
-        summary: { status: "completed", counts: { itemCount: 4 } },
-      },
-    });
-
-    await finalizePersistedActiveRuns(provider, "App closed");
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.status, "interrupted");
-    assert.deepEqual(saved?.appWorkflowOutcome, {
+test("App-close interruption preserves typed outcome without a file-log contract", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "exchange-rates");
+  await provider.automation.updateTaskRun(taskRunId, {
+    appWorkflowOutcome: {
       errorCode: null,
       summary: { status: "completed", counts: { itemCount: 4 } },
-    });
-  } finally {
-    await store.close();
-  }
-});
+    },
+  });
+  await finalizePersistedActiveRuns(provider, "App closed");
+  const saved = await provider.automation.taskRunById(taskRunId);
+  assert.equal(saved?.status, "interrupted");
+  assert.deepEqual(saved?.appWorkflowOutcome, {
+    errorCode: null,
+    summary: { status: "completed", counts: { itemCount: 4 } },
+  });
+}));
 
-test("a completed typed run can leave the human-assistance waiting state", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "ctbc-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
+test("a completed typed run can leave the human-assistance waiting state", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "ctbc-statements", "waiting_for_human");
+  const saved = await finalize(provider, taskRunId, {
+    errorCode: null,
+    summary: { status: "financial-admitted", counts: { itemCount: 2 } },
+  });
+  assert.equal(saved.status, "completed");
+}));
 
-    assert.deepEqual(await finalizeAutomationTaskRun({
-      provider,
-      taskId: "ctbc-statements",
-      taskKind: "crawler",
-      taskRunId: created.taskRunId,
-    }, result({
-      appWorkflowOutcome: {
-        errorCode: null,
-        summary: { status: "financial-admitted", counts: { itemCount: 2 } },
-      },
-    })), { status: "completed" });
-    const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.status, "completed");
-  } finally {
-    await store.close();
-  }
-});
-
-test("terminal provider transition is idempotent under a stale finalizer", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "exchange-rates",
-      kind: "sync",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
+test("competing finalizers persist one decision and apply freshness and notices only once", () => withProvider(async (provider) => {
+  const resolveNotices = provider.automation.resolveTaskPrerequisiteNotices.bind(provider.automation);
+  let noticesResolved = 0;
+  provider.automation.resolveTaskPrerequisiteNotices = async (...args) => {
+    noticesResolved += 1;
+    return resolveNotices(...args);
+  };
+  const summary = { status: "completed", counts: { committedCount: 1, itemCount: 1 } } as const;
+  for (const status of ["completed", "failed", "cancelled"] as const) {
+    noticesResolved = 0;
+    const taskRunId = await createRun(provider, "yuanta-trade-statements");
+    const invalidations = createDataVersionStore();
+    const stop = status === "completed" ? undefined : "forced" as const;
+    const errorCode = status === "failed" ? "commit-outcome-unknown" as const : null;
+    const winners = await Promise.all([
+      finalize(provider, taskRunId, { errorCode, summary }, { stop, dataVersionStore: invalidations }),
+      finalize(provider, taskRunId, { errorCode, summary }, { stop, dataVersionStore: invalidations }),
+    ]);
+    assert.deepEqual(winners.map((run) => run.status), [status, status]);
+    const late = await finalize(provider, taskRunId, { errorCode: "source-unavailable", summary: null }, {
+      dataVersionStore: invalidations,
     });
-    const first = await finalizeTaskRunTransition(provider, {
-      taskRunId: created.taskRunId,
-    }, {
-      status: "completed",
-      exitCode: 0,
-      signal: null,
-      appWorkflowOutcome: { errorCode: null, summary: null },
+    assert.equal(late.status, status, "a later caller with a conflicting decision preserves the winner");
+    const saved = await provider.automation.taskRunById(taskRunId);
+    assert.equal(saved?.status, status);
+    assert.deepEqual(saved?.appWorkflowOutcome, {
+      errorCode: status === "cancelled" ? "cancelled" : errorCode,
+      summary,
     });
-    const stale = await finalizeTaskRunTransition(provider, {
-      taskRunId: created.taskRunId,
-    }, {
-      status: "failed",
-      exitCode: 1,
-      signal: null,
-      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
-    });
-    assert.deepEqual(first, { status: "completed", skipped: false });
-    assert.deepEqual(stale, { status: "completed", skipped: true });
-    assert.deepEqual(
-      (await provider.automation.taskRunById(created.taskRunId))?.appWorkflowOutcome,
-      { errorCode: null, summary: null },
-    );
-  } finally {
-    await store.close();
+    assert.equal(saved?.terminationMode === "forced", status === "cancelled");
+    assert.equal(invalidations.snapshot().version, 1, "durable receipts invalidate once for every terminal status");
+    assert.equal(noticesResolved, status === "completed" ? 1 : 0);
   }
-});
-
-test("competing finalizers persist one decision and apply freshness and notices only once", async () => {
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const upsertNotice = provider.automation.upsertTaskPrerequisiteNotice.bind(provider.automation);
-    const resolveNotices = provider.automation.resolveTaskPrerequisiteNotices.bind(provider.automation);
-    let noticesUpserted = 0;
-    let noticesResolved = 0;
-    provider.automation.upsertTaskPrerequisiteNotice = async (input) => {
-      noticesUpserted += 1;
-      return upsertNotice(input);
-    };
-    provider.automation.resolveTaskPrerequisiteNotices = async (...args) => {
-      noticesResolved += 1;
-      return resolveNotices(...args);
-    };
-    const summary = { status: "completed", counts: { committedCount: 1, itemCount: 1 } } as const;
-    for (const status of ["completed", "failed", "cancelled"] as const) {
-      noticesUpserted = 0;
-      noticesResolved = 0;
-      const created = await provider.automation.createTaskRun({
-        taskId: "yuanta-trade-statements", kind: "crawler", status: "running",
-        attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
-      });
-      const invalidations = createDataVersionStore();
-      const context = {
-        provider, taskId: "yuanta-trade-statements", taskKind: "crawler" as const,
-        taskRunId: created.taskRunId, dataVersionStore: invalidations,
-        forceTerminated: status !== "completed",
-      };
-      const errorCode = status === "failed" ? "commit-outcome-unknown" : null;
-      const execution = result({
-        exitCode: status === "completed" ? 0 : null,
-        signal: status === "completed" ? null : "SIGTERM",
-        appWorkflowOutcome: { errorCode, summary },
-        externalPrerequisiteIds: [YUANTA_SERVISIGN_PREREQUISITE.id],
-      });
-      const outcomes = await Promise.all([
-        finalizeAutomationTaskRun(context, execution),
-        finalizeAutomationTaskRun(context, execution),
-      ]);
-      assert.deepEqual(outcomes, [{ status }, { status }]);
-      // A later caller with a conflicting decision must also preserve the winner.
-      assert.deepEqual(await finalizeAutomationTaskRun(context, result({
-        exitCode: 1,
-        appWorkflowOutcome: { errorCode: "source-unavailable", summary: null },
-        externalPrerequisiteIds: [YUANTA_SERVISIGN_PREREQUISITE.id],
-      })), { status });
-      const saved = await provider.automation.taskRunById(created.taskRunId);
-      assert.equal(saved?.status, status);
-      assert.deepEqual(saved?.appWorkflowOutcome, {
-        errorCode: status === "cancelled" ? "cancelled" : errorCode,
-        summary,
-      });
-      assert.equal(saved?.terminationMode === "forced", status === "cancelled");
-      assert.equal(invalidations.snapshot().version, 1, "durable receipts invalidate once for every terminal status");
-      assert.equal(noticesResolved, status === "completed" ? 1 : 0);
-      assert.equal(noticesUpserted, status === "failed" ? 1 : 0);
-    }
-  } finally {
-    await store.close();
-  }
-});
+}));

@@ -4,12 +4,9 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, Notification } from "electron";
 import {
-  activeAutomationTaskIds,
+  automationRunner,
   hydrateAutomationRuntimeState,
   recoverInterruptedAutomationRuns,
-  shutdownAppAutomationWorkflows,
-  startAutomationTask,
-  abortActiveAppWorkflowExecutions,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
@@ -96,7 +93,7 @@ function handleAutomationRuntimeFatal(details: {
   if (automationRuntimeFatalHandled) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
-  abortActiveAppWorkflowExecutions();
+  automationRunner.abortAll();
   // A fatal invariant must retain exit status 1 without waiting for normal
   // before-quit cleanup or a CDP connection to finish closing.
   app.removeListener("before-quit", handleBeforeQuit);
@@ -121,11 +118,11 @@ const handleBeforeQuit = createBeforeQuitHandler({
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
-    if (activeAutomationTaskIds().length > 0) {
+    if (automationRunner.hasActive()) {
       if (!pgliteOperationalRuntime) {
         throw new Error("PGlite automation provider is unavailable during shutdown.");
       }
-      await shutdownAppAutomationWorkflows(pgliteOperationalRuntime.provider);
+      await automationRunner.shutdown(pgliteOperationalRuntime.provider);
     }
     await pgliteOperationalRuntime?.close();
   },
@@ -286,7 +283,7 @@ async function start() {
   ensureDataRoot(userData);
   stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
-    isActive: (name) => activeAutomationTaskIds().includes(name),
+    isActive: (name) => automationRunner.activeTaskIds().includes(name),
     onError: () => console.error("browser-state-cleanup-failed"),
   });
   Object.assign(process.env, buildDesktopEnv({
@@ -404,9 +401,9 @@ async function start() {
         "exchange-rates",
         occurrenceUtc,
       ),
-      isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
+      isTaskActive: () => automationRunner.activeTaskIds().includes("exchange-rates"),
       startTask: (scheduledAtUtc) => {
-        return startAutomationTask(
+        return automationRunner.start(
           "exchange-rates",
           operationalRuntime.provider,
           { scheduledAtUtc },

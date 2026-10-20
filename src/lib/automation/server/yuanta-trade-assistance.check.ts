@@ -14,6 +14,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
@@ -239,8 +240,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
   try {
     process.chdir(artifactRoot);
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
     });
     for (const contract of [audioContract(), audioContract(), checkboxContract()]) {
       await assistance.request(contract, new AbortController().signal);
@@ -294,8 +294,7 @@ test("Yuanta Trade solver exhaustion rejects the active stage", async () => {
 
   try {
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
     });
     await assert.rejects(
       Promise.race([
@@ -324,8 +323,7 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
   });
   try {
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
     });
     await assert.rejects(
       assistance.request(imageContract(), new AbortController().signal),
@@ -350,8 +348,7 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
   });
   try {
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
     });
     await assert.rejects(
       assistance.request(audioContract(), new AbortController().signal),
@@ -410,8 +407,7 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
   try {
     const controller = new AbortController();
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
     });
     const request = assistance.request(audioContract(), controller.signal);
     await started;

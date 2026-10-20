@@ -10,13 +10,8 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AutomationRuntimeTaskSnapshot } from "$lib/desktop/api.ts";
-import {
-  cancelAutomationTask,
-  forceTerminateAutomationTask,
-  hasActiveAutomationTask,
-  startAutomationTask,
-} from "./runner.ts";
-import { automationRuntimeState } from "./runtime-state.ts";
+import { createAutomationRunner } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
@@ -26,6 +21,8 @@ const database = await PGlite.create();
 const store = new PGliteStore(database);
 await applyPgliteOperationalBaseline(store);
 after(() => database.close());
+const runtime = createAutomationRuntimeState();
+const runner = createAutomationRunner({ runtime });
 
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {
@@ -106,35 +103,29 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
 
 /** Run the production execution path with a scripted supervised worker. */
 function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): typeof runAutomationTaskExecution {
-  return (task, persistence, options, onRunCreated) => runAutomationTaskExecution(
-    task,
-    persistence,
-    {
-      ...options,
-      appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
-        const worker = new ScriptedWorker(workerOptions.workerData as AppWorkflowWorkerStart, mode);
-        workers.push(worker);
-        return worker;
-      },
+  return (task, run, options) => runAutomationTaskExecution(task, run, {
+    ...options,
+    appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
+      const worker = new ScriptedWorker(workerOptions.workerData as AppWorkflowWorkerStart, mode);
+      workers.push(worker);
+      return worker;
     },
-    onRunCreated,
-  );
+  });
 }
 
 test(
   "a cancellation that arrives while the run row is being created ends that run and leaves the previous run's state alone",
-  { todo: "Active automation task run owns the run from claim" },
   async () => {
     const provider = providerWith();
     const firstFinished = deferred<AutomationTaskRun>();
-    const first = await startAutomationTask("exchange-rates", provider, {
+    const first = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("completes"),
       onFinished: firstFinished.resolve,
     });
     assert.equal((await firstFinished.promise).status, "completed");
 
     const published: AutomationRuntimeTaskSnapshot[] = [];
-    const unsubscribe = automationRuntimeState.subscribe((snapshot) => {
+    const unsubscribe = runtime.subscribe((snapshot) => {
       const task = snapshot.tasks.find((candidate) => candidate.taskId === "exchange-rates");
       if (task) published.push(task);
     });
@@ -156,15 +147,16 @@ test(
     }));
     const finished: AutomationTaskRun[] = [];
     try {
-      const starting = startAutomationTask("exchange-rates", delayed, {
+      const starting = runner.start("exchange-rates", delayed, {
         runExecution: workerExecution("completes"),
         onFinished: (run) => finished.push(run),
       });
       await creating.promise;
-      await cancelAutomationTask("exchange-rates", delayed);
+      const cancelling = runner.cancel("exchange-rates");
       releaseCreate.resolve();
+      await cancelling;
       const second = await starting;
-      await until(() => !hasActiveAutomationTask(), "the cancelled run never released its task");
+      await until(() => !runner.hasActive(), "the cancelled run never released its task");
       await until(() => finished.length > 0, "the cancelled run never reported that it finished");
 
       assert.equal((await base.taskRunById(second.runId))?.status, "cancelled");
@@ -176,19 +168,18 @@ test(
     } finally {
       releaseCreate.resolve();
       unsubscribe();
-      await until(() => !hasActiveAutomationTask(), "the run under test did not settle");
+      await until(() => !runner.hasActive(), "the run under test did not settle");
     }
   },
 );
 
 test(
   "force-quit ends the workflow worker immediately and records a forced cancellation",
-  { todo: "force-quit terminates without the cancellation grace" },
   async () => {
     const provider = providerWith();
     const workers: ScriptedWorker[] = [];
     const finished = deferred<AutomationTaskRun>();
-    const started = await startAutomationTask("exchange-rates", provider, {
+    const started = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("ignores-cancel", workers),
       onFinished: finished.resolve,
     });
@@ -196,7 +187,7 @@ test(
       await until(() => workers.length === 1, "the workflow worker never started");
       await workers[0]!.started.promise;
       const forcedAt = Date.now();
-      await forceTerminateAutomationTask("exchange-rates", provider, started.runId);
+      await runner.forceTerminate("exchange-rates", started.runId);
       const elapsed = Date.now() - forcedAt;
 
       assert.equal(workers[0]!.terminated, true);
@@ -205,18 +196,17 @@ test(
       assert.equal(run.status, "cancelled");
       assert.equal(run.terminationMode, "forced");
     } finally {
-      await until(() => !hasActiveAutomationTask(), "the forced run did not settle");
+      await until(() => !runner.hasActive(), "the forced run did not settle");
     }
   },
 );
 
 test(
   "a run whose runner fails before execution still reports a terminal finish",
-  { todo: "finish notifies every terminal run" },
   async () => {
     const provider = { automation: createPgliteOperationalProvider(store).automation } as AutomationPersistenceProvider;
     const finished = deferred<AutomationTaskRun>();
-    const started = await startAutomationTask("exchange-rates", provider, {
+    const started = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("completes"),
       onFinished: finished.resolve,
     });
@@ -229,7 +219,7 @@ test(
       assert.equal(run.taskRunId, started.runId);
       assert.equal(run.status, "failed");
     } finally {
-      await until(() => !hasActiveAutomationTask(), "the failed run did not settle");
+      await until(() => !runner.hasActive(), "the failed run did not settle");
     }
   },
 );
