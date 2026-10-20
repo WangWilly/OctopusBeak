@@ -812,7 +812,7 @@ An always-expanded, source-specific section in credential setup that explains wh
 _Avoid_: Field hint, remote help content, generic learn-more link
 
 **Statement run summary**:
-A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome based on actual collection and admission results. Partial completion preserves independently complete, successfully admitted data alongside product failures without treating an incomplete Source Capture or a grouped evidence spine as partially admissible.
+A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome based on actual collection and admission results. Partial completion preserves independently complete, successfully admitted data alongside product failures without treating an incomplete Source Capture or a grouped evidence spine as partially admissible. When verified products and Attached Preview Products share a run, the summary covers both and retains their durable outcomes through failure or cooperative cancellation.
 _Avoid_: All-products success assumption, partial financial evidence, failure that hides admitted data
 
 **Product collection absence**:

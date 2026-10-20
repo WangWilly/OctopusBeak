@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import type { PreviewCreditCollection, PreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
+import { ProductCollectionInterruptedError, interruptedProductCollectionFromOutput } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
@@ -323,7 +323,15 @@ test("the SinoPac workflow writes attached cards only through the preview port, 
   assert.equal(commits.length, 1);
   assert.ok(commits[0]!.every((item) => (item as { provider: string }).provider === "sinopac"));
   assert.deepEqual(writes.map((write) => [write.sourceId, write.institution, write.product]), [["sinopac", "sinopac", "credit_card"]]);
-  assert.deepEqual(output.products, [{ typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 }]);
+  assert.deepEqual(output.products, [
+    { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+    { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
+  ]);
+  const lateCancellation = interruptedProductCollectionFromOutput(output)!;
+  assert.equal(lateCancellation.summary.sourceCaptureCount, 1);
+  assert.equal(lateCancellation.summary.itemCount, 4);
+  assert.equal(lateCancellation.summary.committedCount, 4);
+  assert.deepEqual(lateCancellation.summary, output.productCollectionSummary);
 });
 
 test("a failing attached card product leaves the verified SinoPac result intact", async () => {
@@ -335,11 +343,14 @@ test("a failing attached card product leaves the verified SinoPac result intact"
     workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
   );
-  assert.equal(output.status, "financial-admitted");
+  assert.equal(output.status, "partial");
   assert.equal(output.rowCount, 1);
   assert.equal(commits.length, 1);
   assert.deepEqual(writes, []);
-  assert.deepEqual(output.products, [{ typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" }]);
+  assert.deepEqual(output.products, [
+    { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+    { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
+  ]);
 });
 
 test("an attached-only SinoPac selection signs in, commits nothing canonical, and collects the cards", async () => {
@@ -354,7 +365,8 @@ test("an attached-only SinoPac selection signs in, commits nothing canonical, an
   assert.deepEqual(commits, []);
   assert.equal(writes.length, 1);
   assert.equal(output.status, "completed");
-  assert.equal(output.products?.[0]?.status, "success");
+  assert.equal(output.products?.[0]?.skipReason, "not_selected");
+  assert.equal(output.products?.[1]?.status, "success");
 
   const { transport: failing } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
   await assert.rejects(runSinopacProviderWorkflow(
@@ -375,7 +387,7 @@ test("the SinoPac workflow collects no attached product when none is selected", 
   );
   assert.deepEqual(calls, []);
   assert.deepEqual(writes, []);
-  assert.equal(output.products, undefined);
+  assert.deepEqual(output.products, [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }]);
 });
 
 test("a session loss during the attached card product ends the SinoPac run after the verified commit", async () => {
@@ -387,6 +399,56 @@ test("a session loss during the attached card product ends the SinoPac run after
     workflowContext([], commits),
     workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
-  ), (error) => error instanceof ProductCollectionInterruptedError && error.errorCode === "authentication-failed");
+  ), (error) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "authentication-failed");
+    assert.equal(error.summary.sourceCaptureCount, 1);
+    assert.equal(error.summary.rowCount, 1);
+    assert.equal(error.summary.itemCount, 1);
+    assert.equal(error.summary.committedCount, 1);
+    assert.equal(error.summary.status, "partial");
+    assert.deepEqual(error.summary.products[0], { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 });
+    return true;
+  });
   assert.equal(commits.length, 1);
 });
+
+for (const timing of ["after verified commit", "after attached write"] as const) {
+  test(`SinoPac cancellation ${timing} preserves all completed writes`, async () => {
+    const controller = new AbortController();
+    const writes: PreviewWrite[] = [];
+    const commits: unknown[][] = [];
+    const base = workflowContext(writes, commits);
+    const context: WorkflowContext = {
+      ...base,
+      signal: controller.signal,
+      event: async (_stage, code) => {
+        if (timing === "after verified commit" && code === "canonical-commit-completed") controller.abort();
+      },
+      previewWrite: {
+        async write(input) {
+          const receipt = await base.previewWrite!.write(input);
+          if (timing === "after attached write") controller.abort();
+          return receipt;
+        },
+      },
+    };
+    const { transport, calls } = fakeTransport(bodies());
+    await assert.rejects(runSinopacProviderWorkflow(
+      context,
+      workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+      { ...verifiedOverrides, cardTransport: transport },
+    ), (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "cancelled");
+      assert.equal(error.summary.sourceCaptureCount, 1);
+      assert.equal(error.summary.committedCount, timing === "after verified commit" ? 1 : 4);
+      assert.equal(error.summary.products[0]?.status, "success");
+      assert.equal(error.summary.products[1]?.status, timing === "after verified commit" ? "skipped" : "success");
+      return true;
+    });
+    assert.equal(commits.length, 1);
+    assert.equal(writes.length, timing === "after verified commit" ? 0 : 1);
+    if (timing === "after verified commit") assert.deepEqual(calls, []);
+  });
+}

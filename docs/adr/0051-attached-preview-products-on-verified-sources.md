@@ -21,5 +21,5 @@ An attached product appears in the verified source's Statement Selection ([ADR 0
 ## Consequences
 
 - A verified workflow's code now spans verified and preview products. Review must check that each product writes to only one side.
-- A failure in an attached product must not fail the verified products of the same run. ADR 0036's per-product results carry this.
+- A failure in an attached product must not fail the verified products of the same run. ADR 0036's per-product results carry this. A recoverable attached-product failure makes the whole run partial when another product has durable receipts, while preserving each successful product result. The shared run summary includes verified and attached outcomes, including after interruption or cooperative cancellation; ADR 0036's fatal-failure and cancellation precedence remains unchanged.
 - When an attached product is promoted to a verified contract, its preview data is deleted and recollected, as for any Preview Source.
