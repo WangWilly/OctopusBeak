@@ -3,8 +3,6 @@ import { canonicalYuantaFundCurrency, yuantaFundSourceAmountCurrency } from "./y
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryScope,
   yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes } from "./yuanta-fund-account-history.ts";
-import { PGlite } from "@electric-sql/pglite";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "../ledger/pglite/investment.ts";
 import { createPGliteCanonicalOverviewQuery } from "../ledger/pglite/overview.ts";
@@ -19,6 +17,7 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
+import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -642,10 +641,9 @@ try {
   assert.throws(() => admitCanonicalInvestmentCapture({ ...groupedCapture, holdings: [{ ...holding,
     lineage: { ...holding.lineage, sourceLots: [sourceLots[0]!, { ...sourceLots[1]!, effectiveOn: "2026-01-01" }] },
   }] }), /contradictory/u);
-  const database = await PGlite.create();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteBaseline(database);
     const command = multipleLotItems[0]!.command;
     if (command.kind !== PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND) throw new Error("Expected investment command");
     await assert.rejects(commitPGliteCanonicalInvestmentCapture(store, {
@@ -764,10 +762,9 @@ try {
     "Catalog display names cannot rename a source-reported Security");
   const eventCapture = committedInvestmentCapture(eventItems);
   assert.deepEqual(eventCapture.transactions.map(row => [row.securityKey, row.action]), [["yuanta-fund:name:SANITIZED OUT FUND", "sell"], ["yuanta-fund:name:SANITIZED IN FUND", "buy"], ["yuanta-fund:name:SANITIZED IN FUND", "dividend"], ["yuanta-fund:name:SANITIZED IN FUND", "corporate_action_in"]]);
-  const eventDb = await PGlite.create();
+  const eventDb = await createTestPGlite("ledger");
   const eventStore = new PGliteStore(eventDb);
   try {
-    await applyPgliteBaseline(eventDb);
     const command = eventItems[0]!.command;
     if (command.kind !== PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND) throw new Error("Expected investment command");
     await commitPGliteCanonicalInvestmentCapture(eventStore, command.request);
@@ -882,9 +879,8 @@ try {
       now: () => "2026-09-10T12:00:00.000Z" });
   const repeatedEmptyCapture = committedInvestmentCapture(repeatedEmptyItems);
   assert.notEqual(repeatedEmptyCapture.captureId, fullyEmptyCapture.captureId);
-  const emptyDb = await PGlite.create();
+  const emptyDb = await createTestPGlite("ledger");
   try {
-    await applyPgliteBaseline(emptyDb);
     const emptyStore = new PGliteStore(emptyDb);
     await commitPGliteCanonicalInvestmentCapture(emptyStore, { capture: fullyEmptyCapture });
     await commitPGliteCanonicalInvestmentCapture(emptyStore, { capture: repeatedEmptyCapture });
@@ -924,10 +920,9 @@ try {
       ? { ...table, rows: table.rows.map((row, index) => index === 0 ? row : row.map((cell, column) => column === 1 ? "SANITIZED ＣＬＯＳＥＤ ＦＵＮＤ" : cell)) } : table) }),
       normalizedNameItems, new AbortController().signal), now: () => "2026-09-12T12:00:00.000Z" });
   assert.deepEqual(committedInvestmentCapture(normalizedNameItems).transactions.map(row => row.transactionKey), accountCapture.transactions.map(row => row.transactionKey));
-  const accountDb = await PGlite.create();
+  const accountDb = await createTestPGlite("ledger");
   const accountStore = new PGliteStore(accountDb);
   try {
-    await applyPgliteBaseline(accountDb);
     await commitPGliteCanonicalInvestmentCapture(accountStore, { capture: accountCapture });
     await commitPGliteCanonicalInvestmentCapture(accountStore, { capture: committedInvestmentCapture(repeatAccountItems) });
     await commitPGliteCanonicalInvestmentCapture(accountStore, { capture: missingMetadataCapture });
@@ -953,10 +948,9 @@ try {
   assert.deepEqual(new Set(mixedCurrencyCapture.transactions.filter(row => row.securityKey === "yuanta-fund:name:SANITIZED CLOSED FUND")
     .map(row => row.cashEffect.currency)), new Set(["TWD", "USD"]));
   assert.equal(mixedCurrencyCapture.securities.find(security => security.securityKey === "yuanta-fund:name:SANITIZED CLOSED FUND")?.currency, "");
-  const mixedCurrencyDb = await PGlite.create();
+  const mixedCurrencyDb = await createTestPGlite("ledger");
   const mixedCurrencyStore = new PGliteStore(mixedCurrencyDb);
   try {
-    await applyPgliteBaseline(mixedCurrencyDb);
     await commitPGliteCanonicalInvestmentCapture(mixedCurrencyStore, { capture: mixedCurrencyCapture });
     assert.equal((await createPGliteCanonicalOverviewQuery(mixedCurrencyStore).current()).projection.transactions.length, 7);
   } finally { await mixedCurrencyStore.close(); }

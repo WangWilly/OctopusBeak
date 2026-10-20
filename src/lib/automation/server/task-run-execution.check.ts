@@ -4,10 +4,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import type { WorkerOptions } from "node:worker_threads";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -31,6 +29,7 @@ import {
 } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 async function createRun(
   provider: ReturnType<typeof createPgliteOperationalProvider>,
@@ -210,10 +209,9 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
   assert.ok(task);
   const directory = await mkdtemp(join(tmpdir(), "octopus-workflow-diagnostics-"));
   const diagnosticPath = join(directory, "workflow-failures.jsonl");
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider, task);
     const result = await executeTaskRunForCheck(task, provider.automation, {
@@ -371,10 +369,9 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
   for (const taskId of ["exchange-rates", "sync-maicoin"] as const) {
     const task = taskById(taskId);
     assert.ok(task);
-    const database = await PGlite.create();
+    const database = await createTestPGlite("operational");
     const store = new PGliteStore(database);
     try {
-      await applyPgliteOperationalBaseline(store);
       const provider = createPgliteOperationalProvider(store);
       let start: AppWorkflowWorkerStart | undefined;
       const taskRunId = await createRun(provider, task);
@@ -411,12 +408,11 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
   // CTBC exercises the shared supervised Chromium worker and financial events.
   const task = taskById("ctbc-statements");
   assert.ok(task);
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const persistedEvents = new Set<string>();
   let unregisterRoute: (() => void) | undefined;
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const appendRunEvent = provider.automation.appendRunEvent.bind(provider.automation);
     provider.automation.appendRunEvent = async (event) => {
@@ -562,10 +558,9 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
   assert.ok(task);
   assert.ok(task.workflowId);
   assert.equal(workflowBrowserProfileForTask(task.workflowId), undefined);
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const runtimeIdentity = {
       profileId: "default",
@@ -631,10 +626,9 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
 test("runtime identity remains on a failed run when browser launch fails before a summary exists", async () => {
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const runtimeIdentity = {
       profileId: "default",
@@ -677,10 +671,9 @@ test("runtime identity remains on a failed run when browser launch fails before 
 test("unsupported browser profiles produce a sanitized runtime configuration failure", async () => {
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider, task);
     const result = await executeTaskRunForCheck(task, provider.automation, {
@@ -711,10 +704,9 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
 });
 
 test("operational run summaries keep only the allow-listed Browser Runtime identity fields", async () => {
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "einvoice-personal-invoices",
@@ -758,9 +750,8 @@ test("task execution module has no command, session-resume, or file-log path", a
 test("supervised product invariant failures retain the worker code instead of guessing from collection events", async () => {
   const task = taskById("ctbc-statements");
   assert.ok(task);
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider, task);
     await executeTaskRunForCheck(task, provider.automation, {

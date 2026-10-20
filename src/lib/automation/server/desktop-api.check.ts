@@ -2,10 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -16,12 +14,12 @@ import {
   loadAutomationDesktopModel,
 } from "./desktop-api.ts";
 import { readAutomationSettings } from "./settings.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 test("desktop automation model and history are read from the provider", async () => {
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
@@ -58,10 +56,9 @@ test("desktop automation model and history are read from the provider", async ()
 });
 
 test("desktop model refreshes ordered workflow events and honors retention pruning", async () => {
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
@@ -145,10 +142,9 @@ test("automation setup links remain stable without loading the ledger", () => {
 test("Fubon statement subset round-trips through settings and desktop model", async () => {
   const root = await mkdtemp(join(tmpdir(), "automation-statement-selection-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const saved = automationSaveCredentials({
       LIBRETTO_CLOUD_FUBON_ENABLED: "true",

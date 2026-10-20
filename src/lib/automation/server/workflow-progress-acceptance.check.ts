@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { WorkerOptions } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -24,6 +22,7 @@ import type {
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 type ProgressSnapshot = Readonly<{
   phaseCode: string | null;
@@ -202,9 +201,8 @@ function makeSteps(retrying = false): readonly WorkerStep[] {
 test("runner progress spans selected product stages, survives a same-run retry, and reserves 100% for full success", async () => {
   const task = taskById("cathay-all-statements");
   assert.ok(task);
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const snapshots: Array<{ runId: string; eventId: string; progress: ProgressSnapshot | null }> = [];
     const startingProgress = new Map<string, ProgressSnapshot | null>();

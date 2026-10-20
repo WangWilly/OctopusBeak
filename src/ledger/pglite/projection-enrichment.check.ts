@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   commitPGliteCanonicalDepositCapture,
@@ -246,7 +246,7 @@ test("Cathay worker classification preserves transfer and unsupported outcomes",
 });
 
 test("PGlite provider deposits maintain current transaction and derived bank kind", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const capture = createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1);
@@ -326,7 +326,7 @@ test("PGlite provider deposits maintain current transaction and derived bank kin
 });
 
 test("PGlite source revision recurrence and complete-range withdrawal update current rows", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = cathayDepositCapture("projection-first");
@@ -344,7 +344,7 @@ test("PGlite source revision recurrence and complete-range withdrawal update cur
 });
 
 test("PGlite Fubon deposit and card commands refresh kind rows and rollback a failed projection", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalDepositCapture(store, fubonCapture());

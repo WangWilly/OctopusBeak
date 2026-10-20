@@ -14,17 +14,16 @@ import { createMaicoinWorkflow } from "../../lib/automation/maicoin-workflow.ts"
 import { createWorkflowFinancialCommitPort } from "../../lib/automation/workflow-financial-commit.ts";
 import { strictSourceText } from "../../lib/automation/source-text.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "./operational.ts";
+import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
 
 test("MaiCoin workflow commits through the injected canonical worker and operational ports", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-pglite-workflow-"));
-  const database = await createBaselinePGlite({ dataDir: join(root, "pglite") });
+  const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteOperationalBaseline(store);
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
@@ -94,7 +93,7 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
 });
 
 test("MaiCoin complete history proof persists empty/native-ID bounded scope and blocks conflicting ID payloads atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   const providerDate = parseMaicoinProviderDate("Wed, 02 Sep 2026 04:05:06 GMT");
   const history = {

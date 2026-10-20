@@ -11,7 +11,7 @@ import {
   esunCanonicalSpineCapture,
   esunNeutralCreditCardCapture,
 } from "../canonical/esun-credit-card-admission.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { creditCardCommandRequestFromCanonicalCapture } from "./credit-card-adapters.ts";
 import {
   commitPGliteCanonicalCreditCardCapture,
@@ -227,7 +227,7 @@ async function assertRejectedWithoutChange(
 }
 
 async function freshStore(): Promise<{ database: PGlite; store: PGliteStore }> {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   return { database, store: new PGliteStore(database) };
 }
 

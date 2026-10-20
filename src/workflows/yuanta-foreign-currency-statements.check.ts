@@ -4,7 +4,7 @@ import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { createBaselinePGlite } from "../ledger/pglite/baseline-test-template.ts";
+import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
@@ -1790,7 +1790,7 @@ function yuantaForeignWindowCapture(
     yuantaForeignRow("USD", "20261006", "", "1.00", "901.00"),
     yuantaForeignRow("USD", "20261006", "", "2.00", "903.00"),
   ];
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalDepositCapture(
@@ -1844,7 +1844,7 @@ function yuantaForeignWindowCapture(
     "the window is anchored to the Taipei date",
   );
 
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalDepositCapture(store, first);

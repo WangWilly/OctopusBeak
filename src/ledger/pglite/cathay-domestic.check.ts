@@ -9,12 +9,12 @@ import {
   validateCathayDomesticDepositSyncInputForPGlite,
 } from "./cathay-domestic-admission.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
 import { PGliteStore } from "./transaction.ts";
 
 test("Cathay domestic multi-account capture commits as one PGlite item", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const accountA = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo;

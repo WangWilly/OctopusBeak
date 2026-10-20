@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
 import { commitPGliteCanonicalFinancialCapture } from "./canonical-source-store.ts";
 import {
@@ -218,7 +218,7 @@ function loanRequestWithRepaymentDeposit(captureId: string, fixtureKey: string):
 }
 
 test("PGlite loan command writes typed facts and deduplicates recurring observations", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = await commitPGliteCanonicalLoanCapture(store, loanRequest("loan-capture-1"), { clock: () => 100 });
@@ -235,7 +235,7 @@ test("PGlite loan command writes typed facts and deduplicates recurring observat
 });
 
 test("PGlite loan command rolls back a changed occurrence atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalLoanCapture(store, loanRequest("loan-capture-1"), { clock: () => 100 });
@@ -251,7 +251,7 @@ test("PGlite loan command rolls back a changed occurrence atomically", async () 
 });
 
 test("Fubon loan slots survive unrelated insertion and reject group shrinkage atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const makeCapture = (observedAt: string, rows: readonly {
@@ -339,7 +339,7 @@ test("Fubon loan slots survive unrelated insertion and reject group shrinkage at
 });
 
 test("PGlite relation command admits scoped repayment evidence and deduplicates replay", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const capture = loanRequest("loan-evidence-capture").capture;
@@ -376,7 +376,7 @@ test("PGlite relation command admits scoped repayment evidence and deduplicates 
 });
 
 test("PGlite loan settlement groups keep member history and roll back cancelled replacement", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = loanRequestWithRepaymentDeposit("loan-group-capture-1", "primary");
@@ -489,7 +489,7 @@ test("PGlite loan settlement groups keep member history and roll back cancelled 
 });
 
 test("default PGlite enrichment records superseded and withdrawn assertion transitions", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const request = (captureLabel: string, description: string) =>
@@ -584,7 +584,7 @@ test("default PGlite enrichment records superseded and withdrawn assertion trans
 });
 
 test("PGlite loan command commits counterpart source and relation atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const base = loanRequest("loan-capture-with-counterpart");
@@ -657,7 +657,7 @@ test("PGlite loan command commits counterpart source and relation atomically", a
 });
 
 test("PGlite Fubon loan capture permits balance-only evolution as a new observation revision", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalLoanCapture(store, loanRequest("loan-capture-1"), { clock: () => 100 });
@@ -698,7 +698,7 @@ test("PGlite Fubon loan capture permits balance-only evolution as a new observat
 
 
 test("Fubon repeated deposit capture resolves repayment evidence through its stable account scope", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = loanRequestWithRepaymentDeposit("fubon-replay-first", "replay");
@@ -742,7 +742,7 @@ test("Fubon repeated deposit capture resolves repayment evidence through its sta
 });
 
 test("repeated deposit capture resolves repayment evidence that names no account through its capture scope", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = loanRequestWithRepaymentDeposit("unscoped-replay-first", "replay");
