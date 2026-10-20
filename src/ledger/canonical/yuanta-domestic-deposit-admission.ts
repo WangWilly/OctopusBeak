@@ -15,8 +15,7 @@ import {
 import {
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE,
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_VERSION,
-  getYuantaHumanAttestedV2Manifest,
-  isYuantaHumanAttestedV2Active,
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   isYuantaHumanAttestedV2Manifest,
   yuantaHumanAttestedV2IdentityEpochKey,
   type YuantaHumanAttestedV2Manifest,
@@ -558,7 +557,7 @@ export function createYuantaDomesticDepositSourceEvidence(
   );
   const identity = deriveYuantaDomesticDepositAccountIdentity(
     capture.account,
-    getYuantaHumanAttestedV2Manifest(),
+    YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
     stableSourceIdentity.sourceConnectionKey,
   );
   const startDate = sourceDate(capture.queryRange.startDate);
@@ -734,7 +733,7 @@ function resolveYuantaSourceConnection(
  */
 export function deriveYuantaDomesticDepositAccountIdentity(
   account: YuantaDomesticDepositCaptureEvidence["account"],
-  manifest: YuantaHumanAttestedV2Manifest = getYuantaHumanAttestedV2Manifest(),
+  manifest: YuantaHumanAttestedV2Manifest = YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositAccountIdentity {
   const subjectDigest = deriveYuantaDomesticDepositAccountKey(account.value);
@@ -802,7 +801,7 @@ export type YuantaDomesticDepositFinancialSemantics = {
 
 export function buildYuantaHumanAttestedFinancialSemantics(
   capture: YuantaDomesticDepositCaptureEvidence,
-  manifest: YuantaHumanAttestedV2Manifest = getYuantaHumanAttestedV2Manifest(),
+  manifest: YuantaHumanAttestedV2Manifest = YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositFinancialSemantics {
   const identity = deriveYuantaDomesticDepositAccountIdentity(
@@ -1161,12 +1160,10 @@ function financialDiagnosticsFor(
   if (!manifest) diagnostics.push("human-attestation-missing");
   else if (!isYuantaHumanAttestedV2Manifest(manifest))
     diagnostics.push("human-attestation-mismatch");
-  if (!isYuantaHumanAttestedV2Active())
-    diagnostics.push("human-attestation-revoked");
   if (!isAdmittedYuantaDomesticDepositCaptureEvidence(input.capture))
     return { diagnostics: [...new Set(diagnostics)], semantics: null };
 
-  const currentManifest = manifest ?? getYuantaHumanAttestedV2Manifest();
+  const currentManifest = manifest ?? YUANTA_HUMAN_ATTESTED_V2_MANIFEST;
   const sourceConnection = resolveYuantaSourceConnection(input);
   diagnostics.push(...sourceConnection.diagnostics);
   if (!sourceConnection.sourceConnectionKey)

@@ -74,24 +74,9 @@ export type EsunCreditCardHumanAttestedV4Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type EsunCreditCardHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked" | "restored";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: `sha256:${string}`;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-const currentManifest: EsunCreditCardHumanAttestedV4Manifest =
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST;
-VALIDATED_MANIFESTS.add(currentManifest);
 
 function manifestFingerprint(
-  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest = ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
 ): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(
@@ -109,7 +94,7 @@ function manifestFingerprint(
 }
 
 export function esunCreditCardHumanAttestedManifestFingerprint(
-  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest = ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
 ): `sha256:${string}` {
   return manifestFingerprint(manifest);
 }
@@ -118,8 +103,7 @@ function assertCurrentManifest(
   manifest: EsunCreditCardHumanAttestedV4Manifest,
 ): void {
   if (
-    manifest !== currentManifest ||
-    !VALIDATED_MANIFESTS.has(manifest) ||
+    manifest !== ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST ||
     manifest.attestationId !==
       ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
@@ -134,23 +118,14 @@ function assertCurrentManifest(
     );
 }
 
-export function getEsunCreditCardHumanAttestedV4Manifest(): EsunCreditCardHumanAttestedV4Manifest {
-  return currentManifest;
-}
-
 export function isEsunCreditCardHumanAttestedV4Manifest(
   value: unknown,
 ): value is EsunCreditCardHumanAttestedV4Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
+    value === ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST
   );
-}
-
-export function isEsunCreditCardHumanAttestedV4Active(): boolean {
-  return currentManifest.status === "active";
 }
 
 /**
@@ -173,7 +148,7 @@ export function isEsunCreditCardHumanAttestedAccountKey(
 }
 
 export function esunCreditCardHumanAttestedIdentityEpochKey(
-  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest = ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
 ): `sha256:${string}` {
   assertCurrentManifest(manifest);
   return `sha256:${createHash("sha256")

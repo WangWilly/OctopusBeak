@@ -55,21 +55,6 @@ export type FubonHumanAttestedV1Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type FubonHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: `sha256:${string}`;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-export let currentManifest: FubonHumanAttestedV1Manifest =
-  FUBON_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(FUBON_HUMAN_ATTESTED_V1_MANIFEST);
 
 export function manifestFingerprint(
   manifest: FubonHumanAttestedV1Manifest,
@@ -81,7 +66,7 @@ export function assertCurrentManifest(
   manifest: FubonHumanAttestedV1Manifest,
 ): void {
   if (
-    manifest !== currentManifest ||
+    manifest !== FUBON_HUMAN_ATTESTED_V1_MANIFEST ||
     manifest.attestationId !== FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion ||
@@ -96,44 +81,13 @@ export function assertCurrentManifest(
     );
 }
 
-export function getFubonHumanAttestedV1Manifest(): FubonHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
 export function isFubonHumanAttestedV1Manifest(
   value: unknown,
 ): value is FubonHumanAttestedV1Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
+    value === FUBON_HUMAN_ATTESTED_V1_MANIFEST
   );
 }
 
-export function isFubonHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
-
-/**
- * Apply the process-wide attestation revocation before a legacy wrapper
- * appends the corresponding durable event. The registry and state are shared
- * with all pure admission consumers.
- */
-export function revokeFubonHumanAttestedV1State(
-  at: string,
-  reason: string,
-): FubonHumanAttestedV1Manifest {
-  if (!/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(at) || !reason.trim())
-    throw new Error("Fubon attestation revocation requires time and reason.");
-  if (currentManifest.status === "revoked") return currentManifest;
-  const revoked = deepFreeze({
-    ...currentManifest,
-    status: "revoked" as const,
-    revokedAt: at,
-    revocationReason: reason.trim(),
-  });
-  currentManifest = revoked;
-  VALIDATED_MANIFESTS.add(revoked);
-  return revoked;
-}
