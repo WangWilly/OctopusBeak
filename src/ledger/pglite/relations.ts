@@ -10,6 +10,7 @@ import {
 } from "./canonical-source-store.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 
 /**
  * Relation resolution is a worker-owned command.  The request contains only
@@ -159,26 +160,12 @@ async function relationCommit(
   authorityRoute: string,
   options: PGliteCanonicalCommitOptions,
 ): Promise<Readonly<{ id: Uint8Array; sequence: number }>> {
-  const latest = await first<{ sequence: number | string; recorded_at_utc_us: number | string }>(
-    transaction,
-    `SELECT COALESCE(MAX(commit_sequence), 0) AS sequence,
-            COALESCE(MAX(recorded_at_utc_us), 0) AS recorded_at_utc_us
-       FROM canonical_commits`,
-  );
-  const sequence = Number(latest?.sequence ?? 0) + 1;
-  const now = options.recordedAtUtcUs ?? options.clock?.() ?? Date.now() * 1_000;
-  if (!Number.isSafeInteger(now) || now < 0)
-    throw new Error("PGlite relation resolution clock returned an invalid timestamp.");
-  const recordedAt = Math.max(now, Number(latest?.recorded_at_utc_us ?? 0) + 1);
-  const commitId = uuidBytes();
-  await query(
-    transaction,
-    `INSERT INTO canonical_commits(
-       commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-     ) VALUES (?, ?, ?, ?, 'relation_resolution')`,
-    [commitId, sequence, recordedAt, authorityRoute],
-  );
-  return { id: commitId, sequence };
+  const { id, sequence } = await insertPGliteCanonicalCommit(transaction, {
+    kind: "relation_resolution",
+    authorityRoute,
+    time: { kind: "requested", recordedAtUtcUs: options.recordedAtUtcUs, clock: options.clock },
+  });
+  return { id, sequence };
 }
 
 type Connection = Readonly<{

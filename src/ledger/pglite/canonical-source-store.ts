@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import type {
   PGliteCanonicalProjectionHook,
 } from "./projection.ts";
@@ -244,18 +245,6 @@ function canonicalBalanceObservationKey(
       `canonical/depository-balance-observation/v2|${observation.observationKey}|${observation.balanceKind}|${observation.currency}|${effectiveAt}`,
     )
     .digest("base64url")}`;
-}
-
-function nextCommitTime(
-  latest: unknown,
-  requested: number | undefined,
-  clock: (() => number) | undefined,
-): number {
-  const prior = Number(latest ?? -1);
-  const candidate = requested ?? clock?.() ?? Date.now() * 1000;
-  if (!Number.isSafeInteger(candidate) || candidate < 0)
-    throw new Error("Canonical PGlite commit clock returned an invalid timestamp.");
-  return Math.max(candidate, Number.isSafeInteger(prior) ? prior + 1 : candidate);
 }
 
 function sameFinancialRevision(
@@ -902,27 +891,11 @@ async function persistSourceCapture(
       "Capture overwrite is forbidden.",
     );
 
-  const latest = await first<{ value: number | string }>(
-    transaction,
-    "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-  );
-  const recordedAt = nextCommitTime(
-    latest?.value,
-    options.recordedAtUtcUs,
-    options.clock,
-  );
-  const commitId = uuidBytes();
-
-  const sequenceRow = await first<{ value: number | string }>(
-    transaction,
-    "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
-  );
-  const commitSequence = integerValue(sequenceRow?.value ?? 0, "Canonical commit sequence") + 1;
-  await txQuery(
-    transaction,
-    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'source_capture')",
-    [commitId, commitSequence, recordedAt, evidence.routeKey],
-  );
+  const { id: commitId, sequence: commitSequence, recordedAtUtcUs: recordedAt } = await insertPGliteCanonicalCommit(transaction, {
+    kind: "source_capture",
+    authorityRoute: evidence.routeKey,
+    time: { kind: "requested", recordedAtUtcUs: options.recordedAtUtcUs, clock: options.clock },
+  });
 
   // Resolve existing identity IDs before validating continuity. New IDs are
   // only inserted after this query, and the enclosing transaction rolls back
