@@ -153,7 +153,7 @@ try {
     "entered",
   );
 
-  const hydrated = await hydrateAutomationRuntimeState(provider);
+  const hydrated = await hydrateAutomationRuntimeState(provider, createAutomationRuntimeState());
   assert.equal(hydrated.tasks.find((task) => task.taskId === "ctbc-statements")?.runId, run.taskRunId);
   assert.equal((await automationRunHistory(provider))[0]?.taskRunId, run.taskRunId);
 
