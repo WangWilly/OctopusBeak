@@ -138,15 +138,12 @@ export function createAutomationPersistenceProvider(
   return Object.freeze({ automation });
 }
 
+/** Fields an update may change. Status moves only through the transition functions. */
 export type AutomationTaskRunUpdate = Partial<
   Pick<
     AutomationTaskRun,
-    | "status"
     | "attempt"
     | "maxAttempts"
-    | "finishedAt"
-    | "exitCode"
-    | "signal"
     | "progress"
     | "terminationMode"
     | "humanAssistanceContract"
@@ -206,6 +203,7 @@ export type AutomationTaskRunActiveUpdate = AutomationTaskRunUpdate & {
 
 export type AutomationTaskRunTerminalUpdate = AutomationTaskRunUpdate & {
   status: TerminalTaskRunStatus;
+  finishedAt: string;
 };
 
 export function isActiveTaskRunStatus(

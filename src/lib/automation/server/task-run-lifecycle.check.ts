@@ -226,7 +226,6 @@ test(
 
 test(
   "the operational store refuses to move a cancelling run back to an earlier active status",
-  { todo: "store transitions follow the Active automation task run table" },
   async () => {
     const automation = createPgliteOperationalProvider(store).automation;
     const { taskRunId } = await automation.createTaskRun({
@@ -245,7 +244,7 @@ test(
     }
     await assert.rejects(
       automation.updateTaskRun(taskRunId, { status: "running" } as Parameters<typeof automation.updateTaskRun>[1]),
-      /status/u,
+      /Invalid automation task run update/u,
     );
     assert.equal((await automation.taskRunById(taskRunId))?.status, "cancelling");
     await automation.transitionTaskRunToTerminal(taskRunId, {
