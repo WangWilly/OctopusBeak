@@ -1,7 +1,7 @@
 import type { AutomationPageModel } from "../types.ts";
 import { userActionForFailure, userActionMessage } from "../workflow-failures.ts";
-import { automationRunMany, loadAutomationDesktopModel } from "./desktop-api.ts";
-import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationTaskRun } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 
 export type ScheduledRunNotification = {
@@ -17,11 +17,12 @@ export function scheduledCollectionTaskIds(model: Pick<AutomationPageModel, "par
 }
 
 export async function startScheduledCollection(
-  provider: AutomationPersistenceProvider,
+  runtime: AutomationRuntime,
   occurrenceUtc: string,
   onFinished: (run: AutomationTaskRun) => void,
 ) {
-  const model = await loadAutomationDesktopModel(provider);
+  const { provider } = runtime;
+  const model = await runtime.desktopModel();
   const due: string[] = [];
   for (const taskId of scheduledCollectionTaskIds(model.automation)) {
     const [attempted, succeeded] = await Promise.all([
@@ -30,7 +31,7 @@ export async function startScheduledCollection(
     ]);
     if (!attempted && !succeeded) due.push(taskId);
   }
-  return automationRunMany(due, provider, { scheduledAtUtc: occurrenceUtc, onFinished });
+  return runtime.runMany(due, { scheduledAtUtc: occurrenceUtc, onFinished });
 }
 
 export function scheduledRunNotification(

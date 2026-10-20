@@ -67,6 +67,12 @@ function fakePage(version = chromiumVersion, exposeBrowser = true): Page {
   } as unknown as Page;
 }
 
+/** The fixture's own startTask and cancelTask stand in for the runtime's. */
+function fixtureRuntime(provider: AutomationPersistenceProvider) {
+  const unused = () => { throw new Error("The check supplies its own task controls."); };
+  return { provider, startWithoutAdmission: unused, cancel: unused };
+}
+
 test("packaged fixture runs real success and cancel contracts with allow-listed runtime proof", async () => {
   const successTaskId = PACKAGED_BROWSER_FIXTURE_TASKS[0].taskId;
   const cancelTaskId = PACKAGED_BROWSER_FIXTURE_TASKS[1].taskId;
@@ -81,7 +87,7 @@ test("packaged fixture runs real success and cancel contracts with allow-listed 
   const started: string[] = [];
   const cancelled: string[] = [];
   const pageChecks = new Map<string, number>();
-  const result = await runPackagedBrowserWorkerFixture(provider, "/tmp/fixture-user-data", environment, {
+  const result = await runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
     async startTask(taskId) {
       started.push(taskId);
       return {
@@ -148,7 +154,7 @@ test("packaged fixture fails closed if it cannot read the live host browser or v
     summary: { status: "completed", counts: {} },
   });
   const provider = fakeProvider(new Map([[run.taskRunId, run]]));
-  await assert.rejects(runPackagedBrowserWorkerFixture(provider, "/tmp/fixture-user-data", environment, {
+  await assert.rejects(runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
     async startTask(id) {
       return { taskId: id, runId: run.taskRunId, runtime: { sessionId: "fixture", revision: 1, tasks: [] } };
     },
@@ -158,7 +164,7 @@ test("packaged fixture fails closed if it cannot read the live host browser or v
     wait: async () => undefined,
     now: () => 0,
   }), /versions did not match/u);
-  await assert.rejects(runPackagedBrowserWorkerFixture(provider, "/tmp/fixture-user-data", environment, {
+  await assert.rejects(runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
     async startTask(id) {
       return { taskId: id, runId: run.taskRunId, runtime: { sessionId: "fixture", revision: 1, tasks: [] } };
     },
