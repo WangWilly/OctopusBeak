@@ -40,7 +40,6 @@ import {
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
   FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-  isFubonHumanAttestedV1Active,
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   deriveFubonCompositeAccountNumberEvidence,
@@ -3037,10 +3036,6 @@ export async function runFubonStatements(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
             );
           }
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-          continue;
-        }
-        if (!isFubonHumanAttestedV1Active()) {
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }

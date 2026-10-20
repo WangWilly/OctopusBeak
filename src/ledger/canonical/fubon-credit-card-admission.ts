@@ -6,7 +6,6 @@ import {
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isFubonCreditCardHumanAttestedAccountKey,
-  isFubonCreditCardHumanAttestedV2Active,
 } from "./fubon-credit-card-human-attestation-contract.ts";
 import {
   fubonCreditCardPanFingerprint,
@@ -988,8 +987,6 @@ export function admitFubonCreditCardCapture(
   capture: FubonCreditCardCaptureInput,
   options: FubonCreditCardAdmissionOptions = {},
 ): FubonCreditCardValidatedCapture {
-  if (!isFubonCreditCardHumanAttestedV2Active())
-    fail("Fubon credit-card human-attested v2 contract is revoked.");
   if (capture === null || typeof capture !== "object") fail("Fubon credit-card capture is required.");
   text(capture.captureId, "Capture ID");
   if (!/^\d{4}-\d{2}-\d{2}T/.test(text(capture.observedAt, "Observed at")))

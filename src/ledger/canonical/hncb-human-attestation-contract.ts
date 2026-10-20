@@ -61,27 +61,6 @@ export type HncbHumanAttestedV1Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type HncbHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: HncbOpaqueToken;
-  sequence: number;
-};
-
-type HncbHumanAttestationStateTransition = Readonly<{
-  manifest: HncbHumanAttestedV1Manifest;
-  event: HncbHumanAttestationEvent | null;
-}>;
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: HncbHumanAttestedV1Manifest =
-  HNCB_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(HNCB_HUMAN_ATTESTED_V1_MANIFEST);
-
 export function manifestFingerprint(
   manifest: HncbHumanAttestedV1Manifest,
 ): HncbOpaqueToken {
@@ -89,7 +68,7 @@ export function manifestFingerprint(
 }
 
 export function hncbHumanAttestedIdentityEpochKey(
-  manifest: HncbHumanAttestedV1Manifest = currentManifest,
+  manifest: HncbHumanAttestedV1Manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 ): HncbOpaqueToken {
   const value = [
     "hncb-human-attested-identity-epoch-v1",
@@ -104,7 +83,7 @@ export function assertCurrentManifest(
   manifest: HncbHumanAttestedV1Manifest,
 ): void {
   if (
-    manifest !== currentManifest ||
+    manifest !== HNCB_HUMAN_ATTESTED_V1_MANIFEST ||
     manifest.attestationId !== HNCB_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
       HNCB_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion ||
@@ -127,117 +106,13 @@ export function validEventAt(value: string): boolean {
   );
 }
 
-export function getHncbHumanAttestedV1Manifest(): HncbHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
 export function isHncbHumanAttestedV1Manifest(
   value: unknown,
 ): value is HncbHumanAttestedV1Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
+    value === HNCB_HUMAN_ATTESTED_V1_MANIFEST
   );
 }
 
-export function isHncbHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
-
-export function transitionHncbHumanAttestedV1Revocation(
-  at: string,
-  reason: string,
-  latest: HncbHumanAttestationEvent | null,
-): HncbHumanAttestationStateTransition {
-  if (!validEventAt(at) || !reason.trim())
-    throw new Error("HNCB attestation revocation requires time and reason.");
-  if (latest?.eventKind === "revoked") {
-    if (currentManifest.status === "active") {
-      const durable = deepFreeze({
-        ...currentManifest,
-        status: "revoked" as const,
-        revokedAt: latest.eventAt,
-        revocationReason: latest.reason,
-      });
-      currentManifest = durable;
-      VALIDATED_MANIFESTS.add(durable);
-    }
-    return { manifest: currentManifest, event: null };
-  }
-  if (currentManifest.status === "revoked")
-    return { manifest: currentManifest, event: null };
-  const revoked = deepFreeze({
-    ...currentManifest,
-    status: "revoked" as const,
-    revokedAt: at,
-    revocationReason: reason.trim(),
-  });
-  currentManifest = revoked;
-  VALIDATED_MANIFESTS.add(revoked);
-  return {
-    manifest: revoked,
-    event: {
-      attestationId: revoked.attestationId,
-      evidenceVersion: revoked.evidenceVersion,
-      eventKind: "revoked",
-      manifestStatus: "revoked",
-      eventAt: at,
-      reason: reason.trim(),
-      manifestFingerprint: manifestFingerprint(revoked),
-      sequence: latest ? latest.sequence + 1 : 1,
-    },
-  };
-}
-
-export function transitionHncbHumanAttestedV1Restoration(
-  at: string,
-  reason: string,
-  latest: HncbHumanAttestationEvent | null,
-): HncbHumanAttestationStateTransition {
-  if (!validEventAt(at) || !reason.trim())
-    throw new Error("HNCB attestation restoration requires time and reason.");
-  if (currentManifest.status === "active" && latest?.eventKind !== "revoked")
-    return { manifest: currentManifest, event: null };
-  const restored = deepFreeze({
-    ...currentManifest,
-    status: "active" as const,
-    revokedAt: null,
-    revocationReason: null,
-  });
-  currentManifest = restored;
-  VALIDATED_MANIFESTS.add(restored);
-  return {
-    manifest: restored,
-    event: {
-      attestationId: restored.attestationId,
-      evidenceVersion: restored.evidenceVersion,
-      eventKind: "attested",
-      manifestStatus: "active",
-      eventAt: at,
-      reason: reason.trim(),
-      manifestFingerprint: manifestFingerprint(restored),
-      sequence: latest ? latest.sequence + 1 : 1,
-    },
-  };
-}
-
-export function createInitialHncbHumanAttestationEvent(
-  observedAt =
-    HNCB_HUMAN_ATTESTED_V1_MANIFEST.attestedAt + "T00:00:00.000+08:00",
-): HncbHumanAttestationEvent {
-  if (!isHncbHumanAttestedV1Active())
-    throw new Error("Cannot attest a revoked HNCB manifest.");
-  assertCurrentManifest(currentManifest);
-  return {
-    attestationId: currentManifest.attestationId,
-    evidenceVersion: currentManifest.evidenceVersion,
-    eventKind: "attested",
-    manifestStatus: "active",
-    eventAt: observedAt,
-    reason: "user-confirmed-hncb-observed-human-attested-2026-08-23",
-    manifestFingerprint: manifestFingerprint(currentManifest),
-    sequence: 1,
-  };
-}
