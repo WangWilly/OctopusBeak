@@ -36,3 +36,20 @@ export function assertKnownAutomationRuntimeTasks(
     runId: unknown.runId,
   });
 }
+
+/** The safe fatal record for a runtime failure: invariant identifiers when known, never the error text. */
+export function automationRuntimeFatalDetails(stage: string, error: unknown) {
+  const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
+  return {
+    code: invariant?.code ?? "automation-runtime-snapshot-failed",
+    stage,
+    ...(invariant
+      ? {
+        sessionId: invariant.sessionId,
+        revision: invariant.revision,
+        taskId: invariant.taskId,
+        runId: invariant.runId,
+      }
+      : {}),
+  };
+}

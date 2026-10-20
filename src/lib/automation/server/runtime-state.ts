@@ -7,7 +7,6 @@ import type {
 import type { AutomationTaskProgress } from "../types.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { assertKnownAutomationRuntimeTasks } from "../runtime-invariants.ts";
-import { AUTOMATION_TASKS } from "./tasks.ts";
 import { sanitizeTypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 const RUNTIME_STATUSES = new Set<AutomationRuntimeTaskStatus>([
@@ -183,10 +182,4 @@ export function createAutomationRuntimeState(
   };
 }
 
-const automationTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
-
-/** The main-process singleton validates the active-task catalog before every snapshot/publication. */
-export const automationRuntimeState = createAutomationRuntimeState(
-  undefined,
-  { knownTaskIds: automationTaskIds },
-);
+export type AutomationRuntimeState = ReturnType<typeof createAutomationRuntimeState>;
