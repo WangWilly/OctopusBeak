@@ -2,6 +2,7 @@ import {
   ProductCollectionInterruptedError,
   type ProductCollectionRunSummary,
 } from "../automation/product-collection.ts";
+import { productRunStatus } from "../automation/product-run-status.ts";
 import { previewRunSummary, type PreviewProductRun } from "./product-collection.ts";
 
 /** Provider-owned evidence from completed verified collection, before attached results are combined. */
@@ -26,14 +27,13 @@ export function finishAttachedProductRun(
   const preview = attached ? previewRunSummary(attached) : null;
   const products = Object.freeze([...verified.products, ...(preview?.products ?? [])]);
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
-  const failed = products.find((product) => product.status === "failed");
   const summary: ProductCollectionRunSummary = Object.freeze({
     products,
     sourceCaptureCount: verified.sourceCaptureCount,
     rowCount: verified.rowCount + (preview?.rowCount ?? 0),
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount,
-    status: failed ? committedCount > 0 ? "partial" : "failed" : "completed",
+    status: productRunStatus(products, committedCount),
   });
   // An uncertain commit remains a failure even when cancellation also wins.
   const interruption = attached?.interrupted;
@@ -48,7 +48,8 @@ export function finishAttachedProductRun(
     const attempted = products.filter((product) => product.status !== "skipped");
     const firstFailure = attached?.firstFailure;
     if (attempted.length === 1 && firstFailure !== null && firstFailure !== undefined) throw firstFailure;
-    throw withCause(new ProductCollectionInterruptedError(failed!.errorCode ?? "source-collection-failed", summary), firstFailure);
+    const failed = products.find((product) => product.status === "failed");
+    throw withCause(new ProductCollectionInterruptedError(failed?.errorCode ?? "source-collection-failed", summary), firstFailure);
   }
   return summary;
 }
