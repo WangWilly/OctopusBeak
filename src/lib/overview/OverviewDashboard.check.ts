@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { resolveOverview } from "../shared-shell/progressive-dashboard-data.ts";
 import type { OverviewPageDto } from "./types.ts";
 
 const source = readFileSync(new URL("./OverviewDashboard.svelte", import.meta.url), "utf8");
@@ -24,21 +23,9 @@ const base: OverviewPageDto = {
   exchangeRates: [],
 };
 
-test("every card reads one model built from the route DTO and its loaded blocks", () => {
-  assert.match(source, /\$: data = resolveOverview\(overview, \{/);
-  assert.match(source, /\$: model = readOverview\(data, \{ today: dateInTimeZone\(new Date\(\), \$systemTimezone\) \}\)/);
-  const history = [{
-    date: "2026-09-22",
-    netAssets: [{ currency: "USD", value: 10 }],
-    dailyChange: [],
-    assets: [{ currency: "USD", value: 10 }],
-    liabilities: [],
-    accountChanges: [],
-    positionCount: 0,
-  }];
-  const resolved = resolveOverview(base, { list: { ...base, dailyHistory: history, dailyHistoryByAccount: { account: history } } });
-  assert.deepEqual(resolved.dailyHistory, history);
-  assert.deepEqual(resolved.dailyHistoryByAccount, { account: history });
+test("every card reads one model built from the live overview page", () => {
+  assert.doesNotMatch(source, /blocks|ProgressiveBlock|resolveOverview/);
+  assert.match(source, /\$: model = readOverview\(overview, \{ today: dateInTimeZone\(new Date\(\), \$systemTimezone\) \}\)/);
 });
 
 test("the daily detail modal receives TWD rows converted per date", () => {
@@ -77,8 +64,8 @@ test("overview does not render balance-basis notices", () => {
 });
 
 test("an incomplete Net position or Liabilities metric replaces its figure with the incomplete copy", () => {
-  assert.match(source, /netMetric = data\.summary\.find\(\(metric\) => metric\.label === "Net position"\)/);
-  assert.match(source, /liabilitiesMetric = data\.summary\.find\(\(metric\) => metric\.label === "Liabilities"\)/);
+  assert.match(source, /netMetric = overview\.summary\.find\(\(metric\) => metric\.label === "Net position"\)/);
+  assert.match(source, /liabilitiesMetric = overview\.summary\.find\(\(metric\) => metric\.label === "Liabilities"\)/);
   assert.match(source, /sideValue = netMetric\?\.incomplete\s*\? \$t\.preview\.incomplete/);
   assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{netMetric\?\.incomplete === true\}/);
   assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\?\.incomplete === true\}/);

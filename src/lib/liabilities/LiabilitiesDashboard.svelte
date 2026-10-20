@@ -33,23 +33,9 @@
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
-  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
-  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
-  import type {
-    DashboardBlockPayload,
-    DashboardBlockValueMap,
-  } from "$lib/shared-shell/dashboard-blocks.ts";
-  import {
-    resolveLiabilitiesChart,
-    resolveLiabilitiesDetails,
-    resolveLiabilitiesList,
-    resolveLiabilitiesSummary,
-  } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let liabilities: LiabilitiesPageDto;
   export let focusAccountId: string | null = null;
-  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
-  export let retryBlock: (key: string) => void = () => {};
 
   const DUE_SOON_DAYS = 3;
   const CARD_COLOR = liabilityColor("credit-card");
@@ -60,37 +46,26 @@
   let accountFilter: BalanceChartFilter = "all";
   let marginFilter: AccountKind | "all" = "all";
 
-  function blockState(key: string): BlockState<DashboardBlockPayload> {
-    return blocks[key] ?? { status: "loading" };
-  }
 
-  function liabilitiesBlockData<Key extends keyof DashboardBlockValueMap["liabilities"]>(
-    key: Key,
-    payload: DashboardBlockPayload | undefined,
-  ): DashboardBlockValueMap["liabilities"][Key] | undefined {
-    return payload?.route === "liabilities" && payload.block === key
-      ? payload.data as DashboardBlockValueMap["liabilities"][Key]
-      : undefined;
-  }
 
-  function settledBlock<Key extends keyof DashboardBlockValueMap["liabilities"]>(states: typeof blocks, key: Key) {
-    const state = states[key];
-    return liabilitiesBlockData(key, state && "data" in state ? state.data : undefined);
-  }
 
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: summaryInput = resolveLiabilitiesSummary(liabilities, settledBlock(blocks, "summary"));
-  $: chartBlock = settledBlock(blocks, "chart");
-  $: listBlock = settledBlock(blocks, "list");
-  $: summary = readLiabilitiesSummary(summaryInput, { today });
+  $: stackedChart = buildStackedBalanceChartData({
+    accounts: localizeAccounts(liabilities.accounts, $t),
+    dailyHistoryByAccount: liabilities.dailyHistoryByAccount,
+    filter: accountFilter,
+    currency: chartCurrency,
+    mode: "liability",
+  });
+  $: summary = readLiabilitiesSummary(liabilities, { today });
   $: liabilityAccounts = liabilities.accounts;
   $: isEmpty = awaitingFirstData(liabilities);
-  $: usesEstimatedCredit = summaryInput.accounts.some((account) =>
+  $: usesEstimatedCredit = liabilities.accounts.some((account) =>
     account.amountLines.some((amount) =>
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: incomplete = totalIncomplete(summaryInput.accounts);
+  $: incomplete = totalIncomplete(liabilities.accounts);
   $: includesPreview = summary.state === "ready" && summary.includesPreview;
   $: sideValue = isEmpty
     ? "—"
@@ -106,19 +81,12 @@
     ...new Set(chartRows.flatMap((row) => row.liabilities.map((amount) => amount.currency))),
   ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
   $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
-  $: chartData = buildStackedBalanceChartData({
-    accounts: liabilityAccounts,
-    dailyHistoryByAccount: liabilities.dailyHistoryByAccount,
-    filter: accountFilter,
-    currency: chartCurrency,
-    mode: "liability",
-  });
 
   function marginShares(accounts: AccountRowDto[]) {
     return accountShares(
       accounts,
-      indexExchangeRates(summaryInput.exchangeRates),
-      valuationDateFor(summaryInput.dailyHistory, accounts, today),
+      indexExchangeRates(liabilities.exchangeRates),
+      valuationDateFor(liabilities.dailyHistory, accounts, today),
     );
   }
 
@@ -169,9 +137,9 @@
     {:else}
       <ProjectionStateBanner projection={liabilities} />
     {/if}
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <div class="block-frame">
       <PageTotalCard
-        label={isEmpty ? $t.liabilities.empty.totalLabel : $t.liabilities.total(summaryInput.accounts.length)}
+        label={isEmpty ? $t.liabilities.empty.totalLabel : $t.liabilities.total(liabilities.accounts.length)}
         ariaLabel={$t.liabilities.metricsAria}
         goodWhen="down"
         total={summary.state === "ready" ? summary.total : null}
@@ -216,17 +184,9 @@
           {/if}
         {/if}
       </PageTotalCard>
-    </ProgressiveBlock>
+    </div>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
-      {@const chartDataBlock = resolveLiabilitiesChart(liabilities, chartBlock)}
-      {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
-        accounts: localizeAccounts(chartDataBlock.accounts, $t),
-        dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
-        filter: accountFilter,
-        currency: chartCurrency,
-        mode: "liability",
-      }) : chartData}
+    <div class="block-frame">
       <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.liabilities.debtBalance}</h2>
@@ -262,46 +222,44 @@
         {/if}
       </div>
       </section>
-    </ProgressiveBlock>
+    </div>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
-      {@const listDataBlock = resolveLiabilitiesList(liabilities, listBlock)}
+    <div class="block-frame">
       <AccountTable
-        accounts={listDataBlock.accounts}
+        accounts={liabilities.accounts}
         mode="liability"
         bind:search
         bind:filter={accountFilter}
-        transactionsByAccount={listDataBlock.transactionsByAccount}
-        dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
+        transactionsByAccount={liabilities.transactionsByAccount}
+        dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
         shares={summary.state === "ready" ? summary.shares : new Map()}
         focusAccountId={focusAccountId}
       />
-    </ProgressiveBlock>
+    </div>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
-      {@const detailsBlock = liabilitiesBlockData("details", data)}
-      {@const detailsDataBlock = resolveLiabilitiesDetails(liabilities, detailsBlock)}
-      {#if detailsDataBlock.marginAccounts.length > 0}
+    <div class="block-frame">
+      {#if liabilities.marginAccounts.length > 0}
         <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
         <div class="panel-title">
           <h2>{$t.liabilities.marginExposure}</h2>
         </div>
         <AccountTable
-          accounts={detailsDataBlock.marginAccounts}
+          accounts={liabilities.marginAccounts}
           mode="liability"
           bind:search
           bind:filter={marginFilter}
-          transactionsByAccount={detailsDataBlock.transactionsByAccount}
+          transactionsByAccount={liabilities.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
-          shares={marginShares(detailsDataBlock.marginAccounts)}
+          shares={marginShares(liabilities.marginAccounts)}
         />
         </section>
       {/if}
-    </ProgressiveBlock>
+    </div>
   </div>
 </DashboardShell>
 
 <style>
+  .block-frame { position: relative; min-width: 0; }
   .empty-banner {
     margin-bottom: var(--space-6);
   }
