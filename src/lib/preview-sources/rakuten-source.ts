@@ -248,7 +248,8 @@ export const playwrightRakutenPage: RakutenPageOpener = (context, startUrl, use)
         const source = await image.getAttribute("src") ?? "";
         const match = /^data:[^;]+;base64,(.+)$/u.exec(source);
         if (!match) return fail("unexpected-response", "the CAPTCHA image is not a data URI");
-        return decodeImageToPng(page, Buffer.from(match[1]!, "base64"));
+        return decodeImageToPng(page, Buffer.from(match[1]!, "base64"))
+          .catch(() => fail("unexpected-response", "the CAPTCHA is not a decodable image"));
       },
       async signIn(credentials) {
         await page.fill("#custNo", credentials.idNumber);
