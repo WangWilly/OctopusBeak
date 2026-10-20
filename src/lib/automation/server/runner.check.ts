@@ -28,8 +28,6 @@ function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
       const taskRunId = `runner-check-${next}`;
       runs.set(taskRunId, {
         finishedAt: null,
-        exitCode: null,
-        signal: null,
         events: [],
         recordJson: "{}",
         humanAssistanceContract: null,

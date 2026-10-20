@@ -37,13 +37,16 @@ import {
   PGliteStore,
   type PGliteTransaction,
 } from "./transaction.ts";
-import { PGLITE_OPERATIONAL_BASELINE_SQL } from "./operational-sql.ts";
+import {
+  PGLITE_OPERATIONAL_BASELINE_SQL,
+  PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL,
+} from "./operational-sql.ts";
 import {
   createPGliteMaicoinPersistence,
   type PGliteMaicoinPersistencePort,
 } from "./maicoin-operational.ts";
 
-export const PGLITE_OPERATIONAL_BASELINE_VERSION = 2;
+export const PGLITE_OPERATIONAL_BASELINE_VERSION = 3;
 
 const OPERATIONAL_TABLES = [
   "automation_task_runs",
@@ -89,10 +92,6 @@ function numeric(value: unknown): number {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
-}
-
-function nullableNumber(value: unknown): number | null {
-  return value === null || value === undefined ? null : Number(value);
 }
 
 function isCanonicalUtcInstant(value: string): boolean {
@@ -228,8 +227,6 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     maxAttempts: Number(row.max_attempts),
     startedAt: String(row.started_at),
     finishedAt: nullableString(row.finished_at),
-    exitCode: nullableNumber(row.exit_code),
-    signal: nullableString(row.signal),
     events: recordEvents(recordJson),
     recordJson,
     appWorkflowOutcome: recordAppWorkflowOutcome(recordJson),
@@ -248,7 +245,7 @@ function taskRunRecordJson(run: AutomationTaskRun): string {
 
 const CREATE_TASK_RUN_FIELDS = new Set([
   "taskId", "kind", "status", "attempt", "maxAttempts", "startedAt",
-  "finishedAt", "exitCode", "signal", "progress", "humanAssistanceContract",
+  "finishedAt", "progress", "humanAssistanceContract",
   "scheduledAtUtc",
 ]);
 const TASK_RUN_UPDATE_FIELDS = new Set([
@@ -344,16 +341,14 @@ async function writeTaskRun(
     `
     UPDATE automation_task_runs
     SET status = $1, attempt = $2, max_attempts = $3, finished_at = $4,
-        exit_code = $5, signal = $6, record_json = $7
-    WHERE task_run_id = $8
+        record_json = $5
+    WHERE task_run_id = $6
   `,
     [
       run.status,
       run.attempt,
       run.maxAttempts,
       run.finishedAt,
-      run.exitCode,
-      run.signal,
       taskRunRecordJson(run),
       taskRunId,
     ],
@@ -371,6 +366,13 @@ export async function applyPgliteOperationalBaseline(
       "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
     );
     const version = numeric(metadata.rows[0]?.baseline_version ?? -1);
+    if (version === 2) {
+      await database.transaction(async (transaction) => {
+        await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL);
+      });
+      await assertPgliteOperationalBaseline(database);
+      return;
+    }
     if (version === PGLITE_OPERATIONAL_BASELINE_VERSION) {
       await assertPgliteOperationalBaseline(database);
       return;
@@ -427,7 +429,7 @@ export async function assertPgliteOperationalBaseline(
       `SELECT COUNT(*) AS count FROM information_schema.columns
        WHERE table_schema = current_schema()
          AND table_name = 'automation_task_runs'
-         AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')`,
+         AND column_name IN ('script', 'error_message', 'log_path', 'log_tail', 'exit_code', 'signal')`,
     ),
   ]);
   if (
@@ -476,8 +478,6 @@ export class PGliteOperationalStore
       maxAttempts: input.maxAttempts,
       startedAt: input.startedAt,
       finishedAt: input.finishedAt ?? null,
-      exitCode: input.exitCode ?? null,
-      signal: input.signal ?? null,
       ...(input.progress === undefined ? {} : { progress: input.progress }),
       events: [],
       humanAssistanceContract: input.humanAssistanceContract ?? null,
@@ -488,8 +488,8 @@ export class PGliteOperationalStore
         `
         INSERT INTO automation_task_runs (
           task_run_id, task_id, kind, status, attempt, max_attempts,
-          started_at, finished_at, exit_code, signal, record_json
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          started_at, finished_at, record_json
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `,
         [
           taskRunId,
@@ -500,8 +500,6 @@ export class PGliteOperationalStore
           input.maxAttempts,
           input.startedAt,
           input.finishedAt ?? null,
-          input.exitCode ?? null,
-          input.signal ?? null,
           JSON.stringify(record),
         ],
       );
@@ -574,13 +572,13 @@ export class PGliteOperationalStore
         return { status: current.status, applied: false };
       }
       const next = sanitizeRun({ ...current, ...update });
-      const firstStatus = 9;
+      const firstStatus = 7;
       const changed = await transaction.query<{ task_run_id: string }>(
         `
         UPDATE automation_task_runs
         SET status = $1, attempt = $2, max_attempts = $3, finished_at = $4,
-            exit_code = $5, signal = $6, record_json = $7
-        WHERE task_run_id = $8 AND status IN (${statusPlaceholders(firstStatus, allowedStatuses)})
+            record_json = $5
+        WHERE task_run_id = $6 AND status IN (${statusPlaceholders(firstStatus, allowedStatuses)})
         RETURNING task_run_id
       `,
         [
@@ -588,8 +586,6 @@ export class PGliteOperationalStore
           next.attempt,
           next.maxAttempts,
           next.finishedAt,
-          next.exitCode,
-          next.signal,
           taskRunRecordJson(next),
           taskRunId,
           ...allowedStatuses,
@@ -740,7 +736,7 @@ export class PGliteOperationalStore
     const result = await this.#database.query<Row>(
       `
       SELECT task_run_id, task_id, kind, status, started_at,
-             finished_at, exit_code, signal, record_json
+             finished_at, record_json
       FROM automation_task_runs
       ORDER BY started_at DESC, task_run_id DESC
       LIMIT $1
@@ -757,8 +753,6 @@ export class PGliteOperationalStore
         status: row.status as AutomationTaskStatus,
         startedAt: String(row.started_at),
         finishedAt: nullableString(row.finished_at),
-        exitCode: nullableNumber(row.exit_code),
-        signal: nullableString(row.signal),
         appWorkflowOutcome: recordAppWorkflowOutcome(recordJson),
         ...(browserRuntime ? { browserRuntime } : {}),
       };

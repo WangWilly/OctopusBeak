@@ -37,8 +37,6 @@ test("history records expose typed outcome metadata without raw process diagnost
     status: "failed",
     startedAt: "2026-09-22T00:00:00.000Z",
     finishedAt: "2026-09-22T00:00:02.000Z",
-    exitCode: 1,
-    signal: null,
     appWorkflowOutcome: {
       errorCode: "source-integrity-failed",
       summary: { status: "failed", counts: { sourceCaptureCount: 2 } },

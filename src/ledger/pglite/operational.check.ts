@@ -6,6 +6,7 @@ import {
   createPgliteOperationalStore,
   PGLITE_OPERATIONAL_BASELINE_MANIFEST,
 } from "./operational.ts";
+import { PGLITE_OPERATIONAL_BASELINE_V2_SQL } from "./operational-baseline-v2.fixture.ts";
 import { PGliteStore } from "./transaction.ts";
 
 const database = await PGlite.create();
@@ -216,7 +217,6 @@ try {
     maxAttempts: 1,
     startedAt: "2026-09-22T00:03:00.000Z",
     finishedAt: "2026-09-22T00:04:00.000Z",
-    exitCode: 1,
   });
   assert.equal((await operational.latestTaskRuns())["exchange-rates"]?.taskRunId, later.taskRunId);
   assert.deepEqual(
@@ -416,7 +416,7 @@ try {
   });
   await assert.rejects(
     applyPgliteOperationalBaseline(legacyStore),
-    /PGlite operational baseline reset required: found version 1, expected 2/u,
+    /PGlite operational baseline reset required: found version 1, expected 3/u,
   );
   const oldRunCount = await legacyStore.query<{ count: number | string }>(
     "SELECT COUNT(*) AS count FROM automation_task_runs WHERE task_run_id = 'legacy-run'",
@@ -451,4 +451,77 @@ try {
   assert.equal(Number(retainedNotice.rows[0]?.count), 1);
 } finally {
   await legacyStore.close();
+}
+
+const baselineV2Database = await PGlite.create();
+const baselineV2Store = new PGliteStore(baselineV2Database);
+try {
+  await baselineV2Store.transaction(async (transaction) => {
+    await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_SQL);
+    await transaction.exec(`
+      INSERT INTO automation_task_runs (
+        task_run_id, task_id, kind, status, attempt, max_attempts,
+        started_at, finished_at, exit_code, signal, record_json
+      ) VALUES
+        ('v2-terminal', 'exchange-rates', 'sync', 'failed', 1, 1,
+         '2026-09-22T00:00:00.000Z', '2026-09-22T00:01:00.000Z', 1, 'SIGTERM',
+         '{"taskRunId":"v2-terminal","exitCode":1,"signal":"SIGTERM","events":[]}'),
+        ('v2-running', 'exchange-rates', 'sync', 'running', 1, 1,
+         '2026-09-22T00:02:00.000Z', NULL, NULL, NULL,
+         '{"taskRunId":"v2-running","events":[]}');
+    `);
+  });
+  await applyPgliteOperationalBaseline(baselineV2Store);
+  await applyPgliteOperationalBaseline(baselineV2Store);
+  await assertPgliteOperationalBaseline(baselineV2Store);
+
+  const upgradedMetadata = await baselineV2Store.query<{ baseline_version: number | string }>(
+    "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
+  );
+  assert.equal(Number(upgradedMetadata.rows[0]?.baseline_version), 3);
+  const retiredColumns = await baselineV2Store.query<{ column_name: string }>(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'automation_task_runs'
+      AND column_name IN ('exit_code', 'signal')
+  `);
+  assert.deepEqual(retiredColumns.rows, []);
+
+  const upgraded = createPgliteOperationalStore(baselineV2Store);
+  const history = await upgraded.recentTaskRuns(5);
+  assert.deepEqual(history.map((run) => [run.taskRunId, run.status]), [
+    ["v2-running", "running"],
+    ["v2-terminal", "failed"],
+  ]);
+  assert.equal("exitCode" in history[1]!, false);
+  assert.equal("signal" in history[1]!, false);
+
+  await assert.rejects(
+    baselineV2Store.query(
+      "UPDATE automation_task_runs SET finished_at = $1 WHERE task_run_id = 'v2-terminal'",
+      ["2026-09-22T00:09:00.000Z"],
+    ),
+    /Terminal automation task run is immutable: v2-terminal/u,
+  );
+  assert.deepEqual(
+    await upgraded.transitionTaskRunToTerminal("v2-running", {
+      status: "completed",
+      finishedAt: "2026-09-22T00:03:00.000Z",
+    }),
+    { status: "completed", applied: true },
+  );
+  await assert.rejects(
+    upgraded.createTaskRun({
+      taskId: "exchange-rates",
+      kind: "sync",
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-22T00:04:00.000Z",
+      exitCode: 0,
+    } as never),
+    /Invalid automation task run input/u,
+  );
+} finally {
+  await baselineV2Store.close();
 }

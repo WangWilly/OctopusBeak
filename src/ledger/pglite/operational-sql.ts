@@ -1,3 +1,25 @@
+const TERMINAL_TASK_RUN_GUARD_SQL = String.raw`
+CREATE OR REPLACE FUNCTION pglite_guard_terminal_automation_task_run()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $guard$
+BEGIN
+  IF OLD.status IN ('completed', 'partial', 'failed', 'cancelled', 'interrupted') THEN
+    IF NEW.task_run_id IS DISTINCT FROM OLD.task_run_id
+      OR NEW.task_id IS DISTINCT FROM OLD.task_id
+      OR NEW.kind IS DISTINCT FROM OLD.kind
+      OR NEW.status IS DISTINCT FROM OLD.status
+      OR NEW.started_at IS DISTINCT FROM OLD.started_at
+      OR NEW.finished_at IS DISTINCT FROM OLD.finished_at
+    THEN
+      RAISE EXCEPTION 'Terminal automation task run is immutable: %', OLD.task_run_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$guard$;
+`;
+
 /**
  * Fresh operational persistence for automation lifecycle state and exchange
  * rates.  This schema is deliberately separate from the generated canonical
@@ -30,8 +52,6 @@ CREATE TABLE IF NOT EXISTS automation_task_runs (
   max_attempts INTEGER NOT NULL CHECK (max_attempts >= 1),
   started_at TEXT NOT NULL,
   finished_at TEXT,
-  exit_code INTEGER,
-  signal TEXT,
   record_json TEXT NOT NULL
 );
 
@@ -72,28 +92,7 @@ CREATE TABLE IF NOT EXISTS exchange_rates (
 CREATE INDEX IF NOT EXISTS idx_exchange_rates_currency_date
   ON exchange_rates(currency, rate_date);
 
-CREATE OR REPLACE FUNCTION pglite_guard_terminal_automation_task_run()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $guard$
-BEGIN
-  IF OLD.status IN ('completed', 'partial', 'failed', 'cancelled', 'interrupted') THEN
-    IF NEW.task_run_id IS DISTINCT FROM OLD.task_run_id
-      OR NEW.task_id IS DISTINCT FROM OLD.task_id
-      OR NEW.kind IS DISTINCT FROM OLD.kind
-      OR NEW.status IS DISTINCT FROM OLD.status
-      OR NEW.started_at IS DISTINCT FROM OLD.started_at
-      OR NEW.finished_at IS DISTINCT FROM OLD.finished_at
-      OR NEW.exit_code IS DISTINCT FROM OLD.exit_code
-      OR NEW.signal IS DISTINCT FROM OLD.signal
-    THEN
-      RAISE EXCEPTION 'Terminal automation task run is immutable: %', OLD.task_run_id;
-    END IF;
-  END IF;
-  RETURN NEW;
-END;
-$guard$;
-
+${TERMINAL_TASK_RUN_GUARD_SQL}
 DROP TRIGGER IF EXISTS automation_task_runs_terminal_immutable
   ON automation_task_runs;
 CREATE TRIGGER automation_task_runs_terminal_immutable
@@ -104,6 +103,20 @@ EXECUTE FUNCTION pglite_guard_terminal_automation_task_run();
 INSERT INTO pglite_operational_baseline_metadata(
   singleton_id, baseline_version, table_count, index_count, trigger_count
 )
-VALUES (1, 2, 3, 5, 1)
+VALUES (1, 3, 3, 5, 1)
 ON CONFLICT (singleton_id) DO NOTHING;
+`;
+
+/**
+ * Forward step for an existing baseline-2 database: drop the subprocess-era
+ * `exit_code` and `signal` run columns (ADR 0052) and refresh the terminal
+ * guard that compared them.  Run inside one transaction by the baseline owner.
+ */
+export const PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL: string = String.raw`
+ALTER TABLE automation_task_runs DROP COLUMN exit_code, DROP COLUMN signal;
+
+${TERMINAL_TASK_RUN_GUARD_SQL}
+UPDATE pglite_operational_baseline_metadata
+SET baseline_version = 3
+WHERE singleton_id = 1 AND baseline_version = 2;
 `;

@@ -152,8 +152,6 @@ export type AutomationTaskHistoryRow = {
   status: AutomationTaskStatus;
   startedAt: string;
   finishedAt: string | null;
-  exitCode: number | null;
-  signal: string | null;
   appWorkflowOutcome: TypedWorkflowOutcome | null;
 };
 

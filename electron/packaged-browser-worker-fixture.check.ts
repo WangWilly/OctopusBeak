@@ -33,8 +33,6 @@ function taskRun(
     maxAttempts: 1,
     startedAt: "2026-09-29T00:00:00.000Z",
     finishedAt: status === "running" ? null : "2026-09-29T00:00:01.000Z",
-    exitCode: status === "completed" ? 0 : status === "cancelled" ? null : 1,
-    signal: null,
     events: [{
       runId: `${taskId}-run`,
       stage: "collection",

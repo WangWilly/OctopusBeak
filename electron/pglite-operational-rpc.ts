@@ -186,7 +186,7 @@ function hasOnlyFields(value: unknown, allowedFields: readonly string[]): value 
 
 const CREATE_TASK_RUN_FIELDS = [
   "taskId", "kind", "status", "attempt", "maxAttempts", "startedAt",
-  "finishedAt", "exitCode", "signal", "progress", "humanAssistanceContract",
+  "finishedAt", "progress", "humanAssistanceContract",
   "scheduledAtUtc",
 ] as const;
 const TASK_RUN_UPDATE_FIELDS = [
