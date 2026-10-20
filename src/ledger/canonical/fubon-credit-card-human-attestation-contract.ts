@@ -63,17 +63,6 @@ export type FubonCreditCardHumanAttestedV2Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type FubonCreditCardHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked" | "restored";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: `sha256:${string}`;
-  sequence: number;
-};
-
 type ManifestFingerprintInput = {
   attestationId: string;
   evidenceVersion: string;
@@ -120,10 +109,6 @@ export const manifestFingerprint = (): `sha256:${string}` =>
     FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   );
 
-const VALIDATED_V2_MANIFESTS = new WeakSet<object>();
-export let currentV2Manifest: FubonCreditCardHumanAttestedV2Manifest =
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
-VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
 
 function validateManifest(
   manifest: FubonCreditCardHumanAttestedV2Manifest,
@@ -152,8 +137,7 @@ export function assertCurrentManifest(
   manifest: FubonCreditCardHumanAttestedV2Manifest,
 ): void {
   if (
-    manifest !== currentV2Manifest ||
-    !VALIDATED_V2_MANIFESTS.has(manifest) ||
+    manifest !== FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST ||
     fubonCreditCardHumanAttestedManifestFingerprint(manifest) !==
       manifestFingerprint()
   )
@@ -163,23 +147,14 @@ export function assertCurrentManifest(
   validateManifest(manifest, FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST);
 }
 
-export function getFubonCreditCardHumanAttestedV2Manifest(): FubonCreditCardHumanAttestedV2Manifest {
-  return currentV2Manifest;
-}
-
 export function isFubonCreditCardHumanAttestedV2Manifest(
   value: unknown,
 ): value is FubonCreditCardHumanAttestedV2Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_V2_MANIFESTS.has(value) &&
-    value === currentV2Manifest
+    value === FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST
   );
-}
-
-export function isFubonCreditCardHumanAttestedV2Active(): boolean {
-  return currentV2Manifest.status === "active";
 }
 
 /**
@@ -202,20 +177,3 @@ export function isFubonCreditCardHumanAttestedAccountKey(
   return true;
 }
 
-export function setCurrentManifestStatus(
-  status: "active" | "revoked",
-  at: string | null,
-  reason: string | null,
-): void {
-  if (status === "active") {
-    currentV2Manifest = FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
-  } else {
-    currentV2Manifest = deepFreeze({
-      ...currentV2Manifest,
-      status: "revoked" as const,
-      revokedAt: at,
-      revocationReason: reason,
-    });
-  }
-  VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
-}

@@ -12,8 +12,6 @@ import {
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
   ctbcHumanAttestedIdentityEpochKey,
-  getCtbcHumanAttestedV1Manifest,
-  isCtbcHumanAttestedV1Active,
   isCtbcHumanAttestedV1Manifest,
   type CtbcHumanAttestedV1Manifest,
 } from "./ctbc-human-attestation-contract.ts";
@@ -611,8 +609,6 @@ export function admitCtbcDomesticDepositFinancialCapture(
   if (!input.humanAttestation) diagnostics.push("human-attestation-missing");
   else if (!isCtbcHumanAttestedV1Manifest(input.humanAttestation))
     diagnostics.push("human-attestation-mismatch");
-  if (!isCtbcHumanAttestedV1Active())
-    diagnostics.push("human-attestation-revoked");
   if (!isAdmittedCtbcDomesticDepositCaptureEvidence(input.capture))
     return {
       status: "blocked",
@@ -697,7 +693,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
           "personal-main",
         ),
         identityEpochKey: ctbcHumanAttestedIdentityEpochKey(
-          input.humanAttestation ?? getCtbcHumanAttestedV1Manifest(),
+          input.humanAttestation ?? CTBC_HUMAN_ATTESTED_V1_MANIFEST,
         ),
         stream: "domestic-deposit",
         recordKind: "ctbc-domestic-deposit",

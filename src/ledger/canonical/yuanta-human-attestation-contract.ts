@@ -70,21 +70,6 @@ export type YuantaHumanAttestedV2Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type YuantaHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: YuantaOpaqueToken;
-  sequence: number;
-};
-
-const VALIDATED_V2_MANIFESTS = new WeakSet<object>();
-export let currentV2Manifest: YuantaHumanAttestedV2Manifest =
-  YUANTA_HUMAN_ATTESTED_V2_MANIFEST;
-VALIDATED_V2_MANIFESTS.add(YUANTA_HUMAN_ATTESTED_V2_MANIFEST);
 
 export function manifestFingerprint(
   manifest: YuantaHumanAttestedV2Manifest,
@@ -110,7 +95,7 @@ const YUANTA_DOMESTIC_DEPOSIT_IDENTITY_EPOCH_SEED = [
  * time, CSV filename, account label, and content digest.
  */
 export function yuantaHumanAttestedV2IdentityEpochKey(
-  _manifest: YuantaHumanAttestedV2Manifest = currentV2Manifest,
+  _manifest: YuantaHumanAttestedV2Manifest = YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
 ): YuantaOpaqueToken {
   const value = YUANTA_DOMESTIC_DEPOSIT_IDENTITY_EPOCH_SEED.join("\u0000");
   return "sha256:" + Buffer.from(value).toString("base64url");
@@ -120,7 +105,7 @@ export function assertCurrentV2Manifest(
   manifest: YuantaHumanAttestedV2Manifest,
 ): void {
   if (
-    manifest !== currentV2Manifest ||
+    manifest !== YUANTA_HUMAN_ATTESTED_V2_MANIFEST ||
     manifest.attestationId !==
       YUANTA_HUMAN_ATTESTED_V2_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
@@ -144,38 +129,13 @@ export function validEventAt(value: string): boolean {
   );
 }
 
-export function getYuantaHumanAttestedV2Manifest(): YuantaHumanAttestedV2Manifest {
-  return currentV2Manifest;
-}
-
 export function isYuantaHumanAttestedV2Manifest(
   value: unknown,
 ): value is YuantaHumanAttestedV2Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_V2_MANIFESTS.has(value) &&
-    value === currentV2Manifest
+    value === YUANTA_HUMAN_ATTESTED_V2_MANIFEST
   );
 }
 
-export function isYuantaHumanAttestedV2Active(): boolean {
-  return currentV2Manifest.status === "active";
-}
-
-/** Update only the mutable authority status while keeping the contract immutable. */
-export function setYuantaHumanAttestedV2Status(
-  status: "active" | "revoked",
-  revokedAt: string | null,
-  revocationReason: string | null,
-): YuantaHumanAttestedV2Manifest {
-  const next = deepFreeze({
-    ...currentV2Manifest,
-    status,
-    revokedAt: status === "active" ? null : revokedAt,
-    revocationReason: status === "active" ? null : revocationReason,
-  });
-  currentV2Manifest = next;
-  VALIDATED_V2_MANIFESTS.add(next);
-  return next;
-}

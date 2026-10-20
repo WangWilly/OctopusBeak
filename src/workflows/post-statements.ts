@@ -33,7 +33,7 @@ import {
   type PostDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/post-domestic-deposit-admission.ts";
 import {
-  getPostHumanAttestedV1Manifest,
+  POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import {
@@ -1044,7 +1044,7 @@ async function runPostStatements(
     financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
   }> = [];
   const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] = [];
-  const manifest = getPostHumanAttestedV1Manifest();
+  const manifest = POST_HUMAN_ATTESTED_V1_MANIFEST;
   for (const { capture, captureId } of captureEntries) {
     const input = {
       capture,

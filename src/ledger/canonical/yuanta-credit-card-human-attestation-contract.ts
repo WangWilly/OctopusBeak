@@ -98,17 +98,6 @@ export type YuantaCreditCardHumanAttestedV2Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type YuantaCreditCardHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked" | "restored";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: `sha256:${string}`;
-  sequence: number;
-};
-
 /** The workflow may only pass an opaque, non-card account attestation key. */
 export function isYuantaCreditCardHumanAttestedAccountKey(
   value: unknown,
@@ -121,13 +110,9 @@ export function isYuantaCreditCardHumanAttestedAccountKey(
   );
 }
 
-const VALIDATED_V2_MANIFESTS = new WeakSet<object>();
-let currentV2Manifest: YuantaCreditCardHumanAttestedV2Manifest =
-  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
-VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
 
 function manifestFingerprintV2(
-  manifest: YuantaCreditCardHumanAttestedV2Manifest = currentV2Manifest,
+  manifest: YuantaCreditCardHumanAttestedV2Manifest = YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
 ): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(
@@ -145,7 +130,7 @@ function manifestFingerprintV2(
 }
 
 export function yuantaCreditCardHumanAttestedV2ManifestFingerprint(
-  manifest: YuantaCreditCardHumanAttestedV2Manifest = currentV2Manifest,
+  manifest: YuantaCreditCardHumanAttestedV2Manifest = YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
 ): `sha256:${string}` {
   return manifestFingerprintV2(manifest);
 }
@@ -154,8 +139,7 @@ export function assertYuantaCreditCardHumanAttestedV2Manifest(
   manifest: YuantaCreditCardHumanAttestedV2Manifest,
 ): void {
   if (
-    manifest !== currentV2Manifest ||
-    !VALIDATED_V2_MANIFESTS.has(manifest) ||
+    manifest !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST ||
     manifest.attestationId !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.attestationId ||
     manifest.evidenceVersion !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion ||
     manifest.authorityRoute !== YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.authorityRoute ||
@@ -167,36 +151,13 @@ export function assertYuantaCreditCardHumanAttestedV2Manifest(
     );
 }
 
-export function getYuantaCreditCardHumanAttestedV2Manifest(): YuantaCreditCardHumanAttestedV2Manifest {
-  return currentV2Manifest;
-}
-
 export function isYuantaCreditCardHumanAttestedV2Manifest(
   value: unknown,
 ): value is YuantaCreditCardHumanAttestedV2Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_V2_MANIFESTS.has(value) &&
-    value === currentV2Manifest
+    value === YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST
   );
 }
 
-export function isYuantaCreditCardHumanAttestedV2Active(): boolean {
-  return currentV2Manifest.status === "active";
-}
-
-export function setYuantaCreditCardHumanAttestedV2Status(
-  status: "active" | "revoked",
-  at: string | null,
-  reason: string | null,
-): YuantaCreditCardHumanAttestedV2Manifest {
-  currentV2Manifest = deepFreeze({
-    ...currentV2Manifest,
-    status,
-    revokedAt: status === "revoked" ? at : null,
-    revocationReason: status === "revoked" ? reason : null,
-  });
-  VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
-  return currentV2Manifest;
-}
