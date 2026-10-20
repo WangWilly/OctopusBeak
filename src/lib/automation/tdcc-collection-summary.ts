@@ -2,6 +2,7 @@ import type { TdccInvestmentExclusion } from "../../ledger/canonical/tdcc-invest
 import type { TdccSettlementExclusion } from "../../ledger/canonical/tdcc-settlement-admission.ts";
 import type { TdccProductCollection } from "../../workflows/tdcc-epassbook-collection.ts";
 import type { CollectionProductOutcome, ProductCollectionRunSummary } from "./product-collection.ts";
+import { productRunStatus } from "./product-run-status.ts";
 
 export const TDCC_PRODUCT_IDS = ["securities", "fund", "settlement"] as const;
 export type TdccProductId = typeof TDCC_PRODUCT_IDS[number];
@@ -221,21 +222,10 @@ export function createTdccRunSummary(selectedIds: readonly TdccProductId[]) {
       return Object.freeze({
         ...base,
         products: Object.freeze(products),
-        status: tdccCollectionRunStatus(products, base.committedCount, base.status),
+        status: productRunStatus(products, base.committedCount),
       });
     },
   });
-}
-
-/** Collection snapshots do not decide cancellation or uncertain-commit terminal status. */
-export function tdccCollectionRunStatus(
-  products: readonly CollectionProductOutcome[],
-  committedCount: number,
-  otherwise: ProductCollectionRunSummary["status"],
-): ProductCollectionRunSummary["status"] {
-  return products.some((product) => product.collection?.status === "incomplete")
-    ? committedCount > 0 ? "partial" : "failed"
-    : otherwise;
 }
 
 export function tdccWorkflowOutput(summary: ProductCollectionRunSummary) {
