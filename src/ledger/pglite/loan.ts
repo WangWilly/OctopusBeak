@@ -2,12 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
-  commitPGliteCanonicalFinancialCaptureInTransaction,
+  admitPGliteCanonicalFinancialCaptureInTransaction,
+  refreshPGliteAdmittedFinancialProjection,
+  type PGliteAdmittedFinancialCapture,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalFinancialCommitResult,
   type PGliteCanonicalSourceCaptureTransactionResult,
 } from "./canonical-source-store.ts";
-import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type {
   PGliteCanonicalFinancialFactInput,
   PGliteCanonicalFinancialAccountInput,
@@ -464,17 +465,13 @@ function validateLoanCapture(capture: LoanCaptureInput): void {
   if (coverage === "source-linked-complete" && (!capture.counterpartTransactions.length || !capture.relations.length)) fail("Complete loan relation coverage requires counterpart and relation evidence.");
 }
 
-async function contextFor(transaction: PGliteTransaction, capture: PGliteCanonicalSourceCaptureTransactionResult): Promise<LoanCaptureContext> {
-  const row = await first<{ account_id: unknown; commit_id: unknown; source_connection_id: unknown; identity_epoch_id: unknown }>(transaction, `SELECT scope.account_id, source_capture.commit_id, source_capture.source_connection_id, source_capture.identity_epoch_id
-    FROM source_captures source_capture JOIN capture_scopes scope ON scope.capture_id = source_capture.capture_id
-    WHERE source_capture.capture_id = ?`, [capture.captureId]);
-  if (!row?.account_id) fail("Loan source capture account scope is missing.");
+function loanContext(admitted: PGliteAdmittedFinancialCapture): LoanCaptureContext {
   return {
-    capture,
-    accountId: bytes(row.account_id, "Loan account"),
-    commitId: bytes(row.commit_id, "Loan commit"),
-    sourceConnectionId: bytes(row.source_connection_id, "Loan source connection"),
-    identityEpochId: bytes(row.identity_epoch_id, "Loan identity epoch"),
+    capture: admitted.capture,
+    accountId: admitted.accountId,
+    commitId: admitted.capture.commitId,
+    sourceConnectionId: admitted.capture.sourceConnectionId,
+    identityEpochId: admitted.capture.identityEpochId,
   };
 }
 
@@ -565,7 +562,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
 ): Promise<PGliteCanonicalLoanCommitResult> {
   const snapshot = structuredClone(request);
   validateLoanCapture(snapshot.capture);
-    const main = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
+    const mainAdmitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: captureSource(snapshot.capture),
       account: loanAccount(snapshot.capture),
       accountIdentifier: snapshot.capture.identity.accountNumber ?? null,
@@ -573,81 +570,33 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
       balanceObservations: snapshot.capture.balanceObservations.map(balanceObservation),
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, { ...options, skipProjection: true });
-    const mainContext = await contextFor(transaction, (await first<{ capture_id: unknown }>(transaction, "SELECT capture_id FROM source_captures WHERE capture_key = ?", [snapshot.capture.captureId])) ? {
-      ...await (async () => {
-        const source = await first<{ capture_id: unknown; commit_id: unknown; source_connection_id: unknown; identity_epoch_id: unknown }>(transaction, "SELECT capture_id, commit_id, source_connection_id, identity_epoch_id FROM source_captures WHERE capture_key = ?", [snapshot.capture.captureId]);
-        if (!source) fail("Loan source capture context is missing.");
-        const sourceRecords = await query<{ occurrence_key: string; source_record_id: unknown }>(transaction, "SELECT occurrence_key, source_record_id FROM source_records WHERE capture_id = ?", [source.capture_id]);
-        return {
-          receipt: { captureId: snapshot.capture.captureId, knowledgePoint: main.commitSequence },
-          captureId: bytes(source.capture_id, "Loan capture"),
-          scopeId: bytes((await first<{ scope_id: unknown }>(transaction, "SELECT scope_id FROM capture_scopes WHERE capture_id = ?", [source.capture_id]))?.scope_id, "Loan scope"),
-          commitId: bytes(source.commit_id, "Loan commit"),
-          sourceConnectionId: bytes(source.source_connection_id, "Loan source connection"),
-          identityEpochId: bytes(source.identity_epoch_id, "Loan identity epoch"),
-          sourceSubjectId: bytes((await first<{ source_subject_id: unknown }>(transaction, "SELECT source_subject_id FROM source_captures WHERE capture_id = ?", [source.capture_id]))?.source_subject_id, "Loan subject"),
-          sourceRecordIds: sourceRecords.map((row) => bytes(row.source_record_id, "Loan source record")),
-          sourceRecordIdsByOccurrence: new Map(sourceRecords.map((row) => [row.occurrence_key, bytes(row.source_record_id, "Loan source record")])),
-        } satisfies PGliteCanonicalSourceCaptureTransactionResult;
-      })(),
-    } : fail("Loan source capture context is missing."));
+    }, options);
+    const main = mainAdmitted.result;
+    const mainContext = loanContext(mainAdmitted);
     await persistIdentity(transaction, mainContext, { accountKey: snapshot.capture.identity.accountKey, accountNo: snapshot.capture.identity.accountNo, accountType: "loan", stream: "loan" });
     await persistFacts(transaction, mainContext, snapshot.capture, main);
 
+    const admittedCaptures = [mainAdmitted];
     const counterpartContexts = new Map<string, LoanCaptureContext>();
     const resultByCapture = new Map<string, PGliteCanonicalFinancialCommitResult>([[snapshot.capture.captureId, main]]);
     for (const counterpart of snapshot.capture.counterpartTransactions) {
       const source = counterpartSource(snapshot.capture, counterpart);
-      const result = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
+      const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
         capture: source,
         account: counterpartAccount(counterpart),
         transactions: [counterpartFinancialFact(counterpart, snapshot.capture)],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: options.recordedAtUtcUs,
-      }, { ...options, skipProjection: true });
-      const raw = await first<{ capture_id: unknown; commit_id: unknown; source_connection_id: unknown; identity_epoch_id: unknown; source_subject_id: unknown; scope_id: unknown }>(transaction, "SELECT source_capture.capture_id, source_capture.commit_id, source_capture.source_connection_id, source_capture.identity_epoch_id, source_capture.source_subject_id, scope.scope_id FROM source_captures source_capture JOIN capture_scopes scope ON scope.capture_id = source_capture.capture_id WHERE source_capture.capture_key = ?", [counterpart.captureId]);
-      if (!raw) fail("Loan counterpart source capture context is missing.");
-      const sourceRecords = await query<{ occurrence_key: string; source_record_id: unknown }>(transaction, "SELECT occurrence_key, source_record_id FROM source_records WHERE capture_id = ?", [raw.capture_id]);
-      const context: LoanCaptureContext = {
-        capture: {
-          receipt: { captureId: counterpart.captureId, knowledgePoint: result.commitSequence },
-          captureId: bytes(raw.capture_id, "Loan counterpart capture"),
-          scopeId: bytes(raw.scope_id, "Loan counterpart scope"),
-          commitId: bytes(raw.commit_id, "Loan counterpart commit"),
-          sourceConnectionId: bytes(raw.source_connection_id, "Loan counterpart source connection"),
-          identityEpochId: bytes(raw.identity_epoch_id, "Loan counterpart identity epoch"),
-          sourceSubjectId: bytes(raw.source_subject_id, "Loan counterpart subject"),
-          sourceRecordIds: sourceRecords.map((row) => bytes(row.source_record_id, "Loan counterpart record")),
-          sourceRecordIdsByOccurrence: new Map(sourceRecords.map((row) => [row.occurrence_key, bytes(row.source_record_id, "Loan counterpart record")])),
-        },
-        accountId: bytes(raw.capture_id, "unused"),
-        commitId: bytes(raw.commit_id, "Loan counterpart commit"),
-        sourceConnectionId: bytes(raw.source_connection_id, "Loan counterpart source connection"),
-        identityEpochId: bytes(raw.identity_epoch_id, "Loan counterpart identity epoch"),
-      };
-      const accountRow = await first<{ account_id: unknown }>(transaction, "SELECT scope.account_id FROM capture_scopes scope JOIN source_captures source_capture ON source_capture.capture_id = scope.capture_id WHERE source_capture.capture_key = ?", [counterpart.captureId]);
-      if (!accountRow?.account_id) fail("Loan counterpart account scope is missing.");
-      context.accountId = bytes(accountRow.account_id, "Loan counterpart account");
+      }, options);
+      const result = admitted.result;
+      const context = loanContext(admitted);
+      admittedCaptures.push(admitted);
       counterpartContexts.set(counterpart.captureId, context);
       resultByCapture.set(counterpart.captureId, result);
       await persistIdentity(transaction, context, { accountKey: counterpart.accountKey, accountNo: counterpart.accountNo, accountType: "depository", stream: "domestic-deposit" });
     }
     await persistRelations(transaction, mainContext, snapshot.capture, counterpartContexts, resultByCapture);
-    const allContexts = [mainContext, ...counterpartContexts.values()];
-    const latestContext = allContexts.reduce((latest, candidate) =>
-      candidate.capture.receipt.knowledgePoint >= latest.capture.receipt.knowledgePoint
-        ? candidate
-        : latest,
-    );
-    await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
-      commitId: latestContext.commitId,
-      cutoffSequence: latestContext.capture.receipt.knowledgePoint,
-      captureIds: allContexts.map((context) => context.capture.captureId),
-      transactionIds: resultByCapture.size === 0
-        ? []
-        : [...resultByCapture.values()].flatMap((result) => result.transactions.map((row) => bytes(row.transactionId, "Loan transaction"))),
-    });
+    await refreshPGliteAdmittedFinancialProjection(transaction, admittedCaptures, options);
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {
       status: "canonical-live" as const,
