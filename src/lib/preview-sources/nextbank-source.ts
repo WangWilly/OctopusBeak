@@ -15,13 +15,13 @@ import {
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
   solveChallengeRound,
   taipeiMonthWindow,
   text,
   type PreviewCaptchaSolver,
   type SourceRecord,
 } from "./source-kit.ts";
+import { nextbankAudioCaptchaSolver } from "./preview-captcha.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 
 const API = "https://api.nextbank.com.tw";
@@ -31,6 +31,11 @@ const PASSWORD_RSA_MODULUS = "B65A34251E089C68D3A586D403D3A31362B8287AAB9C7BD8F9
 const MONTHS = 3;
 const POCKET_PAGE_SIZE = 10;
 const MAX_POCKET_PAGES = 1000;
+// NextBank's CAPTCHA answer is five decimal digits, confirmed by the October
+// 2026 calibration corpus (all 60 labels). The `isAudio: true` challenge comes
+// back as `captchaAudio`, a list of five base64 clips, one spoken digit each;
+// the audio solver transcribes each clip and maps it to a digit.
+const CAPTCHA_LENGTH = 5;
 // NextBank offers NT-dollar deposits only, and neither AllInOne nor PocketInfo
 // carries a currency field. A currency the source does send always wins.
 const ENDPOINT_CURRENCY = "TWD";
@@ -93,6 +98,11 @@ export function encryptNextBankPassword(password: string): string {
   return publicEncrypt({ key, format: "jwk", padding: constants.RSA_PKCS1_PADDING }, Buffer.from(password, "utf8"))
     .toString("hex")
     .toUpperCase();
+}
+
+function captchaAudioClips(value: unknown): readonly Buffer[] {
+  if (!Array.isArray(value) || value.length === 0) return fail("unexpected-response", "Captcha.captchaAudio is not a non-empty list");
+  return value.map((clip, index) => Buffer.from(text(clip, `Captcha.captchaAudio[${index}]`), "base64"));
 }
 
 function trades(page: SourceRecord, field: string): readonly SourceRecord[] {
@@ -289,8 +299,8 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Next Bank account. Its data may be incomplete or wrong. Next Bank's sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的將來銀行帳戶執行過，資料可能不完整或有誤。將來銀行登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live Next Bank account. Its data may be incomplete or wrong. Next Bank's sign-in CAPTCHA is solved from its spoken audio with the on-device speech recogniser, and the run stops at sign-in when it cannot read the clip.",
+        "zh-TW": "預覽來源，從未以真實的將來銀行帳戶執行過，資料可能不完整或有誤。將來銀行登入的驗證碼以語音播放，由裝置上的語音辨識器解題；無法辨識時，執行會在登入時停止。",
       },
       requirements: [{ en: "A Next Bank account with web sign-in.", "zh-TW": "可用網頁登入的將來銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Next Bank.", "zh-TW": "輸入登入將來銀行使用的身分證字號、使用者代碼與密碼。" }],
@@ -308,14 +318,13 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
     startUrl: WEB,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "nextbank-image-captcha");
+      const solve = options.solveCaptcha ?? nextbankAudioCaptchaSolver();
       return open(context, { pageUrl: input.startUrl }, async (http) => {
         const api = client(context, http);
-        const challenge = await api.post("/ap2/open/common/v1.0/Captcha", { isAudio: false });
+        const challenge = await api.post("/ap2/open/common/v1.0/Captcha", { isAudio: true });
         const answer = await solveChallengeRound(context, solve, async () => ({
-          image: Buffer.from(text(challenge.data.captchaImage, "Captcha.captchaImage"), "base64"),
-          charset: "alphanumeric",
+          audio: captchaAudioClips(challenge.data.captchaAudio),
+          expectedLength: CAPTCHA_LENGTH,
         }), 1);
         const login = await api.post("/ap2/api/v1.1/membership/CaptchaLogin", {
           identity: input.credentials[KEY.idNumber] ?? "",

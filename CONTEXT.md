@@ -812,7 +812,7 @@ An always-expanded, source-specific section in credential setup that explains wh
 _Avoid_: Field hint, remote help content, generic learn-more link
 
 **Statement run summary**:
-A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome based on actual collection and admission results. Partial completion preserves independently complete, successfully admitted data alongside product failures without treating an incomplete Source Capture or a grouped evidence spine as partially admissible.
+A compact record of one automation task run's statement collection outcome, including each selected statement type's result and the overall outcome based on actual collection and admission results. Partial completion preserves independently complete, successfully admitted data alongside product failures without treating an incomplete Source Capture or a grouped evidence spine as partially admissible. When verified products and Attached Preview Products share a run, the summary covers both and retains their durable outcomes through failure or cooperative cancellation.
 _Avoid_: All-products success assumption, partial financial evidence, failure that hides admitted data
 
 **Product collection absence**:
@@ -1008,6 +1008,26 @@ _Avoid_: Unrestricted Taishin CAPTCHA, mixed-layout Taishin CAPTCHA corpus
 **Mega Bank login CAPTCHA**:
 The calibrated CAPTCHA family on the Mega Bank preview source: a 100-by-49-pixel image whose answer is exactly five decimal digits. Automatic submission requires confidence at or above 0.99 from the best of three declared strategies; an unaccepted challenge may be replaced by an In-page CAPTCHA Refresh. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.
 _Avoid_: Unrestricted Mega CAPTCHA, lowered Mega confidence threshold, mixed-layout Mega CAPTCHA corpus
+
+**Next Bank login CAPTCHA**:
+The supported CAPTCHA family on the Next Bank preview source: the audio challenge that NextBank's CAPTCHA endpoint returns for `isAudio: true`, a list of five base64 MPEG clips, one spoken Chinese numeral each. The local speech recogniser (sherpa-onnx running the paraformer-zh-small model) transcribes each clip and maps it to one decimal digit, then joins the five digits into the answer, as the Yuanta Trade audio verification does. Acceptance is structural (every clip one digit, five digits total); correctness is left to the login outcome. The audio shape was confirmed against the live endpoint. A clip that transcribes to anything other than one digit is unsupported and must not be submitted automatically.
+_Avoid_: Next Bank image OCR, a non-five-digit Next Bank audio answer
+
+**Rakuten Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Rakuten Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between the declared whole-image and per-character readings; missing agreement or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Confidence-only Rakuten submission, repeated identical Rakuten OCR attempt, mixed-layout Rakuten CAPTCHA corpus
+
+**KGI Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the KGI Bank preview source: a 98-by-25-pixel image whose answer is exactly six decimal digits. Three declared whole-image strategies compare the generic preprocessing with two dark-foreground preparations. Automatic submission requires OCR Agreement or confidence at or above 0.99, and conflicting eligible answers are rejected. A capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted KGI CAPTCHA submission, lowered KGI confidence threshold, mixed-layout KGI CAPTCHA corpus
+
+**First Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the First Bank preview source: a 67-by-29-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires confidence at or above 0.97 from the best of three declared whole-image strategies, including dark-foreground extraction. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted First Bank CAPTCHA submission, lowered First Bank confidence threshold, mixed-layout First Bank CAPTCHA corpus
+
+**O-Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the O-Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between its declared whole-image and per-character teal-foreground readings. Confidence alone never permits submission, and a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Confidence-only O-Bank submission, unrestricted O-Bank CAPTCHA submission, mixed-layout O-Bank CAPTCHA corpus
 
 **Verification challenge presence**:
 The judgment, made at a workflow-declared verification point, of whether the challenge actually appears. When the challenge is absent the run proceeds without solving; a present challenge goes to its solver route.

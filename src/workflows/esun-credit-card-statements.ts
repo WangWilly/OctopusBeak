@@ -36,13 +36,13 @@ import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   ProductCollectionFatalError,
-  ProductCollectionInterruptedError,
   type CollectionProductOutcome,
   type ProductCollectionRunSummary,
 } from "../lib/automation/product-collection.ts";
 import { PREVIEW_PRODUCTS, type PreviewProduct } from "../ledger/pglite/preview-core.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "../lib/preview-sources/attached-products.ts";
 import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
+import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
 
@@ -1172,9 +1172,13 @@ export type EsunProviderWorkflowOutput = Readonly<{
   query: Readonly<{ startDate: string; endDate: string }> | null;
   canonicalAdmission: "admitted" | "failed" | "not-selected";
   canonicalCaptureCount: 0 | 1;
+  sourceCaptureCount: number;
+  rowCount: number;
+  itemCount: number;
   captureId: string | null;
   committedCount: number;
   products: readonly CollectionProductOutcome[];
+  productCollectionSummary: ProductCollectionRunSummary;
   status: ProductCollectionRunSummary["status"];
 }>;
 
@@ -1455,7 +1459,14 @@ async function collectEsunAttachedProducts(
   context: WorkflowContext,
   selected: readonly PreviewProduct[],
 ): Promise<PreviewProductRun> {
-  if (selected.length > 0) await withAbort(waitForEsunPortalSession(page), context.signal);
+  if (selected.length > 0 && !context.signal.aborted) {
+    try {
+      await withAbort(waitForEsunPortalSession(page), context.signal);
+    } catch (error) {
+      // Let the collector record cooperative cancellation before returning the snapshot.
+      if (!context.signal.aborted) throw error;
+    }
+  }
   return collectAttachedPreviewProducts({
     context,
     source: ATTACHED_PREVIEW_PRODUCTS.esun,
@@ -1464,30 +1475,6 @@ async function collectEsunAttachedProducts(
       deposit: () => collectEsunDeposits(createEsunPortalTransport(page, context.signal), context.now()),
     },
   });
-}
-
-function esunRunSummary(
-  creditCard: EsunCreditCardResult | null,
-  creditCardFailure: EsunCreditCardFailure | null,
-  attached: PreviewProductRun,
-): ProductCollectionRunSummary {
-  const products: CollectionProductOutcome[] = [
-    creditCard
-      ? { typeId: "credit_card", status: "success", itemCount: creditCard.itemCount, committedCount: creditCard.itemCount }
-      : creditCardFailure
-        ? { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: creditCardFailure.errorCode }
-        : { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
-    ...attached.products,
-  ];
-  const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
-  return {
-    products,
-    sourceCaptureCount: 0,
-    rowCount: creditCard?.count ?? 0,
-    itemCount: products.reduce((total, product) => total + product.itemCount, 0),
-    committedCount,
-    status: products.some((product) => product.status === "failed") ? committedCount > 0 ? "partial" : "failed" : "completed",
-  };
 }
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
@@ -1538,25 +1525,29 @@ export async function runEsunCreditCardProviderWorkflow(
       }
     }
     const attached = await collectEsunAttachedProducts(page, context, input.attachedPreviewProducts);
-    const summary = esunRunSummary(creditCard, creditCardFailure, attached);
-    if (attached.interrupted) {
-      const interrupted = new ProductCollectionInterruptedError(attached.interrupted.errorCode, summary);
-      (interrupted as { cause?: unknown }).cause = attached.interrupted.error;
-      throw interrupted;
-    }
-    if (creditCardFailure && summary.committedCount === 0) throw creditCardFailure.error;
-    if (!creditCard && attached.products.every((product) => product.status === "failed" || product.status === "skipped")) {
-      throw attached.firstFailure;
-    }
+    const summary = finishAttachedProductRun({
+      products: [creditCard
+        ? { typeId: "credit_card", status: "success", itemCount: creditCard.itemCount, committedCount: creditCard.itemCount }
+        : creditCardFailure
+          ? { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: creditCardFailure.errorCode }
+          : { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }],
+      sourceCaptureCount: 0,
+      rowCount: creditCard?.count ?? 0,
+      firstFailure: creditCardFailure?.error,
+    }, attached, context.signal);
     return {
       usedExistingSession,
       count: creditCard?.count ?? 0,
       query: creditCard?.query ?? null,
       canonicalAdmission: creditCard ? "admitted" : creditCardFailure ? "failed" : "not-selected",
       canonicalCaptureCount: creditCard ? 1 : 0,
+      sourceCaptureCount: summary.sourceCaptureCount,
+      rowCount: summary.rowCount,
+      itemCount: summary.itemCount,
       captureId: creditCard?.captureId ?? null,
       committedCount: summary.committedCount,
       products: summary.products,
+      productCollectionSummary: summary,
       status: summary.status,
     };
   });

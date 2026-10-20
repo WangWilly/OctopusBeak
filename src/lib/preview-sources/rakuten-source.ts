@@ -13,7 +13,6 @@ import {
   parseSourceJson,
   record,
   records,
-  refuseUnsupportedVerification,
   requireDeviceRegistration,
   solveChallengeRound,
   text,
@@ -21,6 +20,8 @@ import {
   type SourceRecord,
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
+import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
+import { decodeImageToPng } from "./browser-http.ts";
 
 const LOGIN_URL = "https://www.rakuten-bank.com.tw/ebank/cgn/cgnot0001/010";
 const CURRENT_MONTH_PATH = "/CTWQU0001/010";
@@ -247,7 +248,8 @@ export const playwrightRakutenPage: RakutenPageOpener = (context, startUrl, use)
         const source = await image.getAttribute("src") ?? "";
         const match = /^data:[^;]+;base64,(.+)$/u.exec(source);
         if (!match) return fail("unexpected-response", "the CAPTCHA image is not a data URI");
-        return Buffer.from(match[1]!, "base64");
+        return decodeImageToPng(page, Buffer.from(match[1]!, "base64"))
+          .catch(() => fail("unexpected-response", "the CAPTCHA is not a decodable image"));
       },
       async signIn(credentials) {
         await page.fill("#custNo", credentials.idNumber);
@@ -303,8 +305,8 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Rakuten Bank account. Its data may be incomplete or wrong. Rakuten's web sign-in needs an image CAPTCHA that no on-device solver supports yet, so runs stop at sign-in.",
-        "zh-TW": "預覽來源，從未以真實的樂天國際銀行帳戶執行過，資料可能不完整或有誤。樂天網銀登入需要圖形驗證碼，目前沒有裝置上的解題器支援，因此執行會在登入時停止。",
+        en: "Preview source, never run against a live Rakuten Bank account. Its data may be incomplete or wrong. Login verification runs on this device; a challenge that cannot be verified ends the run.",
+        "zh-TW": "預覽來源，從未以真實的樂天國際銀行帳戶執行過，資料可能不完整或有誤。登入驗證會在此裝置上執行，無法確認驗證碼時會結束執行。",
       },
       requirements: [{ en: "A Rakuten Bank account with web banking sign-in.", "zh-TW": "可用網路銀行登入的樂天國際銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Rakuten web banking.", "zh-TW": "輸入登入樂天網路銀行使用的身分證字號、使用者代號與密碼。" }],
@@ -322,8 +324,7 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
     startUrl: LOGIN_URL,
     async run(context, input) {
       await context.event("authentication", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "rakuten-image-captcha");
+      const solve = options.solveCaptcha ?? calibratedCaptchaSolver(RAKUTEN_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async (page) => {
         const captcha = await solveChallengeRound(context, solve, async () =>
           ({ image: await page.captchaImage(), charset: "alphanumeric", expectedLength: CAPTCHA_LENGTH }), 1);

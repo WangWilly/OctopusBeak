@@ -29,7 +29,7 @@ const withPockets = (pockets: readonly string[], termTotal: string | null): Reco
 
 function routes(overrides: Record<string, FakeRoute> = {}): Record<string, FakeRoute> {
   return {
-    "POST /ap2/open/common/v1.0/Captcha": () => ok({ uuid: "captcha-1", captchaImage: Buffer.from("png").toString("base64") }),
+    "POST /ap2/open/common/v1.0/Captcha": () => ok({ uuid: "captcha-1", captchaAudio: Array.from({ length: 5 }, () => Buffer.from("clip").toString("base64")) }),
     "POST /ap2/api/v1.1/membership/CaptchaLogin": () => ok({ acstkn: "token-1" }),
     "POST /ap2/api/v2.1/membership/AllInOne": () => jsonResponse(
       '{"success":true,"data":{"mainAccount":{"accountId":"NB-7788","workingBalance":1234.50,"availableBalance":1200.00}}}',
@@ -50,7 +50,7 @@ function routes(overrides: Record<string, FakeRoute> = {}): Record<string, FakeR
   };
 }
 
-const solveCaptcha = async () => "AB12";
+const solveCaptcha = async () => "12345";
 
 async function run(overrides: Record<string, FakeRoute> = {}, products?: readonly PreviewWrite["product"][]) {
   const http = fakeHttpOpener(routes(overrides));
@@ -128,19 +128,20 @@ test("the password leaves only RSA-encrypted and the user code only base64-encod
   const login = JSON.parse(http.requests.find((request) => request.url.endsWith("CaptchaLogin"))!.body!);
   assert.equal(login.identity, "A000000001");
   assert.equal(login.userId, Buffer.from("user01").toString("base64"));
-  assert.equal(login.captchaResult, "AB12");
+  assert.equal(login.captchaResult, "12345");
   assert.equal(login.captchaUuid, "captcha-1");
   assert.match(login.passwd, /^[0-9A-F]{512}$/u);
   assert.ok(!JSON.stringify(http.requests).includes("secret-pass"));
   assert.notEqual(encryptNextBankPassword("x"), encryptNextBankPassword("x"), "PKCS#1 v1.5 padding is randomized");
 });
 
-test("without a calibrated CAPTCHA solver the run fails as verification-configuration-failed before any request", async () => {
-  const http = fakeHttpOpener(routes());
-  const result = await runPreviewSource(createNextBankSource({ http }), credentials);
-  assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.equal(http.requests.length, 0);
-  assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
+test("the production solver requests the CAPTCHA as audio and fails closed when the clip is missing", async () => {
+  const { http } = await run();
+  const captcha = JSON.parse(http.requests.find((request) => request.url.endsWith("/Captcha"))!.body!);
+  assert.equal(captcha.isAudio, true, "the source requests the spoken CAPTCHA");
+  const missing = await run({ "POST /ap2/open/common/v1.0/Captcha": () => ok({ uuid: "captcha-1" }) });
+  assert.equal(missing.errorCode, "source-validation-failed");
+  assert.ok(missing.observations.length > 0, "the response is kept for a structure report");
 });
 
 test("a rejected sign-in and a rejected CAPTCHA are typed", async () => {

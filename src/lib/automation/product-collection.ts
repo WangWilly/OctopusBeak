@@ -181,7 +181,13 @@ export function interruptedProductCollectionFromOutput(
   errorCode: "cancelled" = "cancelled",
 ): ProductCollectionInterruptedError | undefined {
   if (!output || typeof output !== "object" || Array.isArray(output)) return undefined;
-  const candidate = output as Record<string, unknown>;
+  const result = output as Record<string, unknown>;
+  // Attached runs preserve the common snapshot separately from provider-owned
+  // account/row fields, whose units and scope can differ from whole-run counts.
+  const snapshot = result.productCollectionSummary;
+  const candidate = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+    ? snapshot as Record<string, unknown>
+    : result;
   const products = sanitizeCollectionProductOutcomes(candidate.products);
   if (!products) return undefined;
   const readCount = (name: string): number => isSafeCount(candidate[name] as number)

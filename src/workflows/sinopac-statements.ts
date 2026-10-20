@@ -73,17 +73,10 @@ import {
   type SinopacIdentitySiteAssessment,
 } from "./sinopac-identity-evidence.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import {
-  ProductCollectionInterruptedError,
-  type CollectionProductOutcome,
-} from "../lib/automation/product-collection.ts";
+import type { CollectionProductOutcome, ProductCollectionRunSummary } from "../lib/automation/product-collection.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "../lib/preview-sources/attached-products.ts";
-import {
-  previewRunOutput,
-  previewRunSummary,
-  type PreviewProductRun,
-  type PreviewRunOutput,
-} from "../lib/preview-sources/product-collection.ts";
+import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
+import type { PreviewProductRun, PreviewRunOutput } from "../lib/preview-sources/product-collection.ts";
 import { fail } from "../lib/preview-sources/source-kit.ts";
 import {
   collectSinopacCreditCards,
@@ -215,9 +208,13 @@ export type SinopacWorkflowOutput = Readonly<{
   accountCount: number;
   rowCount: number;
   skippedAccountCount: number;
+  sourceCaptureCount: number;
+  itemCount: number;
+  committedCount: number;
   status: "source-only" | "financial-admitted" | PreviewRunOutput["status"];
-  /** The attached preview products' outcomes, present when any was selected. */
-  products?: readonly CollectionProductOutcome[];
+  /** Verified deposit first, followed by attached preview product outcomes. */
+  products: readonly CollectionProductOutcome[];
+  productCollectionSummary: ProductCollectionRunSummary;
 }>;
 
 export type SinopacProviderWorkflowOverrides = Readonly<{
@@ -1677,7 +1674,7 @@ async function collectAndCommitSinopacStatements(
   input: SinopacWorkflowInput,
   initialAccounts: SinopacAccount[],
   overrides: SinopacStatementsRunDependencies,
-): Promise<Omit<SinopacWorkflowOutput, "usedExistingSession">> {
+): Promise<Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary">> {
   const signal = overrides.signal;
   const text = overrides.text;
   signal.throwIfAborted();
@@ -1959,36 +1956,40 @@ async function collectAndCommitSinopacStatements(
     accountCount: captureInputs.length,
     rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
     skippedAccountCount: skippedAccounts.length,
+    sourceCaptureCount: captureInputs.length,
+    itemCount: commitItems.length,
+    committedCount: committed.committedCount,
     status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
   };
 }
 
-/**
- * The run's output. Attached outcomes join the verified result, and an
- * attached failure never fails it; a session loss during an attached product
- * ends the run as one in a verified product would. An attached-only run
- * succeeds or fails on its attached products.
- */
+/** Adapt complete product results while preserving SinoPac's verified account/row counts. */
 function sinopacRunOutput(
   usedExistingSession: boolean,
   dateRange: DateRange,
-  verified: Omit<SinopacWorkflowOutput, "usedExistingSession"> | null,
+  verified: Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary"> | null,
   attached: PreviewProductRun | null,
+  signal: AbortSignal,
 ): SinopacWorkflowOutput {
-  if (attached?.interrupted) {
-    const interrupted = new ProductCollectionInterruptedError(attached.interrupted.errorCode, previewRunSummary(attached));
-    throw Object.assign(interrupted, { cause: attached.interrupted.error });
-  }
-  if (verified) return { usedExistingSession, ...verified, ...(attached ? { products: attached.products } : {}) };
-  const preview = previewRunOutput(attached!);
+  const summary = finishAttachedProductRun({
+    products: [verified
+      ? { typeId: "deposit", status: "success", itemCount: verified.itemCount, committedCount: verified.committedCount }
+      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }],
+    sourceCaptureCount: verified?.sourceCaptureCount ?? 0,
+    rowCount: verified?.rowCount ?? 0,
+  }, attached, signal);
   return {
     usedExistingSession,
     dateRange,
-    accountCount: preview.accountCount,
-    rowCount: 0,
-    skippedAccountCount: 0,
-    status: preview.status,
-    products: preview.products,
+    accountCount: verified?.accountCount ?? attached?.receipts.reduce((total, receipt) => total + receipt.accounts, 0) ?? 0,
+    rowCount: verified?.rowCount ?? 0,
+    skippedAccountCount: verified?.skippedAccountCount ?? 0,
+    sourceCaptureCount: summary.sourceCaptureCount,
+    itemCount: summary.itemCount,
+    committedCount: summary.committedCount,
+    status: summary.status === "completed" ? verified?.status ?? "completed" : summary.status,
+    products: summary.products,
+    productCollectionSummary: summary,
   };
 }
 
@@ -2033,7 +2034,7 @@ export async function runSinopacProviderWorkflow(
     const dateRange = resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
-    let verified: Omit<SinopacWorkflowOutput, "usedExistingSession"> | null = null;
+    let verified: Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary"> | null = null;
     if (collectsAccounts && financialCommit) {
       let accounts: SinopacAccount[];
       if (overrides.readAccounts) {
@@ -2078,7 +2079,6 @@ export async function runSinopacProviderWorkflow(
             )),
         },
       );
-      context.signal.throwIfAborted();
     }
 
     let attached: PreviewProductRun | null = null;
@@ -2097,6 +2097,6 @@ export async function runSinopacProviderWorkflow(
         },
       });
     }
-    return sinopacRunOutput(usedExistingSession, dateRange, verified, attached);
+    return sinopacRunOutput(usedExistingSession, dateRange, verified, attached, context.signal);
   });
 }

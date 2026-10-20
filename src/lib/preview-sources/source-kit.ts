@@ -33,11 +33,9 @@ export function fail(reason: PreviewFailureReason, detail: string): never {
   throw new PreviewSourceFailure(reason, detail);
 }
 
-export type PreviewCaptchaChallenge = Readonly<{
-  image: Buffer;
-  charset: "digits" | "alphanumeric";
-  expectedLength?: number;
-}>;
+export type PreviewCaptchaChallenge =
+  | Readonly<{ image: Buffer; charset: "digits" | "alphanumeric"; expectedLength?: number }>
+  | Readonly<{ audio: readonly Buffer[]; expectedLength?: number }>;
 
 export type PreviewCaptchaSolver = (context: PreviewWorkflowContext, challenge: PreviewCaptchaChallenge) => Promise<string | null>;
 

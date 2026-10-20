@@ -78,6 +78,7 @@ test("the form driver reads the CAPTCHA bytes the page loaded, fills every field
   await withFixture(null, async (context, site) => {
     const outcome = await taishinBrowserSession(context, START_URL, async ({ form }) => {
       const challenge = await form.captcha();
+      assert.ok("image" in challenge, "Taishin provides an image challenge");
       assert.deepEqual(challenge.image, CAPTCHA, "the NonSessionShuffle response bytes, unchanged");
       assert.equal(challenge.charset, "digits");
       assert.equal(challenge.expectedLength, 6, "the CAPTCHA input's maxlength");

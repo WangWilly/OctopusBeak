@@ -31,6 +31,27 @@ const base: HumanAssistanceContractInput = {
   focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"] },
 };
 
+test("character segmentation survives contract projection and transforms and is a distinct strategy", () => {
+  const contract = createHumanAssistanceContract({ ...base, challengeKind: "text-captcha", ocrAttemptPlan: [
+    { imagePreprocessing: ["rakuten-teal-foreground"] },
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+  ], solveAcceptancePolicy: { mode: "agreement-only" } }, 1);
+  assert.equal(contract.ocrAttemptPlan?.[1]?.ocrCharacterSegmentation, "rakuten-four-slots");
+  assert.deepEqual(projectHumanAssistanceContract(contract).ocrAttemptPlan, contract.ocrAttemptPlan);
+  assert.deepEqual(transformHumanAssistanceContract(contract, (input) => input).ocrAttemptPlan, contract.ocrAttemptPlan);
+});
+
+test("unknown character segmentation and ignored page/output settings are rejected", () => {
+  for (const strategy of [
+    { ocrCharacterSegmentation: "unknown" },
+    { ocrCharacterSegmentation: "rakuten-four-slots", ocrPageSegmentationMode: "single-line" },
+    { ocrCharacterSegmentation: "rakuten-four-slots", ocrOutputStage: "final" },
+  ]) {
+    assert.throws(() => createHumanAssistanceContract({ ...base, challengeKind: "text-captcha",
+      ocrAttemptPlan: [strategy] } as HumanAssistanceContractInput, 1), /character segmentation/);
+  }
+});
+
 test("a challenge declaration carries its challenge kind and solver image region", () => {
   const contract = createHumanAssistanceContract({
     ...base,

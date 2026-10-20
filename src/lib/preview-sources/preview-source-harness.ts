@@ -22,15 +22,16 @@ export function blankPng(width: number, height: number): Buffer {
   return PNG.sync.write(png);
 }
 
-export type OcrCall = Readonly<{ imagePreprocessing: readonly string[]; ocrPageSegmentationMode: string | undefined }>;
+export type OcrCall = Readonly<{ imagePreprocessing: readonly string[]; ocrPageSegmentationMode: string | undefined; ocrCharacterSegmentation?: string }>;
 
 export function scriptedOcrEngine(results: readonly Readonly<{ text: string; confidence: number }>[]): TextRecognitionEngine & { calls: OcrCall[] } {
   const calls: OcrCall[] = [];
   return {
     calls,
-    async recognize(_image, _charset, imagePreprocessing, ocrPageSegmentationMode) {
+    async recognize(_image, _charset, imagePreprocessing, ocrPageSegmentationMode, _outputStage, ocrCharacterSegmentation) {
       const result = results[calls.length];
-      calls.push({ imagePreprocessing: imagePreprocessing ?? [], ocrPageSegmentationMode });
+      calls.push({ imagePreprocessing: imagePreprocessing ?? [], ocrPageSegmentationMode,
+        ...(ocrCharacterSegmentation === undefined ? {} : { ocrCharacterSegmentation }) });
       if (!result) throw new Error(`OCR call ${calls.length} has no scripted result`);
       return result;
     },

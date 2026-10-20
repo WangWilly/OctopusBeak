@@ -40,6 +40,19 @@ const contract = {
   focus: { targetId: "answer", contextRegionIds: [] },
 };
 
+test("worker protocol preserves a character OCR strategy and rejects unregistered settings", () => {
+  const frame = { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "human-assistance-request",
+    requestId: "character-verification", contract: { ...contract, challengeKind: "text-captcha", ocrAttemptPlan: [
+      { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+    ] } };
+  const parsed = parseAppWorkflowWorkerOutboundFrame(frame);
+  assert.equal(parsed.kind, "human-assistance-request");
+  if (parsed.kind === "human-assistance-request") assert.deepEqual(parsed.contract.ocrAttemptPlan, frame.contract.ocrAttemptPlan);
+  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({ ...frame,
+    contract: { ...frame.contract, ocrAttemptPlan: [{ ocrCharacterSegmentation: "unknown" }] },
+  }), /protocol rejected/);
+});
+
 function runItem(): PGliteWorkflowRunItem {
   return {
     provider: "fixture",

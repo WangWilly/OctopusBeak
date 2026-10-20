@@ -14,6 +14,24 @@ const [A, B, C] = STRATEGY_GRID;
 const GRID = [A, B, C];
 const mega = CALIBRATION_BANK_SPECS.mega;
 
+test("evaluate can recommend character agreement and emits the complete strategy declaration", async () => {
+  const whole = STRATEGY_GRID.find(({ label }) => label === "pre=rakuten-teal-closed|psm=single-line");
+  const character = STRATEGY_GRID.find(({ strategy }) => strategy.ocrCharacterSegmentation);
+  const grid = [whole, character];
+  const captures = Array.from({ length: 30 }, (_, index) => ({ id: `char-${index}`, width: 152, height: 60 }));
+  const labels = { version: 1, bank: "rakuten", entries: Object.fromEntries(captures.map(({ id }) => [id, {
+    confirmed: { answer: "AB29", at: "user" },
+    suggested: { at: "ocr", answer: "AB29", agreementCount: 2,
+      candidates: grid.map(({ label }) => ({ strategy: label, answer: "AB29", confidence: 0.1 })) },
+  }])) };
+  const result = await evaluateCorpus(CALIBRATION_BANK_SPECS.rakuten, captures, labels, grid);
+  assert.equal(result.recommendation.status, "recommended");
+  assert.equal(result.recommendation.result.accepted, 30);
+  assert.equal(result.recommendation.result.configuration.policy, "agreement-only");
+  assert.match(result.recommendation.declaration, /ocrCharacterSegmentation: "rakuten-four-slots"/);
+  assert.doesNotMatch(result.recommendation.declaration, /undefined/);
+});
+
 function corpus(rows) {
   const captures = [];
   const entries = {};
@@ -80,7 +98,10 @@ test("agreement-only appears once per strategy set and every pair and triple is 
   const all = configurations(GRID);
   assert.equal(all.filter(({ policy }) => policy === "agreement-only").length, 4);
   assert.equal(all.filter(({ policy, strategies }) => policy === "confidence-only" && strategies.length === 1).length, 3 * 12);
-  assert.equal(configurations().length, 18 * 12 + (153 + 816) * (12 + 1 + 12));
+  const size = STRATEGY_GRID.length;
+  const pairs = size * (size - 1) / 2;
+  const triples = size * (size - 1) * (size - 2) / 6;
+  assert.equal(configurations().length, size * 12 + (pairs + triples) * (12 + 1 + 12));
 });
 
 function recommendationRows() {

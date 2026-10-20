@@ -1,5 +1,7 @@
 # Preview source CAPTCHA calibration, October 2026
 
+Historical record of the initial collection. Rakuten's findings below were superseded by [the October 20 calibration and held-out validation](2026-10-20-rakuten-captcha-calibration.md); Next Bank subsequently adopted its audio challenge as described in the current [preview source guide](../agents/preview-sources.md).
+
 ## Question
 
 Can the local Tesseract solver answer the login CAPTCHA of the Taishin, Mega, Next Bank, and Rakuten preview sources often enough, and wrongly rarely enough, for ADR 0039 to allow automatic submission?
