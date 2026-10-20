@@ -14,6 +14,7 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
   "verification-failed",
   "device-registration-required",
   "provider-protocol-outdated",
+  "external-prerequisite-unavailable",
   "source-collection-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
@@ -44,6 +45,7 @@ export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "verification-failed": null,
   "device-registration-required": "register-device",
   "provider-protocol-outdated": "update-app",
+  "external-prerequisite-unavailable": null,
   "source-collection-failed": null,
   "canonical-commit-failed": null,
   "commit-outcome-unknown": null,
@@ -108,6 +110,10 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
   "provider-protocol-outdated": {
     zh: "來源服務的 App 介面已變更，需要更新 OctopusBeak 才能繼續同步。",
     en: "The source service's App interface changed. Update OctopusBeak to sync again.",
+  },
+  "external-prerequisite-unavailable": {
+    zh: "這個來源需要的電腦元件尚未安裝或無法使用，同步已停止。請依提醒安裝官方元件後重新執行。",
+    en: "A component this source needs on this computer is missing or unusable, so the run stopped. Install the official component as the notice describes, then run it again.",
   },
   "source-collection-failed": {
     zh: "來源資料收集失敗，未完成這次來源的資料驗證。",
