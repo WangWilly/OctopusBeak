@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   createPGliteSpendingQuery,
@@ -76,7 +76,7 @@ async function setupFixture(options: Readonly<{
   transactionOneDate?: string;
   transactionOneScale?: number;
 }> = {}): Promise<Fixture> {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
 
   const sourceCommit = id(1);

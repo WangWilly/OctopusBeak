@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
 import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
-import { createBaselinePGlite } from "../../ledger/pglite/baseline-test-template.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
+import { createTestPGlite } from "../../ledger/pglite/baseline-test-template.ts";
+import { createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { TDCC_BASE_URL } from "../../workflows/tdcc-epassbook-client.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -205,9 +205,8 @@ type Harness = Readonly<{
 
 async function withHarness(body: (harness: Harness) => Promise<void>, registered = true) {
   const root = await mkdtemp(join(tmpdir(), "tdcc-workflow-"));
-  const database = await createBaselinePGlite({ dataDir: join(root, "pglite") });
+  const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteOperationalBaseline(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
     provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },

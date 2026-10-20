@@ -5,9 +5,9 @@ import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
 } from "../../../electron/pglite-operational-rpc.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "./operational.ts";
+import { createPgliteOperationalProvider } from "./operational.ts";
 import {
   applyPglitePreviewFinancialDataSchema,
   PREVIEW_FINANCIAL_DATA_TABLES,
@@ -49,13 +49,12 @@ async function withPreviewStore(run: (input: {
   store: PGliteStore;
   preview: ReturnType<typeof createPGliteOperationalRpcClient>["provider"]["preview"];
 }) => Promise<void>) {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger+operational");
   const store = new PGliteStore(database);
   const channel = new MessageChannel();
   const server = createPGliteOperationalRpcServer(channel.port1, createPgliteOperationalProvider(store));
   const client = createPGliteOperationalRpcClient(channel.port2);
   try {
-    await applyPgliteOperationalBaseline(store);
     await applyPglitePreviewFinancialDataSchema(store);
     await run({ store, preview: client.provider.preview });
   } finally {

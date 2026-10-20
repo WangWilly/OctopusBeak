@@ -24,7 +24,7 @@ import {
   PGLITE_ATTESTATION_TABLES,
 } from "./attestation-sql.ts";
 import { PGliteStore } from "./transaction.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../canonical/ctbc-human-attestation-contract.ts";
@@ -122,7 +122,7 @@ test("PGlite human-attestation registry covers every active contract and table",
 });
 
 test("reviewed PGlite baseline accepts the attestation extension for active E.SUN", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   try {
     await database.exec(PGLITE_ATTESTATION_SQL);
     const tables = await database.query<{ table_name: string }>(

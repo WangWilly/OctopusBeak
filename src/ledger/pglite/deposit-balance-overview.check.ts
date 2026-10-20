@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
@@ -356,7 +356,7 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
 }
 
 test("PGlite deposit and balance commands feed current and historical overview atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const deposit = await commitPGliteCanonicalDepositCapture(
@@ -552,7 +552,7 @@ test("PGlite deposit and balance commands feed current and historical overview a
 });
 
 test("PGlite deposit command preserves foreign-currency account scope and exact row currency", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const foreignCapture = createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1);
@@ -571,7 +571,7 @@ test("PGlite deposit command preserves foreign-currency account scope and exact 
 });
 
 test("PGlite deposit identity is independent of collection sequence across captures", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = depositRequest("stable-first");
@@ -633,7 +633,7 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
   assert.equal(financial.status, "admitted");
   assert.ok(financial.capture);
 
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const committed = await commitPGliteCanonicalDepositCapture(store, financial.capture, { clock: () => 350 });
@@ -777,7 +777,7 @@ test("a Fubon option Fubon rewrote continues its account by evidenced account nu
   const transactionCount = async (store: PGliteStore) =>
     (await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count;
 
-  const store = new PGliteStore(await createBaselinePGlite());
+  const store = new PGliteStore(await createTestPGlite("ledger"));
   try {
     const twd = await admitFubon(store, `111-00${digits}-TWD-01`, "pglite-fubon-twd-coded");
     assert.equal(twd.identity, twd.derived, "an unseen account number keeps its derived key");
@@ -808,7 +808,7 @@ test("a Fubon option Fubon rewrote continues its account by evidenced account nu
     await store.close();
   }
 
-  const fresh = new PGliteStore(await createBaselinePGlite());
+  const fresh = new PGliteStore(await createTestPGlite("ledger"));
   try {
     const usdFirst = await admitFubon(fresh, `222-00${digits}-USD-03`, "pglite-fubon-fresh-usd", reconcilingRecord);
     await commitPGliteCanonicalDepositCapture(fresh, usdFirst.capture, { clock: () => 500 });
@@ -822,7 +822,7 @@ test("a Fubon option Fubon rewrote continues its account by evidenced account nu
 });
 
 test("complete deposit ranges withdraw omitted prior source assertions without deleting evidence", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalDepositCapture(store, depositRequest("withdrawal-seed"), { clock: () => 400 });
@@ -853,7 +853,7 @@ test("complete deposit ranges withdraw omitted prior source assertions without d
 });
 
 test("overview preserves investment holdings, transactions, margin lineage, and group selectors", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await seedInvestmentOverviewFixture(store);
@@ -947,7 +947,7 @@ async function seedSecondHoldingCollection(
 }
 
 test("a security missing from a newer complete holding collection is sold in both current and history", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await seedInvestmentOverviewFixture(store);
@@ -968,7 +968,7 @@ test("a security missing from a newer complete holding collection is sold in bot
 });
 
 test("holdings of one collection on different valuation dates are all still held", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await seedInvestmentOverviewFixture(store);

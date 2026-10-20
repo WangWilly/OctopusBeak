@@ -7,7 +7,7 @@ import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   admitPGliteCanonicalSourceCapture,
   commitPGliteCanonicalFinancialCapture,
@@ -166,7 +166,7 @@ const duplicateRows = (count: number, bucketKey?: string): readonly Row[] => Arr
 test("append-only group counts survive reopen and atomically block reductions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "occurrence-group-continuity-"));
   const dataDirectory = join(directory, "pglite");
-  let database = await createBaselinePGlite({ dataDir: dataDirectory });
+  let database = await createTestPGlite("ledger", { dataDir: dataDirectory });
   let store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalFinancialCapture(store, request("group-count-2", duplicateRows(2)));
@@ -380,7 +380,7 @@ test("required group routes reject ungrouped financial facts before a transactio
 });
 
 test("queried-bucket inventories preserve pool counts across date shifts and billing movement", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   const inventory = ["statement:2026/01", "unbilled"] as const;
   try {
@@ -482,7 +482,7 @@ test("queried-bucket inventories preserve pool counts across date shifts and bil
 });
 
 test("Yuanta investment balance snapshots may follow complete grouped transaction history", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const history = request("yuanta-investment-history", duplicateRows(2)).capture;

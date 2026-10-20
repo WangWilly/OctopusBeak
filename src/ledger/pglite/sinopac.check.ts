@@ -9,7 +9,7 @@ import {
   type SinopacStatementCaptureEvidence,
 } from "./sinopac-provider-admission.ts";
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "./sinopac-domestic-adapter.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
 import { PGliteStore } from "./transaction.ts";
 
@@ -63,7 +63,7 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
     JSON.parse(financial.capture!.records[0]!.compactJson).accountingDate,
     "2026-08-03",
   );
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const result = await commitPGliteCanonicalMixedCapture(store, { steps: [

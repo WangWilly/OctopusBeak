@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { WorkerOptions } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
@@ -24,6 +22,7 @@ import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-r
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
@@ -72,10 +71,9 @@ class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorke
   terminate() { setImmediate(() => this.emit("exit", 1)); return Promise.resolve(1); }
 }
 
-const database = await PGlite.create();
+const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
 try {
-  await applyPgliteOperationalBaseline(store);
   assert.deepEqual(
     exchangeRateRequestFromOverview({ dailyHistory: [] }),
     { requiredFrom: null, currencies: [] },

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
   PGLITE_EINVOICE_CONTRACT_VERSION,
@@ -99,7 +99,7 @@ async function counts(store: PGliteStore): Promise<Record<string, number>> {
 }
 
 test("PGlite E-Invoice preserves recurrent revisions, item order, revocation, and Spending reads", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const issued = await commitPGliteCanonicalEInvoiceCapture(store, capture("pglite-einvoice-issued", [invoice()]));
@@ -154,7 +154,7 @@ test("PGlite E-Invoice preserves recurrent revisions, item order, revocation, an
 });
 
 test("PGlite E-Invoice rejects changed revision evidence atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalEInvoiceCapture(store, capture("pglite-einvoice-conflict-seed", [invoice()]));

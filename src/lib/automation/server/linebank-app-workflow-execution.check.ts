@@ -3,10 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import type { Page, Response } from "playwright";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -16,6 +14,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -231,7 +230,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
 
   const root = await mkdtemp(join(tmpdir(), "linebank-app-workflow-"));
   const previousDirectory = process.cwd();
-  const database = await PGlite.create();
+  const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const committed: unknown[][] = [];
   let sourceReadBeforeCommit = true;
@@ -244,7 +243,6 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   let observedStartUrl: string | undefined;
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
