@@ -16,7 +16,6 @@ import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-co
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
-import { runSelectedStatements } from "./run-selected-statements.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 
 registerHooks({
@@ -439,76 +438,18 @@ assert.throws(
     error.message.includes("1 dated transaction row(s) were rejected") &&
     error.message.includes("the complete source was not admitted"),
 );
-const wrappedPartialRun = await runSelectedStatements(
-  ["fund"],
-  [
-    {
-      typeId: "fund",
-      run: async () => {
-        assertYuantaFundCanonicalAdmission(partialAdmission);
-        return { count: 1 };
-      },
-    },
-  ],
-);
-assert.deepEqual(wrappedPartialRun.results, [
-  {
-    typeId: "fund",
-    status: "failed",
-    error:
-      "Yuanta fund canonical admission partial: source-effective-time-evidence-incomplete. 1 dated transaction row(s) were rejected; the complete source was not admitted because the source did not report a holding effective date.",
-  },
-]);
-assert.equal(Object.hasOwn(wrappedPartialRun.outputs, "fund"), false);
-const wrappedIncompleteRun = await runSelectedStatements(
-  ["fund"],
-  [
-    {
-      typeId: "fund",
-      run: async () => {
-        assert.throws(
-          () => assertYuantaFundCanonicalAdmission(incompleteAdmission),
-          (error: unknown) =>
-            error instanceof CanonicalInvestmentAdmissionError &&
-            error.message.includes("source-effective-time-evidence-incomplete"),
-        );
-        assertYuantaFundCanonicalAdmission(incompleteAdmission);
-        return { count: 0 };
-      },
-    },
-  ],
-);
-assert.deepEqual(wrappedIncompleteRun.results, [
-  {
-    typeId: "fund",
-    status: "failed",
-    error:
+assert.throws(
+  () => assertYuantaFundCanonicalAdmission(incompleteAdmission),
+  (error: unknown) =>
+    error instanceof CanonicalInvestmentAdmissionError &&
+    error.message ===
       "Yuanta fund canonical admission failed: source-effective-time-evidence-incomplete. Canonical Financial Commit was not opened.",
-  },
-]);
-assert.equal(Object.hasOwn(wrappedIncompleteRun.outputs, "fund"), false);
-
-const wrappedAdmittedRun = await runSelectedStatements(
-  ["fund"],
-  [
-    {
-      typeId: "fund",
-      run: async () => {
-        assertYuantaFundCanonicalAdmission(
-          evaluateYuantaFundCanonicalAdmission(
-            [overview, basisTable],
-            [position],
-          ),
-        );
-        return { count: 1 };
-      },
-    },
-  ],
 );
-assert.deepEqual(wrappedAdmittedRun.results, [
-  { typeId: "fund", status: "success" },
-]);
-assert.deepEqual(wrappedAdmittedRun.outputs.fund, { count: 1 });
+assert.doesNotThrow(() =>
+  assertYuantaFundCanonicalAdmission(
+    evaluateYuantaFundCanonicalAdmission([overview, basisTable], [position]),
+  ),
+);
 
 type FundSourceCollector = NonNullable<
   Parameters<typeof runYuantaFundStatements>[3]["collectSourceTables"]

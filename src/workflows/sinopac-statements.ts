@@ -18,7 +18,7 @@ import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
