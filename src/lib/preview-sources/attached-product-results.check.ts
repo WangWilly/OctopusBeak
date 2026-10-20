@@ -100,11 +100,10 @@ test("an attached-only sole failure keeps its original classified error", () => 
   assert.throws(() => finishAttachedProductRun(empty, failed), (error: unknown) => error === failed.firstFailure);
 });
 
-test("multiple failures retain every product outcome even without durable writes", () => {
+test("multiple failures without a retained verified error keep every product outcome", () => {
   assert.throws(() => finishAttachedProductRun({
     ...empty,
     products: [{ typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" }],
-    firstFailure: new Error("synthetic deposit failed"),
   }, failed), (error: unknown) => {
     assert.ok(error instanceof ProductCollectionInterruptedError);
     assert.equal(error.summary.status, "failed");
@@ -113,6 +112,21 @@ test("multiple failures retain every product outcome even without durable writes
     return true;
   });
 });
+
+for (const status of ["failed", "no_data", "not_held"] as const) {
+  test(`the verified collection's original error survives an attached ${status} result without durable writes`, () => {
+    const original = new Error("synthetic incomplete verified source");
+    const attached: PreviewProductRun = status === "failed" ? failed : {
+      products: [{ typeId: "credit_card", status, itemCount: 0, committedCount: 0 }],
+      receipts: [], interrupted: null, firstFailure: null,
+    };
+    assert.throws(() => finishAttachedProductRun({
+      ...empty,
+      products: [{ typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" }],
+      firstFailure: original,
+    }, attached), (error: unknown) => error === original);
+  });
+}
 
 test("explicit absence and unselected products complete without inventing receipts", () => {
   const summary = finishAttachedProductRun({
