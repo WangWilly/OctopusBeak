@@ -2,7 +2,8 @@
   import { Download } from "@lucide/svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { formatShare, formatTwd } from "$lib/overview/overview-format.ts";
+  import { formatShare } from "$lib/overview/overview-format.ts";
+import { formatTwd } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
@@ -80,14 +81,14 @@
         {#if account}
           <div class="account-value">
             <span class="label">{$t.positions.accountValue}</span>
-            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
+            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines, $locale)}</strong>
             {#if showTwd && twdValue !== null}
               <span class="converted money" data-sensitive>≈ {formatTwd(twdValue, $locale)}</span>
             {/if}
             {#if dividends.count > 0}
               <span class="dividends" data-dividends>
                 {$t.positions.dividends}
-                <strong class="money" data-sensitive>{formatAmountLines(dividends.totals)}</strong>
+                <strong class="money" data-sensitive>{formatAmountLines(dividends.totals, $locale)}</strong>
                 {$t.positions.dividendCount(dividends.count)}
               </span>
             {/if}

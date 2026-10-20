@@ -205,7 +205,7 @@
                           <span class="snapshot-diverging-tooltip-swatch" style:background-color={series.color}></span>
                           {series.label}
                         </span>
-                        <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(series, data) })}</strong>
+                        <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(series, data) }, { locale: $locale })}</strong>
                       </div>
                     {/each}
                   </div>
@@ -266,7 +266,7 @@
             {#snippet children({ data })}
               <div class="sparkline-tooltip-body">
                 <span>{data.dateLabel}</span>
-                <strong data-sensitive>{formatMoney({ currency, value: data.value })}</strong>
+                <strong data-sensitive>{formatMoney({ currency, value: data.value }, { locale: $locale })}</strong>
               </div>
             {/snippet}
           </Tooltip.Root>

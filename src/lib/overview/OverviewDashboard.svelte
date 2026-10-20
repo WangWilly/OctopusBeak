@@ -6,13 +6,8 @@
   import OverviewTicker from "$lib/overview/components/OverviewTicker.svelte";
   import TodayChangeCard from "$lib/overview/components/TodayChangeCard.svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
-  import {
-    ASSET_CATEGORY_COLOR,
-    formatShortDate,
-    formatTwd,
-    liabilityColor,
-    maskedAccountDigits,
-  } from "$lib/overview/overview-format.ts";
+  import { ASSET_CATEGORY_COLOR, formatShortDate, liabilityColor, maskedAccountDigits } from "$lib/overview/overview-format.ts";
+import { formatTwd } from "$lib/shared-money/money.ts";
   import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -44,8 +39,8 @@
   $: convertedNet = model.netWorth.value;
   $: sideValue = netMetric?.incomplete
     ? $t.preview.incomplete
-    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1)) : formatTwd(convertedNet, $locale);
-  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") : "";
+    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1), $locale) : formatTwd(convertedNet, $locale);
+  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount, { locale: $locale })).join(" / ") : "";
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
