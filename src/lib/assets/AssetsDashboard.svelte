@@ -4,7 +4,8 @@
   import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate } from "$lib/overview/overview-format.ts";
+import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";

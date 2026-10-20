@@ -4,7 +4,8 @@
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import type { ChangeReason, TodayChange } from "$lib/overview/overview-model.ts";
-  import { formatPct, formatShortDate, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { formatPct, formatShortDate } from "$lib/overview/overview-format.ts";
+import { formatTwdNumber } from "$lib/shared-money/money.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import type { AccountRowDto } from "$lib/shared-ledger/types.ts";
 

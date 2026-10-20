@@ -21,7 +21,7 @@
   } from "$lib/shared-accounts/transaction-filters.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, DailyHistoryRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
-  import { formatAmountLines } from "$lib/shared-money/money.ts";
+  import { formatAmount, formatAmountLines } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
   import BalanceHistoryChart from "./BalanceHistoryChart.svelte";
   import DateRangeFilter from "./DateRangeFilter.svelte";
@@ -64,7 +64,6 @@
   $: columns = kind === "ledger"
     ? { up: $t.accountHistory.moneyIn, down: $t.accountHistory.moneyOut, balance: $t.accountHistory.balance }
     : { up: $t.accountHistory.increase, down: $t.accountHistory.decrease, balance: kind === "card" ? $t.accountHistory.used : $t.accountHistory.balance };
-  $: number = new Intl.NumberFormat($locale, { maximumFractionDigits: currency === "TWD" || currency === "JPY" ? 0 : 2 });
   $: institution = account ? localizeAccount(account, $t).institution : "";
 
   function recentDays(days: number): DateRange {
@@ -166,7 +165,7 @@
         {#if account}
           <div class="current">
             <span>{kind === "card" ? $t.accountHistory.currentUsed : $t.accountHistory.currentBalance}</span>
-            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
+            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines, $locale)}</strong>
           </div>
         {/if}
       </AccountModalHeader>
@@ -203,18 +202,18 @@
             {#if stats}
               <dl class="stats" data-history-stats>
                 {#if stats.kind === "card"}
-                  <div><dt>{$t.accountHistory.lastStatement}</dt><dd class="num" data-sensitive>{number.format(stats.lastStatement.balance)} · {shortDate(stats.lastStatement.day)}</dd></div>
-                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{number.format(stats.high.balance)} · {shortDate(stats.high.day)}</dd></div>
-                  <div><dt>{$t.accountHistory.monthlyAverage}</dt><dd class="num" data-sensitive>{number.format(stats.average)}</dd></div>
+                  <div><dt>{$t.accountHistory.lastStatement}</dt><dd class="num" data-sensitive>{formatAmount(stats.lastStatement.balance, currency, { locale: $locale })} · {shortDate(stats.lastStatement.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{formatAmount(stats.high.balance, currency, { locale: $locale })} · {shortDate(stats.high.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.monthlyAverage}</dt><dd class="num" data-sensitive>{formatAmount(stats.average, currency, { locale: $locale })}</dd></div>
                 {:else}
                   <div>
                     <dt>{$t.accountHistory.netChange(daysInRange(activeRange))}</dt>
                     <dd class="num" data-sensitive data-tone={stats.net === 0 ? "flat" : (stats.net > 0) !== liability ? "good" : "bad"}>
-                      {stats.net > 0 ? "+" : ""}{number.format(stats.net)}
+                      {formatAmount(stats.net, currency, { locale: $locale, signed: true })}
                     </dd>
                   </div>
-                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{number.format(stats.high.balance)} · {shortDate(stats.high.day)}</dd></div>
-                  <div><dt>{$t.accountHistory.lowest}</dt><dd class="num" data-sensitive>{number.format(stats.low.balance)} · {shortDate(stats.low.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{formatAmount(stats.high.balance, currency, { locale: $locale })} · {shortDate(stats.high.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.lowest}</dt><dd class="num" data-sensitive>{formatAmount(stats.low.balance, currency, { locale: $locale })} · {shortDate(stats.low.day)}</dd></div>
                 {/if}
               </dl>
             {/if}
@@ -249,9 +248,9 @@
                   <strong>{entryTitle(entry)}</strong>
                   {#if entryDetail(entry)}<span class="detail">{entryDetail(entry)}</span>{/if}
                 </td>
-                <td class="right money" class:good={!liability} class:bad={liability} data-sensitive>{entry.increase === null ? "" : number.format(entry.increase)}</td>
-                <td class="right money" class:good={liability} class:bad={!liability} data-sensitive>{entry.decrease === null ? "" : number.format(entry.decrease)}</td>
-                <td class="right money balance" data-sensitive>{number.format(entry.balance)}</td>
+                <td class="right money" class:good={!liability} class:bad={liability} data-sensitive>{entry.increase === null ? "" : formatAmount(entry.increase, currency, { locale: $locale })}</td>
+                <td class="right money" class:good={liability} class:bad={!liability} data-sensitive>{entry.decrease === null ? "" : formatAmount(entry.decrease, currency, { locale: $locale })}</td>
+                <td class="right money balance" data-sensitive>{formatAmount(entry.balance, currency, { locale: $locale })}</td>
                 <td class="note">
                   {#if entry.kind === "today"}
                     <span class="today-badge">{$t.accountHistory.today}</span>

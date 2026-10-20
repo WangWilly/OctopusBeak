@@ -4,7 +4,8 @@
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
   import type { DailyBar } from "$lib/overview/overview-model.ts";
-  import { formatShortDate, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { formatShortDate } from "$lib/overview/overview-format.ts";
+import { formatTwdNumber } from "$lib/shared-money/money.ts";
 
   export let bars: DailyBar[] = [];
   export let hasDetail = false;
