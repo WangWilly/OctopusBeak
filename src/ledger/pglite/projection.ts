@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
   derivePGliteCathayDescriptionKind,
   derivePGliteTransactionKind,
@@ -175,22 +176,11 @@ async function ensureActiveGeneration(
 async function createProjectionCommit(
   transaction: PGliteTransaction,
 ): Promise<Readonly<{ id: Uint8Array; sequence: number }>> {
-  const latest = await first<{ sequence: number | string; recorded_at_utc_us: number | string }>(
-    transaction,
-    `SELECT COALESCE(MAX(commit_sequence), 0) AS sequence,
-            COALESCE(MAX(recorded_at_utc_us), 0) AS recorded_at_utc_us
-       FROM canonical_commits`,
-  );
-  const sequence = Number(latest?.sequence ?? 0) + 1;
-  const recordedAt = Number(latest?.recorded_at_utc_us ?? 0) + 1;
-  const id = uuidBytes();
-  await query(
-    transaction,
-    `INSERT INTO canonical_commits(
-       commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-     ) VALUES (?, ?, ?, 'automatic/pglite-current-projection/v1', 'derived_import')`,
-    [id, sequence, recordedAt],
-  );
+  const { id, sequence } = await insertPGliteCanonicalCommit(transaction, {
+    kind: "derived_import",
+    authorityRoute: "automatic/pglite-current-projection/v1",
+    time: { kind: "after-latest" },
+  });
   return { id, sequence };
 }
 
