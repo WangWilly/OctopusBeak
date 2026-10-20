@@ -169,6 +169,13 @@ let nextStoreId = 1;
 export function createSpendingReviewStore(options: Readonly<{
   transport: SpendingReviewTransport;
   refreshSummary: () => Promise<void>;
+  /**
+   * How long a newly chosen month must stay chosen before its pending count
+   * and insight load. Each read rebuilds the month in the shared worker, so
+   * stepping through months must not leave a read per passed month queued
+   * ahead of the next click.
+   */
+  monthSettleMs?: number;
 }>): SpendingReviewStore {
   const storeId = nextStoreId++;
   let disposed = false;
@@ -224,6 +231,14 @@ export function createSpendingReviewStore(options: Readonly<{
   let overviewToken = 0;
   let insightToken = 0;
   let merchantToken = 0;
+  const monthSettleMs = options.monthSettleMs ?? 250;
+  let monthReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function loadMonthReads(knowledgeAt: number, forMonth: string | null) {
+    void loadOverview(knowledgeAt);
+    if (forMonth) void loadMonthInsight(knowledgeAt, forMonth);
+    else publish({ monthInsight: null });
+  }
 
   async function loadOverview(knowledgeAt: number) {
     const token = ++overviewToken;
@@ -279,10 +294,17 @@ export function createSpendingReviewStore(options: Readonly<{
         pending.reset();
         merged.reset();
       }
-      void loadOverview(knowledgeAt);
       loadVisible(knowledgeAt);
-      if (nextMonth) void loadMonthInsight(knowledgeAt, nextMonth);
-      else publish({ monthInsight: null });
+      if (monthReadTimer !== null) clearTimeout(monthReadTimer);
+      monthReadTimer = null;
+      if (versionChanged || monthSettleMs <= 0) {
+        loadMonthReads(knowledgeAt, nextMonth);
+        return;
+      }
+      monthReadTimer = setTimeout(() => {
+        monthReadTimer = null;
+        if (!disposed) loadMonthReads(knowledgeAt, nextMonth);
+      }, monthSettleMs);
     },
     showMergeLists() {
       listsVisible = true;
@@ -350,6 +372,8 @@ export function createSpendingReviewStore(options: Readonly<{
     },
     dispose() {
       if (disposed) return;
+      if (monthReadTimer !== null) clearTimeout(monthReadTimer);
+      monthReadTimer = null;
       for (const requestId of activeCandidateRequests) void transport.cancelCandidatePage(requestId).catch(() => {});
       pending.reset();
       merged.reset();
