@@ -11,6 +11,7 @@ import { createBaselinePGlite } from "../../../ledger/pglite/baseline-test-templ
 import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maicoin-operational.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
+import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
@@ -55,13 +56,19 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
     const task = taskById("sync-maicoin");
     assert.ok(task);
     assert.equal(Object.hasOwn(task, "command"), false);
-    await assert.rejects(() => runAutomationTaskExecution(
-      task,
-      operational.automation,
-      { launchEnv: {} },
-      async () => undefined,
-    ), /PGlite workflow transport is unavailable/u);
-    assert.equal((await operational.automation.latestTaskRuns())[task.id], undefined);
+    const { taskRunId } = await operational.automation.createTaskRun({
+      taskId: task.id,
+      kind: task.kind,
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const unstartedRun = await openTaskRunForCheck(operational.automation, taskRunId);
+    await assert.rejects(() => runAutomationTaskExecution(task, unstartedRun, { launchEnv: {} }), /PGlite workflow transport is unavailable/u);
+    const unstarted = await operational.automation.taskRunById(taskRunId);
+    assert.equal(unstarted?.status, "preparing", "missing transport refuses before the run starts");
+    assert.deepEqual(unstarted?.events, []);
     const observedCodes: string[] = [];
     const terminal = new Promise<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>>((resolve) => {
       channel.port2.on("message", (value: unknown) => {

@@ -14,11 +14,11 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type {
   AppWorkflowWorkerHandle,
 } from "./app-workflow-worker-supervisor.ts";
-import {
-  interruptActiveAppWorkflows,
-  runAutomationTaskExecution,
-  abortActiveAppWorkflowExecutions,
-} from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { createAutomationRunner } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
+import { executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
+import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import {
   registerAppWorkflowHumanAssistanceRequestHandler,
   resumeAppWorkflowHumanAssistance,
@@ -29,9 +29,23 @@ import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
 } from "../../../../electron/pglite-child-rpc-client.ts";
-import { finalizeAutomationTaskRun } from "./task-run-finalization.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
+
+async function createRun(
+  provider: ReturnType<typeof createPgliteOperationalProvider>,
+  task: NonNullable<ReturnType<typeof taskById>>,
+) {
+  const created = await provider.automation.createTaskRun({
+    taskId: task.id,
+    kind: task.kind,
+    status: "preparing",
+    attempt: 1,
+    maxAttempts: task.maxAttempts,
+    startedAt: new Date().toISOString(),
+  });
+  return created.taskRunId;
+}
 
 const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
@@ -201,8 +215,9 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const taskRunId = await createRun(provider, task);
+    const result = await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
       launchEnv: {
         LIBRETTO_CLOUD_CTBC_USER_ID: "private-user-id",
         LIBRETTO_CLOUD_CTBC_ACCOUNT: "private-account-id",
@@ -224,7 +239,7 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
         "validation-failure",
         () => true,
       ),
-    }, async (id) => { taskRunId = id; });
+    });
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -256,41 +271,40 @@ test("command-only tasks are rejected before persistence or execution", async ()
     id: "legacy-command-task",
     workflowId: undefined,
   };
-  let persistenceCalls = 0;
-  const persistence = new Proxy({}, {
-    get() {
-      persistenceCalls += 1;
+  let runCalls = 0;
+  const run = new Proxy({ signal: new AbortController().signal }, {
+    get(target, property) {
+      if (property === "signal") return target.signal;
+      runCalls += 1;
       return async () => undefined;
     },
   });
 
   await assert.rejects(
-    () => runAutomationTaskExecution(
-      task,
-      persistence as never,
-      {},
-      async () => {},
-    ),
+    () => runAutomationTaskExecution(task, run as never, {}),
     /App workflow definition is unavailable/,
   );
-  assert.equal(persistenceCalls, 0);
+  assert.equal(runCalls, 0);
 });
 
 test("resuming a missing App run fails closed without invoking a workflow", async () => {
-  const task = taskById("einvoice-personal-invoices");
-  assert.ok(task);
   let workflowCalls = 0;
   const persistence = {
     async taskRunById() { return null; },
   };
-  const result = await runAutomationTaskExecution(
-    task,
-    persistence as never,
-    { taskRunId: "missing-app-run" },
-    async () => { workflowCalls += 1; },
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  await assert.rejects(
+    () => runner.start("einvoice-personal-invoices", { automation: persistence } as never, {
+      taskRunId: "missing-app-run",
+      runExecution: async () => {
+        workflowCalls += 1;
+        return { errorCode: null, summary: null };
+      },
+    }),
+    /Missing automation task run: missing-app-run/u,
   );
-  assert.deepEqual(result, { status: "failed" });
   assert.equal(workflowCalls, 0);
+  assert.equal(runner.hasActive(), false);
 });
 
 class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
@@ -363,8 +377,9 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
       await applyPgliteOperationalBaseline(store);
       const provider = createPgliteOperationalProvider(store);
       let start: AppWorkflowWorkerStart | undefined;
-      let taskRunId = "";
-      const result = await runAutomationTaskExecution(task, provider.automation, {
+      const taskRunId = await createRun(provider, task);
+      const result = await executeTaskRunForCheck(task, provider.automation, {
+        taskRunId,
         launchEnv: {
           [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "/tmp/worker-test.sock",
           [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
@@ -374,7 +389,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
           start = options.workerData as AppWorkflowWorkerStart;
           return new NonBrowserFakeWorker(start);
         },
-      }, async (id) => { taskRunId = id; });
+      });
       assert.equal(result.status, "completed");
       assert.ok(start);
       assert.equal(start.workflowId, taskId);
@@ -419,20 +434,20 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
 
     const runScenario = async (
       scenario: WorkerScenario,
-      options: { deferFinalization?: boolean; forceTerminated?: boolean } = {},
+      options: { forceTerminated?: boolean } = {},
     ) => {
-      let taskRunId = "";
+      const taskRunId = await createRun(provider, task);
       let startData: AppWorkflowWorkerStart | undefined;
       let worker: TaskExecutionFakeWorker | undefined;
-      let cancellationRequested = false;
-      let forceTerminationRequested = false;
+      let active: ActiveAutomationTaskRun | undefined;
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
-      const execution = runAutomationTaskExecution(task, provider.automation, {
+      const execution = executeTaskRunForCheck(task, provider.automation, {
+        taskRunId,
         launchEnv,
-        deferFinalization: options.deferFinalization,
-        isForceTerminationRequested: () => forceTerminationRequested,
-        isCancellationRequested: () => cancellationRequested,
+        onRunOpened: (run) => {
+          active = run;
+        },
         workflowBrowserPortFactory: () => ({
           async withPage(run) { return await run({} as never); },
         }),
@@ -450,10 +465,12 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
           );
           // Race force termination with a worker's interrupted commit, after
           // startup. A pre-start cancellation would never create the worker.
-          worker.once("exit", () => { forceTerminationRequested = options.forceTerminated === true; });
+          worker.once("exit", () => {
+            if (options.forceTerminated) void active?.requestStop("forced");
+          });
           return worker;
         },
-      }, async (id) => { taskRunId = id; });
+      });
 
       if (!startData) {
         let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -465,7 +482,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
             }),
           ]);
         } catch (error) {
-          cancellationRequested = true;
+          void active?.requestStop("cancelled");
           await execution;
           throw error;
         } finally {
@@ -503,24 +520,11 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
           (await provider.automation.taskRunById(taskRunId))?.events.some((event) => event.code === "canonical-commit-started"),
           true,
         );
-        cancellationRequested = true;
+        void active?.requestStop("cancelled");
       }
 
       const result = await execution;
       assert.equal(worker?.eventAckAfterPersistence, true);
-      if (options.deferFinalization) {
-        assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
-        assert.ok("result" in result);
-        assert.ok(result.result);
-        const finalized = await finalizeAutomationTaskRun({
-          provider,
-          taskId: task.id,
-          taskKind: task.kind,
-          taskRunId,
-          forceTerminated: options.forceTerminated,
-        }, result.result);
-        assert.equal(result.status, finalized.status, "deferred and persisted decisions agree");
-      }
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
 
@@ -536,28 +540,24 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(crashed.result.status, "failed");
     assert.equal(crashed.run?.status, "failed");
     assert.equal(crashed.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
-    assert.equal(crashed.run?.signal, null, "an ambiguous commit must not be finalized as cancellation");
 
     const cancelled = await runScenario("commit-cancel");
     assert.equal(cancelled.result.status, "failed");
     assert.equal(cancelled.run?.status, "failed");
     assert.equal(cancelled.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
-    assert.equal(cancelled.run?.signal, null, "cancelling during commit preserves the unknown outcome");
 
-    for (const deferFinalization of [false, true]) {
-      const forced = await runScenario("commit-crash", { deferFinalization, forceTerminated: true });
-      assert.equal(forced.result.status, "failed", "force termination cannot mask an unknown commit");
-      assert.equal(forced.run?.status, "failed");
-      assert.equal(forced.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
-      assert.notEqual(forced.run?.terminationMode, "forced", "the run was not finalized as cancellation");
-    }
+    const forced = await runScenario("commit-crash", { forceTerminated: true });
+    assert.equal(forced.result.status, "failed", "force termination cannot mask an unknown commit");
+    assert.equal(forced.run?.status, "failed");
+    assert.equal(forced.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+    assert.notEqual(forced.run?.terminationMode, "forced", "the run was not finalized as cancellation");
   } finally {
     unregisterRoute?.();
     await store.close();
   }
 });
 
-test("E-Invoice uses the supervised Chromium worker and keeps runtime identity through deferred finalization", async () => {
+test("E-Invoice uses the supervised Chromium worker and keeps runtime identity until its run owner finishes", async () => {
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
   assert.ok(task.workflowId);
@@ -578,12 +578,12 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity t
       [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
       [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
-    let taskRunId = "";
+    const taskRunId = await createRun(provider, task);
     let workerStart: AppWorkflowWorkerStart | undefined;
     let hostInput: Record<string, unknown> | undefined;
-    const deferred = await runAutomationTaskExecution(task, provider.automation, {
+    const active = await openTaskRunForCheck(provider.automation, taskRunId);
+    const outcome = await runAutomationTaskExecution(task, active, {
       launchEnv,
-      deferFinalization: true,
       workflowBrowserPortFactory: (input) => {
         hostInput = input as unknown as Record<string, unknown>;
         return {
@@ -602,9 +602,9 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity t
         workerStart = options.workerData as AppWorkflowWorkerStart;
         return new NonBrowserFakeWorker(workerStart);
       },
-    }, async (id) => { taskRunId = id; });
+    });
 
-    assert.equal(deferred.status, "completed");
+    assert.equal(outcome.errorCode, null);
     assert.ok(workerStart, "E-Invoice creates the supervised worker");
     assert.equal(workerStart.workflowId, "einvoice-personal-invoices");
     assert.ok(workerStart.browserConnection, "the worker receives the App browser connection");
@@ -613,20 +613,11 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity t
     assert.equal(taskRunId, workerStart.taskRunId);
 
     const activeRun = await provider.automation.taskRunById(taskRunId);
-    assert.equal(activeRun?.status, "running", "deferred execution leaves the terminal transition to its owner");
+    assert.equal(activeRun?.status, "running", "execution leaves the terminal transition to its owner");
     assert.deepEqual(activeRun?.browserRuntime, runtimeIdentity);
     assert.equal(activeRun?.appWorkflowOutcome, null);
 
-    const deferredResult = deferred as typeof deferred & {
-      result: Parameters<typeof finalizeAutomationTaskRun>[1];
-      taskRunId: string;
-    };
-    await finalizeAutomationTaskRun({
-      provider: { automation: provider.automation },
-      taskId: task.id,
-      taskKind: task.kind,
-      taskRunId: deferredResult.taskRunId,
-    }, deferredResult.result);
+    await active.finish(outcome);
 
     const finalRun = await provider.automation.taskRunById(taskRunId);
     assert.equal(finalRun?.status, "completed");
@@ -656,8 +647,9 @@ test("runtime identity remains on a failed run when browser launch fails before 
       [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
       [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
-    let taskRunId = "";
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const taskRunId = await createRun(provider, task);
+    const result = await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
       launchEnv,
       workflowBrowserPortFactory: (input) => ({
         async withPage() {
@@ -669,7 +661,7 @@ test("runtime identity remains on a failed run when browser launch fails before 
       appWorkflowWorkerFactory: () => {
         throw new Error("Browser launch failure must happen before worker startup.");
       },
-    }, async (id) => { taskRunId = id; });
+    });
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -690,8 +682,9 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const taskRunId = await createRun(provider, task);
+    const result = await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
       launchEnv: {
         LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
         [einvoicePasswordFixtureEnvKey]: "fixture-password",
@@ -704,7 +697,7 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
       appWorkflowWorkerFactory: () => {
         throw new Error("An unsupported profile must fail before worker startup.");
       },
-    }, async (id) => { taskRunId = id; });
+    });
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -769,8 +762,9 @@ test("supervised product invariant failures retain the worker code instead of gu
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    await runAutomationTaskExecution(task, provider.automation, {
+    const taskRunId = await createRun(provider, task);
+    await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
       launchEnv: {
         LIBRETTO_CLOUD_CTBC_USER_ID: "synthetic-user",
         LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
@@ -781,7 +775,7 @@ test("supervised product invariant failures retain the worker code instead of gu
       workflowBrowserPortFactory: () => ({ async withPage(run) { return await run({} as never); } }),
       appWorkflowBrowserConnectionForRun: (id) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${id}` }),
       appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(options.workerData, "product-invariant", () => true),
-    }, async (id) => { taskRunId = id; });
+    });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "workflow-failed");
     assert.equal(run?.appWorkflowOutcome?.summary?.counts.committedCount, 4);

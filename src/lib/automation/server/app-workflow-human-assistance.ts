@@ -4,11 +4,10 @@ import type {
 } from "../human-assistance.ts";
 import type { WorkflowHumanAssistancePort } from "../workflow-executor.ts";
 import { isSolverChallengeKind } from "../verification-config.ts";
-import type { AutomationPersistencePort } from "./store.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 
 type PendingAssistance = Readonly<{
-  persistence: AutomationPersistencePort;
-  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  run: ActiveAutomationTaskRun;
   resolve(status: Exclude<HumanAssistanceCompletionStatus, "pending">): void;
 }>;
 
@@ -41,18 +40,17 @@ export function registerAppWorkflowHumanAssistanceRequestHandler(
 }
 
 export function createAppWorkflowHumanAssistancePort(input: Readonly<{
-  taskRunId: string;
-  persistence: AutomationPersistencePort;
-  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  run: ActiveAutomationTaskRun;
   onRequest?: (
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
   ) => void | Promise<void>;
 }>): WorkflowHumanAssistancePort {
+  const { run } = input;
   return {
     async request(contract, signal) {
       signal.throwIfAborted();
-      if (pendingAssistance.has(input.taskRunId)) {
+      if (pendingAssistance.has(run.taskRunId)) {
         throw new Error("This workflow run already has a pending human assistance request.");
       }
 
@@ -64,12 +62,8 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
           rejectCompletion = reject;
         },
       );
-      const waiter: PendingAssistance = {
-        persistence: input.persistence,
-        onRuntimeUpdate: input.onRuntimeUpdate,
-        resolve: resolveCompletion,
-      };
-      pendingAssistance.set(input.taskRunId, waiter);
+      const waiter: PendingAssistance = { run, resolve: resolveCompletion };
+      pendingAssistance.set(run.taskRunId, waiter);
       const onAbort = () => {
         rejectCompletion(signal.reason instanceof Error
           ? signal.reason
@@ -78,54 +72,47 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
       signal.addEventListener("abort", onAbort, { once: true });
 
       try {
-        const current = await input.persistence.taskRunById(input.taskRunId);
-        if (!current || current.status !== "running") {
+        if (run.current().status !== "running") {
           throw new Error("App workflow is not active for human assistance.");
         }
-        const registeredHandler = requestHandlers.get(current.taskId);
+        const registeredHandler = requestHandlers.get(run.taskId);
         if (!input.onRequest && !registeredHandler) {
           const reason = isSolverChallengeKind(contract.challengeKind)
             ? "solver-route-unavailable"
             : "solver-challenge-unsupported";
-          await input.persistence.appendRunEvent({
-            runId: input.taskRunId,
+          await run.persistence.appendRunEvent({
+            runId: run.taskRunId,
             stage: "authentication",
             code: reason,
             occurredAt: new Date().toISOString(),
           });
-          await input.onRuntimeUpdate?.(input.taskRunId);
           throw new Error("App workflow solver route is unavailable for this verification stage.");
         }
-        await input.persistence.updateHumanAssistanceContract(input.taskRunId, contract);
-        const transition = await input.persistence.transitionTaskRunToActive(
-          input.taskRunId,
-          { status: "waiting_for_human" },
-        );
-        if (!transition.applied) {
+        await run.persistence.updateHumanAssistanceContract(run.taskRunId, contract);
+        if (!(await run.transition("waiting_for_human"))) {
           throw new Error("App workflow could not enter its human assistance stage.");
         }
-        await input.onRuntimeUpdate?.(input.taskRunId);
         signal.throwIfAborted();
         if (input.onRequest || registeredHandler) {
           void Promise.resolve()
             .then(() => input.onRequest
               ? input.onRequest(contract, signal)
               : registeredHandler?.({
-                  taskId: current.taskId,
-                  taskRunId: input.taskRunId,
+                  taskId: run.taskId,
+                  taskRunId: run.taskRunId,
                   contract,
                   signal,
                 }))
             .catch((error: unknown) => {
-              if (signal.aborted || pendingAssistance.get(input.taskRunId) !== waiter) return;
+              if (signal.aborted || pendingAssistance.get(run.taskRunId) !== waiter) return;
               rejectCompletion(error instanceof Error ? error : new Error("App workflow verification route failed."));
             });
         }
         return await completion;
       } finally {
         signal.removeEventListener("abort", onAbort);
-        if (pendingAssistance.get(input.taskRunId) === waiter) {
-          pendingAssistance.delete(input.taskRunId);
+        if (pendingAssistance.get(run.taskRunId) === waiter) {
+          pendingAssistance.delete(run.taskRunId);
         }
       }
     },
@@ -138,18 +125,10 @@ export async function resumeAppWorkflowHumanAssistance(
   status: Exclude<HumanAssistanceCompletionStatus, "pending">,
 ): Promise<boolean> {
   const waiter = pendingAssistance.get(taskRunId);
-  if (!waiter) return false;
-  const current = await waiter.persistence.taskRunById(taskRunId);
-  if (
-    current?.status !== "waiting_for_human"
-    || current.humanAssistanceContract?.completion.status !== status
-  ) return false;
-  const transition = await waiter.persistence.transitionTaskRunToActive(
-    taskRunId,
-    { status: "running" },
-  );
-  if (!transition.applied) return false;
-  await waiter.onRuntimeUpdate?.(taskRunId);
+  if (!waiter || waiter.run.current().status !== "waiting_for_human") return false;
+  const current = await waiter.run.persistence.taskRunById(taskRunId);
+  if (current?.humanAssistanceContract?.completion.status !== status) return false;
+  if (!(await waiter.run.transition("running"))) return false;
   waiter.resolve(status);
   return true;
 }

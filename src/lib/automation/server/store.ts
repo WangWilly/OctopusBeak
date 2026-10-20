@@ -174,6 +174,32 @@ export const TERMINAL_TASK_RUN_STATUSES = [
 export type ActiveTaskRunStatus = (typeof ACTIVE_TASK_RUN_STATUSES)[number];
 export type TerminalTaskRunStatus = (typeof TERMINAL_TASK_RUN_STATUSES)[number];
 
+/** The statuses each active status may move to. A cancelling run may only end. */
+export const TASK_RUN_TRANSITIONS: Readonly<Record<
+  ActiveTaskRunStatus,
+  readonly (ActiveTaskRunStatus | TerminalTaskRunStatus)[]
+>> = {
+  preparing: ["queued", "running", "cancelling", ...TERMINAL_TASK_RUN_STATUSES],
+  queued: ["running", "cancelling", ...TERMINAL_TASK_RUN_STATUSES],
+  running: ["running", "waiting_for_human", "cancelling", ...TERMINAL_TASK_RUN_STATUSES],
+  waiting_for_human: ["running", "cancelling", ...TERMINAL_TASK_RUN_STATUSES],
+  cancelling: TERMINAL_TASK_RUN_STATUSES,
+};
+
+export function canTransitionTaskRun(
+  from: AutomationTaskStatus,
+  to: ActiveTaskRunStatus | TerminalTaskRunStatus,
+): boolean {
+  return isActiveTaskRunStatus(from) && TASK_RUN_TRANSITIONS[from].includes(to);
+}
+
+/** The active statuses from which a run may move to `to`. */
+export function taskRunPredecessors(
+  to: ActiveTaskRunStatus | TerminalTaskRunStatus,
+): ActiveTaskRunStatus[] {
+  return ACTIVE_TASK_RUN_STATUSES.filter((from) => TASK_RUN_TRANSITIONS[from].includes(to));
+}
+
 export type AutomationTaskRunActiveUpdate = AutomationTaskRunUpdate & {
   status: ActiveTaskRunStatus;
 };

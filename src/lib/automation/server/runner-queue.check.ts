@@ -3,10 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { beforeEach, afterEach } from "node:test";
-import {
-  startAutomationTask, cancelAutomationTask, forceTerminateAutomationTask,
-  shutdownAppAutomationWorkflows, hasActiveAutomationTask,
-} from "./runner.ts";
+import { createAutomationRunner } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
@@ -45,10 +43,11 @@ function harness() {
     automation: {
       async createTaskRun(input: Record<string, unknown>) {
         const taskRunId = `queue-${input.taskId}`;
-        runs.set(taskRunId, { ...input, taskRunId } as AutomationTaskRun);
+        runs.set(taskRunId, { events: [], ...input, taskRunId } as unknown as AutomationTaskRun);
         return { taskRunId };
       },
       async taskRunById(id: string) { return runs.get(id) ?? null; },
+      async resolveTaskPrerequisiteNotices() {},
       async transitionTaskRunToActive(id: string, patch: Partial<AutomationTaskRun>) {
         Object.assign(runs.get(id)!, patch); return { applied: true };
       },
@@ -57,22 +56,23 @@ function harness() {
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const execute: typeof runAutomationTaskExecution = async (task, _port, options, created) => {
-    entered.push(task.id);
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  const execute: typeof runAutomationTaskExecution = async (task, run) => {
     active += 1;
     peak = Math.max(peak, active);
-    await created(options.taskRunId!);
     // A waiting verification continues to own its execution slot.
-    runs.get(options.taskRunId!)!.status = "waiting_for_human";
+    await run.transition("running");
+    await run.transition("waiting_for_human");
+    entered.push(task.id);
     try {
       await new Promise<void>((resolve) => releases.set(task.id, resolve));
       throw new Error("Synthetic source failure releases the workflow slot.");
     } finally { active -= 1; }
   };
   return {
-    runs, entered, releases, provider, execute,
+    runs, entered, releases, provider, execute, runner,
     get peak() { return peak; },
-    start: (id: string) => startAutomationTask(id, provider, { runExecution: execute }),
+    start: (id: string) => runner.start(id, provider, { runExecution: execute }),
   };
 }
 async function tick() { await new Promise<void>((resolve) => setImmediate(resolve)); }
@@ -91,10 +91,10 @@ test("all App start paths share three slots, retain FIFO order and cancel queued
     assert.deepEqual(h.entered, ["exchange-rates", "linebank-statements", "ctbc-statements"]);
     assert.equal(h.runs.get("queue-fubon-all-statements")?.status, "queued");
     assert.equal(h.runs.get("queue-sync-maicoin")?.status, "queued");
-    await cancelAutomationTask("sync-maicoin", h.provider);
+    await h.runner.cancel("sync-maicoin");
     await until(() => h.runs.get("queue-sync-maicoin")?.status === "cancelled");
     await h.start("esun-credit-card-statements");
-    await forceTerminateAutomationTask("esun-credit-card-statements", h.provider);
+    await h.runner.forceTerminate("esun-credit-card-statements");
     assert.equal(h.runs.get("queue-esun-credit-card-statements")?.status, "cancelled");
     h.releases.get("exchange-rates")!();
     await until(() => h.entered.includes("fubon-all-statements"));
@@ -105,7 +105,7 @@ test("all App start paths share three slots, retain FIFO order and cancel queued
   } finally {
     // Also release any unexpectedly admitted run when asserting the old implementation.
     for (const release of h.releases.values()) release();
-    await until(() => !hasActiveAutomationTask());
+    await until(() => !h.runner.hasActive());
   }
 });
 
@@ -115,8 +115,8 @@ test("App shutdown interrupts queued work without starting it or waiting for a f
   await until(() => h.entered.length === 3);
   await h.start("fubon-all-statements");
   for (const release of h.releases.values()) release();
-  await shutdownAppAutomationWorkflows(h.provider, { finalizePersistedRuns: async () => undefined });
+  await h.runner.shutdown(h.provider, { finalizePersistedRuns: async () => undefined });
   assert.ok(!h.entered.includes("fubon-all-statements"));
   assert.equal(h.runs.get("queue-fubon-all-statements")?.status, "interrupted");
-  assert.equal(hasActiveAutomationTask(), false);
+  assert.equal(h.runner.hasActive(), false);
 });

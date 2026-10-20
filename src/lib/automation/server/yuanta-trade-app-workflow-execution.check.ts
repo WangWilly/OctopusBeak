@@ -14,14 +14,14 @@ import type {
   WorkflowFinancialCommitPort,
 } from "../workflow-executor.ts";
 
-const [{ taskById }, { runAutomationTaskExecution }, {
+const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 }, { YUANTA_TRADE_LOGIN_URL }] = await Promise.all([
   import("./tasks.ts"),
-  import("./task-run-execution.ts"),
+  import("./task-run-check-support.ts"),
   import("./app-workflow-registry.ts"),
   import("../../../workflows/yuanta-trade-statements.ts"),
 ]);
@@ -93,7 +93,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
@@ -101,7 +101,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
         observedStartUrl = startUrl;
         return browser;
       },
-    }, async () => {});
+    });
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, YUANTA_TRADE_LOGIN_URL);

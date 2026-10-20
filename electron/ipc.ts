@@ -498,10 +498,10 @@ export function registerOctopusBeakIpc({
     return automationRunMany(taskIds, operationalProvider);
   });
   ipcMain.handle("automation:cancel", (_event, taskId: string, expectedRunId?: string) =>
-    automationCancel(taskId, operationalProvider, expectedRunId),
+    automationCancel(taskId, expectedRunId),
   );
   ipcMain.handle("automation:forceTerminate", (_event, taskId: string, expectedRunId?: string) =>
-    automationForceTerminate(taskId, operationalProvider, expectedRunId),
+    automationForceTerminate(taskId, expectedRunId),
   );
   ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
   ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
