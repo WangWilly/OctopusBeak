@@ -1,16 +1,29 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { octopusBeakApiChannels } from "../src/lib/desktop/api.ts";
+import { registerHooks } from "node:module";
 
-assert.equal(octopusBeakApiChannels.includes("automation:run"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
-assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
-assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
-assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
-assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
-assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
-assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
+type Recorded = { invoked: string[]; sent: string[]; listened: string[]; exposed?: Record<string, Record<string, unknown>> };
+const recorded: Recorded = { invoked: [], sent: [], listened: [] };
+(globalThis as { __preloadRecorded?: Recorded }).__preloadRecorded = recorded;
+
+const fakeElectron = `
+const recorded = globalThis.__preloadRecorded;
+export const ipcRenderer = {
+  invoke: (channel) => { recorded.invoked.push(channel); return Promise.resolve({ ok: true, subscriptionId: "s" }); },
+  send: (channel) => { recorded.sent.push(channel); },
+  on: (channel) => { recorded.listened.push(channel); },
+  removeListener: () => {},
+};
+export const contextBridge = { exposeInMainWorld: (_name, api) => { recorded.exposed = api; } };
+`;
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "electron") {
+      return { url: `data:text/javascript,${encodeURIComponent(fakeElectron)}`, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
 
 const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
 assert.deepEqual(
@@ -18,24 +31,82 @@ assert.deepEqual(
   ["electron"],
   "sandboxed preload must stay self-contained after bundling",
 );
-for (const [method, channel] of [
-  ["deviceRegistrationStatus", "automation:deviceRegistrationStatus"],
-  ["startDeviceRegistration", "automation:startDeviceRegistration"],
-  ["submitDeviceRegistrationCode", "automation:submitDeviceRegistrationCode"],
-  ["cancelDeviceRegistration", "automation:cancelDeviceRegistration"],
-]) {
-  assert.equal((octopusBeakApiChannels as readonly string[]).includes(channel), true, `${channel} is an allowed channel`);
-  assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
+
+await import("./preload.ts");
+const api = recorded.exposed;
+assert.ok(api, "the preload exposes the bridge");
+
+const invokedBy = new Map<string, string>();
+for (const [namespace, methods] of Object.entries(api)) {
+  for (const [method, value] of Object.entries(methods)) {
+    if (typeof value !== "function" || method.startsWith("on") || namespace === "dataViews") continue;
+    const [invokedBefore, sentBefore] = [recorded.invoked.length, recorded.sent.length];
+    void (value as (...args: unknown[]) => unknown)();
+    const crossed = [...recorded.invoked.slice(invokedBefore), ...recorded.sent.slice(sentBefore)];
+    assert.equal(crossed.length, 1, `${namespace}.${method} crosses exactly one channel`);
+    invokedBy.set(`${namespace}.${method}`, crossed[0]!);
+  }
 }
-assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
-assert.match(source, /acknowledgeVersion: .*ipcRenderer\.invoke\("data:acknowledgeVersion"/);
-assert.match(source, /forceTerminate: .*ipcRenderer\.invoke\("automation:forceTerminate"/);
-assert.doesNotMatch(source, /forceQuit:/);
-assert.doesNotMatch(source, /resumeHumanAssistance|viewerScreenshot|viewerInspect|viewerInput|viewerCompletionCheck/);
-assert.match(source, /onInvalidated\(listener\)/);
-assert.match(source, /ipcRenderer\.on\("data:invalidated"/);
-assert.match(source, /const dataViews = \{/);
-for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views:unsubscribe", "data-views:rows", "data-views:error"]) {
-  assert.match(source, new RegExp(channel.replace(/[-:]/gu, "[-:]")));
-}
-assert.match(source, /dataViews,/);
+assert.deepEqual([...invokedBy.values()].sort(), [
+  "automation:block",
+  "automation:cancel",
+  "automation:cancelDeviceRegistration",
+  "automation:deviceRegistrationStatus",
+  "automation:fatalRuntimeSnapshot",
+  "automation:forceTerminate",
+  "automation:openExternalPrerequisite",
+  "automation:openPreviewStructureReportIssue",
+  "automation:openSetupGuideLink",
+  "automation:previewStructureReport",
+  "automation:run",
+  "automation:runHistory",
+  "automation:runMany",
+  "automation:runtimeSnapshot",
+  "automation:saveCredentials",
+  "automation:selectCertificateFile",
+  "automation:startDeviceRegistration",
+  "automation:submitDeviceRegistrationCode",
+  "automation:takeSignInSettingsRequest",
+  "data:acknowledgeVersion",
+  "data:getVersion",
+  "display:setScale",
+  "settings:deletePreviewData",
+  "settings:load",
+  "settings:save",
+  "spending:candidate-page",
+  "spending:candidate-page-cancel",
+  "spending:confirm-strong-candidates",
+  "spending:confirmCandidate",
+  "spending:denyCandidate",
+  "spending:merchant-stats",
+  "spending:merge-log",
+  "spending:month-insight",
+  "spending:page-action",
+  "spending:pairing-candidates",
+  "spending:pairing-prewarm",
+  "spending:pending-overview",
+  "spending:record-page",
+  "spending:revokeLink",
+  "spending:set-purchase-category",
+], "the bridge reaches exactly these request channels");
+assert.equal(invokedBy.get("automation.forceTerminate"), "automation:forceTerminate");
+assert.equal(invokedBy.get("data.getVersion"), "data:getVersion");
+
+const automation = api.automation as Record<string, (listener: () => void) => () => void>;
+const data = api.data as Record<string, (listener: () => void) => () => void>;
+automation.onRuntimeChanged!(() => {});
+automation.onSignInSettingsRequested!(() => {});
+data.onInvalidated!(() => {});
+assert.deepEqual(recorded.listened, [
+  "automation:runtime-changed",
+  "automation:sign-in-settings-requested",
+  "data:invalidated",
+]);
+
+const dataViews = api.dataViews as { enabled(): Promise<unknown>; subscribe(...args: unknown[]): Promise<unknown> };
+recorded.invoked.length = 0;
+recorded.listened.length = 0;
+await dataViews.enabled();
+await dataViews.subscribe("financial.overview.current", {}, () => {});
+assert.deepEqual(recorded.invoked, ["data-views:enabled", "data-views:subscribe"]);
+assert.deepEqual(recorded.listened, ["data-views:rows", "data-views:error"]);

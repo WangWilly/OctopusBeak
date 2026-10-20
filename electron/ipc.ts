@@ -4,8 +4,11 @@ import {
   dialog,
   ipcMain,
   shell,
+  type IpcMainInvokeEvent,
   type OpenDialogOptions,
 } from "electron";
+import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import type { OctopusBeakInvokeChannels } from "./preload.ts";
 import {
   automationCancel,
   automationRun,
@@ -94,6 +97,26 @@ import type {
   SpendingPendingOverviewRequest,
   SpendingStrongConfirmRequest,
 } from "../src/lib/spending/model.ts";
+
+
+type InvokeChannel = {
+  [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];
+}[keyof OctopusBeakInvokeChannels];
+
+type BridgeMethod<Channel extends InvokeChannel> = {
+  [Namespace in keyof OctopusBeakInvokeChannels]: {
+    [Method in keyof OctopusBeakInvokeChannels[Namespace]]: OctopusBeakInvokeChannels[Namespace][Method] extends Channel
+      ? OctopusBeakApi[Namespace][Method & keyof OctopusBeakApi[Namespace]]
+      : never;
+  }[keyof OctopusBeakInvokeChannels[Namespace]];
+}[keyof OctopusBeakInvokeChannels];
+
+/** One main-process handler per preload channel, returning what the bridge method promises. */
+type OctopusBeakInvokeHandlers = {
+  [Channel in InvokeChannel]: BridgeMethod<Channel> extends (...args: infer Args) => infer Result
+    ? (event: IpcMainInvokeEvent, ...args: Args) => Result | Awaited<Result>
+    : never;
+};
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
@@ -214,263 +237,232 @@ export function registerOctopusBeakIpc({
     }
     return result;
   }
-  ipcMain.handle("settings:load", () =>
-    systemSettings(readAutomationSettings()),
-  );
-  ipcMain.handle("settings:save", async (_event, input: SystemSettingsDto) => {
-    const value = validateSystemSettings(input);
-    markStaleWhenPreviewVisibilityChanges(() => writeAutomationSettings({
-      ...readAutomationSettings(),
-      ...systemSettingsFileEntries(value),
-    }));
-    await onSystemSettingsChanged?.(value);
-    return value;
-  });
-  ipcMain.handle("settings:deletePreviewData", () =>
-    deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
-  );
-  ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
-    return pgliteFinancial.request("financial.spending.recordPage", [request]);
-  });
-  ipcMain.handle("spending:candidate-page", async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
-    if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
-      throw new TypeError("Spending candidate page request id is invalid.");
-    if (spendingCandidatePageControllers.has(requestId))
-      throw new Error("Spending candidate page request id is already active.");
-    const controller = new AbortController();
-    spendingCandidatePageControllers.set(requestId, controller);
-    try {
-      return await pgliteFinancial.request("financial.spending.candidatePage", [request], { signal: controller.signal });
-    } finally {
-      if (spendingCandidatePageControllers.get(requestId) === controller)
-        spendingCandidatePageControllers.delete(requestId);
-    }
-  });
-  ipcMain.handle("spending:candidate-page-cancel", (_event, requestId: string) => {
-    if (typeof requestId !== "string") return false;
-    const controller = spendingCandidatePageControllers.get(requestId);
-    if (!controller) return false;
-    controller.abort();
-    return true;
-  });
-  ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
-    return pgliteFinancial.request("financial.spending.pageAction", [request]);
-  });
-  ipcMain.handle("spending:set-purchase-category", async (_event, request: SpendingPurchaseCategoryRequest) => {
-    return pgliteFinancial.request("financial.spending.setPurchaseCategory", [request]);
-  });
-  ipcMain.handle("spending:pending-overview", async (_event, request: SpendingPendingOverviewRequest) => {
-    return pgliteFinancial.request("financial.spending.pendingOverview", [request]);
-  });
-  ipcMain.handle("spending:merge-log", async (_event, request: SpendingMergeLogRequest) => {
-    return pgliteFinancial.request("financial.spending.mergeLog", [request]);
-  });
-  ipcMain.handle("spending:month-insight", async (_event, request: SpendingMonthInsightRequest) => {
-    return pgliteFinancial.request("financial.spending.monthInsight", [request]);
-  });
-  ipcMain.handle("spending:merchant-stats", async (_event, request: SpendingMerchantStatsRequest) => {
-    return pgliteFinancial.request("financial.spending.merchantStats", [request]);
-  });
-  ipcMain.handle("spending:confirm-strong-candidates", async (_event, request: SpendingStrongConfirmRequest) => {
-    return pgliteFinancial.request("financial.spending.confirmStrongCandidates", [request]);
-  });
-  ipcMain.handle("spending:pairing-candidates", (_event, input) =>
-    financialPages.request("financial.spending.pairing", [input]),
-  );
-  ipcMain.handle("spending:pairing-prewarm", (_event, input) =>
-    prewarmPGlitePairingCandidates(financialPages, input),
-  );
-  ipcMain.handle("spending:confirmCandidate", (_event, input) =>
-    financialPages.request("financial.spending.confirmCandidate", [input]),
-  );
-  ipcMain.handle("spending:denyCandidate", (_event, input) =>
-    financialPages.request("financial.spending.denyCandidate", [input]),
-  );
-  ipcMain.handle("spending:revokeLink", (_event, input) =>
-    financialPages.request("financial.spending.revokeLink", [input]),
-  );
-  ipcMain.handle(
-    "automation:block",
-    async (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        async () => {
-          await ensureAutomationRuntimeReady("automation-block");
-          let credentialState;
-          try {
-            credentialState = options?.refreshCredentials
-              ? await automationCredentials.refresh()
-              : await automationCredentials.read();
-          } catch (error) {
-            if (block === "details") throw new Error("無法讀取登入資料");
-            console.warn("automation-credential-state-read-failed", {
-              code: "credential-state-unavailable",
-              stage: "block",
-              block,
-              message: error instanceof Error ? error.message : "unknown",
-            });
-            const states: Record<string, AutomationCredentialStatus> = {};
-            for (const key of AUTOMATION_CREDENTIAL_KEYS) states[key] = "read_failed";
-            credentialState = {
-              revision: 0,
-              status: Object.fromEntries(AUTOMATION_CREDENTIAL_KEYS.map((key) => [key, false])),
-              states,
-              fileNames: {},
-              invalidFileKeys: [],
-              invalidFileReasons: {},
-            };
-          }
-          let runtimeSnapshot;
-          try {
-            runtimeSnapshot = automationRuntimeState.snapshot();
-            assertKnownAutomationRuntimeTasks(
-              runtimeSnapshot,
-              new Set(AUTOMATION_TASKS.map((task) => task.id)),
-            );
-          } catch (error) {
-            reportAutomationRuntimeFatal("automation-block", error);
-          }
-          const core = await loadAutomationCoreSnapshot(
-            operationalProvider,
-            credentialState.status,
-            runtimeSnapshot,
-            credentialState.states,
-          );
-          const model = credentialState
-            ? applyAutomationCredentialState(core, credentialState)
-            : core;
-          return projectAutomationBlock(model, block);
-        },
-      ),
-  );
-  ipcMain.handle(
-    "automation:saveCredentials",
-    async (_event, updates: Record<string, string>) => {
-      const result = markStaleWhenPreviewVisibilityChanges(() => automationSaveCredentials(updates));
-      if (result.saved) await automationCredentials.refresh();
-      return result;
+  const invokeHandlers: OctopusBeakInvokeHandlers = {
+    "settings:load": () =>
+      systemSettings(readAutomationSettings()),
+    "settings:save": async (_event, input: SystemSettingsDto) => {
+      const value = validateSystemSettings(input);
+      markStaleWhenPreviewVisibilityChanges(() => writeAutomationSettings({
+        ...readAutomationSettings(),
+        ...systemSettingsFileEntries(value),
+      }));
+      await onSystemSettingsChanged?.(value);
+      return value;
     },
-  );
-  ipcMain.handle(
-    "automation:deviceRegistrationStatus",
-    (_event, source: unknown) => deviceRegistrationStatus(registrationSource(source)),
-  );
-  ipcMain.handle(
-    "automation:startDeviceRegistration",
-    (_event, source: unknown) => startDeviceRegistration(registrationSource(source)),
-  );
-  ipcMain.handle(
-    "automation:submitDeviceRegistrationCode",
-    (_event, source: unknown, id: unknown, code: unknown) => {
-      const validSource = registrationSource(source);
-      const validId = registrationId(id);
-      if (typeof code !== "string" || !ONE_TIME_CODE.test(code)) {
-        throw new TypeError("A one-time code must be 4 to 8 digits.");
+    "settings:deletePreviewData": () =>
+      deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
+    "spending:record-page": async (_event, request: SpendingRecordPageRequest) => {
+      return pgliteFinancial.request("financial.spending.recordPage", [request]);
+    },
+    "spending:candidate-page": async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
+      if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
+        throw new TypeError("Spending candidate page request id is invalid.");
+      if (spendingCandidatePageControllers.has(requestId))
+        throw new Error("Spending candidate page request id is already active.");
+      const controller = new AbortController();
+      spendingCandidatePageControllers.set(requestId, controller);
+      try {
+        return await pgliteFinancial.request("financial.spending.candidatePage", [request], { signal: controller.signal });
+      } finally {
+        if (spendingCandidatePageControllers.get(requestId) === controller)
+          spendingCandidatePageControllers.delete(requestId);
       }
-      return submitDeviceRegistrationCode(validSource, validId, code);
     },
-  );
-  ipcMain.handle(
-    "automation:cancelDeviceRegistration",
-    (_event, source: unknown, id: unknown) => {
-      cancelDeviceRegistration(registrationSource(source), registrationId(id));
+    "spending:candidate-page-cancel": (_event, requestId: string) => {
+      if (typeof requestId !== "string") return false;
+      const controller = spendingCandidatePageControllers.get(requestId);
+      if (!controller) return false;
+      controller.abort();
+      return true;
     },
-  );
-  ipcMain.handle(
-    "automation:selectCertificateFile",
-    async (event, locale: "en" | "zh-TW") => {
-      const chinese = locale === "zh-TW";
-      const options: OpenDialogOptions = {
-        title: chinese ? "選擇憑證檔案" : "Choose certificate file",
-        properties: ["openFile"],
-        filters: [
-          {
-            name: chinese ? "憑證檔案" : "Certificate files",
-            extensions: [...CERTIFICATE_FILE_EXTENSIONS],
+    "spending:page-action": async (_event, request: SpendingPageActionRequest) => {
+      return pgliteFinancial.request("financial.spending.pageAction", [request]);
+    },
+    "spending:set-purchase-category": async (_event, request: SpendingPurchaseCategoryRequest) => {
+      return pgliteFinancial.request("financial.spending.setPurchaseCategory", [request]);
+    },
+    "spending:pending-overview": async (_event, request: SpendingPendingOverviewRequest) => {
+      return pgliteFinancial.request("financial.spending.pendingOverview", [request]);
+    },
+    "spending:merge-log": async (_event, request: SpendingMergeLogRequest) => {
+      return pgliteFinancial.request("financial.spending.mergeLog", [request]);
+    },
+    "spending:month-insight": async (_event, request: SpendingMonthInsightRequest) => {
+      return pgliteFinancial.request("financial.spending.monthInsight", [request]);
+    },
+    "spending:merchant-stats": async (_event, request: SpendingMerchantStatsRequest) => {
+      return pgliteFinancial.request("financial.spending.merchantStats", [request]);
+    },
+    "spending:confirm-strong-candidates": async (_event, request: SpendingStrongConfirmRequest) => {
+      return pgliteFinancial.request("financial.spending.confirmStrongCandidates", [request]);
+    },
+    "spending:pairing-candidates": (_event, input) =>
+      financialPages.request("financial.spending.pairing", [input]),
+    "spending:pairing-prewarm": (_event, input) =>
+      prewarmPGlitePairingCandidates(financialPages, input),
+    "spending:confirmCandidate": (_event, input) =>
+      financialPages.request("financial.spending.confirmCandidate", [input]),
+    "spending:denyCandidate": (_event, input) =>
+      financialPages.request("financial.spending.denyCandidate", [input]),
+    "spending:revokeLink": (_event, input) =>
+      financialPages.request("financial.spending.revokeLink", [input]),
+    "automation:block": async (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+        withExpectedDataVersion(
+          options?.expectedVersion,
+          () => dataVersionStore.snapshot(),
+          async () => {
+            await ensureAutomationRuntimeReady("automation-block");
+            let credentialState;
+            try {
+              credentialState = options?.refreshCredentials
+                ? await automationCredentials.refresh()
+                : await automationCredentials.read();
+            } catch (error) {
+              if (block === "details") throw new Error("無法讀取登入資料");
+              console.warn("automation-credential-state-read-failed", {
+                code: "credential-state-unavailable",
+                stage: "block",
+                block,
+                message: error instanceof Error ? error.message : "unknown",
+              });
+              const states: Record<string, AutomationCredentialStatus> = {};
+              for (const key of AUTOMATION_CREDENTIAL_KEYS) states[key] = "read_failed";
+              credentialState = {
+                revision: 0,
+                status: Object.fromEntries(AUTOMATION_CREDENTIAL_KEYS.map((key) => [key, false])),
+                states,
+                fileNames: {},
+                invalidFileKeys: [],
+                invalidFileReasons: {},
+              };
+            }
+            let runtimeSnapshot;
+            try {
+              runtimeSnapshot = automationRuntimeState.snapshot();
+              assertKnownAutomationRuntimeTasks(
+                runtimeSnapshot,
+                new Set(AUTOMATION_TASKS.map((task) => task.id)),
+              );
+            } catch (error) {
+              reportAutomationRuntimeFatal("automation-block", error);
+            }
+            const core = await loadAutomationCoreSnapshot(
+              operationalProvider,
+              credentialState.status,
+              runtimeSnapshot,
+              credentialState.states,
+            );
+            const model = credentialState
+              ? applyAutomationCredentialState(core, credentialState)
+              : core;
+            return projectAutomationBlock(model, block);
           },
-        ],
-      };
-      const owner = BrowserWindow.fromWebContents(event.sender);
-      const result = owner
-        ? await dialog.showOpenDialog(owner, options)
-        : await dialog.showOpenDialog(options);
-      if (result.canceled || !result.filePaths[0])
-        return { cancelled: true as const };
-      const validation = validateCertificateFilePath(result.filePaths[0]);
-      if (!validation.valid)
-        return { cancelled: false as const, error: validation.reason };
-      return {
-        cancelled: false as const,
-        path: validation.path,
-        filename: validation.filename,
-      };
+        ),
+    "automation:saveCredentials": async (_event, updates: Record<string, string>) => {
+        const result = markStaleWhenPreviewVisibilityChanges(() => automationSaveCredentials(updates));
+        if (result.saved) await automationCredentials.refresh();
+        return result;
+      },
+    "automation:deviceRegistrationStatus": (_event, source: unknown) => deviceRegistrationStatus(registrationSource(source)),
+    "automation:startDeviceRegistration": (_event, source: unknown) => startDeviceRegistration(registrationSource(source)),
+    "automation:submitDeviceRegistrationCode": (_event, source: unknown, id: unknown, code: unknown) => {
+        const validSource = registrationSource(source);
+        const validId = registrationId(id);
+        if (typeof code !== "string" || !ONE_TIME_CODE.test(code)) {
+          throw new TypeError("A one-time code must be 4 to 8 digits.");
+        }
+        return submitDeviceRegistrationCode(validSource, validId, code);
+      },
+    "automation:cancelDeviceRegistration": (_event, source: unknown, id: unknown) => {
+        cancelDeviceRegistration(registrationSource(source), registrationId(id));
+      },
+    "automation:selectCertificateFile": async (event, locale: "en" | "zh-TW") => {
+        const chinese = locale === "zh-TW";
+        const options: OpenDialogOptions = {
+          title: chinese ? "選擇憑證檔案" : "Choose certificate file",
+          properties: ["openFile"],
+          filters: [
+            {
+              name: chinese ? "憑證檔案" : "Certificate files",
+              extensions: [...CERTIFICATE_FILE_EXTENSIONS],
+            },
+          ],
+        };
+        const owner = BrowserWindow.fromWebContents(event.sender);
+        const result = owner
+          ? await dialog.showOpenDialog(owner, options)
+          : await dialog.showOpenDialog(options);
+        if (result.canceled || !result.filePaths[0])
+          return { cancelled: true as const };
+        const validation = validateCertificateFilePath(result.filePaths[0]);
+        if (!validation.valid)
+          return { cancelled: false as const, error: validation.reason };
+        return {
+          cancelled: false as const,
+          path: validation.path,
+          filename: validation.filename,
+        };
+      },
+    "automation:openSetupGuideLink": async (_event, groupId: string, linkId: string, locale: "en" | "zh-TW") => {
+        const guideLink = automationSetupGuideLink(groupId, linkId, locale);
+        if (!guideLink) throw new Error("Unknown or unsafe setup guide link.");
+        await shell.openExternal(guideLink.url);
+        return { ok: true as const };
+      },
+    "automation:run": async (_event, taskId: string) => {
+      await ensureAutomationRuntimeReady("automation-run");
+      return automationRun(taskId, operationalProvider);
     },
-  );
-  ipcMain.handle(
-    "automation:openSetupGuideLink",
-    async (_event, groupId: string, linkId: string, locale: "en" | "zh-TW") => {
-      const guideLink = automationSetupGuideLink(groupId, linkId, locale);
-      if (!guideLink) throw new Error("Unknown or unsafe setup guide link.");
-      await shell.openExternal(guideLink.url);
+    "automation:runMany": async (_event, taskIds: string[]) => {
+      await ensureAutomationRuntimeReady("automation-run-many");
+      return automationRunMany(taskIds, operationalProvider);
+    },
+    "automation:cancel": (_event, taskId: string, expectedRunId?: string) =>
+      automationCancel(taskId, expectedRunId),
+    "automation:forceTerminate": (_event, taskId: string, expectedRunId?: string) =>
+      automationForceTerminate(taskId, expectedRunId),
+    "automation:runHistory": () => automationRunHistory(operationalProvider),
+    "automation:takeSignInSettingsRequest": () => takeSignInSettingsRequest(),
+    "automation:previewStructureReport": (_event, taskId: string) => {
+      const report = previewStructureReports.get(taskId);
+      return report ? renderPreviewStructureReport(report, app.getVersion()) : null;
+    },
+    "automation:openPreviewStructureReportIssue": async (_event, taskId: string) => {
+      const source = previewSourceForTask(taskId);
+      if (!source || !previewStructureReports.get(taskId)) throw new Error("No preview structure report for this task.");
+      await shell.openExternal(previewStructureReportIssueUrl(source));
       return { ok: true as const };
     },
-  );
-  ipcMain.handle("automation:run", async (_event, taskId: string) => {
-    await ensureAutomationRuntimeReady("automation-run");
-    return automationRun(taskId, operationalProvider);
-  });
-  ipcMain.handle("automation:runMany", async (_event, taskIds: string[]) => {
-    await ensureAutomationRuntimeReady("automation-run-many");
-    return automationRunMany(taskIds, operationalProvider);
-  });
-  ipcMain.handle("automation:cancel", (_event, taskId: string, expectedRunId?: string) =>
-    automationCancel(taskId, expectedRunId),
-  );
-  ipcMain.handle("automation:forceTerminate", (_event, taskId: string, expectedRunId?: string) =>
-    automationForceTerminate(taskId, expectedRunId),
-  );
-  ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
-  ipcMain.handle("automation:takeSignInSettingsRequest", () => takeSignInSettingsRequest());
-  ipcMain.handle("automation:previewStructureReport", (_event, taskId: string) => {
-    const report = previewStructureReports.get(taskId);
-    return report ? renderPreviewStructureReport(report, app.getVersion()) : null;
-  });
-  ipcMain.handle("automation:openPreviewStructureReportIssue", async (_event, taskId: string) => {
-    const source = previewSourceForTask(taskId);
-    if (!source || !previewStructureReports.get(taskId)) throw new Error("No preview structure report for this task.");
-    await shell.openExternal(previewStructureReportIssueUrl(source));
-    return { ok: true as const };
-  });
-  ipcMain.handle(
-    "automation:openExternalPrerequisite",
-    async (_event, prerequisiteId: string) => {
-      const prerequisite = externalPrerequisiteById(prerequisiteId);
-      if (!prerequisite)
-        throw new Error("Unknown or unsafe external prerequisite.");
-      await shell.openExternal(prerequisite.downloadUrl);
-      return { ok: true as const };
+    "automation:openExternalPrerequisite": async (_event, prerequisiteId: string) => {
+        const prerequisite = externalPrerequisiteById(prerequisiteId);
+        if (!prerequisite)
+          throw new Error("Unknown or unsafe external prerequisite.");
+        await shell.openExternal(prerequisite.downloadUrl);
+        return { ok: true as const };
+      },
+    "automation:runtimeSnapshot": async () => {
+      try {
+        await ensureAutomationRuntimeReady("runtime-snapshot");
+        return automationRuntimeState.snapshot();
+      } catch (error) {
+        return reportAutomationRuntimeFatal("runtime-snapshot", error);
+      }
     },
-  );
-  ipcMain.handle("automation:runtimeSnapshot", async () => {
-    try {
-      await ensureAutomationRuntimeReady("runtime-snapshot");
-      return automationRuntimeState.snapshot();
-    } catch (error) {
-      return reportAutomationRuntimeFatal("runtime-snapshot", error);
-    }
-  });
-  ipcMain.handle("automation:fatalRuntimeSnapshot", () => {
-    reportAutomationRuntimeFatal("renderer-resync");
-  });
-  ipcMain.handle("data:getVersion", () => dataVersionStore.snapshot());
-  ipcMain.handle("data:acknowledgeVersion", (_event, version: unknown) => {
-    if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
-      throw new TypeError("Data version must be a non-negative safe integer.");
-    }
-    dataVersionStore.acknowledge(version);
-    return dataVersionStore.snapshot();
-  });
+    "automation:fatalRuntimeSnapshot": () => {
+      reportAutomationRuntimeFatal("renderer-resync");
+    },
+    "data:getVersion": () => dataVersionStore.snapshot(),
+    "data:acknowledgeVersion": (_event, version: unknown) => {
+      if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+        throw new TypeError("Data version must be a non-negative safe integer.");
+      }
+      dataVersionStore.acknowledge(version);
+      return dataVersionStore.snapshot();
+    },
+  };
+  for (const [channel, handler] of Object.entries(invokeHandlers)) {
+    ipcMain.handle(channel, handler as (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown);
+  }
   return {
     close: async () => {
       unsubscribeFromDataInvalidation();
