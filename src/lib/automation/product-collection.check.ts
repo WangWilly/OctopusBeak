@@ -11,7 +11,9 @@ import {
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
+  type CollectionProductOutcome,
 } from "./product-collection.ts";
+import { productRunStatus } from "./product-run-status.ts";
 
 function item(product: string, itemKey: string): PGliteWorkflowRunItem {
   return {
@@ -288,3 +290,25 @@ const signal = () => new AbortController();
 }
 
 console.log("product-collection checks passed");
+
+{
+  const outcome = (
+    status: CollectionProductOutcome["status"],
+    collection?: CollectionProductOutcome["collection"],
+  ): CollectionProductOutcome => ({
+    typeId: "securities",
+    status,
+    itemCount: 0,
+    committedCount: 0,
+    ...(status === "failed" ? { errorCode: "source-collection-failed" as const } : {}),
+    ...(collection ? { collection } : {}),
+  });
+  const incomplete = { status: "incomplete" as const, exclusionCounts: {} };
+  const complete = { status: "complete" as const, exclusionCounts: {} };
+
+  assert.equal(productRunStatus([outcome("success", complete), outcome("no_data"), outcome("skipped")], 3), "completed");
+  assert.equal(productRunStatus([outcome("success"), outcome("failed")], 2), "partial");
+  assert.equal(productRunStatus([outcome("failed")], 0), "failed");
+  assert.equal(productRunStatus([outcome("success", incomplete)], 1), "partial", "incomplete coverage with receipts is partial");
+  assert.equal(productRunStatus([outcome("no_data", incomplete)], 0), "failed", "incomplete coverage without receipts fails");
+}

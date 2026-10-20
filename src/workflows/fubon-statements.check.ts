@@ -24,7 +24,7 @@ import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   type FubonCurrentDepositBalanceRow,
 } from "./fubon-current-deposit-balances.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type {

@@ -13,7 +13,8 @@ import type {
   WorkflowProgressActivity,
   WorkflowStage,
 } from "./workflow-executor.ts";
-import { sanitizeTdccProductEvidence, tdccCollectionRunStatus, TDCC_MAX_SUMMARY_COUNT } from "./tdcc-collection-summary.ts";
+import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
+import { productRunStatus } from "./product-run-status.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
@@ -197,16 +198,13 @@ export function interruptedProductCollectionFromOutput(
   const rowCount = readCount("rowCount");
   const itemCount = readCount("itemCount");
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
-  const hasFailure = products.some((product) => product.status === "failed");
   return new ProductCollectionInterruptedError(errorCode, Object.freeze({
     products,
     sourceCaptureCount,
     rowCount,
     itemCount,
     committedCount,
-    status: tdccCollectionRunStatus(products, committedCount, hasFailure
-      ? committedCount > 0 ? "partial" : "failed"
-      : "completed"),
+    status: productRunStatus(products, committedCount),
   }));
 }
 
@@ -295,14 +293,13 @@ function summarize(
   itemCount: number,
   committedCount: number,
 ): ProductCollectionRunSummary {
-  const failed = outcomes.some((outcome) => outcome.status === "failed");
   return Object.freeze({
     products: Object.freeze([...outcomes]),
     sourceCaptureCount,
     rowCount,
     itemCount,
     committedCount,
-    status: failed ? committedCount > 0 ? "partial" : "failed" : "completed",
+    status: productRunStatus(outcomes, committedCount),
   });
 }
 
