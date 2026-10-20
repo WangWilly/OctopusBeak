@@ -40,31 +40,31 @@ type AuthFrame = {
   readonly token: string;
 };
 
-type SocketMessageListener = (value: unknown) => void;
+export type SocketMessageListener = (value: unknown) => void;
 
-type SocketMessagePort = {
+export type SocketMessagePort = {
   on(event: "message", listener: SocketMessageListener): unknown;
   off(event: "message", listener: SocketMessageListener): unknown;
   postMessage(value: unknown): void;
   close(): void;
 };
 
-function plainRecord(value: unknown): value is Record<string, unknown> {
+export function plainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
-function validToken(token: string): boolean {
+export function validToken(token: string): boolean {
   return /^[A-Za-z0-9_-]{32,128}$/u.test(token);
 }
 
-function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChildTransportError {
+export function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChildTransportError {
   return new PGliteChildTransportError(code);
 }
 
 /** A bounded, newline-delimited JSON socket adapter for the existing RPC ports. */
-class LineSocketPort implements SocketMessagePort {
+export class LineSocketPort implements SocketMessagePort {
   #listeners = new Set<SocketMessageListener>();
   #buffer = "";
   #decoder = new StringDecoder("utf8");
