@@ -313,7 +313,7 @@ async function executeInlineAppWorkflow(
       });
       await childRpc.ready;
       const { financial } = childRpc;
-      accountIdentity = { continuity: (request) => financial.accountIdentityContinuity(request) };
+      accountIdentity = { continuity: (request) => financial.request("financial.accountIdentity.continuity", [request]) };
     }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const input = workflowInputForTask(execution.task.workflowId, launchEnv);

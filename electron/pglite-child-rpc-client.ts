@@ -9,6 +9,7 @@ import {
   createPGliteFinancialRpcClient,
   type PGliteFinancialOperation,
   type PGliteFinancialRequestOptions,
+  type PGliteFinancialPort,
   type PGliteFinancialRpcClient,
 } from "./pglite-financial-rpc-client.ts";
 import {
@@ -191,7 +192,7 @@ export class PGliteChildTransportError extends Error {
 export type PGliteChildRpcClient = Readonly<{
   ready: Promise<void>;
   operationalProvider: PGliteOperationalRpcClient["provider"];
-  financial: PGliteFinancialRpcClient["registry"];
+  financial: PGliteFinancialPort;
   workflow: PGliteWorkflowClient;
   request<K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown>;
   close(error?: Error): void;
@@ -245,7 +246,7 @@ export function createPGliteChildRpcClient(
       options?: PGliteWorkflowRequestOptions,
     ): Promise<PGliteWorkflowCommandResult<Command>> => financial.request(
       command.kind,
-      [command.request],
+      [command.request] as never,
       options,
     ) as Promise<PGliteWorkflowCommandResult<Command>>,
   };
@@ -278,7 +279,7 @@ export function createPGliteChildRpcClient(
   const request = <K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown> => {
     if (operation.startsWith("automation.") || operation.startsWith("exchangeRates."))
       return operational.request(operation as PGliteOperationalOperation, args);
-    return financial.request(operation as PGliteFinancialOperation, args, options);
+    return financial.request(operation as PGliteFinancialOperation, args as never, options);
   };
   const close = (error = safeTransportError("closed")): void => {
     if (closed) return;
@@ -295,7 +296,7 @@ export function createPGliteChildRpcClient(
   return Object.freeze({
     ready,
     operationalProvider: operational.provider,
-    financial: financial.registry,
+    financial,
     workflow,
     request,
     close,

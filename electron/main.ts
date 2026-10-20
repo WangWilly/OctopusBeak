@@ -31,10 +31,6 @@ import {
   type PGliteOperationalRuntime,
 } from "./pglite-runtime.ts";
 import {
-  createPGliteFinancialPageClient,
-} from "./pglite-financial-registry.ts";
-import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
-import {
   PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX,
   packagedBrowserFixtureEnabled,
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
@@ -437,11 +433,7 @@ async function start() {
       worker: operationalRuntime.worker,
       dataDir: operationalRuntime.dataDir,
     },
-    pgliteFinancial: createPGliteFinancialPageClient(
-      operationalRuntime.worker.financial,
-      operationalRuntime.worker.subscribe,
-      configuredOverviewSources,
-    ),
+    pgliteFinancial: operationalRuntime.worker.financial,
   });
   // Recovery owns the persisted active-run boundary.  Do not let the
   // scheduler claim a new run until that boundary has been reconciled; the

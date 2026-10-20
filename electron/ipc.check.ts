@@ -48,13 +48,13 @@ assert.doesNotMatch(source, /assertManualVerificationAllowedForTask|human-sessio
 assert.match(source, /data:invalidated/);
 assert.match(
   source,
-  /PGliteFinancialPageClient/,
-  "financial page requests use the worker-owned PGlite registry",
+  /PGliteFinancialPort/,
+  "financial page requests use the worker-owned PGlite port",
 );
 assert.match(source, /registerPGliteViewIpc/);
 assert.doesNotMatch(source, /financial-page-worker|createFinancialPageWorkerClient/);
 assert.match(source, /pgliteOperational: \{/);
-assert.match(source, /pgliteFinancial: PGliteFinancialPageClient/);
+assert.match(source, /pgliteFinancial: PGliteFinancialPort/);
 assert.match(source, /withExpectedDataVersion/);
 assert.match(source, /options\?\.expectedVersion/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:block"/);

@@ -219,7 +219,7 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
         },
       },
       financial: {
-        async overviewCurrent() { return { dailyHistory: [] }; },
+        async request() { return { dailyHistory: [] }; },
       },
     } as never,
   });
