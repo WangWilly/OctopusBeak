@@ -190,10 +190,10 @@ const CREATE_TASK_RUN_FIELDS = [
   "scheduledAtUtc",
 ] as const;
 const TASK_RUN_UPDATE_FIELDS = [
-  "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
-  "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
-  "browserRuntime",
+  "attempt", "maxAttempts", "progress", "terminationMode", "humanAssistanceContract",
+  "appWorkflowOutcome", "browserRuntime",
 ] as const;
+const TASK_RUN_TRANSITION_FIELDS = [...TASK_RUN_UPDATE_FIELDS, "status", "finishedAt"] as const;
 
 function previewVisibility(value: unknown): boolean {
   return hasOnlyFields(value, ["visible"]) && Array.isArray(value.visible)
@@ -214,7 +214,7 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
       return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS);
     case "automation.transitionTaskRunToActive":
     case "automation.transitionTaskRunToTerminal":
-      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS);
+      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_TRANSITION_FIELDS);
     case "automation.updateHumanAssistanceContract":
       return args.length === 2 && stringValue(args[0]) && plainRecord(args[1]);
     case "automation.updateHumanAssistanceCompletion":
