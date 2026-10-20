@@ -10,16 +10,16 @@ import {
 } from "./canonical-source-store.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import {
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+} from "./workflow-commands.ts";
 
 /**
  * Relation resolution is a worker-owned command.  The request contains only
  * source keys and provider evidence identifiers; a transaction capability or
  * callback never crosses this boundary.
  */
-export const PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND =
-  "canonical.loan-repayment-relations.resolve" as const;
-export const PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND =
-  "canonical.investment-funding-relations.resolve" as const;
 
 export type PGliteCanonicalExplicitLoanRelationLink = Readonly<{
   fromCaptureId: string;

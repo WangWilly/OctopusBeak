@@ -204,24 +204,6 @@ export type PGliteChildRpcClientOptions = {
   diagnosticContext?: WorkflowFailureCorrelation;
 };
 
-function financialOperationForWorkflow(command: PGliteWorkflowCommand): PGliteFinancialOperation {
-  switch (command.kind) {
-    case "canonical.source.admit": return "financial.source.admit";
-    case "canonical.financial.commit": return "financial.source.commit";
-    case "canonical.financial.commit-batch": return "financial.source.commitBatch";
-    case "canonical.deposit.commit": return "financial.deposit.commit";
-    case "canonical.mixed.commit": return "financial.mixed.commit";
-    case "canonical.balance.capture": return "financial.balance.capture";
-    case "canonical.einvoice.commit": return "financial.einvoice.commit";
-    case "canonical.credit-card.commit": return "financial.creditCard.commit";
-    case "canonical.credit-card.balance": return "financial.creditCard.balance";
-    case "canonical.loan.commit": return "financial.loan.commit";
-    case "canonical.investment.commit": return "financial.investment.commit";
-    case "canonical.loan-repayment-relations.resolve": return "financial.loanRelations.resolve";
-    case "canonical.investment-funding-relations.resolve": return "financial.investmentRelations.resolve";
-  }
-}
-
 function endpointAndToken(options: PGliteChildRpcClientOptions): { endpoint: string; token: string } {
   const environment = options.environment ?? process.env;
   const endpoint = options.endpoint ?? environment[PGLITE_CHILD_RPC_ENDPOINT_ENV];
@@ -262,7 +244,7 @@ export function createPGliteChildRpcClient(
       command: Command,
       options?: PGliteWorkflowRequestOptions,
     ): Promise<PGliteWorkflowCommandResult<Command>> => financial.request(
-      financialOperationForWorkflow(command),
+      command.kind,
       [command.request],
       options,
     ) as Promise<PGliteWorkflowCommandResult<Command>>,
