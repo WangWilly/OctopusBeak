@@ -71,6 +71,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.liabilities.current",
   "financial.spending.current",
   "financial.spending.version",
+  "financial.spending.prewarmPairing",
   "financial.preview.visibilityChanged",
   "financial.spending.pairing",
   "financial.spending.confirmCandidate",
@@ -163,6 +164,8 @@ export type PGliteFinancialRegistry = Readonly<{
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
   spendingVersion(): Promise<number>;
+  /** Build the pairing index when the store is still at this version; returns the current version. */
+  spendingPrewarmPairing(dataVersion: number): Promise<number>;
   previewVisibilityChanged(): Promise<void>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
@@ -331,6 +334,7 @@ export function createPGliteFinancialRpcClient(
     liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
     spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
     spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
+    spendingPrewarmPairing: (dataVersion) => call("financial.spending.prewarmPairing", [dataVersion]) as Promise<number>,
     previewVisibilityChanged: () => call("financial.preview.visibilityChanged", []).then(() => undefined),
     spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,
     confirmCandidate: (input) => call("financial.spending.confirmCandidate", [input]) as Promise<SpendingPurchaseActionResult>,

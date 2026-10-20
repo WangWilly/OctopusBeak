@@ -363,6 +363,8 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
     case "financial.spending.version":
     case "financial.preview.visibilityChanged":
       return args.length === 0;
+    case "financial.spending.prewarmPairing":
+      return args.length === 1 && nonNegativeSafeInteger(args[0]);
     case "financial.spending.pairing":
       return args.length === 1 && plainRecord(args[0])
         && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
@@ -795,6 +797,9 @@ export function createPGliteFinancialRegistry(
       );
       return Number(result.rows[0]?.value ?? 0);
     },
+    spendingPrewarmPairing(dataVersion) {
+      return spending.prewarmPairing(dataVersion);
+    },
     spendingPairing(input) {
       return spending.pairingCandidates(input);
     },
@@ -888,6 +893,7 @@ async function invoke(
     case "financial.spending.current": return registry.spendingCurrent(args[0] as SpendingLoadInput | undefined);
     case "financial.spending.version": return registry.spendingVersion();
     case "financial.preview.visibilityChanged": return registry.previewVisibilityChanged();
+    case "financial.spending.prewarmPairing": return registry.spendingPrewarmPairing(args[0] as number);
     case "financial.spending.pairing": return registry.spendingPairing(args[0] as SpendingPairingCandidatesInput);
     case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
     case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
@@ -932,14 +938,68 @@ const CANONICAL_COMMIT_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new S
 
 export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
 
+/**
+ * Pairing, its page actions, and the purchase list they change answer a click;
+ * the other page refreshes do not. They run before queued reads, still one
+ * operation at a time.
+ */
+const INTERACTIVE_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
+  "financial.spending.version",
+  "financial.spending.prewarmPairing",
+  "financial.spending.pairing",
+  "financial.spending.confirmCandidate",
+  "financial.spending.denyCandidate",
+  "financial.spending.revokeLink",
+]);
+
+/**
+ * Runs one PGlite operation at a time for a worker. Interactive work (a click
+ * waiting on Pairing or its page action) starts before queued background work
+ * such as page refreshes and live-view recomputes; a running operation is
+ * never interrupted.
+ */
+export type PGliteWorkScheduler = Readonly<{
+  schedule<T>(lane: "interactive" | "background", task: () => Promise<T>): Promise<T>;
+}>;
+
+export function createPGliteWorkScheduler(): PGliteWorkScheduler {
+  const queued = { interactive: [] as Array<() => Promise<void>>, background: [] as Array<() => Promise<void>> };
+  let running = false;
+  let pumpScheduled = false;
+  // A query blocks this thread, so requests that arrived meanwhile are still
+  // undelivered messages. Choose the next job only after one event-loop turn,
+  // and keep a single pending turn: several would run their jobs back to back
+  // in one phase without ever delivering those messages.
+  const schedulePump = () => {
+    if (pumpScheduled) return;
+    pumpScheduled = true;
+    setImmediate(() => {
+      pumpScheduled = false;
+      if (running) return;
+      const job = queued.interactive.shift() ?? queued.background.shift();
+      if (!job) return;
+      running = true;
+      void job().finally(() => {
+        running = false;
+        schedulePump();
+      });
+    });
+  };
+  const schedule = <T>(lane: keyof typeof queued, task: () => Promise<T>) => new Promise<T>((resolve, reject) => {
+    queued[lane].push(() => Promise.resolve().then(task).then(resolve, reject));
+    schedulePump();
+  });
+  return Object.freeze({ schedule });
+}
+
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
   registry: PGliteFinancialRegistry,
   assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
+  scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
 ): PGliteFinancialRpcServer {
   let closed = false;
-  let sequence = Promise.resolve();
   const active = new Set<Promise<void>>();
   const controllers = new Map<number, AbortController>();
   const onMessage = (value: unknown): void => {
@@ -967,7 +1027,9 @@ export function createPGliteFinancialRpcServer(
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const work = sequence.then(() => {
+    const interactive = INTERACTIVE_OPERATIONS.has(operation)
+      || (operation === "financial.spending.current" && (value.args[0] as { __spendingRead?: unknown } | undefined)?.__spendingRead === "record-page");
+    const work = scheduler.schedule(interactive ? "interactive" : "background", async () => {
       if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
       if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
         assertCommitAdmissible(value.diagnosticContext);
@@ -1007,7 +1069,6 @@ export function createPGliteFinancialRpcServer(
         );
       },
     ).then(() => undefined);
-    sequence = work.catch(() => undefined);
     active.add(work);
     void work.finally(() => {
       active.delete(work);
@@ -1083,7 +1144,7 @@ export function createPGliteFinancialPageClient(
     rankPairingCandidates: (input: SpendingPairingCandidatesInput) => rpc.registry.spendingPairing(input),
     previewVisibilityChanged: () => rpc.registry.previewVisibilityChanged(),
     prewarmPairingCandidates: async (input: { dataVersion: number }) => {
-      const currentVersion = await rpc.registry.spendingVersion();
+      const currentVersion = await rpc.registry.spendingPrewarmPairing(input.dataVersion);
       return currentVersion === input.dataVersion
         ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
         : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
@@ -1127,6 +1188,7 @@ export function createPGliteFinancialLiveViews(
   db: PGliteWithLive,
   registry: PGliteFinancialRegistry & PGliteFinancialPageActionEvents,
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
+  scheduler?: PGliteWorkScheduler,
 ) {
   const entries = new Map<string, {
     stop: () => Promise<void>;
@@ -1164,13 +1226,14 @@ export function createPGliteFinancialLiveViews(
               queued = false;
               const requestedSources = (params as { expectedSources?: PGliteFinancialExpectedSources }).expectedSources;
               const sources = requestedSources ?? expectedSources();
-              const value = view === "financial.overview.current"
-                ? await registry.overviewCurrent(sources)
+              const load = (): Promise<unknown> => view === "financial.overview.current"
+                ? registry.overviewCurrent(sources)
                 : view === "financial.assets.current"
-                  ? await registry.assetsCurrent(sources)
+                  ? registry.assetsCurrent(sources)
                   : view === "financial.liabilities.current"
-                    ? await registry.liabilitiesCurrent(sources)
-                  : await registry.spendingCurrent(params as SpendingLoadInput);
+                    ? registry.liabilitiesCurrent(sources)
+                  : registry.spendingCurrent(params as SpendingLoadInput);
+              const value = scheduler ? await scheduler.schedule("background", load) : await load();
               if (stopped) return;
               entry!.lastValue = value;
               for (const listener of listeners) {
