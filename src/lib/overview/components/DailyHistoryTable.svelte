@@ -52,11 +52,11 @@
   ) {
     const amounts = row[key];
     if (row.exchangeRateMissing) {
-      const formatted = signed ? formatSignedAmountLines(amounts) : formatAmountLines(amounts);
+      const formatted = signed ? formatSignedAmountLines(amounts, $locale) : formatAmountLines(amounts, $locale);
       return formatted.replaceAll(" / ", "\n");
     }
     const amount = amounts.find((item) => item.currency === currency);
-    return amount ? formatMoney(amount, { signed }) : "--";
+    return amount ? formatMoney(amount, { signed, locale: $locale }) : "--";
   }
 
   function currencyValue(amounts: DailyHistoryRowDto["netAssets"]) {

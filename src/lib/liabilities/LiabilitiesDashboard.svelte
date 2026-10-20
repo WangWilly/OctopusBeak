@@ -7,7 +7,8 @@
     type UpcomingPayment,
   } from "$lib/liabilities/liabilities-summary.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
-  import { formatShare, formatShortDate, formatTwd, formatTwdNumber, liabilityColor } from "$lib/overview/overview-format.ts";
+  import { formatShare, formatShortDate, liabilityColor } from "$lib/overview/overview-format.ts";
+import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
