@@ -632,3 +632,19 @@ test("Fubon current balance capture succeeds after grouped billed history withou
     assert.equal(count.rows[0]?.count, 1);
   } finally { await database.close(); }
 });
+
+test("a credit-card commit refreshes the projection once and asks for every enrichment", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    const refreshes: { captureIds?: readonly Uint8Array[]; transactionIds?: readonly Uint8Array[]; cutoffSequence: number; refreshEnrichmentAll?: boolean }[] = [];
+    await commitPGliteCanonicalCreditCardCapture(store, capture("credit-card-projection-pin"), {
+      projection: async (_transaction, refresh) => { refreshes.push(refresh); },
+    });
+    assert.equal(refreshes.length, 1);
+    assert.equal(refreshes[0]!.captureIds?.length, 1);
+    assert.equal(refreshes[0]!.refreshEnrichmentAll, true);
+  } finally {
+    await store.close();
+  }
+});

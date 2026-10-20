@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit, type PGliteCanonicalCommitRef } from "./canonical-commit.ts";
 import {
   cachedPGliteSpendingSnapshot,
   queryCurrentSpending,
@@ -173,23 +174,17 @@ async function currentSnapshotForAction(
   return queryCurrentSpending(transaction);
 }
 
-type CommitRef = Readonly<{ id: Uint8Array; sequence: number; recordedAtUtcUs: number }>;
+type CommitRef = PGliteCanonicalCommitRef;
 
-async function commit(
+function commit(
   transaction: PGliteTransaction,
   authorityRoute: string,
 ): Promise<CommitRef> {
-  const id = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
-  const sequence = (await latest(transaction)) + 1;
-  const recordedAtUtcUs = Date.now() * 1000;
-  await txQuery(
-    transaction,
-    `INSERT INTO canonical_commits(
-       commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-     ) VALUES (?, ?, ?, ?, 'relation_resolution')`,
-    [id, sequence, recordedAtUtcUs, authorityRoute],
-  );
-  return { id, sequence, recordedAtUtcUs };
+  return insertPGliteCanonicalCommit(transaction, {
+    kind: "relation_resolution",
+    authorityRoute,
+    time: { kind: "wall-clock" },
+  });
 }
 
 async function requirePair(transaction: PGliteTransaction, pair: SpendingPair): Promise<Readonly<{ invoice: Uint8Array; transaction: Uint8Array }>> {
