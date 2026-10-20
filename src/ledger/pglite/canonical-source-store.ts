@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import type {
   PGliteCanonicalProjectionHook,
 } from "./projection.ts";
@@ -91,8 +92,6 @@ export type PGliteCanonicalCommitOptions = Readonly<{
   recordedAtUtcUs?: number;
   /** Worker-local current projection hook; never crosses the named IPC seam. */
   projection?: PGliteCanonicalProjectionHook;
-  /** Internal nested-domain marker; extension commands project once at the end. */
-  skipProjection?: boolean;
 }>;
 
 export type PGliteCanonicalFinancialTransactionResult = Readonly<{
@@ -246,18 +245,6 @@ function canonicalBalanceObservationKey(
       `canonical/depository-balance-observation/v2|${observation.observationKey}|${observation.balanceKind}|${observation.currency}|${effectiveAt}`,
     )
     .digest("base64url")}`;
-}
-
-function nextCommitTime(
-  latest: unknown,
-  requested: number | undefined,
-  clock: (() => number) | undefined,
-): number {
-  const prior = Number(latest ?? -1);
-  const candidate = requested ?? clock?.() ?? Date.now() * 1000;
-  if (!Number.isSafeInteger(candidate) || candidate < 0)
-    throw new Error("Canonical PGlite commit clock returned an invalid timestamp.");
-  return Math.max(candidate, Number.isSafeInteger(prior) ? prior + 1 : candidate);
 }
 
 function sameFinancialRevision(
@@ -904,27 +891,11 @@ async function persistSourceCapture(
       "Capture overwrite is forbidden.",
     );
 
-  const latest = await first<{ value: number | string }>(
-    transaction,
-    "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-  );
-  const recordedAt = nextCommitTime(
-    latest?.value,
-    options.recordedAtUtcUs,
-    options.clock,
-  );
-  const commitId = uuidBytes();
-
-  const sequenceRow = await first<{ value: number | string }>(
-    transaction,
-    "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
-  );
-  const commitSequence = integerValue(sequenceRow?.value ?? 0, "Canonical commit sequence") + 1;
-  await txQuery(
-    transaction,
-    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'source_capture')",
-    [commitId, commitSequence, recordedAt, evidence.routeKey],
-  );
+  const { id: commitId, sequence: commitSequence, recordedAtUtcUs: recordedAt } = await insertPGliteCanonicalCommit(transaction, {
+    kind: "source_capture",
+    authorityRoute: evidence.routeKey,
+    time: { kind: "requested", recordedAtUtcUs: options.recordedAtUtcUs, clock: options.clock },
+  });
 
   // Resolve existing identity IDs before validating continuity. New IDs are
   // only inserted after this query, and the enclosing transaction rolls back
@@ -1839,6 +1810,47 @@ export async function commitPGliteCanonicalFinancialCaptureInTransaction(
   return commitFinancialRequestInTransaction(transaction, snapshot, options);
 }
 
+/** What the shared financial commit wrote, for a domain command that adds its own rows before projecting. */
+export type PGliteAdmittedFinancialCapture = Readonly<{
+  result: PGliteCanonicalFinancialCommitResult;
+  capture: PGliteCanonicalSourceCaptureTransactionResult;
+  accountId: Uint8Array;
+}>;
+
+/**
+ * Run the shared financial commit without refreshing the current projection.
+ * The caller writes its domain rows and then calls
+ * refreshPGliteAdmittedFinancialProjection once for everything it admitted.
+ */
+export async function admitPGliteCanonicalFinancialCaptureInTransaction(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+  options: PGliteCanonicalCommitOptions = {},
+): Promise<PGliteAdmittedFinancialCapture> {
+  const snapshot = cloneFinancialRequest(request);
+  validateFinancialRequest(snapshot);
+  return admitFinancialRequestInTransaction(transaction, snapshot, options);
+}
+
+/** Refresh the current projection once for every admitted capture, cut off at the latest commit. */
+export async function refreshPGliteAdmittedFinancialProjection(
+  transaction: PGliteTransaction,
+  admitted: readonly PGliteAdmittedFinancialCapture[],
+  options: PGliteCanonicalCommitOptions,
+  refresh: Readonly<{ refreshEnrichmentAll?: true }> = {},
+): Promise<void> {
+  const latest = admitted.reduce((current, candidate) =>
+    candidate.result.commitSequence >= current.result.commitSequence ? candidate : current);
+  await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
+    commitId: latest.capture.commitId,
+    cutoffSequence: latest.result.commitSequence,
+    captureIds: admitted.map((entry) => entry.capture.captureId),
+    transactionIds: admitted.flatMap((entry) => entry.result.transactions.map((row) =>
+      Uint8Array.from(Buffer.from(row.transactionId.replaceAll("-", ""), "hex")))),
+    ...refresh,
+  });
+}
+
 function validateFinancialRequest(
   request: PGliteCanonicalFinancialCommitRequest,
 ): void {
@@ -1920,6 +1932,17 @@ async function commitFinancialRequestInTransaction(
   request: PGliteCanonicalFinancialCommitRequest,
   options: PGliteCanonicalCommitOptions,
 ): Promise<PGliteCanonicalFinancialCommitResult> {
+  const admitted = await admitFinancialRequestInTransaction(transaction, request, options);
+  await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options);
+  throwIfCancelled(options.signal);
+  return admitted.result;
+}
+
+async function admitFinancialRequestInTransaction(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+  options: PGliteCanonicalCommitOptions,
+): Promise<PGliteAdmittedFinancialCapture> {
   throwIfCancelled(options.signal);
   const attestation = getPGliteHumanAttestationRoute(request.capture.routeKey);
   if (attestation) {
@@ -1955,21 +1978,14 @@ async function commitFinancialRequestInTransaction(
   );
   await persistSourceSyncState(transaction, request, capture, accountId);
   throwIfCancelled(transactionOptions.signal);
-  if (!options.skipProjection) {
-    await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
-      commitId: capture.commitId,
-      cutoffSequence: capture.receipt.knowledgePoint,
-      captureIds: [capture.captureId],
-      transactionIds: transactions.map((result) =>
-        Uint8Array.from(Buffer.from(result.transactionId.replaceAll("-", ""), "hex")),
-      ),
-    });
-  }
-  throwIfCancelled(transactionOptions.signal);
   return {
-    captureId: capture.receipt.captureId,
-    commitSequence: capture.receipt.knowledgePoint,
-    transactions,
+    result: {
+      captureId: capture.receipt.captureId,
+      commitSequence: capture.receipt.knowledgePoint,
+      transactions,
+    },
+    capture,
+    accountId,
   };
 }
 
