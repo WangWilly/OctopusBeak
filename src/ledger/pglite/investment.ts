@@ -21,19 +21,10 @@ import type { TdccAdmittedFundAccount } from "../canonical/tdcc-investment-admis
 import { isInstitutionKey } from "../../lib/institutions/institutions.ts";
 import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
-import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
-
-/** Named worker command for a source-admitted investment snapshot. */
-export { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND };
 
 export type PGliteCanonicalInvestmentCommitRequest = Readonly<{
   capture: InvestmentCaptureInput;
   recordedAtUtcUs?: number;
-}>;
-
-export type PGliteCanonicalInvestmentCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND;
-  request: PGliteCanonicalInvestmentCommitRequest;
 }>;
 
 export type PGliteCanonicalInvestmentCommitResult = Readonly<{
@@ -708,10 +699,3 @@ export async function commitPGliteCanonicalInvestmentCapture(
   });
 }
 
-export function executePGliteCanonicalInvestmentCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalInvestmentCommitCommand | PGliteCanonicalInvestmentCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalInvestmentCommitResult> {
-  return commitPGliteCanonicalInvestmentCapture(store, "kind" in command ? command.request : command, options);
-}

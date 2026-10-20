@@ -37,7 +37,6 @@ import type {
   PGliteCanonicalBalanceCommitResult,
 } from "../src/ledger/pglite/balance.ts";
 import type {
-  executePGliteCanonicalEInvoiceCommit,
   PGliteCanonicalEInvoiceCommitResult,
 } from "../src/ledger/pglite/einvoice.ts";
 import type {
@@ -63,6 +62,7 @@ import type {
 } from "../src/ledger/pglite/relations.ts";
 import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
 import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
 /** Stable named query/command registry identifiers. */
 export const PGLITE_FINANCIAL_OPERATIONS = [
@@ -176,7 +176,7 @@ export type PGliteFinancialRegistry = Readonly<{
   depositCommit(request: PGliteCanonicalDepositCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalDepositCommitResult>;
   mixedCommit(request: PGliteCanonicalMixedCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalMixedCommitResult>;
   balanceCapture(request: PGliteCanonicalBalanceCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalBalanceCommitResult>;
-  einvoiceCommit(request: Parameters<typeof executePGliteCanonicalEInvoiceCommit>[1], options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalEInvoiceCommitResult>;
+  einvoiceCommit(request: CanonicalEInvoiceCaptureInput, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalEInvoiceCommitResult>;
   creditCardCommit(request: PGliteCanonicalCreditCardCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalCreditCardCommitResult>;
   creditCardBalance(request: PGliteCanonicalCreditCardBalanceCaptureRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalCreditCardCommitResult>;
   loanCommit(request: PGliteCanonicalLoanCommitRequest, options?: PGliteCanonicalCommitOptions): Promise<PGliteCanonicalLoanCommitResult>;

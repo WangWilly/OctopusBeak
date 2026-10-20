@@ -16,10 +16,6 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * source keys and provider evidence identifiers; a transaction capability or
  * callback never crosses this boundary.
  */
-export const PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND =
-  "canonical.loan-repayment-relations.resolve" as const;
-export const PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND =
-  "canonical.investment-funding-relations.resolve" as const;
 
 export type PGliteCanonicalExplicitLoanRelationLink = Readonly<{
   fromCaptureId: string;
@@ -41,11 +37,6 @@ export type PGliteCanonicalLoanRelationResolutionRequest = Readonly<{
   counterpartyEvidence?: readonly TransactionCounterpartyAccountEvidenceInput[];
 }>;
 
-export type PGliteCanonicalLoanRelationResolutionCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND;
-  request: PGliteCanonicalLoanRelationResolutionRequest;
-}>;
-
 export type PGliteCanonicalLoanRelationResolutionResult = Readonly<{
   status: "canonical-live";
   outcome: "changed" | "unchanged" | "no-admission";
@@ -59,11 +50,6 @@ export type PGliteCanonicalLoanRelationResolutionResult = Readonly<{
 export type PGliteCanonicalInvestmentRelationResolutionRequest = Readonly<{
   sourceConnectionKey?: string;
   observedAt?: string;
-}>;
-
-export type PGliteCanonicalInvestmentRelationResolutionCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND;
-  request: PGliteCanonicalInvestmentRelationResolutionRequest;
 }>;
 
 export type PGliteCanonicalInvestmentRelationResolutionResult = Readonly<{
@@ -1051,14 +1037,6 @@ export async function resolvePGliteCanonicalLoanRepaymentRelations(
   return store.transaction((transaction) => resolveLoanRelationsInTransaction(transaction, structuredClone(request), options));
 }
 
-export function executePGliteCanonicalLoanRelationCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalLoanRelationResolutionCommand | PGliteCanonicalLoanRelationResolutionRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalLoanRelationResolutionResult> {
-  return resolvePGliteCanonicalLoanRepaymentRelations(store, "kind" in command ? command.request : command, options);
-}
-
 /* ------------------------------------------------------------------------- *
  * Investment funding resolution
  * ------------------------------------------------------------------------- */
@@ -1470,14 +1448,6 @@ export async function resolvePGliteCanonicalInvestmentFundingRelations(
   options: PGliteCanonicalCommitOptions = {},
 ): Promise<PGliteCanonicalInvestmentRelationResolutionResult> {
   return store.transaction((transaction) => resolveInvestmentRelationsInTransaction(transaction, structuredClone(request), options));
-}
-
-export function executePGliteCanonicalInvestmentRelationCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalInvestmentRelationResolutionCommand | PGliteCanonicalInvestmentRelationResolutionRequest = {},
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalInvestmentRelationResolutionResult> {
-  return resolvePGliteCanonicalInvestmentFundingRelations(store, "kind" in command ? command.request : command, options);
 }
 
 export async function queryPGliteCurrentLoanRepaymentRelations(

@@ -88,7 +88,7 @@ import {
   type PGliteCanonicalSourceAdmissionRequest,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
-  executePGliteCanonicalDepositCommit,
+  commitPGliteCanonicalDepositCapture,
   type PGliteCanonicalDepositCommitRequest,
 } from "../src/ledger/pglite/deposit.ts";
 import {
@@ -96,27 +96,26 @@ import {
   type PGliteCanonicalMixedCommitRequest,
 } from "../src/ledger/pglite/mixed-commit.ts";
 import {
-  executePGliteCanonicalBalanceCapture,
+  commitPGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
 } from "../src/ledger/pglite/balance.ts";
 import {
-  executePGliteCanonicalEInvoiceCommit,
+  commitPGliteCanonicalEInvoiceCapture,
   PGliteCanonicalEInvoiceAdmissionError,
 } from "../src/ledger/pglite/einvoice.ts";
 import {
-  executePGliteCanonicalCreditCardCommand,
+  commitPGliteCanonicalCreditCardBalanceCapture,
+  commitPGliteCanonicalCreditCardCapture,
   PGliteCanonicalCreditCardAdmissionError,
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   type PGliteCanonicalCreditCardBalanceCaptureRequest,
   type PGliteCanonicalCreditCardCaptureRequest,
 } from "../src/ledger/pglite/credit-card.ts";
 import {
-  executePGliteCanonicalLoanCommand,
+  commitPGliteCanonicalLoanCapture,
   type PGliteCanonicalLoanCommitRequest,
 } from "../src/ledger/pglite/loan.ts";
 import {
-  executePGliteCanonicalInvestmentCommand,
+  commitPGliteCanonicalInvestmentCapture,
   listPGliteTdccFundAccounts,
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
@@ -125,8 +124,8 @@ import {
   type AccountIdentityContinuityRequest,
 } from "../src/ledger/pglite/account-identity-continuity.ts";
 import {
-  executePGliteCanonicalLoanRelationCommand,
-  executePGliteCanonicalInvestmentRelationCommand,
+  resolvePGliteCanonicalLoanRepaymentRelations,
+  resolvePGliteCanonicalInvestmentFundingRelations,
   queryPGliteCurrentLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentSettlementGroups,
   queryPGliteCurrentInvestmentFundingRelations,
@@ -146,6 +145,7 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
 type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
@@ -350,104 +350,6 @@ function einvoiceCaptureShape(value: unknown): boolean {
     && plainRecord(value.scope)
     && Array.isArray(value.pages)
     && Array.isArray(value.invoices);
-}
-
-function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly unknown[]): boolean {
-  switch (operation) {
-    case "financial.overview.current":
-    case "financial.assets.current":
-    case "financial.liabilities.current":
-      return args.length === 0 || (args.length === 1 && Array.isArray(args[0]));
-    case "financial.spending.current":
-      return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
-    case "financial.spending.version":
-    case "financial.preview.visibilityChanged":
-      return args.length === 0;
-    case "financial.spending.pairing":
-      return args.length === 1 && plainRecord(args[0])
-        && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion);
-    case "financial.spending.confirmCandidate":
-    case "financial.spending.denyCandidate":
-    case "financial.spending.revokeLink":
-      return args.length === 1 && plainRecord(args[0]);
-    case "financial.spending.confirmStrongCandidates":
-      return args.length === 1 && plainRecord(args[0])
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
-        && Array.isArray((args[0] as Record<string, unknown>).pairs);
-    case "financial.spending.setPurchaseCategory":
-      return args.length === 1 && plainRecord(args[0])
-        && stringField(args[0], "purchaseId")
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
-        && ((args[0] as Record<string, unknown>).categoryCode === null
-          || typeof (args[0] as Record<string, unknown>).categoryCode === "string");
-    case "financial.source.admit":
-      return args.length === 1 && sourceEvidenceShape(args[0]);
-    case "financial.source.commit":
-      return args.length === 1 && sourceCommitShape(args[0]);
-    case "financial.source.commitBatch":
-      return args.length === 1 && plainRecord(args[0])
-        && Array.isArray((args[0] as Record<string, unknown>).commits)
-        && ((args[0] as Record<string, unknown>).commits as unknown[]).length > 0
-        && ((args[0] as Record<string, unknown>).commits as unknown[]).every(sourceCommitShape);
-    case "financial.deposit.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && plainRecord((args[0] as Record<string, unknown>).capture);
-    case "financial.mixed.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && Array.isArray((args[0] as Record<string, unknown>).steps)
-        && ((args[0] as Record<string, unknown>).steps as unknown[]).length > 0
-        && ((args[0] as Record<string, unknown>).steps as unknown[]).every((step) =>
-          plainRecord(step)
-          && (step.kind === "source" && sourceEvidenceShape(step.request)
-            || step.kind === "financial" && sourceCommitShape(step.request)
-            || step.kind === "deposit" && plainRecord(step.request)
-              && plainRecord(step.request.capture)));
-    case "financial.balance.capture":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && Array.isArray((args[0] as Record<string, unknown>).observations);
-    case "financial.einvoice.commit":
-      return args.length === 1 && einvoiceCaptureShape(args[0]);
-    case "financial.creditCard.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && plainRecord((args[0] as Record<string, unknown>).identity)
-        && Array.isArray((args[0] as Record<string, unknown>).instruments)
-        && Array.isArray((args[0] as Record<string, unknown>).transactions)
-        && Array.isArray((args[0] as Record<string, unknown>).statements);
-    case "financial.creditCard.balance":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && plainRecord((args[0] as Record<string, unknown>).identity)
-        && plainRecord((args[0] as Record<string, unknown>).balance);
-    case "financial.loan.commit":
-    case "financial.investment.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && plainRecord((args[0] as Record<string, unknown>).capture);
-    case "financial.loanRelations.resolve":
-      return args.length === 1 && plainRecord(args[0])
-        && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string";
-    case "financial.investmentRelations.resolve":
-    case "financial.loanRelations.current":
-    case "financial.loanSettlementGroups.current":
-      return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
-    case "financial.investmentRelations.current":
-      return args.length === 0 || (args.length === 1 && typeof args[0] === "string");
-    case "financial.exchangeRates.read":
-      return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"));
-    case "financial.tdccFundAccounts.list":
-      return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
-    case "financial.accountIdentity.continuity":
-      return args.length === 1 && accountIdentityContinuityRequestShape(args[0]);
-    case "financial.exchangeRates.upsert":
-      return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
-    default:
-      return false;
-  }
 }
 
 function exactAmountToDto(amount: CanonicalOverviewAmount): CurrencyAmountDto {
@@ -854,16 +756,16 @@ export function createPGliteFinancialRegistry(
     sourceAdmit: (request, options) => source.admit(request, options),
     sourceCommit: (request, options) => source.commit(request, options),
     sourceCommitBatch: (request, options) => source.commitBatch(request, options),
-    depositCommit: (request, options) => executePGliteCanonicalDepositCommit(store, request, options),
+    depositCommit: (request, options) => commitPGliteCanonicalDepositCapture(store, request, options),
     mixedCommit: (request, options) => commitPGliteCanonicalMixedCapture(store, request, options),
-    balanceCapture: (request, options) => executePGliteCanonicalBalanceCapture(store, request, options),
-    einvoiceCommit: (request, options) => executePGliteCanonicalEInvoiceCommit(store, request, options),
-    creditCardCommit: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request }, options),
-    creditCardBalance: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND, request }, options),
-    loanCommit: (request, options) => executePGliteCanonicalLoanCommand(store, request, options),
-    investmentCommit: (request, options) => executePGliteCanonicalInvestmentCommand(store, request, options),
-    resolveLoanRelations: (request, options) => executePGliteCanonicalLoanRelationCommand(store, request, options),
-    resolveInvestmentRelations: (request, options) => executePGliteCanonicalInvestmentRelationCommand(store, request, options),
+    balanceCapture: (request, options) => commitPGliteCanonicalBalanceCapture(store, request, options),
+    einvoiceCommit: (request, options) => commitPGliteCanonicalEInvoiceCapture(store, request, options),
+    creditCardCommit: (request, options) => commitPGliteCanonicalCreditCardCapture(store, request, options),
+    creditCardBalance: (request, options) => commitPGliteCanonicalCreditCardBalanceCapture(store, request, options),
+    loanCommit: (request, options) => commitPGliteCanonicalLoanCapture(store, request, options),
+    investmentCommit: (request, options) => commitPGliteCanonicalInvestmentCapture(store, request, options),
+    resolveLoanRelations: (request, options) => resolvePGliteCanonicalLoanRepaymentRelations(store, request, options),
+    resolveInvestmentRelations: (request, options) => resolvePGliteCanonicalInvestmentFundingRelations(store, request, options),
     currentLoanRelations: (options) => queryPGliteCurrentLoanRepaymentRelations(store, options),
     currentLoanSettlementGroups: (options) => queryPGliteCurrentLoanRepaymentSettlementGroups(store, options),
     currentInvestmentRelations: (sourceConnectionKey) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
@@ -874,61 +776,189 @@ export function createPGliteFinancialRegistry(
   });
 }
 
-async function invoke(
-  registry: PGliteFinancialRegistry,
-  operation: PGliteFinancialOperation,
-  args: readonly unknown[],
-  signal?: AbortSignal,
-): Promise<unknown> {
-  const options: PGliteCanonicalCommitOptions | undefined = signal ? { signal } : undefined;
-  switch (operation) {
-    case "financial.overview.current": return registry.overviewCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.assets.current": return registry.assetsCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.liabilities.current": return registry.liabilitiesCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.spending.current": return registry.spendingCurrent(args[0] as SpendingLoadInput | undefined);
-    case "financial.spending.version": return registry.spendingVersion();
-    case "financial.preview.visibilityChanged": return registry.previewVisibilityChanged();
-    case "financial.spending.pairing": return registry.spendingPairing(args[0] as SpendingPairingCandidatesInput);
-    case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
-    case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
-    case "financial.spending.revokeLink": return registry.revokeLink(args[0] as SpendingLinkActionInput);
-    case "financial.spending.setPurchaseCategory": return registry.setPurchaseCategory(args[0] as SpendingPurchaseCategoryRequest);
-    case "financial.spending.confirmStrongCandidates": return registry.confirmStrongCandidates(args[0] as SpendingStrongConfirmRequest);
-    case "financial.source.admit": return registry.sourceAdmit(args[0] as PGliteCanonicalSourceAdmissionRequest, options);
-    case "financial.source.commit": return registry.sourceCommit(args[0] as PGliteCanonicalFinancialCommitRequest, options);
-    case "financial.source.commitBatch": return registry.sourceCommitBatch(args[0] as PGliteCanonicalFinancialCommitBatchRequest, options);
-    case "financial.deposit.commit": return registry.depositCommit(args[0] as PGliteCanonicalDepositCommitRequest, options);
-    case "financial.mixed.commit": return registry.mixedCommit(args[0] as PGliteCanonicalMixedCommitRequest, options);
-    case "financial.balance.capture": return registry.balanceCapture(args[0] as PGliteCanonicalBalanceCaptureRequest, options);
-    case "financial.einvoice.commit": return registry.einvoiceCommit(args[0] as Parameters<typeof executePGliteCanonicalEInvoiceCommit>[1], options);
-    case "financial.creditCard.commit": return registry.creditCardCommit(args[0] as PGliteCanonicalCreditCardCaptureRequest, options);
-    case "financial.creditCard.balance": return registry.creditCardBalance(args[0] as PGliteCanonicalCreditCardBalanceCaptureRequest, options);
-    case "financial.loan.commit": return registry.loanCommit(args[0] as PGliteCanonicalLoanCommitRequest, options);
-    case "financial.investment.commit": return registry.investmentCommit(args[0] as PGliteCanonicalInvestmentCommitRequest, options);
-    case "financial.loanRelations.resolve": return registry.resolveLoanRelations(args[0] as PGliteCanonicalLoanRelationResolutionRequest, options);
-    case "financial.investmentRelations.resolve": return registry.resolveInvestmentRelations(args[0] as PGliteCanonicalInvestmentRelationResolutionRequest ?? {}, options);
-    case "financial.loanRelations.current": return registry.currentLoanRelations(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined);
-    case "financial.loanSettlementGroups.current": return registry.currentLoanSettlementGroups(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined);
-    case "financial.investmentRelations.current": return registry.currentInvestmentRelations(args[0] as string | undefined);
-    case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
-    case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
-    case "financial.accountIdentity.continuity": return registry.accountIdentityContinuity(args[0] as AccountIdentityContinuityRequest);
-    case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
-  }
-}
+type FinancialOperationHandler = Readonly<{
+  accepts(args: readonly unknown[]): boolean;
+  run(registry: PGliteFinancialRegistry, args: readonly unknown[], options?: PGliteCanonicalCommitOptions): Promise<unknown>;
+  /** Canonical writes from a workflow run must pass assertCommitAdmissible first. */
+  canonicalCommit?: true;
+}>;
 
-const CANONICAL_COMMIT_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
-  "financial.source.commit",
-  "financial.source.commitBatch",
-  "financial.deposit.commit",
-  "financial.mixed.commit",
-  "financial.balance.capture",
-  "financial.einvoice.commit",
-  "financial.creditCard.commit",
-  "financial.creditCard.balance",
-  "financial.loan.commit",
-  "financial.investment.commit",
-]);
+const FINANCIAL_OPERATION_HANDLERS: Readonly<Record<PGliteFinancialOperation, FinancialOperationHandler>> = {
+  "financial.overview.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0])),
+    run: (registry, args) => registry.overviewCurrent(args[0] as PGliteFinancialExpectedSources | undefined),
+  },
+  "financial.assets.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0])),
+    run: (registry, args) => registry.assetsCurrent(args[0] as PGliteFinancialExpectedSources | undefined),
+  },
+  "financial.liabilities.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0])),
+    run: (registry, args) => registry.liabilitiesCurrent(args[0] as PGliteFinancialExpectedSources | undefined),
+  },
+  "financial.spending.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
+    run: (registry, args) => registry.spendingCurrent(args[0] as SpendingLoadInput | undefined),
+  },
+  "financial.spending.version": {
+    accepts: (args) => args.length === 0,
+    run: (registry) => registry.spendingVersion(),
+  },
+  "financial.preview.visibilityChanged": {
+    accepts: (args) => args.length === 0,
+    run: (registry) => registry.previewVisibilityChanged(),
+  },
+  "financial.spending.pairing": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion),
+    run: (registry, args) => registry.spendingPairing(args[0] as SpendingPairingCandidatesInput),
+  },
+  "financial.spending.confirmCandidate": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.confirmCandidate(args[0] as SpendingConfirmActionInput),
+  },
+  "financial.spending.denyCandidate": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.denyCandidate(args[0] as SpendingCandidateActionInput),
+  },
+  "financial.spending.revokeLink": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0]),
+    run: (registry, args) => registry.revokeLink(args[0] as SpendingLinkActionInput),
+  },
+  "financial.spending.setPurchaseCategory": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && stringField(args[0], "purchaseId")
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
+      && ((args[0] as Record<string, unknown>).categoryCode === null
+        || typeof (args[0] as Record<string, unknown>).categoryCode === "string"),
+    run: (registry, args) => registry.setPurchaseCategory(args[0] as SpendingPurchaseCategoryRequest),
+  },
+  "financial.spending.confirmStrongCandidates": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
+      && Array.isArray((args[0] as Record<string, unknown>).pairs),
+    run: (registry, args) => registry.confirmStrongCandidates(args[0] as SpendingStrongConfirmRequest),
+  },
+  "financial.source.admit": {
+    accepts: (args) => args.length === 1 && sourceEvidenceShape(args[0]),
+    run: (registry, args, options) => registry.sourceAdmit(args[0] as PGliteCanonicalSourceAdmissionRequest, options),
+  },
+  "financial.source.commit": {
+    accepts: (args) => args.length === 1 && sourceCommitShape(args[0]),
+    run: (registry, args, options) => registry.sourceCommit(args[0] as PGliteCanonicalFinancialCommitRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.source.commitBatch": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && Array.isArray((args[0] as Record<string, unknown>).commits)
+      && ((args[0] as Record<string, unknown>).commits as unknown[]).length > 0
+      && ((args[0] as Record<string, unknown>).commits as unknown[]).every(sourceCommitShape),
+    run: (registry, args, options) => registry.sourceCommitBatch(args[0] as PGliteCanonicalFinancialCommitBatchRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.deposit.commit": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    run: (registry, args, options) => registry.depositCommit(args[0] as PGliteCanonicalDepositCommitRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.mixed.commit": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && Array.isArray((args[0] as Record<string, unknown>).steps)
+      && ((args[0] as Record<string, unknown>).steps as unknown[]).length > 0
+      && ((args[0] as Record<string, unknown>).steps as unknown[]).every((step) =>
+        plainRecord(step)
+        && (step.kind === "source" && sourceEvidenceShape(step.request)
+          || step.kind === "financial" && sourceCommitShape(step.request)
+          || step.kind === "deposit" && plainRecord(step.request)
+            && plainRecord(step.request.capture))),
+    run: (registry, args, options) => registry.mixedCommit(args[0] as PGliteCanonicalMixedCommitRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.balance.capture": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && Array.isArray((args[0] as Record<string, unknown>).observations),
+    run: (registry, args, options) => registry.balanceCapture(args[0] as PGliteCanonicalBalanceCaptureRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.einvoice.commit": {
+    accepts: (args) => args.length === 1 && einvoiceCaptureShape(args[0]),
+    run: (registry, args, options) => registry.einvoiceCommit(args[0] as CanonicalEInvoiceCaptureInput, options),
+    canonicalCommit: true,
+  },
+  "financial.creditCard.commit": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && plainRecord((args[0] as Record<string, unknown>).identity)
+      && Array.isArray((args[0] as Record<string, unknown>).instruments)
+      && Array.isArray((args[0] as Record<string, unknown>).transactions)
+      && Array.isArray((args[0] as Record<string, unknown>).statements),
+    run: (registry, args, options) => registry.creditCardCommit(args[0] as PGliteCanonicalCreditCardCaptureRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.creditCard.balance": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
+      && plainRecord((args[0] as Record<string, unknown>).account)
+      && plainRecord((args[0] as Record<string, unknown>).identity)
+      && plainRecord((args[0] as Record<string, unknown>).balance),
+    run: (registry, args, options) => registry.creditCardBalance(args[0] as PGliteCanonicalCreditCardBalanceCaptureRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.loan.commit": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    run: (registry, args, options) => registry.loanCommit(args[0] as PGliteCanonicalLoanCommitRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.investment.commit": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && plainRecord((args[0] as Record<string, unknown>).capture),
+    run: (registry, args, options) => registry.investmentCommit(args[0] as PGliteCanonicalInvestmentCommitRequest, options),
+    canonicalCommit: true,
+  },
+  "financial.loanRelations.resolve": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string",
+    run: (registry, args, options) => registry.resolveLoanRelations(args[0] as PGliteCanonicalLoanRelationResolutionRequest, options),
+  },
+  "financial.investmentRelations.resolve": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
+    run: (registry, args, options) => registry.resolveInvestmentRelations(args[0] as PGliteCanonicalInvestmentRelationResolutionRequest ?? {}, options),
+  },
+  "financial.loanRelations.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
+    run: (registry, args) => registry.currentLoanRelations(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined),
+  },
+  "financial.loanSettlementGroups.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
+    run: (registry, args) => registry.currentLoanSettlementGroups(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined),
+  },
+  "financial.investmentRelations.current": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && typeof args[0] === "string"),
+    run: (registry, args) => registry.currentInvestmentRelations(args[0] as string | undefined),
+  },
+  "financial.exchangeRates.read": {
+    accepts: (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string")),
+    run: (registry, args) => registry.readExchangeRates(args[0] as string[] | undefined),
+  },
+  "financial.tdccFundAccounts.list": {
+    accepts: (args) => args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey"),
+    run: (registry, args) => registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string }),
+  },
+  "financial.accountIdentity.continuity": {
+    accepts: (args) => args.length === 1 && accountIdentityContinuityRequestShape(args[0]),
+    run: (registry, args) => registry.accountIdentityContinuity(args[0] as AccountIdentityContinuityRequest),
+  },
+  "financial.exchangeRates.upsert": {
+    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row)),
+    run: (registry, args) => registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]),
+  },
+};
 
 export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
 
@@ -959,8 +989,10 @@ export function createPGliteFinancialRpcServer(
       post(port, genericFailure(value.id, "invalid-request"));
       return;
     }
-    if (!PGLITE_FINANCIAL_OPERATIONS.includes(value.operation as PGliteFinancialOperation)
-      || !validFinancialArgs(value.operation as PGliteFinancialOperation, value.args)) {
+    const handler = PGLITE_FINANCIAL_OPERATIONS.includes(value.operation as PGliteFinancialOperation)
+      ? FINANCIAL_OPERATION_HANDLERS[value.operation as PGliteFinancialOperation]
+      : undefined;
+    if (!handler?.accepts(value.args)) {
       post(port, genericFailure(value.id, "invalid-request"));
       return;
     }
@@ -969,10 +1001,10 @@ export function createPGliteFinancialRpcServer(
     controllers.set(value.id, controller);
     const work = sequence.then(() => {
       if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-      if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
+      if (assertCommitAdmissible && value.diagnosticContext && handler.canonicalCommit) {
         assertCommitAdmissible(value.diagnosticContext);
       }
-      return invoke(registry, operation, value.args, controller.signal);
+      return handler.run(registry, value.args, { signal: controller.signal });
     }).then(
       (result) => {
         post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });

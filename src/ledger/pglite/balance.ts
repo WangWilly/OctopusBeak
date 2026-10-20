@@ -10,21 +10,12 @@ import type {
   PGliteCanonicalBalanceObservationInput,
   PGliteCanonicalSourceEvidence,
 } from "./source-admission-validation.ts";
-import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "./workflow-commands.ts";
-
-/** Named worker command for a provider current-balance capture. */
-export { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND };
 
 export type PGliteCanonicalBalanceCaptureRequest = Readonly<{
   capture: PGliteCanonicalSourceEvidence;
   account: PGliteCanonicalFinancialAccountInput;
   observations: readonly PGliteCanonicalBalanceObservationInput[];
   recordedAtUtcUs?: number;
-}>;
-
-export type PGliteCanonicalBalanceCaptureCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND;
-  request: PGliteCanonicalBalanceCaptureRequest;
 }>;
 
 export type PGliteCanonicalBalanceCommitResult = Readonly<{
@@ -114,14 +105,3 @@ export async function commitPGliteCanonicalBalanceCapture(
   return readBalanceCommit(store, request, result);
 }
 
-/** Execute a serializable named balance command on the worker-owned store. */
-export function executePGliteCanonicalBalanceCapture(
-  store: PGliteStore,
-  command:
-    | PGliteCanonicalBalanceCaptureCommand
-    | PGliteCanonicalBalanceCaptureRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalBalanceCommitResult> {
-  const request = "kind" in command ? command.request : command;
-  return commitPGliteCanonicalBalanceCapture(store, request, options);
-}

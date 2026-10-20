@@ -15,15 +15,6 @@ import {
 } from "./canonical-source-store.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
-import {
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-} from "./workflow-commands.ts";
-
-export {
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-};
 
 export type PGliteCanonicalCreditCardAmount = Readonly<{
   coefficient: string;
@@ -104,16 +95,6 @@ export type PGliteCanonicalCreditCardBalanceCaptureRequest = Readonly<{
     observation: PGliteCanonicalBalanceObservationInput;
     estimate: PGliteCanonicalCreditCardBalanceEstimate;
   }>;
-}>;
-
-export type PGliteCanonicalCreditCardCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND;
-  request: PGliteCanonicalCreditCardCaptureRequest;
-}>;
-
-export type PGliteCanonicalCreditCardBalanceCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND;
-  request: PGliteCanonicalCreditCardBalanceCaptureRequest;
 }>;
 
 export type PGliteCanonicalCreditCardCommitResult = Readonly<{
@@ -795,12 +776,3 @@ export async function commitPGliteCanonicalCreditCardBalanceCapture(
   }, options);
 }
 
-export function executePGliteCanonicalCreditCardCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalCreditCardCommitCommand | PGliteCanonicalCreditCardBalanceCommand,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalCreditCardCommitResult> {
-  return command.kind === PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND
-    ? commitPGliteCanonicalCreditCardBalanceCapture(store, command.request, options)
-    : commitPGliteCanonicalCreditCardCapture(store, command.request, options);
-}

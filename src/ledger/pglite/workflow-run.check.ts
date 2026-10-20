@@ -8,7 +8,7 @@ function item(key: string, relationCommands?: PGliteWorkflowRunItem["relationCom
     provider: "post",
     product: "deposit",
     itemKey: key,
-    command: { kind: "canonical.financial.commit", request: {} } as PGliteWorkflowCommand,
+    command: { kind: "financial.source.commit", request: {} } as PGliteWorkflowCommand,
     relationCommands,
   };
 }
@@ -21,7 +21,7 @@ test("PGlite run preserves item failures, admission summaries, and post-commit w
   const calls: string[] = [];
   const result = await executePGliteWorkflowRun({
     client: client(async (command) => {
-      if (command.kind === "canonical.loan-repayment-relations.resolve") {
+      if (command.kind === "financial.loanRelations.resolve") {
         calls.push("relation");
         throw new Error("private relation evidence");
       }
@@ -35,8 +35,8 @@ test("PGlite run preserves item failures, admission summaries, and post-commit w
       return { captureId: "capture-ok", commitSequence: 12 };
     }),
     items: [
-      { ...item("bad"), command: { kind: "canonical.financial.commit", request: { key: "bad" } } as unknown as PGliteWorkflowCommand },
-      item("good", () => [{ kind: "canonical.loan-repayment-relations.resolve", request: {} } as PGliteWorkflowCommand]),
+      { ...item("bad"), command: { kind: "financial.source.commit", request: { key: "bad" } } as unknown as PGliteWorkflowCommand },
+      item("good", () => [{ kind: "financial.loanRelations.resolve", request: {} } as PGliteWorkflowCommand]),
     ],
   });
   assert.equal(result.status, "partially-completed");
