@@ -990,7 +990,7 @@ export async function interruptActiveAppWorkflows(
       controller.abort(new Error("App is shutting down."));
     }
     const current = await persistence.taskRunById(taskRunId);
-    if (!current || !["preparing", "queued", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
+    if (!current || !["preparing", "queued", "running", "cancelling", "waiting_for_human"].includes(current.status)) {
       continue;
     }
     await persistence.transitionTaskRunToTerminal(taskRunId, {

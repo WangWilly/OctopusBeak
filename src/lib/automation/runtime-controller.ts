@@ -92,7 +92,7 @@ export function createAutomationRuntimeController() {
       const task = byTaskId.get(taskId);
       if (!task) continue;
       if (token.kind === "run") {
-        if (task.runId && ["preparing", "running", "retrying", "waiting_for_human", "cancelling", "completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
+        if (task.runId && ["preparing", "running", "waiting_for_human", "cancelling", "completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
           pending.delete(taskId);
         }
       } else if (token.kind === "cancel" || token.kind === "force-terminate") {

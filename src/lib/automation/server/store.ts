@@ -159,7 +159,6 @@ export const ACTIVE_TASK_RUN_STATUSES = [
   "queued",
   "preparing",
   "running",
-  "retrying",
   "cancelling",
   "waiting_for_human",
 ] as const;

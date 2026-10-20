@@ -164,7 +164,7 @@ export function activeAutomationTaskIds() {
 export function currentAutomationTaskRun(taskId: string) {
   const current = activeTaskRunIds.get(taskId);
   if (!current) return null;
-  if (current === "pending" || current === "queued") {
+  if (current === "pending") {
     throw new Error(`Automation task is still preparing: ${taskId}`);
   }
   const runtime = automationRuntimeState.snapshot();
@@ -206,21 +206,11 @@ function runtimeForTask(taskId: string) {
 export async function persistCancellationTransitionForRunWithPersistence(
   provider: AutomationPersistenceProvider,
   runId: string,
-  status: "cancelling" | "cancelled",
-  finishedAt: string | null = null,
 ) {
   const persistence = provider.automation;
   const run = await persistence.taskRunById(runId);
-  if (!run || isTerminalTaskRunStatus(run.status)) return run;
-  if (!isActiveTaskRunStatus(run.status)) return run;
-  if (status === "cancelled") {
-    await persistence.transitionTaskRunToTerminal(runId, {
-      status,
-      finishedAt: finishedAt ?? new Date().toISOString(),
-    });
-  } else {
-    await persistence.transitionTaskRunToActive(runId, { status });
-  }
+  if (!run || !isActiveTaskRunStatus(run.status)) return run;
+  await persistence.transitionTaskRunToActive(runId, { status: "cancelling" });
   return persistence.taskRunById(runId);
 }
 
@@ -387,8 +377,8 @@ async function cancelAutomationTaskWithPersistence(
   const cancellationRequestedAt = new Date().toISOString();
   const queueController = queuedTaskControllers.get(taskId);
   const activeRunId = requestedRunId;
-  const cancellingRun = activeRunId !== "pending" && activeRunId !== "queued"
-    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
+  const cancellingRun = activeRunId !== "pending"
+    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId)
     : null;
   // Persistence is asynchronous. The task may finish and a newer run may
   // claim this task ID while it is in flight, so re-check before touching the
@@ -483,8 +473,8 @@ async function forceTerminateAutomationTaskWithPersistence(
   if (timer) clearTimeout(timer);
   cancellationForceTimers.delete(taskId);
   const activeRunId = requestedRunId;
-  const cancellingRun = activeRunId && activeRunId !== "pending" && activeRunId !== "queued"
-    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
+  const cancellingRun = activeRunId !== "pending"
+    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId)
     : null;
   if (activeTaskRunIds.get(taskId) !== requestedRunId) return { cancelled: taskId };
   const runtime = runtimeForTask(taskId);

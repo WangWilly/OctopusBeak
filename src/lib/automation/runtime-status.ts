@@ -2,7 +2,7 @@ import type { AutomationTaskStatus } from "./types.ts";
 
 export type ActiveAutomationRuntimeStatus = Extract<
   AutomationTaskStatus,
-  "queued" | "preparing" | "running" | "retrying" | "waiting_for_human" | "cancelling"
+  "queued" | "preparing" | "running" | "waiting_for_human" | "cancelling"
 >;
 
 export function isActiveAutomationRuntimeStatus(
@@ -11,7 +11,6 @@ export function isActiveAutomationRuntimeStatus(
   return status === "queued"
     || status === "preparing"
     || status === "running"
-    || status === "retrying"
     || status === "waiting_for_human"
     || status === "cancelling";
 }
