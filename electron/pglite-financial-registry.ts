@@ -179,10 +179,6 @@ export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
 type SpendingTaggedRead = "record-page" | "candidate-page" | "pending-overview" | "merge-log" | "month-insight" | "merchant-stats";
 
 export type PGliteFinancialPageClient = Readonly<{
-  load(page: "overview", options?: { expectedVersion?: number }): Promise<OverviewPageDto>;
-  load(page: "assets", options?: { expectedVersion?: number }): Promise<AssetsPageDto>;
-  load(page: "liabilities", options?: { expectedVersion?: number }): Promise<LiabilitiesPageDto>;
-  load(page: "spending", input?: SpendingLoadInput, options?: { expectedVersion?: number }): Promise<SpendingPageDto>;
   loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
   loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
   applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
@@ -192,13 +188,6 @@ export type PGliteFinancialPageClient = Readonly<{
   loadSpendingMonthInsight(request: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
   loadSpendingMerchantStats(request: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
   confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
-  loadBlock(
-    page: "overview" | "assets" | "liabilities" | "spending" | "automation",
-    block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey,
-    options?: { expectedVersion?: number },
-    automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto,
-    automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot,
-  ): Promise<import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   previewVisibilityChanged(): Promise<void>;
   prewarmPairingCandidates(input: { dataVersion: number }): Promise<{ status: "ready" | "stale"; dataVersion: number; reused?: boolean; requestedVersion?: number }>;
@@ -1067,15 +1056,6 @@ export function createPGliteFinancialPageClient(
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
 ): PGliteFinancialPageClient & { subscribe?: typeof subscribe } {
   const page = {
-    load(pageName: "overview" | "assets" | "liabilities" | "spending", inputOrOptions?: SpendingLoadInput | { expectedVersion?: number }, options?: { expectedVersion?: number }) {
-      void inputOrOptions;
-      void options;
-      const sources = expectedSources();
-      if (pageName === "overview") return rpc.registry.overviewCurrent(sources);
-      if (pageName === "assets") return rpc.registry.assetsCurrent(sources);
-      if (pageName === "liabilities") return rpc.registry.liabilitiesCurrent(sources);
-      return rpc.registry.spendingCurrent(inputOrOptions as SpendingLoadInput | undefined);
-    },
     loadSpendingRecordPage(request: SpendingRecordPageRequest) {
       return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
     },
@@ -1102,15 +1082,6 @@ export function createPGliteFinancialPageClient(
     },
     confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest) {
       return rpc.registry.confirmStrongCandidates(request);
-    },
-    async loadBlock(pageName: "overview" | "assets" | "liabilities" | "spending" | "automation", block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey, options?: { expectedVersion?: number }, automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto, automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot) {
-      void options;
-      void automationCredentialState;
-      void automationRuntimeState;
-      if (pageName === "automation") throw new Error("PGlite financial registry does not own automation page assembly.");
-      const value = await this.load(pageName, pageName === "spending" ? undefined : undefined);
-      const { projectFinancialBlock } = await import("./financial-page-block-loader.ts");
-      return projectFinancialBlock(value, block as never, pageName as never) as import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload;
     },
     rankPairingCandidates: (input: SpendingPairingCandidatesInput) => rpc.registry.spendingPairing(input),
     previewVisibilityChanged: () => rpc.registry.previewVisibilityChanged(),

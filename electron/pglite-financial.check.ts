@@ -206,7 +206,7 @@ test("one worker exposes named financial reads/writes and complete live snapshot
   const snapshots: unknown[] = [];
   let stop: (() => Promise<void>) | undefined;
   try {
-    const initial = await page.load("overview");
+    const initial = await client.financial.registry.overviewCurrent([]);
     assert.equal(initial.availability, "empty");
     assert.equal(await client.financial.registry.spendingVersion(), 0);
     assert.ok(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"));
