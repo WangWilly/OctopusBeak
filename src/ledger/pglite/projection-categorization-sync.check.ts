@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   commitPGliteCanonicalDepositCapture,
@@ -159,7 +159,7 @@ async function generationCategorizations(store: PGliteStore, transactionId: Uint
 }
 
 test("a capture that re-observes a user-categorized transaction keeps its generation categorization", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalDepositCapture(store, cathayDepositCapture("categorization-sync-first"));
@@ -240,7 +240,7 @@ test("re-sync keeps a reconciling user allocation and drops one that does not re
     [[{ code: "food_and_groceries", amount: "60" }, { code: "household_goods_and_services", amount: "40" }], ["food_and_groceries", "household_goods_and_services"], "a reconciling allocation survives re-observation"],
     [[{ code: "food_and_groceries", amount: "60" }, { code: "household_goods_and_services", amount: "30" }], [], "an allocation whose booked total differs from the revision amount is not exposed"],
   ] as const) {
-    const database = await createBaselinePGlite();
+    const database = await createTestPGlite("ledger");
     const store = new PGliteStore(database);
     try {
       await commitPGliteCanonicalDepositCapture(store, cathayDepositCapture("categorization-sync-first", "100"));

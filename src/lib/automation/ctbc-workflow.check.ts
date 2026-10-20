@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
 import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
-import { createBaselinePGlite } from "../../ledger/pglite/baseline-test-template.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
+import { createTestPGlite } from "../../ledger/pglite/baseline-test-template.ts";
+import { createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import type { Page, Response } from "playwright";
@@ -220,9 +220,8 @@ const input = {
 };
 
 test("CTBC preserves exact duplicate deposits as stable occurrence-group slots through the real commit port", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger+operational");
   const store = new PGliteStore(database);
-  await applyPgliteOperationalBaseline(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({ provider: {
     operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates),

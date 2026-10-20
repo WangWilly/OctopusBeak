@@ -10,7 +10,7 @@ import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
 import { readOverview } from "../src/lib/overview/overview-model.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
-import { createBaselinePGlite } from "../src/ledger/pglite/baseline-test-template.ts";
+import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import type { PGliteCanonicalBalanceCaptureRequest } from "../src/ledger/pglite/balance.ts";
 import type { PGliteCanonicalFinancialCommitRequest } from "../src/ledger/pglite/canonical-source-store.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
@@ -167,9 +167,8 @@ async function withLedger(run: (input: {
   preview: ReturnType<typeof createPGlitePreviewFinancialData>;
   addUsdRate: () => Promise<void>;
 }) => Promise<void>, database?: PGlite) {
-  const store = new PGliteStore(database ?? await createBaselinePGlite());
+  const store = new PGliteStore(database ?? await createTestPGlite("ledger+operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     await applyPglitePreviewFinancialDataSchema(store);
     const operational = createPgliteOperationalProvider(store);
     const canonical = createPGliteFinancialRegistry(store, operational.exchangeRates);
@@ -379,6 +378,7 @@ test("preview writes and reads leave every canonical table unchanged", async () 
 test("live overview republishes on a preview collection and on a visibility change", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
   await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withLedger(async ({ registry, writePreview }) => {
     let visibility = VISIBLE;
     const shown = registry(() => visibility);

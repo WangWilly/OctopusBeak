@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -16,6 +14,7 @@ import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const sinopacContract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -87,9 +86,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
   test(`App ${providerId} retries typed rejection after execution cleanup aborts assistance and without retained events`, async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), `${providerId}-app-captcha-`));
     const originalCwd = process.cwd();
-    const store = new PGliteStore(await PGlite.create());
+    const store = new PGliteStore(await createTestPGlite("operational"));
     try {
-      await applyPgliteOperationalBaseline(store);
       const provider = createPgliteOperationalProvider(store);
       const created = await provider.automation.createTaskRun({
         taskId,
@@ -182,9 +180,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
 }
 
 test("App SinoPac CAPTCHA assistance aborts its route when the live run is cancelled", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
@@ -242,10 +239,9 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
     "einvoice-personal-invoices",
   ];
   for (const taskId of taskIds) {
-    const store = new PGliteStore(await PGlite.create());
+    const store = new PGliteStore(await createTestPGlite("operational"));
     const controller = new AbortController();
     try {
-      await applyPgliteOperationalBaseline(store);
       const provider = createPgliteOperationalProvider(store);
       const created = await provider.automation.createTaskRun({
         taskId,
@@ -305,10 +301,9 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
 });
 
 test("exhausted App solver retries finalize with a typed verification failure and safe reason", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const controller = new AbortController();
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const taskId = "fubon-all-statements";
     const created = await provider.automation.createTaskRun({
@@ -363,10 +358,9 @@ for (const scenario of [
   { name: "a workflow failure before any CAPTCHA", requestsCaptcha: false },
 ] as const) {
   test(`${scenario.name} runs exactly one execution and never restarts`, async () => {
-    const store = new PGliteStore(await PGlite.create());
+    const store = new PGliteStore(await createTestPGlite("operational"));
     const controller = new AbortController();
     try {
-      await applyPgliteOperationalBaseline(store);
       const provider = createPgliteOperationalProvider(store);
       const taskId = "fubon-all-statements";
       const created = await provider.automation.createTaskRun({
@@ -413,10 +407,9 @@ for (const scenario of [
 }
 
 test("Yuanta Trade audio solver exhaustion restarts through the App campaign", async () => {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   const controller = new AbortController();
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "yuanta-trade-statements",

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
   type PGliteCanonicalInvestmentCommitRequest,
@@ -168,7 +168,7 @@ function investmentRequestWithOccurrences(
 }
 
 test("zero-cash brokerage events retain security, action, and quantity for the transaction modal", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const request = investmentRequest("investment-zero-cash-detail");
@@ -201,7 +201,7 @@ test("zero-cash brokerage events retain security, action, and quantity for the t
 });
 
 test("brokerage transactions retain source cash across financial and product queries", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const request = investmentRequest("investment-usd-cash-detail");
@@ -313,7 +313,7 @@ function fundingDepositRequest(
 }
 
 test("source-linked investment funding resolves exactly one retained bank fact", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const funding = await commitPGliteCanonicalFinancialCapture(store, fundingDepositRequest("funding-1"));
@@ -369,7 +369,7 @@ test("source-linked investment funding resolves exactly one retained bank fact",
 });
 
 test("investment funding relation reopens after ambiguity clears and cancellation rolls back", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   const originalDateNow = Date.now;
   const withEventTime = async <T>(milliseconds: number, run: () => Promise<T>): Promise<T> => {
@@ -496,7 +496,7 @@ test("investment funding relation reopens after ambiguity clears and cancellatio
 });
 
 test("PGlite investment command preserves holdings, valuation, cost, and grouped transactions", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-1"), { clock: () => 100 });
@@ -522,7 +522,7 @@ test("PGlite investment command preserves holdings, valuation, cost, and grouped
 });
 
 test("PGlite investment commit preserves duplicate slots through insertion and growth, then rejects shrink to zero atomically", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const first = await commitPGliteCanonicalInvestmentCapture(
@@ -575,7 +575,7 @@ test("PGlite investment commit preserves duplicate slots through insertion and g
 });
 
 test("PGlite investment command rolls back changed source evidence", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-1"), { clock: () => 100 });
@@ -591,7 +591,7 @@ test("PGlite investment command rolls back changed source evidence", async () =>
 });
 
 test("PGlite investment command records independent margin loan as a balance-only source", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const base = investmentRequest("investment-independent-margin-1");
@@ -628,7 +628,7 @@ test("PGlite investment command records independent margin loan as a balance-onl
 });
 
 test("PGlite investment command records independent margin credit without transaction facts", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
     const base = investmentRequest("investment-independent-credit-1");

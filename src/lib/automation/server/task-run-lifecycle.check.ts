@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test, { after } from "node:test";
 import type { WorkerOptions } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -16,10 +14,10 @@ import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.t
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
-const database = await PGlite.create();
+const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
-await applyPgliteOperationalBaseline(store);
 after(() => database.close());
 const runtime = createAutomationRuntimeState();
 const runner = createAutomationRunner({ runtime });

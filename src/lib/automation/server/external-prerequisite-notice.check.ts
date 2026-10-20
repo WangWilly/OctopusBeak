@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -15,10 +13,10 @@ import {
 } from "./task-run-finalization.ts";
 import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
 import { classifyTypedWorkflowFailure, type TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
-const database = await PGlite.create();
+const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
-await applyPgliteOperationalBaseline(store);
 after(() => database.close());
 const { automation } = createPgliteOperationalProvider(store);
 

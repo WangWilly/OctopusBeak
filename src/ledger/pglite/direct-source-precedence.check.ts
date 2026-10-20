@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createBaselinePGlite } from "./baseline-test-template.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
 import { readPGliteDailyHistoryWithAccounts } from "./daily-history.ts";
 import {
   commitCathay,
@@ -23,7 +23,7 @@ import { mapCanonicalProduct } from "../../lib/shared-ledger/server/canonical-pr
 import type { CanonicalOverviewProjection } from "../canonical/canonical-overview-query.ts";
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger");
   try {
     await run(new PGliteStore(database));
   } finally {

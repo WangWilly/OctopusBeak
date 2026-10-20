@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -14,14 +12,14 @@ import {
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 async function withRun(
   taskId: string,
   check: (provider: AutomationPersistenceProvider, taskRunId: string) => Promise<void>,
 ) {
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const { taskRunId } = await provider.automation.createTaskRun({
       taskId,

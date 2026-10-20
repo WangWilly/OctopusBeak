@@ -3,9 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGlite } from "@electric-sql/pglite";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
@@ -13,6 +11,7 @@ import type {
   WorkflowBrowserPort,
   WorkflowFinancialCommitPort,
 } from "../workflow-executor.ts";
+import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
@@ -55,7 +54,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
 
   const root = await mkdtemp(join(tmpdir(), "yuanta-trade-app-workflow-"));
   const previousDirectory = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
+  const store = new PGliteStore(await createTestPGlite("operational"));
   let observedStartUrl: string | undefined;
   let browserDispatches = 0;
   let commitCalls = 0;
@@ -76,7 +75,6 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
 
   try {
     process.chdir(root);
-    await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     assertAssistanceRegistered = async () => {
       await assert.rejects(

@@ -18,8 +18,8 @@ import {
 } from "./pglite-financial-registry.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-requirements.ts";
-import { createBaselinePGlite } from "../src/ledger/pglite/baseline-test-template.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
+import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
+import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 
 const token = (letter: string): string => `sha256:${letter.repeat(64)}`;
@@ -294,9 +294,8 @@ test("one worker exposes named financial reads/writes and complete live snapshot
 });
 
 test("PGlite overview exposes observed daily balances to exchange-rate requirements", async () => {
-  const database = await createBaselinePGlite();
+  const database = await createTestPGlite("ledger+operational");
   const store = new PGliteStore(database);
-  await applyPgliteOperationalBaseline(store);
   const operational = createPgliteOperationalProvider(store);
   const registry = createPGliteFinancialRegistry(store, operational.exchangeRates);
   try {
