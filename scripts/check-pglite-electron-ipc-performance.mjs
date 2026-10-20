@@ -110,6 +110,12 @@ try {
   await page.reload();
   await page.locator('[data-progressive-block="summary"][data-block-state="ready"]').first().waitFor({ state: "visible", timeout: 60_000 });
   const overviewReadyMs = performance.now() - started;
+  // Launch catches up the daily exchange-rate run, which rebuilds the Overview
+  // for tens of seconds at this scale. Measure Pairing on a settled app.
+  await page.waitForFunction(async () => {
+    const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+    return snapshot.tasks.every((task) => !["queued", "preparing", "running", "cancelling"].includes(task.status));
+  }, undefined, { timeout: 120_000, polling: 500 });
   await page.evaluate(() => {
     window.__pgliteElectronLongTasks = [];
     new PerformanceObserver((list) => {
