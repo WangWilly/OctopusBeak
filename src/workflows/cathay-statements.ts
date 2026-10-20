@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import {
+  ProductCollectionFatalError,
+  StatementComponentAbsentError,
+} from "../lib/automation/product-collection.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,

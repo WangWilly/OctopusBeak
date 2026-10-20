@@ -12,7 +12,7 @@ import {
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,

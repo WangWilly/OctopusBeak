@@ -13,7 +13,7 @@ import {
   clickAndWaitForNavigation,
   hasAttachedLocator,
 } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import type {
   LoanCapturePage,
   LoanSourceCompletenessEvidence,
