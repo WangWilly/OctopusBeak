@@ -185,3 +185,37 @@ test("an account identity continuity read crosses the workflow port only in its 
     await server.close();
   }
 });
+
+test("a correlated canonical write must pass the commit assertion while reads skip it", async () => {
+  const served: string[] = [];
+  const registry = {
+    depositCommit: async () => {
+      served.push("deposit");
+      return {};
+    },
+    spendingVersion: async () => {
+      served.push("version");
+      return 7;
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const asserted: unknown[] = [];
+  const [clientPort, serverPort] = memoryPair();
+  const server = createPGliteFinancialRpcServer(serverPort, registry, (context) => {
+    asserted.push(context);
+    throw new Error("task run is no longer active");
+  });
+  const correlation = { workflowId: "fubon", taskRunId: "run-1" };
+  const client = createPGliteFinancialRpcClient(clientPort, undefined, correlation);
+  try {
+    await assert.rejects(
+      client.request("financial.deposit.commit", [{ capture: {} }]),
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "operation-failed",
+    );
+    assert.equal(await client.request("financial.spending.version", []), 7);
+    assert.deepEqual(asserted, [correlation], "only the canonical write is asserted");
+    assert.deepEqual(served, ["version"], "the rejected write never reaches the store");
+  } finally {
+    client.close();
+    await server.close();
+  }
+});

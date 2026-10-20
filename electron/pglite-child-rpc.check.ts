@@ -140,7 +140,7 @@ test("authenticated child RPC reaches the same worker named registries", async (
     assert.equal((await child.financial.overviewCurrent()).availability, "empty");
     assert.deepEqual(await child.financial.currentLoanRelations(), []);
     const unresolvedFunding = await child.workflow.commit({
-      kind: "canonical.investment-funding-relations.resolve",
+      kind: "financial.investmentRelations.resolve",
       request: {},
     });
     assert.equal(unresolvedFunding.outcome, "unchanged");

@@ -15,7 +15,6 @@ import {
   type PGliteCanonicalDepositCommitResult,
 } from "./deposit.ts";
 
-export const PGLITE_CANONICAL_MIXED_COMMIT_COMMAND = "canonical.mixed.commit" as const;
 
 export type PGliteCanonicalMixedCommitStep =
   | Readonly<{ kind: "source"; request: PGliteCanonicalSourceAdmissionRequest }>
