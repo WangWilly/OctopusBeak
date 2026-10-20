@@ -22,15 +22,7 @@ import {
   offeredAutomationSources,
   readAutomationSettings,
 } from "./settings.ts";
-import {
-  activeAutomationTaskIds,
-  cancelAutomationTask,
-  currentAutomationTaskRun,
-  forceTerminateAutomationTask,
-  hasActiveAutomationTask,
-  startAutomationTask,
-  type StartAutomationTaskOptions,
-} from "./runner.ts";
+import { automationRunner, type StartAutomationTaskOptions } from "./runner.ts";
 import {
   type AutomationPersistenceProvider,
   type AutomationTaskHistoryRow,
@@ -165,7 +157,7 @@ export async function loadAutomationCoreSnapshot(
 ): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
   const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
-  const activeTaskIds = activeAutomationTaskIds();
+  const activeTaskIds = automationRunner.activeTaskIds();
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
     provider.automation.latestTaskRuns(),
@@ -201,7 +193,7 @@ export async function loadAutomationCoreSnapshot(
             .map((group) => group.id),
         ),
         externalPrerequisiteNotices: pagePrerequisiteNoticesFromRows(notices),
-        active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
+        active: activeTaskIds.length > 0,
         businessDate: range.businessDate,
         runtime,
         credentialStates: { ...credentialStates },
@@ -396,13 +388,13 @@ export async function automationRun(
   taskId: string,
   provider: AutomationPersistenceProvider,
 ): Promise<{ started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
-  const current = currentAutomationTaskRun(taskId);
+  const current = await automationRunner.current(taskId);
   if (current) {
     return { started: taskId, runId: current.runId, runtime: current.runtime };
   }
   const model = await loadAutomationDesktopModel(provider);
   const task = assertAutomationTaskCanStartInModel(taskId, model);
-  const started = await startAutomationTask(task.id, provider);
+  const started = await automationRunner.start(task.id, provider);
   return { started: task.id, runId: started.runId, runtime: started.runtime };
 }
 
@@ -421,13 +413,13 @@ export async function automationRunMany(
   const results: Record<string, AutomationRunManyTaskResult> = {};
   for (const taskId of [...new Set(taskIds)]) {
     try {
-      const existing = currentAutomationTaskRun(taskId);
+      const existing = await automationRunner.current(taskId);
       if (existing) {
         results[taskId] = { status: "already_running", runId: existing.runId };
         continue;
       }
       const task = assertAutomationTaskCanStartInModel(taskId, model);
-      const run = await startAutomationTask(task.id, provider, options);
+      const run = await automationRunner.start(task.id, provider, options);
       started.push(task.id);
       results[task.id] = { status: "started", runId: run.runId };
     } catch (error) {
@@ -441,18 +433,16 @@ export async function automationRunMany(
 
 export function automationCancel(
   taskId: string,
-  provider: AutomationPersistenceProvider,
   expectedRunId?: string,
 ): Promise<{ cancelled: string }> {
-  return cancelAutomationTask(taskId, provider, expectedRunId);
+  return automationRunner.cancel(taskId, expectedRunId);
 }
 
 export function automationForceTerminate(
   taskId: string,
-  provider: AutomationPersistenceProvider,
   expectedRunId?: string,
 ): Promise<{ cancelled: string }> {
-  return forceTerminateAutomationTask(taskId, provider, expectedRunId);
+  return automationRunner.forceTerminate(taskId, expectedRunId);
 }
 
 export function automationRunHistory(

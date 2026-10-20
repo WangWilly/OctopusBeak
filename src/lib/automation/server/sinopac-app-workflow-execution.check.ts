@@ -13,7 +13,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const TRANSACTION_URL = "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx";
@@ -177,7 +177,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
@@ -185,7 +185,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
         observedStartUrl = startUrl;
         return browser;
       },
-    }, async () => {});
+    });
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
@@ -203,12 +203,12 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     const invalidBrowser: WorkflowBrowserPort = {
       async withPage(runPage) { return runPage(invalidPage); },
     };
-    const rejected = await runAutomationTaskExecution(task, provider.automation, {
+    const rejected = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: rejectedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
       workflowBrowserPortFactory: () => invalidBrowser,
-    }, async () => {});
+    });
     assert.equal(rejected.status, "failed");
     assert.equal(committed.length, 1, "malformed source is rejected before Canonical Financial Commit");
     const rejectedRun = await provider.automation.taskRunById(rejectedRunId);

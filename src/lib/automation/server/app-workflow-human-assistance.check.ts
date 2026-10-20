@@ -12,6 +12,7 @@ import {
   registerAppWorkflowHumanAssistanceRequestHandler,
   resumeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
+import { openTaskRunForCheck } from "./task-run-check-support.ts";
 
 const contract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -54,8 +55,7 @@ test("App workflow assistance lets the host route and resume the same waiting ru
     const routeStarted = new Promise<void>((resolve) => { notifyRouteStarted = resolve; });
     const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: created.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
       onRequest: async (_requestedContract, _signal) => {
         const waiting = await provider.automation.taskRunById(created.taskRunId);
         assert.equal(waiting?.status, "waiting_for_human");
@@ -93,8 +93,7 @@ test("App workflow assistance rejects a failed host route instead of leaving a d
       startedAt: new Date().toISOString(),
     });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: created.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
       onRequest: async () => { throw new Error("route failed"); },
     });
     const controller = new AbortController();
@@ -122,8 +121,7 @@ test("solver challenges fail when the App has no registered route", async () => 
       startedAt: new Date().toISOString(),
     });
     const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: created.taskRunId,
-      persistence: provider.automation,
+      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
     });
     await assert.rejects(
       Promise.race([
@@ -183,12 +181,45 @@ test("App workflow assistance dispatches the registered route by task and live r
     try {
       const controller = new AbortController();
       const request = createAppWorkflowHumanAssistancePort({
-        taskRunId: created.taskRunId,
-        persistence: provider.automation,
+        run: await openTaskRunForCheck(provider.automation, created.taskRunId),
       }).request(contract, controller.signal);
       assert.equal(await request, "entered");
     } finally {
       releaseRoute();
+      unregister();
+    }
+  } finally {
+    await store.close();
+  }
+});
+
+test("a cancelled run cannot enter a verification stage", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "sinopac-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 3,
+      startedAt: new Date().toISOString(),
+    });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
+    let routed = false;
+    const unregister = registerAppWorkflowHumanAssistanceRequestHandler("sinopac-statements", () => {
+      routed = true;
+    });
+    try {
+      await run.requestStop("cancelled");
+      await assert.rejects(
+        createAppWorkflowHumanAssistancePort({ run }).request(contract, new AbortController().signal),
+        /not active for human assistance/u,
+      );
+      assert.equal(routed, false);
+      assert.equal((await provider.automation.taskRunById(created.taskRunId))?.status, "cancelling");
+    } finally {
       unregister();
     }
   } finally {

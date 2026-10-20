@@ -13,7 +13,8 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { linebankEpochMillisecondsFromSourceDateTime } from "../../../workflows/linebank-statements.ts";
 import { taskById } from "./tasks.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
@@ -249,7 +250,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: {
@@ -265,7 +266,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
         observedStartUrl = startUrl;
         return browser;
       },
-    }, async () => {});
+    });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
     assert.equal(observedStartUrl, LOGIN_URL);
@@ -286,12 +287,12 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
 
     const malformedPage = createPage({ malformedTransactions: true });
     const malformedRunId = await createRun(provider);
-    const malformed = await runAutomationTaskExecution(task, provider.automation, {
+    const malformed = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(malformedPage); } }),
-    }, async () => {});
+    });
     assert.equal(malformed.status, "failed");
     assert.equal(committed.length, 1, "malformed LINE Bank response is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
@@ -299,30 +300,32 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
 
     const incompletePage = createPage({ incompleteTransactions: true });
     const incompleteRunId = await createRun(provider);
-    const incomplete = await runAutomationTaskExecution(task, provider.automation, {
+    const incomplete = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(incompletePage); } }),
-    }, async () => {});
+    });
     assert.equal(incomplete.status, "failed");
     assert.equal(committed.length, 1, "incomplete LINE Bank pagination is rejected before commit");
     const incompleteRun = await provider.automation.taskRunById(incompleteRunId);
     assert.ok(incompleteRun?.events.some((event) => event.code === "source-validation-rejected"));
 
-    let cancellationRequested = false;
+    let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancellationPage = createPage({
       signedIn: false,
       async onPoll() {
-        cancellationRequested = true;
+        void cancellationRun?.requestStop("cancelled");
         await new Promise((resolve) => setTimeout(resolve, 75));
       },
     });
     const cancellationRunId = await createRun(provider);
-    const cancelled = await runAutomationTaskExecution(task, provider.automation, {
+    const cancelled = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: cancellationRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      isCancellationRequested: () => cancellationRequested,
+      onRunOpened: (active) => {
+        cancellationRun = active;
+      },
       workflowPorts: {
         financialCommit,
         humanAssistance: {
@@ -332,7 +335,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
         },
       },
       workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }),
-    }, async () => {});
+    });
     assert.equal(cancelled.status, "cancelled");
     assert.equal(committed.length, 1, "cancelled LINE Bank run does not commit");
     assert.deepEqual(await readdir(root), []);

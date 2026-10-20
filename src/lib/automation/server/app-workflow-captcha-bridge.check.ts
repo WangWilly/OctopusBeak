@@ -12,6 +12,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
@@ -98,6 +99,7 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         maxAttempts: 1,
         startedAt: new Date().toISOString(),
       });
+      const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
       const settings: AutomationSettingsFile = {
         VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD: "0.9",
       };
@@ -112,8 +114,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         appWorkflow: true,
         provider,
         launchVerificationSettings: settings,
-        initialExecutionOptions: { taskRunId: created.taskRunId },
-        isCancellationRequested: () => false,
+        run,
+        initialExecutionOptions: {},
         routeWaitingRunVerification: (input) => routeWaitingRunVerification({
           ...input,
           solver: {
@@ -144,55 +146,22 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
           const attempt = options.attempt ?? 1;
           executeAttempts.push(attempt);
           const controller = new AbortController();
-          const assistance = createAppWorkflowHumanAssistancePort({
-            taskRunId: created.taskRunId,
-            persistence: provider.automation,
-          });
+          const assistance = createAppWorkflowHumanAssistancePort({ run });
           try {
             await assistance.request(providerContract, controller.signal);
           } catch {
             assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
-            return {
-              status: "failed" as const,
-              taskRunId: created.taskRunId,
-              executionId: options.executionId!,
-              session: null,
-              owner: null,
-              result: {
-                exitCode: 1,
-                signal: null,
-                error: new Error("Solver exhausted"),
-                resumeFailure: null,
-                outputPersistenceWarnings: [],
-                externalPrerequisiteIds: [],
-              },
-            };
+            return { errorCode: "workflow-failed" as const, summary: null };
           }
           const rejected = attempt === 2;
           // Worker cleanup aborts the request before the host joins execution.
           // Progress events are deliberately absent: they must not drive retries.
           controller.abort(new Error("Worker finished"));
-          const processResult = {
-            exitCode: rejected ? 1 : 0,
-            signal: null,
-            error: rejected ? new Error("App workflow failed (workflow-failed).") : null,
-            resumeFailure: null,
-            appWorkflowOutcome: { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null },
-            outputPersistenceWarnings: [],
-            externalPrerequisiteIds: [],
-          };
-          return {
-            status: rejected ? "failed" as const : "completed" as const,
-            taskRunId: created.taskRunId,
-            executionId: options.executionId!,
-            session: null,
-            owner: null,
-            result: processResult,
-          };
+          return { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null };
         },
       });
 
-      assert.deepEqual(await campaign, { status: "completed" });
+      assert.equal((await run.finish(await campaign)).status, "completed");
       assert.deepEqual(executeAttempts, [1, 2, 3]);
       assert.equal(captureSessions.length, 5);
       assert.deepEqual(captureSessions, Array.from({ length: 5 }, () => created.taskRunId));
@@ -225,8 +194,8 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     const controller = new AbortController();
-    let cancelled = false;
     const campaign = runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
@@ -236,40 +205,25 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
       routeWaitingRunVerification: () => new Promise((_resolve, reject) => {
         controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
       }),
-      initialExecutionOptions: { taskRunId: created.taskRunId },
-      isCancellationRequested: () => cancelled,
-      async execute(options: AutomationTaskExecutionOptions) {
-        const assistance = createAppWorkflowHumanAssistancePort({
-          taskRunId: created.taskRunId,
-          persistence: provider.automation,
-        });
+      run,
+      initialExecutionOptions: {},
+      async execute() {
+        const assistance = createAppWorkflowHumanAssistancePort({ run });
         try {
           await assistance.request(sinopacContract, controller.signal);
           throw new Error("Cancellation did not interrupt verification assistance.");
         } catch {
-          return {
-            status: "cancelled" as const,
-            taskRunId: created.taskRunId,
-            executionId: options.executionId!,
-            session: null,
-            owner: null,
-            result: {
-              exitCode: null,
-              signal: "SIGTERM",
-              error: new Error("Automation task cancelled."),
-              resumeFailure: null,
-              outputPersistenceWarnings: [],
-              externalPrerequisiteIds: [],
-            },
-          };
+          return { errorCode: "cancelled" as const, summary: null };
         }
       },
     });
 
     await waitFor(async () => (await provider.automation.taskRunById(created.taskRunId))?.status === "waiting_for_human");
-    cancelled = true;
+    void run.requestStop("cancelled");
     controller.abort(new Error("App closed"));
-    assert.deepEqual(await campaign, { status: "failed" });
+    const report = await campaign;
+    assert.equal(report.errorCode, "cancelled");
+    await run.finish(report);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "cancelled");
     assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
@@ -301,6 +255,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         maxAttempts: 1,
         startedAt: new Date().toISOString(),
       });
+      const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
       const attempts: number[] = [];
       let routeCalls = 0;
       const campaign = runCaptchaRetryCampaign({
@@ -308,8 +263,8 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         appWorkflow: true,
         provider,
         launchVerificationSettings: {},
-        initialExecutionOptions: { taskRunId: created.taskRunId },
-        isCancellationRequested: () => false,
+        run,
+        initialExecutionOptions: {},
         captchaRetryCooldownMs: () => undefined,
         routeWaitingRunVerification: async (input) => {
           routeCalls += 1;
@@ -319,10 +274,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         async execute(options) {
           attempts.push(options.attempt ?? 1);
           if ((options.attempt ?? 1) === 1) {
-            const assistance = createAppWorkflowHumanAssistancePort({
-              taskRunId: created.taskRunId,
-              persistence: provider.automation,
-            });
+            const assistance = createAppWorkflowHumanAssistancePort({ run });
             try {
               await assistance.request(sinopacContract, controller.signal);
             } catch {
@@ -330,16 +282,8 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
             }
           }
           return {
-            status: (options.attempt ?? 1) === 1 ? "failed" as const : "completed" as const,
-            taskRunId: created.taskRunId,
-            executionId: options.executionId!,
-            result: {
-              exitCode: (options.attempt ?? 1) === 1 ? 1 : 0,
-              signal: null,
-              error: (options.attempt ?? 1) === 1 ? new Error("Challenge rejected") : null,
-              outputPersistenceWarnings: [],
-              externalPrerequisiteIds: [],
-            },
+            errorCode: (options.attempt ?? 1) === 1 ? "workflow-failed" as const : null,
+            summary: null,
           };
         },
       });
@@ -350,7 +294,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
           2_000,
         )),
       ]);
-      assert.deepEqual(result, { status: "completed" }, taskId);
+      assert.equal((await run.finish(result)).status, "completed", taskId);
       assert.deepEqual(attempts, [1, 2], taskId);
       assert.equal(routeCalls, 1, taskId);
     } finally {
@@ -375,14 +319,15 @@ test("exhausted App solver retries finalize with a typed verification failure an
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     const attempts: number[] = [];
     const result = await runCaptchaRetryCampaign({
       taskId,
       appWorkflow: true,
       provider,
       launchVerificationSettings: {},
-      initialExecutionOptions: { taskRunId: created.taskRunId },
-      isCancellationRequested: () => false,
+      run,
+      initialExecutionOptions: {},
       captchaRetryCooldownMs: () => undefined,
       routeWaitingRunVerification: async (input) => {
         await input.onChallengeCaptured?.();
@@ -390,30 +335,17 @@ test("exhausted App solver retries finalize with a typed verification failure an
       },
       async execute(options) {
         attempts.push(options.attempt ?? 1);
-        const assistance = createAppWorkflowHumanAssistancePort({
-          taskRunId: created.taskRunId,
-          persistence: provider.automation,
-        });
+        const assistance = createAppWorkflowHumanAssistancePort({ run });
         try {
           await assistance.request(sinopacContract, controller.signal);
         } catch {
           // Reject the current challenge so the campaign can admit its next round.
         }
-        return {
-          status: "failed" as const,
-          taskRunId: created.taskRunId,
-          executionId: options.executionId!,
-          result: {
-            exitCode: 1,
-            signal: null,
-            error: new Error("untrusted solver diagnostics"),
-            outputPersistenceWarnings: [],
-            externalPrerequisiteIds: [],
-          },
-        };
+        return { errorCode: "workflow-failed" as const, summary: null };
       },
     });
-    assert.deepEqual(result, { status: "failed" });
+    assert.equal(result.errorCode, "verification-failed");
+    await run.finish(result);
     assert.deepEqual(attempts, [1, 2, 3]);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "failed");
@@ -445,6 +377,7 @@ for (const scenario of [
         maxAttempts: 1,
         startedAt: new Date().toISOString(),
       });
+      const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
       const attempts: number[] = [];
       let routes = 0;
       const result = await runCaptchaRetryCampaign({
@@ -452,8 +385,8 @@ for (const scenario of [
         appWorkflow: true,
         provider,
         launchVerificationSettings: {},
-        initialExecutionOptions: { taskRunId: created.taskRunId },
-        isCancellationRequested: () => false,
+        run,
+        initialExecutionOptions: {},
         captchaRetryCooldownMs: () => undefined,
         routeWaitingRunVerification: async (input) => {
           routes += 1;
@@ -463,27 +396,13 @@ for (const scenario of [
         async execute(options) {
           attempts.push(options.attempt ?? 1);
           if (scenario.requestsCaptcha) {
-            const assistance = createAppWorkflowHumanAssistancePort({
-              taskRunId: created.taskRunId,
-              persistence: provider.automation,
-            });
+            const assistance = createAppWorkflowHumanAssistancePort({ run });
             await assistance.request(sinopacContract, controller.signal).catch(() => undefined);
           }
-          return {
-            status: "failed" as const,
-            taskRunId: created.taskRunId,
-            executionId: options.executionId!,
-            result: {
-              exitCode: 1,
-              signal: null,
-              error: new Error("workflow failed"),
-              outputPersistenceWarnings: [],
-              externalPrerequisiteIds: [],
-            },
-          };
+          return { errorCode: "workflow-failed" as const, summary: null };
         },
       });
-      assert.deepEqual(result, { status: "failed" });
+      assert.equal((await run.finish(result)).status, "failed");
       assert.deepEqual(attempts, [1]);
       assert.equal(routes, scenario.requestsCaptcha ? 1 : 0);
     } finally {
@@ -507,6 +426,7 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     const attempts: number[] = [];
     let routeCalls = 0;
     const campaign = runCaptchaRetryCampaign({
@@ -514,8 +434,8 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
       appWorkflow: true,
       provider,
       launchVerificationSettings: {},
-      initialExecutionOptions: { taskRunId: created.taskRunId },
-      isCancellationRequested: () => false,
+      run,
+      initialExecutionOptions: {},
       routeWaitingRunVerification: async (input) => {
         routeCalls += 1;
         await input.onChallengeCaptured?.();
@@ -525,10 +445,7 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
         attempts.push(options.attempt ?? 1);
         assert.equal(options.verificationRouteOwnedByCampaign, true);
         if ((options.attempt ?? 1) === 1) {
-          const assistance = createAppWorkflowHumanAssistancePort({
-            taskRunId: created.taskRunId,
-            persistence: provider.automation,
-          });
+          const assistance = createAppWorkflowHumanAssistancePort({ run });
           try {
             await assistance.request(yuantaTradeAudioContract, controller.signal);
           } catch {
@@ -536,20 +453,12 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
           }
         }
         return {
-          status: (options.attempt ?? 1) === 1 ? "failed" as const : "completed" as const,
-          taskRunId: created.taskRunId,
-          executionId: options.executionId!,
-          result: {
-            exitCode: (options.attempt ?? 1) === 1 ? 1 : 0,
-            signal: null,
-            error: (options.attempt ?? 1) === 1 ? new Error("Solver exhausted") : null,
-            outputPersistenceWarnings: [],
-            externalPrerequisiteIds: [],
-          },
+          errorCode: (options.attempt ?? 1) === 1 ? "workflow-failed" as const : null,
+          summary: null,
         };
       },
     });
-    assert.deepEqual(await campaign, { status: "completed" });
+    assert.equal((await run.finish(await campaign)).status, "completed");
     assert.deepEqual(attempts, [1, 2]);
     assert.equal(routeCalls, 1);
   } finally {

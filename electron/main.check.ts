@@ -11,8 +11,8 @@ assert.match(
   source,
   /recoverInterruptedAutomationRuns\(operationalRuntime\.provider\)[\s\S]*?\.then\(\(\) => hydrateAutomationRuntimeState\(operationalRuntime\.provider\)\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/,
 );
-assert.match(source, /abortActiveAppWorkflowExecutions\(\)/u);
-assert.match(source, /shutdownAppAutomationWorkflows\(pgliteOperationalRuntime\.provider\)/u);
+assert.match(source, /automationRunner\.abortAll\(\)/u);
+assert.match(source, /automationRunner\.shutdown\(pgliteOperationalRuntime\.provider\)/u);
 assert.match(
   source,
   /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);\s*\}\)/,

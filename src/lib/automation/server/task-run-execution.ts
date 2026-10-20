@@ -7,16 +7,7 @@ import {
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
-import {
-  decideAutomationTaskRunOutcome,
-  finalizeAutomationTaskRun,
-  type AutomationTaskExecutionResult,
-  type AutomationTaskRunExecution,
-} from "./task-run-finalization.ts";
-import {
-  type AutomationPersistencePort,
-  isTerminalTaskRunStatus,
-} from "./store.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
@@ -37,6 +28,7 @@ import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
+  type TypedWorkflowOutcome,
 } from "./typed-workflow-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,
@@ -71,13 +63,15 @@ import {
   requirePGliteChildRpcClientFromEnv,
 } from "../../../../electron/pglite-child-rpc-client.ts";
 
-const activeWorkflowControllers = new Map<string, AbortController>();
-const activeWorkflowRunIds = new Map<string, string>();
+/** One workflow execution within an Active Automation Task Run. */
+type AutomationTaskRunExecution = Readonly<{
+  task: NonNullable<ReturnType<typeof taskById>>;
+  run: ActiveAutomationTaskRun;
+  executionId: string;
+}>;
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
-  /** Reuse the user-visible task run for an internal execution. */
-  taskRunId?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
   launchVerificationSettings?: AutomationSettingsFile;
@@ -89,12 +83,6 @@ export type AutomationTaskExecutionOptions = {
   maxAttempts?: number;
   /** This execution is another round of the same visible run. */
   retrying?: boolean;
-  /** Let a higher-level campaign own the single terminal transition. */
-  deferFinalization?: boolean;
-  /** Stop a typed workflow when the host task was cancelled. */
-  isCancellationRequested?: () => boolean;
-  isForceTerminationRequested?: () => boolean;
-  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
   /** App composition may replace a typed workflow capability at its port seam. */
   workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
@@ -128,28 +116,17 @@ function createWorkflowProgressReporter(
   options: AutomationTaskExecutionOptions,
   input: unknown,
 ) {
-  let progress = execution.run.progress ?? indeterminateProgress(execution.run.attempt);
+  let progress = execution.run.current().progress ?? indeterminateProgress(execution.run.current().attempt);
   const selectedStatementTypes = selectedWorkflowStatementTypes(input);
   let retrying = options.retrying === true;
 
   const persistProgress = async (next: AutomationTaskProgress): Promise<void> => {
     progress = next;
     try {
-      const current = await execution.persistence.taskRunById(execution.run.taskRunId);
-      if (current && !isTerminalTaskRunStatus(current.status)) {
-        await execution.persistence.updateTaskRun(execution.run.taskRunId, { progress: next });
-      }
+      await execution.run.update({ progress: next });
     } catch {
       // Progress is advisory; a progress write must not turn a committed
       // workflow result into an ambiguous failure.
-    }
-  };
-
-  const refreshRuntime = async (): Promise<void> => {
-    try {
-      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-    } catch {
-      // The persisted event and progress record are authoritative.
     }
   };
 
@@ -163,14 +140,13 @@ function createWorkflowProgressReporter(
         : event;
       if (retryIsCaughtUp) retrying = false;
 
-      await execution.persistence.appendRunEvent(recordedEvent);
+      await execution.run.persistence.appendRunEvent(recordedEvent);
       const projected = projectWorkflowRunProgress(
         recordedEvent,
         progress,
         selectedStatementTypes,
       );
       if (projected) await persistProgress(projected);
-      await refreshRuntime();
     },
 
     async appendExchangeRateProgress(value: Readonly<{
@@ -180,8 +156,7 @@ function createWorkflowProgressReporter(
       percent: number;
     }>): Promise<void> {
       const percent = Math.max(progress.percent ?? 0, Math.min(99, Math.max(0, value.percent)));
-      await persistProgress({ ...value, percent, attempt: execution.run.attempt });
-      await refreshRuntime();
+      await persistProgress({ ...value, percent, attempt: execution.run.current().attempt });
     },
   };
 }
@@ -220,7 +195,7 @@ function createBrowserRuntimeIdentityRecorder(
   let writeFailed = false;
   return {
     record(identity) {
-      pendingWrite = execution.persistence.updateTaskRun(execution.run.taskRunId, {
+      pendingWrite = execution.run.persistence.updateTaskRun(execution.run.taskRunId, {
         browserRuntime: {
           profileId: identity.profileId,
           profileRevision: identity.profileRevision,
@@ -256,7 +231,7 @@ function browserPortWithIdentityPersistence(
 async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
-): Promise<AutomationTaskExecutionResult> {
+): Promise<TypedWorkflowOutcome> {
   const scope = registerCollectionScope(
     execution.run.taskRunId,
     execution.task,
@@ -275,65 +250,40 @@ async function executeAppWorkflow(
 }
 
 function collectionScopeChangedResult(
-  result: AutomationTaskExecutionResult,
-): AutomationTaskExecutionResult {
-  const summary = result.appWorkflowOutcome?.summary ?? null;
+  result: TypedWorkflowOutcome,
+): TypedWorkflowOutcome {
+  const { summary } = result;
   return {
-    ...result,
-    exitCode: 1,
-    signal: null,
-    error: new Error("App workflow failed (collection-scope-changed)."),
-    appWorkflowOutcome: {
-      errorCode: "collection-scope-changed",
-      summary: summary?.products
-        ? {
-          ...summary,
-          products: summary.products.map((product) =>
-            product.errorCode === "commit-outcome-unknown"
-              ? { ...product, errorCode: "collection-scope-changed" }
-              : product),
-        }
-        : summary,
-    },
+    errorCode: "collection-scope-changed",
+    summary: summary?.products
+      ? {
+        ...summary,
+        products: summary.products.map((product) =>
+          product.errorCode === "commit-outcome-unknown"
+            ? { ...product, errorCode: "collection-scope-changed" }
+            : product),
+      }
+      : summary,
   };
 }
 
 async function executeInlineAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
-): Promise<AutomationTaskExecutionResult> {
+): Promise<TypedWorkflowOutcome> {
   const definition = workflowDefinitionForTask(execution.task.workflowId);
   if (!definition || !execution.task.workflowId) {
-    return {
-      exitCode: 1,
-      signal: null,
-      error: new Error("App workflow definition is unavailable."),
-      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
+    return { errorCode: "workflow-failed", summary: null };
   }
 
-  const controller = new AbortController();
-  const cancellationPoll = setInterval(() => {
-    if (options.isCancellationRequested?.() && !controller.signal.aborted) {
-      controller.abort(new Error("Automation task cancelled."));
-    }
-  }, 50);
-  cancellationPoll.unref();
-  activeWorkflowControllers.set(execution.task.id, controller);
-  activeWorkflowRunIds.set(execution.task.id, execution.run.taskRunId);
-
+  const { signal } = execution.run;
   let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
   let unregisterHumanAssistance: (() => void) | undefined;
-  let result: AutomationTaskExecutionResult;
+  let result: TypedWorkflowOutcome;
   let workflowOutput: unknown;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
-    if (options.isCancellationRequested?.()) {
-      controller.abort(new Error("Automation task cancelled."));
-    }
     const injectedPorts = options.workflowPorts ?? {};
     let financialCommit = injectedPorts.financialCommit;
     if (definition.requiresFinancialCommit && !financialCommit) {
@@ -374,7 +324,7 @@ async function executeInlineAppWorkflow(
       ?? options.workflowBrowserPortFactory?.({
         taskId: execution.task.id,
         taskRunId: execution.run.taskRunId,
-        signal: controller.signal,
+        signal,
         userDataDirectory,
         startUrl,
         browserProfile,
@@ -383,7 +333,7 @@ async function executeInlineAppWorkflow(
       ?? createAppWorkflowBrowserPort({
         taskId: execution.task.id,
         taskRunId: execution.run.taskRunId,
-        signal: controller.signal,
+        signal,
         userDataDirectory,
         startUrl,
         browserProfile,
@@ -397,11 +347,7 @@ async function executeInlineAppWorkflow(
       browser: browserWithIdentityPersistence,
       text: strictSourceText,
       humanAssistance: injectedPorts.humanAssistance
-        ?? createAppWorkflowHumanAssistancePort({
-          taskRunId: execution.run.taskRunId,
-          persistence: execution.persistence,
-          onRuntimeUpdate: execution.onRuntimeUpdate,
-        }),
+        ?? createAppWorkflowHumanAssistancePort({ run: execution.run }),
       ...(financialCommit ? { financialCommit } : {}),
       ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
       ...(accountIdentity ? { accountIdentity } : {}),
@@ -426,70 +372,47 @@ async function executeInlineAppWorkflow(
     if (!options.verificationRouteOwnedByCampaign) {
       unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
         execution.task.workflowId,
-        { automation: execution.persistence },
+        { automation: execution.run.persistence },
       );
     }
     workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
       input,
-      controller.signal,
+      signal,
     );
     await browserRuntimeIdentity.flush();
-    result = {
-      exitCode: 0,
-      signal: null,
-      error: null,
-      appWorkflowOutcome: {
-        errorCode: null,
-        summary: summarizeTypedWorkflowOutput(workflowOutput),
-      },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
+    result = { errorCode: null, summary: summarizeTypedWorkflowOutput(workflowOutput) };
   } catch (error) {
     try {
       await browserRuntimeIdentity.flush();
     } catch {
       // Preserve only a stable workflow failure; persistence errors are opaque.
     }
-    const cancelled = controller.signal.aborted
-      || options.isCancellationRequested?.() === true;
+    const cancelled = signal.aborted;
     let events: readonly WorkflowRunEvent[] = [];
     try {
-      events = (await execution.persistence.taskRunById(execution.run.taskRunId))?.events ?? [];
+      events = (await execution.run.persistence.taskRunById(execution.run.taskRunId))?.events ?? [];
     } catch {
       // Classification falls back to the opaque workflow code if events are unavailable.
     }
+    // Provider exceptions may contain account or invoice data. Persist only
+    // a stable task-level classification in the operational database.
     result = {
-      exitCode: cancelled ? null : 1,
-      signal: cancelled ? "SIGTERM" : null,
-      // Provider exceptions may contain account or invoice data. Persist only
-      // a stable task-level classification in the operational database.
-      error: cancelled
-        ? new Error("Automation task cancelled.")
-        : new Error("App workflow failed (workflow-failed)."),
-      appWorkflowOutcome: {
-        errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
-        summary: summarizeInterruptedProductCollection(error)
-          ?? summarizeTypedWorkflowOutput(workflowOutput),
-      },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
+      errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
+      summary: summarizeInterruptedProductCollection(error)
+        ?? summarizeTypedWorkflowOutput(workflowOutput),
     };
     if (!cancelled) {
       await recordWorkflowFailure(execution, options, {
         source: "workflow-host",
-        errorCode: result.appWorkflowOutcome?.errorCode ?? "workflow-failed",
+        errorCode: result.errorCode ?? "workflow-failed",
         stage: lastWorkflowStage(events),
         error,
       });
     }
   } finally {
     unregisterHumanAssistance?.();
-    clearInterval(cancellationPoll);
-    activeWorkflowControllers.delete(execution.task.id);
-    activeWorkflowRunIds.delete(execution.task.id);
     childRpc?.close();
   }
   return result;
@@ -515,51 +438,12 @@ function pgliteRpcForWorker(environment: NodeJS.ProcessEnv) {
 function sanitizedWorkerResult(
   outcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>>,
   errorCode: TypedWorkflowErrorCode,
-): AutomationTaskExecutionResult {
-  if (outcome.status === "completed" && errorCode === "cancelled") {
-    return {
-      exitCode: null,
-      signal: "SIGTERM",
-      error: new Error("Automation task cancelled."),
-      appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
-  }
-  if (outcome.status === "completed") {
-    return {
-      exitCode: 0,
-      signal: null,
-      error: null,
-      appWorkflowOutcome: {
-        errorCode: null,
-        summary: outcome.summary,
-      },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
-  }
-
-  if (errorCode === "cancelled") {
-    return {
-      exitCode: null,
-      signal: "SIGTERM",
-      error: new Error("Automation task cancelled."),
-      appWorkflowOutcome: { errorCode: "cancelled", summary: outcome.summary },
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
-  }
-
+): TypedWorkflowOutcome {
+  // An ambiguous commit keeps its code through finalization. Marking it
+  // cancelled would hide the uncertain financial outcome from the App.
   return {
-    // An ambiguous commit must remain a failure through finalization. Marking
-    // it cancelled would hide the uncertain financial outcome from the App.
-    exitCode: 1,
-    signal: null,
-    error: new Error(`App workflow failed (${errorCode}).`),
-    appWorkflowOutcome: { errorCode, summary: outcome.summary },
-    outputPersistenceWarnings: [],
-    externalPrerequisiteIds: [],
+    errorCode: outcome.status === "completed" ? null : errorCode,
+    summary: outcome.summary,
   };
 }
 
@@ -573,7 +457,7 @@ function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHo
 async function executeSupervisedAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
-): Promise<AutomationTaskExecutionResult> {
+): Promise<TypedWorkflowOutcome> {
   const workflowId = execution.task.workflowId;
   const definition = workflowDefinitionForTask(workflowId);
   if (!definition || !workflowId || definition.id !== workflowId) {
@@ -598,32 +482,17 @@ async function executeSupervisedAppWorkflow(
     });
   };
 
-  const controller = new AbortController();
-  const cancellationPoll = setInterval(() => {
-    if (
-      (options.isCancellationRequested?.() || options.isForceTerminationRequested?.())
-      && !controller.signal.aborted
-    ) {
-      controller.abort(new Error("Automation task cancelled."));
-    }
-  }, 50);
-  cancellationPoll.unref();
-  activeWorkflowControllers.set(execution.task.id, controller);
-  activeWorkflowRunIds.set(execution.task.id, execution.run.taskRunId);
-
+  const { signal, forceSignal } = execution.run;
   let unregisterHumanAssistance: (() => void) | undefined;
-  let result: AutomationTaskExecutionResult;
+  let result: TypedWorkflowOutcome;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
   let priorEventCount: number | null = null;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
-    if (options.isCancellationRequested?.() || options.isForceTerminationRequested?.()) {
-      controller.abort(new Error("Automation task cancelled."));
-    }
     try {
-      const existing = await execution.persistence.taskRunById(execution.run.taskRunId);
+      const existing = await execution.run.persistence.taskRunById(execution.run.taskRunId);
       priorEventCount = existing?.events.length ?? null;
     } catch {
       // Worker events are also observed in memory before persistence is ACKed.
@@ -639,7 +508,7 @@ async function executeSupervisedAppWorkflow(
     const browser = runtime.kind === "nonbrowser" ? undefined : options.workflowBrowserPortFactory?.({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
-      signal: controller.signal,
+      signal,
       userDataDirectory,
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
@@ -647,34 +516,31 @@ async function executeSupervisedAppWorkflow(
     }) ?? createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
-      signal: controller.signal,
+      signal,
       userDataDirectory,
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
       nativeDialogOwner: "worker",
     });
-    const humanAssistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: execution.run.taskRunId,
-      persistence: execution.persistence,
-      onRuntimeUpdate: execution.onRuntimeUpdate,
-    });
+    const humanAssistance = createAppWorkflowHumanAssistancePort({ run: execution.run });
     if (!options.verificationRouteOwnedByCampaign) {
       unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
         workflowId,
-        { automation: execution.persistence },
+        { automation: execution.run.persistence },
       );
     }
 
     const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
-      controller.signal.throwIfAborted();
+      signal.throwIfAborted();
       return await runSupervisedAppWorkflow({
         runId: execution.run.taskRunId,
         workflowId,
         input,
         ...(browserConnection ? { browserConnection } : {}),
         ...(pgliteRpc ? { pgliteRpc } : {}),
-        signal: controller.signal,
+        signal,
+        forceSignal,
         appendEvent: async (event) => {
           // The supervisor ACKs only after this callback completes. Record the
           // attempted event first so commit ambiguity remains detectable even
@@ -716,7 +582,7 @@ async function executeSupervisedAppWorkflow(
 
     let eventsForExecution = observedEvents;
     try {
-      const persisted = await execution.persistence.taskRunById(execution.run.taskRunId);
+      const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
       if (persisted) {
         eventsForExecution = priorEventCount === null
           ? [...observedEvents]
@@ -762,12 +628,10 @@ async function executeSupervisedAppWorkflow(
     } catch {
       // Preserve only a stable workflow failure; persistence errors are opaque.
     }
-    const cancelled = controller.signal.aborted
-      || options.isCancellationRequested?.() === true
-      || options.isForceTerminationRequested?.() === true;
+    const cancelled = signal.aborted;
     let eventsForExecution: readonly WorkflowRunEvent[] = observedEvents;
     try {
-      const persisted = await execution.persistence.taskRunById(execution.run.taskRunId);
+      const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
       if (persisted) {
         eventsForExecution = [
           ...(priorEventCount === null ? [] : persisted.events.slice(priorEventCount)),
@@ -806,65 +670,12 @@ async function executeSupervisedAppWorkflow(
     }
   } finally {
     unregisterHumanAssistance?.();
-    clearInterval(cancellationPoll);
-    activeWorkflowControllers.delete(execution.task.id);
-    activeWorkflowRunIds.delete(execution.task.id);
   }
   return result!;
 }
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
   return automationConfigEnv({ baseEnv });
-}
-
-async function createAutomationTaskRunExecution(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  persistence: AutomationPersistencePort,
-  options: AutomationTaskExecutionOptions,
-): Promise<AutomationTaskRunExecution | null> {
-  const attempt = options.attempt ?? 1;
-  const maxAttempts = options.maxAttempts ?? 1;
-  const startedAt = new Date().toISOString();
-  const existingRun = options.taskRunId
-    ? await persistence.taskRunById(options.taskRunId)
-    : null;
-  if (options.taskRunId && !existingRun) return null;
-  const startingProgress = existingRun?.progress
-    ? { ...existingRun.progress, attempt }
-    : indeterminateProgress(attempt);
-  const run = existingRun
-    ? { taskRunId: existingRun.taskRunId, attempt, progress: startingProgress }
-    : {
-        ...(await persistence.createTaskRun({
-          taskId: task.id,
-          kind: task.kind,
-          status: "running",
-          attempt,
-          maxAttempts,
-          startedAt,
-          scheduledAtUtc: options.scheduledAtUtc,
-          progress: startingProgress,
-        })),
-        attempt,
-      };
-  if (existingRun) {
-    await persistence.updateTaskRun(existingRun.taskRunId, {
-      status: "running",
-      attempt,
-      maxAttempts,
-      finishedAt: null,
-      exitCode: null,
-      signal: null,
-      progress: startingProgress,
-    });
-  }
-  return {
-    task,
-    persistence,
-    run,
-    executionId: options.executionId ?? randomUUID(),
-    onRuntimeUpdate: options.onRuntimeUpdate,
-  };
 }
 
 function indeterminateProgress(attempt: number): AutomationTaskProgress {
@@ -877,15 +688,15 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
   };
 }
 
+const CANCELLED: TypedWorkflowOutcome = { errorCode: "cancelled", summary: null };
+
+/** Execute one workflow round of an Active Automation Task Run and report its outcome. */
 export async function runAutomationTaskExecution(
   task: NonNullable<ReturnType<typeof taskById>>,
-  persistence: AutomationPersistencePort,
+  run: ActiveAutomationTaskRun,
   options: AutomationTaskExecutionOptions,
-  onRunCreated: (taskRunId: string) => void | Promise<void>,
-) {
-  if (options.isCancellationRequested?.()) {
-    return { status: "cancelled" as const };
-  }
+): Promise<TypedWorkflowOutcome> {
+  if (run.signal.aborted) return CANCELLED;
   if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
   }
@@ -897,117 +708,16 @@ export async function runAutomationTaskExecution(
       || !nonbrowserLaunchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim())) {
     throw new Error("PGlite workflow transport is unavailable.");
   }
-  const execution = await createAutomationTaskRunExecution(
-    task,
-    persistence,
+  const attempt = options.attempt ?? 1;
+  const current = run.current();
+  const started = await run.transition("running", {
+    attempt,
+    maxAttempts: options.maxAttempts ?? 1,
+    progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
+  });
+  if (!started) return CANCELLED;
+  return executeAppWorkflow(
+    { task, run, executionId: options.executionId ?? randomUUID() },
     options,
   );
-  if (!execution) {
-    return { status: "failed" as const };
-  }
-  await onRunCreated(execution.run.taskRunId);
-  if (options.isCancellationRequested?.()) {
-    const cancelledResult: AutomationTaskExecutionResult = {
-      exitCode: null,
-      signal: "SIGTERM",
-      error: new Error("Automation task cancelled."),
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
-    if (options.deferFinalization) {
-      return {
-        status: "cancelled" as const,
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        result: cancelledResult,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(
-      {
-        provider: { automation: persistence },
-        taskId: task.id,
-        taskKind: task.kind,
-        taskRunId: execution.run.taskRunId,
-      },
-      cancelledResult,
-    );
-    try {
-      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-    } catch {
-      // Runtime refresh follows the terminal persistence boundary.
-    }
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-    };
-  }
-  if (task.workflowId) {
-    const result = await executeAppWorkflow(execution, options);
-    const provider = { automation: persistence };
-    if (options.deferFinalization) {
-      return {
-        status: decideAutomationTaskRunOutcome(result, {
-          forceTerminated: options.isForceTerminationRequested?.() === true,
-        }).status,
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        result,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(
-      {
-        provider,
-        taskId: task.id,
-        taskKind: task.kind,
-        taskRunId: execution.run.taskRunId,
-        forceTerminated: options.isForceTerminationRequested?.() === true,
-      },
-      result,
-    );
-    try {
-      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-    } catch {
-      // Runtime refresh follows the terminal persistence boundary.
-    }
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-      result,
-    };
-  }
-  throw new Error("App workflow definition is unavailable.");
-}
-
-/** Abort live App workflows and persist interruption before startup recovery. */
-export async function interruptActiveAppWorkflows(
-  persistence: AutomationPersistencePort,
-) {
-  for (const [taskId, taskRunId] of activeWorkflowRunIds) {
-    const controller = activeWorkflowControllers.get(taskId);
-    if (controller && !controller.signal.aborted) {
-      controller.abort(new Error("App is shutting down."));
-    }
-    const current = await persistence.taskRunById(taskRunId);
-    if (!current || !["preparing", "queued", "running", "cancelling", "waiting_for_human"].includes(current.status)) {
-      continue;
-    }
-    await persistence.transitionTaskRunToTerminal(taskRunId, {
-      status: "interrupted",
-      finishedAt: new Date().toISOString(),
-      exitCode: null,
-      signal: null,
-      appWorkflowOutcome: current.appWorkflowOutcome ?? {
-        errorCode: "cancelled",
-        summary: null,
-      },
-    });
-  }
-}
-
-export function abortActiveAppWorkflowExecutions() {
-  for (const controller of activeWorkflowControllers.values()) {
-    if (!controller.signal.aborted) controller.abort(new Error("App is shutting down."));
-  }
 }

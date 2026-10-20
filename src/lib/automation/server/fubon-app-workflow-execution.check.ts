@@ -25,13 +25,13 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { runAutomationTaskExecution }, {
+const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
 }] = await Promise.all([
   import("./tasks.ts"),
-  import("./task-run-execution.ts"),
+  import("./task-run-check-support.ts"),
   import("./app-workflow-registry.ts"),
 ]);
 
@@ -109,7 +109,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
-    const result = await runAutomationTaskExecution(task, provider.automation, {
+    const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workflowPorts: { financialCommit, accountIdentity },
@@ -117,7 +117,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
         observedStartUrl = startUrl;
         return browser;
       },
-    }, async () => {});
+    });
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, LOGIN_URL);
