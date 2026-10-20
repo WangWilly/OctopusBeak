@@ -90,7 +90,8 @@ import {
 } from "../../lib/spending/purchase-matching.ts";
 import {
   createSpendingManualPairingIndex,
-  rankSpendingManualPaymentCandidates,
+  spendingManualPaymentRanking,
+  type SpendingManualPaymentCandidate,
 } from "../canonical/spending-manual-pairing.ts";
 import {
   largestPurchasesByCurrency,
@@ -3198,9 +3199,26 @@ export async function queryCurrentSpendingSummaryPage(
   return spendingPageFromSummary(await queryCurrentSpendingSummary(reader), request);
 }
 
+/** Eligible pairing transactions of one data version and their rank index. */
+export type PGlitePairingIndex = Readonly<{
+  knowledgeAt: number;
+  byId: ReadonlyMap<string, PairingTransaction>;
+  index: ReturnType<typeof createSpendingManualPairingIndex>;
+}>;
+
+async function queryPGlitePairingIndex(reader: PGliteSpendingReader, knowledgeAt: number): Promise<PGlitePairingIndex> {
+  const transactions = await queryPairingTransactionsDirect(reader);
+  return Object.freeze({
+    knowledgeAt,
+    byId: new Map(transactions.map((transaction) => [transaction.transactionId, transaction])),
+    index: createSpendingManualPairingIndex(knowledgeAt, transactions),
+  });
+}
+
 export async function rankPGliteSpendingPaymentCandidates(
   reader: PGliteSpendingReader,
   input: SpendingPairingCandidatesInput,
+  pairingIndexAt: (reader: PGliteSpendingReader, knowledgeAt: number) => Promise<PGlitePairingIndex> = queryPGlitePairingIndex,
 ): Promise<SpendingPairingCandidatesResult> {
   const knowledgeAt = await latest(reader);
   if (knowledgeAt !== input.dataVersion) throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
@@ -3208,21 +3226,15 @@ export async function rankPGliteSpendingPaymentCandidates(
   if (!invoice || invoice.revision.state === "revoked") throw new Error("Spending invoice selection is stale, revoked, or missing.");
   const offset = Number.isSafeInteger(input.offset) && (input.offset ?? 0) >= 0 ? input.offset ?? 0 : 0;
   const limit = Number.isSafeInteger(input.limit) && (input.limit ?? 0) > 0 ? Math.min(input.limit ?? 50, 100) : 50;
-  const transactions = await queryPairingTransactionsDirect(reader);
-  const ranked = rankSpendingManualPaymentCandidates(
-    matchingInvoice(invoice),
-    createSpendingManualPairingIndex(knowledgeAt, transactions),
-  );
-  const byId = new Map(transactions.map((transaction) => [transaction.transactionId, transaction]));
-  const pageRank = ranked.slice(offset, offset + limit);
-  const selectedRank = input.selectedTransactionId
-    ? ranked.find((candidate) => candidate.transactionId === input.selectedTransactionId)
-    : undefined;
+  const { byId, index } = await pairingIndexAt(reader, knowledgeAt);
+  const ranking = spendingManualPaymentRanking(matchingInvoice(invoice), index);
+  const pageRank = ranking.page(offset, limit);
+  const selectedRank = input.selectedTransactionId ? ranking.find(input.selectedTransactionId) : undefined;
   const streams = await pairingPresentationStreams(reader, [...new Set([
     ...pageRank.map((candidate) => candidate.transactionId),
     ...(selectedRank ? [selectedRank.transactionId] : []),
   ])]);
-  const candidateView = (candidate: typeof ranked[number]) => {
+  const candidateView = (candidate: SpendingManualPaymentCandidate) => {
     const transaction = byId.get(candidate.transactionId);
     if (!transaction) throw new Error("Spending pairing candidate is missing from the current index.");
     const stream = streams.get(candidate.transactionId);
@@ -3239,8 +3251,8 @@ export async function rankPGliteSpendingPaymentCandidates(
     dataVersion: input.dataVersion,
     candidates,
     ...(input.selectedTransactionId !== undefined ? { selectedCandidate: selectedRank ? candidateView(selectedRank) : null } : {}),
-    totalCandidateCount: ranked.length,
-    nextOffset: offset + candidates.length < ranked.length ? offset + candidates.length : null,
+    totalCandidateCount: ranking.total,
+    nextOffset: offset + candidates.length < ranking.total ? offset + candidates.length : null,
   };
 }
 
@@ -3265,10 +3277,10 @@ function rankSpendingPaymentCandidatesFromSnapshot(
     });
     pairingSnapshotCache.set(snapshot, pairing);
   }
-  const ranked = rankSpendingManualPaymentCandidates(matchingInvoice(invoice), pairing.index);
+  const ranking = spendingManualPaymentRanking(matchingInvoice(invoice), pairing.index);
   const offset = Number.isSafeInteger(input.offset) && (input.offset ?? 0) >= 0 ? input.offset ?? 0 : 0;
   const limit = Number.isSafeInteger(input.limit) && (input.limit ?? 0) > 0 ? Math.min(input.limit ?? 50, 100) : 50;
-  const candidateView = (candidate: typeof ranked[number]) => {
+  const candidateView = (candidate: SpendingManualPaymentCandidate) => {
     const transaction = pairing!.byId.get(candidate.transactionId);
     if (!transaction) throw new Error("Spending pairing candidate is missing from the current index.");
     return createSpendingPairingCandidateViewFromTransaction({
@@ -3277,16 +3289,14 @@ function rankSpendingPaymentCandidatesFromSnapshot(
       effectiveDateBasis: transaction.effectiveDateBasis ?? null,
     });
   };
-  const candidates = ranked.slice(offset, offset + limit).map(candidateView);
-  const selectedRank = input.selectedTransactionId
-    ? ranked.find((candidate) => candidate.transactionId === input.selectedTransactionId)
-    : undefined;
+  const candidates = ranking.page(offset, limit).map(candidateView);
+  const selectedRank = input.selectedTransactionId ? ranking.find(input.selectedTransactionId) : undefined;
   return {
     dataVersion: input.dataVersion,
     candidates,
     ...(input.selectedTransactionId !== undefined ? { selectedCandidate: selectedRank ? candidateView(selectedRank) : null } : {}),
-    totalCandidateCount: ranked.length,
-    nextOffset: offset + candidates.length < ranked.length ? offset + candidates.length : null,
+    totalCandidateCount: ranking.total,
+    nextOffset: offset + candidates.length < ranking.total ? offset + candidates.length : null,
   };
 }
 
@@ -3294,10 +3304,18 @@ function rankSpendingPaymentCandidatesFromSnapshot(
  * Counted non-refund purchases of one month with their merchant facts. The
  * month is given directly or as the month of one purchase.
  */
+type MonthPurchaseFactsScope = Readonly<{ month: string } | { purchaseId: string }>;
+type MonthPurchaseFactsReader = (
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  scope: MonthPurchaseFactsScope,
+) => Promise<readonly MonthPurchaseFact[]>;
+
+/** Every non-refund purchase of one month: the month asked for, or the purchase's own month. */
 async function queryMonthPurchaseFacts(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
-  scope: Readonly<{ month: string } | { purchaseId: string }>,
+  scope: MonthPurchaseFactsScope,
 ): Promise<readonly MonthPurchaseFact[]> {
   const monthFilter = "month" in scope
     ? "SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?"
@@ -3330,12 +3348,13 @@ async function queryMonthPurchaseFacts(
 export async function queryCurrentSpendingMonthInsight(
   reader: PGliteSpendingReader,
   request: SpendingMonthInsightRequest,
+  readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMonthInsightDto> {
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("month-insight", current);
   if (!validSpendingMonth(request.month)) throw new TypeError("Spending month insight month is invalid.");
-  const facts = await queryMonthPurchaseFacts(reader, current, { month: request.month });
+  const facts = await readFacts(reader, current, { month: request.month });
   return Object.freeze({
     schemaVersion: 1,
     knowledgeAt: current,
@@ -3348,6 +3367,7 @@ export async function queryCurrentSpendingMonthInsight(
 export async function queryCurrentSpendingMerchantStats(
   reader: PGliteSpendingReader,
   request: SpendingMerchantStatsRequest,
+  readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMerchantStatsDto> {
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
@@ -3355,9 +3375,13 @@ export async function queryCurrentSpendingMerchantStats(
   if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
     throw new TypeError("Spending merchant stats purchase id is required.");
   const purchaseId = request.purchaseId.trim();
-  const facts = await queryMonthPurchaseFacts(reader, current, { purchaseId });
+  const facts = await readFacts(reader, current, { purchaseId });
   const target = facts.find((fact) => fact.purchaseId === purchaseId);
-  if (!target) throw new Error("Spending merchant stats purchase is not a current purchase.");
+  // The modal can still show a purchase that the last merge or revoke replaced.
+  if (!target) return Object.freeze({
+    schemaVersion: 1, knowledgeAt: current, purchaseId, month: null,
+    merchant: null, merchantLabel: null, count: 0, totalsByCurrency: Object.freeze([]),
+  });
   const stats = sameMerchantStats(facts, purchaseId);
   return Object.freeze({
     schemaVersion: 1,
@@ -3486,6 +3510,33 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       pendingCache = await queryPendingSpendingCandidates(transaction, knowledgeAt);
     return pendingCache;
   };
+  let pairingCache: Promise<PGlitePairingIndex> | null = null;
+  let pairingCacheVersion = -1;
+  const pairingIndexAt = (transaction: PGliteSpendingReader, knowledgeAt: number) => {
+    if (pairingCacheVersion !== knowledgeAt || !pairingCache) {
+      pairingCacheVersion = knowledgeAt;
+      pairingCache = queryPGlitePairingIndex(transaction, knowledgeAt);
+      pairingCache.catch(() => {
+        if (pairingCacheVersion === knowledgeAt) pairingCache = null;
+      });
+    }
+    return pairingCache;
+  };
+  // A page action makes the month insight and the open purchase's merchant
+  // stats reload together; both read the same month, so read it once per version.
+  let factsCache: Readonly<{ knowledgeAt: number; byMonth: Map<string, readonly MonthPurchaseFact[]> }> | null = null;
+  const monthFacts: MonthPurchaseFactsReader = async (transaction, knowledgeAt, scope) => {
+    if (factsCache?.knowledgeAt !== knowledgeAt) factsCache = { knowledgeAt, byMonth: new Map() };
+    const { byMonth } = factsCache;
+    const cached = "month" in scope
+      ? byMonth.get(scope.month)
+      : [...byMonth.values()].find((facts) => facts.some((fact) => fact.purchaseId === scope.purchaseId));
+    if (cached) return cached;
+    const facts = await queryMonthPurchaseFacts(transaction, knowledgeAt, scope);
+    const month = "month" in scope ? scope.month : facts[0]?.occurrence.slice(0, 7);
+    if (month) byMonth.set(month, facts);
+    return facts;
+  };
   return Object.freeze({
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
@@ -3508,9 +3559,9 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
     }),
     monthInsight: (request: SpendingMonthInsightRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMonthInsight(transaction, request)),
+      store.transaction((transaction) => queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
     merchantStats: (request: SpendingMerchantStatsRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMerchantStats(transaction, request)),
+      store.transaction((transaction) => queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
     mergeLog: (request: SpendingMergeLogRequest) =>
       store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
     pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
@@ -3541,8 +3592,14 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
           return rankPGliteSpendingPaymentCandidates(transaction, request);
         });
       }
-      return store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request));
+      return store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request, pairingIndexAt));
     },
+    /** Build the pairing index for the current version so the next dialog open only ranks. */
+    prewarmPairing: (dataVersion: number) => store.transaction(async (transaction) => {
+      const knowledgeAt = await latest(transaction);
+      if (knowledgeAt === dataVersion) await pairingIndexAt(transaction, knowledgeAt);
+      return knowledgeAt;
+    }),
   });
 }
 
