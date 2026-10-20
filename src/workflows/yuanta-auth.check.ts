@@ -238,10 +238,7 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
       return locator;
     },
   } as unknown as Frame;
-  const contract = await emitHumanAssistanceStage(
-    yuantaBankCaptchaAssistanceStage(loginFrame),
-    () => undefined,
-  );
+  const contract = await emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame));
 
   assert.deepEqual(selectors, ["#gcode", 'img[src*="GOTP"]:visible']);
   assert.equal(contract.challengeKind, "text-captcha");

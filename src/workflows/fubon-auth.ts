@@ -9,6 +9,7 @@ import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
+import { withAbort } from "./abort.ts";
 
 const FUBON_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -1228,27 +1229,6 @@ async function currentOtpChallengeVisible(
   return false;
 }
 
-function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", abort);
-    const abort = () => {
-      cleanup();
-      reject(signal.reason ?? new Error("Workflow cancelled."));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
 
 /** Fubon authentication using the App-owned human-assistance port. */
 export async function completeFubonHumanLoginWithAssistance(
@@ -1265,7 +1245,7 @@ export async function completeFubonHumanLoginWithAssistance(
   const event = options.event ?? (() => Promise.resolve());
   const assistance = async (stage: WorkflowHumanAssistanceStage) => {
     signal.throwIfAborted();
-    const contract = await withAbort(emitHumanAssistanceStage(stage, (value) => value), signal);
+    const contract = await withAbort(emitHumanAssistanceStage(stage), signal);
     await event("human-assistance-requested");
     const status = await withAbort(request(contract, signal), signal);
     signal.throwIfAborted();

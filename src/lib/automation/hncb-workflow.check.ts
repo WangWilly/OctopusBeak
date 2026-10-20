@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { requestCaptchaAssistance } from "../../workflows/human-assistance.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import {
   downloadCurrentStatementInMemory,
   hncbCaptchaAssistanceStage,
   parseStatementExport,
-  requestHncbCaptchaAssistance,
   runHncbStatements,
 } from "../../workflows/hncb-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
@@ -367,7 +367,7 @@ test("HNCB CAPTCHA assistance receives the injected cancellation signal", async 
     `);
     const signal = new AbortController().signal;
     let receivedSignal: AbortSignal | undefined;
-    const status = await requestHncbCaptchaAssistance(
+    const status = await requestCaptchaAssistance("HNCB", 
       hncbCaptchaAssistanceStage(page),
       async (_contract, assistanceSignal) => {
         receivedSignal = assistanceSignal;
@@ -381,7 +381,7 @@ test("HNCB CAPTCHA assistance receives the injected cancellation signal", async 
     const cancelled = new AbortController();
     cancelled.abort(new Error("cancelled"));
     await assert.rejects(
-      requestHncbCaptchaAssistance(
+      requestCaptchaAssistance("HNCB", 
         hncbCaptchaAssistanceStage(page),
         async () => { throw new Error("request must not run"); },
         cancelled.signal,

@@ -393,10 +393,7 @@ try {
       alt="HNCB CAPTCHA"
     />
   `);
-  const captchaContract = await emitHumanAssistanceStage(
-    hncbCaptchaAssistanceStage(captchaPage),
-    (contract) => contract,
-  );
+  const captchaContract = await emitHumanAssistanceStage(hncbCaptchaAssistanceStage(captchaPage));
   assert.equal(captchaContract.stageId, "hncb-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");
