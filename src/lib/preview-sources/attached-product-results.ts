@@ -6,7 +6,10 @@ import { previewRunSummary, type PreviewProductRun } from "./product-collection.
 
 /** Provider-owned evidence from completed verified collection, before attached results are combined. */
 export type VerifiedProductResults = Pick<ProductCollectionRunSummary, "products" | "sourceCaptureCount" | "rowCount"> &
-  Readonly<{ firstFailure?: unknown }>;
+  Readonly<{
+    /** Original verified error to preserve when no product has durable receipts. */
+    firstFailure?: unknown;
+  }>;
 
 /**
  * Owns whole-run result policy for Attached Preview Products (ADR 0051).
@@ -41,8 +44,9 @@ export function finishAttachedProductRun(
     throw withCause(new ProductCollectionInterruptedError("cancelled", summary), signal?.reason ?? interruption?.error);
   }
   if (summary.status === "failed") {
+    if (verified.firstFailure !== null && verified.firstFailure !== undefined) throw verified.firstFailure;
     const attempted = products.filter((product) => product.status !== "skipped");
-    const firstFailure = verified.firstFailure ?? attached?.firstFailure;
+    const firstFailure = attached?.firstFailure;
     if (attempted.length === 1 && firstFailure !== null && firstFailure !== undefined) throw firstFailure;
     throw withCause(new ProductCollectionInterruptedError(failed!.errorCode ?? "source-collection-failed", summary), firstFailure);
   }
