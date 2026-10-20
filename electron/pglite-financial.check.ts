@@ -9,10 +9,10 @@ import test from "node:test";
 import {
   createPGliteFinancialRegistry,
   createPGliteFinancialLiveViews,
-  createPGliteFinancialPageClient,
+  prewarmPGlitePairingCandidates,
   PGliteFinancialError,
   PGLITE_FINANCIAL_OPERATIONS,
-  type PGliteFinancialRpcClient,
+  type PGliteFinancialPort,
   type PGliteFinancialRegistry,
   type PGliteFinancialOperation,
 } from "./pglite-financial-registry.ts";
@@ -179,20 +179,20 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
 }
 
 test("pairing prewarm checks the commit version without materializing Spending", async () => {
-  let versionReads = 0;
-  const page = createPGliteFinancialPageClient({
-    registry: {
-      spendingVersion: async () => { versionReads += 1; return 7; },
-      spendingCurrent: async () => { throw new Error("full Spending read is not prewarm"); },
+  const requested: string[] = [];
+  const financial = {
+    request: async (operation: string) => {
+      requested.push(operation);
+      return 7;
     },
-  } as unknown as PGliteFinancialRpcClient);
-  assert.deepEqual(await page.prewarmPairingCandidates({ dataVersion: 7 }), {
+  } as unknown as PGliteFinancialPort;
+  assert.deepEqual(await prewarmPGlitePairingCandidates(financial, { dataVersion: 7 }), {
     status: "ready", dataVersion: 7, reused: false,
   });
-  assert.deepEqual(await page.prewarmPairingCandidates({ dataVersion: 6 }), {
+  assert.deepEqual(await prewarmPGlitePairingCandidates(financial, { dataVersion: 6 }), {
     status: "stale", dataVersion: 7, requestedVersion: 6,
   });
-  assert.equal(versionReads, 2);
+  assert.deepEqual(requested, ["financial.spending.version", "financial.spending.version"]);
 });
 
 test("one worker exposes named financial reads/writes and complete live snapshots", async () => {
@@ -202,39 +202,38 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     workerData: { dataDir },
   });
   const client = createPGliteViewWorkerClient(worker);
-  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
   const snapshots: unknown[] = [];
   let stop: (() => Promise<void>) | undefined;
   try {
-    const initial = await page.load("overview");
+    const initial = await client.financial.request("financial.overview.current", [[]]);
     assert.equal(initial.availability, "empty");
-    assert.equal(await client.financial.registry.spendingVersion(), 0);
+    assert.equal(await client.financial.request("financial.spending.version", []), 0);
     assert.ok(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"));
-    assert.deepEqual(await client.financial.registry.currentLoanRelations(), []);
-    assert.deepEqual(await client.financial.registry.currentLoanSettlementGroups(), []);
-    assert.deepEqual(await client.financial.registry.currentInvestmentRelations(), []);
+    assert.deepEqual(await client.financial.request("financial.loanRelations.current", []), []);
+    assert.deepEqual(await client.financial.request("financial.loanSettlementGroups.current", []), []);
+    assert.deepEqual(await client.financial.request("financial.investmentRelations.current", []), []);
     stop = await client.subscribe("financial.overview.current", {}, (rows) => {
       snapshots.push(rows[0]);
     });
     await waitFor(() => snapshots.length >= 1);
 
-    await client.financial.registry.upsertExchangeRates([{
+    await client.financial.request("financial.exchangeRates.upsert", [[{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.5,
       source: "financial-rpc-check",
       fetchedAt: "2026-09-22T00:00:00.000Z",
-    }]);
+    }]]);
     await waitFor(() => snapshots.length >= 2);
     assert.equal((snapshots.at(-1) as { availability: string }).availability, "empty");
     const afterInsert = snapshots.length;
-    await client.financial.registry.upsertExchangeRates([{
+    await client.financial.request("financial.exchangeRates.upsert", [[{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.6,
       source: "financial-rpc-check-update",
       fetchedAt: "2026-09-22T01:00:00.000Z",
-    }]);
+    }]]);
     await waitFor(() => snapshots.length > afterInsert);
     await new Promise((resolve) => setTimeout(resolve, 250));
     const afterRateUpdate = snapshots.length;
@@ -262,7 +261,7 @@ test("one worker exposes named financial reads/writes and complete live snapshot
 
     const beforeFailure = snapshots.length;
     await assert.rejects(
-      client.financial.request("financial.source.commit", [{}]),
+      client.financial.request("financial.source.commit", [{}] as never),
       (error: unknown) => error instanceof PGliteFinancialError
         && error.code === "invalid-request",
     );
@@ -270,20 +269,20 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     assert.equal(snapshots.length, beforeFailure, "a rolled-back/failed command must not publish a new page snapshot");
 
     await assert.rejects(
-      client.financial.request("SELECT 1" as PGliteFinancialOperation, []),
+      client.financial.request("SELECT 1" as PGliteFinancialOperation, [] as never),
       /Invalid PGlite financial request/u,
       "renderer cannot submit arbitrary SQL as a financial operation",
     );
     await stop();
     stop = undefined;
     const beforeUnsubscribe = snapshots.length;
-    await client.financial.registry.upsertExchangeRates([{
+    await client.financial.request("financial.exchangeRates.upsert", [[{
       rateDate: "2026-09-23",
       currency: "USD",
       twdPerUnit: 31.6,
       source: "financial-rpc-check",
       fetchedAt: "2026-09-23T00:00:00.000Z",
-    }]);
+    }]]);
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(snapshots.length, beforeUnsubscribe, "unsubscribe must stop result publication");
   } finally {
@@ -299,27 +298,27 @@ test("PGlite overview exposes observed daily balances to exchange-rate requireme
   const operational = createPgliteOperationalProvider(store);
   const registry = createPGliteFinancialRegistry(store, operational.exchangeRates);
   try {
-    await registry.sourceCommit(sourceCommitRequest("overview-history-source", "123456"));
-    await registry.balanceCapture(balanceCaptureRequest(
+    await registry["financial.source.commit"]([sourceCommitRequest("overview-history-source", "123456")]);
+    await registry["financial.balance.capture"]([balanceCaptureRequest(
       "overview-history-twd-1",
       "2026-09-22T04:00:00.000Z",
       "1000",
       "TWD",
-    ));
-    await registry.balanceCapture(balanceCaptureRequest(
+    )]);
+    await registry["financial.balance.capture"]([balanceCaptureRequest(
       "overview-history-usd",
       "2026-09-22T06:00:00.000Z",
       "425",
       "USD",
-    ));
-    await registry.balanceCapture(balanceCaptureRequest(
+    )]);
+    await registry["financial.balance.capture"]([balanceCaptureRequest(
       "overview-history-twd-2",
       "2026-09-24T04:00:00.000Z",
       "1300",
       "TWD",
-    ));
+    )]);
 
-    const overview = await registry.overviewCurrent();
+    const overview = await registry["financial.overview.current"]([]);
     assert.equal(overview.historyAvailability, "available");
     assert.deepEqual(overview.dailyHistory.map((row) => row.date), ["2026-09-22", "2026-09-24"]);
     assert.deepEqual(exchangeRateRequestFromOverview(overview), {
@@ -339,7 +338,6 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
   });
   const worker = start();
   const client = createPGliteViewWorkerClient(worker);
-  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
   const snapshots: Record<string, unknown[]> = { overview: [], assets: [], spending: [] };
   const stops: Array<() => Promise<void>> = [];
   try {
@@ -349,25 +347,25 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
       }));
     }
     await waitFor(() => Object.values(snapshots).every((rows) => rows.length >= 1));
-    const committed = await client.financial.registry.sourceCommit(sourceCommitRequest("rpc-capture"));
+    const committed = await client.financial.request("financial.source.commit", [sourceCommitRequest("rpc-capture")]);
     assert.equal(committed.transactions[0]?.amount.coefficient, "100");
-    const unresolved = await client.financial.registry.resolveLoanRelations({
+    const unresolved = await client.financial.request("financial.loanRelations.resolve", [{
       sourceConnectionKey: token("a"),
       requiredCoverage: { complete: false },
       observedAt: "2026-09-22T00:00:00.000Z",
-    });
+    }]);
     assert.equal(unresolved.outcome, "no-admission");
-    const repeated = await client.financial.registry.resolveLoanRelations({
+    const repeated = await client.financial.request("financial.loanRelations.resolve", [{
       sourceConnectionKey: token("a"),
       requiredCoverage: { complete: false },
       observedAt: "2026-09-22T00:00:00.000Z",
-    });
+    }]);
     assert.equal(repeated.outcome, "unchanged");
     assert.equal(repeated.resolutionId, unresolved.resolutionId);
-    const funding = await client.financial.registry.resolveInvestmentRelations({
+    const funding = await client.financial.request("financial.investmentRelations.resolve", [{
       sourceConnectionKey: token("a"),
       observedAt: "2026-09-22T00:00:00.000Z",
-    });
+    }]);
     assert.equal(funding.outcome, "unchanged");
     assert.equal(funding.resolved, 0);
     await waitFor(() => Object.values(snapshots).every((rows) => rows.length >= 2));
@@ -399,28 +397,28 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     assert.ok(spending.purchaseReport.summary, "the compact Spending page must include grouped totals and counts");
     assert.equal(spending.purchaseReport.summary.recordCount, 0, "an ineligible source fact must not become a purchase row");
     assert.deepEqual(spending.purchaseReport.summary.monthTotals, [], "the compact summary must omit months without eligible purchase rows");
-    const committedPage = await page.loadSpendingRecordPage({
+    const committedPage = await client.financial.request("financial.spending.recordPage", [{
       knowledgeAt: spending.purchaseReport.knowledgeAt,
       month: "2026-01",
       day: "2026-01-01",
-    });
+    }]);
     assert.equal(committedPage.knowledgeAt, spending.purchaseReport.knowledgeAt);
     const staleRequest = { knowledgeAt: spending.purchaseReport.knowledgeAt - 1, month: "2026-01" };
     const staleResult = { stale: true, knowledgeAt: spending.purchaseReport.knowledgeAt };
-    assert.deepEqual(await page.loadSpendingRecordPage(staleRequest), staleResult);
-    assert.deepEqual(await page.loadSpendingCandidatePage(staleRequest), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.recordPage", [staleRequest]), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.candidatePage", [staleRequest]), staleResult);
     const knowledgeAt = spending.purchaseReport.knowledgeAt;
-    assert.deepEqual(await page.loadSpendingPendingOverview({ knowledgeAt: knowledgeAt - 1 }), staleResult);
-    assert.deepEqual(await page.loadSpendingMergeLog({ knowledgeAt: knowledgeAt - 1 }), staleResult);
-    assert.deepEqual(await page.loadSpendingMonthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-01" }), staleResult);
-    assert.deepEqual(await page.loadSpendingMerchantStats({ knowledgeAt: knowledgeAt - 1, purchaseId: "transaction:x" }), staleResult);
-    assert.deepEqual(await page.loadSpendingPendingOverview({ knowledgeAt }), {
+    assert.deepEqual(await client.financial.request("financial.spending.pendingOverview", [{ knowledgeAt: knowledgeAt - 1 }]), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.mergeLog", [{ knowledgeAt: knowledgeAt - 1 }]), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.monthInsight", [{ knowledgeAt: knowledgeAt - 1, month: "2026-01" }]), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.merchantStats", [{ knowledgeAt: knowledgeAt - 1, purchaseId: "transaction:x" }]), staleResult);
+    assert.deepEqual(await client.financial.request("financial.spending.pendingOverview", [{ knowledgeAt }]), {
       schemaVersion: 1, knowledgeAt, pendingCount: 0, strongCount: 0, affectedByCurrency: [], strongPairs: [],
     });
-    assert.deepEqual(await page.loadSpendingMergeLog({ knowledgeAt }), { schemaVersion: 1, knowledgeAt, entries: [], nextCursor: null });
-    assert.deepEqual(await page.loadSpendingMonthInsight({ knowledgeAt, month: "2026-01" }), { schemaVersion: 1, knowledgeAt, month: "2026-01", largestByCurrency: [] });
+    assert.deepEqual(await client.financial.request("financial.spending.mergeLog", [{ knowledgeAt }]), { schemaVersion: 1, knowledgeAt, entries: [], nextCursor: null });
+    assert.deepEqual(await client.financial.request("financial.spending.monthInsight", [{ knowledgeAt, month: "2026-01" }]), { schemaVersion: 1, knowledgeAt, month: "2026-01", largestByCurrency: [] });
     const unknownPair = { candidateId: "sha256:unknown", invoiceIdentityId: "00000000-0000-4000-8000-000000000001", transactionIdentityId: "00000000-0000-4000-8000-000000000002" };
-    const conflict = await page.confirmSpendingStrongCandidates({ shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] });
+    const conflict = await client.financial.request("financial.spending.confirmStrongCandidates", [{ shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] }]);
     assert.deepEqual(conflict, { status: "conflict", knowledgeAt, conflicts: [unknownPair], strongPairs: [] }, "the worker command rejects a pair that is not pending");
 
     assert.ok(!("stale" in committedPage));
@@ -452,18 +450,17 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     const reopenedWorker = start();
     const reopened = createPGliteViewWorkerClient(reopenedWorker);
     try {
-      const persistedOverview = await reopened.financial.registry.overviewCurrent();
-      const persistedSpending = await reopened.financial.registry.spendingCurrent();
-      const reopenedPage = createPGliteFinancialPageClient(reopened.financial, reopened.subscribe);
+      const persistedOverview = await reopened.financial.request("financial.overview.current", []);
+      const persistedSpending = await reopened.financial.request("financial.spending.current", []);
       assert.equal(persistedOverview.accounts.length, 1, "canonical account must survive worker close/reopen");
       assert.deepEqual(persistedSpending.canonical.transactions, [], "reopened Spending remains a compact summary");
       assert.ok(persistedSpending.purchaseReport.summary, "reopened Spending retains its compact summary");
       assert.equal(persistedSpending.purchaseReport.summary.recordCount, 0);
-      const persistedPage = await reopenedPage.loadSpendingRecordPage({
+      const persistedPage = await reopened.financial.request("financial.spending.recordPage", [{
         knowledgeAt: persistedSpending.purchaseReport.knowledgeAt,
         month: "2026-01",
         day: "2026-01-01",
-      });
+      }]);
       assert.ok(!("stale" in persistedPage));
       assert.deepEqual(persistedPage.records, [], "the empty eligible purchase page must survive worker close/reopen");
       assert.ok(
@@ -487,41 +484,40 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
     workerData: { dataDir },
   });
   const client = createPGliteViewWorkerClient(worker);
-  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
   try {
-    const result = await client.financial.registry.mixedCommit({
+    const result = await client.financial.request("financial.mixed.commit", [{
       steps: [
         { kind: "source", request: sourceCommitRequest("raw-rpc").capture },
         { kind: "financial", request: sourceCommitRequest("derived-rpc") },
       ],
-    });
+    }]);
     assert.equal(result.admissions.length, 1);
     assert.equal(result.financial.length, 1);
-    const spending = await client.financial.registry.spendingCurrent();
+    const spending = await client.financial.request("financial.spending.current", []);
     assert.deepEqual(spending.canonical.transactions, [], "the live read returns a compact summary, not full transaction rows");
     assert.equal(spending.purchaseReport.summary?.recordCount, 0, "the unclassified source fact is outside the purchase row set");
-    const committedPage = await page.loadSpendingRecordPage({
+    const committedPage = await client.financial.request("financial.spending.recordPage", [{
       knowledgeAt: spending.purchaseReport.knowledgeAt,
       month: "2026-01",
       day: "2026-01-01",
-    });
+    }]);
     assert.ok(!("stale" in committedPage));
     assert.deepEqual(committedPage.records, [], "the mixed command's unclassified fact is not a purchase row");
     const invalid = sourceCommitRequest("invalid-rpc");
-    await assert.rejects(client.financial.registry.mixedCommit({
+    await assert.rejects(client.financial.request("financial.mixed.commit", [{
       steps: [
         { kind: "source", request: sourceCommitRequest("rollback-rpc").capture },
         { kind: "financial", request: { ...invalid, account: { ...invalid.account, accountType: "invalid" as "depository" } } },
       ],
-    }), /PGlite financial operation failed/u);
-    const reopened = await client.financial.registry.spendingCurrent();
+    }]), /PGlite financial operation failed/u);
+    const reopened = await client.financial.request("financial.spending.current", []);
     assert.deepEqual(reopened.canonical.transactions, [], "a failed mixed command keeps the compact response shape");
     assert.equal(reopened.purchaseReport.summary?.recordCount, 0, "a failed mixed command must not add a purchase row");
-    const afterRollbackPage = await page.loadSpendingRecordPage({
+    const afterRollbackPage = await client.financial.request("financial.spending.recordPage", [{
       knowledgeAt: reopened.purchaseReport.knowledgeAt,
       month: "2026-01",
       day: "2026-01-01",
-    });
+    }]);
     assert.ok(!("stale" in afterRollbackPage));
     assert.deepEqual(afterRollbackPage.records, [], "rollback preserves the empty eligible purchase page");
   } finally {
@@ -562,7 +558,7 @@ test("financial live views recover after a transient read failure and stop durin
   let blocked: Promise<typeof page> | null = null;
   let readCount = 0;
   const registry = {
-    overviewCurrent: async () => {
+    "financial.overview.current": async () => {
       readCount += 1;
       if (failNext) {
         failNext = false;
@@ -618,7 +614,7 @@ test("failed live subscription releases started dependencies and permits retry",
     },
   } as unknown as import("@electric-sql/pglite/live").PGliteWithLive;
   const registry = {
-    overviewCurrent: async () => {
+    "financial.overview.current": async () => {
       if (failRead) throw new Error("initial read failed");
       return { availability: "empty" };
     },
@@ -649,7 +645,6 @@ test("a purchase category change publishes a new Spending version that reads the
     workerData: { dataDir },
   });
   const client = createPGliteViewWorkerClient(worker);
-  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
   const snapshots: Array<{ purchaseReport: { knowledgeAt: number; summary?: { monthTotals: readonly { month: string }[] } } }> = [];
   let stop: (() => Promise<void>) | null = null;
   try {
@@ -657,7 +652,7 @@ test("a purchase category change publishes a new Spending version that reads the
       snapshots.push(rows[0] as (typeof snapshots)[number]);
     });
     await waitFor(() => snapshots.length >= 1);
-    await client.financial.registry.einvoiceCommit({
+    await client.financial.request("financial.einvoice.commit", [{
       captureId: "category-change-invoice",
       sourceConnectionKey: "sha256:category-change-connection",
       identityEpoch: "sha256:category-change-epoch",
@@ -674,19 +669,19 @@ test("a purchase category change publishes a new Spending version that reads the
       },
       pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { fixture: "category-change" } }],
       invoices: [fixtureInvoice({ stableKey: "AB33333333:2026-09-03", sellerName: "全聯實業股份有限公司", items: [{ sequence: 1, name: "鮮奶", amount: "90" }] })],
-    } as never);
+    } as never]);
     await waitFor(() => (snapshots.at(-1)?.purchaseReport.summary?.monthTotals.length ?? 0) > 0);
     const before = snapshots.at(-1)!.purchaseReport;
     const month = before.summary!.monthTotals[0]!.month;
     const recordsAt = async (knowledgeAt: number) => {
-      const read = await page.loadSpendingRecordPage({ knowledgeAt, month, limit: 50 });
+      const read = await client.financial.request("financial.spending.recordPage", [{ knowledgeAt, month, limit: 50 }]);
       assert.ok(!("stale" in read), "the record page must read the published version");
       return read.records;
     };
     const records = await recordsAt(before.knowledgeAt);
     const purchase = records.find((record) => record.basis === "invoice");
     assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
-    const result = await page.setSpendingPurchaseCategory({ purchaseId: purchase.purchaseId, knowledgeAt: before.knowledgeAt, categoryCode: "dining" });
+    const result = await client.financial.request("financial.spending.setPurchaseCategory", [{ purchaseId: purchase.purchaseId, knowledgeAt: before.knowledgeAt, categoryCode: "dining" }]);
     assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
     await waitFor(() => (snapshots.at(-1)?.purchaseReport.knowledgeAt ?? 0) >= result.knowledgeAt);
     const after = (await recordsAt(result.knowledgeAt)).find((record) => record.purchaseId === purchase.purchaseId);

@@ -26,10 +26,6 @@ test("spending browser fixture exposes the renderer data and block contracts", a
   assert.equal(typeof api.data.getVersion, "function");
   assert.equal(typeof api.data.acknowledgeVersion, "function");
   assert.equal(typeof api.data.onInvalidated, "function");
-  assert.equal(typeof api.overview.loadBlock, "function");
-  assert.equal(typeof api.assets.loadBlock, "function");
-  assert.equal(typeof api.liabilities.loadBlock, "function");
-  assert.equal(typeof api.spending.loadBlock, "function");
   assert.equal(typeof api.spending.prewarmPairingCandidates, "function");
   assert.equal(await api.dataViews.enabled(), true);
   assert.equal(typeof api.dataViews.subscribe, "function");

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
+import {
+  createPGliteFinancialLocalPort,
+  createPGliteFinancialRegistry,
+} from "../../../electron/pglite-financial-registry.ts";
 import { createTestPGlite } from "../../ledger/pglite/baseline-test-template.ts";
 import { createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
@@ -209,7 +212,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
   });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
@@ -257,7 +260,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
               signInDetails: async () => host.signInDetails(),
               saveSession: (session) => host.saveSession(session),
             },
-            admittedFundAccounts: (connection) => childRpc.financial.listTdccFundAccounts(connection),
+            admittedFundAccounts: (connection) => childRpc.financial.request("financial.tdccFundAccounts.list", [connection]),
           },
           events: { append: async (event) => { events.push(event); runOptions.onEvent?.(event); } },
           now: () => NOW,

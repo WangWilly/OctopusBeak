@@ -172,8 +172,8 @@ async function withLedger(run: (input: {
     await applyPglitePreviewFinancialDataSchema(store);
     const operational = createPgliteOperationalProvider(store);
     const canonical = createPGliteFinancialRegistry(store, operational.exchangeRates);
-    await canonical.sourceCommit(depositCommit());
-    await canonical.balanceCapture(canonicalBalanceOf100Point1Twd());
+    await canonical["financial.source.commit"]([depositCommit()]);
+    await canonical["financial.balance.capture"]([canonicalBalanceOf100Point1Twd()]);
     const preview = createPGlitePreviewFinancialData(store);
     await run({
       store,
@@ -202,7 +202,7 @@ test("visible preview balances count in overview and assets totals with exact de
   await withLedger(async ({ registry, writePreview }) => {
     await writePreview(twdSavings);
     const shown = registry(() => VISIBLE);
-    const overview = await shown.overviewCurrent();
+    const overview = await shown["financial.overview.current"]([]);
     assert.deepEqual(net(overview).map((amount) => [amount.currency, amount.exact]), [
       ["TWD", { coefficient: "133460", scale: 2 }],
     ], "100.1 canonical plus 1234.50 preview, exactly");
@@ -217,7 +217,7 @@ test("visible preview balances count in overview and assets totals with exact de
     ]);
     assert.deepEqual(overview.dailyHistory.at(-1)!.assets.map((amount) => amount.exact), [{ coefficient: "13346", scale: 1 }]);
 
-    const assets = await shown.assetsCurrent();
+    const assets = await shown["financial.assets.current"]([]);
     assert.ok(assets.accounts.some((account) => account.id === preview.id));
     assert.deepEqual(assets.dailyHistoryByAccount[preview.id]!.map((row) => row.date), ["2026-10-03", "2026-10-05"]);
     assert.deepEqual(assets.transactionsByAccount[preview.id], undefined, "preview rows never become canonical transactions");
@@ -236,12 +236,12 @@ test("hidden preview data adds no account, history row, total, or flag", async (
   await withLedger(async ({ registry, writePreview }) => {
     await writePreview(twdSavings);
     const hidden = registry(() => HIDDEN);
-    const overview = await hidden.overviewCurrent();
+    const overview = await hidden["financial.overview.current"]([]);
     assert.deepEqual(net(overview).map((amount) => amount.exact), [{ coefficient: "1001", scale: 1 }]);
     assert.equal(overview.accounts.some((account) => account.preview), false);
     assert.deepEqual(overview.dailyHistory.map((row) => row.date), ["2026-10-01"]);
     assert.equal(overview.dailyHistory.some((row) => row.includesPreview), false);
-    const assets = await hidden.assetsCurrent();
+    const assets = await hidden["financial.assets.current"]([]);
     assert.equal(assets.accounts.some((account) => account.preview), false);
     assert.equal(Object.keys(assets.dailyHistoryByAccount).some((id) => id.startsWith("preview:")), false);
     const model = readOverview(overview, { today: TODAY });
@@ -255,13 +255,13 @@ test("the Preview features setting decides visibility at each read", async () =>
     await writePreview(twdSavings);
     let settings: Record<string, string> = { PREVIEW_FEATURES_ENABLED: "true" };
     const live = registry(() => currentPreviewVisibility(settings));
-    assert.equal((await live.overviewCurrent()).accounts.some((account) => account.preview), true);
+    assert.equal((await live["financial.overview.current"]([])).accounts.some((account) => account.preview), true);
     settings = { PREVIEW_FEATURES_ENABLED: "false" };
-    const off = await live.overviewCurrent();
+    const off = await live["financial.overview.current"]([]);
     assert.equal(off.accounts.some((account) => account.preview), false);
     assert.equal(off.dailyHistory.some((row) => row.includesPreview), false);
     assert.equal(readOverview(off, { today: TODAY }).netWorth.includesPreview, false);
-    assert.equal((await live.assetsCurrent()).accounts.some((account) => account.preview), false);
+    assert.equal((await live["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
   });
 });
 
@@ -269,7 +269,7 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
   await withLedger(async ({ registry, writePreview, addUsdRate }) => {
     await writePreview(usdSavings);
     const shown = registry(() => VISIBLE);
-    const rateless = readOverview(await shown.overviewCurrent(), { today: TODAY });
+    const rateless = readOverview(await shown["financial.overview.current"]([]), { today: TODAY });
     assert.equal(rateless.netWorth.value, 100.1, "verified net worth stays when preview data has no rate");
     assert.deepEqual(rateless.netWorth.unconvertedPreviewCurrencies, ["USD"]);
     assert.equal(rateless.netWorth.includesPreview, false);
@@ -277,11 +277,11 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);
     assert.equal(rateless.assetAllocation.includesPreview, false);
     assert.equal(rateless.series.some((point) => point.includesPreview), false);
-    const ratelessAssets = readAssetsSummary(await shown.assetsCurrent(), { today: TODAY });
+    const ratelessAssets = readAssetsSummary(await shown["financial.assets.current"]([]), { today: TODAY });
     assert.ok(ratelessAssets.state === "ready" && !ratelessAssets.includesPreview);
 
     await addUsdRate();
-    const rated = readOverview(await shown.overviewCurrent(), { today: TODAY });
+    const rated = readOverview(await shown["financial.overview.current"]([]), { today: TODAY });
     assert.equal(rated.netWorth.value, 100.1 + 320);
     assert.equal(rated.netWorth.includesPreview, true);
     assert.equal(rated.assetAllocation.includesPreview, true);
@@ -316,14 +316,14 @@ test("preview credit accounts list on Liabilities only, and an unknown used cred
       },
     });
     const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "credit_card" }] }));
-    const liabilities = await shown.liabilitiesCurrent();
+    const liabilities = await shown["financial.liabilities.current"]([]);
     const rows = liabilities.accounts.filter((account) => account.preview);
     assert.deepEqual(rows.map((account) => [account.label, account.valueAvailability]), [
       ["Known card", "available"],
       ["Unknown card", "unavailable"],
     ]);
     assert.equal(liabilities.dailyHistory.at(-1)!.liabilities[0]!.value, 300);
-    assert.equal((await shown.assetsCurrent()).accounts.some((account) => account.preview), false);
+    assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
   });
 });
 
@@ -331,10 +331,10 @@ test("preview transactions stay out of Spending reads", async () => {
   await withLedger(async ({ registry, writePreview }) => {
     const shown = registry(() => VISIBLE);
     const readSpending = async () => {
-      const knowledgeAt = await shown.spendingVersion();
+      const knowledgeAt = await shown["financial.spending.version"]([]);
       return {
-        summary: await shown.spendingCurrent(),
-        records: await shown.spendingCurrent({ __spendingRead: "record-page", request: { knowledgeAt, month: "2026-10" } } as never),
+        summary: await shown["financial.spending.current"]([]),
+        records: await shown["financial.spending.recordPage"]([{ knowledgeAt, month: "2026-10" }]),
       };
     };
     const before = await readSpending();
@@ -364,13 +364,13 @@ async function canonicalSnapshot(store: PGliteStore): Promise<Record<string, str
 test("preview writes and reads leave every canonical table unchanged", async () => {
   await withLedger(async ({ store, registry, writePreview }) => {
     const shown = registry(() => VISIBLE);
-    await shown.overviewCurrent();
-    await shown.assetsCurrent();
+    await shown["financial.overview.current"]([]);
+    await shown["financial.assets.current"]([]);
     const before = await canonicalSnapshot(store);
     await writePreview(twdSavings, usdSavings);
-    await shown.overviewCurrent();
-    await shown.assetsCurrent();
-    await shown.liabilitiesCurrent();
+    await shown["financial.overview.current"]([]);
+    await shown["financial.assets.current"]([]);
+    await shown["financial.liabilities.current"]([]);
     assert.deepEqual(await canonicalSnapshot(store), before);
   });
 });
@@ -398,7 +398,7 @@ test("live overview republishes on a preview collection and on a visibility chan
       await writePreview(twdSavings);
       await until(() => published.at(-1)!.accounts.some((account) => account.preview));
       visibility = HIDDEN;
-      await shown.previewVisibilityChanged();
+      await shown["financial.preview.visibilityChanged"]([]);
       await until(() => !published.at(-1)!.accounts.some((account) => account.preview));
     } finally {
       await stop();

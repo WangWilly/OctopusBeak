@@ -11,6 +11,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   createPGliteFinancialRpcClient,
+  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   type PGliteFinancialRegistry,
 } from "../../../../electron/pglite-financial-registry.ts";
@@ -119,16 +120,16 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     const ports = memoryPair();
     const server = createPGliteFinancialRpcServer(
       ports[1],
-      this.registry,
+      createPGliteFinancialLocalPort(this.registry),
       ({ taskRunId }) => assertCollectionScopeCurrent(taskRunId),
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
       workflowId: start.workflowId,
       taskRunId: start.taskRunId,
     });
-    await client.registry.depositCommit({ capture: {} } as never);
+    await client.request("financial.deposit.commit", [{ capture: {} } as never]);
     await this.editSettings();
-    const second = await client.registry.depositCommit({ capture: {} } as never).then(() => true, () => false);
+    const second = await client.request("financial.deposit.commit", [{ capture: {} } as never]).then(() => true, () => false);
     client.close();
     await server.close();
     this.emit("message", second
@@ -167,7 +168,7 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
   };
   let commits = 0;
   const registry = {
-    depositCommit: async () => {
+    "financial.deposit.commit": async () => {
       commits += 1;
       return { captureId: `capture-${commits}`, commitSequence: commits };
     },
