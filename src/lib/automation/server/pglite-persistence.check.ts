@@ -162,7 +162,6 @@ try {
   const cancelling = await persistCancellationTransitionForRunWithPersistence(
     provider,
     run.taskRunId,
-    "cancelling",
   );
   assert.equal(cancelling?.status, "cancelling");
   const cancelled = await finalizeTaskRunTransition(

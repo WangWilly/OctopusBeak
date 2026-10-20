@@ -48,7 +48,6 @@ function progressText(
 ) {
   if (percent !== null) return `${percent}%`;
   if (runtime.status === "running") return `Running attempt ${runtime.attempt}/${runtime.maxAttempts}`;
-  if (runtime.status === "retrying") return `Retrying attempt ${runtime.attempt}/${runtime.maxAttempts}`;
   if (runtime.status === "waiting_for_human") return "Waiting for human";
   if (runtime.status === "completed") return "Completed";
   if (runtime.status === "partial") return "Partial";

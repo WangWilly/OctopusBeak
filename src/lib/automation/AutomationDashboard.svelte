@@ -1311,7 +1311,7 @@ import type {
     if (task.status === "waiting_for_human") {
       return task.isActive;
     }
-    return task.isActive && ["preparing", "running", "retrying", "cancelling"].includes(task.status);
+    return task.isActive && ["preparing", "running", "cancelling"].includes(task.status);
   }
 
   function isOnboardingProgressTask(task: AutomationTaskRow) {
@@ -1360,7 +1360,7 @@ import type {
       const stageWithProgress = task.progressPercent === null
         ? stage
         : dictionary.automation.progressStagePercent(stage, task.progressPercent);
-      const retrying = task.status === "retrying" || task.workflowProgress?.params?.retrying === true;
+      const retrying = task.workflowProgress?.params?.retrying === true;
       return retrying
         ? dictionary.automation.progressRetryingStage(
           stageWithProgress,
@@ -1377,7 +1377,6 @@ import type {
     }
     if (task.progressPercent !== null) return `${task.progressPercent}%`;
     if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
-    if (task.status === "retrying") return dictionary.automation.progressRetrying(task.attempt || 1, task.maxAttempts);
     if (task.status === "completed") return dictionary.automation.progressCompleted;
     if (task.status === "partial") return dictionary.automation.progressPartial;
     if (task.status === "failed") return dictionary.automation.progressFailed;
