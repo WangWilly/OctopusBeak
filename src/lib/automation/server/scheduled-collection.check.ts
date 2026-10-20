@@ -26,6 +26,7 @@ const expectedUserActions: Record<TypedWorkflowErrorCode, UserAction | null> = {
   "verification-failed": null,
   "device-registration-required": "register-device",
   "provider-protocol-outdated": "update-app",
+  "external-prerequisite-unavailable": null,
   "source-collection-failed": null,
   "canonical-commit-failed": null,
   "commit-outcome-unknown": null,

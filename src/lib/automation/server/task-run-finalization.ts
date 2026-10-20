@@ -4,6 +4,8 @@ import type {
   TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
 import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
+import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
+import { taskById } from "./tasks.ts";
 import {
   isTerminalTaskRunStatus,
   type AutomationPersistencePort,
@@ -94,6 +96,19 @@ export async function finalizeAutomationTaskRun(
     }
     if (outcome.status === "completed") {
       await persistence.resolveTaskPrerequisiteNotices(current.taskId, taskRunId, finishedAt);
+    } else if (outcome.errorCode === "external-prerequisite-unavailable") {
+      // The workflow names the missing component by the run event its metadata declares.
+      const recorded = new Set(current.events.map((event) => event.code));
+      for (const prerequisite of taskById(current.taskId)?.externalPrerequisites ?? []) {
+        if (!isValidExternalPrerequisiteMetadata(prerequisite)) continue;
+        if (!recorded.has(prerequisite.unavailableEventCode)) continue;
+        await persistence.upsertTaskPrerequisiteNotice({
+          taskId: current.taskId,
+          prerequisiteId: prerequisite.id,
+          taskRunId,
+          detectedAt: finishedAt,
+        });
+      }
     }
   }
   const finalized = await persistence.taskRunById(taskRunId);
