@@ -30,6 +30,7 @@ export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
   downloadUrl:
     "https://global.yuanta.com.tw/NexusPVM/webimage/servisign/YuanTaCGCryptServiSignSetup.pkg",
   allowedHosts: ["global.yuanta.com.tw"],
+  unavailableEventCode: "servisign-unavailable",
   instructions: {
     en: "Download and install the official YuanTa security component. After installation, return here and press Run again.",
     "zh-TW":

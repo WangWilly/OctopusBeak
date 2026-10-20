@@ -1,28 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  externalPrerequisiteSignal,
+  ExternalPrerequisiteUnavailableError,
   isValidExternalPrerequisiteMetadata,
-  parseExternalPrerequisiteSignals,
 } from "./external-prerequisite.ts";
 
-test("external prerequisite signals are explicit, stable, and deduplicated", () => {
-  const signal = externalPrerequisiteSignal("yuanta-servisign");
-  assert.equal(signal, "automation-prerequisite: yuanta-servisign");
-  assert.deepEqual(
-    parseExternalPrerequisiteSignals(
-      `progress\n${signal}\n${signal}\nautomation-prerequisite: another-component\n`,
-    ),
-    ["yuanta-servisign", "another-component"],
-  );
-  assert.deepEqual(
-    parseExternalPrerequisiteSignals("The task failed: automation-prerequisite: fake"),
-    [],
-  );
-});
-
-test("external prerequisite signal IDs reject unsafe values", () => {
-  assert.throws(() => externalPrerequisiteSignal("https://example.com"), /Invalid/);
+test("external prerequisite IDs reject unsafe values", () => {
+  assert.equal(new ExternalPrerequisiteUnavailableError("yuanta-servisign").prerequisiteId, "yuanta-servisign");
+  assert.throws(() => new ExternalPrerequisiteUnavailableError("https://example.com"), /Invalid/u);
 });
 
 test("installer metadata must be HTTPS and match its provider host allowlist", () => {
@@ -32,6 +17,7 @@ test("installer metadata must be HTTPS and match its provider host allowlist", (
     component: "Component",
     downloadUrl: "https://provider.example.test/installer.pkg",
     allowedHosts: ["provider.example.test"],
+    unavailableEventCode: "component-unavailable",
     instructions: { en: "Install it.", "zh-TW": "請安裝。" },
   } as const;
   assert.equal(isValidExternalPrerequisiteMetadata(metadata), true);
