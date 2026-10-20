@@ -48,6 +48,8 @@ export type AutomationExternalPrerequisite = {
   component: string;
   downloadUrl: string;
   allowedHosts: readonly string[];
+  /** The run event code the workflow records when this component is missing. */
+  unavailableEventCode: string;
   instructions: {
     en: string;
     "zh-TW": string;

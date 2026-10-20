@@ -1,23 +1,18 @@
 import type { AutomationExternalPrerequisite } from "./types.ts";
 
-const EXTERNAL_PREREQUISITE_SIGNAL = "automation-prerequisite:";
-const EXTERNAL_PREREQUISITE_ID_PATTERN = "[a-z0-9][a-z0-9._-]*";
-const EXTERNAL_PREREQUISITE_ID = new RegExp(`^${EXTERNAL_PREREQUISITE_ID_PATTERN}$`);
+const EXTERNAL_PREREQUISITE_ID = /^[a-z0-9][a-z0-9._-]*$/u;
 
-export function externalPrerequisiteSignal(prerequisiteId: string): string {
-  if (!EXTERNAL_PREREQUISITE_ID.test(prerequisiteId)) {
-    throw new Error(`Invalid external prerequisite ID: ${prerequisiteId}`);
+/** A workflow stopped because a component the person installs is unavailable (ADR 0002). */
+export class ExternalPrerequisiteUnavailableError extends Error {
+  readonly prerequisiteId: string;
+  constructor(prerequisiteId: string) {
+    if (!EXTERNAL_PREREQUISITE_ID.test(prerequisiteId)) {
+      throw new Error(`Invalid external prerequisite ID: ${prerequisiteId}`);
+    }
+    super(`External prerequisite is unavailable: ${prerequisiteId}`);
+    this.name = "ExternalPrerequisiteUnavailableError";
+    this.prerequisiteId = prerequisiteId;
   }
-  return `${EXTERNAL_PREREQUISITE_SIGNAL} ${prerequisiteId}`;
-}
-
-export function parseExternalPrerequisiteSignals(output: string): string[] {
-  const ids = new Set<string>();
-  for (const line of output.split(/\r?\n/)) {
-    const match = line.match(new RegExp(`^${EXTERNAL_PREREQUISITE_SIGNAL}\\s*(${EXTERNAL_PREREQUISITE_ID_PATTERN})\\s*$`, "i"));
-    if (match) ids.add(match[1].toLowerCase());
-  }
-  return [...ids];
 }
 
 export function isValidExternalPrerequisiteMetadata(

@@ -10,6 +10,7 @@ import {
   explicitAction,
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
+  assertYuantaTradeServiSignAvailable,
   isCompleteHoldingCapture,
   isCompleteTradeCapture,
   buildYuantaTradeFundingEvidence,
@@ -37,6 +38,7 @@ import { readFile } from "node:fs/promises";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 
 const workflowSource = await readFile(
   new URL("./yuanta-trade-statements.ts", import.meta.url),
@@ -145,6 +147,23 @@ test("detects the YuanTa missing security component state", async () => {
   } as unknown as Page;
 
   assert.equal(await isYuantaSecurityComponentMissing(page), true);
+});
+
+test("a missing YuanTa security component stops the run with its external prerequisite", async () => {
+  const page = {
+    getByText: () => ({ first: () => ({ isVisible: async () => true }) }),
+  } as unknown as Page;
+  const events: string[] = [];
+  const context = {
+    event: async (stage: string, code: string) => { events.push(`${stage}:${code}`); },
+  } as unknown as WorkflowContext;
+
+  await assert.rejects(
+    assertYuantaTradeServiSignAvailable(page, context),
+    (error: unknown) => error instanceof ExternalPrerequisiteUnavailableError
+      && error.prerequisiteId === "yuanta-servisign",
+  );
+  assert.deepEqual(events, ["authentication:servisign-unavailable"]);
 });
 
 test("removes focus from the YuanTa password field after filling credentials", async () => {

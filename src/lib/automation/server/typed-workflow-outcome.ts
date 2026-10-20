@@ -1,6 +1,7 @@
 import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
+import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import {
@@ -213,6 +214,7 @@ export function classifyTypedWorkflowFailure(
   if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
   if (error instanceof SourceUnavailableError) return "source-unavailable";
   if (error instanceof ProviderProtocolOutdatedError) return "provider-protocol-outdated";
+  if (error instanceof ExternalPrerequisiteUnavailableError) return "external-prerequisite-unavailable";
 
   const commitEvents = events.filter((event) => event.stage === "commit");
   const commitFailed = commitEvents.some((event) => /(?:canonical-)?commit-failed$/u.test(event.code));

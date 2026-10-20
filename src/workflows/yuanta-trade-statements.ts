@@ -29,6 +29,7 @@ import {
   type YuantaForeignSettlementMarketCode,
 } from "../ledger/canonical/investment-funding-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -1561,9 +1562,7 @@ export async function assertYuantaTradeServiSignAvailable(
 ): Promise<void> {
   if (!(await isYuantaSecurityComponentMissing(page))) return;
   await context.event("authentication", "servisign-unavailable");
-  throw new Error(
-    "The YuanTa security component is unavailable. Install or update it, then run the task again.",
-  );
+  throw new ExternalPrerequisiteUnavailableError("yuanta-servisign");
 }
 
 async function completeTypedCertificateIfPresent(
