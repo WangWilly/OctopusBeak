@@ -212,7 +212,6 @@ export async function seedDesktopCdpFixture(
     await automation.transitionTaskRunToTerminal(fubonRun.taskRunId, {
       status: "partial",
       finishedAt: `${day}T08:02:00.000Z`,
-      exitCode: 0,
       appWorkflowOutcome: {
         errorCode: null,
         summary: {
@@ -249,7 +248,6 @@ export async function seedDesktopCdpFixture(
     await automation.transitionTaskRunToTerminal(esunRun.taskRunId, {
       status: "failed",
       finishedAt: `${day}T09:02:00.000Z`,
-      exitCode: 1,
       appWorkflowOutcome: {
         errorCode: "workflow-failed",
         summary: { status: "failed", counts: {} },
@@ -273,7 +271,6 @@ export async function seedDesktopCdpFixture(
       await automation.transitionTaskRunToTerminal(cathayRun.taskRunId, {
         status: "failed",
         finishedAt: `${day}T10:02:00.000Z`,
-        exitCode: 1,
         appWorkflowOutcome: {
           errorCode: "device-registration-required",
           summary: { status: "failed", counts: {} },
@@ -293,7 +290,6 @@ export async function seedDesktopCdpFixture(
       await automation.transitionTaskRunToTerminal(tdccRun.taskRunId, {
         status,
         finishedAt: `${day}T11:01:00.000Z`,
-        exitCode: status === "failed" ? 1 : 0,
         appWorkflowOutcome,
       });
     }

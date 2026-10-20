@@ -31,10 +31,9 @@ test("desktop automation model and history are read from the provider", async ()
       maxAttempts: 1,
       startedAt: "2026-09-22T00:00:00.000Z",
     });
-    await provider.automation.updateTaskRun(created.taskRunId, {
+    await provider.automation.transitionTaskRunToTerminal(created.taskRunId, {
       status: "completed",
       finishedAt: "2026-09-22T00:01:00.000Z",
-      exitCode: 0,
       appWorkflowOutcome: {
         errorCode: null,
         summary: { status: "completed", counts: { count: 2 } },

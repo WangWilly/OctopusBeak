@@ -13,6 +13,7 @@ import {
 import {
   ACTIVE_TASK_RUN_STATUSES,
   isTerminalTaskRunStatus,
+  taskRunPredecessors,
   type AutomationPersistencePort,
   type AutomationTaskHistoryRow,
   type AutomationTaskPrerequisiteNoticeRecord,
@@ -251,10 +252,10 @@ const CREATE_TASK_RUN_FIELDS = new Set([
   "scheduledAtUtc",
 ]);
 const TASK_RUN_UPDATE_FIELDS = new Set([
-  "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
-  "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
-  "browserRuntime",
+  "attempt", "maxAttempts", "progress", "terminationMode", "humanAssistanceContract",
+  "appWorkflowOutcome", "browserRuntime",
 ]);
+const TASK_RUN_TRANSITION_FIELDS = new Set([...TASK_RUN_UPDATE_FIELDS, "status", "finishedAt"]);
 
 function assertKnownFields(value: unknown, fields: ReadonlySet<string>, label: string): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -562,14 +563,14 @@ export class PGliteOperationalStore
 
   private async transitionTaskRunConditionally(
     taskRunId: string,
-    update: AutomationTaskRunUpdate & { status: AutomationTaskStatus },
-    allowedStatuses: readonly AutomationTaskStatus[],
+    update: AutomationTaskRunActiveUpdate | AutomationTaskRunTerminalUpdate,
   ): Promise<{ status: AutomationTaskStatus; applied: boolean }> {
-    assertKnownFields(update, TASK_RUN_UPDATE_FIELDS, "task run update");
+    assertKnownFields(update, TASK_RUN_TRANSITION_FIELDS, "task run update");
+    const allowedStatuses = taskRunPredecessors(update.status);
     return this.#database.transaction(async (transaction) => {
       const current = await taskRunByIdFrom(transaction, taskRunId);
       if (!current) throw new Error(`Missing automation task run: ${taskRunId}`);
-      if (!allowedStatuses.includes(current.status)) {
+      if (!(allowedStatuses as readonly AutomationTaskStatus[]).includes(current.status)) {
         return { status: current.status, applied: false };
       }
       const next = sanitizeRun({ ...current, ...update });
@@ -605,14 +606,14 @@ export class PGliteOperationalStore
     taskRunId: string,
     update: AutomationTaskRunActiveUpdate,
   ): Promise<{ status: AutomationTaskStatus; applied: boolean }> {
-    return this.transitionTaskRunConditionally(taskRunId, update, ACTIVE_TASK_RUN_STATUSES);
+    return this.transitionTaskRunConditionally(taskRunId, update);
   }
 
   transitionTaskRunToTerminal(
     taskRunId: string,
     update: AutomationTaskRunTerminalUpdate,
   ): Promise<{ status: AutomationTaskStatus; applied: boolean }> {
-    return this.transitionTaskRunConditionally(taskRunId, update, ACTIVE_TASK_RUN_STATUSES);
+    return this.transitionTaskRunConditionally(taskRunId, update);
   }
 
   async updateHumanAssistanceContract(

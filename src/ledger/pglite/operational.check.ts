@@ -189,7 +189,6 @@ try {
   const completed = await operational.transitionTaskRunToTerminal(created.taskRunId, {
     status: "completed",
     finishedAt: "2026-09-22T00:01:00.000Z",
-    exitCode: 0,
   });
   assert.deepEqual(completed, { status: "completed", applied: true });
   const staleFinalizer = await operational.transitionTaskRunToTerminal(created.taskRunId, {
