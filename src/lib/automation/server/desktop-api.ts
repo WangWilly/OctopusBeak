@@ -137,6 +137,12 @@ function coreCredentialGroup(
   };
 }
 
+/** What the App process knows about runs right now, beside the persisted history. */
+export type AutomationLiveRuns = Readonly<{
+  snapshot: AutomationRuntimeSnapshot;
+  activeTaskIds: readonly string[];
+}>;
+
 /**
  * Build the automation data that does not require access to encrypted
  * credentials.  Workers use this function directly; the credential state is
@@ -147,12 +153,6 @@ function coreCredentialGroup(
  * persistence reads are awaited before the page model is assembled, keeping
  * runtime state and persisted history from being published out of order.
  */
-/** What the App process knows about runs right now, beside the persisted history. */
-export type AutomationLiveRuns = Readonly<{
-  snapshot: AutomationRuntimeSnapshot;
-  activeTaskIds: readonly string[];
-}>;
-
 export async function loadAutomationCoreSnapshot(
   provider: AutomationPersistenceProvider,
   live: AutomationLiveRuns,
