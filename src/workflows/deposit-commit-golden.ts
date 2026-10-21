@@ -15,7 +15,7 @@ import type {
 export type DepositCommitRecorder = Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   event: WorkflowContext["event"];
-  recorded(): unknown;
+  recorded(): Record<string, unknown>;
 }>;
 
 export function recordDepositCommit(): DepositCommitRecorder {
@@ -57,7 +57,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu;
 const LONG_DIGITS = /\b\d{10,19}\b/gu;
 const groupDigits = (digits: string): string => digits.match(/\d{1,4}/gu)!.join("_");
 
-function normalize(value: unknown): unknown {
+function normalize(value: unknown): Record<string, unknown> {
   const ids = new Map<string, string>();
   const json = JSON.stringify(value, (_key, field: unknown) => {
     if (typeof field === "function") return "[function]";

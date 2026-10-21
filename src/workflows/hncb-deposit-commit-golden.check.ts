@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
 import { mock, test } from "node:test";
 import type { Frame, Page } from "playwright";
 import { runHncbStatements, type HncbStatementsRunDependencies } from "./hncb-statements.ts";
@@ -15,8 +14,6 @@ const NOW = Date.parse("2026-09-01T04:00:00.000Z");
 const accountA = ["9000", "0000", "0011"].join("");
 const accountB = ["9000", "0000", "0022"].join("");
 const input = { startDate: "2026/08/01", endDate: "2026/08/31", accountFilters: [] };
-
-await mkdir(new URL("./deposit-commit-goldens/", import.meta.url), { recursive: true });
 
 type Statement = Awaited<ReturnType<NonNullable<HncbStatementsRunDependencies["downloadStatement"]>>>;
 type CurrentRows = Awaited<ReturnType<NonNullable<HncbStatementsRunDependencies["readCurrentDepositBalances"]>>>;
@@ -106,7 +103,7 @@ async function record(
       readCurrentDepositBalances: async () => current.detail ?? [],
       readCurrentDepositOverviewBalances: async () => current.overview ?? [],
     });
-    const recorded = { output, ...(recorder.recorded() as Record<string, unknown>) };
+    const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);
     return recorded;
   } finally {
@@ -138,7 +135,7 @@ test("HNCB golden: two accounts with inflow and outflow rows and matched current
     { detail: [currentRow(accountA, "13800.00", "13800.00"), currentRow(accountB, "3500.00", "3400.00")] },
   );
   assert.equal((recorded.output as { status: string }).status, "financial-admitted");
-  assert.deepEqual(commandKinds(recorded).length, 4);
+  assert.equal(commandKinds(recorded).length, 4);
 });
 
 test("HNCB golden: an account with no data commits beside an admitted account", async () => {

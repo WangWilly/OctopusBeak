@@ -139,7 +139,7 @@ async function runGolden(name: string, stubs: DepositStubs): Promise<void> {
     signOut: async () => undefined,
     collectDeposit,
   });
-  await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...(recorder.recorded() as object) }));
+  await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...recorder.recorded() }));
 }
 
 const CAPTURE_CLOCK = /(?<=yuanta-(?:financial|source)-)\d{13}(?=-)/gu;
