@@ -53,7 +53,6 @@ export type PGliteWorkflowRunItem = Readonly<{
   command: PGliteWorkflowCommand;
   /** Build named follow-through commands after the financial commit succeeds. */
   relationCommands?: (value: unknown) => readonly PGliteWorkflowCommand[];
-  onRelationResult?: (value: unknown) => void;
 }>;
 
 export type PGliteWorkflowRunRequest = Readonly<{
@@ -224,8 +223,7 @@ export async function executePGliteWorkflowRun(
       const warnings: PGliteWorkflowDiagnostic[] = [];
       try {
         for (const command of item.relationCommands?.(value) ?? []) {
-          const relationResult = await request.client.commit(command);
-          item.onRelationResult?.(relationResult);
+          await request.client.commit(command);
         }
       } catch {
         const warning = diagnostic(item, "relation-resolution", "relation-failed");
