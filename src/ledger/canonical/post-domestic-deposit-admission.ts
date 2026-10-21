@@ -1,5 +1,4 @@
 import { canonicalDigest } from "./canonical-digest.ts";
-import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
@@ -279,105 +278,7 @@ export function isAdmittedPostDomesticDepositCaptureEvidence(
   );
 }
 
-function dateShape(value: string): "slash-date" | "other" {
-  return validCalendarDate(normalizedCell(value)) ? "slash-date" : "other";
-}
 
-function timeShape(value: string): "local-second" | "other" {
-  return validLocalSecond(normalizedCell(value)) ? "local-second" : "other";
-}
-
-export function createPostDomesticDepositSourceEvidence(
-  capture: PostDomesticDepositValidatedEvidence,
-  captureId: string,
-): CanonicalSourceEvidence {
-  if (!isAdmittedPostDomesticDepositCaptureEvidence(capture))
-    throw new Error("Post source evidence requires structural admission.");
-  if (!captureId.trim())
-    throw new Error("Post source evidence capture ID is required.");
-  const account = normalizedCell(capture.account.value);
-  const subjectDigest = canonicalDigest("post-source-subject-v1", account);
-  const rows = capture.response.rows;
-  return {
-    captureId: captureId.trim(),
-    integrationNamespace: "post",
-    sourceConnectionKey: canonicalDigest(
-      "post-source-connection-v1",
-      "personal-session-visible-account-scope",
-    ),
-    identityEpoch: canonicalDigest(
-      "post-source-identity-epoch-v1",
-      POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-    ),
-    stream: "domestic-deposit",
-    recordKind: POST_DOMESTIC_DEPOSIT_SOURCE_RECORD_KIND,
-    routeKey: POST_DOMESTIC_DEPOSIT_SOURCE_ROUTE,
-    contractVersion: POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-    subjectDigest,
-    observedAt: capture.observedAt,
-    accountNumber: capture.account.accountNumber ?? null,
-    scope: {
-      startDate: capture.queryRange.startDate.replaceAll("/", ""),
-      endDate: capture.queryRange.endDate.replaceAll("/", ""),
-      kind: "bounded-range",
-      completeness: "single-page",
-      ruleVersion: POST_DOMESTIC_DEPOSIT_SOURCE_RULE_VERSION,
-    },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: rows.length,
-        terminal: true,
-        metadata: {
-          accountSubjectDigest: subjectDigest,
-          itemShape: capture.response.itemShape,
-          columnCount: 8,
-          completeness: "unproven",
-          absenceAuthority: null,
-        },
-      },
-    ],
-    records: rows.map((row) => {
-      const cells = row.values.map(normalizedCell);
-      const rowDigest = canonicalDigest(
-        "post-source-row-v1",
-        String(row.rowOrdinal),
-        ...cells,
-      );
-      return {
-        occurrenceKey: canonicalDigest(
-          "post-source-occurrence-v1",
-          subjectDigest,
-          String(row.rowOrdinal),
-          rowDigest,
-        ),
-        collisionKey: canonicalDigest(
-          "post-source-collision-v1",
-          subjectDigest,
-          rowDigest,
-        ),
-        providerKey: rowDigest,
-        contentHash: canonicalDigest("post-source-content-v1", rowDigest),
-        compact: {
-          evidenceVersion: capture.evidenceVersion,
-          rowOrdinal: row.rowOrdinal,
-          rowDigest,
-          columnCount: cells.length,
-          accountingDateShape: dateShape(cells[0]!),
-          transactionDateShape: dateShape(cells[1]!),
-          transactionTimeShape: timeShape(cells[2]!),
-          amountDirection: row.directionFlag,
-          balanceShape: validAmount(cells[6]!) ? "decimal" : "other",
-          providerGuaranteed: false,
-          canonicalAdmission: "blocked",
-          sourceStage: "source-only",
-          semanticStatus: "observed-structural-only",
-        },
-      };
-    }),
-  };
-}
 
 export type PostDomesticDepositFinancialAdmissionInput = {
   capture: PostDomesticDepositValidatedEvidence;
@@ -680,16 +581,6 @@ export function admitPostDomesticDepositFinancialCapture(
   return { status: "admitted", capture, diagnostics: [] };
 }
 
-export function isPostSourceOnlyFinancialDiagnostic(
-  diagnostic: string,
-): boolean {
-  return new Set([
-    "human-attestation-missing",
-    "human-attestation-mismatch",
-    "human-attestation-revoked",
-    "row-direction-unknown",
-  ]).has(diagnostic);
-}
 
 export function isPostSha256Token(value: string): boolean {
   return SHA256_TOKEN.test(value);

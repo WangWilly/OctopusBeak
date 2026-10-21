@@ -20,13 +20,10 @@ import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-de
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
-  createPostDomesticDepositSourceEvidence,
-  isPostSourceOnlyFinancialDiagnostic,
   POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   derivePostDomesticDepositAccountNumberEvidence,
   type PostDomesticDepositCaptureEvidence,
@@ -1038,7 +1035,6 @@ async function runPostStatements(
     capture,
     captureId: postCaptureId(observedAt, index),
   }));
-  const sourceOnlyEntries: typeof captureEntries = [];
   const financialInputs: Array<{
     captureId: string;
     financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
@@ -1052,17 +1048,12 @@ async function runPostStatements(
       humanAttestation: manifest,
     };
     const admission = admitPostDomesticDepositFinancialCapture(input);
-    if (admission.status !== "admitted" || !admission.capture) {
-      const blocked = admission.diagnostics;
-      if (!blocked.every(isPostSourceOnlyFinancialDiagnostic))
-        throw new Error(
-          `Post domestic deposit financial admission failed: ${[
-            ...new Set(blocked),
-          ].join(", ")}`,
-        );
-      sourceOnlyEntries.push({ capture, captureId });
-      continue;
-    }
+    if (admission.status !== "admitted" || !admission.capture)
+      throw new Error(
+        `Post domestic deposit financial admission failed: ${[
+          ...new Set(admission.diagnostics),
+        ].join(", ")}`,
+      );
     financialInputs.push({
       captureId: input.captureId,
       financialCapture: admission.capture,
@@ -1106,13 +1097,6 @@ async function runPostStatements(
 
   overrides.signal?.throwIfAborted();
   const items = [
-      ...sourceOnlyEntries.map((entry) => ({
-        provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-          request: createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
-        },
-      } as const)),
       ...financialInputs.map((entry) => ({
         provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
         command: {
