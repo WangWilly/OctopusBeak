@@ -456,9 +456,10 @@ async function assertOccurrenceContinuity(
         WHERE source_subject_id = ? AND record_kind = ? AND occurrence_key = ?`,
       [sourceSubjectId, recordKind, record.occurrenceKey],
     );
-    const comparablePayloadJson = canonicalOccurrencePayload(canonicalSourceRecordJson(record));
+    const revisableFields = canonicalSourceRouteRegistration(evidence.routeKey)?.revisablePayloadFields ?? [];
+    const comparablePayloadJson = comparableOccurrencePayload(canonicalSourceRecordJson(record), revisableFields);
     for (const row of prior.rows) {
-      const priorJson = canonicalOccurrencePayload(row.payload_json);
+      const priorJson = comparableOccurrencePayload(row.payload_json, revisableFields);
       const providerMatches = row.provider_key === record.providerKey;
       const allowedFubonLoanEvolution = recordKind === "fubon-loan-transaction" && equivalentFubonLoanPayload(row.payload_json, comparablePayloadJson);
       if (
@@ -512,6 +513,83 @@ function canonicalOccurrencePayload(payloadJson: string): string {
       "Source occurrence payload must be an object.",
     );
   return canonicalJson(parsed as Record<string, unknown>);
+}
+
+function comparableOccurrencePayload(payloadJson: string, revisableFields: readonly string[]): string {
+  const canonical = canonicalOccurrencePayload(payloadJson);
+  if (revisableFields.length === 0) return canonical;
+  const parsed = JSON.parse(canonical) as Record<string, unknown>;
+  for (const field of revisableFields) delete parsed[field];
+  return canonicalJson(parsed);
+}
+
+/**
+ * A recapture that differs from an admitted occurrence only in the route's
+ * revisable payload fields derives a new occurrence key, while its collision
+ * key still names the admitted occurrence. Continue that occurrence so the
+ * fact revises its transaction instead of conflicting (ADR 0055).
+ */
+async function continueRevisedOccurrences(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+): Promise<PGliteCanonicalFinancialCommitRequest> {
+  const revisableFields = canonicalSourceRouteRegistration(request.capture.routeKey)?.revisablePayloadFields ?? [];
+  if (revisableFields.length === 0) return request;
+  const sourceSubjectId = await findPGliteSourceSubjectId(transaction, request.capture);
+  if (!sourceSubjectId) return request;
+  const continued = new Map<string, string>();
+  const records: PGliteCanonicalSourceEvidence["records"][number][] = [];
+  for (const record of request.capture.records) {
+    records.push(record);
+    if (record.collisionKey === undefined || record.occurrenceGroup === undefined) continue;
+    const prior = await txQuery<{
+      occurrence_key: string | null;
+      payload_json: string;
+      occurrence_group_fingerprint: string | null;
+    }>(
+      transaction,
+      `SELECT occurrence_key, payload_json, occurrence_group_fingerprint FROM source_records
+        WHERE source_subject_id = ? AND record_kind = ? AND collision_key = ?`,
+      [sourceSubjectId, request.capture.recordKind, record.collisionKey],
+    );
+    const priorKeys = new Set(prior.rows.map((row) => row.occurrence_key));
+    const [priorKey] = priorKeys;
+    const priorFingerprint = prior.rows[0]?.occurrence_group_fingerprint;
+    if (priorKeys.size !== 1 || !priorKey || priorKey === record.occurrenceKey || !priorFingerprint) continue;
+    const payload = comparableOccurrencePayload(canonicalSourceRecordJson(record), revisableFields);
+    if (!prior.rows.every((row) => comparableOccurrencePayload(row.payload_json, revisableFields) === payload)) continue;
+    continued.set(record.occurrenceKey, priorKey);
+    records[records.length - 1] = {
+      ...record,
+      occurrenceKey: priorKey,
+      occurrenceGroup: { ...record.occurrenceGroup, fingerprint: priorFingerprint },
+    };
+  }
+  if (continued.size === 0) return request;
+  // A fact keyed apart from its occurrence would open a second transaction.
+  if (request.transactions.some((fact) => continued.has(fact.sourceOccurrenceKey) && fact.sourceSequence !== fact.sourceOccurrenceKey))
+    throw new PGliteCanonicalSourceAdmissionError(
+      "occurrence-conflict",
+      "A continued occurrence requires its fact to be keyed by that occurrence.",
+    );
+  const continuedKey = (key: string) => continued.get(key) ?? key;
+  return {
+    ...request,
+    capture: { ...request.capture, records },
+    transactions: request.transactions.map((fact) => ({
+      ...fact,
+      sourceOccurrenceKey: continuedKey(fact.sourceOccurrenceKey),
+      sourceSequence: continuedKey(fact.sourceSequence),
+    })),
+    ...(request.occurrenceSupersessions
+      ? {
+          occurrenceSupersessions: request.occurrenceSupersessions.map((entry) => ({
+            ...entry,
+            successorOccurrenceKey: continuedKey(entry.successorOccurrenceKey),
+          })),
+        }
+      : {}),
+  };
 }
 
 function canonicalJson(value: Record<string, unknown>): string {
@@ -1935,10 +2013,11 @@ async function commitFinancialRequestInTransaction(
 
 async function admitFinancialRequestInTransaction(
   transaction: PGliteTransaction,
-  request: PGliteCanonicalFinancialCommitRequest,
+  submitted: PGliteCanonicalFinancialCommitRequest,
   options: PGliteCanonicalCommitOptions,
 ): Promise<PGliteAdmittedFinancialCapture> {
   throwIfCancelled(options.signal);
+  const request = await continueRevisedOccurrences(transaction, submitted);
   const attestation = getPGliteHumanAttestationRoute(request.capture.routeKey);
   if (attestation) {
     // The immutable local manifest seeds the first event. A revoked durable
