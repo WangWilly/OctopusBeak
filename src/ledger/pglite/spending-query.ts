@@ -2227,15 +2227,14 @@ function sqlUuid(expression: string): string {
  * refunds. purchaseRowsParams supplies its leading parameters. A transaction
  * of an account Direct source precedence covers is not eligible, and neither
  * is a refund of one.
- */
-/**
- * Every current purchase, or with "month" only the purchases dated in the
- * month passed as the first parameter. Scoping drops unlinked payments of
- * other months before any join; every linked transaction, active invoice, and
- * refund still decides link validity and refund exclusion as for the whole
- * set. The branches avoid joins whose row estimates a month filter would
- * skew: a link carries its invoice and payment columns, and the exclusions are
- * hashed NOT IN lookups (every id involved is NOT NULL).
+ *
+ * With "month", only the purchases dated in the month passed as the first
+ * parameter. Scoping drops unlinked payments of other months before any join;
+ * every linked transaction, active invoice, and refund still decides link
+ * validity and refund exclusion as for the whole set. The branches avoid joins
+ * whose row estimates a month filter would skew: a link carries its invoice
+ * and payment columns, and the exclusions are hashed NOT IN lookups (every id
+ * involved is NOT NULL).
  */
 function purchaseRowsCte(scope: "all" | "month"): string {
   const inMonth = (expression: string) => scope === "month"
