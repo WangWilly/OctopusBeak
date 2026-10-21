@@ -438,6 +438,7 @@ async function runSingle(runNumber) {
       window.__pairingConfirmRenderedAt = null;
       window.__pairingConfirmArmed = false;
       window.__pairingConfirmBusyAt = null;
+      window.__pairingDialogShownAt = null;
       window.__pairingSelectedTransactionId = null;
       window.__pairingPrewarmVersions = [];
       window.__pairingPrewarmStarted = false;
@@ -461,6 +462,8 @@ async function runSingle(runNumber) {
       }
       const observePairingDom = () => {
         const observer = new MutationObserver(() => {
+          if (window.__pairingDialogShownAt === null && document.querySelector("[data-pairing-dialog]"))
+            window.__pairingDialogShownAt = performance.now();
           if (
             window.__pairingCandidateRenderedAt === null &&
             document.querySelector("[data-pairing-dialog] input[name='spending-payment']")
@@ -481,6 +484,14 @@ async function runSingle(runNumber) {
       };
       if (document.documentElement) observePairingDom();
       else addEventListener("DOMContentLoaded", observePairingDom, { once: true });
+      // Time interactions from the click the page receives, not from before
+      // Playwright's own round trip and actionability checks.
+      window.__pairingStartOnClick = (selector, kinds) => {
+        document.addEventListener("click", (event) => {
+          if (event.target instanceof Element && event.target.closest(selector))
+            for (const kind of kinds) window.__pairingStartInteraction(kind);
+        }, { capture: true, once: true });
+      };
       window.__pairingStartInteraction = (kind) => {
         const start = performance.now();
         window.__pairingPerformance.windows[kind] = { start, end: null };
@@ -534,13 +545,13 @@ async function runSingle(runNumber) {
     const prewarmDoneAtClick = await page.evaluate(() => window.__pairingPrewarmDone === true);
     const prewarmStartedAt = performance.now();
 
-    await page.evaluate(() => {
-      window.__pairingStartInteraction("open-feedback");
-      window.__pairingStartInteraction("open-complete");
-    });
+    await page.evaluate(() => window.__pairingStartOnClick("[data-open-pairing]", ["open-feedback", "open-complete"]));
     await page.locator("[data-open-pairing]").first().click();
     await page.locator('[data-pairing-dialog][data-pairing-feedback="open-dialog"]').waitFor({ state: "visible", timeout: 30_000 });
-    const openFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open-feedback"));
+    const openFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(
+      "open-feedback",
+      window.__pairingDialogShownAt,
+    ));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
     const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(
       "open-complete",
@@ -551,10 +562,7 @@ async function runSingle(runNumber) {
       window.__pairingSelectedTransactionId = transactionId;
     }, selectedCandidate.transactionId);
 
-    await page.evaluate(() => {
-      window.__pairingStartInteraction("confirm-feedback");
-      window.__pairingStartInteraction("confirm-complete");
-    });
+    await page.evaluate(() => window.__pairingStartOnClick("[data-confirm-direct-pair]", ["confirm-feedback", "confirm-complete"]));
     await page.locator("[data-confirm-direct-pair]").click();
     // A fast confirm can show and drop its busy state between Playwright polls.
     await page.waitForFunction(() => window.__pairingConfirmBusyAt !== null, undefined, { timeout: 30_000 });
