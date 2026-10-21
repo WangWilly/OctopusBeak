@@ -422,8 +422,7 @@ test("SinoPac accepts the authorized duplicate-login confirm and keeps observing
   const emitter = new EventEmitter();
   const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
   let accepted = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, "duplicate-login-fixture", {
-    dialogOwner: "workflow",
+  await assert.rejects(runSinopacLoginAttempt(page, {
     submit: async () => {
       emitter.emit("dialog", {
         type: () => "confirm",
@@ -453,8 +452,7 @@ test("SinoPac failed duplicate-login confirmation fails without a CAPTCHA retry"
   const emitter = new EventEmitter();
   const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
   let confirmations = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, "failed-confirm-fixture", {
-    dialogOwner: "workflow",
+  await assert.rejects(runSinopacLoginAttempt(page, {
     submit: async () => { emitter.emit("dialog", {
       type: () => "confirm",
       message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",
