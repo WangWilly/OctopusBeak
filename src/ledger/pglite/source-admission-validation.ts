@@ -36,7 +36,6 @@ export type PGliteCanonicalAdmissionFailureReason =
   | "invalid-origin"
   | "invalid-financial-fact"
   | "cancelled"
-  | "empty-batch"
   | "infrastructure";
 
 /** Stable errors crossing the worker/domain boundary. */
