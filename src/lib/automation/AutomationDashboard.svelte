@@ -1444,7 +1444,7 @@ import type {
     </button>
   </svelte:fragment>
 
-  <div class:sync-sheet-open={syncOpen} class="content automation-content">
+  <div class="content automation-content">
     <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
     {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, renderedPendingActions)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
@@ -1993,6 +1993,7 @@ import type {
 {/if}
 
 {#if syncOpen}
+  <button class="sync-sheet-backdrop" type="button" aria-label={$t.common.close} onclick={() => (syncOpen = false)}></button>
   <aside class="sync-sheet" aria-labelledby="sync-title">
       <div class="modal-head sync-sheet-head">
         <div>
@@ -2587,11 +2588,6 @@ import type {
   .automation-content {
     display: grid;
     gap: 22px;
-    transition: margin-right 0.2s ease;
-  }
-
-  .automation-content.sync-sheet-open {
-    margin-right: 455px;
   }
 
   .topbar-action {
@@ -3655,6 +3651,21 @@ import type {
     border-left: 1px solid var(--border);
     background: var(--surface);
     box-shadow: -7px 0 22px rgb(30 48 66 / 0.05);
+  }
+
+  .sync-sheet-backdrop {
+    position: fixed;
+    z-index: 24;
+    inset: var(--topbar-height, 60px) 0 0 0;
+    border: 0;
+    background: rgb(14 18 28 / 0.18);
+    animation: sync-sheet-backdrop-in 160ms ease-out both;
+  }
+
+  @keyframes sync-sheet-backdrop-in {
+    from {
+      opacity: 0;
+    }
   }
 
   .sync-sheet-head {
@@ -4732,10 +4743,6 @@ import type {
   }
 
   @media (max-width: 1100px) {
-    .automation-content.sync-sheet-open {
-      margin-right: 0;
-    }
-
     .sync-sheet {
       box-shadow: -18px 0 46px rgb(30 48 66 / 0.14);
     }
