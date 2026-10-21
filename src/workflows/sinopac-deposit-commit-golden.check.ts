@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
 import { mock, test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -24,8 +23,6 @@ const NOW = Date.parse("2026-10-01T04:00:00.000Z");
 const twdAccount = ["9100", "0000", "0000", "11"].join("");
 const twdAccountB = ["9100", "0000", "0000", "22"].join("");
 const usdAccount = ["9200", "0000", "0000", "33"].join("");
-
-await mkdir(new URL("./deposit-commit-goldens/", import.meta.url), { recursive: true });
 
 const input: SinopacWorkflowInput = {
   credentials: {
@@ -110,27 +107,30 @@ type Scenario = Readonly<{
   current?: readonly SinopacCurrentDepositBalanceRow[];
 }>;
 
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {
+  return {
+    runId: "sinopac-golden-run",
+    signal: new AbortController().signal,
+    now: () => "2026-10-01T12:00:00.000+08:00",
+    browser: { withPage: async (run) => await run(signedInPage()) },
+    text: strictSourceText,
+    humanAssistance: { request: async () => "entered" },
+    financialCommit: recorder.financialCommit,
+    event: recorder.event,
+  };
+}
+
 async function record(name: string, scenario: Scenario): Promise<Record<string, unknown>> {
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     const recorder = recordDepositCommit();
-    const context: WorkflowContext = {
-      runId: "sinopac-golden-run",
-      signal: new AbortController().signal,
-      now: () => "2026-10-01T12:00:00.000+08:00",
-      browser: { withPage: async (run) => await run(signedInPage()) },
-      text: strictSourceText,
-      humanAssistance: { request: async () => "entered" },
-      financialCommit: recorder.financialCommit,
-      event: recorder.event,
-    };
-    const output = await runSinopacProviderWorkflow(context, input, {
+    const output = await runSinopacProviderWorkflow(workflowContext(recorder), input, {
       readAccounts: async () => scenario.accounts.map(({ response: _response, ...account }) => account),
       queryTransactions: async (account) =>
         scenario.accounts.find((candidate) => candidate.DataValue === account.DataValue)!.response,
       readCurrentDepositBalances: async () => scenario.current ?? [],
     });
-    const recorded = { output, ...(recorder.recorded() as Record<string, unknown>) };
+    const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);
     return recorded;
   } finally {
@@ -209,16 +209,7 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     await assert.rejects(
-      runSinopacProviderWorkflow({
-        runId: "sinopac-golden-run",
-        signal: new AbortController().signal,
-        now: () => "2026-10-01T12:00:00.000+08:00",
-        browser: { withPage: async (run) => await run(signedInPage()) },
-        text: strictSourceText,
-        humanAssistance: { request: async () => "entered" },
-        financialCommit: recorder.financialCommit,
-        event: recorder.event,
-      }, input, {
+      runSinopacProviderWorkflow(workflowContext(recorder), input, {
         readAccounts: async () => [{ DataText: "SYNTHETIC TWD", DataValue: twdAccount, DisplayText: "TWD" }],
         queryTransactions: async () => rows(
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER A"),
@@ -231,5 +222,5 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
   } finally {
     mock.timers.reset();
   }
-  assert.deepEqual((recorder.recorded() as { executions: unknown[] }).executions, []);
+  assert.deepEqual(recorder.recorded().executions, []);
 });
