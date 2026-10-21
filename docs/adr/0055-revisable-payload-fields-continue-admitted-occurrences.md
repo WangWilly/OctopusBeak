@@ -17,11 +17,16 @@ A source route may declare `revisablePayloadFields` in the closed route registry
 On such a route, before a financial capture is persisted, the store looks up each grouped record's collision key. It continues the admitted occurrence when all of the following hold:
 
 - exactly one admitted occurrence key holds that collision key, and it differs from the record's key;
+- the admitted occurrence has a group fingerprint;
 - every admitted payload for that occurrence equals the record's payload once the revisable fields are removed.
 
-Continuing an occurrence means the record and its financial fact take the admitted occurrence key and group fingerprint. The occurrence-group checks then run against the continued identity. The financial fact's changed description creates the next transaction revision, and the prior source assertion is superseded. A recapture whose summary is unchanged adds no revision, and the summary may later change back.
+Continuing an occurrence means the record, its financial fact, and any supersession that names it as successor take the admitted occurrence key and group fingerprint. A continued fact must be keyed by its occurrence (`sourceSequence` equals `sourceOccurrenceKey`); otherwise the commit fails as `occurrence-conflict`, because a separate sequence would open a second transaction. The occurrence-group checks then run against the continued identity. The financial fact's changed description creates the next transaction revision, and the prior source assertion is superseded. A recapture whose summary is unchanged adds no revision, and the summary may later change back.
 
 Occurrence continuity compares admitted and recaptured payloads without the route's revisable fields. Every other field, including the note and check number, must still match exactly.
+
+This refines ADR 0008's "contract-established stable claim identity" for these routes. The group collision key, which the contract derives from the row fence without revisable fields, becomes the stable claim identity. A continued source record stores the admitted occurrence key beside a payload that would now derive a different key, so the stored key is no longer a function of the stored content.
+
+Only routes whose financial facts come from `deposit.ts` are supported. A route that also sends balance observations or matches commit results by its own occurrence keys, such as credit card and investment, must not declare revisable fields until those callers translate continued keys. Today both cases fail closed.
 
 ## Considered options
 
@@ -35,4 +40,5 @@ Occurrence continuity compares admitted and recaptured payloads without the rout
 - A Yuanta row whose summary is rewritten keeps one transaction. Its revision history records each summary.
 - A continued occurrence keeps the key derived from the first summary admitted for it.
 - A rewrite of any undeclared field still fails closed as `occurrence-conflict`.
+- A declared field must never feed the collision key. If it did, its change would make a new collision key and the record would not be continued; if a fence value such as the amount were declared, the guard would rest on the collision key alone.
 - Other routes are unchanged until they declare revisable fields.

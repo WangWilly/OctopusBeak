@@ -571,6 +571,12 @@ async function continueRevisedOccurrences(
     };
   }
   if (continued.size === 0) return request;
+  // A fact keyed apart from its occurrence would open a second transaction.
+  if (request.transactions.some((fact) => continued.has(fact.sourceOccurrenceKey) && fact.sourceSequence !== fact.sourceOccurrenceKey))
+    throw new PGliteCanonicalSourceAdmissionError(
+      "occurrence-conflict",
+      "A continued occurrence requires its fact to be keyed by that occurrence.",
+    );
   const continuedKey = (key: string) => continued.get(key) ?? key;
   return {
     ...request,
@@ -578,9 +584,7 @@ async function continueRevisedOccurrences(
     transactions: request.transactions.map((fact) => ({
       ...fact,
       sourceOccurrenceKey: continuedKey(fact.sourceOccurrenceKey),
-      sourceSequence: fact.sourceSequence === fact.sourceOccurrenceKey
-        ? continuedKey(fact.sourceSequence)
-        : fact.sourceSequence,
+      sourceSequence: continuedKey(fact.sourceSequence),
     })),
     ...(request.occurrenceSupersessions
       ? {
