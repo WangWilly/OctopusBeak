@@ -73,6 +73,24 @@ async function dividendDescriptions(store: PGliteStore): Promise<string[]> {
   return rows.rows.map((row) => row.description.split(" · ")[0]!);
 }
 
+async function currentDividendDescription(store: PGliteStore): Promise<string> {
+  const rows = await store.query<{ description: string }>(
+    `SELECT revision.description
+       FROM current_transactions current
+       JOIN transaction_revisions revision ON revision.revision_id = current.revision_id
+      WHERE revision.amount_coefficient = '7894'`,
+  );
+  assert.equal(rows.rows.length, 1);
+  return rows.rows[0]!.description.split(" · ")[0]!;
+}
+
+async function dividendOccurrenceKeys(store: PGliteStore): Promise<number> {
+  return (await store.query<{ count: number }>(
+    `SELECT COUNT(DISTINCT occurrence_key)::int AS count FROM source_records
+      WHERE record_kind = 'yuanta-domestic-deposit' AND payload_json LIKE '%"7894"%'`,
+  )).rows[0]!.count;
+}
+
 async function transactionCount(store: PGliteStore): Promise<number> {
   return (await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]!.count;
 }
@@ -84,6 +102,8 @@ test("a Yuanta summary rewritten after commit revises the committed transaction"
     await commitPGliteCanonicalDepositCapture(store, yuantaCapture("2026-10-21", [salaryRow, dividendRow("轉帳存入")]));
     assert.equal(await transactionCount(store), 2, "the rewritten summary keeps one transaction");
     assert.deepEqual(await dividendDescriptions(store), ["基金配息", "轉帳存入"]);
+    assert.equal(await currentDividendDescription(store), "轉帳存入", "the current projection shows the rewritten summary");
+    assert.equal(await dividendOccurrenceKeys(store), 1, "every capture of the row keeps the admitted occurrence key");
 
     await commitPGliteCanonicalDepositCapture(store, yuantaCapture("2026-10-22", [salaryRow, dividendRow("轉帳存入")]));
     assert.deepEqual(await dividendDescriptions(store), ["基金配息", "轉帳存入"], "an unchanged recapture adds no revision");
@@ -102,7 +122,7 @@ test("a Yuanta note rewritten after commit still conflicts", async () => {
     await commitPGliteCanonicalDepositCapture(store, yuantaCapture("2026-10-20", [salaryRow, dividendRow("基金配息")]));
     await assert.rejects(
       commitPGliteCanonicalDepositCapture(store, yuantaCapture("2026-10-21", [salaryRow, dividendRow("基金配息", "其他備註")])),
-      /occurrence/u,
+      (error: unknown) => (error as { code?: string }).code === "occurrence-conflict",
     );
     assert.deepEqual(await dividendDescriptions(store), ["基金配息"]);
   } finally {
