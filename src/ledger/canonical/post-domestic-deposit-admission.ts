@@ -630,6 +630,7 @@ export function admitPostDomesticDepositFinancialCapture(
     if (!result.record) continue;
     records.push(result.record);
   }
+  if (records.length === 0) diagnostics.push("terminal-completeness-unproven");
   const uniqueDiagnostics = [...new Set(diagnostics)];
   if (uniqueDiagnostics.length > 0)
     return { status: "blocked", capture: null, diagnostics: uniqueDiagnostics };
