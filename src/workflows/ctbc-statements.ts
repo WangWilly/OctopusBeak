@@ -1062,9 +1062,15 @@ export function buildCtbcCurrentDepositBalanceCapture(
   };
 }
 
+/**
+ * Index a run's admitted deposit identities and return the lookup its current
+ * balance rows use. Every capture in one run shares the first capture's
+ * source connection and identity epoch, so a row needs only its stream and
+ * source account key.
+ */
 export function indexCtbcCurrentDepositFinancialCaptures(
   financialCaptures: readonly ExistingCtbcFinancialCapture[],
-): ReadonlyMap<string, ExistingCtbcFinancialCapture> {
+): (row: Readonly<{ stream: string; sourceAccountKey: string }>) => ExistingCtbcFinancialCapture | undefined {
   const result = new Map<string, ExistingCtbcFinancialCapture>();
   for (const candidate of financialCaptures) {
     const identity = candidate.identity;
@@ -1082,7 +1088,10 @@ export function indexCtbcCurrentDepositFinancialCaptures(
       throw new Error("CTBC current deposit identities are ambiguous across financial captures.");
     if (!prior) result.set(key, candidate);
   }
-  return result;
+  const first = financialCaptures[0]?.identity;
+  return (row) => first && result.get(
+    `${first.sourceConnectionKey}\u0000${first.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+  );
 }
 
 async function readCtbcCurrentDepositBalancesForApp(
@@ -1272,8 +1281,7 @@ export async function runCtbcProviderWorkflow(
         completed: currentRows.length,
         total: currentRows.length,
       });
-      const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
-      const firstIdentity = financialCaptures[0]!.identity;
+      const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
       await context.event("validation", "current-balance-validation-started", {
         completed: 0,
         total: currentRows.length,
@@ -1281,9 +1289,7 @@ export async function runCtbcProviderWorkflow(
       try {
         for (const row of currentRows) {
           context.signal.throwIfAborted();
-          const matching = existing.get(
-            `${firstIdentity.sourceConnectionKey}\u0000${firstIdentity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-          );
+          const matching = admittedCaptureFor(row);
           if (!matching)
             throw new Error("CTBC current deposit snapshot has no admitted account identity.");
           balances.push({

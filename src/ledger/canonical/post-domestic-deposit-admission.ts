@@ -1,10 +1,4 @@
-import { createHash } from "node:crypto";
-import {
-  createAdvertisedDomesticDepositPreflight,
-  type AdvertisedDomesticDepositContract,
-  type AdvertisedDomesticDepositPreflightInput,
-} from "./advertised-domestic-deposit-preflight.ts";
-import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import { canonicalDigest } from "./canonical-digest.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
@@ -21,57 +15,9 @@ import {
   type PostHumanAttestedV1Manifest,
 } from "./post-human-attestation-contract.ts";
 
-export const POST_DOMESTIC_DEPOSIT_CONTRACT = {
-  source: "post",
-  authority: "post/domestic-deposit/preflight-v1",
-  contractVersion: "preflight-v1",
-  readiness: "preflight-only",
-  workflow: "postStatements",
-  expectedRowWidth: 8,
-  accountingDateIndex: 0,
-  transactionDateIndex: 1,
-  transactionTimeIndex: 2,
-  provenance: {
-    evidenceBasis: "provider ITEM fields normalized through DR_FLG",
-    fixtureValues: "synthetic",
-    liveResponseRetained: false,
-  },
-  outflowIndex: 4,
-  inflowIndex: 5,
-  completenessEvidence: "none",
-  explicitNoDataEvidence: { kind: "none" },
-} as const satisfies AdvertisedDomesticDepositContract;
-
-export const POST_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1 = {
-  accountIdentity: "SYNTHETIC-POST-ACCOUNT",
-  scope: { startDate: "2026/01/01", endDate: "2026/06/30" },
-  records: [
-    {
-      values: [
-        "2026/01/02",
-        "2026/01/02",
-        "09:10:11",
-        "SYNTHETIC",
-        "",
-        "100",
-        "100",
-        "",
-      ],
-    },
-  ],
-} satisfies AdvertisedDomesticDepositPreflightInput;
-
-export const preflightPostDomesticDeposit =
-  createAdvertisedDomesticDepositPreflight(POST_DOMESTIC_DEPOSIT_CONTRACT);
 
 export const POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
   "capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_ROUTE =
-  "post/domestic-deposit/capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_RULE_VERSION =
-  "post/domestic-deposit/capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_RECORD_KIND =
-  "post-domestic-deposit-row-v1" as const;
 export const POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS =
   "canonical-human-attested" as const;
 export const POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
@@ -163,16 +109,6 @@ function normalizedCell(value: string): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function postDigest(domain: string, ...values: string[]): `sha256:${string}` {
-  const digest = createHash("sha256");
-  digest.update(domain);
-  for (const value of values) {
-    digest.update("\0");
-    digest.update(value);
-  }
-  return `sha256:${digest.digest("base64url")}`;
 }
 
 function validCalendarDate(value: string): boolean {
@@ -336,106 +272,6 @@ export function isAdmittedPostDomesticDepositCaptureEvidence(
   );
 }
 
-function dateShape(value: string): "slash-date" | "other" {
-  return validCalendarDate(normalizedCell(value)) ? "slash-date" : "other";
-}
-
-function timeShape(value: string): "local-second" | "other" {
-  return validLocalSecond(normalizedCell(value)) ? "local-second" : "other";
-}
-
-export function createPostDomesticDepositSourceEvidence(
-  capture: PostDomesticDepositValidatedEvidence,
-  captureId: string,
-): CanonicalSourceEvidence {
-  if (!isAdmittedPostDomesticDepositCaptureEvidence(capture))
-    throw new Error("Post source evidence requires structural admission.");
-  if (!captureId.trim())
-    throw new Error("Post source evidence capture ID is required.");
-  const account = normalizedCell(capture.account.value);
-  const subjectDigest = postDigest("post-source-subject-v1", account);
-  const rows = capture.response.rows;
-  return {
-    captureId: captureId.trim(),
-    integrationNamespace: "post",
-    sourceConnectionKey: postDigest(
-      "post-source-connection-v1",
-      "personal-session-visible-account-scope",
-    ),
-    identityEpoch: postDigest(
-      "post-source-identity-epoch-v1",
-      POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-    ),
-    stream: "domestic-deposit",
-    recordKind: POST_DOMESTIC_DEPOSIT_SOURCE_RECORD_KIND,
-    routeKey: POST_DOMESTIC_DEPOSIT_SOURCE_ROUTE,
-    contractVersion: POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-    subjectDigest,
-    observedAt: capture.observedAt,
-    accountNumber: capture.account.accountNumber ?? null,
-    scope: {
-      startDate: capture.queryRange.startDate.replaceAll("/", ""),
-      endDate: capture.queryRange.endDate.replaceAll("/", ""),
-      kind: "bounded-range",
-      completeness: "single-page",
-      ruleVersion: POST_DOMESTIC_DEPOSIT_SOURCE_RULE_VERSION,
-    },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: rows.length,
-        terminal: true,
-        metadata: {
-          accountSubjectDigest: subjectDigest,
-          itemShape: capture.response.itemShape,
-          columnCount: 8,
-          completeness: "unproven",
-          absenceAuthority: null,
-        },
-      },
-    ],
-    records: rows.map((row) => {
-      const cells = row.values.map(normalizedCell);
-      const rowDigest = postDigest(
-        "post-source-row-v1",
-        String(row.rowOrdinal),
-        ...cells,
-      );
-      return {
-        occurrenceKey: postDigest(
-          "post-source-occurrence-v1",
-          subjectDigest,
-          String(row.rowOrdinal),
-          rowDigest,
-        ),
-        collisionKey: postDigest(
-          "post-source-collision-v1",
-          subjectDigest,
-          rowDigest,
-        ),
-        providerKey: rowDigest,
-        contentHash: postDigest("post-source-content-v1", rowDigest),
-        compact: {
-          evidenceVersion: capture.evidenceVersion,
-          rowOrdinal: row.rowOrdinal,
-          rowDigest,
-          columnCount: cells.length,
-          accountingDateShape: dateShape(cells[0]!),
-          transactionDateShape: dateShape(cells[1]!),
-          transactionTimeShape: timeShape(cells[2]!),
-          amountDirection: row.directionFlag,
-          balanceShape: validAmount(cells[6]!) ? "decimal" : "other",
-          providerGuaranteed: false,
-          canonicalAdmission: "blocked",
-          sourceStage: "source-only",
-          semanticStatus: "observed-structural-only",
-        },
-      };
-    }),
-  };
-}
-
 export type PostDomesticDepositFinancialAdmissionInput = {
   capture: PostDomesticDepositValidatedEvidence;
   captureId: string;
@@ -519,7 +355,7 @@ function postFinancialRecord(
   const description = cells[3] ?? "";
   const note = cells[7] ?? "";
   const displayDescription = combineDomesticDepositDescription(description, note);
-  const coreKey = postDigest(
+  const coreKey = canonicalDigest(
     "post-observed-composite-fence-v1",
     subjectDigest,
     accountingDate,
@@ -531,7 +367,7 @@ function postFinancialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
-  const occurrenceKey = postDigest(
+  const occurrenceKey = canonicalDigest(
     "post-observed-composite-occurrence-v1",
     coreKey,
     description,
@@ -542,7 +378,7 @@ function postFinancialRecord(
       occurrenceKey,
       collisionKey: coreKey,
       providerKey: coreKey,
-      contentHash: postDigest("post-observed-content-v1", ...cells),
+      contentHash: canonicalDigest("post-observed-content-v1", ...cells),
       sequenceLexeme: String(row.rowOrdinal),
       compactJson: JSON.stringify({
         evidenceVersion: POST_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -553,8 +389,8 @@ function postFinancialRecord(
         direction,
         amount,
         balanceAfter,
-        descriptionDigest: postDigest("post-description-v1", description),
-        noteDigest: postDigest("post-note-v1", note),
+        descriptionDigest: canonicalDigest("post-description-v1", description),
+        noteDigest: canonicalDigest("post-note-v1", note),
         providerGuaranteed: false,
       }),
       amount,
@@ -601,11 +437,11 @@ export function admitPostDomesticDepositFinancialCapture(
     input.capture.response.rows.length === 0
   )
     diagnostics.push("terminal-completeness-unproven");
-  const subjectDigest = postDigest(
+  const subjectDigest = canonicalDigest(
     "post-source-subject-v1",
     normalizedCell(input.capture.account.value),
   );
-  const sourceConnectionKey = postDigest(
+  const sourceConnectionKey = canonicalDigest(
     "post-source-connection-v1",
     "personal-session-visible-account-scope",
   );
@@ -634,12 +470,12 @@ export function admitPostDomesticDepositFinancialCapture(
   const uniqueDiagnostics = [...new Set(diagnostics)];
   if (uniqueDiagnostics.length > 0)
     return { status: "blocked", capture: null, diagnostics: uniqueDiagnostics };
-  const contractFingerprint = postDigest(
+  const contractFingerprint = canonicalDigest(
     "post-contract-v1",
     POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     POST_HUMAN_ATTESTED_V1_MANIFEST.provenance.attestationContractFingerprint,
   );
-  const preflightFingerprint = postDigest(
+  const preflightFingerprint = canonicalDigest(
     "post-preflight-v1",
     subjectDigest,
     rangeStart,
@@ -650,7 +486,7 @@ export function admitPostDomesticDepositFinancialCapture(
       record,
       partitionDate: record.sourceTime.localDate,
     })),
-    scopeKey: postDigest(
+    scopeKey: canonicalDigest(
       "post-domestic-deposit-occurrence-scope-v1",
       subjectDigest,
       POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -721,7 +557,7 @@ export function admitPostDomesticDepositFinancialCapture(
         responseCode: "200",
         terminal: true,
         rowCount: records.length,
-        responseDigest: postDigest(
+        responseDigest: canonicalDigest(
           "post-response-v1",
           ...input.capture.response.rows.flatMap((row) =>
             row.values.map(normalizedCell),
@@ -742,17 +578,6 @@ export function admitPostDomesticDepositFinancialCapture(
     occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { status: "admitted", capture, diagnostics: [] };
-}
-
-export function isPostSourceOnlyFinancialDiagnostic(
-  diagnostic: string,
-): boolean {
-  return new Set([
-    "human-attestation-missing",
-    "human-attestation-mismatch",
-    "human-attestation-revoked",
-    "row-direction-unknown",
-  ]).has(diagnostic);
 }
 
 export function isPostSha256Token(value: string): boolean {

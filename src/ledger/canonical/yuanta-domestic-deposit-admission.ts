@@ -1,5 +1,5 @@
+import { canonicalDigest } from "./canonical-digest.ts";
 // Pure Yuanta domestic-deposit source and financial admission contracts.
-import { createHash } from "node:crypto";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
@@ -136,61 +136,7 @@ export type YuantaDomesticDepositCaptureDiagnostic =
   | "terminal-evidence-missing"
   | "provenance-invalid";
 
-export type YuantaDomesticDepositTelemetryRow = {
-  rowOrdinal: number;
-  rowFingerprint: `sha256:${string}`;
-  cellDigests: `sha256:${string}`[];
-  cellCount: 11;
-  amountShape: "inflow" | "outflow" | "empty" | "invalid" | "conflict";
-  /**
-   * Privacy-safe direction-column diagnostics.  These categories describe
-   * syntax only; they never include the observed amount lexeme.
-   */
-  amountClasses: {
-    outflow: "empty" | "valid-zero" | "valid-nonzero" | "invalid";
-    inflow: "empty" | "valid-zero" | "valid-nonzero" | "invalid";
-  };
-};
-
-export type YuantaDomesticDepositTelemetryManifest = {
-  telemetryVersion: typeof YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION;
-  evidenceVersion: typeof YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
-  source: "yuanta";
-  observedAt: string;
-  account: {
-    valueDigest: `sha256:${string}`;
-    labelDigest: `sha256:${string}`;
-  };
-  queryRange: {
-    dateRange: string;
-    startDate: string;
-    endDate: string;
-  };
-  downloads: {
-    filenameDigest: `sha256:${string}`;
-    byteLength: number;
-    contentDigest: `sha256:${string}`;
-    columnNames: string[];
-    columnCount: 11;
-    rowCount: number;
-    rows: YuantaDomesticDepositTelemetryRow[];
-  }[];
-  /** This boundary records source observation only; it cannot admit finance. */
-  canonicalAdmission: "blocked";
-  sourceStage: "telemetry-only";
-};
-
 const VALIDATED_YUANTA_EVIDENCE = new WeakSet<object>();
-
-function yuantaDigest(
-  domain: string,
-  ...values: readonly string[]
-): `sha256:${string}` {
-  const hash = createHash("sha256");
-  hash.update(domain);
-  for (const value of values) hash.update("\0").update(value);
-  return `sha256:${hash.digest("base64url")}`;
-}
 
 function normalizedCell(value: unknown): string {
   return String(value ?? "")
@@ -262,12 +208,12 @@ function validSourceAmount(value: string): boolean {
   );
 }
 
-type YuantaDomesticDepositTelemetryAmountClass =
+type YuantaSourceAmountClass =
   "empty" | "valid-zero" | "valid-nonzero" | "invalid";
 
 function sourceAmountCellClass(
   value: unknown,
-): YuantaDomesticDepositTelemetryAmountClass {
+): YuantaSourceAmountClass {
   const normalized = normalizedCell(value);
   if (!normalized) return "empty";
   if (!validSourceAmount(normalized)) return "invalid";
@@ -277,7 +223,7 @@ function sourceAmountCellClass(
 
 function sourceAmountShape(
   cells: readonly string[],
-): YuantaDomesticDepositTelemetryRow["amountShape"] {
+): "inflow" | "outflow" | "empty" | "invalid" | "conflict" {
   const outflowClass = sourceAmountCellClass(cells[6]);
   const inflowClass = sourceAmountCellClass(cells[7]);
   if (outflowClass === "invalid" || inflowClass === "invalid") return "invalid";
@@ -465,70 +411,6 @@ export function isAdmittedYuantaDomesticDepositCaptureEvidence(
 }
 
 /**
- * Redact one admitted source capture for workflow output. The input may carry
- * account selectors and CSV cells transiently, but this return value contains
- * only opaque digests, fixed column names, row ordinals, and shape metadata.
- * No financial admission or canonical writer is reachable from this seam.
- */
-export function createYuantaDomesticDepositTelemetryManifest(
-  capture: YuantaDomesticDepositValidatedEvidence,
-): YuantaDomesticDepositTelemetryManifest {
-  if (!isAdmittedYuantaDomesticDepositCaptureEvidence(capture))
-    throw new Error("Yuanta telemetry requires structural source admission.");
-
-  return {
-    telemetryVersion: YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
-    evidenceVersion: capture.evidenceVersion,
-    source: "yuanta",
-    observedAt: capture.observedAt,
-    account: {
-      valueDigest: yuantaDigest(
-        "yuanta-telemetry-account-value-v1",
-        capture.account.value,
-      ),
-      labelDigest: yuantaDigest(
-        "yuanta-telemetry-account-label-v1",
-        capture.account.label,
-      ),
-    },
-    queryRange: { ...capture.queryRange },
-    downloads: capture.downloads.map((download) => ({
-      filenameDigest: yuantaDigest(
-        "yuanta-telemetry-filename-v1",
-        download.filename,
-      ),
-      byteLength: download.byteLength,
-      contentDigest: download.contentDigest,
-      columnNames: [...YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES],
-      columnCount: 11,
-      rowCount: download.rows.length,
-      rows: download.rows.map((row) => {
-        const cells = row.values.map(normalizedCell);
-        return {
-          rowOrdinal: row.rowOrdinal,
-          rowFingerprint: yuantaDigest(
-            "yuanta-telemetry-row-v1",
-            String(row.rowOrdinal),
-            ...cells,
-          ),
-          cellDigests: cells.map((cell) =>
-            yuantaDigest("yuanta-telemetry-cell-v1", cell),
-          ),
-          cellCount: 11,
-          amountShape: sourceAmountShape(cells),
-          amountClasses: {
-            outflow: sourceAmountCellClass(cells[6]),
-            inflow: sourceAmountCellClass(cells[7]),
-          },
-        };
-      }),
-    })),
-    canonicalAdmission: "blocked",
-    sourceStage: "telemetry-only",
-  };
-}
-
-/**
  * Convert the validated CSV boundary into de-identified durable source
  * evidence. Raw account values, labels, descriptions, notes, amounts and
  * downloaded bytes never enter the source ledger; only scoped digests and
@@ -590,18 +472,18 @@ export function createYuantaDomesticDepositSourceEvidence(
       rowCount: download.rows.length,
       terminal: download.terminal === true,
       metadata: {
-        filenameDigest: yuantaDigest(
+        filenameDigest: canonicalDigest(
           "yuanta-source-filename-v2",
           download.filename,
         ),
         contentDigest: download.contentDigest,
         byteLength: download.byteLength,
         columnCount: download.columnNames.length,
-        accountValueDigest: yuantaDigest(
+        accountValueDigest: canonicalDigest(
           "yuanta-source-account-value-v2",
           capture.account.value,
         ),
-        accountLabelDigest: yuantaDigest(
+        accountLabelDigest: canonicalDigest(
           "yuanta-source-account-label-v2",
           capture.account.label,
         ),
@@ -612,13 +494,13 @@ export function createYuantaDomesticDepositSourceEvidence(
       download.rows.map((row) => {
         const cells = row.values.map(normalizedCell);
         const identityCells = normalizedYuantaRowForIdentity(row.values);
-        const rowDigest = yuantaDigest(
+        const rowDigest = canonicalDigest(
           "yuanta-source-row-v2",
           String(pageOrdinal),
           String(row.rowOrdinal),
           ...identityCells,
         );
-        const occurrenceKey = yuantaDigest(
+        const occurrenceKey = canonicalDigest(
           "yuanta-source-occurrence-v2",
           identity.subjectDigest,
           identity.identityEpochKey,
@@ -628,13 +510,13 @@ export function createYuantaDomesticDepositSourceEvidence(
         );
         return {
           occurrenceKey,
-          collisionKey: yuantaDigest(
+          collisionKey: canonicalDigest(
             "yuanta-source-collision-v2",
             identity.subjectDigest,
             rowDigest,
           ),
           providerKey: rowDigest,
-          contentHash: yuantaDigest("yuanta-source-content-v2", rowDigest),
+          contentHash: canonicalDigest("yuanta-source-content-v2", rowDigest),
           compact: {
             evidenceVersion: capture.evidenceVersion,
             pageOrdinal,
@@ -690,13 +572,6 @@ export type YuantaDomesticDepositAccountNumberEvidence = Readonly<{
   sourceField: "#acctno option.value";
 }>;
 
-/** Legacy v1 identifiers remain available for read-only compatibility tests. */
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_ROUTE =
-  "yuanta/domestic-deposit/capture-evidence-v1" as const;
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RECORD_KIND =
-  "yuanta-domestic-deposit-capture-evidence" as const;
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RULE_VERSION =
-  "yuanta/domestic-deposit/capture-evidence-v1/terminal-download" as const;
 
 export type YuantaDomesticDepositAccountIdentity = {
   accountNo: string;
@@ -741,7 +616,7 @@ export function deriveYuantaDomesticDepositAccountIdentity(
     accountNo: subjectDigest,
     sourceConnectionKey:
       sourceConnectionKey ??
-      yuantaDigest(
+      canonicalDigest(
         "yuanta-source-connection-v2",
         "yuanta",
         manifest.attestationId,
@@ -989,9 +864,6 @@ function unsupportedCancellation(values: readonly string[]): boolean {
   );
 }
 
-function financialOpaque(domain: string, ...parts: string[]): string {
-  return yuantaDigest(domain, ...parts);
-}
 
 function rangeDate(value: string): string {
   return normalizedCell(value).replace(/\//g, "-");
@@ -1056,11 +928,11 @@ function financialRecord(
   const checkNumber = normalizedCell(values[9]);
   const note = normalizedCell(values[10]);
   const displayDescription = combineDomesticDepositDescription(description, note);
-  const contentHash = financialOpaque(
+  const contentHash = canonicalDigest(
     "yuanta-observed-content-v2",
     ...normalizedYuantaRowForIdentity(values),
   );
-  const collisionKey = financialOpaque(
+  const collisionKey = canonicalDigest(
     "yuanta-observed-composite-fence-v2",
     identity.subjectDigest,
     time.accountingDate,
@@ -1072,7 +944,7 @@ function financialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
-  const occurrenceKey = financialOpaque(
+  const occurrenceKey = canonicalDigest(
     "yuanta-observed-composite-occurrence-v2",
     collisionKey,
     description,
@@ -1095,15 +967,15 @@ function financialRecord(
         direction,
         amount,
         balanceAfter,
-        descriptionDigest: financialOpaque(
+        descriptionDigest: canonicalDigest(
           "yuanta-description-v1",
           description,
         ),
-        checkNumberDigest: financialOpaque(
+        checkNumberDigest: canonicalDigest(
           "yuanta-check-number-v1",
           checkNumber,
         ),
-        noteDigest: financialOpaque("yuanta-note-v1", note),
+        noteDigest: canonicalDigest("yuanta-note-v1", note),
         providerGuaranteed: false,
       }),
       amount,
@@ -1298,12 +1170,12 @@ function financialDiagnosticsFor(
   if (diagnostics.length > 0)
     return { diagnostics: [...new Set(diagnostics)], semantics };
 
-  const contractFingerprint = financialOpaque(
+  const contractFingerprint = canonicalDigest(
     "yuanta-contract-v2",
     YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
   );
-  const preflightFingerprint = financialOpaque(
+  const preflightFingerprint = canonicalDigest(
     "yuanta-preflight-v2",
     identity.subjectDigest,
     input.capture.queryRange.startDate,
@@ -1317,7 +1189,7 @@ function financialDiagnosticsFor(
   );
   const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
     rows: groupRows,
-    scopeKey: financialOpaque(
+    scopeKey: canonicalDigest(
       "yuanta-domestic-deposit-occurrence-scope-v2",
       identity.subjectDigest,
       YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -1390,7 +1262,7 @@ function financialDiagnosticsFor(
       preflightFingerprint,
       metadataJson: JSON.stringify({
         pageOrdinal,
-        filenameDigest: financialOpaque(
+        filenameDigest: canonicalDigest(
           "yuanta-filename-v1",
           download.filename,
         ),

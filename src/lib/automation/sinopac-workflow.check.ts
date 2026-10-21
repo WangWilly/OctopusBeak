@@ -14,7 +14,8 @@ import {
 } from "../../workflows/sinopac-statements.ts";
 import { isSinopacDuplicateLoginDialog, SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { classifyTypedWorkflowFailure } from "./server/typed-workflow-outcome.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowRunEvent } from "./workflow-executor.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -254,6 +255,42 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
   }
 });
 
+test("a failed SinoPac Canonical Financial Commit is classified as a commit failure", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const failingCommit: WorkflowFinancialCommitPort = {
+    async execute(items) {
+      for await (const _item of items);
+      return { status: "failed", items: [], diagnostics: [], committedCount: 0, failedCount: 1 };
+    },
+  };
+  const context = makeContext({
+    page: pageFixture(),
+    financialCommit: failingCommit,
+    onEvent: async (stage, code) => {
+      events.push({ runId: "sinopac-test-run", stage, code, occurredAt: "2026-09-24T04:00:00.000Z" });
+    },
+  });
+  const error = await runSinopacProviderWorkflow(context, input, {
+    readAccounts: async () => [account],
+    queryTransactions: async () => ({
+      Header: "SUCCESS",
+      SubInfo: [{
+        DataText1: "2026/09/03 09:21",
+        DataText2: "2026/09/03",
+        DataText3: "Synthetic salary",
+        DataText4: "-100",
+        DataText5: "900",
+        DataText7: "",
+        DataText8: "",
+      }],
+    }),
+    readCurrentDepositBalances: async () => [],
+  }).then(() => null, (thrown: unknown) => thrown);
+
+  assert.ok(error instanceof Error);
+  assert.equal(classifyTypedWorkflowFailure(error, events), "canonical-commit-failed");
+});
+
 test("typed SinoPac workflow rejects incomplete source before Canonical Financial Commit", async () => {
   const calls: unknown[][] = [];
   const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub(calls) });
@@ -385,8 +422,7 @@ test("SinoPac accepts the authorized duplicate-login confirm and keeps observing
   const emitter = new EventEmitter();
   const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
   let accepted = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, "duplicate-login-fixture", {
-    dialogOwner: "workflow",
+  await assert.rejects(runSinopacLoginAttempt(page, {
     submit: async () => {
       emitter.emit("dialog", {
         type: () => "confirm",
@@ -416,8 +452,7 @@ test("SinoPac failed duplicate-login confirmation fails without a CAPTCHA retry"
   const emitter = new EventEmitter();
   const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
   let confirmations = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, "failed-confirm-fixture", {
-    dialogOwner: "workflow",
+  await assert.rejects(runSinopacLoginAttempt(page, {
     submit: async () => { emitter.emit("dialog", {
       type: () => "confirm",
       message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",

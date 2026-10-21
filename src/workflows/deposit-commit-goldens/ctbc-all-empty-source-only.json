@@ -1,0 +1,259 @@
+{
+  "executions": [
+    {
+      "options": {
+        "provider": "ctbc",
+        "product": "financial"
+      },
+      "items": [
+        {
+          "provider": "ctbc",
+          "product": "domestic-deposit",
+          "itemKey": "ctbc-uuid-1",
+          "command": {
+            "kind": "financial.source.admit",
+            "request": {
+              "captureId": "ctbc-uuid-1",
+              "integrationNamespace": "ctbc",
+              "sourceConnectionKey": "sha256:k7VCTnfRR5QmleVTD3D631OVYr-GxGDjL7X6lq8jit8",
+              "identityEpoch": "sha256:2d-9qZ9PANBrWNkNX5xzOsFqJIDBJj209J9BZfv52Sw",
+              "stream": "domestic-deposit",
+              "recordKind": "ctbc-domestic-deposit-row-v2",
+              "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
+              "contractVersion": "capture-evidence-v2",
+              "subjectDigest": "sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8",
+              "observedAt": "2026-09-25T20:00:00.000+08:00",
+              "accountNumber": {
+                "value": "9999_0000_0001",
+                "kind": "depository-account",
+                "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
+                "sourceField": "accountInfoList.accountId"
+              },
+              "scope": {
+                "startDate": "20260701",
+                "endDate": "20260831",
+                "kind": "bounded-range",
+                "completeness": "complete-range",
+                "ruleVersion": "ctbc/domestic-deposit/capture-evidence-v2"
+              },
+              "pages": [
+                {
+                  "pageOrdinal": 0,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": false,
+                  "metadata": {
+                    "rangeStart": "2026/07/01",
+                    "rangeEnd": "2026/07/31",
+                    "nextKeyState": "empty",
+                    "providerTerminal": true,
+                    "providerCode": "0000",
+                    "providerExplicitNoData": false,
+                    "providerSuccessEmpty": true,
+                    "responseShape": {
+                      "hasRsData": true,
+                      "rsDataKind": "object",
+                      "hasDetailList": true,
+                      "detailListIsArray": true,
+                      "detailListRowCount": 0,
+                      "nextKeyPresent": false
+                    }
+                  }
+                },
+                {
+                  "pageOrdinal": 1,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": true,
+                  "metadata": {
+                    "rangeStart": "2026/08/01",
+                    "rangeEnd": "2026/08/31",
+                    "nextKeyState": "empty",
+                    "providerTerminal": true,
+                    "providerCode": "0000",
+                    "providerExplicitNoData": false,
+                    "providerSuccessEmpty": true,
+                    "responseShape": {
+                      "hasRsData": true,
+                      "rsDataKind": "object",
+                      "hasDetailList": true,
+                      "detailListIsArray": true,
+                      "detailListRowCount": 0,
+                      "nextKeyPresent": false
+                    }
+                  }
+                }
+              ],
+              "records": []
+            }
+          }
+        },
+        {
+          "provider": "ctbc",
+          "product": "domestic-deposit",
+          "itemKey": "ctbc-uuid-2",
+          "command": {
+            "kind": "financial.source.admit",
+            "request": {
+              "captureId": "ctbc-uuid-2",
+              "integrationNamespace": "ctbc",
+              "sourceConnectionKey": "sha256:k7VCTnfRR5QmleVTD3D631OVYr-GxGDjL7X6lq8jit8",
+              "identityEpoch": "sha256:2d-9qZ9PANBrWNkNX5xzOsFqJIDBJj209J9BZfv52Sw",
+              "stream": "domestic-deposit",
+              "recordKind": "ctbc-domestic-deposit-row-v2",
+              "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
+              "contractVersion": "capture-evidence-v2",
+              "subjectDigest": "sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ",
+              "observedAt": "2026-09-25T20:00:00.000+08:00",
+              "accountNumber": {
+                "value": "9999_0000_0002",
+                "kind": "depository-account",
+                "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
+                "sourceField": "accountInfoList.accountId"
+              },
+              "scope": {
+                "startDate": "20260701",
+                "endDate": "20260831",
+                "kind": "bounded-range",
+                "completeness": "complete-range",
+                "ruleVersion": "ctbc/domestic-deposit/capture-evidence-v2",
+                "absenceAuthority": "provider-explicit-no-data"
+              },
+              "pages": [
+                {
+                  "pageOrdinal": 0,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": false,
+                  "metadata": {
+                    "rangeStart": "2026/07/01",
+                    "rangeEnd": "2026/07/31",
+                    "nextKeyState": "empty",
+                    "providerTerminal": true,
+                    "providerCode": "9201",
+                    "providerExplicitNoData": true,
+                    "providerSuccessEmpty": false,
+                    "responseShape": {
+                      "hasRsData": true,
+                      "rsDataKind": "null",
+                      "hasDetailList": false,
+                      "detailListIsArray": false,
+                      "detailListRowCount": null,
+                      "nextKeyPresent": false
+                    }
+                  }
+                },
+                {
+                  "pageOrdinal": 1,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": true,
+                  "metadata": {
+                    "rangeStart": "2026/08/01",
+                    "rangeEnd": "2026/08/31",
+                    "nextKeyState": "empty",
+                    "providerTerminal": true,
+                    "providerCode": "9201",
+                    "providerExplicitNoData": true,
+                    "providerSuccessEmpty": false,
+                    "responseShape": {
+                      "hasRsData": true,
+                      "rsDataKind": "null",
+                      "hasDetailList": false,
+                      "detailListIsArray": false,
+                      "detailListRowCount": null,
+                      "nextKeyPresent": false
+                    }
+                  }
+                }
+              ],
+              "records": []
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "collection",
+      "code": "collection-started"
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "code": "collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "canonical-admission-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "canonical-admission-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}

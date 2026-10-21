@@ -1,9 +1,4 @@
-import { createHash } from "node:crypto";
-import {
-  createAdvertisedDomesticDepositPreflight,
-  type AdvertisedDomesticDepositContract,
-  type AdvertisedDomesticDepositPreflightInput,
-} from "./advertised-domestic-deposit-preflight.ts";
+import { canonicalDigest } from "./canonical-digest.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
@@ -23,64 +18,8 @@ import {
 
 
 
-export const HNCB_DOMESTIC_DEPOSIT_CONTRACT = {
-  source: "hncb",
-  authority: "hncb/domestic-deposit/preflight-v1",
-  contractVersion: "preflight-v1",
-  readiness: "preflight-only",
-  workflow: "hncbStatements",
-  expectedRowWidth: 11,
-  accountingDateIndex: 2,
-  transactionDateIndex: 0,
-  transactionTimeIndex: 1,
-  provenance: {
-    evidenceBasis: "downloaded HTML workbook columns and provider no-data text",
-    fixtureValues: "synthetic",
-    liveResponseRetained: false,
-  },
-  outflowIndex: 4,
-  inflowIndex: 5,
-  completenessEvidence: "none",
-  explicitNoDataEvidence: {
-    kind: "message",
-    pattern: /查\s*無\s*資\s*料|無\s*資\s*料|無\s*交\s*易|查\s*無\s*符\s*合/u,
-  },
-} as const satisfies AdvertisedDomesticDepositContract;
-
-
-
-export const HNCB_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1 = {
-  accountIdentity: "SYNTHETIC-HNCB-ACCOUNT",
-  scope: { startDate: "2026/01/01", endDate: "2026/01/31" },
-  records: [
-    {
-      values: [
-        "2026/01/02",
-        "09:10:11",
-        "2026/01/02",
-        "TWD",
-        "",
-        "100",
-        "100",
-        "SYNTHETIC",
-        "",
-        "",
-        "",
-      ],
-    },
-  ],
-} satisfies AdvertisedDomesticDepositPreflightInput;
-
-
-
-export const preflightHncbDomesticDeposit =
-  createAdvertisedDomesticDepositPreflight(HNCB_DOMESTIC_DEPOSIT_CONTRACT);
-
-
-
 /**
- * HNCB source evidence is deliberately versioned separately from the
- * preflight contract. The provider export establishes an eleven-column
+ * The HNCB provider export establishes an eleven-column
  * workbook shape, but it does not establish a permanent occurrence key,
  * posting status, cancellation semantics, timezone, pagination completeness,
  * or shared-account authority. This adapter therefore remains source-only.
@@ -330,17 +269,6 @@ const VALIDATED_HNCB_EVIDENCE = new WeakSet<object>();
 
 const SHA256_TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
 
-
-
-function hncbDigest(
-  domain: string,
-  ...values: readonly string[]
-): `sha256:${string}` {
-  const hash = createHash("sha256");
-  hash.update(domain);
-  for (const value of values) hash.update("\0").update(value);
-  return `sha256:${hash.digest("base64url")}`;
-}
 
 
 
@@ -669,16 +597,16 @@ export type HncbDomesticDepositAccountIdentity = {
 export function deriveHncbDomesticDepositAccountIdentity(
   account: HncbDomesticDepositCaptureEvidence["account"],
 ): HncbDomesticDepositAccountIdentity {
-  const subjectDigest = hncbDigest(
+  const subjectDigest = canonicalDigest(
     "hncb-source-account-v1",
     normalizedCell(account.value),
   );
   return {
-    sourceConnectionKey: hncbDigest(
+    sourceConnectionKey: canonicalDigest(
       "hncb-source-connection-v1",
       "account-scope",
     ),
-    identityEpochKey: hncbDigest(
+    identityEpochKey: canonicalDigest(
       "hncb-source-identity-epoch-v1",
       HNCB_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
     ),
@@ -728,18 +656,18 @@ function sourceEvidenceForCapture(
       rowCount: download.rows.length,
       terminal: download.terminal,
       metadata: {
-        filenameDigest: hncbDigest(
+        filenameDigest: canonicalDigest(
           "hncb-source-filename-v1",
           download.filename,
         ),
         contentDigest: download.contentDigest,
         byteLength: download.byteLength,
         columnCount: download.columnNames.length,
-        accountValueDigest: hncbDigest(
+        accountValueDigest: canonicalDigest(
           "hncb-source-account-value-v1",
           capture.account.value,
         ),
-        accountLabelDigest: hncbDigest(
+        accountLabelDigest: canonicalDigest(
           "hncb-source-account-label-v1",
           capture.account.label,
         ),
@@ -750,27 +678,27 @@ function sourceEvidenceForCapture(
     records: pages.flatMap(({ download, pageOrdinal }) =>
       download.rows.map((row) => {
         const cells = row.values.map(normalizedCell);
-        const rowDigest = hncbDigest(
+        const rowDigest = canonicalDigest(
           "hncb-source-row-v1",
           String(pageOrdinal),
           String(row.rowOrdinal),
           ...cells,
         );
         return {
-          occurrenceKey: hncbDigest(
+          occurrenceKey: canonicalDigest(
             "hncb-source-occurrence-v1",
             identity.subjectDigest,
             String(pageOrdinal),
             String(row.rowOrdinal),
             rowDigest,
           ),
-          collisionKey: hncbDigest(
+          collisionKey: canonicalDigest(
             "hncb-source-collision-v1",
             identity.subjectDigest,
             rowDigest,
           ),
           providerKey: rowDigest,
-          contentHash: hncbDigest("hncb-source-content-v1", rowDigest),
+          contentHash: canonicalDigest("hncb-source-content-v1", rowDigest),
           compact: {
             evidenceVersion: capture.evidenceVersion,
             pageOrdinal,
@@ -801,161 +729,6 @@ export function createHncbDomesticDepositSourceEvidence(
   captureId: string,
 ): CanonicalSourceEvidence {
   return sourceEvidenceForCapture(capture, captureId);
-}
-
-
-
-/**
- * A workflow run may inspect several visible accounts, but the generic
- * source writer exposes one atomic source-capture call.  This batch seam
- * keeps the account set and row ownership as opaque digests while retaining
- * one source commit boundary after every account has reached a terminal
- * export/no-data result.
- */
-export function createHncbDomesticDepositBatchSourceEvidence(
-  captures: readonly HncbDomesticDepositValidatedEvidence[],
-  captureId: string,
-): CanonicalSourceEvidence {
-  if (captures.length === 0)
-    throw new Error("HNCB source evidence batch cannot be empty.");
-  if (!captureId.trim())
-    throw new Error("HNCB source evidence capture ID is required.");
-  for (const capture of captures) {
-    if (!isAdmittedHncbDomesticDepositCaptureEvidence(capture))
-      throw new Error(
-        "HNCB source evidence batch requires structural admission.",
-      );
-    if (capture.downloads.length !== 1)
-      throw new Error(
-        "HNCB source evidence batch requires one export per account.",
-      );
-  }
-  const first = captures[0]!;
-  const firstIdentity = deriveHncbDomesticDepositAccountIdentity(first.account);
-  const expectedObservedAt = first.observedAt;
-  const expectedStartDate = sourceDate(first.queryRange.startDate);
-  const expectedEndDate = sourceDate(first.queryRange.endDate);
-  const identities = captures
-    .map((capture) => {
-      const identity = deriveHncbDomesticDepositAccountIdentity(
-        capture.account,
-      );
-      if (
-        capture.observedAt !== expectedObservedAt ||
-        sourceDate(capture.queryRange.startDate) !== expectedStartDate ||
-        sourceDate(capture.queryRange.endDate) !== expectedEndDate
-      )
-        throw new Error("HNCB source evidence batch scope is inconsistent.");
-      return { capture, identity };
-    })
-    .sort((left, right) =>
-      left.identity.subjectDigest.localeCompare(right.identity.subjectDigest),
-    );
-  const batchSubjectDigest = hncbDigest(
-    "hncb-source-batch-subject-v1",
-    ...identities.map(({ identity }) => identity.subjectDigest),
-  );
-  const pages = identities.flatMap(({ capture, identity }, accountOrdinal) =>
-    capture.downloads.map((download) => ({
-      accountOrdinal,
-      capture,
-      download,
-      identity,
-    })),
-  );
-  return {
-    captureId: captureId.trim(),
-    integrationNamespace: "hncb",
-    sourceConnectionKey: firstIdentity.sourceConnectionKey,
-    identityEpoch: firstIdentity.identityEpochKey,
-    stream: "domestic-deposit",
-    recordKind: HNCB_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND,
-    routeKey: HNCB_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_ROUTE,
-    contractVersion: HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-    subjectDigest: batchSubjectDigest,
-    observedAt: expectedObservedAt,
-    scope: {
-      startDate: expectedStartDate,
-      endDate: expectedEndDate,
-      kind: "bounded-range",
-      completeness: "single-page",
-      ruleVersion: HNCB_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION,
-    },
-    pages: pages.map(({ capture, download, identity }, pageOrdinal) => ({
-      pageOrdinal,
-      responseCode: "200",
-      rowCount: download.rows.length,
-      terminal: pageOrdinal === pages.length - 1,
-      metadata: {
-        filenameDigest: hncbDigest(
-          "hncb-source-filename-v1",
-          download.filename,
-        ),
-        contentDigest: download.contentDigest,
-        byteLength: download.byteLength,
-        columnCount: download.columnNames.length,
-        accountSubjectDigest: identity.subjectDigest,
-        accountValueDigest: hncbDigest(
-          "hncb-source-account-value-v1",
-          capture.account.value,
-        ),
-        accountLabelDigest: hncbDigest(
-          "hncb-source-account-label-v1",
-          capture.account.label,
-        ),
-        zeroResultAuthority: capture.zeroResultAuthority ?? null,
-        completeness: "unproven",
-      },
-    })),
-    records: pages.flatMap(({ capture, download, identity, accountOrdinal }) =>
-      download.rows.map((row) => {
-        const cells = row.values.map(normalizedCell);
-        const rowDigest = hncbDigest(
-          "hncb-source-batch-row-v1",
-          identity.subjectDigest,
-          String(accountOrdinal),
-          String(row.rowOrdinal),
-          ...cells,
-        );
-        return {
-          occurrenceKey: hncbDigest(
-            "hncb-source-batch-occurrence-v1",
-            batchSubjectDigest,
-            identity.subjectDigest,
-            String(accountOrdinal),
-            String(row.rowOrdinal),
-            rowDigest,
-          ),
-          collisionKey: hncbDigest(
-            "hncb-source-batch-collision-v1",
-            batchSubjectDigest,
-            identity.subjectDigest,
-            rowDigest,
-          ),
-          providerKey: rowDigest,
-          contentHash: hncbDigest("hncb-source-batch-content-v1", rowDigest),
-          compact: {
-            evidenceVersion: capture.evidenceVersion,
-            accountSubjectDigest: identity.subjectDigest,
-            accountOrdinal,
-            rowOrdinal: row.rowOrdinal,
-            rowDigest,
-            columnCount: cells.length,
-            transactionDateShape: "slash-date",
-            accountingDateShape: "slash-date",
-            transactionTimeShape: "local-second",
-            currency: "TWD",
-            amountDirection: amountDirection(cells),
-            balanceShape: "decimal",
-            providerGuaranteed: HNCB_DOMESTIC_DEPOSIT_PROVIDER_GUARANTEED,
-            canonicalAdmission: "blocked",
-            sourceStage: "source-only",
-            semanticStatus: "observed-structural-only",
-          },
-        };
-      }),
-    ),
-  };
 }
 
 
@@ -1137,14 +910,6 @@ function canonicalHncbTime(value: string): string | null {
 
 
 
-function hncbFinancialOpaque(
-  domain: string,
-  ...parts: string[]
-): `sha256:${string}` {
-  return hncbDigest(domain, ...parts);
-}
-
-
 
 function unsupportedHncbAuthority(label: string): boolean {
   return /共同|共有|聯名|联名|聯合|联合|代理|代管|joint|shared|co[- ]?owner|authorized/i.test(
@@ -1212,11 +977,11 @@ function hncbFinancialRecord(
   const note = normalizedCell(values[9]);
   const displayDescription = combineDomesticDepositDescription(description, note);
   const reference = normalizedCell(values[10]);
-  const contentHash = hncbFinancialOpaque(
+  const contentHash = canonicalDigest(
     "hncb-observed-content-v1",
     ...values.map(normalizedCell),
   );
-  const collisionKey = hncbFinancialOpaque(
+  const collisionKey = canonicalDigest(
     "hncb-observed-composite-fence-v1",
     identity.subjectDigest,
     accountingDate,
@@ -1228,7 +993,7 @@ function hncbFinancialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
-  const occurrenceKey = hncbFinancialOpaque(
+  const occurrenceKey = canonicalDigest(
     "hncb-observed-composite-occurrence-v1",
     collisionKey,
     description,
@@ -1252,13 +1017,13 @@ function hncbFinancialRecord(
         direction,
         amount,
         balanceAfter,
-        descriptionDigest: hncbFinancialOpaque(
+        descriptionDigest: canonicalDigest(
           "hncb-description-v1",
           description,
         ),
-        depositorDigest: hncbFinancialOpaque("hncb-depositor-v1", depositor),
-        noteDigest: hncbFinancialOpaque("hncb-note-v1", note),
-        referenceDigest: hncbFinancialOpaque("hncb-reference-v1", reference),
+        depositorDigest: canonicalDigest("hncb-depositor-v1", depositor),
+        noteDigest: canonicalDigest("hncb-note-v1", note),
+        referenceDigest: canonicalDigest("hncb-reference-v1", reference),
         providerGuaranteed: false,
       }),
       amount,
@@ -1412,12 +1177,12 @@ function hncbFinancialDiagnosticsFor(
   }
   if (diagnostics.length > 0)
     return { diagnostics: [...new Set(diagnostics)], semantics };
-  const contractFingerprint = hncbFinancialOpaque(
+  const contractFingerprint = canonicalDigest(
     "hncb-contract-v1",
     HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
   );
-  const preflightFingerprint = hncbFinancialOpaque(
+  const preflightFingerprint = canonicalDigest(
     "hncb-preflight-v1",
     identity.subjectDigest,
     input.capture.queryRange.startDate,
@@ -1428,7 +1193,7 @@ function hncbFinancialDiagnosticsFor(
       record,
       partitionDate: record.sourceTime.localDate,
     })),
-    scopeKey: hncbFinancialOpaque(
+    scopeKey: canonicalDigest(
       "hncb-domestic-deposit-occurrence-scope-v1",
       identity.subjectDigest,
       HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -1500,7 +1265,7 @@ function hncbFinancialDiagnosticsFor(
       preflightFingerprint,
       metadataJson: JSON.stringify({
         pageOrdinal,
-        filenameDigest: hncbFinancialOpaque(
+        filenameDigest: canonicalDigest(
           "hncb-filename-v1",
           download.filename,
         ),

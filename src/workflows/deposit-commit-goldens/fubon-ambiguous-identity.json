@@ -1,0 +1,647 @@
+{
+  "result": {
+    "sourceCaptureCount": 2,
+    "rowCount": 5,
+    "itemCount": 3,
+    "committedCount": 3,
+    "skippedProductCount": 2,
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "success",
+        "itemCount": 3,
+        "committedCount": 3
+      },
+      {
+        "typeId": "credit_card",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "loan",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      }
+    ],
+    "status": "financial-admitted"
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "fubon",
+        "product": "deposit"
+      },
+      "items": [
+        {
+          "provider": "fubon",
+          "product": "domestic-deposit",
+          "itemKey": "fubon-source-t+1-i1l8R0PnM4d4-0",
+          "command": {
+            "kind": "financial.source.admit",
+            "request": {
+              "captureId": "fubon-source-t+1-i1l8R0PnM4d4-0",
+              "integrationNamespace": "fubon",
+              "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+              "identityEpoch": "sha256:Wc-uChIep3jqYX8oPQZ3ts7EcxBf188cPcp8xgJs690",
+              "stream": "domestic-deposit",
+              "recordKind": "fubon-domestic-deposit-capture-evidence",
+              "routeKey": "fubon/domestic-deposit/capture-evidence-v2",
+              "contractVersion": "capture-evidence-v2",
+              "subjectDigest": "sha256:EYeKVUZshu2d76KRJHa-np-_ZOWSQ1ZOBKg7AXP6__o",
+              "observedAt": "2026-09-25T00:00:00.000Z",
+              "scope": {
+                "startDate": "20260826",
+                "endDate": "20260925",
+                "kind": "bounded-range",
+                "completeness": "complete-range",
+                "ruleVersion": "fubon/domestic-deposit/capture-evidence-v2/pagination-termination"
+              },
+              "pages": [
+                {
+                  "pageOrdinal": 0,
+                  "responseCode": "200",
+                  "rowCount": 2,
+                  "terminal": false,
+                  "metadata": {
+                    "responseSequence": 1,
+                    "providerPageSize": 10,
+                    "providerTotalCount": null,
+                    "pageFieldName": "resultGrid:dataGridCurrentPage",
+                    "providerTerminal": false,
+                    "paginationEvidence": null,
+                    "paginationAmbiguous": null,
+                    "paginationAmbiguityReason": null,
+                    "queryStartDate": "20260826",
+                    "queryEndDate": "20260925",
+                    "selectedAccountDigest": "sha256:EYeKVUZshu2d76KRJHa-np-_ZOWSQ1ZOBKg7AXP6__o",
+                    "selectedLabelDigest": "sha256:kyOcWEXlnGuj5GLEHjrYzBCEVQshexkl07qC3vy8ZBw",
+                    "branchDigest": "sha256:W5AgXHqr2Wpfh1-5ACYIMgKm8KFK-jqZWbnr9od699s",
+                    "zeroObservation": "non-empty-page",
+                    "semanticStatus": "unresolved"
+                  }
+                },
+                {
+                  "pageOrdinal": 1,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": true,
+                  "metadata": {
+                    "responseSequence": 2,
+                    "providerPageSize": 10,
+                    "providerTotalCount": null,
+                    "pageFieldName": null,
+                    "providerTerminal": false,
+                    "paginationEvidence": null,
+                    "paginationAmbiguous": null,
+                    "paginationAmbiguityReason": null,
+                    "queryStartDate": "20260826",
+                    "queryEndDate": "20260925",
+                    "selectedAccountDigest": "sha256:EYeKVUZshu2d76KRJHa-np-_ZOWSQ1ZOBKg7AXP6__o",
+                    "selectedLabelDigest": "sha256:kyOcWEXlnGuj5GLEHjrYzBCEVQshexkl07qC3vy8ZBw",
+                    "branchDigest": "sha256:W5AgXHqr2Wpfh1-5ACYIMgKm8KFK-jqZWbnr9od699s",
+                    "zeroObservation": "empty-page",
+                    "semanticStatus": "unresolved"
+                  }
+                }
+              ],
+              "records": [
+                {
+                  "occurrenceKey": "sha256:vFIltymy2NSh_qrQsgpOi7ks7LZMr1D5a6g27DtgInA",
+                  "providerKey": "sha256:9Rprjx7Y2sBblOuT8ytRv1a4v1CZRD5BTGkcFlhRYrs",
+                  "contentHash": "sha256:wr2Q6WE4uGaaoV2PVcbmz_vDo-PCPq_bDdVgeyBT4iI",
+                  "compact": {
+                    "evidenceVersion": "capture-evidence-v2",
+                    "pageOrdinal": 0,
+                    "rowOrdinal": 0,
+                    "cellCount": 7,
+                    "observedCurrency": "TWD",
+                    "rowDigest": "sha256:9Rprjx7Y2sBblOuT8ytRv1a4v1CZRD5BTGkcFlhRYrs",
+                    "sourceOccurrenceObserved": false,
+                    "identityBasis": "page-row-position-and-content",
+                    "semanticStatus": "unresolved"
+                  }
+                },
+                {
+                  "occurrenceKey": "sha256:830Qy1hDLp8_snbhdywVXIQ7LPeeTRvQXw4rgciJI9g",
+                  "providerKey": "sha256:FY2c5kXyLuHEXa4nLQYNqb4btL8YXIHcX9GeE9HADQ4",
+                  "contentHash": "sha256:I1WjbFeb1zdpb0sEoxbRHNOEPvffKehnRKZQlluocr4",
+                  "compact": {
+                    "evidenceVersion": "capture-evidence-v2",
+                    "pageOrdinal": 0,
+                    "rowOrdinal": 1,
+                    "cellCount": 7,
+                    "observedCurrency": "TWD",
+                    "rowDigest": "sha256:FY2c5kXyLuHEXa4nLQYNqb4btL8YXIHcX9GeE9HADQ4",
+                    "sourceOccurrenceObserved": false,
+                    "identityBasis": "page-row-position-and-content",
+                    "semanticStatus": "unresolved"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "provider": "fubon",
+          "product": "domestic-deposit",
+          "itemKey": "fubon-financial-t+0-dpxNUBxz1737-0",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "fubon-financial-t+0-dpxNUBxz1737-0",
+                "authorityRoute": "fubon/domestic-deposit/human-attested-v1",
+                "contractVersion": "human-attested-v1",
+                "identity": {
+                  "integrationNamespace": "fubon",
+                  "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                  "identityEpochKey": "sha256:Wc-uChIep3jqYX8oPQZ3ts7EcxBf188cPcp8xgJs690",
+                  "stream": "domestic-deposit",
+                  "recordKind": "fubon-domestic-deposit",
+                  "subjectDigest": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                  "sourceAccountKey": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                  "accountNo": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                  "accountNumber": {
+                    "value": "9990_0000_0001_01",
+                    "kind": "depository-account",
+                    "evidenceVersion": "fubon/domestic-deposit/account-number-v1",
+                    "sourceField": "form1:comboAccount option.value"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T00:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-08-26",
+                  "endDate": "2026-09-25",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "human-attested-requested-range-all-pages",
+                  "completenessRuleVersion": "fubon/domestic-deposit/human-attested-v1",
+                  "absenceAuthority": "comparable-complete-range",
+                  "contractFingerprint": "sha256:8A_q_hf3JaIXT4xRMuoGTW69eu5shzG-A3qeJGaz16c",
+                  "preflightFingerprint": "sha256:wox-jzP7USWu1pvd7QBlgmJWFkQIZzUEODoBvaez-z8",
+                  "pageCount": 2,
+                  "withdrawalPolicy": "never-infer"
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "fubon/domestic-deposit/human-attested-v1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "fubon/domestic-deposit/human-attested-v1",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "fubon/domestic-deposit/human-attested-v1",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": false,
+                    "rowCount": 3,
+                    "responseDigest": "sha256:trif50eFEgrhMeeBa7-g7Kwhn3krIBjeHzctnxlbpSM",
+                    "proofKind": "human-attested-requested-range-all-pages",
+                    "contractFingerprint": "sha256:8A_q_hf3JaIXT4xRMuoGTW69eu5shzG-A3qeJGaz16c",
+                    "preflightFingerprint": "sha256:wox-jzP7USWu1pvd7QBlgmJWFkQIZzUEODoBvaez-z8",
+                    "metadataJson": "{\"pageOrdinal\":0,\"responseSequence\":1,\"terminal\":false,\"rowCount\":3,\"providerPageSize\":10,\"providerTotalCount\":null,\"paginationEvidence\":null,\"paginationAmbiguous\":null,\"paginationAmbiguityReason\":null,\"zeroObservation\":\"non-empty-page\",\"zeroResultAuthority\":\"unproven\",\"withdrawalPolicy\":\"never-infer\",\"occurrenceRule\":\"fubon/domestic-deposit/observed-composite-v2\",\"providerGuaranteed\":false}"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:4nEM2y268o2QPLlefVCWL4rqy6iZqkSPcGhqWF2Ik1k",
+                    "proofKind": "human-attested-requested-range-all-pages",
+                    "contractFingerprint": "sha256:8A_q_hf3JaIXT4xRMuoGTW69eu5shzG-A3qeJGaz16c",
+                    "preflightFingerprint": "sha256:wox-jzP7USWu1pvd7QBlgmJWFkQIZzUEODoBvaez-z8",
+                    "metadataJson": "{\"pageOrdinal\":1,\"responseSequence\":2,\"terminal\":true,\"rowCount\":0,\"providerPageSize\":10,\"providerTotalCount\":null,\"paginationEvidence\":null,\"paginationAmbiguous\":null,\"paginationAmbiguityReason\":null,\"zeroObservation\":\"empty-page\",\"zeroResultAuthority\":\"unproven\",\"withdrawalPolicy\":\"never-infer\",\"occurrenceRule\":\"fubon/domestic-deposit/observed-composite-v2\",\"providerGuaranteed\":false}"
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:VIEh3iPC4m5abVjTQ9ya0ISrdDArDFFmNf0jeeAuOUs",
+                    "collisionKey": "sha256:Jwb-TJ8sM2zWH4CFh2gmCDfCaiibQxTqqXzdHmBWzNQ",
+                    "providerKey": "sha256:RoSobEHh2aJbAaSBGki0Y518axrF_BK5pUUScOAQVX8",
+                    "contentHash": "sha256:mBLwAV3ILHBiQLkSlo4sGBlnfhJqqNEA39urMG8MfBg",
+                    "sequenceLexeme": "0:0",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc\",\"currency\":\"TWD\",\"date\":\"2026-09-01\",\"time\":\"08:00:00\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"100000\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"100000\",\"scale\":2},\"contentHash\":\"sha256:mBLwAV3ILHBiQLkSlo4sGBlnfhJqqNEA39urMG8MfBg\",\"rowStatusEvidence\":\"explicit-clean-v1\"}",
+                    "amount": {
+                      "coefficient": "100000",
+                      "scale": 2
+                    },
+                    "balanceAfter": {
+                      "coefficient": "100000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "SYNTHETIC SALARY · SYNTHETIC NOTE",
+                    "direction": "inflow",
+                    "sourceTime": {
+                      "localDate": "2026-09-01",
+                      "localTime": "08:00:00",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1788220800000
+                    },
+                    "effectiveOn": "2026-09-01",
+                    "transactionDateTimeLocal": "2026-09-01T08:00:00",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:BMs5V1xRe7SIWQwZ8CVyZMBR518RO9GIFDjoiLtkf68",
+                      "fingerprint": "sha256:hxu4RSO2p17y3En8XC-vdRf4pH4RWo8_DEJ9I1Kj9wk",
+                      "partitionDate": "2026-09-01",
+                      "ordinal": 1
+                    }
+                  },
+                  {
+                    "occurrenceKey": "sha256:-sDI-OFBGv22oXDtzGRWjp2W6HMzR3pnq4i5WRn8azM",
+                    "collisionKey": "sha256:b-GOtRCUmVwcZxJxKLM5mgxvkwH2W7yo0C2gwEbk19g",
+                    "providerKey": "sha256:z_oTVnmCRYvXCKrmC9N6d6aIRvj2tXbK9G0xFA3BRl0",
+                    "contentHash": "sha256:iGV-8R3FJFitSsP0PbeORi9JruGQeMyxiI79bHfgDkc",
+                    "sequenceLexeme": "0:1",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc\",\"currency\":\"TWD\",\"date\":\"2026-09-03\",\"time\":\"09:10:11\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"25000\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"75000\",\"scale\":2},\"contentHash\":\"sha256:iGV-8R3FJFitSsP0PbeORi9JruGQeMyxiI79bHfgDkc\",\"rowStatusEvidence\":\"explicit-clean-v1\"}",
+                    "amount": {
+                      "coefficient": "25000",
+                      "scale": 2
+                    },
+                    "balanceAfter": {
+                      "coefficient": "75000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "放款繳款 · 9991_1122_2333_44測試分行",
+                    "direction": "outflow",
+                    "sourceTime": {
+                      "localDate": "2026-09-03",
+                      "localTime": "09:10:11",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1788397811000
+                    },
+                    "effectiveOn": "2026-09-03",
+                    "transactionDateTimeLocal": "2026-09-03T09:10:11",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:BMs5V1xRe7SIWQwZ8CVyZMBR518RO9GIFDjoiLtkf68",
+                      "fingerprint": "sha256:E54Wd-W9MgM7SbZuXqEfRJy3zoPryPl3TH3WGnzNs0k",
+                      "partitionDate": "2026-09-03",
+                      "ordinal": 1
+                    }
+                  },
+                  {
+                    "occurrenceKey": "sha256:7ve9QiVkty9U6OvLiGsUS1bw_HnXy5VD1ZDrF7nCw_0",
+                    "collisionKey": "sha256:x09P2BTj7-ppd1q8rGnA7W2sfb8ZLExua0nTxOMmoPA",
+                    "providerKey": "sha256:-2u0LEitZChtBIsJ8nNsOUcq3F05li1QfVOvkDgcgzc",
+                    "contentHash": "sha256:5ooT1GAPxCgfGMY9sYCJRhmSTJwj6-55HxLu_SkfcGk",
+                    "sequenceLexeme": "0:2",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc\",\"currency\":\"TWD\",\"date\":\"2026-09-05\",\"time\":\"10:20:30\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"10000\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"65000\",\"scale\":2},\"contentHash\":\"sha256:5ooT1GAPxCgfGMY9sYCJRhmSTJwj6-55HxLu_SkfcGk\",\"rowStatusEvidence\":\"explicit-clean-v1\"}",
+                    "amount": {
+                      "coefficient": "10000",
+                      "scale": 2
+                    },
+                    "balanceAfter": {
+                      "coefficient": "65000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "SYNTHETIC TRANSFER OUT",
+                    "direction": "outflow",
+                    "sourceTime": {
+                      "localDate": "2026-09-05",
+                      "localTime": "10:20:30",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1788574830000
+                    },
+                    "effectiveOn": "2026-09-05",
+                    "transactionDateTimeLocal": "2026-09-05T10:20:30",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:BMs5V1xRe7SIWQwZ8CVyZMBR518RO9GIFDjoiLtkf68",
+                      "fingerprint": "sha256:kBQvqDYm3ZqP-nnR9TNGOKuKB7zKaEpxuObUc0zFh-4",
+                      "partitionDate": "2026-09-05",
+                      "ordinal": 1
+                    }
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:BMs5V1xRe7SIWQwZ8CVyZMBR518RO9GIFDjoiLtkf68",
+                    "startDate": "2026-08-26",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "human-attested-v1"
+                  }
+                ]
+              }
+            }
+          },
+          "relationCommands": [
+            {
+              "kind": "financial.loanRelations.resolve",
+              "request": {
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "integrationNamespace": "fubon",
+                "observedAt": "2026-09-25T00:00:00.000Z",
+                "counterpartyEvidence": [
+                  {
+                    "captureId": "fubon-financial-t+0-dpxNUBxz1737-0",
+                    "sourceRecordKey": "sha256:-sDI-OFBGv22oXDtzGRWjp2W6HMzR3pnq4i5WRn8azM",
+                    "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                    "identityEpochKey": "sha256:Wc-uChIep3jqYX8oPQZ3ts7EcxBf188cPcp8xgJs690",
+                    "accountKey": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                    "accountValue": "9991_1122_2333_44",
+                    "role": "beneficiary",
+                    "purpose": "loan_repayment",
+                    "scope": "loan_contract",
+                    "evidenceKind": "transaction-counterparty-account",
+                    "sourceField": "附註",
+                    "contractVersion": "fubon/deposit-loan-payment-account/v1"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "provider": "fubon",
+          "product": "current-balance",
+          "itemKey": "current-balance:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1",
+                "integrationNamespace": "fubon",
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "identityEpoch": "sha256:Wc-uChIep3jqYX8oPQZ3ts7EcxBf188cPcp8xgJs690",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "fubon/domestic-deposit/current-balance-v1",
+                "contractVersion": "fubon/current-deposit-balance-v1",
+                "subjectDigest": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                "observedAt": "2026-09-25T00:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-24",
+                  "endDate": "2026-09-24",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "fubon/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 2,
+                    "terminal": true,
+                    "metadata": {
+                      "source": "fubon-current-deposit-summary",
+                      "sourceRowCount": 1,
+                      "balanceFieldCount": 2
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:A4sEl5gl4yazol8BakMJHeql2xU4draK1LaT7OFxmwQ",
+                    "collisionKey": "sha256:A4sEl5gl4yazol8BakMJHeql2xU4draK1LaT7OFxmwQ",
+                    "providerKey": "sha256:nNPFP-Lws46DMNeCLWwSTuLdwusHIEBnWnoNVaDQrkg",
+                    "contentHash": "sha256:is050Kwag8PiGFbr1JWCc9UT6RcF54UlInLhvqyWnMc",
+                    "compact": {
+                      "accountNumber": "9990_0000_0001_01",
+                      "accountNickname": "synthetic",
+                      "depositType": "活期",
+                      "branchName": "012",
+                      "currencySourceLexeme": "台幣",
+                      "effectiveAt": "2026-09-24T16:00:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
+                        "status": 200,
+                        "cacheControl": "no-store, no-cache",
+                        "contractVersion": "fubon/current-deposit-balance-v1"
+                      },
+                      "sourceField": "即時餘額",
+                      "balanceKind": "ledger",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "65000",
+                        "scale": 2,
+                        "sourceLexeme": "650.00"
+                      }
+                    },
+                    "sequenceLexeme": "sha256:A4sEl5gl4yazol8BakMJHeql2xU4draK1LaT7OFxmwQ",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:5A4koNVZncUOJmGGfgUUQer4soeH48RxNUIyGSMrYx4",
+                    "collisionKey": "sha256:5A4koNVZncUOJmGGfgUUQer4soeH48RxNUIyGSMrYx4",
+                    "providerKey": "sha256:Ff08VAYO_-ckSwIyI0CO96Z80mATGFDalG0UNSQdAi0",
+                    "contentHash": "sha256:KCeYsQ79SWtKGOi86dxmK5XiMouY2_OO3KNvKGwgHGM",
+                    "compact": {
+                      "accountNumber": "9990_0000_0001_01",
+                      "accountNickname": "synthetic",
+                      "depositType": "活期",
+                      "branchName": "012",
+                      "currencySourceLexeme": "台幣",
+                      "effectiveAt": "2026-09-24T16:00:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
+                        "status": 200,
+                        "cacheControl": "no-store, no-cache",
+                        "contractVersion": "fubon/current-deposit-balance-v1"
+                      },
+                      "sourceField": "可用餘額",
+                      "balanceKind": "available",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "60000",
+                        "scale": 2,
+                        "sourceLexeme": "600.00"
+                      }
+                    },
+                    "sequenceLexeme": "sha256:5A4koNVZncUOJmGGfgUUQer4soeH48RxNUIyGSMrYx4",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:ueZVos9qYq1JAeGu1DCynjLC1gCVJ9eM_khRdIWFaQw",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "65000",
+                    "scale": 2,
+                    "sourceLexeme": "650.00"
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-24T16:00:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "fubon/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:A4sEl5gl4yazol8BakMJHeql2xU4draK1LaT7OFxmwQ",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
+                  "evidenceContractVersion": "fubon/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:A4sEl5gl4yazol8BakMJHeql2xU4draK1LaT7OFxmwQ",
+                  "evidenceEndpoint": "https://ebank.taipeifubon.com.tw/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store, no-cache"
+                },
+                {
+                  "observationKey": "sha256:ueZVos9qYq1JAeGu1DCynjLC1gCVJ9eM_khRdIWFaQw",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "60000",
+                    "scale": 2,
+                    "sourceLexeme": "600.00"
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-24T16:00:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "fubon/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:5A4koNVZncUOJmGGfgUUQer4soeH48RxNUIyGSMrYx4",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
+                  "evidenceContractVersion": "fubon/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:5A4koNVZncUOJmGGfgUUQer4soeH48RxNUIyGSMrYx4",
+                  "evidenceEndpoint": "https://ebank.taipeifubon.com.tw/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store, no-cache"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-statement-excluded-account-identity-ambiguous"
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "deposit-canonical-commit-started",
+      "counts": {
+        "completed": 0,
+        "total": 3,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "deposit-canonical-commit-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}

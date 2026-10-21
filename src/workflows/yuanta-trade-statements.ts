@@ -754,7 +754,7 @@ export async function isYuantaSecurityComponentMissing(
   return page
     .getByText(YUANTA_SECURITY_COMPONENT_MESSAGE, { exact: false })
     .first()
-    .isVisible({ timeout: 1_000 })
+    .isVisible()
     .catch(() => false);
 }
 
@@ -766,7 +766,7 @@ export async function dismissPasswordChangeReminderIfPresent(
     exact: true,
   });
   const visible = await postpone
-    .isVisible({ timeout: 2_000 })
+    .isVisible()
     .catch((error: unknown) => {
       if (
         error instanceof Error &&
@@ -792,13 +792,13 @@ async function isSignedIn(page: Page): Promise<boolean> {
   if (!page.url().includes("/NexusWebTrade/AssetReport/")) return false;
   return await page
     .locator("#btnLogout")
-    .isVisible({ timeout: 2_000 })
+    .isVisible()
     .catch(() => false);
 }
 
 async function acceptDisclaimerIfPresent(page: Page): Promise<void> {
   const checkbox = page.locator("#checkDisclaimer");
-  if (!(await checkbox.isVisible({ timeout: 2_000 }).catch(() => false))) {
+  if (!(await checkbox.isVisible().catch(() => false))) {
     return;
   }
 
@@ -811,7 +811,7 @@ async function dismissPersonalMessageIfPresent(page: Page): Promise<void> {
   if (!page.url().includes("/NexusWebTrade/RA/PersonalMessage")) return;
 
   const closeButton = page.locator("button.close").first();
-  if (!(await closeButton.isVisible({ timeout: 5_000 }).catch(() => false))) {
+  if (!(await closeButton.isVisible().catch(() => false))) {
     return;
   }
 
@@ -1591,7 +1591,7 @@ async function completeTypedCertificateIfPresent(
     requireCredential(credentials, "yuanta_trade_ca_path"),
   );
   const passwordField = page.locator("#jpki_PfxFilePwd");
-  if (!(await passwordField.isVisible({ timeout: 5_000 }).catch(() => false))) {
+  if (!(await passwordField.isVisible().catch(() => false))) {
     const stage: WorkflowHumanAssistanceStage = {
       stageId: "yuanta-trade-certificate-selection",
       title: "Select the YuanTa Trade certificate",
@@ -1625,10 +1625,10 @@ async function completeTypedCertificateIfPresent(
 
 async function submitTypedLoginIfReady(page: Page): Promise<void> {
   const loginButton = page.locator("#loginBtn");
-  if (!(await loginButton.isVisible({ timeout: 2_000 }).catch(() => false))) return;
+  if (!(await loginButton.isVisible().catch(() => false))) return;
 
   const checkbox = page.locator("#chbYCaptchaV2");
-  if (await checkbox.isVisible({ timeout: 1_000 }).catch(() => false)) {
+  if (await checkbox.isVisible().catch(() => false)) {
     const checked = await checkbox.isChecked().catch(() => false);
     if (!checked) {
       throw new Error("YuanTa Trade CAPTCHA checkbox was not completed.");
@@ -1659,7 +1659,7 @@ async function authenticateYuantaTradePage(
     ).switchCaptchaType("A"));
   }
   const audioInput = page.locator("#verificationCode");
-  if (await audioInput.isVisible({ timeout: 2_000 }).catch(() => false)) {
+  if (await audioInput.isVisible().catch(() => false)) {
     await requestYuantaTradeAssistance(
       context,
       yuantaTradeAudioAssistanceStage(page),
@@ -1671,7 +1671,7 @@ async function authenticateYuantaTradePage(
 
   const checkbox = page.locator("#chbYCaptchaV2");
   if (
-    await checkbox.isVisible({ timeout: 2_000 }).catch(() => false) &&
+    await checkbox.isVisible().catch(() => false) &&
     !(await checkbox.isChecked().catch(() => false))
   ) {
     await requestYuantaTradeAssistance(

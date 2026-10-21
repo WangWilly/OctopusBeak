@@ -12,17 +12,12 @@ import {
   sinopacStatementRowsToCsv,
   runSinopacIdentityValidation,
   runSinopacLoginAttempt,
-  sinopacPostSubmitDialogOwner,
   sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
   buildSinopacCurrentDepositBalanceCapture,
 } from "./sinopac-statements.ts";
 import { parseSinopacCurrentDepositBalanceSnapshot } from "./sinopac-current-deposit-balances.ts";
 import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
-import {
-  SINOPAC_DIALOG_OWNER_ENV,
-  sinopacHostDialogOwner,
-} from "../lib/automation/sinopac-captcha.ts";
 
 const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
 const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
@@ -249,7 +244,7 @@ class FakeSinopacLoginPage extends EventEmitter {}
 
 const dialogLoginPage = new FakeSinopacLoginPage();
 let dialogDismissed = false;
-const dialogLoginAttempt = runSinopacLoginAttempt(dialogLoginPage as never, "ses-workflow", {
+const dialogLoginAttempt = runSinopacLoginAttempt(dialogLoginPage as never, {
   submit: async () => {
     dialogLoginPage.emit("dialog", {
       type: () => "alert",
@@ -272,83 +267,6 @@ await assert.rejects(
 assert.equal(dialogDismissed, true);
 assert.equal(dialogLoginPage.listenerCount("dialog"), 0);
 
-assert.equal(
-  sinopacPostSubmitDialogOwner("ses-host", {
-    [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-host"),
-  }),
-  "host",
-);
-assert.equal(
-  sinopacPostSubmitDialogOwner("ses-manual", { HUMAN_ASSISTANCE_HOST_FD: "3" }),
-  "workflow",
-);
-assert.equal(
-  sinopacPostSubmitDialogOwner("ses-manual", {
-    HUMAN_ASSISTANCE_HOST_PATH: "/tmp/contract.jsonl",
-  }),
-  "workflow",
-);
-assert.equal(
-  sinopacPostSubmitDialogOwner("ses-current", {
-    [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-stale"),
-  }),
-  "workflow",
-);
-assert.equal(sinopacPostSubmitDialogOwner("ses-manual", {}), "workflow");
-
-const externalOwnerLoginPage = new FakeSinopacLoginPage();
-let resolveExternalSuccess!: () => void;
-const externalSuccess = new Promise<void>((resolve) => {
-  resolveExternalSuccess = resolve;
-});
-const previousDialogOwner = process.env[SINOPAC_DIALOG_OWNER_ENV];
-process.env[SINOPAC_DIALOG_OWNER_ENV] = sinopacHostDialogOwner("ses-external-owner");
-try {
-  await runSinopacLoginAttempt(externalOwnerLoginPage as never, "ses-external-owner", {
-    submit: async () => {
-      externalOwnerLoginPage.emit("dialog", {
-        type: () => "alert",
-        message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
-        dismiss: async () => {},
-      });
-      resolveExternalSuccess();
-    },
-    waitForSuccess: () => externalSuccess,
-  });
-} finally {
-  if (previousDialogOwner === undefined) delete process.env[SINOPAC_DIALOG_OWNER_ENV];
-  else process.env[SINOPAC_DIALOG_OWNER_ENV] = previousDialogOwner;
-}
-assert.equal(externalOwnerLoginPage.listenerCount("dialog"), 0);
-
-const staleOwnerLoginPage = new FakeSinopacLoginPage();
-let staleOwnerDialogDismissed = false;
-const previousStaleDialogOwner = process.env[SINOPAC_DIALOG_OWNER_ENV];
-process.env[SINOPAC_DIALOG_OWNER_ENV] = sinopacHostDialogOwner("ses-previous");
-try {
-  await assert.rejects(
-    runSinopacLoginAttempt(staleOwnerLoginPage as never, "ses-current", {
-      submit: async () => {
-        staleOwnerLoginPage.emit("dialog", {
-          type: () => "alert",
-          dismiss: async () => {
-            staleOwnerDialogDismissed = true;
-          },
-        });
-      },
-      waitForSuccess: () => new Promise<void>(() => undefined),
-    }),
-    /SinoPac login was interrupted by a browser dialog/,
-  );
-} finally {
-  if (previousStaleDialogOwner === undefined) {
-    delete process.env[SINOPAC_DIALOG_OWNER_ENV];
-  } else {
-    process.env[SINOPAC_DIALOG_OWNER_ENV] = previousStaleDialogOwner;
-  }
-}
-assert.equal(staleOwnerDialogDismissed, true);
-assert.equal(staleOwnerLoginPage.listenerCount("dialog"), 0);
 
 const rows = sinopacApiRowsToStatementRows([
   {

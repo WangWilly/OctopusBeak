@@ -83,7 +83,6 @@ import {
 } from "../src/ledger/pglite/spending-command.ts";
 import {
   createPGliteCanonicalSourceStore,
-  type PGliteCanonicalFinancialCommitBatchRequest,
   type PGliteCanonicalFinancialCommitRequest,
   type PGliteCanonicalSourceAdmissionRequest,
 } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -656,7 +655,6 @@ export function createPGliteFinancialRegistry(
     },
     "financial.source.admit": ([request], options) => source.admit(request, options),
     "financial.source.commit": ([request], options) => source.commit(request, options),
-    "financial.source.commitBatch": ([request], options) => source.commitBatch(request, options),
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),
     "financial.mixed.commit": ([request], options) => commitPGliteCanonicalMixedCapture(store, request, options),
     "financial.balance.capture": ([request], options) => commitPGliteCanonicalBalanceCapture(store, request, options),
