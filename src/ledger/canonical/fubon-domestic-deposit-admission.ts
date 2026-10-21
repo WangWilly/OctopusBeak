@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { canonicalDigest } from "./canonical-digest.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
@@ -814,11 +814,11 @@ function hardSourceOnlyRowDiagnostics(
       if (!amount || !balanceAfter || !time) continue;
       const direction = outflow ? "outflow" : inflow ? "inflow" : null;
       if (!direction) continue;
-      const contentHash = opaqueToken(
+      const contentHash = canonicalDigest(
         "fubon-observed-composite-content-v2",
         ...normalizedOccurrenceIdentityCells(cells),
       );
-      const fence = opaqueToken(
+      const fence = canonicalDigest(
         "fubon-observed-composite-fence-v2",
         identity.subjectDigest,
         FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
@@ -898,7 +898,7 @@ function sourceRowDigest(
   rowOrdinal: number,
   cells: readonly string[],
 ): `sha256:${string}` {
-  return opaqueToken(
+  return canonicalDigest(
     "fubon-source-row-v2",
     String(pageOrdinal),
     String(rowOrdinal),
@@ -909,7 +909,7 @@ function sourceRowDigest(
 function sourceAccountDigest(
   account: FubonDomesticDepositCaptureEvidence["account"],
 ): `sha256:${string}` {
-  return opaqueToken("fubon-source-account-v2", account.value);
+  return canonicalDigest("fubon-source-account-v2", account.value);
 }
 
 function sourcePageMetadata(
@@ -928,11 +928,11 @@ function sourcePageMetadata(
     queryStartDate: sourceDate(page.queryRange.startDate),
     queryEndDate: sourceDate(page.queryRange.endDate),
     selectedAccountDigest,
-    selectedLabelDigest: opaqueToken(
+    selectedLabelDigest: canonicalDigest(
       "fubon-source-account-label-v2",
       page.selectedAccount.label,
     ),
-    branchDigest: opaqueToken(
+    branchDigest: canonicalDigest(
       "fubon-source-branch-v2",
       page.selectedAccount.branchName,
     ),
@@ -1022,7 +1022,7 @@ export function createFubonDomesticDepositSourceEvidence(
           row.rowOrdinal,
           row.cells,
         );
-        const occurrenceKey = opaqueToken(
+        const occurrenceKey = canonicalDigest(
           "fubon-source-structural-occurrence-v2",
           subjectDigest,
           manifest.attestationId,
@@ -1038,7 +1038,7 @@ export function createFubonDomesticDepositSourceEvidence(
         return {
           occurrenceKey,
           providerKey: rowDigest,
-          contentHash: opaqueToken("fubon-source-content-v2", rowDigest),
+          contentHash: canonicalDigest("fubon-source-content-v2", rowDigest),
           compact: {
             evidenceVersion: FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
             pageOrdinal: page.pageOrdinal,
@@ -1049,7 +1049,7 @@ export function createFubonDomesticDepositSourceEvidence(
             sourceOccurrenceObserved: sourceOccurrenceId.length > 0,
             ...(sourceOccurrenceId
               ? {
-                  sourceOccurrenceDigest: opaqueToken(
+                  sourceOccurrenceDigest: canonicalDigest(
                     "fubon-source-occurrence-v2",
                     sourceOccurrenceId,
                   ),
@@ -1282,12 +1282,6 @@ export class FubonDomesticDepositFinancialAdmissionError extends Error {
   }
 }
 
-function opaqueToken(...parts: string[]): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(parts.join("\u0000"))
-    .digest("base64url")}`;
-}
-
 function validOpaque(value: string): value is `sha256:${string}` {
   return /^sha256:[A-Za-z0-9_-]+$/.test(value);
 }
@@ -1397,14 +1391,14 @@ export function deriveFubonDomesticDepositAccountIdentity(
     accountNo: subjectDigest,
     sourceConnectionKey:
       sourceConnectionKey ??
-      opaqueToken(
+      canonicalDigest(
         "fubon-source-connection-v2",
         "fubon",
         FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
         manifest.attestationId,
         manifest.evidenceVersion,
       ),
-    identityEpochKey: opaqueToken(
+    identityEpochKey: canonicalDigest(
       "fubon-source-epoch-v2",
       FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
       manifest.attestationId,
@@ -1848,11 +1842,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
     // row out of the financial record set when the workflow explicitly uses
     // the partial admission mode.
     if (sourceOnlyRow) continue;
-    const contentHash = opaqueToken(
+    const contentHash = canonicalDigest(
       "fubon-observed-composite-content-v2",
       ...normalizedOccurrenceIdentityCells(cells),
     );
-    const fence = opaqueToken(
+    const fence = canonicalDigest(
       "fubon-observed-composite-fence-v2",
       identity.subjectDigest,
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
@@ -1865,7 +1859,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       balanceAfter.coefficient,
       String(balanceAfter.scale),
     );
-    const occurrenceKey = opaqueToken(
+    const occurrenceKey = canonicalDigest(
       "fubon-observed-composite-occurrence-v2",
       fence,
       contentHash,
@@ -1907,13 +1901,13 @@ function normalizeFubonDomesticDepositFinancialCapture(
       diagnostics: [...new Set(diagnostics)],
     };
 
-  const contractFingerprint = opaqueToken(
+  const contractFingerprint = canonicalDigest(
     "fubon-contract-v3",
     FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     semantics.evidenceVersion,
     FUBON_HUMAN_ATTESTED_V1_MANIFEST.provenance.sourceCaptureFingerprint,
   );
-  const preflightFingerprint = opaqueToken(
+  const preflightFingerprint = canonicalDigest(
     "fubon-preflight-v3",
     identity.subjectDigest,
     input.capture.queryRange.startDate,
@@ -1923,7 +1917,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
   const endDate = input.capture.queryRange.endDate.replace(/\//g, "-");
   const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
     rows: groupRows,
-    scopeKey: opaqueToken(
+    scopeKey: canonicalDigest(
       "fubon-domestic-deposit-occurrence-scope-v1",
       identity.subjectDigest,
       FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -2005,7 +1999,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       rowCount: allowSourceOnlyRows
         ? financialRowCountByPage.get(page.pageOrdinal) ?? 0
         : page.rows.length,
-      responseDigest: opaqueToken(
+      responseDigest: canonicalDigest(
         "fubon-page-v3",
         String(page.pageOrdinal),
         String(page.responseSequence),
