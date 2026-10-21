@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { canonicalDigest } from "./canonical-digest.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
@@ -118,15 +118,6 @@ function cell(value: string): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-function digest(domain: string, ...values: string[]): `sha256:${string}` {
-  const hash = createHash("sha256");
-  hash.update(domain);
-  for (const value of values) {
-    hash.update("\0");
-    hash.update(value);
-  }
-  return `sha256:${hash.digest("base64url")}`;
 }
 function validDate(value: string): boolean {
   if (!SLASH_DATE.test(value)) return false;
@@ -366,7 +357,7 @@ export function createCtbcDomesticDepositSourceEvidence(
   if (!captureId.trim())
     throw new Error("CTBC source evidence capture ID is required.");
   const account = cell(capture.account.accountId);
-  const subjectDigest = digest("ctbc-source-subject-v1", account);
+  const subjectDigest = canonicalDigest("ctbc-source-subject-v1", account);
   const allTerminal = capture.responses.every(
     (page) => page.terminal && page.nextKey === null,
   );
@@ -374,8 +365,8 @@ export function createCtbcDomesticDepositSourceEvidence(
   return {
     captureId: captureId.trim(),
     integrationNamespace: "ctbc",
-    sourceConnectionKey: digest("ctbc-source-connection-v1", "personal-main"),
-    identityEpoch: digest(
+    sourceConnectionKey: canonicalDigest("ctbc-source-connection-v1", "personal-main"),
+    identityEpoch: canonicalDigest(
       "ctbc-source-identity-epoch-v1",
       CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     ),
@@ -416,27 +407,27 @@ export function createCtbcDomesticDepositSourceEvidence(
     records: capture.responses.flatMap((response) =>
       response.rows.map((row) => {
         const cells = row.values.map(cell);
-        const rowDigest = digest(
+        const rowDigest = canonicalDigest(
           "ctbc-source-row-v1",
           String(response.rangeOrdinal),
           String(row.rowOrdinal),
           ...cells,
         );
         return {
-          occurrenceKey: digest(
+          occurrenceKey: canonicalDigest(
             "ctbc-source-occurrence-v1",
             subjectDigest,
             String(response.rangeOrdinal),
             String(row.rowOrdinal),
             rowDigest,
           ),
-          collisionKey: digest(
+          collisionKey: canonicalDigest(
             "ctbc-source-collision-v1",
             subjectDigest,
             rowDigest,
           ),
           providerKey: rowDigest,
-          contentHash: digest("ctbc-source-content-v1", rowDigest),
+          contentHash: canonicalDigest("ctbc-source-content-v1", rowDigest),
           compact: {
             evidenceVersion: capture.evidenceVersion,
             rangeOrdinal: response.rangeOrdinal,
@@ -542,7 +533,7 @@ function financialRecord(
   const description = cells[3] ?? "";
   const note = cells[7] ?? "";
   const displayDescription = combineDomesticDepositDescription(description, note);
-  const core = digest(
+  const core = canonicalDigest(
     "ctbc-observed-composite-fence-v1",
     subjectDigest,
     accountingDate,
@@ -554,14 +545,14 @@ function financialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
-  const occurrenceKey = digest("ctbc-observed-composite-occurrence-v1", core, description, note);
+  const occurrenceKey = canonicalDigest("ctbc-observed-composite-occurrence-v1", core, description, note);
   return {
     diagnostics,
     record: {
       occurrenceKey,
       collisionKey: core,
       providerKey: core,
-      contentHash: digest("ctbc-observed-content-v1", ...cells),
+      contentHash: canonicalDigest("ctbc-observed-content-v1", ...cells),
       sequenceLexeme: `${response.rangeOrdinal}:${row.rowOrdinal}`,
       compactJson: JSON.stringify({
         evidenceVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -572,8 +563,8 @@ function financialRecord(
         direction,
         amount,
         balanceAfter,
-        descriptionDigest: digest("ctbc-description-v1", description),
-        noteDigest: digest("ctbc-note-v1", note),
+        descriptionDigest: canonicalDigest("ctbc-description-v1", description),
+        noteDigest: canonicalDigest("ctbc-note-v1", note),
         providerGuaranteed: false,
       }),
       amount,
@@ -631,7 +622,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
     input.capture.responses.every((response) => response.rows.length === 0)
   )
     diagnostics.push("absence-authority-mixed");
-  const subjectDigest = digest(
+  const subjectDigest = canonicalDigest(
     "ctbc-source-subject-v1",
     cell(input.capture.account.accountId),
   );
@@ -650,7 +641,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
     return { status: "blocked", capture: null, diagnostics: unique };
   const startDate = input.capture.queryRange.startDate.replaceAll("/", "-");
   const endDate = input.capture.queryRange.endDate.replaceAll("/", "-");
-  const contractFingerprint = digest(
+  const contractFingerprint = canonicalDigest(
     "ctbc-contract-v1",
     CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     CTBC_HUMAN_ATTESTED_V1_MANIFEST.provenance.attestationContractFingerprint,
@@ -659,7 +650,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
   try {
     occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
       rows: records.map((record) => ({ record, partitionDate: record.effectiveOn })),
-      scopeKey: digest(
+      scopeKey: canonicalDigest(
         "ctbc-domestic-deposit-occurrence-scope-v1",
         subjectDigest,
         CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -688,7 +679,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
       contractVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
       identity: {
         integrationNamespace: "ctbc",
-        sourceConnectionKey: digest(
+        sourceConnectionKey: canonicalDigest(
           "ctbc-source-connection-v1",
           "personal-main",
         ),
@@ -715,7 +706,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
         completenessRuleVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
         absenceAuthority: allNoData ? "provider-explicit-no-data" : null,
         contractFingerprint,
-        preflightFingerprint: digest(
+        preflightFingerprint: canonicalDigest(
           "ctbc-preflight-v1",
           subjectDigest,
           startDate,
@@ -746,7 +737,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
         responseCode: "200",
         terminal: index === input.capture.responses.length - 1,
         rowCount: response.rows.length,
-        responseDigest: digest(
+        responseDigest: canonicalDigest(
           "ctbc-response-v1",
           String(response.rangeOrdinal),
           response.code,
@@ -754,7 +745,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
         ),
         proofKind: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_COMPLETENESS_BASIS,
         contractFingerprint,
-        preflightFingerprint: digest(
+        preflightFingerprint: canonicalDigest(
           "ctbc-preflight-v1",
           subjectDigest,
           startDate,

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { canonicalDigest } from "../canonical/canonical-digest.ts";
 import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
@@ -32,15 +32,6 @@ type SinopacIdentity = {
   identityEpochKey: `sha256:${string}`;
   subjectDigest: `sha256:${string}`;
 };
-
-function sinopacDigest(
-  domain: string,
-  ...values: readonly string[]
-): `sha256:${string}` {
-  const hash = createHash("sha256").update(domain);
-  for (const value of values) hash.update("\0").update(value);
-  return `sha256:${hash.digest("base64url")}`;
-}
 
 function stableSourceJson(value: Record<string, unknown>): string {
   const canonicalize = (entry: unknown): unknown =>
@@ -109,17 +100,17 @@ function deriveSinopacIdentity(
   capture: SinopacStatementValidatedCapture,
 ): SinopacIdentity {
   const product = capture.product;
-  const subjectDigest = sinopacDigest(
+  const subjectDigest = canonicalDigest(
     `sinopac-${product}-subject-v1`,
     normalizedCell(capture.account.value),
     normalizedCell(capture.account.currency),
   );
   return {
-    sourceConnectionKey: sinopacDigest(
+    sourceConnectionKey: canonicalDigest(
       `sinopac-${product}-connection-v1`,
       product,
     ),
-    identityEpochKey: sinopacDigest(
+    identityEpochKey: canonicalDigest(
       `sinopac-${product}-identity-epoch-v1`,
       product,
     ),
@@ -174,11 +165,11 @@ function sinopacFinancialRecord(
   if (!amount || !direction || !balanceAfter || diagnostics.length > 0)
     return { record: null, diagnostics };
   const identity = deriveSinopacIdentity(capture);
-  const contentHash = sinopacDigest(
+  const contentHash = canonicalDigest(
     "sinopac-observed-content-v1",
     ...values.map(normalizedCell),
   );
-  const collisionKey = sinopacDigest(
+  const collisionKey = canonicalDigest(
     "sinopac-observed-composite-fence-v1",
     identity.subjectDigest,
     accountingDate,
@@ -190,7 +181,7 @@ function sinopacFinancialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
-  const occurrenceKey = sinopacDigest(
+  const occurrenceKey = canonicalDigest(
     "sinopac-observed-composite-occurrence-v1",
     collisionKey,
     normalizedCell(values[3]),
@@ -214,12 +205,12 @@ function sinopacFinancialRecord(
         direction,
         amount,
         balanceAfter,
-        descriptionDigest: sinopacDigest(
+        descriptionDigest: canonicalDigest(
           "sinopac-description-v1",
           normalizedCell(values[3]),
         ),
-        noteDigest: sinopacDigest("sinopac-note-v1", normalizedCell(values[7])),
-        referenceDigest: sinopacDigest(
+        noteDigest: canonicalDigest("sinopac-note-v1", normalizedCell(values[7])),
+        referenceDigest: canonicalDigest(
           "sinopac-reference-v1",
           normalizedCell(values[8]),
         ),
@@ -314,12 +305,12 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   const queryEnd = canonicalSinopacDate(input.capture.queryRange.endDate);
   if (!queryStart || !queryEnd)
     return { status: "blocked", capture: null, diagnostics: ["query-range-invalid"] };
-  const contractFingerprint = sinopacDigest(
+  const contractFingerprint = canonicalDigest(
     "sinopac-contract-v1",
     SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
   );
-  const preflightFingerprint = sinopacDigest(
+  const preflightFingerprint = canonicalDigest(
     "sinopac-preflight-v1",
     identity.subjectDigest,
     queryStart,
@@ -329,7 +320,7 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   try {
     occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
       rows: groupRows,
-      scopeKey: sinopacDigest(
+      scopeKey: canonicalDigest(
         "sinopac-domestic-deposit-occurrence-scope-v1",
         identity.subjectDigest,
         SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
