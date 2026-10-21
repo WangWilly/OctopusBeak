@@ -162,7 +162,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
       launchVerificationSettings: {},
-      workflowPorts: { financialCommit: committedFinancialCommit() },
+      workerPorts: { financialCommit: committedFinancialCommit() },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
     assert.equal(firstResult.status, "completed");
@@ -210,7 +210,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       taskRunId: rejectedRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
       launchVerificationSettings: {},
-      workflowPorts: { financialCommit: rejectedCommit },
+      workerPorts: { financialCommit: rejectedCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
     assert.equal(rejectedResult.status, "failed");
@@ -228,7 +228,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       },
       launchEnv: testCredentialEnvironment(),
       launchVerificationSettings: {},
-      workflowPorts: { financialCommit: committedFinancialCommit() },
+      workerPorts: { financialCommit: committedFinancialCommit() },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000),
     });
     // Wait until the run is actively executing, then shut down.

@@ -102,7 +102,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit },
+      workerPorts: { financialCommit },
       workflowBrowserPortFactory: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;

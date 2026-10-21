@@ -110,7 +110,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit, accountIdentity },
+      workerPorts: { financialCommit, accountIdentity },
       workflowBrowserPortFactory: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
