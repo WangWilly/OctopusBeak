@@ -1912,7 +1912,7 @@ async function collectAndCommitSinopacStatements(
     signal,
   });
   if (committed.status !== "completed") {
-    await overrides.event?.("commit", "canonical-commit-rejected", {
+    await overrides.event?.("commit", signal?.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed", {
       completed: committed.committedCount,
       total: commitItems.length,
     });
