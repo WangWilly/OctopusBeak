@@ -13,6 +13,7 @@ import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { createPGlitePairingPerformanceFixture } from "../src/ledger/pglite/spending-performance-fixture.ts";
 import { spendingPairingReportContext } from "../src/lib/spending/model.ts";
 import { record, singleCategory, view } from "./spending-canonical-fixture.mjs";
+import { chooseSpendingMonth } from "./spending-month.mjs";
 import {
   createSpendingViteServer,
   spendingDesktopApiInitScript,
@@ -67,6 +68,7 @@ function transactionRecord(candidate) {
       effectiveDateBasis: candidate.effectiveDateBasis,
     },
     items: [],
+    category: { mode: "absent" },
     possibleDuplicate: false,
     candidateIds: [],
     link: null,
@@ -122,6 +124,7 @@ function invoiceRecord(invoiceId, occurrenceValue = "2025-01-01") {
     },
     transaction: null,
     items: [],
+    category: { mode: "absent" },
     possibleDuplicate: false,
     candidateIds: [],
     link: null,
@@ -146,6 +149,7 @@ function linkedRecord(index) {
     invoice: invoiceView,
     transaction: transactionView,
     items: [],
+    category: { mode: "absent" },
     possibleDuplicate: false,
     candidateIds: [],
     link: {
@@ -334,7 +338,14 @@ async function runSingle(runNumber) {
     const uiWorkerStartupMs = actual.startupMs;
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    await page.clock.setFixedTime(new Date("2026-12-31T12:00:00+08:00"));
+    // page.clock also fakes performance, which this benchmark measures with, so pin only Date.
+    await page.addInitScript((now) => {
+      const RealDate = Date;
+      globalThis.Date = class extends RealDate {
+        constructor(...args) { super(...(args.length === 0 ? [now] : args)); }
+        static now() { return now; }
+      };
+    }, Date.parse("2026-12-31T12:00:00+08:00"));
     const errors = [];
     const bridgeTimings = [];
     const prewarmVersions = [];
@@ -426,6 +437,7 @@ async function runSingle(runNumber) {
       window.__pairingCandidateRenderedAt = null;
       window.__pairingConfirmRenderedAt = null;
       window.__pairingConfirmArmed = false;
+      window.__pairingConfirmBusyAt = null;
       window.__pairingSelectedTransactionId = null;
       window.__pairingPrewarmVersions = [];
       window.__pairingPrewarmStarted = false;
@@ -453,8 +465,10 @@ async function runSingle(runNumber) {
             window.__pairingCandidateRenderedAt === null &&
             document.querySelector("[data-pairing-dialog] input[name='spending-payment']")
           ) window.__pairingCandidateRenderedAt = performance.now();
-          if (document.querySelector('[data-pairing-feedback="confirm-busy"]'))
+          if (!window.__pairingConfirmArmed && document.querySelector('[data-pairing-feedback="confirm-busy"]')) {
             window.__pairingConfirmArmed = true;
+            window.__pairingConfirmBusyAt = performance.now();
+          }
           if (
             window.__pairingConfirmArmed &&
             window.__pairingConfirmRenderedAt === null &&
@@ -512,7 +526,8 @@ async function runSingle(runNumber) {
     });
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
-    await page.locator(".month-picker select").selectOption(selectedCandidate.occurrence.value.slice(0, 7));
+    await chooseSpendingMonth(page, selectedCandidate.occurrence.value.slice(0, 7));
+    await page.locator(`[data-purchase-record][data-purchase-id="${invoiceRecord.purchaseId}"]`).click({ timeout: 30_000 });
     await page.locator("[data-open-pairing]").first().waitFor({ timeout: 30_000 });
     const initialRenderedRecordCount = await page.locator("[data-purchase-record]").count();
     await page.waitForFunction(() => window.__pairingPrewarmStarted === true, undefined, { timeout: 30_000 });
@@ -541,8 +556,12 @@ async function runSingle(runNumber) {
       window.__pairingStartInteraction("confirm-complete");
     });
     await page.locator("[data-confirm-direct-pair]").click();
-    await page.locator('[data-pairing-dialog] [data-pairing-feedback="confirm-busy"]').waitFor({ state: "visible", timeout: 30_000 });
-    const confirmFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm-feedback"));
+    // A fast confirm can show and drop its busy state between Playwright polls.
+    await page.waitForFunction(() => window.__pairingConfirmBusyAt !== null, undefined, { timeout: 30_000 });
+    const confirmFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(
+      "confirm-feedback",
+      window.__pairingConfirmBusyAt,
+    ));
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
     await page.locator(`[data-purchase-record][data-basis="linked"][data-transaction-id="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
     const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(

@@ -107,47 +107,50 @@
       </AreaChart>
     </div>
     <div class="pace-strip" data-daily-strip>
-      <BarChart
-        data={reading.days}
-        x="day"
-        y="value"
-        xDomain={reading.days.map((day) => day.day)}
-        c="tone"
-        cDomain={["spend", "heavy", "refund", "quiet", "future"]}
-        cRange={["color-mix(in oklch, var(--accent) 55%, transparent)", "var(--accent)", "var(--danger)", "transparent", "transparent"]}
-        height={96}
-        bandPadding={BAND_PADDING}
-        rule={false}
-        padding={{ top: 6, right: PLOT_RIGHT, bottom: 24, left: PLOT_LEFT }}
-        tooltipContext={{ mode: "band", onclick: selectDay }}
-        props={{
-          xAxis: { format: dayTick, ticks: reading.days.map((day) => day.day), tickLabelProps: { class: "strip-day-tick" } },
-          yAxis: {
-            format: (value: unknown) => compactAmount.format(Number(value)),
-            tickLabelProps: { "data-sensitive": "" },
-            ticks: 2,
-          },
-        }}
-      >
-        {#snippet marks()}
-          <Bars data={stripBars} radius={2} rounded="edge" key={(day: DayReading) => day.date} />
-          {#if selected && selected.value !== 0}
-            <Bars data={[selected]} radius={2} rounded="edge" fill="none" stroke="var(--fg)" strokeWidth={2} class="strip-selected" />
-          {/if}
-        {/snippet}
-        {#snippet tooltip({ context })}
-          <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
-            {#snippet children({ data })}
-              {#if data.tone !== "future"}
-                <div class="sparkline-tooltip-body">
-                  <span>{dayText(data.date)} · {$t.purchaseSpending.dayPurchasesCount(data.recordCount)}</span>
-                  <strong class="money" data-sensitive>{amountText(data.net)}</strong>
-                </div>
-              {/if}
-            {/snippet}
-          </Tooltip.Root>
-        {/snippet}
-      </BarChart>
+      <!-- A new month swaps the band domain and the keyed bars in separate ticks; remount instead. -->
+      {#key reading.days[0]?.date}
+        <BarChart
+          data={reading.days}
+          x="day"
+          y="value"
+          xDomain={reading.days.map((day) => day.day)}
+          c="tone"
+          cDomain={["spend", "heavy", "refund", "quiet", "future"]}
+          cRange={["color-mix(in oklch, var(--accent) 55%, transparent)", "var(--accent)", "var(--danger)", "transparent", "transparent"]}
+          height={96}
+          bandPadding={BAND_PADDING}
+          rule={false}
+          padding={{ top: 6, right: PLOT_RIGHT, bottom: 24, left: PLOT_LEFT }}
+          tooltipContext={{ mode: "band", onclick: selectDay }}
+          props={{
+            xAxis: { format: dayTick, ticks: reading.days.map((day) => day.day), tickLabelProps: { class: "strip-day-tick" } },
+            yAxis: {
+              format: (value: unknown) => compactAmount.format(Number(value)),
+              tickLabelProps: { "data-sensitive": "" },
+              ticks: 2,
+            },
+          }}
+        >
+          {#snippet marks()}
+            <Bars data={stripBars} radius={2} rounded="edge" key={(day: DayReading) => day.date} />
+            {#if selected && selected.value !== 0}
+              <Bars data={[selected]} radius={2} rounded="edge" fill="none" stroke="var(--fg)" strokeWidth={2} class="strip-selected" />
+            {/if}
+          {/snippet}
+          {#snippet tooltip({ context })}
+            <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
+              {#snippet children({ data })}
+                {#if data.tone !== "future"}
+                  <div class="sparkline-tooltip-body">
+                    <span>{dayText(data.date)} · {$t.purchaseSpending.dayPurchasesCount(data.recordCount)}</span>
+                    <strong class="money" data-sensitive>{amountText(data.net)}</strong>
+                  </div>
+                {/if}
+              {/snippet}
+            </Tooltip.Root>
+          {/snippet}
+        </BarChart>
+      {/key}
     </div>
     {#if reading.heavyThreshold && reading.days.some((day) => day.tone === "heavy")}
       <p class="strip-legend"><span class="strip-swatch" aria-hidden="true"></span>{$t.spendingInsight.heavyLegend} <span class="money" data-sensitive>{amountText(reading.heavyThreshold)}</span></p>

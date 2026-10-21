@@ -437,7 +437,7 @@
     {/if}
 
     <div class="block-frame">
-      <section class="card month-overview" data-month-panel aria-labelledby="spending-month-title">
+      <section class="card month-overview" data-month-panel data-month={activeMonth} aria-labelledby="spending-month-title">
         <div class="month-summary">
           <header class="month-head">
             <div class="month-nav">
@@ -767,6 +767,7 @@
                 type="button"
                 class="purchase-record"
                 data-purchase-record
+                data-purchase-id={record.purchaseId}
                 data-basis={record.basis}
                 data-transaction-id={record.transaction?.transactionId ?? ""}
                 data-possible-duplicate={record.possibleDuplicate}

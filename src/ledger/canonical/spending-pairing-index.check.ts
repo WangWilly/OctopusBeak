@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createSpendingManualPairingIndex,
   rankSpendingManualPaymentCandidates,
+  spendingManualPaymentRanking,
 } from "./spending-manual-pairing.ts";
 import type {
   SpendingMatchingInvoice,
@@ -82,4 +83,23 @@ test("indexed rank results are cached per invoice within a data version", () => 
   const first = rankSpendingManualPaymentCandidates(invoice(), index);
   const second = rankSpendingManualPaymentCandidates(invoice(), index);
   assert.strictEqual(second, first);
+});
+
+test("ranking pages and lookups match the complete unindexed order", () => {
+  const transactions = Array.from({ length: 60 }, (_, index) => transaction(
+    `tx-${String(index).padStart(2, "0")}`,
+    String(990 + (index % 7) * 5),
+    index % 11 === 0 ? "USD" : "TWD",
+    `2026-09-${String(1 + (index % 9)).padStart(2, "0")}`,
+    index % 3 === 0 ? "Shop Taipei" : `Other ${index}`,
+  ));
+  const expected = rankSpendingManualPaymentCandidates(invoice("2026-09-04"), transactions);
+  const ranking = spendingManualPaymentRanking(invoice("2026-09-04"), createSpendingManualPairingIndex(9, transactions));
+  assert.equal(ranking.total, expected.length);
+  for (const [offset, limit] of [[0, 7], [5, 13], [20, 50], [58, 10], [60, 5]] as const)
+    assert.deepEqual(ranking.page(offset, limit), expected.slice(offset, offset + limit), `page ${offset}+${limit}`);
+  for (const candidate of [expected[0]!, expected[33]!, expected.at(-1)!])
+    assert.deepEqual(ranking.find(candidate.transactionId), candidate);
+  assert.equal(ranking.find("missing"), undefined);
+  assert.deepEqual(ranking.all(), expected);
 });

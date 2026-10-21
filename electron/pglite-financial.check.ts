@@ -178,11 +178,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   }
 }
 
-test("pairing prewarm checks the commit version without materializing Spending", async () => {
-  const requested: string[] = [];
+test("pairing prewarm builds the version's pairing index without materializing Spending", async () => {
+  const requested: unknown[] = [];
   const financial = {
-    request: async (operation: string) => {
-      requested.push(operation);
+    request: async (operation: string, args: readonly unknown[]) => {
+      requested.push([operation, ...args]);
       return 7;
     },
   } as unknown as PGliteFinancialPort;
@@ -192,7 +192,7 @@ test("pairing prewarm checks the commit version without materializing Spending",
   assert.deepEqual(await prewarmPGlitePairingCandidates(financial, { dataVersion: 6 }), {
     status: "stale", dataVersion: 7, requestedVersion: 6,
   });
-  assert.deepEqual(requested, ["financial.spending.version", "financial.spending.version"]);
+  assert.deepEqual(requested, [["financial.spending.prewarmPairing", 7], ["financial.spending.prewarmPairing", 6]]);
 });
 
 test("one worker exposes named financial reads/writes and complete live snapshots", async () => {
