@@ -1,23 +1,29 @@
-# Domestic deposit admission
+# No shared domestic deposit admission module
 
-Status: proposed
+Status: rejected
 
 ## Decision
 
-Six bank deposit workflows (CTBC, Post, HNCB, Yuanta, Fubon, and SinoPac domestic) admit their captures through one shared [Domestic Deposit Admission](../../CONTEXT.md). Each bank contributes a Deposit Source Adapter covering row decoding, account identity and account-number evidence, Identity Epoch derivation, completeness proof, source-only diagnostics, and the current-balance match. The admission returns the items the workflow hands to the Canonical Financial Commit, including the choice between a mixed source-and-deposit commit and a single deposit commit, so that choice is made in one place.
+The six bank deposit admissions (CTBC, Post, HNCB, Yuanta, Fubon, and SinoPac domestic) stay separate modules. They share only `canonicalDigest`, the SHA-256 domain digest every one of them already computed byte for byte. A shared admission module with one Deposit Source Adapter per bank, and typed commit submissions in place of the PGlite commands workflows build, were both proposed and rejected after reading all six banks.
 
-Before this decision, the six banks each held 750 to 2,100 lines repeating one stage sequence and the same generic helpers. Each used its own source-only fallback list and its own rule for matching a current balance to an admitted account. A fix to one bank's identity or validation did not reach the others.
+The banks looked alike from outside: 750 to 2,100 lines each, the same four stage names, and repeated helper names. Inside, the parts a shared module would own differ per bank, and most of them are identity formulas that [ADR 0035](0035-source-contract-catalog-and-rule-admission.md) freezes:
+
+- **Occurrence key fields.** CTBC and Post hash description and note. Yuanta adds a check number. HNCB adds depositor and reference. SinoPac hashes three raw columns. Fubon hashes the fence and the content hash.
+- **Fence fields.** Fubon also includes the attestation ID, evidence version, currency, and a combined date-time.
+- **Record body.** The compact JSON uses `subjectDigest` or `accountDigest`, carries different extra digests, and SinoPac serializes it with a stable key order. `effectiveOn` is the accounting date for CTBC and Post but the transaction date for HNCB and SinoPac. Occurrence groups partition by `effectiveOn` for CTBC, by the local transaction date for Post and HNCB, and by the accounting date for Yuanta.
+- **Capture semantics.** SinoPac's effective time is the transaction time at minute precision. The others use the accounting date at second precision. HNCB, Yuanta, and Fubon carry their semantics in their own objects.
+- **Orchestration.** CTBC, Post, HNCB, and SinoPac run their stages inline. Yuanta and Fubon run through `collectSelectedProducts`, with different event codes that runtime suffix regexes and the dashboard consume.
+
+An adapter would have to pass every one of these as a parameter. Its interface would be as wide as the code it replaced, so deleting the module would only move that code back into each bank.
 
 ## Considered options
 
-- **Run admission inside the commit, in the App process, and pass only decoded rows across the worker seam.** Rejected for now. This would validate each capture once instead of twice, but it moves every bank adapter into the App process and moves admission failures out of the workflow's validation stage. Admission stays a pure function in the worker. `pglite/deposit.ts` keeps revalidating at the seam, because the admission brand cannot cross serialization.
-- **Fold Cathay and LINE Bank into the same adapter interface.** Rejected. Cathay validates a lossless-JSON sync input, and LINE Bank admits through preflight evidence and its v13 human-attested contract. Fitting either one would widen the adapter interface for all six banks. Each may join later through its own decision.
-- **Let the admission module emit stage events, unifying the event codes across workflows.** Deferred. The two orchestrations (inline workflows, and `collectSelectedProducts` for Yuanta and Fubon) emit different codes, which runtime suffix regexes and the dashboard consume. Unifying them is a separate change, so the admission module returns results and emits nothing.
-- **Typed commit submissions in place of the PGlite commands every workflow builds, with the commit choosing the command, the atomic grouping, and the order.** Rejected after reading the commit side. The commit cannot choose the grouping: Cathay deliberately commits all of one run's domestic statements as one atomic item, and only the workflow knows that. It cannot choose the command either: a mixed commit with one step is not equivalent to that step's own command, because the direct commit turns a database error into a typed admission error that the run records as an item failure, while the mixed commit lets it propagate as a fatal run failure. Every other kind maps one-to-one to its command, so the submission type would only rename the commands across twenty workflows, and deleting it would remove no complexity. The useful part, which deposit captures commit with their source evidence, belongs to Domestic Deposit Admission.
+- **A shared admission module with a Deposit Source Adapter per bank.** Rejected for the reasons above.
+- **Typed commit submissions, with the commit choosing the command, the atomic grouping, and the order.** Rejected. The commit cannot choose the grouping, because Cathay deliberately commits all of one run's domestic statements as one atomic item and only the workflow knows that. It cannot choose the command either. A mixed commit with one step is not equivalent to that step's own command: the direct commit turns a database error into a typed admission error that the run records as an item failure, while the mixed commit lets the error propagate as a fatal run failure. Every other kind maps one-to-one to its command, so the submission type would only rename commands across twenty workflows.
+- **Relation commands as a list built with the item, instead of a callback after commit.** Rejected. Building Yuanta's loan relation evidence can throw for a complete account with no records in range. Inside the post-commit callback, that becomes a relation warning and the loan still commits. Built with the item, it fails the whole run.
 
 ## Consequences
 
-- Behavior is frozen. Golden checks under `src/workflows/deposit-commit-goldens/` record each bank's commit items and progress events before the refactor, and they must not change. Identity, fingerprint, and Identity Epoch formulas stay byte-identical per bank ([ADR 0035](0035-source-contract-catalog-and-rule-admission.md)). A shared helper replaces a bank's copy only where the goldens prove the outputs are identical.
-- Relation follow-through is unchanged ([ADR 0016](0016-evidence-gated-loan-repayment-relations.md), [ADR 0020](0020-shared-financial-admission-and-relation-follow-through.md)).
-- Workflows outside the six banks keep building PGlite commands directly.
-- Each bank module keeps its file name but exports only its adapter, plus the constants that the route registry and attestation need.
+- Golden checks under `src/workflows/deposit-commit-goldens/` record what each of the six banks hands to the Canonical Financial Commit, including its progress events. A change to any bank's admission is checked against them, and `UPDATE_DEPOSIT_GOLDENS=1` rewrites a golden only when the change is intended.
+- A bug in one bank's admission is fixed in that bank. Before copying a fix to another bank, check that bank's formula, because the formulas differ on purpose.
+- Revisit this decision only if several banks move to one provider-independent record formula. That would itself need a new identity epoch and a purge-and-recollect under ADR 0035.
