@@ -21,7 +21,7 @@ import {
   readYuantaBig5CsvFromAnchor,
   yuantaObservedAt,
 } from "./yuanta-statements.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,

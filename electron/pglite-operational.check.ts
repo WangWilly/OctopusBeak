@@ -167,7 +167,7 @@ test("the operational runtime requires its PGlite data directory", () => {
 test("Electron main starts the required PGlite provider without SQLite startup", async () => {
   const source = await readFile(new URL("./main.ts", import.meta.url), "utf8");
   assert.match(source, /createPGliteOperationalRuntime\(/u);
-  assert.match(source, /recoverInterruptedAutomationRuns\(operationalRuntime\.provider\)/u);
+  assert.match(source, /createAutomationRuntime\(operationalRuntime\.provider\)[\s\S]*?runtime\.recover\(\)/u);
   assert.doesNotMatch(source, /initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/u);
 });
 

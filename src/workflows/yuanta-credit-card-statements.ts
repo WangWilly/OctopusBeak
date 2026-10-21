@@ -33,7 +33,7 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   deriveYuantaSourceConnectionKey,
   yuantaSourceConnectionScope,

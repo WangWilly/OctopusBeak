@@ -409,7 +409,7 @@ assert.deepEqual(responseBodyLoaded.evidence.diagnostic, {
 
 const {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-} = await import("../ledger/canonical/yuanta-credit-card-human-attestation.ts");
+} = await import("../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts");
 
 assert.equal(
   YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,

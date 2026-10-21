@@ -40,7 +40,6 @@ import {
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
   FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-  isFubonHumanAttestedV1Active,
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   deriveFubonCompositeAccountNumberEvidence,
@@ -58,7 +57,7 @@ import type {
   TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   readFubonCurrentDepositBalances,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -3037,10 +3036,6 @@ export async function runFubonStatements(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
             );
           }
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-          continue;
-        }
-        if (!isFubonHumanAttestedV1Active()) {
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }

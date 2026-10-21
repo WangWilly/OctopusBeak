@@ -12,7 +12,7 @@ import {
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
@@ -28,8 +28,7 @@ import {
   type YuantaDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 import {
-  getYuantaHumanAttestedV2Manifest,
-  isYuantaHumanAttestedV2Active,
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
 } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
 import {
   requireSourceConnectionIdentity,
@@ -1202,7 +1201,7 @@ export async function runYuantaStatements(
     const financialInput = {
       capture,
       captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
-      humanAttestation: getYuantaHumanAttestedV2Manifest(),
+      humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
       // Financial Source Connection identity comes only from the stable
       // login pair. The attestation manifest remains provenance for the
       // independently versioned account/identity epoch.
@@ -1221,10 +1220,6 @@ export async function runYuantaStatements(
         throw new Error(
           `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
         );
-      sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-      continue;
-    }
-    if (!isYuantaHumanAttestedV2Active()) {
       sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
       continue;
     }

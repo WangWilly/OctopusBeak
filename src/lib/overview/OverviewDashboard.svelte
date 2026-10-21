@@ -6,13 +6,8 @@
   import OverviewTicker from "$lib/overview/components/OverviewTicker.svelte";
   import TodayChangeCard from "$lib/overview/components/TodayChangeCard.svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
-  import {
-    ASSET_CATEGORY_COLOR,
-    formatShortDate,
-    formatTwd,
-    liabilityColor,
-    maskedAccountDigits,
-  } from "$lib/overview/overview-format.ts";
+  import { ASSET_CATEGORY_COLOR, formatShortDate, liabilityColor, maskedAccountDigits } from "$lib/overview/overview-format.ts";
+import { formatTwd } from "$lib/shared-money/money.ts";
   import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -20,13 +15,6 @@
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
-  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
-  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
-  import type {
-    DashboardBlockPayload,
-    DashboardBlockValueMap,
-  } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { resolveOverview } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import {
@@ -36,45 +24,23 @@
   } from "$lib/onboarding/target-observer.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
 
-  type OverviewBlocks = DashboardBlockValueMap["overview"];
-
   export let overview: OverviewPageDto;
-  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
-  export let retryBlock: (key: string) => void = () => {};
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
   export let onboardingEmptyState = false;
 
   let detailOpen = false;
 
-  function blockState(key: keyof OverviewBlocks): BlockState<DashboardBlockPayload> {
-    return blocks[key] ?? { status: "loading" };
-  }
 
-  function overviewBlockData<Key extends keyof OverviewBlocks>(
-    states: typeof blocks,
-    key: Key,
-  ): OverviewBlocks[Key] | undefined {
-    const state = states[key];
-    const payload = state && "data" in state ? state.data : undefined;
-    return payload?.route === "overview" && payload.block === key
-      ? payload.data as OverviewBlocks[Key]
-      : undefined;
-  }
 
-  $: data = resolveOverview(overview, {
-    summary: overviewBlockData(blocks, "summary"),
-    chart: overviewBlockData(blocks, "chart"),
-    list: overviewBlockData(blocks, "list"),
-  });
-  $: model = readOverview(data, { today: dateInTimeZone(new Date(), $systemTimezone) });
-  $: netMetric = data.summary.find((metric) => metric.label === "Net position");
-  $: liabilitiesMetric = data.summary.find((metric) => metric.label === "Liabilities");
+  $: model = readOverview(overview, { today: dateInTimeZone(new Date(), $systemTimezone) });
+  $: netMetric = overview.summary.find((metric) => metric.label === "Net position");
+  $: liabilitiesMetric = overview.summary.find((metric) => metric.label === "Liabilities");
   $: netAmounts = overview.summary[0]?.amounts ?? [];
   $: convertedNet = model.netWorth.value;
   $: sideValue = netMetric?.incomplete
     ? $t.preview.incomplete
-    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1)) : formatTwd(convertedNet, $locale);
-  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount)).join(" / ") : "";
+    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1), $locale) : formatTwd(convertedNet, $locale);
+  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount, { locale: $locale })).join(" / ") : "";
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
@@ -82,7 +48,7 @@
     ? overview.summary[0]?.includesPreview === true
     : model.netWorth.includesPreview;
   $: awaitingData = awaitingFirstData(overview);
-  $: holdsForeign = data.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
+  $: holdsForeign = overview.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
     key: slice.category,
     label: $t.overview.assetCategories[slice.category],
@@ -135,9 +101,9 @@
   syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
   <div class="content overview-content">
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <div class="block-frame">
       <OverviewTicker ticker={model.ticker} />
-    </ProgressiveBlock>
+    </div>
     {#if awaitingData}
       <EmptySourceBanner
         title={$t.overview.emptyTitle}
@@ -161,7 +127,7 @@
         <span>{$t.overview.currentUnavailable}</span>
       </div>
     {/if}
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <div class="block-frame">
       <section
         aria-label={$t.overview.netWorth}
         use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.summary" }}
@@ -173,8 +139,8 @@
           incomplete={netMetric?.incomplete === true}
         />
       </section>
-    </ProgressiveBlock>
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+    </div>
+    <div class="block-frame">
       <div class="overview-row change-row">
         <DailyChangeCard
           bars={model.dailyBars}
@@ -183,8 +149,8 @@
         />
         <TodayChangeCard change={model.todayChange} />
       </div>
-    </ProgressiveBlock>
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+    </div>
+    <div class="block-frame">
       <div class="overview-row allocation-row">
         <AllocationCard
           state="assets"
@@ -214,12 +180,13 @@
           emptyBody={$t.overview.liabilityEmptyBody}
         />
       </div>
-    </ProgressiveBlock>
+    </div>
   </div>
   <DailyHistoryModal bind:open={detailOpen} rows={model.historyRows} />
 </DashboardShell>
 
 <style>
+  .block-frame { position: relative; min-width: 0; }
   .overview-content {
     display: grid;
     gap: var(--space-6);

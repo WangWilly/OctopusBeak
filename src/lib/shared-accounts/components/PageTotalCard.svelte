@@ -1,6 +1,7 @@
 <script lang="ts">
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { formatPct, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { formatPct } from "$lib/overview/overview-format.ts";
+import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import type { SpanChange } from "$lib/shared-ledger/twd-valuation.ts";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
 

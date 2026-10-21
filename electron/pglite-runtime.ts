@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { assertCollectionScopeCurrent } from "../src/lib/automation/server/collection-scope.ts";
 import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
-import type { PGliteFinancialRegistry } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-registry.ts";
 import {
   createPGliteChildRpcServer,
   type PGliteChildRpcServer,
@@ -14,7 +14,7 @@ import {
 
 export type PGliteOperationalProvider = PGliteOperationalDomains & {
   /** Same-worker overview query used to derive exchange-rate coverage. */
-  financial: Pick<PGliteFinancialRegistry, "overviewCurrent">;
+  financial: PGliteFinancialPort;
   /** Child workflows must use the authenticated parent endpoint. */
   pgliteWorkflow: Readonly<{
     required: true;
@@ -55,13 +55,13 @@ export function createPGliteOperationalRuntime(
   const childRpc = createPGliteChildRpcServer({
     provider: {
       operational: worker.operationalProvider,
-      financial: worker.financial.registry,
+      financial: worker.financial,
     },
     assertCommitAdmissible: ({ taskRunId }) => assertCollectionScopeCurrent(taskRunId),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
     ...worker.operationalProvider,
-    financial: worker.financial.registry,
+    financial: worker.financial,
     pgliteWorkflow: Object.freeze({ required: true, env: childRpc.env }),
   });
   return Object.freeze({

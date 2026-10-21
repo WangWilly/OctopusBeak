@@ -1,3 +1,4 @@
+import type { PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionFatalError } from "../automation/product-collection.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { PreviewLocalDate } from "../../ledger/pglite/preview-financial-data.ts";
@@ -31,6 +32,21 @@ export class PreviewSourceFailure extends ProductCollectionFatalError {
 
 export function fail(reason: PreviewFailureReason, detail: string): never {
   throw new PreviewSourceFailure(reason, detail);
+}
+
+/** Keep one row per source row key; the same key with different content is a malformed response. */
+export function uniqueTransactions(
+  rows: readonly (PreviewTransaction | null)[],
+  keyName: string,
+): PreviewTransaction[] {
+  const byKey = new Map<string, PreviewTransaction>();
+  for (const row of rows) {
+    if (!row) continue;
+    const previous = byKey.get(row.sourceRowKey);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(row)) return fail("unexpected-response", `a ${keyName} repeats with different content`);
+    byKey.set(row.sourceRowKey, row);
+  }
+  return [...byKey.values()];
 }
 
 export type PreviewCaptchaChallenge =

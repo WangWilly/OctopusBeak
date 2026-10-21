@@ -23,7 +23,6 @@ test("Fubon credit-card keeps the immutable v2 contract and removes v1 readers",
     "sha256:ieTzCkwR2SP6gNT4ZNlF8gahKrpc8kYFKtwSTP-_PLY",
   );
   assert.equal(fubon.manifestFingerprint(), "sha256:ieTzCkwR2SP6gNT4ZNlF8gahKrpc8kYFKtwSTP-_PLY");
-  assert.equal(fubon.isFubonCreditCardHumanAttestedV2Active(), true);
   assert.equal(fubon.isFubonCreditCardHumanAttestedV2Manifest(manifest), true);
   assert.equal(Object.isFrozen(manifest.semantics), true);
   fubon.assertCurrentManifest(manifest);
@@ -52,7 +51,6 @@ test("E.SUN credit-card keeps the immutable v4 contract and removes old admissio
     esun.esunCreditCardHumanAttestedIdentityEpochKey(manifest),
     "sha256:dOqshmLcy0MsoJm4sK-2PZ8S2K0RtbkQOnS-YBlMZxY",
   );
-  assert.equal(esun.isEsunCreditCardHumanAttestedV4Active(), true);
   assert.equal(esun.isEsunCreditCardHumanAttestedV4Manifest(manifest), true);
   assert.equal(Object.isFrozen(manifest.semantics), true);
   assertRetiredExports(esun, [
@@ -77,7 +75,6 @@ test("Yuanta credit-card keeps the immutable v2 contract and removes v1 readers"
     yuantaCard.yuantaCreditCardHumanAttestedV2ManifestFingerprint(manifest),
     "sha256:hDf7LDFMLfJMUHk5uGhA8rCscjhOLggZVAs6OzYf-YE",
   );
-  assert.equal(yuantaCard.isYuantaCreditCardHumanAttestedV2Active(), true);
   assert.equal(yuantaCard.isYuantaCreditCardHumanAttestedV2Manifest(manifest), true);
   assert.equal(Object.isFrozen(manifest.semantics), true);
   yuantaCard.assertYuantaCreditCardHumanAttestedV2Manifest(manifest);
@@ -107,7 +104,6 @@ test("Yuanta domestic deposit keeps its immutable v2 contract and identity epoch
     yuantaDomestic.yuantaHumanAttestedV2IdentityEpochKey(manifest),
     "sha256:eXVhbnRhLWh1bWFuLWF0dGVzdGVkLWlkZW50aXR5LWVwb2NoLXYyAHl1YW50YS1kb21lc3RpYy1kZXBvc2l0LWh1bWFuLWF0dGVzdGVkLXYyAGh1bWFuLWF0dGVzdGVkLXYyAHNoYTI1Njo5Y2RlNmYxYzRmMzVlNGY0ZDJlZjYzNGNmNmJjMWU3YjQ4NjliMWEwYzFlNWU3YzJmMWE0YTllMWJkNWQ0YzYz",
   );
-  assert.equal(yuantaDomestic.isYuantaHumanAttestedV2Active(), true);
   assert.equal(yuantaDomestic.isYuantaHumanAttestedV2Manifest(manifest), true);
   assert.equal(Object.isFrozen(manifest.semantics), true);
   yuantaDomestic.assertCurrentV2Manifest(manifest);

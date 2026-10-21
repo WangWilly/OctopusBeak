@@ -34,6 +34,7 @@ import {
   type PreviewCaptchaChallenge,
   type PreviewCaptchaSolver,
   type SourceRecord,
+  uniqueTransactions,
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 
@@ -166,16 +167,6 @@ function directed(inValue: unknown, outValue: unknown, field: string): Pick<Prev
   return inflow !== null ? { amount: inflow, direction: "inflow" } : { amount: outflow!, direction: "outflow" };
 }
 
-function uniqueTransactions(rows: readonly PreviewTransaction[]): PreviewTransaction[] {
-  const byKey = new Map<string, PreviewTransaction>();
-  for (const row of rows) {
-    const previous = byKey.get(row.sourceRowKey);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(row)) return fail("unexpected-response", "a row key repeats with different content");
-    byKey.set(row.sourceRowKey, row);
-  }
-  return [...byKey.values()];
-}
-
 function count(value: unknown, field: string): number {
   if (typeof value !== "string" || !/^\d{1,6}$/u.test(value.trim())) return fail("unexpected-response", `${field} is not a count`);
   return Number(value);
@@ -263,7 +254,7 @@ async function twdAccounts(api: Client, now: string): Promise<PreviewAccount[]> 
           { kind: "available" as const, amount: exactDecimal(balance.availbalance, `${balancePath}.availbalance`), currency, observedAt: asOf },
         ],
       ],
-      transactions: uniqueTransactions(rows.map((row, rowIndex) => twdTransaction(row, `rb0102.userList[${rowIndex}]`, currency))),
+      transactions: uniqueTransactions(rows.map((row, rowIndex) => twdTransaction(row, `rb0102.userList[${rowIndex}]`, currency)), "row key"),
     });
   }
   return accounts;
@@ -343,7 +334,7 @@ async function fxAccounts(api: Client, now: string): Promise<PreviewAccount[]> {
       currency,
       type: "depository",
       balances: [{ kind: "current", amount: exactDecimal(balances[0]!.BALANCE, `${balancePath}.BALANCE`), currency, observedAt: observedAt(balanceResponse.date, now) }],
-      transactions: uniqueTransactions(rows.map((row, index) => fxTransaction(row, `rb0802.TRANS_DETAILS[${index}]`, currency))),
+      transactions: uniqueTransactions(rows.map((row, index) => fxTransaction(row, `rb0802.TRANS_DETAILS[${index}]`, currency)), "row key"),
     });
   }
   return accounts;

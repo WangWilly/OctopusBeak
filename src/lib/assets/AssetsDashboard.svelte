@@ -4,42 +4,30 @@
   import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate } from "$lib/overview/overview-format.ts";
+import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
-  import { historyPointKey } from "$lib/shared-ledger/types.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import { currencyCount } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
     buildStackedBalanceChartData,
+    chartCurrenciesFor,
     type BalanceChartFilter,
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
-  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
-  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
-  import type {
-    DashboardBlockPayload,
-    DashboardBlockValueMap,
-  } from "$lib/shared-shell/dashboard-blocks.ts";
-  import {
-    resolveAssetsChart,
-    resolveAssetsList,
-    resolveAssetsSummary,
-  } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
-  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
-  export let retryBlock: (key: string) => void = () => {};
 
   const EMPTY_TILE_CATEGORIES = ["brokerage", "crypto", "bank", "fund", "foreign"] as const;
   const EMPTY_TILE_COLOR = "color-mix(in oklch, var(--muted) 45%, transparent)";
@@ -48,28 +36,18 @@
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
 
-  function blockState(key: string): BlockState<DashboardBlockPayload> {
-    return blocks[key] ?? { status: "loading" };
-  }
 
-  function assetsBlockData<Key extends keyof DashboardBlockValueMap["assets"]>(
-    key: Key,
-    payload: DashboardBlockPayload | undefined,
-  ): DashboardBlockValueMap["assets"][Key] | undefined {
-    return payload?.route === "assets" && payload.block === key
-      ? payload.data as DashboardBlockValueMap["assets"][Key]
-      : undefined;
-  }
 
-  function settledBlock<Key extends keyof DashboardBlockValueMap["assets"]>(states: typeof blocks, key: Key) {
-    const state = states[key];
-    return assetsBlockData(key, state && "data" in state ? state.data : undefined);
-  }
 
   $: today = dateInTimeZone(new Date(), $systemTimezone);
-  $: summary = readAssetsSummary(resolveAssetsSummary(assets, settledBlock(blocks, "summary")), { today });
-  $: chartBlock = settledBlock(blocks, "chart");
-  $: listBlock = settledBlock(blocks, "list");
+  $: stackedChart = buildStackedBalanceChartData({
+    accounts: localizeAccounts(assets.accounts, $t),
+    dailyHistoryByAccount: assets.dailyHistoryByAccount,
+    filter: accountFilter,
+    currency: chartCurrency,
+    mode: "asset",
+  });
+  $: summary = readAssetsSummary(assets, { today });
   $: assetAccounts = assets.accounts;
   $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
@@ -78,18 +56,8 @@
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
   );
-  $: chartRows = [...assets.dailyHistory].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
-  $: chartCurrencies = [
-    ...new Set(chartRows.flatMap((row) => row.assets.map((amount) => amount.currency))),
-  ].sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
+  $: chartCurrencies = chartCurrenciesFor(assets.dailyHistory, "assets");
   $: if (!chartCurrencies.includes(chartCurrency)) chartCurrency = chartCurrencies[0] ?? "TWD";
-  $: chartData = buildStackedBalanceChartData({
-    accounts: assetAccounts,
-    dailyHistoryByAccount: assets.dailyHistoryByAccount,
-    filter: accountFilter,
-    currency: chartCurrency,
-    mode: "asset",
-  });
 
   function totalLabel(current: AssetsSummary) {
     return current.state === "ready" && holdsForeign && current.slices.length > 0
@@ -97,9 +65,6 @@
       : $t.assets.total;
   }
 
-  function currencyOrder(value: string) {
-    return value === "TWD" ? 0 : value === "USD" ? 1 : value === "JPY" ? 2 : 3;
-  }
 
   function selectValue(event: Event) {
     return (event.currentTarget as HTMLSelectElement).value;
@@ -126,7 +91,7 @@
     {:else}
       <ProjectionStateBanner projection={assets} />
     {/if}
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <div class="block-frame">
       <PageTotalCard
         label={totalLabel(summary)}
         ariaLabel={$t.assets.metricsAria}
@@ -156,17 +121,9 @@
           {/each}
         {/if}
       </PageTotalCard>
-    </ProgressiveBlock>
+    </div>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
-      {@const chartDataBlock = resolveAssetsChart(assets, chartBlock)}
-      {@const stackedChart = chartBlock ? buildStackedBalanceChartData({
-        accounts: localizeAccounts(chartDataBlock.accounts, $t),
-        dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
-        filter: accountFilter,
-        currency: chartCurrency,
-        mode: "asset",
-      }) : chartData}
+    <div class="block-frame">
       <section class="card balance-history" aria-label={$t.assets.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.assets.assetBalance}</h2>
@@ -202,28 +159,28 @@
         {/if}
       </div>
       </section>
-    </ProgressiveBlock>
+    </div>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
-      {@const listDataBlock = resolveAssetsList(assets, listBlock)}
+    <div class="block-frame">
       <AccountTable
-        accounts={listDataBlock.accounts}
-        coveredAccounts={listDataBlock.coveredAccounts}
+        accounts={assets.accounts}
+        coveredAccounts={assets.coveredAccounts}
         mode="asset"
         bind:search
         bind:filter={accountFilter}
-        positionsByAccount={listDataBlock.positionsByAccount}
-        transactionsByAccount={listDataBlock.transactionsByAccount}
-        dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
+        positionsByAccount={assets.positionsByAccount}
+        transactionsByAccount={assets.transactionsByAccount}
+        dailyHistoryByAccount={assets.dailyHistoryByAccount}
         shares={summary.state === "ready" ? summary.shares : new Map()}
         twdValues={summary.state === "ready" ? summary.twdValues : new Map()}
         focusAccountId={focusAccountId}
       />
-    </ProgressiveBlock>
+    </div>
   </div>
 </DashboardShell>
 
 <style>
+  .block-frame { position: relative; min-width: 0; }
   .empty-banner {
     margin-bottom: var(--space-6);
   }

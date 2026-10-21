@@ -61,30 +61,14 @@ export type PostHumanAttestedV1Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type PostHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: PostOpaqueToken;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: PostHumanAttestedV1Manifest =
-  POST_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(POST_HUMAN_ATTESTED_V1_MANIFEST);
-
 export function postHumanAttestationFingerprint(
-  manifest: PostHumanAttestedV1Manifest = currentManifest,
+  manifest: PostHumanAttestedV1Manifest = POST_HUMAN_ATTESTED_V1_MANIFEST,
 ): PostOpaqueToken {
   return manifest.provenance.attestationContractFingerprint as PostOpaqueToken;
 }
 
 export function postHumanAttestedIdentityEpochKey(
-  manifest: PostHumanAttestedV1Manifest = currentManifest,
+  manifest: PostHumanAttestedV1Manifest = POST_HUMAN_ATTESTED_V1_MANIFEST,
 ): PostOpaqueToken {
   return `sha256:${Buffer.from(
     [
@@ -97,10 +81,10 @@ export function postHumanAttestedIdentityEpochKey(
 }
 
 export function assertPostHumanAttestedV1Manifest(
-  manifest: PostHumanAttestedV1Manifest = currentManifest,
+  manifest: PostHumanAttestedV1Manifest = POST_HUMAN_ATTESTED_V1_MANIFEST,
 ): void {
   if (
-    manifest !== currentManifest ||
+    manifest !== POST_HUMAN_ATTESTED_V1_MANIFEST ||
     manifest.attestationId !== POST_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
       POST_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion ||
@@ -115,31 +99,14 @@ export function assertPostHumanAttestedV1Manifest(
     );
 }
 
-export function getPostHumanAttestedV1Manifest(): PostHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
 export function isPostHumanAttestedV1Manifest(
   value: unknown,
 ): value is PostHumanAttestedV1Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
+    value === POST_HUMAN_ATTESTED_V1_MANIFEST
   );
-}
-
-export function isPostHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
-
-/** Shared singleton updater used by the durable SQLite attestation adapter. */
-export function replacePostHumanAttestedV1Manifest(
-  manifest: PostHumanAttestedV1Manifest,
-): void {
-  currentManifest = manifest;
-  VALIDATED_MANIFESTS.add(manifest);
 }
 
 export function validPostHumanAttestationEventAt(value: string): boolean {

@@ -23,9 +23,11 @@ import {
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
-import { getHncbHumanAttestedV1Manifest } from "../ledger/canonical/hncb-human-attestation-contract.ts";
 import {
-  emitHumanAssistanceStage,
+  HNCB_HUMAN_ATTESTED_V1_MANIFEST,
+} from "../ledger/canonical/hncb-human-attestation-contract.ts";
+import {
+  requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import type {
@@ -774,23 +776,6 @@ async function signInHncbPage(
   await waitForSignedInState(page);
 }
 
-export async function requestHncbCaptchaAssistance(
-  stage: WorkflowHumanAssistanceStage,
-  request: (
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ) => Promise<HumanAssistanceCompletionStatus>,
-  signal: AbortSignal,
-): Promise<HumanAssistanceCompletionStatus> {
-  signal.throwIfAborted();
-  const contract = await emitHumanAssistanceStage(stage, (value) => value);
-  const status = await request(contract, signal);
-  signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified")
-    throw new Error(`HNCB human assistance ended with status ${status}.`);
-  return status;
-}
-
 async function waitForSignedInState(page: Page): Promise<void> {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -1347,7 +1332,7 @@ export async function runHncbStatements(
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
     let status: WorkflowOutput["status"] = "source-only";
-    const manifest = getHncbHumanAttestedV1Manifest();
+    const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
     for (const [index, capture] of captures.entries()) {
       const input = {
         capture,
@@ -1508,7 +1493,7 @@ export async function runHncbProviderWorkflow(
         parsed.data.credentials,
         async (stage, signal) => {
           await context.event("authentication", "human-assistance-requested");
-          const status = await requestHncbCaptchaAssistance(
+          const status = await requestCaptchaAssistance("HNCB", 
             stage,
             (contract, assistanceSignal) =>
               context.humanAssistance.request(contract, assistanceSignal),

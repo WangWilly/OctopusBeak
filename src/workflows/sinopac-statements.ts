@@ -6,19 +6,15 @@ import {
   strictSourceText,
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import {
-  emitHumanAssistanceStage,
+  requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -223,11 +219,6 @@ export type SinopacProviderWorkflowOverrides = Readonly<{
   readCurrentDepositBalances?: SinopacStatementsRunDependencies["readCurrentDepositBalances"];
   cardTransport?: SinopacCardTransport;
 }>;
-
-type SinopacHumanAssistanceRequest = (
-  contract: HumanAssistanceContractInput,
-  signal: AbortSignal,
-) => Promise<HumanAssistanceCompletionStatus>;
 
 type ExistingSinopacFinancialCapture = Readonly<{
   identity: Readonly<{
@@ -1090,24 +1081,6 @@ export function sinopacCaptchaAssistanceStage(
   };
 }
 
-export async function requestSinopacCaptchaAssistance(
-  stage: WorkflowHumanAssistanceStage,
-  request: SinopacHumanAssistanceRequest,
-  signal: AbortSignal,
-): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">> {
-  signal.throwIfAborted();
-  const contract = await waitForSinopacSignal(
-    emitHumanAssistanceStage(stage, (value) => value),
-    signal,
-  );
-  const status = await waitForSinopacSignal(request(contract, signal), signal);
-  signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    throw new Error(`SinoPac human assistance ended with status ${status}.`);
-  }
-  return status;
-}
-
 async function signInSinopacForApp(
   page: Page,
   credentials: SinopacCredentials,
@@ -1116,7 +1089,7 @@ async function signInSinopacForApp(
   context.signal.throwIfAborted();
   await fillLoginForm(page, credentials, context.signal);
   await context.event("authentication", "human-assistance-requested");
-  const status = await requestSinopacCaptchaAssistance(
+  const status = await requestCaptchaAssistance("SinoPac", 
     sinopacCaptchaAssistanceStage(page),
     (contract, signal) => context.humanAssistance.request(contract, signal),
     context.signal,

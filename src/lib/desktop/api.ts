@@ -232,20 +232,7 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
     deletePreviewData(): Promise<void>;
   };
-  overview: {
-    load(options?: DataReadOptions): Promise<OverviewPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
-  };
-  assets: {
-    load(options?: DataReadOptions): Promise<AssetsPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
-  };
-  liabilities: {
-    load(options?: DataReadOptions): Promise<LiabilitiesPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
-  };
   spending: {
-    load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
     loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
     loadCandidatePage(input: SpendingCandidatePageRequest, requestId: string): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
     cancelCandidatePage(requestId: string): Promise<boolean>;
@@ -256,7 +243,6 @@ export type OctopusBeakApi = {
     loadMonthInsight(input: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
     loadMerchantStats(input: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
     confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
@@ -297,63 +283,3 @@ export type OctopusBeakApi = {
   };
   dataViews: DataViewsApi;
 };
-
-export const octopusBeakApiChannels = [
-  "settings:load",
-  "settings:save",
-  "settings:deletePreviewData",
-  "overview:load",
-  "overview:block",
-  "assets:load",
-  "assets:block",
-  "liabilities:load",
-  "liabilities:block",
-  "spending:load",
-  "spending:block",
-  "spending:record-page",
-  "spending:candidate-page",
-  "spending:candidate-page-cancel",
-  "spending:page-action",
-  "spending:set-purchase-category",
-  "spending:pending-overview",
-  "spending:merge-log",
-  "spending:month-insight",
-  "spending:merchant-stats",
-  "spending:confirm-strong-candidates",
-  "spending:pairing-candidates",
-  "spending:pairing-prewarm",
-  "spending:confirmCandidate",
-  "spending:denyCandidate",
-  "spending:revokeLink",
-  "automation:block",
-  "automation:saveCredentials",
-  "automation:deviceRegistrationStatus",
-  "automation:startDeviceRegistration",
-  "automation:submitDeviceRegistrationCode",
-  "automation:cancelDeviceRegistration",
-  "automation:selectCertificateFile",
-  "automation:openSetupGuideLink",
-  "automation:run",
-  "automation:runMany",
-  "automation:cancel",
-  "automation:forceTerminate",
-  "automation:runHistory",
-  "automation:openExternalPrerequisite",
-  "automation:runtimeSnapshot",
-  "automation:fatalRuntimeSnapshot",
-  "automation:runtime-changed",
-  "automation:takeSignInSettingsRequest",
-  "automation:sign-in-settings-requested",
-  "automation:previewStructureReport",
-  "automation:openPreviewStructureReportIssue",
-  "data:getVersion",
-  "data:acknowledgeVersion",
-  "data:invalidated",
-  "data-views:subscribe",
-  "data-views:enabled",
-  "data-views:unsubscribe",
-  "data-views:rows",
-  "data-views:error",
-] as const;
-
-export type OctopusBeakApiChannel = typeof octopusBeakApiChannels[number];

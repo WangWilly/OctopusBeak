@@ -21,9 +21,7 @@ import {
 } from "./canonical-source-store.ts";
 import { syncEInvoiceItemCategorizations } from "./einvoice-item-categorization.ts";
 import type { PGliteTransaction, PGliteStore } from "./transaction.ts";
-import { PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND } from "./workflow-commands.ts";
 
-export { PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND };
 export const PGLITE_EINVOICE_INTEGRATION_NAMESPACE = "einvoice" as const;
 export const PGLITE_EINVOICE_STREAM = "personal-invoices" as const;
 export const PGLITE_EINVOICE_RECORD_KIND = "personal-invoice" as const;
@@ -35,11 +33,6 @@ export const PGLITE_EINVOICE_COMPLETENESS_RULE_VERSION =
   "einvoice/personal-invoices/completeness-v1" as const;
 export const PGLITE_EINVOICE_CURRENCY_AUTHORITY =
   "taiwan/e-invoice/twd/v1" as const;
-
-export type PGliteCanonicalEInvoiceCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND;
-  request: CanonicalEInvoiceCaptureInput;
-}>;
 
 export type PGliteCanonicalEInvoiceCommitResult = Readonly<{
   status: "committed";
@@ -583,14 +576,3 @@ export async function commitPGliteCanonicalEInvoiceCapture(
   });
 }
 
-export function executePGliteCanonicalEInvoiceCommit(
-  store: PGliteStore,
-  command: PGliteCanonicalEInvoiceCommitCommand | CanonicalEInvoiceCaptureInput,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalEInvoiceCommitResult> {
-  return commitPGliteCanonicalEInvoiceCapture(
-    store,
-    "kind" in command ? command.request : command,
-    options,
-  );
-}

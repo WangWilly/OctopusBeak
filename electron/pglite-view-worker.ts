@@ -21,6 +21,7 @@ import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialLiveViews,
   createPGliteFinancialRegistry,
+  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
 } from "./pglite-financial-registry.ts";
@@ -96,7 +97,7 @@ export async function startPGliteViewWorker(
       );
     },
   };
-  const financialServer = createPGliteFinancialRpcServer(port, financialRegistry, undefined, scheduler);
+  const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
     port,

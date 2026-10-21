@@ -256,3 +256,21 @@ test("independent margin accounts persist as balances without transaction slots 
     await store.close();
   }
 });
+
+test("an investment commit with a margin balance refreshes the projection once for both captures", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    const refreshes: { captureIds?: readonly Uint8Array[]; transactionIds?: readonly Uint8Array[]; cutoffSequence: number; refreshEnrichmentAll?: boolean }[] = [];
+    await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("margin-projection-pin", "loan"), {
+      clock: () => 100,
+      projection: async (_transaction, refresh) => { refreshes.push(refresh); },
+    });
+    assert.equal(refreshes.length, 1);
+    assert.equal(refreshes[0]!.captureIds?.length, 2, "the investment and its independent margin balance capture");
+    const latest = (await store.query<{ value: number }>("SELECT MAX(commit_sequence)::int AS value FROM canonical_commits")).rows[0]!.value;
+    assert.equal(refreshes[0]!.cutoffSequence, latest);
+  } finally {
+    await store.close();
+  }
+});

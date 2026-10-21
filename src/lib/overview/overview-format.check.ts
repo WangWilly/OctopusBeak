@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  formatPct,
-  formatShortDate,
-  formatTwdNumber,
-  maskedAccountDigits,
-} from "./overview-format.ts";
+import { formatPct, formatShortDate, maskedAccountDigits } from "./overview-format.ts";
+import { formatTwdNumber } from "../shared-money/money.ts";
 
 test("an account label shows only the last four digits of its provider number", () => {
   assert.equal(maskedAccountDigits("Taipei Fubon Bank · Loan · LN-12-7730"), "7730");
