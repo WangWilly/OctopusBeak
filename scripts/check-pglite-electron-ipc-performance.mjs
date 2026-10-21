@@ -108,7 +108,7 @@ try {
     version: 1, status: "bypassed", currentSlide: 1, bankAutomationChoice: null,
   })));
   await page.reload();
-  await page.locator('[data-progressive-block="summary"][data-block-state="ready"]').first().waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator(".overview-content").first().waitFor({ state: "visible", timeout: 60_000 });
   const overviewReadyMs = performance.now() - started;
   // Launch catches up the daily exchange-rate run, which rebuilds the Overview
   // for tens of seconds at this scale. Measure Pairing on a settled app.
