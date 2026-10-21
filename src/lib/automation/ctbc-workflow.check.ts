@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
+import {
+  createPGliteFinancialLocalPort,
+  createPGliteFinancialRegistry,
+} from "../../../electron/pglite-financial-registry.ts";
 import { createTestPGlite } from "../../ledger/pglite/baseline-test-template.ts";
 import { createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
@@ -224,7 +227,7 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({ provider: {
-    operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates),
+    operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)),
   } });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
@@ -297,7 +300,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
     const balanceItem = harness.committed[0]?.[1] as { product?: string };
     assert.equal(item.provider, "ctbc");
     assert.equal(item.product, "domestic-deposit");
-    assert.equal(item.command?.kind, "canonical.mixed.commit");
+    assert.equal(item.command?.kind, "financial.mixed.commit");
     assert.equal(balanceItem.product, "current-balance");
     assert.equal("downloads" in result, false);
     assert.deepEqual(await readdir(directory), []);

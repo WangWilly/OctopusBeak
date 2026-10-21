@@ -9,6 +9,7 @@ import {
   createPGliteFinancialRpcClient,
   type PGliteFinancialOperation,
   type PGliteFinancialRequestOptions,
+  type PGliteFinancialPort,
   type PGliteFinancialRpcClient,
 } from "./pglite-financial-rpc-client.ts";
 import {
@@ -39,31 +40,31 @@ type AuthFrame = {
   readonly token: string;
 };
 
-type SocketMessageListener = (value: unknown) => void;
+export type SocketMessageListener = (value: unknown) => void;
 
-type SocketMessagePort = {
+export type SocketMessagePort = {
   on(event: "message", listener: SocketMessageListener): unknown;
   off(event: "message", listener: SocketMessageListener): unknown;
   postMessage(value: unknown): void;
   close(): void;
 };
 
-function plainRecord(value: unknown): value is Record<string, unknown> {
+export function plainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
-function validToken(token: string): boolean {
+export function validToken(token: string): boolean {
   return /^[A-Za-z0-9_-]{32,128}$/u.test(token);
 }
 
-function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChildTransportError {
+export function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChildTransportError {
   return new PGliteChildTransportError(code);
 }
 
 /** A bounded, newline-delimited JSON socket adapter for the existing RPC ports. */
-class LineSocketPort implements SocketMessagePort {
+export class LineSocketPort implements SocketMessagePort {
   #listeners = new Set<SocketMessageListener>();
   #buffer = "";
   #decoder = new StringDecoder("utf8");
@@ -191,7 +192,7 @@ export class PGliteChildTransportError extends Error {
 export type PGliteChildRpcClient = Readonly<{
   ready: Promise<void>;
   operationalProvider: PGliteOperationalRpcClient["provider"];
-  financial: PGliteFinancialRpcClient["registry"];
+  financial: PGliteFinancialPort;
   workflow: PGliteWorkflowClient;
   request<K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown>;
   close(error?: Error): void;
@@ -203,24 +204,6 @@ export type PGliteChildRpcClientOptions = {
   environment?: NodeJS.ProcessEnv;
   diagnosticContext?: WorkflowFailureCorrelation;
 };
-
-function financialOperationForWorkflow(command: PGliteWorkflowCommand): PGliteFinancialOperation {
-  switch (command.kind) {
-    case "canonical.source.admit": return "financial.source.admit";
-    case "canonical.financial.commit": return "financial.source.commit";
-    case "canonical.financial.commit-batch": return "financial.source.commitBatch";
-    case "canonical.deposit.commit": return "financial.deposit.commit";
-    case "canonical.mixed.commit": return "financial.mixed.commit";
-    case "canonical.balance.capture": return "financial.balance.capture";
-    case "canonical.einvoice.commit": return "financial.einvoice.commit";
-    case "canonical.credit-card.commit": return "financial.creditCard.commit";
-    case "canonical.credit-card.balance": return "financial.creditCard.balance";
-    case "canonical.loan.commit": return "financial.loan.commit";
-    case "canonical.investment.commit": return "financial.investment.commit";
-    case "canonical.loan-repayment-relations.resolve": return "financial.loanRelations.resolve";
-    case "canonical.investment-funding-relations.resolve": return "financial.investmentRelations.resolve";
-  }
-}
 
 function endpointAndToken(options: PGliteChildRpcClientOptions): { endpoint: string; token: string } {
   const environment = options.environment ?? process.env;
@@ -262,8 +245,8 @@ export function createPGliteChildRpcClient(
       command: Command,
       options?: PGliteWorkflowRequestOptions,
     ): Promise<PGliteWorkflowCommandResult<Command>> => financial.request(
-      financialOperationForWorkflow(command),
-      [command.request],
+      command.kind,
+      [command.request] as never,
       options,
     ) as Promise<PGliteWorkflowCommandResult<Command>>,
   };
@@ -296,7 +279,7 @@ export function createPGliteChildRpcClient(
   const request = <K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown> => {
     if (operation.startsWith("automation.") || operation.startsWith("exchangeRates."))
       return operational.request(operation as PGliteOperationalOperation, args);
-    return financial.request(operation as PGliteFinancialOperation, args, options);
+    return financial.request(operation as PGliteFinancialOperation, args as never, options);
   };
   const close = (error = safeTransportError("closed")): void => {
     if (closed) return;
@@ -313,7 +296,7 @@ export function createPGliteChildRpcClient(
   return Object.freeze({
     ready,
     operationalProvider: operational.provider,
-    financial: financial.registry,
+    financial,
     workflow,
     request,
     close,

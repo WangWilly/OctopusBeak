@@ -13,7 +13,8 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
-  import { formatShare, formatTwd } from "$lib/overview/overview-format.ts";
+  import { formatShare } from "$lib/overview/overview-format.ts";
+import { formatTwd } from "$lib/shared-money/money.ts";
   import { squarify } from "$lib/overview/treemap-layout.ts";
 
   export let title: string;

@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
-  commitPGliteCanonicalFinancialCaptureInTransaction,
+  admitPGliteCanonicalFinancialCaptureInTransaction,
+  refreshPGliteAdmittedFinancialProjection,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalFinancialCommitResult,
   type PGliteCanonicalSourceCaptureTransactionResult,
 } from "./canonical-source-store.ts";
-import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type {
   PGliteCanonicalFinancialAccountInput,
   PGliteCanonicalBalanceObservationInput,
@@ -21,19 +21,10 @@ import type { TdccAdmittedFundAccount } from "../canonical/tdcc-investment-admis
 import { isInstitutionKey } from "../../lib/institutions/institutions.ts";
 import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
-import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
-
-/** Named worker command for a source-admitted investment snapshot. */
-export { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND };
 
 export type PGliteCanonicalInvestmentCommitRequest = Readonly<{
   capture: InvestmentCaptureInput;
   recordedAtUtcUs?: number;
-}>;
-
-export type PGliteCanonicalInvestmentCommitCommand = Readonly<{
-  kind: typeof PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND;
-  request: PGliteCanonicalInvestmentCommitRequest;
 }>;
 
 export type PGliteCanonicalInvestmentCommitResult = Readonly<{
@@ -499,14 +490,6 @@ type InvestmentContext = {
   commitId: Uint8Array;
 };
 
-async function contextFor(transaction: PGliteTransaction, source: PGliteCanonicalSourceCaptureTransactionResult): Promise<InvestmentContext> {
-  const row = await first<{ account_id: unknown; commit_id: unknown }>(transaction, `SELECT scope.account_id, source_capture.commit_id
-    FROM source_captures source_capture JOIN capture_scopes scope ON scope.capture_id = source_capture.capture_id
-    WHERE source_capture.capture_id = ?`, [source.captureId]);
-  if (!row?.account_id) fail("Investment source capture account scope is missing.");
-  return { capture: source, accountId: bytes(row.account_id, "Investment account"), commitId: bytes(row.commit_id, "Investment commit") };
-}
-
 async function persistExtensions(transaction: PGliteTransaction, context: InvestmentContext, capture: InvestmentCaptureInput, result: PGliteCanonicalFinancialCommitResult): Promise<void> {
   await query(transaction, `INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES (?, ?, ?, ?) ON CONFLICT(capture_id) DO NOTHING`, [context.capture.captureId, context.commitId, capture.sourceId, capture.contractVersion]);
   await query(transaction, `INSERT INTO investment_accounts(account_id, source_connection_id, identity_epoch_id, source_id, account_key, account_type, account_subtype) VALUES (?, ?, ?, ?, ?, 'investment', ?) ON CONFLICT(account_id) DO NOTHING`, [context.accountId, (await first<{ source_connection_id: unknown }>(transaction, "SELECT source_connection_id FROM financial_accounts WHERE account_id = ?", [context.accountId]))?.source_connection_id, (await first<{ identity_epoch_id: unknown }>(transaction, "SELECT identity_epoch_id FROM financial_accounts WHERE account_id = ?", [context.accountId]))?.identity_epoch_id, capture.sourceId, capture.identity.accountKey, capture.identity.accountSubtype ?? null]);
@@ -637,63 +620,29 @@ export async function commitPGliteCanonicalInvestmentCapture(
   for (const holding of snapshot.capture.holdings) assertInvestmentHoldingSourceLots(snapshot.capture.sourceId, holding);
   return store.transaction(async (transaction) => {
     const margin = marginFact(snapshot.capture);
-    const result = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
+    const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: captureSource(snapshot.capture),
       account: account(snapshot.capture),
       accountIdentifier: snapshot.capture.identity.accountNumber ?? null,
       transactions: [...snapshot.capture.transactions.map((row) => financialFact(snapshot.capture, row)), ...(margin ? [margin] : [])],
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, { ...options, skipProjection: true });
-    const source = await first<{ capture_id: unknown; scope_id: unknown; commit_id: unknown; source_connection_id: unknown; identity_epoch_id: unknown }>(transaction, "SELECT source_capture.capture_id, scope.scope_id, source_capture.commit_id, source_capture.source_connection_id, source_capture.identity_epoch_id FROM source_captures source_capture JOIN capture_scopes scope ON scope.capture_id = source_capture.capture_id WHERE source_capture.capture_key = ?", [snapshot.capture.captureId]);
-    if (!source) fail("Investment source capture context is missing.");
-    const sourceRecords = await query<{ occurrence_key: string; source_record_id: unknown }>(transaction, "SELECT occurrence_key, source_record_id FROM source_records WHERE capture_id = ?", [source.capture_id]);
-    const captureResult: PGliteCanonicalSourceCaptureTransactionResult = {
-      receipt: { captureId: snapshot.capture.captureId, knowledgePoint: result.commitSequence },
-      captureId: bytes(source.capture_id, "Investment capture"),
-      scopeId: bytes(source.scope_id, "Investment scope"),
-      commitId: bytes(source.commit_id, "Investment commit"),
-      sourceConnectionId: bytes(source.source_connection_id, "Investment source connection"),
-      identityEpochId: bytes(source.identity_epoch_id, "Investment identity epoch"),
-      sourceSubjectId: bytes((await first<{ source_subject_id: unknown }>(transaction, "SELECT source_subject_id FROM source_captures WHERE capture_id = ?", [source.capture_id]))?.source_subject_id, "Investment subject"),
-      sourceRecordIds: sourceRecords.map((row) => bytes(row.source_record_id, "Investment source record")),
-      sourceRecordIdsByOccurrence: new Map(sourceRecords.map((row) => [row.occurrence_key, bytes(row.source_record_id, "Investment source record")])),
-    };
-    const context = await contextFor(transaction, captureResult);
+    }, options);
+    const result = admitted.result;
+    const context: InvestmentContext = { capture: admitted.capture, accountId: admitted.accountId, commitId: admitted.capture.commitId };
     await persistExtensions(transaction, context, snapshot.capture, result);
     const marginBalance = independentMarginBalanceSource(snapshot.capture);
+    const admittedCaptures = [admitted];
     if (marginBalance)
-      await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
+      admittedCaptures.push(await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
         capture: marginBalance.source,
         account: marginBalance.account,
         transactions: [],
         balanceObservations: [marginBalance.observation],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-      }, { ...options, skipProjection: true });
-    const captureKeys = [
-      snapshot.capture.captureId,
-      ...(marginBalance ? [marginBalance.source.captureId] : []),
-    ];
-    const committedCaptures = await query<{
-      capture_id: unknown;
-      commit_id: unknown;
-      commit_sequence: number | string;
-    }>(transaction, `SELECT source_capture.capture_id, source_capture.commit_id,
-                             commit_row.commit_sequence
-                        FROM source_captures source_capture
-                        JOIN canonical_commits commit_row
-                          ON commit_row.commit_id = source_capture.commit_id
-                       WHERE source_capture.capture_key IN (${captureKeys.map(() => "?").join(",")})`, captureKeys);
-    const latestCapture = committedCaptures.reduce((latest, candidate) =>
-      Number(candidate.commit_sequence) >= Number(latest.commit_sequence) ? candidate : latest,
-    );
-    await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
-      commitId: bytes(latestCapture.commit_id, "Investment projection commit"),
-      cutoffSequence: Number(latestCapture.commit_sequence),
-      captureIds: committedCaptures.map((capture) => bytes(capture.capture_id, "Investment projection capture")),
-      transactionIds: result.transactions.map((row) => bytes(row.transactionId, "Investment transaction")),
-    });
+      }, options));
+    await refreshPGliteAdmittedFinancialProjection(transaction, admittedCaptures, options);
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {
       status: "canonical-live" as const,
@@ -708,10 +657,3 @@ export async function commitPGliteCanonicalInvestmentCapture(
   });
 }
 
-export function executePGliteCanonicalInvestmentCommand(
-  store: PGliteStore,
-  command: PGliteCanonicalInvestmentCommitCommand | PGliteCanonicalInvestmentCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalInvestmentCommitResult> {
-  return commitPGliteCanonicalInvestmentCapture(store, "kind" in command ? command.request : command, options);
-}

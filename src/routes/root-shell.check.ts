@@ -20,13 +20,10 @@ test("financial page refreshes use live views and isolate first-run failures", (
   assert.doesNotMatch(source, /Promise\.all\(\s*\[\s*routeDataCache\.load/);
 });
 
-test("financial pages are live-only and synthesize ready dashboard blocks", () => {
+test("financial pages are live-only and hand dashboards the whole page", () => {
   assert.match(source, /createFinancialPageLiveStores\(window\.octopusBeak\.dataViews\)/);
   assert.match(source, /PGlite financial page views are unavailable/);
-  assert.match(source, /readyDashboardBlock\("overview", "summary"/);
-  assert.match(source, /readyDashboardBlock\("assets", "summary"/);
-  assert.match(source, /readyDashboardBlock\("liabilities", "summary"/);
-  assert.match(source, /readyDashboardBlock\("spending", "summary"/);
+  assert.doesNotMatch(source, /readyDashboardBlock|(overview|assets|liabilities|spending)Blocks\(/);
   assert.doesNotMatch(source, /octopusBeak\.(overview|assets|liabilities|spending)\.(load|loadBlock)\(/);
   assert.match(source, /return window\.octopusBeak\.automation\.loadBlock\(key, options\)/);
 });
@@ -34,8 +31,8 @@ test("financial pages are live-only and synthesize ready dashboard blocks", () =
 test("a PGlite page DTO makes every dashboard section renderable", () => {
   assert.match(source, /overviewRenderValue = overviewValue/);
   assert.match(source, /<OverviewDashboard\s+overview=\{overviewRenderValue\}/);
-  assert.match(source, /setRouteBlocks\(nextRoute, setValue\(state\.data\)\)/);
-  assert.match(source, /<SpendingDashboard\s+spending=\{spendingRenderValue\}/);
+  assert.match(source, /setValue\(state\.data\);/);
+  assert.match(source, /<PurchaseSpendingDashboard\s+purchaseReport=\{spendingRenderValue\.purchaseReport\}/);
 });
 
 test("automation block refreshes are coordinated and stale responses are detected", () => {

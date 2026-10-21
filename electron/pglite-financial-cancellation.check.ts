@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createPGliteFinancialRpcClient,
+  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   PGliteFinancialError,
   type PGliteFinancialRegistry,
@@ -75,7 +76,7 @@ test("financial cancellation waits for the terminal response and preserves commi
     transactions: [],
   };
   const registry = {
-    sourceCommit: async (_request: unknown, options?: { signal?: AbortSignal }) => {
+    "financial.source.commit": async (_args: unknown, options?: { signal?: AbortSignal }) => {
       enteredResolve();
       if (mode === "abort") {
         await new Promise<never>((_resolve, reject) => {
@@ -86,11 +87,11 @@ test("financial cancellation waits for the terminal response and preserves commi
       return committed;
     },
   } as unknown as PGliteFinancialRegistry;
-  const server = createPGliteFinancialRpcServer(serverPort, registry);
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry));
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     const abortController = new AbortController();
-    const abortRequest = client.registry.sourceCommit(sourceRequest() as never, { signal: abortController.signal });
+    const abortRequest = client.request("financial.source.commit", [sourceRequest() as never], { signal: abortController.signal });
     await entered;
     let settled = false;
     void abortRequest.then(() => { settled = true; }, () => { settled = true; });
@@ -107,7 +108,7 @@ test("financial cancellation waits for the terminal response and preserves commi
     mode = "commit";
     entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
     const commitController = new AbortController();
-    const commitRequest = client.registry.sourceCommit(sourceRequest() as never, { signal: commitController.signal });
+    const commitRequest = client.request("financial.source.commit", [sourceRequest() as never], { signal: commitController.signal });
     await entered;
     commitController.abort();
     releaseCommit();
@@ -122,15 +123,15 @@ test("financial cancellation waits for the terminal response and preserves commi
 test("unknown financial failures remain fatal across the worker boundary", async () => {
   const [clientPort, serverPort] = memoryPair();
   const registry = {
-    sourceCommit: async () => {
+    "financial.source.commit": async () => {
       throw new Error("account table missing");
     },
   } as unknown as PGliteFinancialRegistry;
-  const server = createPGliteFinancialRpcServer(serverPort, registry);
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry));
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     await assert.rejects(
-      client.registry.sourceCommit(sourceRequest() as never),
+      client.request("financial.source.commit", [sourceRequest() as never]),
       (error: unknown) => error instanceof PGliteFinancialError
         && error.code === "operation-failed"
         && error.category === "fatal",
@@ -154,13 +155,13 @@ test("an account identity continuity read crosses the workflow port only in its 
   const continued = { status: "continued", sourceAccountKey: `sha256:${"K".repeat(43)}` };
   const served: unknown[] = [];
   const registry = {
-    accountIdentityContinuity: async (input: unknown) => {
+    "financial.accountIdentity.continuity": async ([input]: [unknown]) => {
       served.push(input);
       return continued;
     },
   } as unknown as PGliteFinancialRegistry;
   const [clientPort, serverPort] = memoryPair();
-  const server = createPGliteFinancialRpcServer(serverPort, registry, () => undefined);
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), () => undefined);
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     const { identifier: _identifier, ...withoutIdentifier } = request;
@@ -172,15 +173,49 @@ test("an account identity continuity read crosses the workflow port only in its 
       { ...request, accountLabel: "extra" },
     ]) {
       await assert.rejects(
-        client.registry.accountIdentityContinuity(malformed as never),
+        client.request("financial.accountIdentity.continuity", [malformed as never]),
         (error: unknown) => error instanceof PGliteFinancialError && error.code === "invalid-request",
       );
     }
     assert.deepEqual(served, [], "a malformed request never reaches the store read");
-    assert.deepEqual(await client.registry.accountIdentityContinuity(request), continued);
+    assert.deepEqual(await client.request("financial.accountIdentity.continuity", [request]), continued);
     assert.deepEqual(served, [request]);
   }
   finally {
+    client.close();
+    await server.close();
+  }
+});
+
+test("a correlated canonical write must pass the commit assertion while reads skip it", async () => {
+  const served: string[] = [];
+  const registry = {
+    "financial.deposit.commit": async () => {
+      served.push("deposit");
+      return {};
+    },
+    "financial.spending.version": async () => {
+      served.push("version");
+      return 7;
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const asserted: unknown[] = [];
+  const [clientPort, serverPort] = memoryPair();
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), (context) => {
+    asserted.push(context);
+    throw new Error("task run is no longer active");
+  });
+  const correlation = { workflowId: "fubon", taskRunId: "run-1" };
+  const client = createPGliteFinancialRpcClient(clientPort, undefined, correlation);
+  try {
+    await assert.rejects(
+      client.request("financial.deposit.commit", [{ capture: {} }] as never),
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "operation-failed",
+    );
+    assert.equal(await client.request("financial.spending.version", []), 7);
+    assert.deepEqual(asserted, [correlation], "only the canonical write is asserted");
+    assert.deepEqual(served, ["version"], "the rejected write never reaches the store");
+  } finally {
     client.close();
     await server.close();
   }

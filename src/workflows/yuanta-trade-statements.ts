@@ -206,7 +206,7 @@ export async function requestYuantaTradeAssistance(
   context.signal.throwIfAborted();
   let contract: HumanAssistanceContractInput;
   try {
-    contract = await emitHumanAssistanceStage(stage, () => undefined);
+    contract = await emitHumanAssistanceStage(stage);
   } catch (error) {
     await context.event("authentication", "human-assistance-failed");
     throw error;

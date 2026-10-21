@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, Notification } from "electron";
 import {
-  automationRunner,
-  hydrateAutomationRuntimeState,
-  recoverInterruptedAutomationRuns,
-} from "../src/lib/automation/server/runner.ts";
+  createAutomationRuntime,
+  type AutomationRuntime,
+} from "../src/lib/automation/server/automation-runtime.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
@@ -24,16 +23,11 @@ import {
 import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
-import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
-import { AutomationRuntimeInvariantError } from "../src/lib/automation/runtime-invariants.ts";
+import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
   type PGliteOperationalRuntime,
 } from "./pglite-runtime.ts";
-import {
-  createPGliteFinancialPageClient,
-} from "./pglite-financial-registry.ts";
-import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX,
   packagedBrowserFixtureEnabled,
@@ -80,6 +74,7 @@ let stopBrowserStateCleanup: (() => void) | null = null;
 let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
+let automationRuntime: AutomationRuntime | null = null;
 let automationRuntimeFatalHandled = false;
 
 function handleAutomationRuntimeFatal(details: {
@@ -93,7 +88,7 @@ function handleAutomationRuntimeFatal(details: {
   if (automationRuntimeFatalHandled) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
-  automationRunner.abortAll();
+  automationRuntime?.abortAll();
   // A fatal invariant must retain exit status 1 without waiting for normal
   // before-quit cleanup or a CDP connection to finish closing.
   app.removeListener("before-quit", handleBeforeQuit);
@@ -118,12 +113,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
-    if (automationRunner.hasActive()) {
-      if (!pgliteOperationalRuntime) {
-        throw new Error("PGlite automation provider is unavailable during shutdown.");
-      }
-      await automationRunner.shutdown(pgliteOperationalRuntime.provider);
-    }
+    if (automationRuntime?.hasActive()) await automationRuntime.shutdown();
     await pgliteOperationalRuntime?.close();
   },
   quit: () => app.quit(),
@@ -283,7 +273,7 @@ async function start() {
   ensureDataRoot(userData);
   stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
-    isActive: (name) => automationRunner.activeTaskIds().includes(name),
+    isActive: (name) => automationRuntime?.activeTaskIds().includes(name) ?? false,
     onError: () => console.error("browser-state-cleanup-failed"),
   });
   Object.assign(process.env, buildDesktopEnv({
@@ -296,14 +286,15 @@ async function start() {
     dataDir: path.join(userData, "data", "pglite"),
   });
   pgliteOperationalRuntime = operationalRuntime;
+  const runtime = createAutomationRuntime(operationalRuntime.provider);
+  automationRuntime = runtime;
   registerAutomationCredentialSafeStorage();
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
   const automationRuntimeReady = new Promise<void>((resolve, reject) => {
     setImmediate(() => {
-      recoverInterruptedAutomationRuns(operationalRuntime.provider)
-        .then(() => hydrateAutomationRuntimeState(operationalRuntime.provider))
+      runtime.recover()
         .then(async () => {
           if (cdpVerificationFixture) {
             const contract = createHumanAssistanceContract({
@@ -338,7 +329,7 @@ async function start() {
               startedAt: new Date().toISOString(),
               humanAssistanceContract: contract,
             });
-            await hydrateAutomationRuntimeState(operationalRuntime.provider);
+            await runtime.rehydrate();
           }
           // This is an isolated Electron regression seam. It is only active
           // for the disposable CDP fixture and lets the fatal invariant be
@@ -347,7 +338,7 @@ async function start() {
             cdpFixture
             && unknownActiveRuntimeFixture
           ) {
-            automationRuntimeState.upsert({
+            runtime.upsertRuntimeTask({
               taskId: "unknown-cdp-active-task",
               runId: "unknown-cdp-run",
               status: "running",
@@ -370,21 +361,7 @@ async function start() {
     });
   });
   void automationRuntimeReady.catch((error) => {
-    const invariant = error instanceof AutomationRuntimeInvariantError
-      ? error.details
-      : null;
-    handleAutomationRuntimeFatal({
-      code: invariant?.code ?? "automation-runtime-snapshot-failed",
-      stage: "startup-reconcile",
-      ...(invariant
-        ? {
-          sessionId: invariant.sessionId,
-          revision: invariant.revision,
-          taskId: invariant.taskId,
-          runId: invariant.runId,
-        }
-        : {}),
-    });
+    handleAutomationRuntimeFatal(automationRuntimeFatalDetails("startup-reconcile", error));
   });
   if (!cdpFixture && !packagedBrowserFixture) {
     scheduler = createExchangeRateScheduler({
@@ -401,13 +378,11 @@ async function start() {
         "exchange-rates",
         occurrenceUtc,
       ),
-      isTaskActive: () => automationRunner.activeTaskIds().includes("exchange-rates"),
-      startTask: (scheduledAtUtc) => {
-        return automationRunner.start(
-          "exchange-rates",
-          operationalRuntime.provider,
-          { scheduledAtUtc },
-        ).then(() => undefined);
+      isTaskActive: () => runtime.activeTaskIds().includes("exchange-rates"),
+      startTask: async (scheduledAtUtc) => {
+        const started = await runtime.runMany(["exchange-rates"], { scheduledAtUtc });
+        const result = started.results["exchange-rates"];
+        if (result?.status === "error") throw new Error(result.error);
       },
       reportError: (error) => console.error("exchange-rate-scheduler-error", error),
     });
@@ -417,12 +392,13 @@ async function start() {
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
       startCollection: (occurrenceUtc) =>
-        startScheduledCollection(operationalRuntime.provider, occurrenceUtc, notifyScheduledRun)
+        startScheduledCollection(runtime, occurrenceUtc, notifyScheduledRun)
           .then(() => undefined),
       reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
     });
   }
   ipcRegistration = registerOctopusBeakIpc({
+    automationRuntime: runtime,
     onSystemSettingsChanged: () => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
@@ -437,11 +413,7 @@ async function start() {
       worker: operationalRuntime.worker,
       dataDir: operationalRuntime.dataDir,
     },
-    pgliteFinancial: createPGliteFinancialPageClient(
-      operationalRuntime.worker.financial,
-      operationalRuntime.worker.subscribe,
-      configuredOverviewSources,
-    ),
+    pgliteFinancial: operationalRuntime.worker.financial,
   });
   // Recovery owns the persisted active-run boundary.  Do not let the
   // scheduler claim a new run until that boundary has been reconciled; the
@@ -459,7 +431,7 @@ async function start() {
   if (packagedBrowserFixture) {
     void automationRuntimeReady
       .then(async () => await runPackagedBrowserWorkerFixture(
-        operationalRuntime.provider,
+        runtime,
         userData,
         process.env,
       ))

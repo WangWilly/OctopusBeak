@@ -88,7 +88,7 @@ import {
   type PGliteCanonicalSourceAdmissionRequest,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
-  executePGliteCanonicalDepositCommit,
+  commitPGliteCanonicalDepositCapture,
   type PGliteCanonicalDepositCommitRequest,
 } from "../src/ledger/pglite/deposit.ts";
 import {
@@ -96,27 +96,26 @@ import {
   type PGliteCanonicalMixedCommitRequest,
 } from "../src/ledger/pglite/mixed-commit.ts";
 import {
-  executePGliteCanonicalBalanceCapture,
+  commitPGliteCanonicalBalanceCapture,
   type PGliteCanonicalBalanceCaptureRequest,
 } from "../src/ledger/pglite/balance.ts";
 import {
-  executePGliteCanonicalEInvoiceCommit,
+  commitPGliteCanonicalEInvoiceCapture,
   PGliteCanonicalEInvoiceAdmissionError,
 } from "../src/ledger/pglite/einvoice.ts";
 import {
-  executePGliteCanonicalCreditCardCommand,
+  commitPGliteCanonicalCreditCardBalanceCapture,
+  commitPGliteCanonicalCreditCardCapture,
   PGliteCanonicalCreditCardAdmissionError,
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   type PGliteCanonicalCreditCardBalanceCaptureRequest,
   type PGliteCanonicalCreditCardCaptureRequest,
 } from "../src/ledger/pglite/credit-card.ts";
 import {
-  executePGliteCanonicalLoanCommand,
+  commitPGliteCanonicalLoanCapture,
   type PGliteCanonicalLoanCommitRequest,
 } from "../src/ledger/pglite/loan.ts";
 import {
-  executePGliteCanonicalInvestmentCommand,
+  commitPGliteCanonicalInvestmentCapture,
   listPGliteTdccFundAccounts,
   type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
@@ -125,8 +124,8 @@ import {
   type AccountIdentityContinuityRequest,
 } from "../src/ledger/pglite/account-identity-continuity.ts";
 import {
-  executePGliteCanonicalLoanRelationCommand,
-  executePGliteCanonicalInvestmentRelationCommand,
+  resolvePGliteCanonicalLoanRepaymentRelations,
+  resolvePGliteCanonicalInvestmentFundingRelations,
   queryPGliteCurrentLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentSettlementGroups,
   queryPGliteCurrentInvestmentFundingRelations,
@@ -146,12 +145,14 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
 type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
 
 import {
-  PGLITE_FINANCIAL_OPERATIONS,
+  isPGliteFinancialOperation,
+  PGLITE_FINANCIAL_CONTRACTS,
   PGliteFinancialError,
   type PGliteFinancialCancelRequest,
   type PGliteFinancialExpectedSources,
@@ -159,6 +160,7 @@ import {
   type PGliteFinancialOperation,
   type PGliteFinancialRequest,
   type PGliteFinancialResponse,
+  type PGliteFinancialPort,
   type PGliteFinancialRegistry,
   type PGliteFinancialRpcClient,
   type PGliteFinancialRpcPort,
@@ -174,38 +176,6 @@ type PGliteFinancialPageActionEvents = Readonly<{
 type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Required<PGliteFinancialPageActionEvents>;
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
-
-/** Version-bound Spending reads multiplexed over financial.spending.current. */
-type SpendingTaggedRead = "record-page" | "candidate-page" | "pending-overview" | "merge-log" | "month-insight" | "merchant-stats";
-
-export type PGliteFinancialPageClient = Readonly<{
-  load(page: "overview", options?: { expectedVersion?: number }): Promise<OverviewPageDto>;
-  load(page: "assets", options?: { expectedVersion?: number }): Promise<AssetsPageDto>;
-  load(page: "liabilities", options?: { expectedVersion?: number }): Promise<LiabilitiesPageDto>;
-  load(page: "spending", input?: SpendingLoadInput, options?: { expectedVersion?: number }): Promise<SpendingPageDto>;
-  loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
-  loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
-  applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
-  setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
-  loadSpendingPendingOverview(request: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
-  loadSpendingMergeLog(request: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
-  loadSpendingMonthInsight(request: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
-  loadSpendingMerchantStats(request: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
-  confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
-  loadBlock(
-    page: "overview" | "assets" | "liabilities" | "spending" | "automation",
-    block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey,
-    options?: { expectedVersion?: number },
-    automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto,
-    automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot,
-  ): Promise<import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload>;
-  rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
-  previewVisibilityChanged(): Promise<void>;
-  prewarmPairingCandidates(input: { dataVersion: number }): Promise<{ status: "ready" | "stale"; dataVersion: number; reused?: boolean; requestedVersion?: number }>;
-  confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
-  denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
-  revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
-}>;
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -292,163 +262,6 @@ function post(port: RpcPort, response: PGliteFinancialResponse): void {
     port.postMessage(response);
   } catch {
     // The renderer may close while a worker operation is finishing.
-  }
-}
-
-function nonNegativeSafeInteger(value: unknown): boolean {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function stringField(value: unknown, key: string): boolean {
-  const field = plainRecord(value) ? value[key] : undefined;
-  return typeof field === "string" && field.length > 0;
-}
-
-function accountIdentityContinuityRequestShape(value: unknown): boolean {
-  return plainRecord(value)
-    && Object.keys(value).length === 5
-    && stringField(value, "integrationNamespace")
-    && stringField(value, "sourceConnectionKey")
-    && stringField(value, "identityEpochKey")
-    && stringField(value, "stream")
-    && plainRecord(value.identifier)
-    && Object.keys(value.identifier).length === 2
-    && stringField(value.identifier, "kind")
-    && stringField(value.identifier, "value");
-}
-
-function sourceEvidenceShape(value: unknown): boolean {
-  return plainRecord(value)
-    && [
-      "captureId",
-      "integrationNamespace",
-      "sourceConnectionKey",
-      "identityEpoch",
-      "stream",
-      "recordKind",
-      "routeKey",
-      "contractVersion",
-      "subjectDigest",
-      "observedAt",
-    ].every((key) => stringField(value, key))
-    && plainRecord(value.scope)
-    && Array.isArray(value.pages)
-    && Array.isArray(value.records);
-}
-
-function sourceCommitShape(value: unknown): boolean {
-  return plainRecord(value)
-    && sourceEvidenceShape(value.capture)
-    && plainRecord(value.account)
-    && Array.isArray(value.transactions);
-}
-
-function einvoiceCaptureShape(value: unknown): boolean {
-  return plainRecord(value)
-    && ["captureId", "sourceConnectionKey", "identityEpoch", "subjectDigest", "observedAt"]
-      .every((key) => stringField(value, key))
-    && plainRecord(value.scope)
-    && Array.isArray(value.pages)
-    && Array.isArray(value.invoices);
-}
-
-function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly unknown[]): boolean {
-  switch (operation) {
-    case "financial.overview.current":
-    case "financial.assets.current":
-    case "financial.liabilities.current":
-      return args.length === 0 || (args.length === 1 && Array.isArray(args[0]));
-    case "financial.spending.current":
-      return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
-    case "financial.spending.version":
-    case "financial.preview.visibilityChanged":
-      return args.length === 0;
-    case "financial.spending.prewarmPairing":
-      return args.length === 1 && nonNegativeSafeInteger(args[0]);
-    case "financial.spending.pairing":
-      return args.length === 1 && plainRecord(args[0])
-        && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion);
-    case "financial.spending.confirmCandidate":
-    case "financial.spending.denyCandidate":
-    case "financial.spending.revokeLink":
-      return args.length === 1 && plainRecord(args[0]);
-    case "financial.spending.confirmStrongCandidates":
-      return args.length === 1 && plainRecord(args[0])
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
-        && Array.isArray((args[0] as Record<string, unknown>).pairs);
-    case "financial.spending.setPurchaseCategory":
-      return args.length === 1 && plainRecord(args[0])
-        && stringField(args[0], "purchaseId")
-        && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
-        && ((args[0] as Record<string, unknown>).categoryCode === null
-          || typeof (args[0] as Record<string, unknown>).categoryCode === "string");
-    case "financial.source.admit":
-      return args.length === 1 && sourceEvidenceShape(args[0]);
-    case "financial.source.commit":
-      return args.length === 1 && sourceCommitShape(args[0]);
-    case "financial.source.commitBatch":
-      return args.length === 1 && plainRecord(args[0])
-        && Array.isArray((args[0] as Record<string, unknown>).commits)
-        && ((args[0] as Record<string, unknown>).commits as unknown[]).length > 0
-        && ((args[0] as Record<string, unknown>).commits as unknown[]).every(sourceCommitShape);
-    case "financial.deposit.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && plainRecord((args[0] as Record<string, unknown>).capture);
-    case "financial.mixed.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && Array.isArray((args[0] as Record<string, unknown>).steps)
-        && ((args[0] as Record<string, unknown>).steps as unknown[]).length > 0
-        && ((args[0] as Record<string, unknown>).steps as unknown[]).every((step) =>
-          plainRecord(step)
-          && (step.kind === "source" && sourceEvidenceShape(step.request)
-            || step.kind === "financial" && sourceCommitShape(step.request)
-            || step.kind === "deposit" && plainRecord(step.request)
-              && plainRecord(step.request.capture)));
-    case "financial.balance.capture":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && Array.isArray((args[0] as Record<string, unknown>).observations);
-    case "financial.einvoice.commit":
-      return args.length === 1 && einvoiceCaptureShape(args[0]);
-    case "financial.creditCard.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && plainRecord((args[0] as Record<string, unknown>).identity)
-        && Array.isArray((args[0] as Record<string, unknown>).instruments)
-        && Array.isArray((args[0] as Record<string, unknown>).transactions)
-        && Array.isArray((args[0] as Record<string, unknown>).statements);
-    case "financial.creditCard.balance":
-      return args.length === 1 && plainRecord(args[0])
-        && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
-        && plainRecord((args[0] as Record<string, unknown>).account)
-        && plainRecord((args[0] as Record<string, unknown>).identity)
-        && plainRecord((args[0] as Record<string, unknown>).balance);
-    case "financial.loan.commit":
-    case "financial.investment.commit":
-      return args.length === 1 && plainRecord(args[0])
-        && plainRecord((args[0] as Record<string, unknown>).capture);
-    case "financial.loanRelations.resolve":
-      return args.length === 1 && plainRecord(args[0])
-        && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string";
-    case "financial.investmentRelations.resolve":
-    case "financial.loanRelations.current":
-    case "financial.loanSettlementGroups.current":
-      return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
-    case "financial.investmentRelations.current":
-      return args.length === 0 || (args.length === 1 && typeof args[0] === "string");
-    case "financial.exchangeRates.read":
-      return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string"));
-    case "financial.tdccFundAccounts.list":
-      return args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey");
-    case "financial.accountIdentity.continuity":
-      return args.length === 1 && accountIdentityContinuityRequestShape(args[0]);
-    case "financial.exchangeRates.upsert":
-      return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row));
-    default:
-      return false;
   }
 }
 
@@ -707,19 +520,16 @@ export function createPGliteFinancialRegistry(
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
   const previewVisibilityListeners = new Set<() => void>();
-  const readTaggedSpendingPage = (read: SpendingTaggedRead, request: unknown) => {
-    switch (read) {
-      case "record-page": return spending.recordPage(request as SpendingRecordPageRequest);
-      case "candidate-page": return spending.candidatePage(request as SpendingCandidatePageRequest);
-      case "pending-overview": return spending.pendingOverview(request as SpendingPendingOverviewRequest);
-      case "merge-log": return spending.mergeLog(request as SpendingMergeLogRequest);
-      case "month-insight": return spending.monthInsight(request as SpendingMonthInsightRequest);
-      case "merchant-stats": return spending.merchantStats(request as SpendingMerchantStatsRequest);
-      default: throw new TypeError("Unknown Spending page read.");
+  const versioned = async <T>(read: () => Promise<T>): Promise<SpendingPageReadResult<T>> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof SpendingPageVersionError)) throw error;
+      return { stale: true, knowledgeAt: error.knowledgeAt };
     }
   };
   return Object.freeze({
-    async overviewCurrent(expectedSources = []) {
+    async "financial.overview.current"([expectedSources = []]) {
       // Keep the canonical projection, history, prices, and rate rows in one
       // repeatable read transaction so a worker commit between queries cannot
       // mix snapshots.
@@ -733,7 +543,7 @@ export function createPGliteFinancialRegistry(
         return mapOverview(result, rates, history, prices, preview.accounts);
       });
     },
-    async assetsCurrent(expectedSources = []) {
+    async "financial.assets.current"([expectedSources = []]) {
       return store.transaction(async (transaction) => {
         const result = await createPGliteCanonicalOverviewQuery(
           transaction,
@@ -754,7 +564,7 @@ export function createPGliteFinancialRegistry(
         };
       });
     },
-    async liabilitiesCurrent(expectedSources = []) {
+    async "financial.liabilities.current"([expectedSources = []]) {
       return store.transaction(async (transaction) => {
         const result = await createPGliteCanonicalOverviewQuery(
           transaction,
@@ -775,32 +585,23 @@ export function createPGliteFinancialRegistry(
         };
       });
     },
-    async spendingCurrent(input = {}) {
-      const tagged = input as SpendingLoadInput & Readonly<{
-        __spendingRead?: SpendingTaggedRead;
-        request?: unknown;
-      }>;
-      if (tagged.__spendingRead) {
-        try {
-          const result = await readTaggedSpendingPage(tagged.__spendingRead, tagged.request);
-          return result as unknown as SpendingPageDto;
-        } catch (error) {
-          if (!(error instanceof SpendingPageVersionError)) throw error;
-          return { stale: true, knowledgeAt: error.knowledgeAt } as unknown as SpendingPageDto;
-        }
-      }
-      return spending.summaryPage(input);
-    },
-    async spendingVersion() {
+    "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
+    "financial.spending.recordPage": ([request]) => versioned(() => spending.recordPage(request)),
+    "financial.spending.candidatePage": ([request]) => versioned(() => spending.candidatePage(request)),
+    "financial.spending.pendingOverview": ([request]) => versioned(() => spending.pendingOverview(request)),
+    "financial.spending.mergeLog": ([request]) => versioned(() => spending.mergeLog(request)),
+    "financial.spending.monthInsight": ([request]) => versioned(() => spending.monthInsight(request)),
+    "financial.spending.merchantStats": ([request]) => versioned(() => spending.merchantStats(request)),
+    async "financial.spending.version"() {
       const result = await store.query<{ value: number | string }>(
         "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
       );
       return Number(result.rows[0]?.value ?? 0);
     },
-    spendingPrewarmPairing(dataVersion) {
+    "financial.spending.prewarmPairing"([dataVersion]) {
       return spending.prewarmPairing(dataVersion);
     },
-    spendingPairing(input) {
+    "financial.spending.pairing"([input]) {
       return spending.pairingCandidates(input);
     },
     isSpendingPageActionInFlight() {
@@ -814,127 +615,67 @@ export function createPGliteFinancialRegistry(
       previewVisibilityListeners.add(listener);
       return () => previewVisibilityListeners.delete(listener);
     },
-    async previewVisibilityChanged() {
+    async "financial.preview.visibilityChanged"() {
       for (const listener of previewVisibilityListeners) listener();
     },
-    confirmCandidate(input) {
-      const tagged = input as SpendingConfirmActionInput & Readonly<{
-        __spendingPageAction?: SpendingPageActionRequest;
-      }>;
-      if (tagged.__spendingPageAction) {
-        if (spendingPageActionCount === 0) latestSettledPageAction = null;
-        spendingPageActionCount += 1;
-        return commands.pageAction(tagged.__spendingPageAction).then((result) => {
-          if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
-            latestSettledPageAction = result;
-          return result as unknown as SpendingPurchaseActionResult;
-        }).finally(() => {
-          spendingPageActionCount -= 1;
-          if (spendingPageActionCount !== 0) return;
-          const publication = latestSettledPageAction;
-          latestSettledPageAction = null;
-          for (const listener of pageActionListeners) {
-            try {
-              listener(publication);
-            } catch {
-              // A live view cannot change the action result or other listeners.
-            }
+    "financial.spending.pageAction"([request]) {
+      if (spendingPageActionCount === 0) latestSettledPageAction = null;
+      spendingPageActionCount += 1;
+      return commands.pageAction(request).then((result) => {
+        if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
+          latestSettledPageAction = result;
+        return result;
+      }).finally(() => {
+        spendingPageActionCount -= 1;
+        if (spendingPageActionCount !== 0) return;
+        const publication = latestSettledPageAction;
+        latestSettledPageAction = null;
+        for (const listener of pageActionListeners) {
+          try {
+            listener(publication);
+          } catch {
+            // A live view cannot change the action result or other listeners.
           }
-        });
-      }
+        }
+      });
+    },
+    "financial.spending.confirmCandidate"([input]) {
       return commands.confirmCandidate(input);
     },
-    denyCandidate(input) {
+    "financial.spending.denyCandidate"([input]) {
       return commands.denyCandidate(input);
     },
-    revokeLink(input) {
+    "financial.spending.revokeLink"([input]) {
       return commands.revokeLink(input);
     },
-    setPurchaseCategory(input) {
+    "financial.spending.setPurchaseCategory"([input]) {
       return commands.setPurchaseCategory(input);
     },
-    confirmStrongCandidates(input) {
+    "financial.spending.confirmStrongCandidates"([input]) {
       return commands.confirmStrongCandidates(input);
     },
-    sourceAdmit: (request, options) => source.admit(request, options),
-    sourceCommit: (request, options) => source.commit(request, options),
-    sourceCommitBatch: (request, options) => source.commitBatch(request, options),
-    depositCommit: (request, options) => executePGliteCanonicalDepositCommit(store, request, options),
-    mixedCommit: (request, options) => commitPGliteCanonicalMixedCapture(store, request, options),
-    balanceCapture: (request, options) => executePGliteCanonicalBalanceCapture(store, request, options),
-    einvoiceCommit: (request, options) => executePGliteCanonicalEInvoiceCommit(store, request, options),
-    creditCardCommit: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request }, options),
-    creditCardBalance: (request, options) => executePGliteCanonicalCreditCardCommand(store, { kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND, request }, options),
-    loanCommit: (request, options) => executePGliteCanonicalLoanCommand(store, request, options),
-    investmentCommit: (request, options) => executePGliteCanonicalInvestmentCommand(store, request, options),
-    resolveLoanRelations: (request, options) => executePGliteCanonicalLoanRelationCommand(store, request, options),
-    resolveInvestmentRelations: (request, options) => executePGliteCanonicalInvestmentRelationCommand(store, request, options),
-    currentLoanRelations: (options) => queryPGliteCurrentLoanRepaymentRelations(store, options),
-    currentLoanSettlementGroups: (options) => queryPGliteCurrentLoanRepaymentSettlementGroups(store, options),
-    currentInvestmentRelations: (sourceConnectionKey) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
-    readExchangeRates: (currencies) => exchangeRates.readExchangeRates(currencies),
-    upsertExchangeRates: (rows) => exchangeRates.upsertExchangeRates(rows),
-    listTdccFundAccounts: (connection) => listPGliteTdccFundAccounts(store, connection),
-    accountIdentityContinuity: (request) => resolvePGliteAccountIdentityContinuity(store, request),
+    "financial.source.admit": ([request], options) => source.admit(request, options),
+    "financial.source.commit": ([request], options) => source.commit(request, options),
+    "financial.source.commitBatch": ([request], options) => source.commitBatch(request, options),
+    "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),
+    "financial.mixed.commit": ([request], options) => commitPGliteCanonicalMixedCapture(store, request, options),
+    "financial.balance.capture": ([request], options) => commitPGliteCanonicalBalanceCapture(store, request, options),
+    "financial.einvoice.commit": ([request], options) => commitPGliteCanonicalEInvoiceCapture(store, request, options),
+    "financial.creditCard.commit": ([request], options) => commitPGliteCanonicalCreditCardCapture(store, request, options),
+    "financial.creditCard.balance": ([request], options) => commitPGliteCanonicalCreditCardBalanceCapture(store, request, options),
+    "financial.loan.commit": ([request], options) => commitPGliteCanonicalLoanCapture(store, request, options),
+    "financial.investment.commit": ([request], options) => commitPGliteCanonicalInvestmentCapture(store, request, options),
+    "financial.loanRelations.resolve": ([request], options) => resolvePGliteCanonicalLoanRepaymentRelations(store, request, options),
+    "financial.investmentRelations.resolve": ([request = {}], options) => resolvePGliteCanonicalInvestmentFundingRelations(store, request, options),
+    "financial.loanRelations.current": ([options]) => queryPGliteCurrentLoanRepaymentRelations(store, options),
+    "financial.loanSettlementGroups.current": ([options]) => queryPGliteCurrentLoanRepaymentSettlementGroups(store, options),
+    "financial.investmentRelations.current": ([sourceConnectionKey]) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
+    "financial.exchangeRates.read": ([currencies]) => exchangeRates.readExchangeRates(currencies),
+    "financial.exchangeRates.upsert": ([rows]) => exchangeRates.upsertExchangeRates(rows),
+    "financial.tdccFundAccounts.list": ([connection]) => listPGliteTdccFundAccounts(store, connection),
+    "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
   });
 }
-
-async function invoke(
-  registry: PGliteFinancialRegistry,
-  operation: PGliteFinancialOperation,
-  args: readonly unknown[],
-  signal?: AbortSignal,
-): Promise<unknown> {
-  const options: PGliteCanonicalCommitOptions | undefined = signal ? { signal } : undefined;
-  switch (operation) {
-    case "financial.overview.current": return registry.overviewCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.assets.current": return registry.assetsCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.liabilities.current": return registry.liabilitiesCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
-    case "financial.spending.current": return registry.spendingCurrent(args[0] as SpendingLoadInput | undefined);
-    case "financial.spending.version": return registry.spendingVersion();
-    case "financial.preview.visibilityChanged": return registry.previewVisibilityChanged();
-    case "financial.spending.prewarmPairing": return registry.spendingPrewarmPairing(args[0] as number);
-    case "financial.spending.pairing": return registry.spendingPairing(args[0] as SpendingPairingCandidatesInput);
-    case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
-    case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
-    case "financial.spending.revokeLink": return registry.revokeLink(args[0] as SpendingLinkActionInput);
-    case "financial.spending.setPurchaseCategory": return registry.setPurchaseCategory(args[0] as SpendingPurchaseCategoryRequest);
-    case "financial.spending.confirmStrongCandidates": return registry.confirmStrongCandidates(args[0] as SpendingStrongConfirmRequest);
-    case "financial.source.admit": return registry.sourceAdmit(args[0] as PGliteCanonicalSourceAdmissionRequest, options);
-    case "financial.source.commit": return registry.sourceCommit(args[0] as PGliteCanonicalFinancialCommitRequest, options);
-    case "financial.source.commitBatch": return registry.sourceCommitBatch(args[0] as PGliteCanonicalFinancialCommitBatchRequest, options);
-    case "financial.deposit.commit": return registry.depositCommit(args[0] as PGliteCanonicalDepositCommitRequest, options);
-    case "financial.mixed.commit": return registry.mixedCommit(args[0] as PGliteCanonicalMixedCommitRequest, options);
-    case "financial.balance.capture": return registry.balanceCapture(args[0] as PGliteCanonicalBalanceCaptureRequest, options);
-    case "financial.einvoice.commit": return registry.einvoiceCommit(args[0] as Parameters<typeof executePGliteCanonicalEInvoiceCommit>[1], options);
-    case "financial.creditCard.commit": return registry.creditCardCommit(args[0] as PGliteCanonicalCreditCardCaptureRequest, options);
-    case "financial.creditCard.balance": return registry.creditCardBalance(args[0] as PGliteCanonicalCreditCardBalanceCaptureRequest, options);
-    case "financial.loan.commit": return registry.loanCommit(args[0] as PGliteCanonicalLoanCommitRequest, options);
-    case "financial.investment.commit": return registry.investmentCommit(args[0] as PGliteCanonicalInvestmentCommitRequest, options);
-    case "financial.loanRelations.resolve": return registry.resolveLoanRelations(args[0] as PGliteCanonicalLoanRelationResolutionRequest, options);
-    case "financial.investmentRelations.resolve": return registry.resolveInvestmentRelations(args[0] as PGliteCanonicalInvestmentRelationResolutionRequest ?? {}, options);
-    case "financial.loanRelations.current": return registry.currentLoanRelations(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined);
-    case "financial.loanSettlementGroups.current": return registry.currentLoanSettlementGroups(args[0] as { sourceConnectionKey?: string; integrationNamespace?: string } | undefined);
-    case "financial.investmentRelations.current": return registry.currentInvestmentRelations(args[0] as string | undefined);
-    case "financial.exchangeRates.read": return registry.readExchangeRates(args[0] as string[] | undefined);
-    case "financial.tdccFundAccounts.list": return registry.listTdccFundAccounts(args[0] as { sourceConnectionKey: string; identityEpochKey: string });
-    case "financial.accountIdentity.continuity": return registry.accountIdentityContinuity(args[0] as AccountIdentityContinuityRequest);
-    case "financial.exchangeRates.upsert": return registry.upsertExchangeRates(args[0] as readonly ExchangeRateRecord[]);
-  }
-}
-
-const CANONICAL_COMMIT_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
-  "financial.source.commit",
-  "financial.source.commitBatch",
-  "financial.deposit.commit",
-  "financial.mixed.commit",
-  "financial.balance.capture",
-  "financial.einvoice.commit",
-  "financial.creditCard.commit",
-  "financial.creditCard.balance",
-  "financial.loan.commit",
-  "financial.investment.commit",
-]);
 
 export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
 
@@ -950,6 +691,20 @@ const INTERACTIVE_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
   "financial.spending.confirmCandidate",
   "financial.spending.denyCandidate",
   "financial.spending.revokeLink",
+  "financial.spending.pageAction",
+  "financial.spending.recordPage",
+]);
+
+/**
+ * Page reads whose caller only keeps the answer to its newest request. While
+ * one is still queued, a newer request of the same operation replaces its
+ * arguments, so stepping through months reads only the month reached; the
+ * earlier callers receive that answer and discard it as superseded.
+ */
+const LATEST_WINS_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
+  "financial.spending.monthInsight",
+  "financial.spending.pendingOverview",
+  "financial.spending.merchantStats",
 ]);
 
 /**
@@ -992,18 +747,20 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
-/**
- * Page reads whose caller only keeps the answer to its newest request. While
- * one is still queued, a newer request of the same kind replaces its
- * arguments, so stepping through months reads only the month reached; the
- * earlier callers receive that answer and discard it as superseded.
- */
-const LATEST_WINS_SPENDING_READS: ReadonlySet<string> = new Set(["month-insight", "pending-overview", "merchant-stats"]);
+/** Serve a worker-owned registry through the same port interface the RPC client offers. */
+export function createPGliteFinancialLocalPort(registry: PGliteFinancialRegistry): PGliteFinancialPort {
+  return Object.freeze({
+    request: (operation, args, options) => (registry[operation] as (
+      args: unknown,
+      options?: PGliteCanonicalCommitOptions,
+    ) => Promise<never>)(args, options),
+  });
+}
 
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
-  registry: PGliteFinancialRegistry,
+  financial: PGliteFinancialPort,
   assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
   scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
 ): PGliteFinancialRpcServer {
@@ -1028,36 +785,34 @@ export function createPGliteFinancialRpcServer(
       post(port, genericFailure(value.id, "invalid-request"));
       return;
     }
-    if (!PGLITE_FINANCIAL_OPERATIONS.includes(value.operation as PGliteFinancialOperation)
-      || !validFinancialArgs(value.operation as PGliteFinancialOperation, value.args)) {
+    const contract = isPGliteFinancialOperation(value.operation)
+      ? PGLITE_FINANCIAL_CONTRACTS[value.operation]
+      : undefined;
+    if (!contract?.accepts(value.args)) {
       post(port, genericFailure(value.id, "invalid-request"));
       return;
     }
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const spendingRead = operation === "financial.spending.current"
-      ? (value.args[0] as { __spendingRead?: unknown } | undefined)?.__spendingRead
-      : undefined;
-    const interactive = INTERACTIVE_OPERATIONS.has(operation) || spendingRead === "record-page";
-    const latestWins = typeof spendingRead === "string" && LATEST_WINS_SPENDING_READS.has(spendingRead) ? spendingRead : null;
-    const queuedRead = latestWins ? queuedReads.get(latestWins) : undefined;
+    const latestWins = LATEST_WINS_OPERATIONS.has(operation);
+    const queuedRead = latestWins ? queuedReads.get(operation) : undefined;
     let outcome: Promise<unknown>;
     if (queuedRead) {
       queuedRead.args = value.args;
       outcome = queuedRead.outcome;
     } else {
       const read = { args: value.args, outcome: Promise.resolve() as Promise<unknown> };
-      outcome = scheduler.schedule(interactive ? "interactive" : "background", async () => {
-        if (latestWins && queuedReads.get(latestWins) === read) queuedReads.delete(latestWins);
+      outcome = scheduler.schedule(INTERACTIVE_OPERATIONS.has(operation) ? "interactive" : "background", async () => {
+        if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (assertCommitAdmissible && value.diagnosticContext && CANONICAL_COMMIT_OPERATIONS.has(operation)) {
+        if (assertCommitAdmissible && value.diagnosticContext && contract.canonicalCommit) {
           assertCommitAdmissible(value.diagnosticContext);
         }
-        return invoke(registry, operation, read.args, controller.signal);
+        return financial.request(operation, read.args as never, { signal: controller.signal });
       });
       read.outcome = outcome;
-      if (latestWins) queuedReads.set(latestWins, read);
+      if (latestWins) queuedReads.set(operation, read);
     }
     const work = outcome.then(
       (result) => {
@@ -1113,72 +868,15 @@ export function createPGliteFinancialRpcServer(
   };
 }
 
-/** Create the page-shaped client used by Electron IPC handlers. */
-export function createPGliteFinancialPageClient(
-  rpc: PGliteFinancialRpcClient,
-  subscribe?: (view: string, params: object, onRows: (rows: unknown[]) => void) => Promise<() => Promise<void>>,
-  expectedSources: () => PGliteFinancialExpectedSources = () => [],
-): PGliteFinancialPageClient & { subscribe?: typeof subscribe } {
-  const page = {
-    load(pageName: "overview" | "assets" | "liabilities" | "spending", inputOrOptions?: SpendingLoadInput | { expectedVersion?: number }, options?: { expectedVersion?: number }) {
-      void inputOrOptions;
-      void options;
-      const sources = expectedSources();
-      if (pageName === "overview") return rpc.registry.overviewCurrent(sources);
-      if (pageName === "assets") return rpc.registry.assetsCurrent(sources);
-      if (pageName === "liabilities") return rpc.registry.liabilitiesCurrent(sources);
-      return rpc.registry.spendingCurrent(inputOrOptions as SpendingLoadInput | undefined);
-    },
-    loadSpendingRecordPage(request: SpendingRecordPageRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
-    },
-    loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options: { signal?: AbortSignal } = {}) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "candidate-page", request }], options) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
-    },
-    applySpendingPageAction(request: SpendingPageActionRequest) {
-      return rpc.request("financial.spending.confirmCandidate", [{ __spendingPageAction: request }]) as Promise<SpendingPageActionResult>;
-    },
-    setSpendingPurchaseCategory(request: SpendingPurchaseCategoryRequest) {
-      return rpc.registry.setPurchaseCategory(request);
-    },
-    loadSpendingPendingOverview(request: SpendingPendingOverviewRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "pending-overview", request }]) as Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
-    },
-    loadSpendingMergeLog(request: SpendingMergeLogRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "merge-log", request }]) as Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
-    },
-    loadSpendingMonthInsight(request: SpendingMonthInsightRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "month-insight", request }]) as Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
-    },
-    loadSpendingMerchantStats(request: SpendingMerchantStatsRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "merchant-stats", request }]) as Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
-    },
-    confirmSpendingStrongCandidates(request: SpendingStrongConfirmRequest) {
-      return rpc.registry.confirmStrongCandidates(request);
-    },
-    async loadBlock(pageName: "overview" | "assets" | "liabilities" | "spending" | "automation", block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey, options?: { expectedVersion?: number }, automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto, automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot) {
-      void options;
-      void automationCredentialState;
-      void automationRuntimeState;
-      if (pageName === "automation") throw new Error("PGlite financial registry does not own automation page assembly.");
-      const value = await this.load(pageName, pageName === "spending" ? undefined : undefined);
-      const { projectFinancialBlock } = await import("./financial-page-block-loader.ts");
-      return projectFinancialBlock(value, block as never, pageName as never) as import("../src/lib/shared-shell/dashboard-blocks.ts").DashboardBlockPayload;
-    },
-    rankPairingCandidates: (input: SpendingPairingCandidatesInput) => rpc.registry.spendingPairing(input),
-    previewVisibilityChanged: () => rpc.registry.previewVisibilityChanged(),
-    prewarmPairingCandidates: async (input: { dataVersion: number }) => {
-      const currentVersion = await rpc.registry.spendingPrewarmPairing(input.dataVersion);
-      return currentVersion === input.dataVersion
-        ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
-        : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
-    },
-    confirmCandidate: (input: SpendingConfirmActionInput) => rpc.registry.confirmCandidate(input),
-    denyCandidate: (input: SpendingCandidateActionInput) => rpc.registry.denyCandidate(input),
-    revokeLink: (input: SpendingLinkActionInput) => rpc.registry.revokeLink(input),
-    ...(subscribe ? { subscribe } : {}),
-  };
-  return page as PGliteFinancialPageClient & { subscribe?: typeof subscribe };
+/** Build the version's pairing index ahead of a click, never a full Spending read. */
+export async function prewarmPGlitePairingCandidates(
+  financial: PGliteFinancialPort,
+  input: Readonly<{ dataVersion: number }>,
+) {
+  const currentVersion = await financial.request("financial.spending.prewarmPairing", [input.dataVersion]);
+  return currentVersion === input.dataVersion
+    ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
+    : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
 }
 
 const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
@@ -1251,12 +949,12 @@ export function createPGliteFinancialLiveViews(
               const requestedSources = (params as { expectedSources?: PGliteFinancialExpectedSources }).expectedSources;
               const sources = requestedSources ?? expectedSources();
               const load = (): Promise<unknown> => view === "financial.overview.current"
-                ? registry.overviewCurrent(sources)
+                ? registry["financial.overview.current"]([sources])
                 : view === "financial.assets.current"
-                  ? registry.assetsCurrent(sources)
+                  ? registry["financial.assets.current"]([sources])
                   : view === "financial.liabilities.current"
-                    ? registry.liabilitiesCurrent(sources)
-                  : registry.spendingCurrent(params as SpendingLoadInput);
+                    ? registry["financial.liabilities.current"]([sources])
+                  : registry["financial.spending.current"]([params as SpendingLoadInput]);
               const value = scheduler ? await scheduler.schedule("background", load) : await load();
               if (stopped) return;
               entry!.lastValue = value;
@@ -1286,7 +984,7 @@ export function createPGliteFinancialLiveViews(
             // commit notification may arrive just after that publication;
             // avoid rebuilding the same full summary ahead of a Pairing click.
             // A separate commit still has a newer version and is recomputed.
-            void registry.spendingVersion().then((version) => {
+            void registry["financial.spending.version"]([]).then((version) => {
               if (stopped) return;
               const published = (entry?.lastValue as SpendingPageDto | undefined)?.purchaseReport.knowledgeAt ?? -1;
               if (version > published) return recompute();
@@ -1352,7 +1050,7 @@ export function createPGliteFinancialLiveViews(
                 }
               }
 
-              const currentVersion = await registry.spendingVersion();
+              const currentVersion = await registry["financial.spending.version"]([]);
               const published = entry?.lastValue as SpendingPageDto | undefined;
               const publishedVersion = published?.purchaseReport.knowledgeAt ?? -1;
               const actionVersion = result?.knowledgeAt ?? -1;

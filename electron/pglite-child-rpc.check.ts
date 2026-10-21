@@ -19,7 +19,7 @@ function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClien
       ...client.operationalProvider,
       exchangeRates: client.operationalProvider.exchangeRates,
     },
-    financial: client.financial.registry,
+    financial: client.financial,
   };
 }
 
@@ -137,10 +137,10 @@ test("authenticated child RPC reaches the same worker named registries", async (
       (await child.operationalProvider.automation.taskRunById(created.taskRunId))?.status,
       "running",
     );
-    assert.equal((await child.financial.overviewCurrent()).availability, "empty");
-    assert.deepEqual(await child.financial.currentLoanRelations(), []);
+    assert.equal((await child.financial.request("financial.overview.current", [])).availability, "empty");
+    assert.deepEqual(await child.financial.request("financial.loanRelations.current", []), []);
     const unresolvedFunding = await child.workflow.commit({
-      kind: "canonical.investment-funding-relations.resolve",
+      kind: "financial.investmentRelations.resolve",
       request: {},
     });
     assert.equal(unresolvedFunding.outcome, "unchanged");
@@ -162,7 +162,7 @@ test("child RPC retains a worker admission category across both hops", async () 
   const provider = {
     operational: {},
     financial: {
-      overviewCurrent: async () => { throw new PGliteFinancialError("operation-failed", "admission"); },
+      request: async () => { throw new PGliteFinancialError("operation-failed", "admission"); },
     },
   } as unknown as PGliteChildProvider;
   const server = createPGliteChildRpcServer({ provider });
@@ -171,7 +171,7 @@ test("child RPC retains a worker admission category across both hops", async () 
     await server.ready;
     await child.ready;
     await assert.rejects(
-      child.financial.overviewCurrent(),
+      child.financial.request("financial.overview.current", []),
       (error: unknown) => error instanceof PGliteFinancialError
         && error.code === "operation-failed" && error.category === "admission",
     );
@@ -198,7 +198,7 @@ test("missing owner endpoint and child disconnect fail explicitly", async () => 
       },
     },
     financial: {
-      sourceCommit: async (_request: unknown, options?: { signal?: AbortSignal }) => {
+      request: async (_operation: unknown, _args: unknown, options?: { signal?: AbortSignal }) => {
         entered = true;
         await new Promise<void>((resolve, reject) => {
           options?.signal?.addEventListener("abort", () => {

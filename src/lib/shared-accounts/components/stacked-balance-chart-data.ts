@@ -191,3 +191,17 @@ function sumForDate(
     return sum + (mode === "liability" ? Math.abs(value) : value);
   }, 0);
 }
+
+function currencyOrder(value: string) {
+  return value === "TWD" ? 0 : value === "USD" ? 1 : value === "JPY" ? 2 : 3;
+}
+
+/** The currencies one side of the last 30 history points holds, TWD, USD, and JPY first. */
+export function chartCurrenciesFor(
+  history: readonly DailyHistoryRowDto[],
+  side: "assets" | "liabilities",
+): string[] {
+  const rows = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+  return [...new Set(rows.flatMap((row) => row[side].map((amount) => amount.currency)))]
+    .sort((left, right) => currencyOrder(left) - currencyOrder(right) || left.localeCompare(right));
+}

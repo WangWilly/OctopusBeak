@@ -11,7 +11,8 @@
     type NetWorthPoint,
     type SeriesRange,
   } from "$lib/overview/overview-model.ts";
-  import { formatPct, formatShortDate, formatTwd, formatTwdNumber } from "$lib/overview/overview-format.ts";
+  import { formatPct, formatShortDate } from "$lib/overview/overview-format.ts";
+import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 
   export let netWorth: NetWorth;
   export let series: NetWorthPoint[] = [];

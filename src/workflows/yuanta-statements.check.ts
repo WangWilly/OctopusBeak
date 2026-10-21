@@ -267,7 +267,7 @@ await assert.rejects(
   /stable caller-supplied Source Connection scope and key/u,
 );
 const { StatementComponentAbsentError } =
-  await import("./run-selected-statements.ts");
+  await import("../lib/automation/product-collection.ts");
 
 class DelayedVisibilityLocator {
   private readonly visibleAt: number;

@@ -33,7 +33,7 @@ import {
   type PostDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/post-domestic-deposit-admission.ts";
 import {
-  getPostHumanAttestedV1Manifest,
+  POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import {
@@ -51,7 +51,7 @@ import {
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
 import {
-  emitHumanAssistanceStage,
+  requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 
@@ -481,23 +481,6 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-export async function requestPostCaptchaAssistance(
-  stage: WorkflowHumanAssistanceStage,
-  request: (
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ) => Promise<HumanAssistanceCompletionStatus>,
-  signal: AbortSignal,
-): Promise<HumanAssistanceCompletionStatus> {
-  signal.throwIfAborted();
-  const contract = await emitHumanAssistanceStage(stage, (value) => value);
-  const status = await request(contract, signal);
-  signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified")
-    throw new Error(`iPost human assistance ended with status ${status}.`);
-  return status;
-}
-
 async function signInPostWithAssistance(
   page: Page,
   credentials: PostCredentials,
@@ -535,7 +518,7 @@ async function signInPostWithAssistance(
     throw new Error("iPost CAPTCHA input is unavailable for assistance.");
 
   try {
-    await requestPostCaptchaAssistance(
+    await requestCaptchaAssistance("iPost", 
       postCaptchaAssistanceStage(page),
       requestHumanAssistance,
       signal,
@@ -1061,7 +1044,7 @@ async function runPostStatements(
     financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
   }> = [];
   const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] = [];
-  const manifest = getPostHumanAttestedV1Manifest();
+  const manifest = POST_HUMAN_ATTESTED_V1_MANIFEST;
   for (const { capture, captureId } of captureEntries) {
     const input = {
       capture,

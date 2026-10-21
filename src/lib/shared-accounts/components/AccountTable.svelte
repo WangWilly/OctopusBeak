@@ -317,7 +317,7 @@
         {:else if account.valueAvailability === "unavailable"}
           <span>{$t.accounts.noAvailableData}</span>
         {:else}
-          {formatAmountLines(account.amountLines)}
+          {formatAmountLines(account.amountLines, $locale)}
         {/if}
       </strong><br />
       {#if availableBalanceBasis}

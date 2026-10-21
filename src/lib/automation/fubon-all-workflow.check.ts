@@ -49,7 +49,7 @@ function item(product: string, value = "complete"): PGliteWorkflowRunItem {
     product,
     itemKey: `${product}-1`,
     command: {
-      kind: "canonical.deposit.commit",
+      kind: "financial.deposit.commit",
       request: { value },
     } as unknown as PGliteWorkflowRunItem["command"],
   };

@@ -171,7 +171,7 @@
                 <span>{tooltipDate(data?.time)}</span>
                 <div class="stacked-balance-tooltip-row stacked-balance-tooltip-total">
                   <span>{$t.chart.total}</span>
-                  <strong data-sensitive>{formatMoney({ currency, value: tooltipTotal(data) })}</strong>
+                  <strong data-sensitive>{formatMoney({ currency, value: tooltipTotal(data) }, { locale: $locale })}</strong>
                 </div>
                 {#each orderedTooltipSeries() as item}
                   <div class="stacked-balance-tooltip-row">
@@ -179,7 +179,7 @@
                       <span class="stacked-balance-tooltip-swatch" style:background-color={item.color}></span>
                       {kindLabels[item.key] ?? item.label}
                     </span>
-                    <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(item, data) })}</strong>
+                    <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(item, data) }, { locale: $locale })}</strong>
                   </div>
                 {/each}
               </div>

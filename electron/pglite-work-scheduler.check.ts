@@ -4,7 +4,7 @@ import {
   createPGliteFinancialRpcClient,
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
-  type PGliteFinancialRegistry,
+  type PGliteFinancialPort,
 } from "./pglite-financial-registry.ts";
 
 test("queued interactive work starts before queued background work, one job at a time", async () => {
@@ -62,25 +62,25 @@ test("queued month reads collapse into the newest request of their kind", async 
   const reads: string[] = [];
   let releaseFirst!: () => void;
   const firstRunning = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  const registry = {
-    async spendingCurrent(input: { __spendingRead: string; request: { month: string } }) {
-      reads.push(`${input.__spendingRead}:${input.request.month}`);
+  const financial = {
+    async request(operation: string, [request]: readonly [{ month: string }]) {
+      reads.push(`${operation}:${request.month}`);
       if (reads.length === 1) await firstRunning;
-      return { month: input.request.month };
+      return { month: request.month };
     },
-  } as unknown as PGliteFinancialRegistry;
-  const server = createPGliteFinancialRpcServer(port("server", "client") as never, registry);
+  } as unknown as PGliteFinancialPort;
+  const server = createPGliteFinancialRpcServer(port("server", "client") as never, financial);
   const client = createPGliteFinancialRpcClient(port("client", "server") as never);
-  const insight = (month: string) => client.request("financial.spending.current", [{ __spendingRead: "month-insight", request: { knowledgeAt: 1, month } }]);
+  const insight = (month: string) => client.request("financial.spending.monthInsight", [{ knowledgeAt: 1, month }]);
   try {
-    const running = client.request("financial.spending.current", [{ __spendingRead: "record-page", request: { knowledgeAt: 1, month: "2026-12" } }]);
+    const running = client.request("financial.spending.recordPage", [{ knowledgeAt: 1, month: "2026-12" }]);
     await new Promise((resolve) => setTimeout(resolve, 5));
     const stepped = [insight("2026-11"), insight("2026-10"), insight("2026-09")];
     await new Promise((resolve) => setTimeout(resolve, 5));
     releaseFirst();
     await running;
     assert.deepEqual(await Promise.all(stepped), [{ month: "2026-09" }, { month: "2026-09" }, { month: "2026-09" }]);
-    assert.deepEqual(reads, ["record-page:2026-12", "month-insight:2026-09"]);
+    assert.deepEqual(reads, ["financial.spending.recordPage:2026-12", "financial.spending.monthInsight:2026-09"]);
   } finally {
     client.close(new Error("test done"));
     await server.close();

@@ -54,17 +54,6 @@ export type SinopacHumanAttestedV1Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type SinopacHumanAttestationEvent = Readonly<{
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: `sha256:${string}`;
-  sequence: number;
-}>;
-
 export function sinopacHumanAttestedIdentityEpochKey(
   manifest: SinopacHumanAttestedV1Manifest = SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
 ): `sha256:${string}` {

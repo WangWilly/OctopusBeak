@@ -32,18 +32,6 @@ function intlLocale(locale: Locale): string {
   return locale === "zh-TW" ? "zh-TW" : "en-US";
 }
 
-/** Whole TWD with grouping and a true minus sign, e.g. `−19,410` or `+1,860`. */
-export function formatTwdNumber(value: number, locale: Locale, signed = false): string {
-  const rounded = Math.round(value);
-  const digits = new Intl.NumberFormat(intlLocale(locale), { maximumFractionDigits: 0 }).format(Math.abs(rounded));
-  if (rounded < 0) return `${MINUS}${digits}`;
-  return signed && rounded > 0 ? `+${digits}` : digits;
-}
-
-export function formatTwd(value: number, locale: Locale): string {
-  return `TWD ${formatTwdNumber(value, locale)}`;
-}
-
 /** Signed percentage, e.g. `+0.3%` or `−2.4%`. */
 export function formatPct(ratio: number, locale: Locale, digits = 1): string {
   const value = new Intl.NumberFormat(intlLocale(locale), {

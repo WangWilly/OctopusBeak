@@ -58,7 +58,7 @@ function runItem(): PGliteWorkflowRunItem {
     provider: "fixture",
     product: "fixture",
     itemKey: "fixture-item",
-    command: { kind: "canonical.source.admit", request: {} },
+    command: { kind: "financial.source.admit", request: {} },
   } as unknown as PGliteWorkflowRunItem;
 }
 
@@ -219,7 +219,7 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
         },
       },
       financial: {
-        async overviewCurrent() { return { dailyHistory: [] }; },
+        async request() { return { dailyHistory: [] }; },
       },
     } as never,
   });

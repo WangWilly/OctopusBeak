@@ -3,10 +3,6 @@
   import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
-  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
-  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { resolveSpendingPurchaseReport } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
   } from "../purchase-matching.ts";
@@ -60,7 +56,6 @@
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
-  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let refreshSummary: () => Promise<void> = async () => {};
   const today = taipeiDateKey(Date.now() / 1000);
   const spendingSession = createPurchaseSpendingSession({
@@ -76,30 +71,6 @@
     refreshSummary: () => refreshSummary(),
   });
   const reviewState = review.state;
-
-  export let retryBlock: (key: string) => void = () => {};
-
-  function blockState(key: "summary" | "chart" | "details"): BlockState<DashboardBlockPayload> {
-    if (report.summary) {
-      const data = {
-        canonical: $spendingState.canonical,
-        purchaseReport: report as unknown as SpendingPageDto["purchaseReport"],
-        invoices: [],
-      };
-      return {
-        status: "ready",
-        data: { route: "spending", block: key, data } as DashboardBlockPayload,
-      };
-    }
-    return blocks[key] ?? { status: "loading" };
-  }
-
-  function spendingBlockData(
-    key: "summary" | "chart" | "details",
-    payload: DashboardBlockPayload | undefined,
-  ) {
-    return payload?.route === "spending" && payload.block === key ? payload.data : undefined;
-  }
 
   let report = purchaseReport;
   let isUpdating = false;
@@ -208,6 +179,12 @@
   $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId)
     ?? (validatedSelectedCandidate?.transactionId === selectedPaymentId ? validatedSelectedCandidate : null);
   $: visibleTotals = totalsForMonth(report, activeMonth);
+  $: detailsMonthRecords = report.records.filter((record) => record.occurrence.value.startsWith(`${activeMonth}-`));
+  $: detailsVisibleRecords = detailsMonthRecords
+    .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
+    .slice()
+    .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+  $: detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords);
   $: monthSummary = report.summary?.monthTotals.find((summary) => summary.month === activeMonth) ?? null;
   $: periodRecordCount = report.summary
     ? selectedDay
@@ -459,8 +436,7 @@
       <section class="card purchase-action-error" role="alert">{actionErrorText || pageError}</section>
     {/if}
 
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
-      {@const summaryBlock = spendingBlockData("summary", data)}
+    <div class="block-frame">
       <section class="card month-overview" data-month-panel data-month={activeMonth} aria-labelledby="spending-month-title">
         <div class="month-summary">
           <header class="month-head">
@@ -587,7 +563,7 @@
             </dl>
           {:else if reading}
             <p class="month-empty">{$t.spendingInsight.noCurrencyThisMonth(selectedCurrency)}</p>
-          {:else if (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
+          {:else if report.totalStatus === "includes-pending-confirmation"}
             <p class="month-caveat" data-pending-total data-total-status="includes-pending-confirmation">{$t.purchaseSpending.pendingTotalNote}</p>
           {/if}
         </div>
@@ -623,10 +599,10 @@
           </section>
         {/if}
       </section>
-    </ProgressiveBlock>
+    </div>
 
     {#if cards}
-      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+      <div class="block-frame">
         <div class="charts-row">
           <section class="card pace-card" aria-labelledby="spending-pace-title">
             <header class="card-head">
@@ -738,17 +714,10 @@
             {/if}
           </section>
         </div>
-      </ProgressiveBlock>
+      </div>
     {/if}
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
-    {@const detailsReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
-    {@const detailsMonthRecords = detailsReport.records.filter((record) => record.occurrence.value.startsWith(`${activeMonth}-`))}
-    {@const detailsVisibleRecords = detailsMonthRecords
-      .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
-      .slice()
-      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId))}
-    {@const detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords)}
+    <div class="block-frame">
     <section class="card purchase-records-card" aria-labelledby="spending-records-title">
       <header class="records-head">
         <div class="records-title">
@@ -856,7 +825,7 @@
         </div>
       {/if}
     </section>
-    </ProgressiveBlock>
+    </div>
 
     {#if pairingInvoice?.invoice}
       <section class="pairing-dialog-backdrop" data-pairing-dialog data-pairing-feedback="open-dialog">
@@ -942,6 +911,7 @@
 </DashboardShell>
 
 <style>
+  .block-frame { position: relative; min-width: 0; }
   .purchase-spending { display: grid; gap: var(--space-6); }
   .purchase-spending :global(button) { transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
   .purchase-action-error { padding: var(--space-4) var(--space-5); border-color: color-mix(in oklch, var(--danger) 35%, var(--border)); background: color-mix(in oklch, var(--danger) 8%, white); color: var(--danger); }

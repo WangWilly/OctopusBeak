@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
   USER_CATEGORIZATION_RULE_LINEAGE,
   writeEInvoiceItemUserCategory,
@@ -183,14 +184,11 @@ async function insertTransactionTransition(
 }
 
 async function createUserCommit(transaction: PGliteTransaction): Promise<Uint8Array> {
-  const id = uuidBytes();
-  const sequence = (await latest(transaction)) + 1;
-  await query(transaction,
-    `INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind)
-     VALUES (?, ?, ?, 'user/local', 'user_assertion')`,
-    [id, sequence, Date.now() * 1000],
-  );
-  return id;
+  return (await insertPGliteCanonicalCommit(transaction, {
+    kind: "user_assertion",
+    authorityRoute: "user/local",
+    time: { kind: "wall-clock" },
+  })).id;
 }
 
 async function activeGenerationId(transaction: PGliteTransaction): Promise<number | null> {

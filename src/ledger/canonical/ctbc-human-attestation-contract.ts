@@ -1,5 +1,5 @@
 // Pure CTBC attestation contract and process-local manifest state. Database
-// event persistence lives in ctbc-human-attestation.ts.
+// event persistence lives in ledger/pglite/attestation.ts.
 export type CtbcOpaqueToken = `sha256:${string}`;
 
 export function freezeCtbcHumanAttestationManifest<T>(value: T, seen = new WeakSet<object>()): T {
@@ -61,28 +61,12 @@ export type CtbcHumanAttestedV1Manifest = Omit<
   revocationReason: string | null;
 };
 
-export type CtbcHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: CtbcOpaqueToken;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: CtbcHumanAttestedV1Manifest =
-  CTBC_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(currentManifest);
-
-export function ctbcHumanAttestationFingerprint(manifest = currentManifest): CtbcOpaqueToken {
+export function ctbcHumanAttestationFingerprint(manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST): CtbcOpaqueToken {
   return manifest.provenance.attestationContractFingerprint as CtbcOpaqueToken;
 }
 
 export function ctbcHumanAttestedIdentityEpochKey(
-  manifest: CtbcHumanAttestedV1Manifest = currentManifest,
+  manifest: CtbcHumanAttestedV1Manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 ): CtbcOpaqueToken {
   return `sha256:${Buffer.from(
     [
@@ -103,22 +87,18 @@ export function isCtbcHumanAttestationDateTime(value: string): boolean {
 
 export function assertCtbcHumanAttestationManifest(): void {
   if (
-    currentManifest.attestationId !==
+    CTBC_HUMAN_ATTESTED_V1_MANIFEST.attestationId !==
       CTBC_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
-    currentManifest.authorityRoute !==
+    CTBC_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute !==
       CTBC_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute ||
-    currentManifest.provenance.attestationContractFingerprint !==
+    CTBC_HUMAN_ATTESTED_V1_MANIFEST.provenance.attestationContractFingerprint !==
       CTBC_HUMAN_ATTESTED_V1_MANIFEST.provenance
         .attestationContractFingerprint ||
-    currentManifest.providerGuaranteed !== false
+    CTBC_HUMAN_ATTESTED_V1_MANIFEST.providerGuaranteed !== false
   )
     throw new Error(
       "CTBC attestation manifest does not match the immutable contract.",
     );
-}
-
-export function getCtbcHumanAttestedV1Manifest(): CtbcHumanAttestedV1Manifest {
-  return currentManifest;
 }
 
 export function isCtbcHumanAttestedV1Manifest(
@@ -127,19 +107,7 @@ export function isCtbcHumanAttestedV1Manifest(
   return (
     value !== null &&
     typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
+    value === CTBC_HUMAN_ATTESTED_V1_MANIFEST
   );
 }
 
-export function isCtbcHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
-
-
-export function replaceCtbcHumanAttestedV1Manifest(
-  manifest: CtbcHumanAttestedV1Manifest,
-): void {
-  currentManifest = manifest;
-  VALIDATED_MANIFESTS.add(manifest);
-}

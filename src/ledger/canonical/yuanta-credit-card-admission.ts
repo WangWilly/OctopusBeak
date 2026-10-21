@@ -7,7 +7,6 @@ import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-c
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isYuantaCreditCardHumanAttestedAccountKey,
-  isYuantaCreditCardHumanAttestedV2Active,
 } from "./yuanta-credit-card-human-attestation-contract.ts";
 import {
   assignOccurrenceSlots,
@@ -819,8 +818,6 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 export function admitYuantaCreditCardCapture(
   capture: YuantaCreditCardCaptureInput,
 ): YuantaCreditCardValidatedCapture {
-  if (!isYuantaCreditCardHumanAttestedV2Active())
-    fail("Yuanta credit-card human-attested v2 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("Yuanta credit-card capture is required.");
   const captureId = text(capture.captureId, "Capture ID");

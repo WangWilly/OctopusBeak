@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     groupDigits,
     localTime,
@@ -80,7 +80,7 @@
             <strong class="chip closed" data-preview-value="closed">{$t.preview.closed}</strong>
           {:else}
             <span>{credit ? $t.preview.usedCredit : $t.transactions.currentBalance}</span>
-            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines)}</strong>
+            <strong class="money" data-sensitive>{formatAmountLines(account.amountLines, $locale)}</strong>
           {/if}
         </div>
       </AccountModalHeader>

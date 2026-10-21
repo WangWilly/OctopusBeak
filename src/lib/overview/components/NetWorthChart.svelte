@@ -2,7 +2,8 @@
   import { locale } from "$lib/i18n/i18n.ts";
   import type { NetWorthPoint } from "$lib/overview/overview-model.ts";
   import { dayOffset, monthTicks, niceTicks } from "$lib/overview/net-worth-chart.ts";
-  import { formatCompact, formatDayWithWeekday, formatMonth, formatTwd } from "$lib/overview/overview-format.ts";
+  import { formatCompact, formatDayWithWeekday, formatMonth } from "$lib/overview/overview-format.ts";
+import { formatTwd } from "$lib/shared-money/money.ts";
 
   export let points: NetWorthPoint[] = [];
   export let label = "";

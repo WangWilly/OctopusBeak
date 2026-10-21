@@ -110,7 +110,7 @@ const { assembleYuantaLoanStatement } = await import(
   "./yuanta-loan-statements.ts"
 );
 const { StatementComponentAbsentError } =
-  await import("./run-selected-statements.ts");
+  await import("../lib/automation/product-collection.ts");
 
 const loanSource = await readFile(
   new URL("./yuanta-loan-statements.ts", import.meta.url),

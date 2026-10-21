@@ -15,6 +15,9 @@ import {
 } from "./desktop-api.ts";
 import { readAutomationSettings } from "./settings.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
+
+const idleRuns = () => ({ snapshot: createAutomationRuntimeState().snapshot(), activeTaskIds: [] });
 
 test("desktop automation model and history are read from the provider", async () => {
   const database = await createTestPGlite("operational");
@@ -37,7 +40,7 @@ test("desktop automation model and history are read from the provider", async ()
         summary: { status: "completed", counts: { count: 2 } },
       },
     });
-    const model = await loadAutomationDesktopModel(provider);
+    const model = await loadAutomationDesktopModel(provider, idleRuns());
     assert.ok(model.credentialGroups.length > 0);
     assert.equal(model.automation.credentials !== undefined, true);
     const history = await automationRunHistory(provider);
@@ -74,7 +77,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
         summary: { status: "partial", counts: { itemCount: 4, skippedProductCount: 1 } },
       },
     });
-    const beforeEvents = await loadAutomationDesktopModel(provider);
+    const beforeEvents = await loadAutomationDesktopModel(provider, idleRuns());
     assert.deepEqual(
       beforeEvents.automation.tasks.find((task) => task.id === "exchange-rates")?.events,
       [],
@@ -94,7 +97,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
       total: 2,
     });
 
-    const current = await loadAutomationDesktopModel(provider);
+    const current = await loadAutomationDesktopModel(provider, idleRuns());
     const currentTask = current.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
@@ -117,7 +120,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
       await provider.automation.pruneRunEvents("2026-09-26T00:00:00.000Z"),
       2,
     );
-    const expired = await loadAutomationDesktopModel(provider);
+    const expired = await loadAutomationDesktopModel(provider, idleRuns());
     const expiredTask = expired.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
@@ -156,7 +159,7 @@ test("Fubon statement subset round-trips through settings and desktop model", as
       "deposit,loan",
     );
 
-    const model = await loadAutomationDesktopModel(provider);
+    const model = await loadAutomationDesktopModel(provider, idleRuns());
     const fubon = model.credentialGroups.find((group) => group.id === "fubon");
     assert.deepEqual(fubon?.selectedStatementTypeIds, ["deposit", "loan"]);
     assert.equal(fubon?.statementSetupRequired, false);

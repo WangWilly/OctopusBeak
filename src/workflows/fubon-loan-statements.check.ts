@@ -854,7 +854,7 @@ test("commits and resolves one Fubon loan capture through authenticated PGlite R
   const server = createPGliteChildRpcServer({
     provider: {
       operational: worker.operationalProvider,
-      financial: worker.financial.registry,
+      financial: worker.financial,
     } as PGliteChildProvider,
   });
   const priorEnv = Object.fromEntries(
@@ -970,7 +970,7 @@ test("commits and resolves one Fubon loan capture through authenticated PGlite R
       assert.equal(result.items[0]?.status, "committed");
       assert.deepEqual(result.items[0]?.relationWarnings, []);
       assert.equal(
-        (await worker.financial.registry.liabilitiesCurrent()).accounts.length,
+        (await worker.financial.request("financial.liabilities.current", [])).accounts.length,
         1,
       );
     } finally {

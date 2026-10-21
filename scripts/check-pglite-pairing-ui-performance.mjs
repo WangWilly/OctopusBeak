@@ -9,7 +9,6 @@ import { Worker } from "node:worker_threads";
 import { chromium } from "playwright";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteViewWorkerClient } from "../electron/pglite-view-worker-client.ts";
-import { createPGliteFinancialPageClient } from "../electron/pglite-financial-registry.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { createPGlitePairingPerformanceFixture } from "../src/ledger/pglite/spending-performance-fixture.ts";
 import { spendingPairingReportContext } from "../src/lib/spending/model.ts";
@@ -219,7 +218,7 @@ async function startWorker(dataDir) {
   const startupAt = performance.now();
   let dataVersion;
   try {
-    dataVersion = await client.financial.registry.spendingVersion();
+    dataVersion = await client.financial.request("financial.spending.version", []);
   } catch (error) {
     progress(`worker startup/version request failed for ${dataDir}: ${String(error)}`);
     await client.close().catch(() => undefined);
@@ -258,14 +257,14 @@ async function runSingle(runNumber) {
       limit: 50,
     };
     const coldRankStartedAt = performance.now();
-    const ranked = await preflight.client.financial.registry.spendingPairing(rankInput).catch((error) => {
+    const ranked = await preflight.client.financial.request("financial.spending.pairing", [rankInput]).catch((error) => {
       progress(`cold ranking RPC failed: ${String(error)}`);
       throw error;
     });
     const coldRankRpcMs = performance.now() - coldRankStartedAt;
     progress(`cold rank completed (${coldRankRpcMs.toFixed(1)}ms, ${ranked.totalCandidateCount} candidates)`);
     const warmRankStartedAt = performance.now();
-    const warmRanked = await preflight.client.financial.registry.spendingPairing(rankInput).catch((error) => {
+    const warmRanked = await preflight.client.financial.request("financial.spending.pairing", [rankInput]).catch((error) => {
       progress(`warm ranking RPC failed: ${String(error)}`);
       throw error;
     });
@@ -280,7 +279,7 @@ async function runSingle(runNumber) {
       "warm ranking must preserve the full ranking order",
     );
     const rendererModel = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
-    const currentPage = await preflight.client.financial.registry.spendingCurrent();
+    const currentPage = await preflight.client.financial.request("financial.spending.current", []);
     assert.equal(currentPage.purchaseReport.knowledgeAt, dataVersion);
     const model = {
       ...currentPage,
@@ -299,7 +298,7 @@ async function runSingle(runNumber) {
       pairingReportContext,
     };
     const warmConfirmStartedAt = performance.now();
-    const warmConfirmation = await preflight.client.financial.registry.confirmCandidate(directConfirmInput).catch((error) => {
+    const warmConfirmation = await preflight.client.financial.request("financial.spending.confirmCandidate", [directConfirmInput]).catch((error) => {
       progress(`warm confirmation RPC failed: ${String(error)}`);
       throw error;
     });
@@ -311,10 +310,10 @@ async function runSingle(runNumber) {
 
     coldConfirmWorker = await startWorker(coldConfirmDataDir);
     const coldConfirmStartedAt = performance.now();
-    const coldConfirmation = await coldConfirmWorker.client.financial.registry.confirmCandidate({
+    const coldConfirmation = await coldConfirmWorker.client.financial.request("financial.spending.confirmCandidate", [{
       ...directConfirmInput,
       dataVersion: coldConfirmWorker.dataVersion,
-    }).catch((error) => {
+    }]).catch((error) => {
       progress(`cold confirmation RPC failed: ${String(error)}`);
       throw error;
     });
@@ -335,7 +334,6 @@ async function runSingle(runNumber) {
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     actual = await startWorker(dataDir);
-    const actualPage = createPGliteFinancialPageClient(actual.client.financial);
     progress("started UI worker");
     const uiWorkerStartupMs = actual.startupMs;
 
@@ -362,7 +360,7 @@ async function runSingle(runNumber) {
       rankBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const value = await actual.client.financial.registry.spendingPairing(input);
+        const value = await actual.client.financial.request("financial.spending.pairing", [input]);
         progress(`UI rank RPC completed (${(performance.now() - startedAt).toFixed(1)}ms)`);
         return value;
       } finally {
@@ -375,7 +373,7 @@ async function runSingle(runNumber) {
       confirmBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const value = await actualPage.applySpendingPageAction(input);
+        const value = await actual.client.financial.request("financial.spending.pageAction", [input]);
         progress(`UI confirm RPC completed (${(performance.now() - startedAt).toFixed(1)}ms)`);
         return value;
       } finally {
@@ -388,7 +386,7 @@ async function runSingle(runNumber) {
       prewarmBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const currentVersion = await actual.client.financial.registry.spendingVersion();
+        const currentVersion = await actual.client.financial.request("financial.spending.version", []);
         const result = currentVersion === input.dataVersion
           ? { status: "ready", dataVersion: input.dataVersion, reused: false }
           : { status: "stale", dataVersion: currentVersion, requestedVersion: input.dataVersion };
@@ -577,11 +575,11 @@ async function runSingle(runNumber) {
     );
 
     const publicReadStartedAt = performance.now();
-    const postConfirmRank = await actual.client.financial.registry.spendingPairing({
+    const postConfirmRank = await actual.client.financial.request("financial.spending.pairing", [{
       invoiceIdentityId: fixture.targetInvoiceId,
       dataVersion: dataVersion + 1,
       limit: 100,
-    });
+    }]);
     const publicReadMs = performance.now() - publicReadStartedAt;
     assert.equal(postConfirmRank.dataVersion, dataVersion + 1);
     assert.equal(postConfirmRank.candidates.some((candidate) => candidate.transactionId === selectedCandidate.transactionId), false,

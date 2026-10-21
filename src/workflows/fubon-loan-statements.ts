@@ -29,7 +29,7 @@ import {
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
 import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";

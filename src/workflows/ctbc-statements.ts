@@ -20,7 +20,7 @@ import {
   type CtbcDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/ctbc-domestic-deposit-admission.ts";
 import {
-  getCtbcHumanAttestedV1Manifest,
+  CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -41,6 +41,7 @@ import {
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { withAbort } from "./abort.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -192,27 +193,6 @@ export type CtbcStatementRow = {
   values: string[];
 };
 
-function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("CTBC workflow was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 /** Decode provider JSON through the injected strict text port before use. */
 export function decodeCtbcSourceJson<T>(
@@ -1221,7 +1201,7 @@ export async function runCtbcProviderWorkflow(
       validatedCaptures.push(admission.capture);
     }
 
-    const manifest = getCtbcHumanAttestedV1Manifest();
+    const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
     const financialCaptures: ExistingCtbcFinancialCapture[] = [];
     const items: PGliteWorkflowRunItem[] = [];
     await context.event("validation", "canonical-admission-started", {
