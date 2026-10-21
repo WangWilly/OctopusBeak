@@ -8,8 +8,10 @@
   import {
     ArrowLeftRight,
     BookOpen,
+    Check,
     ChevronDown,
     ChevronRight,
+    ChevronUp,
     CircleAlert,
     CircleEllipsis,
     CloudDownload,
@@ -17,6 +19,7 @@
     KeyRound,
     Landmark,
     Lock,
+    Minus,
     Plus,
     RefreshCw,
     Search,
@@ -100,6 +103,7 @@ import type {
   import { mergeAutomationRuntime } from "./runtime-sync.ts";
   import { workflowFailureExplanation } from "./workflow-failures.ts";
   import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
+  import { collectionFailures, runStageTrack } from "./run-stage-track.ts";
   import type { Readable } from "svelte/store";
   import type { ViewState } from "$lib/data-views/client/view-stores.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -162,6 +166,7 @@ import type {
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
+  let copiedErrorCode: string | null = null;
   let runDetailsOverview: OverviewPageDto | null = null;
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
@@ -424,6 +429,27 @@ import type {
 
   function formatTime(value: string | null) {
     return formatUtcDateTime(value, $systemTimezone, $locale) || "--";
+  }
+
+  function formatClock(value: string) {
+    return new Intl.DateTimeFormat($locale, {
+      timeZone: $systemTimezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).format(new Date(value));
+  }
+
+  function runDurationSeconds(task: AutomationTaskRow) {
+    if (!task.latestStartedAt || !task.latestFinishedAt) return null;
+    const milliseconds = Date.parse(task.latestFinishedAt) - Date.parse(task.latestStartedAt);
+    return Number.isFinite(milliseconds) && milliseconds >= 0 ? Math.round(milliseconds / 1000) : null;
+  }
+
+  async function copyErrorCode(code: string) {
+    await navigator.clipboard.writeText(code);
+    copiedErrorCode = code;
   }
 
   function latestTaskTime(task: AutomationTaskRow) {
@@ -1720,17 +1746,36 @@ import type {
                 </td>
               </tr>
               {#if expandedRunDetailsTaskId === task.id}
+                {@const duration = runDurationSeconds(task)}
                 <tr class="inline-run-details-row" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-run-details`}>
                   <td colspan="5">
                     <div class="inline-run-details" tabindex="-1" transition:disclosureSlide>
                       <div class="inline-run-details-head">
-                        <strong>{$t.automation.workflowEventTitle(taskLabel(task, $t))}</strong>
-                        <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
+                        <div class="inline-run-details-title">
+                          <strong>{$t.automation.workflowEventTitle(taskLabel(task, $t))}</strong>
+                          <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
+                          {#if task.runId || duration !== null}
+                            <span class="run-meta">
+                              {[task.runId, duration === null ? null : $t.automation.runDuration(duration)].filter(Boolean).join(" · ")}
+                            </span>
+                          {/if}
+                        </div>
+                        <button
+                          class="button secondary run-details-collapse"
+                          type="button"
+                          aria-label={$t.automation.collapseRunDetails}
+                          title={$t.automation.collapseRunDetails}
+                          onclick={() => (expandedRunDetailsTaskId = null)}
+                        >
+                          <ChevronUp size={16} strokeWidth={2.2} aria-hidden="true" />
+                        </button>
                       </div>
                       {#if task.appWorkflowOutcome?.errorCode}
                         {@const solverExhausted = verificationSolverExhausted(task.events)}
+                        {@const errorCode = task.appWorkflowOutcome.errorCode}
                         <div class="workflow-outcome-error">
-                          <code>{task.appWorkflowOutcome.errorCode}</code>
+                          <CircleAlert size={16} strokeWidth={2.2} aria-hidden="true" />
+                          <code>{errorCode}</code>
                           {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
                             <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                             {#if deviceRegistrationSource(task.credentialGroupId)}
@@ -1756,17 +1801,68 @@ import type {
                               {$t.automation.structureReport.share}
                             </button>
                           {/if}
+                          <button class="copy-error-code" type="button" onclick={() => void copyErrorCode(errorCode)}>
+                            {copiedErrorCode === errorCode ? $t.automation.errorCodeCopied : $t.automation.copyErrorCode}
+                          </button>
                         </div>
                       {/if}
+                      {#if task.events.length}
+                        <section class="run-stage-track" aria-label={$t.automation.runStages}>
+                          <span class="run-details-label">{$t.automation.runStages}</span>
+                          <ol class="run-stages">
+                            {#each runStageTrack(task.events, task.status, task.appWorkflowOutcome) as stage (stage.stage)}
+                              {@const failureLabel = stage.lastEvent ? workflowEventFailureLabel(stage.lastEvent) : null}
+                              {@const productFailures = stage.stage === "collection" ? collectionFailures(task.appWorkflowOutcome) : null}
+                              <li class="run-stage" data-state={stage.state}>
+                                <span class="run-stage-node-row">
+                                  <span class="run-stage-node" title={$t.automation.runStageStates[stage.state]}>
+                                    {#if stage.state === "done"}
+                                      <Check size={12} strokeWidth={3} aria-hidden="true" />
+                                    {:else if stage.state === "failed"}
+                                      <X size={12} strokeWidth={3} aria-hidden="true" />
+                                    {:else if stage.state === "warning"}
+                                      <Minus size={12} strokeWidth={3} aria-hidden="true" />
+                                    {/if}
+                                    <span class="visually-hidden">{$t.automation.runStageStates[stage.state]}</span>
+                                  </span>
+                                  <span class="run-stage-connector"></span>
+                                </span>
+                                <span class="run-stage-label">{$t.automation.workflowStages[stage.stage]}</span>
+                                {#if stage.lastEvent}
+                                  <time class="run-stage-time" datetime={stage.lastEvent.occurredAt}>{formatClock(stage.lastEvent.occurredAt)}</time>
+                                  {#if failureLabel}
+                                    <span class="run-stage-note">{failureLabel}</span>
+                                  {:else if productFailures}
+                                    <span class="run-stage-note">{$t.automation.collectionFailures(
+                                      productFailures.typeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join($locale === "zh-TW" ? "、" : ", "),
+                                      productFailures.typeIds.length,
+                                      productFailures.attempted,
+                                    )}</span>
+                                  {:else if stage.lastEvent.completed !== undefined || stage.lastEvent.total !== undefined}
+                                    <span class="run-stage-note">{$t.automation.workflowEventCounts(stage.lastEvent.completed, stage.lastEvent.total)}</span>
+                                  {:else}
+                                    <code class="run-stage-note">{stage.lastEvent.code}</code>
+                                  {/if}
+                                {/if}
+                              </li>
+                            {/each}
+                          </ol>
+                        </section>
+                      {/if}
                       {#if task.appWorkflowOutcome?.summary}
-                        <div class="workflow-outcome-summary" aria-label={$t.automation.workflowOutcomeSummary}>
-                          {#if task.appWorkflowOutcome.summary.status}
-                            <span>{task.appWorkflowOutcome.summary.status}</span>
-                          {/if}
-                          {#each task.id === "sync-tdcc" ? countsOutsideTdccExclusions(task.appWorkflowOutcome.summary.counts) : Object.entries(task.appWorkflowOutcome.summary.counts) as count}
-                            <span>{count[0]}: {count[1]}</span>
-                          {/each}
-                        </div>
+                        {@const summaryCounts = task.id === "sync-tdcc"
+                          ? countsOutsideTdccExclusions(task.appWorkflowOutcome.summary.counts)
+                          : Object.entries(task.appWorkflowOutcome.summary.counts)}
+                        {#if summaryCounts.length}
+                          <div class="workflow-outcome-summary" aria-label={$t.automation.workflowOutcomeSummary}>
+                            {#if task.appWorkflowOutcome.summary.status}
+                              <span>{task.appWorkflowOutcome.summary.status}</span>
+                            {/if}
+                            {#each summaryCounts as count}
+                              <span>{count[0]}: {count[1]}</span>
+                            {/each}
+                          </div>
+                        {/if}
                       {/if}
                       {#if task.id === "sync-tdcc" && task.appWorkflowOutcome?.summary}
                         {@const exclusions = tdccExclusionLines(task.appWorkflowOutcome.summary.counts, $t)}
@@ -1780,42 +1876,38 @@ import type {
                         {/if}
                       {/if}
                       {#if task.appWorkflowOutcome?.summary?.products?.length}
-                        <ul class="workflow-product-results" aria-label={$t.automation.productResults}>
-                          {#each task.appWorkflowOutcome.summary.products as product (product.typeId)}
-                            <li class="workflow-product-row">
-                              <strong class="workflow-product-name">
-                                {$t.automation.statementTypeLabels[product.typeId] ?? product.typeId}
-                              </strong>
-                              <div class="workflow-product-details">
-                                <span class="workflow-product-status" data-status={product.status}>
-                                  {$t.automation.productOutcomeStatuses[product.status]}
-                                </span>
-                                {#if product.status === "skipped" && product.skipReason}
-                                  <span class="workflow-product-note">
-                                    {$t.automation.productSkipReasons[product.skipReason]}
-                                  </span>
-                                {/if}
-                                {#if task.id === "sync-tdcc" && product.collection}
-                                  <span class="workflow-product-note">
-                                    {$t.automation.tdccCollectionStatuses[product.collection.status]}
-                                  </span>
-                                {/if}
-                                {#if product.status === "failed" && product.committedCount > 0}
-                                  <span class="workflow-product-retained">
-                                    {$t.automation.productRetainedCount(product.committedCount)}
-                                  </span>
-                                {/if}
-                                {#if product.errorCode}
-                                  {@const productFailure = workflowFailureExplanation(product.errorCode, $locale)}
-                                  {#if productFailure}
-                                    <span class="workflow-product-note">{productFailure}</span>
-                                  {/if}
-                                  <code>{product.errorCode}</code>
-                                {/if}
-                              </div>
-                            </li>
-                          {/each}
-                        </ul>
+                        <section class="workflow-products" aria-label={$t.automation.productResults}>
+                          <span class="run-details-label">{$t.automation.productResults}</span>
+                          <table class="workflow-product-results">
+                            <thead>
+                              <tr>
+                                <th scope="col">{$t.automation.productColumns.product}</th>
+                                <th scope="col">{$t.automation.productColumns.result}</th>
+                                <th scope="col">{$t.automation.productColumns.note}</th>
+                                <th scope="col">{$t.automation.productColumns.errorCode}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {#each task.appWorkflowOutcome.summary.products as product (product.typeId)}
+                                {@const productFailure = product.errorCode ? workflowFailureExplanation(product.errorCode, $locale) : null}
+                                {@const notes = [
+                                  product.status === "skipped" && product.skipReason ? $t.automation.productSkipReasons[product.skipReason] : null,
+                                  task.id === "sync-tdcc" && product.collection ? $t.automation.tdccCollectionStatuses[product.collection.status] : null,
+                                  product.status === "failed" && product.committedCount > 0 ? $t.automation.productRetainedCount(product.committedCount) : null,
+                                  productFailure,
+                                ].filter(Boolean)}
+                                <tr class="workflow-product-row" data-status={product.status}>
+                                  <th scope="row" class="workflow-product-name">
+                                    {$t.automation.statementTypeLabels[product.typeId] ?? product.typeId}
+                                  </th>
+                                  <td class="workflow-product-status">{$t.automation.productOutcomeStatuses[product.status]}</td>
+                                  <td class="workflow-product-note" class:empty={!notes.length}>{notes.length ? notes.join(" ") : "—"}</td>
+                                  <td class="workflow-product-code" class:empty={!product.errorCode}>{#if product.errorCode}<code>{product.errorCode}</code>{:else}—{/if}</td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        </section>
                       {/if}
                       {#if runDetailsOverview}
                         {@const unvalued = unvaluedAccountLabels(task.id, runDetailsOverview, $t)}
@@ -1830,27 +1922,40 @@ import type {
                         {/if}
                       {/if}
                       {#if task.events.length}
-                        <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
-                          {#each task.events as event, index (index)}
-                            {@const failureLabel = workflowEventFailureLabel(event)}
-                            <li class="workflow-event-row">
-                              <div class="workflow-event-main">
-                                <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
-                                {#if failureLabel}
-                                  <span>{failureLabel}</span>
-                                {:else}
-                                  <code>{event.code}</code>
-                                {/if}
-                              </div>
-                              <div class="workflow-event-meta">
-                                <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
-                                {#if event.completed !== undefined || event.total !== undefined}
-                                  <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
-                                {/if}
-                              </div>
-                            </li>
-                          {/each}
-                        </ol>
+                        {@const latest = task.events[task.events.length - 1]}
+                        <details class="workflow-events">
+                          <summary>
+                            <ChevronRight class="workflow-events-chevron" size={16} strokeWidth={2.2} aria-hidden="true" />
+                            <span class="workflow-events-label">{$t.automation.workflowEventsDisclosure(task.events.length)}</span>
+                            <span class="workflow-events-latest">
+                              <span>{$t.automation.latestEvent}</span>
+                              <time datetime={latest.occurredAt}>{formatClock(latest.occurredAt)}</time>
+                              <span>{$t.automation.workflowStages[latest.stage]}</span>
+                              <code>{latest.code}</code>
+                            </span>
+                          </summary>
+                          <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
+                            {#each task.events as event, index (index)}
+                              {@const failureLabel = workflowEventFailureLabel(event)}
+                              <li class="workflow-event-row">
+                                <div class="workflow-event-main">
+                                  <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
+                                  {#if failureLabel}
+                                    <span>{failureLabel}</span>
+                                  {:else}
+                                    <code>{event.code}</code>
+                                  {/if}
+                                </div>
+                                <div class="workflow-event-meta">
+                                  <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
+                                  {#if event.completed !== undefined || event.total !== undefined}
+                                    <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
+                                  {/if}
+                                </div>
+                              </li>
+                            {/each}
+                          </ol>
+                        </details>
                       {:else}
                         <p class="workflow-event-empty">{$t.automation.workflowEventEmpty}</p>
                       {/if}
@@ -3099,7 +3204,7 @@ import type {
     color: var(--danger);
   }
 
-  .inline-run-details-row td {
+  .inline-run-details-row > td {
     padding: 0;
     background: color-mix(in oklch, var(--accent-soft) 38%, var(--surface));
     scroll-margin-top: 88px;
@@ -3107,8 +3212,8 @@ import type {
 
   .inline-run-details {
     display: grid;
-    gap: var(--space-3);
-    padding: var(--space-5);
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5) var(--space-5);
     border-top: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
     border-bottom: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
     outline: none;
@@ -3127,13 +3232,357 @@ import type {
     gap: var(--space-3);
   }
 
+  .inline-run-details-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) 10px;
+    min-width: 0;
+  }
+
+  .inline-run-details-title strong {
+    font-size: 15px;
+  }
+
+  .run-meta {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  .run-details-collapse {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0 9px;
+  }
+
+  .run-details-label {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.8px;
+  }
+
+  .workflow-outcome-error {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    margin: 0;
+    padding: 10px 14px;
+    border: 1px solid color-mix(in oklch, var(--danger) 22%, var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
+    color: var(--danger);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-outcome-error > span {
+    flex: 1 1 240px;
+  }
+
+  .workflow-outcome-error code {
+    font-family: var(--font-mono);
+    font-weight: 700;
+  }
+
+  .copy-error-code {
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .copy-error-code:hover {
+    text-decoration: underline;
+  }
+
+  .device-registration-action {
+    min-height: 32px;
+  }
+
+  .workflow-failure-summary .device-registration-action {
+    width: fit-content;
+    margin-top: var(--space-1);
+  }
+
+  .run-stage-track,
+  .workflow-products {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .run-stages {
+    display: flex;
+    margin: 0;
+    padding: 0 0 var(--space-1);
+    overflow-x: auto;
+    list-style: none;
+  }
+
+  .run-stage {
+    --stage-color: var(--success);
+    display: grid;
+    flex: 1 1 0;
+    align-content: start;
+    gap: 2px;
+    min-width: 112px;
+    font-size: 11px;
+  }
+
+  .run-stage[data-state="failed"] {
+    --stage-color: var(--danger);
+  }
+
+  .run-stage[data-state="warning"] {
+    --stage-color: var(--warn);
+  }
+
+  .run-stage[data-state="active"] {
+    --stage-color: var(--accent);
+  }
+
+  .run-stage[data-state="pending"] {
+    --stage-color: var(--border);
+  }
+
+  .run-stage-node-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .run-stage-node {
+    display: grid;
+    flex: 0 0 22px;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--stage-color);
+    color: white;
+  }
+
+  .run-stage[data-state="pending"] .run-stage-node {
+    border: 2px solid var(--border);
+    background: var(--surface);
+  }
+
+  .run-stage[data-state="active"] .run-stage-node::after {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: white;
+  }
+
+  .run-stage-connector {
+    flex: 1 1 auto;
+    height: 2px;
+    background: var(--stage-color);
+  }
+
+  .run-stage:last-child .run-stage-connector {
+    display: none;
+  }
+
+  .run-stage-label {
+    color: var(--fg);
+    font-size: 12px;
+  }
+
+  .run-stage-time {
+    color: var(--muted);
+    font-family: var(--font-mono);
+  }
+
+  .run-stage-note {
+    padding-right: var(--space-2);
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  code.run-stage-note {
+    font-family: var(--font-mono);
+  }
+
+  .run-stage:is([data-state="failed"], [data-state="warning"]) :is(.run-stage-label, .run-stage-note) {
+    color: var(--stage-color);
+  }
+
+  .run-stage[data-state="pending"] .run-stage-label {
+    color: var(--muted);
+  }
+
+  .tdcc-exclusions,
+  .unvalued-accounts {
+    display: grid;
+    gap: var(--space-1);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .tdcc-exclusions strong,
+  .unvalued-accounts strong {
+    color: var(--fg);
+    font-weight: 680;
+  }
+
+  .tdcc-exclusions ul,
+  .unvalued-accounts ul {
+    margin: 0;
+    padding-left: var(--space-4);
+  }
+
+  .workflow-outcome-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .workflow-product-results {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    border-collapse: separate;
+    border-spacing: 0;
+    overflow: hidden;
+    background: var(--surface);
+    table-layout: fixed;
+  }
+
+  .workflow-product-results th,
+  .workflow-product-results td {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-align: left;
+    text-transform: none;
+    vertical-align: middle;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-product-results thead th {
+    padding-block: var(--space-2);
+    border-top: 0;
+    background: var(--surface-soft);
+    font-size: 11px;
+    letter-spacing: 0.6px;
+  }
+
+  .workflow-product-results thead th:first-child {
+    width: 28%;
+  }
+
+  .workflow-product-results thead th:nth-child(2) {
+    width: 14%;
+  }
+
+  .workflow-product-results thead th:last-child {
+    width: 28%;
+  }
+
+  .workflow-product-results .workflow-product-name {
+    color: var(--fg);
+    font-size: 13px;
+  }
+
+  .workflow-product-results .workflow-product-status {
+    color: var(--accent);
+  }
+
+  .workflow-product-row[data-status="failed"] .workflow-product-status {
+    color: var(--danger);
+  }
+
+  .workflow-product-row:is([data-status="no_data"], [data-status="not_held"], [data-status="skipped"]) .workflow-product-status {
+    color: var(--muted);
+  }
+
+  .workflow-product-row[data-status="failed"] :is(.workflow-product-note, .workflow-product-code) {
+    color: var(--fg);
+  }
+
+  .workflow-product-code {
+    font-family: var(--font-mono);
+  }
+
+  .workflow-product-code code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .workflow-events {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .workflow-events summary {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    padding: 10px 14px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .workflow-events summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .workflow-events :global(.workflow-events-chevron) {
+    color: var(--muted);
+    transition: transform 160ms ease;
+  }
+
+  .workflow-events[open] :global(.workflow-events-chevron) {
+    transform: rotate(90deg);
+  }
+
+  .workflow-events-label {
+    font-size: 13px;
+  }
+
+  .workflow-events-latest {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .workflow-events-latest time {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .workflow-events-latest code {
+    color: var(--fg);
+    font-family: var(--font-mono);
+  }
+
   .workflow-event-list {
     max-height: 280px;
     margin: 0;
     padding: 0;
     overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-top: 1px solid var(--border);
     background: var(--surface-soft);
     list-style: none;
   }
@@ -3144,7 +3593,7 @@ import type {
     justify-content: space-between;
     gap: var(--space-4);
     min-height: 42px;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-2) 14px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -3184,126 +3633,6 @@ import type {
     margin: 0;
     color: var(--muted);
     font-size: 13px;
-  }
-
-  .workflow-outcome-error {
-    display: grid;
-    justify-items: start;
-    gap: var(--space-2);
-    margin: 0;
-    color: var(--danger);
-    font-size: 12px;
-    overflow-wrap: anywhere;
-  }
-
-  .workflow-outcome-error code {
-    font-family: var(--font-mono);
-  }
-
-  .device-registration-action {
-    min-height: 32px;
-  }
-
-  .workflow-failure-summary .device-registration-action {
-    width: fit-content;
-    margin-top: var(--space-1);
-  }
-
-  .tdcc-exclusions,
-  .unvalued-accounts {
-    display: grid;
-    gap: var(--space-1);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .tdcc-exclusions strong,
-  .unvalued-accounts strong {
-    color: var(--fg);
-    font-weight: 680;
-  }
-
-  .tdcc-exclusions ul,
-  .unvalued-accounts ul {
-    margin: 0;
-    padding-left: var(--space-4);
-  }
-
-  .workflow-outcome-summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-4);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .workflow-product-results {
-    display: grid;
-    gap: 0;
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-soft);
-    list-style: none;
-  }
-
-  .workflow-product-row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-3);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .workflow-product-row:last-child {
-    border-bottom: 0;
-  }
-
-  .workflow-product-name {
-    flex: 0 0 auto;
-    font-size: 13px;
-  }
-
-  .workflow-product-details {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-3);
-    min-width: 0;
-    color: var(--muted);
-    font-size: 12px;
-    text-align: right;
-  }
-
-  .workflow-product-status {
-    color: var(--accent);
-    font-weight: 650;
-  }
-
-  .workflow-product-status[data-status="failed"] {
-    color: var(--danger);
-  }
-
-  .workflow-product-status[data-status="no_data"],
-  .workflow-product-status[data-status="not_held"],
-  .workflow-product-status[data-status="skipped"] {
-    color: var(--muted);
-  }
-
-  .workflow-product-details code {
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    overflow-wrap: anywhere;
-  }
-
-  .workflow-product-retained {
-    color: var(--fg);
-    font-weight: 550;
   }
 
   .sync-sheet {
@@ -4466,13 +4795,39 @@ import type {
       text-align: left;
     }
 
-    .workflow-product-row {
-      flex-direction: column;
+    .workflow-product-results thead {
+      display: none;
     }
 
-    .workflow-product-details {
+    .workflow-product-results,
+    .workflow-product-results tbody,
+    .workflow-product-row,
+    .workflow-product-results th,
+    .workflow-product-results td {
+      display: block;
+      width: auto;
+    }
+
+    .workflow-product-row {
+      padding: var(--space-2) 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .workflow-product-row:first-child {
+      border-top: 0;
+    }
+
+    .workflow-product-results .workflow-product-row > * {
+      padding: 2px 12px;
+      border-top: 0;
+    }
+
+    .workflow-product-results .empty {
+      display: none;
+    }
+
+    .workflow-events-latest {
       justify-content: flex-start;
-      text-align: left;
     }
 
     .credential-layout {

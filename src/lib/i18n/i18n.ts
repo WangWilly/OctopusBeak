@@ -749,6 +749,24 @@ const en = {
     inlineLogTitle: (task: string) => `${task} · Live logs`,
     workflowEventTitle: (task: string) => `${task} · Workflow events`,
     workflowEventEmpty: "No recent workflow events remain.",
+    collapseRunDetails: "Collapse run details",
+    runDuration: (seconds: number) =>
+      seconds < 60 ? `took ${seconds}s` : `took ${Math.floor(seconds / 60)}m ${seconds % 60}s`,
+    copyErrorCode: "Copy error code",
+    errorCodeCopied: "Copied",
+    runStages: "Run stages",
+    runStageStates: {
+      done: "done",
+      warning: "partly done",
+      failed: "failed",
+      active: "in progress",
+      pending: "not reached",
+    } as Record<string, string>,
+    productColumns: { product: "Product", result: "Result", note: "Note", errorCode: "Error code" },
+    workflowEventsDisclosure: (count: number) => `Workflow events (${count})`,
+    latestEvent: "Latest",
+    collectionFailures: (products: string, failed: number, attempted: number) =>
+      `${products} failed (${failed} / ${attempted})`,
     verificationSolverExhausted:
       "Automatic verification could not finish this challenge, so the run stopped. Retry when the challenge can be completed automatically.",
     workflowEventCounts: (completed: number | undefined, total: number | undefined) =>
@@ -2032,6 +2050,23 @@ const zh: typeof en = {
     inlineLogTitle: (task) => `${task}・即時日誌`,
     workflowEventTitle: (task) => `${task}・工作流程事件`,
     workflowEventEmpty: "目前沒有保留中的工作流程事件。",
+    collapseRunDetails: "收合執行明細",
+    runDuration: (seconds) =>
+      seconds < 60 ? `歷時 ${seconds} 秒` : `歷時 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`,
+    copyErrorCode: "複製錯誤碼",
+    errorCodeCopied: "已複製",
+    runStages: "執行階段",
+    runStageStates: {
+      done: "已完成",
+      warning: "部分完成",
+      failed: "失敗",
+      active: "進行中",
+      pending: "未執行",
+    } as Record<string, string>,
+    productColumns: { product: "產品", result: "結果", note: "備註", errorCode: "錯誤碼" },
+    workflowEventsDisclosure: (count) => `工作流程事件（${count}）`,
+    latestEvent: "最新",
+    collectionFailures: (products, failed, attempted) => `${products} ${failed} / ${attempted} 失敗`,
     verificationSolverExhausted:
       "自動驗證無法完成這次驗證，流程已停止。請在驗證可由系統自動完成時再重試。",
     workflowEventCounts: (completed, total) =>
