@@ -1,0 +1,22 @@
+{
+  "error": "Post domestic deposit source admission blocked: empty-scope-unproven",
+  "executions": [],
+  "events": [
+    {
+      "stage": "authentication",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    }
+  ]
+}
