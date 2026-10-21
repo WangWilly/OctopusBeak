@@ -14,8 +14,9 @@ import {
   cacheSpendingPairingRank,
   createSpendingPairingIndex,
   type SpendingPairingIndex,
+  type SpendingPairingIndexEntry,
 } from "./spending-pairing-index.ts";
-import { merchantSimilarity } from "./spending-match-strength.ts";
+import { merchantSimilarityTo } from "./spending-match-strength.ts";
 
 export type { SpendingPairingIndex } from "./spending-pairing-index.ts";
 
@@ -87,12 +88,43 @@ function compareDateDistances(left: number, right: number): number {
   return left - right;
 }
 
-function rankIndexedManualPaymentCandidates(
+/**
+ * One invoice's candidates in rank order. Candidates are grouped by tier and
+ * calendar distance, which order the groups; a group is scored and sorted only
+ * when a page or a lookup reaches it, so a dialog page does not sort the whole
+ * transaction set.
+ */
+export type SpendingManualPaymentRanking = Readonly<{
+  total: number;
+  page(offset: number, limit: number): readonly SpendingManualPaymentCandidate[];
+  find(transactionId: string): SpendingManualPaymentCandidate | undefined;
+  all(): readonly SpendingManualPaymentCandidate[];
+}>;
+
+type RankGroup = {
+  tier: 1 | 2 | 3;
+  distance: number;
+  entries: SpendingPairingIndexEntry[];
+  ranked: readonly SpendingManualPaymentCandidate[] | null;
+};
+
+const EMPTY_RANKING: SpendingManualPaymentRanking = Object.freeze({
+  total: 0,
+  page: () => Object.freeze([]),
+  find: () => undefined,
+  all: () => Object.freeze([]),
+});
+
+function rankGroupKey(tier: 1 | 2 | 3, distance: number): string {
+  return `${tier}:${Number.isFinite(distance) ? distance : "infinity"}`;
+}
+
+export function spendingManualPaymentRanking(
   invoice: SpendingMatchingInvoice,
   index: SpendingPairingIndex,
-): readonly SpendingManualPaymentCandidate[] {
+): SpendingManualPaymentRanking {
   const invoiceAmount = invoiceMatchingMoney(invoice);
-  if (!invoiceAmount) return Object.freeze([]);
+  if (!invoiceAmount) return EMPTY_RANKING;
   const cacheKey = manualCandidateCacheKey(invoice);
   const cached = cachedSpendingPairingRank(index, cacheKey);
   if (cached) return cached;
@@ -100,42 +132,90 @@ function rankIndexedManualPaymentCandidates(
   const invoiceCurrency = invoiceAmount.currency.trim().toUpperCase();
   const invoiceAmountKey = exactMoneyKey(invoiceAmount);
   const invoiceDay = calendarDayNumber(invoice.revision.occurrence.value);
-  const buckets = new Map<string, {
-    tier: 1 | 2 | 3;
-    distance: number;
-    candidates: SpendingManualPaymentCandidate[];
-  }>();
-  for (const entry of index.entries) {
+  const placement = (entry: SpendingPairingIndexEntry) => {
     const sameCurrency = invoiceCurrency === entry.currency;
-    const exactAmount = sameCurrency && invoiceAmountKey === entry.amountKey;
-    const tier = exactAmount ? 1 as const : sameCurrency ? 2 as const : 3 as const;
+    const tier = sameCurrency && invoiceAmountKey === entry.amountKey ? 1 as const : sameCurrency ? 2 as const : 3 as const;
     const distance = Number.isFinite(invoiceDay) && Number.isFinite(entry.purchaseDay)
       ? Math.abs(invoiceDay - entry.purchaseDay)
       : Number.POSITIVE_INFINITY;
-    const difference = sameCurrency ? exactMoneyDifference(invoiceAmount, entry.transaction.amount) : null;
-    const candidate = {
-      transactionId: entry.transaction.transactionId,
-      tier,
-      dateDistanceDays: distance,
-      amountDifference: difference
-        ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
-        : null,
-      merchantSimilarity: merchantSimilarity(invoice.revision.seller.name, entry.transaction.description),
-    } satisfies SpendingManualPaymentCandidate;
-    const key = `${tier}:${Number.isFinite(distance) ? distance : "infinity"}`;
-    const bucket = buckets.get(key);
-    if (bucket) bucket.candidates.push(candidate);
-    else buckets.set(key, { tier, distance, candidates: [candidate] });
+    return { tier, distance };
+  };
+  const groups = new Map<string, RankGroup>();
+  for (const entry of index.entries) {
+    const { tier, distance } = placement(entry);
+    const key = rankGroupKey(tier, distance);
+    const group = groups.get(key);
+    if (group) group.entries.push(entry);
+    else groups.set(key, { tier, distance, entries: [entry], ranked: null });
   }
-
-  const ordered = [...buckets.values()].sort((left, right) =>
+  const ordered = [...groups.values()].sort((left, right) =>
     left.tier - right.tier || compareDateDistances(left.distance, right.distance));
-  const ranked: SpendingManualPaymentCandidate[] = [];
-  for (const bucket of ordered) {
-    bucket.candidates.sort(compareManualCandidates);
-    ranked.push(...bucket.candidates);
-  }
-  return cacheSpendingPairingRank(index, cacheKey, Object.freeze(ranked));
+
+  const similarityToSeller = merchantSimilarityTo(invoice.revision.seller.name);
+  const rankGroup = (group: RankGroup) => {
+    if (group.ranked) return group.ranked;
+    const rows = group.entries.map((entry) => {
+      const difference = group.tier === 3 ? null : exactMoneyDifference(invoiceAmount, entry.transaction.amount);
+      return {
+        difference,
+        candidate: Object.freeze({
+          transactionId: entry.transaction.transactionId,
+          tier: group.tier,
+          dateDistanceDays: group.distance,
+          amountDifference: difference
+            ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
+            : null,
+          merchantSimilarity: similarityToSeller(entry.transaction.description),
+        }) satisfies SpendingManualPaymentCandidate,
+        amountOrder: 0n,
+      };
+    });
+    if (group.tier === 2) {
+      // Bring every difference to one scale once instead of in each comparison.
+      const scale = Math.max(0, ...rows.map((row) => row.difference?.scale ?? 0));
+      for (const row of rows)
+        row.amountOrder = row.difference ? row.difference.coefficient * 10n ** BigInt(scale - row.difference.scale) : 0n;
+    }
+    rows.sort((left, right) => {
+      if (left.amountOrder !== right.amountOrder) return left.amountOrder < right.amountOrder ? -1 : 1;
+      if (left.candidate.merchantSimilarity !== right.candidate.merchantSimilarity)
+        return right.candidate.merchantSimilarity - left.candidate.merchantSimilarity;
+      return left.candidate.transactionId.localeCompare(right.candidate.transactionId);
+    });
+    group.ranked = Object.freeze(rows.map((row) => row.candidate));
+    return group.ranked;
+  };
+
+  let all: readonly SpendingManualPaymentCandidate[] | null = null;
+  const ranking: SpendingManualPaymentRanking = Object.freeze({
+    total: index.entries.length,
+    page(offset: number, limit: number) {
+      const page: SpendingManualPaymentCandidate[] = [];
+      let start = 0;
+      for (const group of ordered) {
+        if (page.length >= limit) break;
+        const end = start + group.entries.length;
+        if (end > offset) {
+          const ranked = rankGroup(group);
+          page.push(...ranked.slice(Math.max(0, offset - start), Math.max(0, offset - start) + limit - page.length));
+        }
+        start = end;
+      }
+      return Object.freeze(page);
+    },
+    find(transactionId: string) {
+      const entry = index.entries.find((candidate) => candidate.transaction.transactionId === transactionId);
+      if (!entry) return undefined;
+      const { tier, distance } = placement(entry);
+      const group = groups.get(rankGroupKey(tier, distance));
+      return group ? rankGroup(group).find((candidate) => candidate.transactionId === transactionId) : undefined;
+    },
+    all() {
+      all ??= Object.freeze(ordered.flatMap(rankGroup));
+      return all;
+    },
+  });
+  return cacheSpendingPairingRank(index, cacheKey, ranking);
 }
 
 function isSpendingPairingIndex(
@@ -153,10 +233,10 @@ export function rankSpendingManualPaymentCandidates(
   invoice: SpendingMatchingInvoice,
   transactions: readonly SpendingMatchingTransaction[] | SpendingPairingIndex,
 ): readonly SpendingManualPaymentCandidate[] {
-  if (isSpendingPairingIndex(transactions)) return rankIndexedManualPaymentCandidates(invoice, transactions);
+  if (isSpendingPairingIndex(transactions)) return spendingManualPaymentRanking(invoice, transactions).all();
   const invoiceAmount = invoiceMatchingMoney(invoice);
   if (!invoiceAmount) return Object.freeze([]);
-  const invoiceDescription = invoice.revision.seller.name;
+  const similarityToSeller = merchantSimilarityTo(invoice.revision.seller.name);
   const ranked = transactions.map((transaction) => {
     const sameCurrency = invoiceAmount.currency.trim().toUpperCase() === transaction.amount.currency.trim().toUpperCase();
     const exactAmount = sameCurrency && exactMoneyEqual(invoiceAmount, transaction.amount);
@@ -169,7 +249,7 @@ export function rankSpendingManualPaymentCandidates(
       amountDifference: difference
         ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
         : null,
-      merchantSimilarity: merchantSimilarity(invoiceDescription, transaction.description),
+      merchantSimilarity: similarityToSeller(transaction.description),
     } satisfies SpendingManualPaymentCandidate;
   });
   return Object.freeze(ranked.sort(compareManualCandidates));

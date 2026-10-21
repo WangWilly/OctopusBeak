@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { createPGlitePairingPerformanceFixture } from "../src/ledger/pglite/spending-performance-fixture.ts";
+import { chooseSpendingMonth } from "./spending-month.mjs";
 
 const require = createRequire(import.meta.url);
 const electron = require("electron");
@@ -107,8 +108,14 @@ try {
     version: 1, status: "bypassed", currentSlide: 1, bankAutomationChoice: null,
   })));
   await page.reload();
-  await page.locator("[data-overview-state]").first().waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator(".overview-content").first().waitFor({ state: "visible", timeout: 60_000 });
   const overviewReadyMs = performance.now() - started;
+  // Launch catches up the daily exchange-rate run, which rebuilds the Overview
+  // for tens of seconds at this scale. Measure Pairing on a settled app.
+  await page.waitForFunction(async () => {
+    const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+    return snapshot.tasks.every((task) => !["queued", "preparing", "running", "cancelling"].includes(task.status));
+  }, undefined, { timeout: 120_000, polling: 500 });
   await page.evaluate(() => {
     window.__pgliteElectronLongTasks = [];
     new PerformanceObserver((list) => {
@@ -116,61 +123,57 @@ try {
     }).observe({ entryTypes: ["longtask"] });
   });
 
-  await arm(page, '[data-onboarding="nav-spending"]', {
-    feedback: '[data-onboarding="nav-spending"].active',
-    complete: '[data-chart], .purchase-summary-card',
+  const spendingNav = '.side-nav a[href="#/spending"]';
+  await arm(page, spendingNav, {
+    feedback: `${spendingNav}.active`,
+    complete: "[data-month-panel]",
   });
-  await page.locator('[data-onboarding="nav-spending"]').click();
+  await page.locator(spendingNav).click();
   const navigationFeedbackMs = await sample(page, "feedback");
   const navigationMs = await sample(page, "complete", 60_000);
-  await page.locator('.month-picker select').selectOption("2026-01");
+  await chooseSpendingMonth(page, "2026-01");
   await page.locator('.chart-period-picker select').selectOption("2026-01-01");
-  await page.locator('[data-purchase-day="2026-01-01"] [data-open-pairing]').first().waitFor({ timeout: 60_000 });
-
-  await arm(page, '[data-purchase-day="2026-01-01"] [data-open-pairing]', {
+  const invoiceRow = `[data-purchase-record][data-purchase-id="invoice:${fixture.targetInvoiceId}"]`;
+  const openPairing = "[data-purchase-modal] [data-open-pairing]";
+  const linkedRow = `[data-purchase-record][data-basis="linked"][data-transaction-id="${fixture.targetTransactionId}"]`;
+  const pairingOpened = {
     feedback: '[data-pairing-dialog][data-pairing-feedback="open-dialog"]',
     complete: `[data-pairing-dialog] input[name="spending-payment"][value="${fixture.targetTransactionId}"]`,
-  });
-  await page.locator('[data-purchase-day="2026-01-01"] [data-open-pairing]').first().click();
+  };
+  const pairConfirmed = { feedback: '[data-pairing-feedback="confirm-busy"]', complete: linkedRow };
+  await page.locator(invoiceRow).click({ timeout: 60_000 });
+
+  await arm(page, openPairing, pairingOpened);
+  await page.locator(openPairing).click();
   const openFeedbackMs = await sample(page, "feedback");
   const openMs = await sample(page, "complete", 60_000);
   const totalCandidateCount = Number(await page.locator("[data-total-candidate-count]").getAttribute("data-total-candidate-count"));
   assert.equal(totalCandidateCount, 90_000);
   await page.locator(`[data-pairing-dialog] input[value="${fixture.targetTransactionId}"]`).check();
 
-  await arm(page, '[data-confirm-direct-pair]', {
-    feedback: '[data-pairing-feedback="confirm-busy"]',
-    complete: `[data-purchase-record][data-basis="linked"][data-transaction-id="${fixture.targetTransactionId}"]`,
-  });
+  await arm(page, '[data-confirm-direct-pair]', pairConfirmed);
   await page.locator('[data-confirm-direct-pair]').click();
   const confirmFeedbackMs = await sample(page, "feedback");
   const confirmMs = await sample(page, "complete", 60_000);
   assert.equal(await page.locator("[data-pairing-dialog]").count(), 0);
 
-  const revokeSelector = `[data-purchase-record][data-transaction-id="${fixture.targetTransactionId}"] [data-revoke-link]`;
-  await arm(page, revokeSelector, {
-    feedback: `${revokeSelector}:disabled`,
-    complete: '[data-purchase-day="2026-01-01"] [data-open-pairing]',
-  });
+  // The purchase modal follows the invoice into its linked record and back.
+  const revokeSelector = "[data-purchase-modal] [data-revoke-link]";
+  await arm(page, revokeSelector, { feedback: `${revokeSelector}:disabled`, complete: openPairing });
   await page.locator(revokeSelector).click();
   const revokeFeedbackMs = await sample(page, "feedback");
   const revokeMs = await sample(page, "complete", 60_000);
-  await arm(page, '[data-purchase-day="2026-01-01"] [data-open-pairing]', {
-    feedback: '[data-pairing-dialog][data-pairing-feedback="open-dialog"]',
-    complete: `[data-pairing-dialog] input[name="spending-payment"][value="${fixture.targetTransactionId}"]`,
-  });
-  await page.locator('[data-purchase-day="2026-01-01"] [data-open-pairing]').first().click();
+  await arm(page, openPairing, pairingOpened);
+  await page.locator(openPairing).click();
   const reopenAfterRevokeFeedbackMs = await sample(page, "feedback");
   const reopenAfterRevokeMs = await sample(page, "complete", 60_000);
   await page.locator(`[data-pairing-dialog] input[value="${fixture.targetTransactionId}"]`).check();
-  await arm(page, '[data-confirm-direct-pair]', {
-    feedback: '[data-pairing-feedback="confirm-busy"]',
-    complete: `[data-purchase-record][data-basis="linked"][data-transaction-id="${fixture.targetTransactionId}"]`,
-  });
+  await arm(page, '[data-confirm-direct-pair]', pairConfirmed);
   await page.locator('[data-confirm-direct-pair]').click();
   const warmConfirmFeedbackMs = await sample(page, "feedback");
   const warmConfirmMs = await sample(page, "complete", 60_000);
   assert.equal(await page.locator("[data-pairing-dialog]").count(), 0);
+  await page.locator("[data-purchase-modal] .modal-backdrop").click({ position: { x: 4, y: 4 } });
 
   await arm(page, ".refresh-trigger", {
     feedback: '.refresh-trigger[data-refresh-state="refreshing"]',

@@ -184,6 +184,10 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.spending.version": operation<[], number>(
     (args) => args.length === 0
   ),
+  /** Build the pairing index when the store is still at this version; returns the current version. */
+  "financial.spending.prewarmPairing": operation<[dataVersion: number], number>(
+    (args) => args.length === 1 && nonNegativeSafeInteger(args[0])
+  ),
   "financial.preview.visibilityChanged": operation<[], void>(
     (args) => args.length === 0
   ),
