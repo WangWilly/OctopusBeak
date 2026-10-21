@@ -11,11 +11,8 @@ import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
-import { strictSourceText } from "../source-text.ts";
-import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
 import type {
   WorkflowBrowserPort,
-  WorkflowExecutorPorts,
   WorkflowProgressStatementType,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
@@ -27,7 +24,6 @@ import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowE
 import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
-  summarizeTypedWorkflowOutput,
   type TypedWorkflowOutcome,
 } from "./typed-workflow-outcome.ts";
 import {
@@ -35,7 +31,6 @@ import {
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
 } from "./workflow-failure-diagnostics.ts";
-import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
   appWorkflowBrowserConnectionForSession,
   createAppWorkflowBrowserPort,
@@ -51,16 +46,13 @@ import {
 import {
   workflowDefinitionForTask,
   workflowInputForTask,
-  workflowBrowserProfileForTask,
   workflowRuntimeForTask,
-  workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
-  requirePGliteChildRpcClientFromEnv,
 } from "../../../../electron/pglite-child-rpc-client.ts";
 
 /** One workflow execution within an Active Automation Task Run. */
@@ -83,8 +75,6 @@ export type AutomationTaskExecutionOptions = {
   maxAttempts?: number;
   /** This execution is another round of the same visible run. */
   retrying?: boolean;
-  /** App composition may replace a typed workflow capability at its port seam. */
-  workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for the host side of a TDCC run's session port. Production reads credentials.json. */
   createTdccSessionHost?: () => TdccSessionHost;
   /** Test seam for the supervised App workflow worker. Production uses Worker. */
@@ -212,22 +202,6 @@ function createBrowserRuntimeIdentityRecorder(
   };
 }
 
-function browserPortWithIdentityPersistence(
-  browser: WorkflowBrowserPort,
-  recorder: BrowserRuntimeIdentityRecorder,
-): WorkflowBrowserPort {
-  return {
-    async withPage(run) {
-      return await browser.withPage(async (page) => {
-        // The host reports identity before launch. Persist it before the
-        // workflow worker or inline provider can touch the source.
-        await recorder.flush();
-        return await run(page);
-      });
-    },
-  };
-}
-
 async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
@@ -238,11 +212,7 @@ async function executeAppWorkflow(
     options.launchEnv ?? automationProcessEnv(),
   );
   try {
-    // Explicit port overrides are an inline composition seam. Production browser
-    // workflows, including E-Invoice, use the supervised App worker.
-    const result = options.workflowPorts !== undefined
-      ? await executeInlineAppWorkflow(execution, options)
-      : await executeSupervisedAppWorkflow(execution, options);
+    const result = await executeSupervisedAppWorkflow(execution, options);
     return scope.refused() ? collectionScopeChangedResult(result) : result;
   } finally {
     scope.release();
@@ -265,157 +235,6 @@ function collectionScopeChangedResult(
       }
       : summary,
   };
-}
-
-async function executeInlineAppWorkflow(
-  execution: AutomationTaskRunExecution,
-  options: AutomationTaskExecutionOptions,
-): Promise<TypedWorkflowOutcome> {
-  const definition = workflowDefinitionForTask(execution.task.workflowId);
-  if (!definition || !execution.task.workflowId) {
-    return { errorCode: "workflow-failed", summary: null };
-  }
-
-  const { signal } = execution.run;
-  let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
-  let unregisterHumanAssistance: (() => void) | undefined;
-  let result: TypedWorkflowOutcome;
-  let workflowOutput: unknown;
-  const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
-  try {
-    const launchEnv = options.launchEnv ?? automationProcessEnv();
-    const injectedPorts = options.workflowPorts ?? {};
-    let financialCommit = injectedPorts.financialCommit;
-    if (definition.requiresFinancialCommit && !financialCommit) {
-      childRpc = requirePGliteChildRpcClientFromEnv(launchEnv, {
-        workflowId: execution.task.workflowId,
-        taskRunId: execution.run.taskRunId,
-      });
-      await childRpc.ready;
-      financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
-    }
-    let previewWrite = injectedPorts.previewWrite;
-    if (definition.requiresPreviewWrite && !previewWrite) {
-      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
-        workflowId: execution.task.workflowId,
-        taskRunId: execution.run.taskRunId,
-      });
-      await childRpc.ready;
-      previewWrite = childRpc.operationalProvider.preview;
-    } else if (workflowUsesPreviewWrite(definition) && !previewWrite && childRpc) {
-      previewWrite = childRpc.operationalProvider.preview;
-    }
-    let accountIdentity = injectedPorts.accountIdentity;
-    if (definition.requiresAccountIdentity && !accountIdentity) {
-      childRpc ??= requirePGliteChildRpcClientFromEnv(launchEnv, {
-        workflowId: execution.task.workflowId,
-        taskRunId: execution.run.taskRunId,
-      });
-      await childRpc.ready;
-      const { financial } = childRpc;
-      accountIdentity = { continuity: (request) => financial.request("financial.accountIdentity.continuity", [request]) };
-    }
-    const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
-    const input = workflowInputForTask(execution.task.workflowId, launchEnv);
-    const progressReporter = createWorkflowProgressReporter(execution, options, input);
-    const startUrl = workflowStartUrlForTask(execution.task.workflowId);
-    const browserProfile = workflowBrowserProfileForTask(execution.task.workflowId);
-    const browser: WorkflowBrowserPort = injectedPorts.browser
-      ?? options.workflowBrowserPortFactory?.({
-        taskId: execution.task.id,
-        taskRunId: execution.run.taskRunId,
-        signal,
-        userDataDirectory,
-        startUrl,
-        browserProfile,
-        onRuntimeIdentity: browserRuntimeIdentity.record,
-      })
-      ?? createAppWorkflowBrowserPort({
-        taskId: execution.task.id,
-        taskRunId: execution.run.taskRunId,
-        signal,
-        userDataDirectory,
-        startUrl,
-        browserProfile,
-        onRuntimeIdentity: browserRuntimeIdentity.record,
-      });
-    const browserWithIdentityPersistence = browserPortWithIdentityPersistence(
-      browser,
-      browserRuntimeIdentity,
-    );
-    const ports: WorkflowExecutorPorts = {
-      browser: browserWithIdentityPersistence,
-      text: strictSourceText,
-      humanAssistance: injectedPorts.humanAssistance
-        ?? createAppWorkflowHumanAssistancePort({ run: execution.run }),
-      ...(financialCommit ? { financialCommit } : {}),
-      ...(injectedPorts.tdcc ? { tdcc: injectedPorts.tdcc } : {}),
-      ...(accountIdentity ? { accountIdentity } : {}),
-      ...(previewWrite ? { previewWrite } : {}),
-      events: injectedPorts.events ?? {
-        async append(event) {
-          await progressReporter.appendEvent(event);
-        },
-      },
-      now: injectedPorts.now ?? (() => new Date().toISOString()),
-      onEventFailure: injectedPorts.onEventFailure
-        ?? (() => console.error("workflow-event-persistence-failed")),
-      productFailure: (failure) => recordWorkflowFailure(execution, options, {
-        source: "workflow-host",
-        errorCode: failure.errorCode,
-        stage: failure.stage,
-        statementType: failure.statementType,
-        error: failure.error,
-      }),
-    };
-    const executor = createWorkflowExecutor([definition], ports);
-    if (!options.verificationRouteOwnedByCampaign) {
-      unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
-        execution.task.workflowId,
-        { automation: execution.run.persistence },
-      );
-    }
-    workflowOutput = await executor.run(
-      execution.task.workflowId,
-      execution.run.taskRunId,
-      input,
-      signal,
-    );
-    await browserRuntimeIdentity.flush();
-    result = { errorCode: null, summary: summarizeTypedWorkflowOutput(workflowOutput) };
-  } catch (error) {
-    try {
-      await browserRuntimeIdentity.flush();
-    } catch {
-      // Preserve only a stable workflow failure; persistence errors are opaque.
-    }
-    const cancelled = signal.aborted;
-    let events: readonly WorkflowRunEvent[] = [];
-    try {
-      events = (await execution.run.persistence.taskRunById(execution.run.taskRunId))?.events ?? [];
-    } catch {
-      // Classification falls back to the opaque workflow code if events are unavailable.
-    }
-    // Provider exceptions may contain account or invoice data. Persist only
-    // a stable task-level classification in the operational database.
-    result = {
-      errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
-      summary: summarizeInterruptedProductCollection(error)
-        ?? summarizeTypedWorkflowOutput(workflowOutput),
-    };
-    if (!cancelled) {
-      await recordWorkflowFailure(execution, options, {
-        source: "workflow-host",
-        errorCode: result.errorCode ?? "workflow-failed",
-        stage: lastWorkflowStage(events),
-        error,
-      });
-    }
-  } finally {
-    unregisterHumanAssistance?.();
-    childRpc?.close();
-  }
-  return result;
 }
 
 const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>(WORKFLOW_ERROR_CODES);
