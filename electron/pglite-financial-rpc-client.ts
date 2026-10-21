@@ -32,7 +32,6 @@ import type { SpendingPageReadResult } from "../src/lib/spending/page-reader.ts"
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
 import type {
-  PGliteCanonicalFinancialCommitBatchRequest,
   PGliteCanonicalFinancialCommitRequest,
   PGliteCanonicalFinancialCommitResult,
   PGliteCanonicalSourceAdmissionRequest,
@@ -222,13 +221,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   "financial.source.commit": operation<[request: PGliteCanonicalFinancialCommitRequest], PGliteCanonicalFinancialCommitResult>(
     (args) => args.length === 1 && sourceCommitShape(args[0]),
-    { canonicalCommit: true },
-  ),
-  "financial.source.commitBatch": operation<[request: PGliteCanonicalFinancialCommitBatchRequest], readonly PGliteCanonicalFinancialCommitResult[]>(
-    (args) => args.length === 1 && plainRecord(args[0])
-      && Array.isArray((args[0] as Record<string, unknown>).commits)
-      && ((args[0] as Record<string, unknown>).commits as unknown[]).length > 0
-      && ((args[0] as Record<string, unknown>).commits as unknown[]).every(sourceCommitShape),
     { canonicalCommit: true },
   ),
   "financial.deposit.commit": operation<[request: PGliteCanonicalDepositCommitRequest], PGliteCanonicalDepositCommitResult>(

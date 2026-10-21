@@ -1,0 +1,212 @@
+{
+  "result": {
+    "sourceCaptureCount": 1,
+    "rowCount": 1,
+    "itemCount": 1,
+    "committedCount": 1,
+    "skippedProductCount": 4,
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "success",
+        "itemCount": 1,
+        "committedCount": 1
+      },
+      {
+        "typeId": "foreign_currency",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "credit_card",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "loan",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "fund",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      }
+    ],
+    "status": "source-only"
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "yuanta",
+        "product": "deposit"
+      },
+      "items": [
+        {
+          "provider": "yuanta",
+          "product": "domestic-deposit",
+          "itemKey": "yuanta-source-t+0-RqlfmcUYQW0S",
+          "command": {
+            "kind": "financial.source.admit",
+            "request": {
+              "captureId": "yuanta-source-t+0-RqlfmcUYQW0S",
+              "integrationNamespace": "yuanta",
+              "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+              "identityEpoch": "sha256:eXVhbnRhLWh1bWFuLWF0dGVzdGVkLWlkZW50aXR5LWVwb2NoLXYyAHl1YW50YS1kb21lc3RpYy1kZXBvc2l0LWh1bWFuLWF0dGVzdGVkLXYyAGh1bWFuLWF0dGVzdGVkLXYyAHNoYTI1Njo5Y2RlNmYxYzRmMzVlNGY0ZDJlZjYzNGNmNmJjMWU3YjQ4NjliMWEwYzFlNWU3YzJmMWE0YTllMWJkNWQ0YzYz",
+              "stream": "domestic-deposit",
+              "recordKind": "yuanta-domestic-deposit-capture-evidence-v2",
+              "routeKey": "yuanta/domestic-deposit/capture-evidence-v2",
+              "contractVersion": "capture-evidence-v2",
+              "subjectDigest": "sha256:wSHhE5sj7ACRVSy6vLeptF79X2MrQOG2oKbyRDmrdXc",
+              "observedAt": "2026-09-25T08:00:00+08:00",
+              "scope": {
+                "startDate": "20260625",
+                "endDate": "20260925",
+                "kind": "bounded-range",
+                "completeness": "complete-range",
+                "ruleVersion": "yuanta/domestic-deposit/capture-evidence-v2/terminal-download"
+              },
+              "pages": [
+                {
+                  "pageOrdinal": 0,
+                  "responseCode": "200",
+                  "rowCount": 1,
+                  "terminal": true,
+                  "metadata": {
+                    "filenameDigest": "sha256:xdrHOY68-YFQVWmyWQypvUSWQloV78wyt3Ynm0C1NVw",
+                    "contentDigest": "sha256:synthetic-SYNTHETIC-YUANTA-JOINT",
+                    "byteLength": 128,
+                    "columnCount": 11,
+                    "accountValueDigest": "sha256:cLnKPw1p_6XmNR9GldepJzgwol7QjhQV9vnTK36p6_0",
+                    "accountLabelDigest": "sha256:V8Yv6mr7KzEsnQu5knvY1f5UoKMfKQeHOWrEGRNHDMY",
+                    "zeroResultAuthority": null
+                  }
+                }
+              ],
+              "records": [
+                {
+                  "occurrenceKey": "sha256:Uw_91FsmI6xNXsduYI4WQn1dAoDR3hahYHSrYdvumIY",
+                  "collisionKey": "sha256:41Asy9keWdznB9aE8XtxvgXB-JNpsaGuiDUJwqyCiio",
+                  "providerKey": "sha256:gSS7VLIQSdv3j0bdkINf6e3eruazG5biARuv3esN2yo",
+                  "contentHash": "sha256:BdvAuha09Li-1B56Tf43wvHryf8o7q8zBuBlEnxmQOY",
+                  "compact": {
+                    "evidenceVersion": "capture-evidence-v2",
+                    "pageOrdinal": 0,
+                    "rowOrdinal": 0,
+                    "rowDigest": "sha256:gSS7VLIQSdv3j0bdkINf6e3eruazG5biARuv3esN2yo",
+                    "cellCount": 11,
+                    "amountShape": "inflow",
+                    "semanticStatus": "observed-structural-only"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-download-started",
+      "counts": {
+        "activity": "download",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "deposit-collection-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "deposit-canonical-commit-started",
+      "counts": {
+        "completed": 0,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "deposit-canonical-commit-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    }
+  ]
+}

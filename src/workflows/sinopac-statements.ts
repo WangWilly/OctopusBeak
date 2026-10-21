@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import type { Dialog, Page, Response } from "playwright";
+import type { Page, Response } from "playwright";
 import { z } from "zod";
 import {
   SourceTextIntegrityError,
   strictSourceText,
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
+import { withAbort } from "./abort.ts";
+import { signInAttempt } from "./sign-in-attempt.ts";
 import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
@@ -55,10 +57,8 @@ import {
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
   SinopacCaptchaRejectedError,
-  SINOPAC_DIALOG_OWNER_ENV,
   isSinopacCaptchaRejectionDialog,
   isSinopacDuplicateLoginDialog,
-  sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
   SINOPAC_IDENTITY_FIELD_NAMES,
@@ -770,7 +770,7 @@ export function sinopacSignedInPageUrl(href: string): boolean {
 async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
   const url = page.url();
   if (!sinopacSignedInPageUrl(url)) return false;
-  return await waitForSinopacSignal(
+  return await withAbort(
     page
       .locator('a#user-logout:visible, a[href*="MMALogout"]:visible')
       .isVisible()
@@ -779,29 +779,6 @@ async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
   );
 }
 
-async function waitForSinopacSignal<T>(
-  operation: Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  if (!signal) return await operation;
-  signal.throwIfAborted();
-  let abortListener: (() => void) | undefined;
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    abortListener = () => reject(
-      signal.reason instanceof Error
-        ? signal.reason
-        : new Error("SinoPac workflow was cancelled."),
-    );
-    signal.addEventListener("abort", abortListener, { once: true });
-    if (signal.aborted) abortListener();
-  });
-  void operation.catch(() => undefined);
-  try {
-    return await Promise.race([operation, cancelled]);
-  } finally {
-    if (abortListener) signal.removeEventListener("abort", abortListener);
-  }
-}
 
 export async function waitForSignedInState(
   page: Page,
@@ -824,11 +801,11 @@ export async function waitForSignedInState(
     }
     throw new Error("SinoPac service is temporarily unavailable.");
   }
-  await waitForSinopacSignal(
+  await withAbort(
     page.waitForLoadState("domcontentloaded", { timeout: 60_000 }),
     signal,
   );
-  await waitForSinopacSignal(
+  await withAbort(
     page
       .locator('a#user-logout, a[href*="MMALogout"]')
       .first()
@@ -841,128 +818,74 @@ export type SinopacLoginAttemptDependencies = {
   submit: () => Promise<void>;
   waitForSuccess: (signal: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
-  dialogOwner?: "host" | "workflow";
   onDialog?: (captchaRejected: boolean) => void | Promise<void>;
   onDuplicateLoginConfirmed?: () => void | Promise<void>;
 };
 
-/**
- * The desktop host owns provider dialogs when the workflow has a host
- * transport.  A direct CLI run has no host and keeps the local fail-fast
- * fallback so it cannot wait for the full navigation timeout.
- */
-export function sinopacPostSubmitDialogOwner(
-  session: string,
-  env: NodeJS.ProcessEnv = process.env,
-): "host" | "workflow" {
-  return env[SINOPAC_DIALOG_OWNER_ENV]?.trim() === sinopacHostDialogOwner(session)
-    ? "host"
-    : "workflow";
-}
-
 export async function runSinopacLoginAttempt(
   page: Page,
-  session: string,
   dependencies: SinopacLoginAttemptDependencies,
 ): Promise<void> {
-  const dialogOwner = dependencies.dialogOwner
-    ?? sinopacPostSubmitDialogOwner(session);
-  if (dialogOwner === "host") {
-    dependencies.signal?.throwIfAborted();
-    const probeAbortController = new AbortController();
-    const successSignal = dependencies.signal
-      ? AbortSignal.any([probeAbortController.signal, dependencies.signal])
-      : probeAbortController.signal;
-    const successProbe = dependencies.waitForSuccess(successSignal);
-    void successProbe.catch(() => undefined);
-    try {
-      await waitForSinopacSignal(dependencies.submit(), dependencies.signal);
-      await waitForSinopacSignal(successProbe, dependencies.signal);
-    } finally {
-      probeAbortController.abort();
-    }
-    return;
-  }
-
-  const probeAbortController = new AbortController();
-  let rejectDialog!: (error: Error) => void;
-  const dialogDetected = new Promise<never>((_resolve, reject) => {
-    rejectDialog = reject;
-  });
   let dialogHandled = false;
   let duplicateLoginConfirmed = false;
-  const dialogHandler = async (dialog: Dialog): Promise<void> => {
-    if (dialogHandled) return;
-    dialogHandled = true;
-    let type = "unknown";
-    let message = "";
-    let captchaRejected = false;
-    try {
-      type = dialog.type();
-      message = dialog.message();
-      // Only the exact provider warning admits a typed CAPTCHA rejection.
-      captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
-    } catch {
-      // Keep the fail-fast path usable if the browser closes the dialog while
-      // it is being inspected.
-    }
-    if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
-      duplicateLoginConfirmed = true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const accepted = await Promise.race([
-        Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-      if (accepted) {
+  await signInAttempt(page, {
+    submit: dependencies.submit,
+    waitForSuccess: dependencies.waitForSuccess,
+    signal: dependencies.signal,
+    handleDialog: async (dialog) => {
+      if (dialogHandled) return null;
+      dialogHandled = true;
+      let type = "unknown";
+      let message = "";
+      let captchaRejected = false;
+      try {
+        type = dialog.type();
+        message = dialog.message();
+        // Only the exact provider warning admits a typed CAPTCHA rejection.
+        captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
+      } catch {
+        // Keep the fail-fast path usable if the browser closes the dialog while
+        // it is being inspected.
+      }
+      if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
+        duplicateLoginConfirmed = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const accepted = await Promise.race([
+          Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (!accepted) return new Error("SinoPac duplicate login confirmation failed.");
         dialogHandled = false;
         try {
           await dependencies.onDuplicateLoginConfirmed?.();
         } catch {
           // Operational events must not change the authentication outcome.
         }
-        return;
+        return null;
       }
-      rejectDialog(new Error("SinoPac duplicate login confirmation failed."));
-      probeAbortController.abort();
-      return;
-    }
-    try {
-      await dependencies.onDialog?.(captchaRejected);
-    } catch {
-      // Operational event persistence must not change the authentication outcome.
-    }
-    const dismissal = Promise.resolve().then(() => dialog.dismiss());
-    void dismissal.catch(() => undefined);
-    let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
-    const dismissed = await Promise.race([
-      dismissal.then(() => true, () => false),
-      new Promise<boolean>((resolve) => {
-        dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-      }),
-    ]);
-    if (dismissalTimer) clearTimeout(dismissalTimer);
-    rejectDialog(captchaRejected && dismissed
-      ? new SinopacCaptchaRejectedError()
-      : new Error("SinoPac login was interrupted by a browser dialog."));
-    probeAbortController.abort();
-  };
-
-  page.on("dialog", dialogHandler);
-  try {
-    const successProbe = dependencies.waitForSuccess(probeAbortController.signal);
-    void successProbe.catch(() => undefined);
-    const loginOutcome = (async () => {
-      await waitForSinopacSignal(dependencies.submit(), dependencies.signal);
-      await successProbe;
-    })();
-    await waitForSinopacSignal(Promise.race([loginOutcome, dialogDetected]), dependencies.signal);
-  } finally {
-    probeAbortController.abort();
-    page.off("dialog", dialogHandler);
-  }
+      try {
+        await dependencies.onDialog?.(captchaRejected);
+      } catch {
+        // Operational event persistence must not change the authentication outcome.
+      }
+      const dismissal = Promise.resolve().then(() => dialog.dismiss());
+      void dismissal.catch(() => undefined);
+      let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
+      const dismissed = await Promise.race([
+        dismissal.then(() => true, () => false),
+        new Promise<boolean>((resolve) => {
+          dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+        }),
+      ]);
+      if (dismissalTimer) clearTimeout(dismissalTimer);
+      return captchaRejected && dismissed
+        ? new SinopacCaptchaRejectedError()
+        : new Error("SinoPac login was interrupted by a browser dialog.");
+    },
+  });
 }
 
 export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {
@@ -977,24 +900,24 @@ export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {
 
 async function clickLoginButton(page: Page, signal?: AbortSignal): Promise<void> {
   const visibleButton = page.locator("#MMA_Login");
-  if (await waitForSinopacSignal(visibleButton.isVisible().catch(() => false), signal)) {
-    await waitForSinopacSignal(visibleButton.click(), signal);
+  if (await withAbort(visibleButton.isVisible().catch(() => false), signal)) {
+    await withAbort(visibleButton.click(), signal);
     return;
   }
-  await waitForSinopacSignal(page.locator('input[alt="登入"]').click({ force: true }), signal);
+  await withAbort(page.locator('input[alt="登入"]').click({ force: true }), signal);
 }
 
 async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   for (const selector of sinopacPasswordExpiryNoticeDismissTargets()) {
     const dismiss = page.locator(selector).first();
-    if (await waitForSinopacSignal(dismiss.isVisible({ timeout: 5_000 }).catch(() => false), signal)) {
-      await waitForSinopacSignal(dismiss.click(), signal);
-      await waitForSinopacSignal(
+    if (await withAbort(dismiss.isVisible().catch(() => false), signal)) {
+      await withAbort(dismiss.click(), signal);
+      await withAbort(
         dismiss.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {}),
         signal,
       );
-      await waitForSinopacSignal(
+      await withAbort(
         page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {}),
         signal,
       );
@@ -1011,28 +934,28 @@ async function fillLoginForm(
   // The App may attach to an existing signed-out browser page. Navigate only
   // when it is not already at the sign-in entry to avoid duplicate requests.
   if (!sinopacLoginEntryUrl(page.url())) {
-    await waitForSinopacSignal(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+    await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
   } else {
-    await waitForSinopacSignal(page.waitForLoadState("domcontentloaded", { timeout: 60_000 }), signal);
+    await withAbort(page.waitForLoadState("domcontentloaded", { timeout: 60_000 }), signal);
   }
-  await waitForSinopacSignal(page.locator("form#aspnetForm").waitFor({ timeout: 60_000 }), signal);
+  await withAbort(page.locator("form#aspnetForm").waitFor({ timeout: 60_000 }), signal);
 
   const loginInputs = page.locator(
     "input.selectable:visible, input.tips:visible",
   );
 
-  await waitForSinopacSignal(loginInputs
+  await withAbort(loginInputs
     .first()
     .fill(requireCredential(credentials, "sinopac_user_id")), signal);
-  await waitForSinopacSignal(loginInputs
+  await withAbort(loginInputs
     .nth(1)
     .fill(requireCredential(credentials, "sinopac_account")), signal);
-  await waitForSinopacSignal(loginInputs
+  await withAbort(loginInputs
     .nth(2)
     .fill(requireCredential(credentials, "sinopac_password")), signal);
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  await waitForSinopacSignal(captcha.fill(""), signal);
-  await waitForSinopacSignal(captcha.focus(), signal);
+  await withAbort(captcha.fill(""), signal);
+  await withAbort(captcha.focus(), signal);
 }
 
 export function sinopacCaptchaAssistanceStage(
@@ -1099,7 +1022,7 @@ async function signInSinopacForApp(
   if (await isSignedIn(page, context.signal)) return;
 
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  const currentValue = await waitForSinopacSignal(
+  const currentValue = await withAbort(
     captcha.inputValue(),
     context.signal,
   );
@@ -1108,9 +1031,7 @@ async function signInSinopacForApp(
       `SinoPac CAPTCHA assistance ended with ${status}, but no answer was entered.`,
     );
   }
-  await runSinopacLoginAttempt(page, context.runId, {
-    // The provider dismisses dialogs and returns a typed rejection to the App.
-    dialogOwner: "workflow",
+  await runSinopacLoginAttempt(page, {
     signal: context.signal,
     onDuplicateLoginConfirmed: () => context.event("authentication", "duplicate-login-confirmed"),
     onDialog: async (captchaRejected) => {
@@ -1161,18 +1082,18 @@ async function openTransactionPage(
   const detailLink = page
     .locator('a[title="往來明細"], a[href*="mma_transdetail"]')
     .first();
-  if (await waitForSinopacSignal(detailLink.isVisible({ timeout: 10_000 }).catch(() => false), signal)) {
-    await waitForSinopacSignal(detailLink.click(), signal);
+  if (await withAbort(detailLink.isVisible().catch(() => false), signal)) {
+    await withAbort(detailLink.click(), signal);
   } else {
-    await waitForSinopacSignal(page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" }), signal);
+    await withAbort(page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" }), signal);
   }
-  await waitForSinopacSignal(
+  await withAbort(
     page.locator("#StartDate").waitFor({ state: "visible", timeout: 60_000 }),
     signal,
   );
-  const response = await waitForSinopacSignal(responsePromise, signal);
+  const response = await withAbort(responsePromise, signal);
   const [body, headers] = await Promise.all([
-    waitForSinopacSignal(response.body(), signal),
+    withAbort(response.body(), signal),
     response.allHeaders(),
   ]);
   let payload: unknown;
@@ -1226,7 +1147,7 @@ class SinopacApiClient {
 
   private async postJson<T>(path: string, body: URLSearchParams): Promise<T> {
     this.signal?.throwIfAborted();
-    const response = await waitForSinopacSignal(this.page.evaluate(
+    const response = await withAbort(this.page.evaluate(
       async ({ path, bodyText }) => {
         type BrowserXhr = {
           open(method: string, url: string, async: boolean): void;
@@ -1599,16 +1520,16 @@ async function readSinopacCurrentDepositBalancesWithText(
     }
   }, { timeout: timeoutMs });
   void responsePromise.catch(() => undefined);
-  await waitForSinopacSignal(
+  await withAbort(
     page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
       waitUntil: "domcontentloaded",
       timeout: timeoutMs,
     }),
     signal,
   );
-  const response = await waitForSinopacSignal(responsePromise, signal);
+  const response = await withAbort(responsePromise, signal);
   const [bytes, headers] = await Promise.all([
-    waitForSinopacSignal(response.body(), signal),
+    withAbort(response.body(), signal),
     response.allHeaders(),
   ]);
   const payload = decodeSinopacJsonSource({
@@ -1703,7 +1624,7 @@ async function collectAndCommitSinopacStatements(
       });
       let response: SinopacTransactionResponse;
       try {
-        response = await waitForSinopacSignal((
+        response = await withAbort((
           overrides.queryTransactions ??
           ((candidate, range, businessDate) =>
             apiClient.fetchTransactions(candidate, range, businessDate))
@@ -1814,25 +1735,6 @@ async function collectAndCommitSinopacStatements(
       });
       throw new Error("SinoPac financial capture is missing.");
     }
-    const occurrenceKeys = new Set<string>();
-    const collisionKeys = new Map<string, string>();
-    const ambiguous = financialCapture.records.some((record) => {
-      if (occurrenceKeys.has(record.occurrenceKey)) return true;
-      occurrenceKeys.add(record.occurrenceKey);
-      if (record.collisionKey) {
-        const prior = collisionKeys.get(record.collisionKey);
-        if (prior && prior !== record.occurrenceKey) return true;
-        collisionKeys.set(record.collisionKey, record.occurrenceKey);
-      }
-      return false;
-    });
-    if (ambiguous) {
-      items.push({
-        provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
-        command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
-      });
-      continue;
-    }
     items.push({
       provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
       command: {
@@ -1857,7 +1759,7 @@ async function collectAndCommitSinopacStatements(
     await overrides.event?.("collection", "current-balance-collection-started");
     let currentRows: readonly SinopacCurrentDepositBalanceRow[];
     try {
-      currentRows = await waitForSinopacSignal(
+      currentRows = await withAbort(
         readCurrent(page, { observedAt }),
         signal,
       );
@@ -1912,7 +1814,7 @@ async function collectAndCommitSinopacStatements(
     signal,
   });
   if (committed.status !== "completed") {
-    await overrides.event?.("commit", "canonical-commit-rejected", {
+    await overrides.event?.("commit", signal?.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed", {
       completed: committed.committedCount,
       total: commitItems.length,
     });
@@ -2012,7 +1914,7 @@ export async function runSinopacProviderWorkflow(
       let accounts: SinopacAccount[];
       if (overrides.readAccounts) {
         await context.event("collection", "account-list-collection-started");
-        accounts = await waitForSinopacSignal(
+        accounts = await withAbort(
           overrides.readAccounts(dateRange),
           context.signal,
         );

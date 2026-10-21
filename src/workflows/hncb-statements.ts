@@ -20,6 +20,7 @@ import {
   createHncbDomesticDepositSourceEvidence,
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+  isHncbSourceOnlyFinancialDiagnostic,
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
@@ -1342,19 +1343,7 @@ export async function runHncbStatements(
       const admission = admitHncbDomesticDepositFinancialCapture(input);
       const sourceCaptureId = `hncb-source-${captureId}-${index}`;
       if (admission.status !== "admitted") {
-        const allowedSourceOnly = admission.diagnostics.every((diagnostic) =>
-          [
-            "human-attestation-missing",
-            "human-attestation-mismatch",
-            "human-attestation-revoked",
-            "unsupported-currency",
-            "authority-shared-account",
-            "authority-semantics-unproven",
-            "completeness-semantics-unproven",
-            "zero-result-authority-unproven",
-            "terminal-evidence-missing",
-          ].includes(diagnostic),
-        );
+        const allowedSourceOnly = admission.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic);
         if (!allowedSourceOnly)
           throw new Error(
             `HNCB domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,

@@ -14,7 +14,7 @@ function item(key: string, relationCommands?: PGliteWorkflowRunItem["relationCom
 }
 
 function client(commit: (command: PGliteWorkflowCommand) => Promise<unknown>): PGliteWorkflowClient {
-  return { commit, commitBatch: () => { throw new Error("unused"); } } as unknown as PGliteWorkflowClient;
+  return { commit } as unknown as PGliteWorkflowClient;
 }
 
 test("PGlite run preserves item failures, admission summaries, and post-commit warnings", async () => {

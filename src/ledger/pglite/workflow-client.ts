@@ -3,7 +3,6 @@ import type {
   PGliteCanonicalBalanceCommitResult,
 } from "./balance.ts";
 import type {
-  PGliteCanonicalFinancialCommitBatchRequest,
   PGliteCanonicalFinancialCommitRequest,
   PGliteCanonicalFinancialCommitResult,
   PGliteCanonicalSourceAdmissionReceipt,
@@ -15,7 +14,6 @@ import {
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-  PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND,
   PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
@@ -59,7 +57,6 @@ export {
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-  PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND,
   PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
@@ -79,7 +76,6 @@ type CommandContract<Request, Result> = Readonly<{ request: Request; result: Res
 type PGliteWorkflowCommandContracts = {
   [PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND]: CommandContract<PGliteCanonicalSourceAdmissionRequest, PGliteCanonicalSourceAdmissionReceipt>;
   [PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND]: CommandContract<PGliteCanonicalFinancialCommitRequest, PGliteCanonicalFinancialCommitResult>;
-  [PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND]: CommandContract<PGliteCanonicalFinancialCommitBatchRequest, readonly PGliteCanonicalFinancialCommitResult[]>;
   [PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND]: CommandContract<PGliteCanonicalDepositCommitRequest, PGliteCanonicalDepositCommitResult>;
   [PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND]: CommandContract<PGliteCanonicalBalanceCaptureRequest, PGliteCanonicalBalanceCommitResult>;
   [PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND]: CommandContract<CanonicalEInvoiceCaptureInput, PGliteCanonicalEInvoiceCommitResult>;
@@ -178,10 +174,6 @@ export type PGliteWorkflowClient = Readonly<{
     command: Command,
     options?: PGliteWorkflowRequestOptions,
   ): Promise<PGliteWorkflowCommandResult<Command>>;
-  commitBatch(
-    command: Extract<PGliteWorkflowCommand, { kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND }>,
-    options?: PGliteWorkflowRequestOptions,
-  ): Promise<readonly PGliteCanonicalFinancialCommitResult[]>;
 }>;
 
 /** Build a workflow client around a named transport supplied by the owner. */
@@ -191,10 +183,6 @@ export function createPGliteWorkflowClient(
   return Object.freeze({
     commit: <Command extends PGliteWorkflowCommand>(
       command: Command,
-      options?: PGliteWorkflowRequestOptions,
-    ) => transport.execute(command, options),
-    commitBatch: (
-      command: Extract<PGliteWorkflowCommand, { kind: typeof PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND }>,
       options?: PGliteWorkflowRequestOptions,
     ) => transport.execute(command, options),
   });

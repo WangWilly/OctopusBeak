@@ -678,9 +678,15 @@ export function buildPostCurrentDepositBalanceCapture(
   };
 }
 
+/**
+ * Index a run's admitted deposit identities and return the lookup its current
+ * balance rows use. Every capture in one run shares the first capture's
+ * source connection and identity epoch, so a row needs only its stream and
+ * source account key.
+ */
 export function indexPostCurrentDepositFinancialCaptures(
   financialCaptures: readonly ExistingPostCurrentDepositFinancialCapture[],
-): ReadonlyMap<string, ExistingPostCurrentDepositFinancialCapture> {
+): (row: Readonly<{ stream: string; sourceAccountKey: string }>) => ExistingPostCurrentDepositFinancialCapture | undefined {
   const result = new Map<string, ExistingPostCurrentDepositFinancialCapture>();
   for (const candidate of financialCaptures) {
     const identity = candidate.identity;
@@ -697,5 +703,8 @@ export function indexPostCurrentDepositFinancialCaptures(
       throw new Error("Post current deposit identities are ambiguous across financial captures.");
     if (!prior) result.set(key, candidate);
   }
-  return result;
+  const first = financialCaptures[0]?.identity;
+  return (row) => first && result.get(
+    `${first.sourceConnectionKey}\u0000${first.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+  );
 }

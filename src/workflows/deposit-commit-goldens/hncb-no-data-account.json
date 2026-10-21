@@ -1,0 +1,328 @@
+{
+  "output": {
+    "dateRange": {
+      "startDate": "2026/08/01",
+      "endDate": "2026/08/31"
+    },
+    "usedExistingSession": false,
+    "count": 2,
+    "sourceCaptureCount": 2,
+    "rowCount": 2,
+    "itemCount": 2,
+    "committedCount": 2,
+    "status": "financial-admitted"
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "hncb",
+        "product": "financial"
+      },
+      "items": [
+        {
+          "provider": "hncb",
+          "product": "domestic-deposit",
+          "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-0",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-0",
+                "authorityRoute": "hncb/domestic-deposit/human-attested-v1",
+                "contractVersion": "human-attested-v1",
+                "identity": {
+                  "integrationNamespace": "hncb",
+                  "sourceConnectionKey": "sha256:4lVg-KsX6hGGgyoEdIiv256jPbESasqYN8HyiDJ2QzI",
+                  "identityEpochKey": "sha256:aG5jYi1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBobmNiLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjdhNGZkN2EwZjIyZjRjNWQ5MzNkNWYzYjViNWJmOWFjNTJmMWRkMGU5ZDZiNGQ0ZDBkOWFkNGExZmNiNWUzYjE",
+                  "stream": "domestic-deposit",
+                  "recordKind": "hncb-domestic-deposit",
+                  "subjectDigest": "sha256:q_VM3n_H4FmZUBTs5OqiKW6Fqp3vwKh9Ws9YX3BarsQ",
+                  "accountNo": "9000_0000_0011",
+                  "accountNumber": {
+                    "value": "9000_0000_0011",
+                    "kind": "depository-account",
+                    "evidenceVersion": "hncb/domestic-deposit/account-number-v1",
+                    "sourceField": "select#acct1 option.value + workbook metadata 帳號"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-01T12:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-08-01",
+                  "endDate": "2026-08-31",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "exact-ui-range-terminal-export",
+                  "completenessRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "absenceAuthority": "provider-explicit-no-data",
+                  "contractFingerprint": "sha256:nv29dhRuKGScf9FYLMqM2AeNMWtau6GvkV_TiVWKwoE",
+                  "preflightFingerprint": "sha256:ZDbjFOt1VboSLSQxkKK8CmDoP1avkXCilfBLP3Tmr1A",
+                  "pageCount": 1,
+                  "withdrawalPolicy": "never-infer"
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true,
+                  "providerGuaranteed": false,
+                  "occurrenceProviderGuaranteed": false
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 2,
+                    "responseDigest": "sha256:synthetic-9000_0000_0011",
+                    "proofKind": "exact-ui-range-terminal-export",
+                    "contractFingerprint": "sha256:nv29dhRuKGScf9FYLMqM2AeNMWtau6GvkV_TiVWKwoE",
+                    "preflightFingerprint": "sha256:ZDbjFOt1VboSLSQxkKK8CmDoP1avkXCilfBLP3Tmr1A",
+                    "metadataJson": "{\"pageOrdinal\":0,\"filenameDigest\":\"sha256:Ge_G1tY6ta6NdMJpiDTdVnM11-ShhslYq8ZhDWJJhHg\",\"contentDigest\":\"sha256:synthetic-9000_0000_0011\",\"rowCount\":2,\"zeroResultAuthority\":null,\"providerGuaranteed\":false}"
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:xSP_gUhoZc03UqD8et3ggHUt2AejfqgJwas1cIfDj2s",
+                    "collisionKey": "sha256:xFioFwr2TJhKEGT8mbPjliYkCqtegH03czyPgNTmiII",
+                    "providerKey": "sha256:BOTIpVBaE9LmBd13ZehG-v4hlUPclLMOm-fj7288p4Y",
+                    "contentHash": "sha256:Qz1x2xbMYoJKGEh8D7bJIIpkbqOhCr8aNWAlsa6YW20",
+                    "sequenceLexeme": "0:0",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"accountDigest\":\"sha256:q_VM3n_H4FmZUBTs5OqiKW6Fqp3vwKh9Ws9YX3BarsQ\",\"accountingDate\":\"2026-08-03\",\"transactionDate\":\"2026-08-03\",\"transactionTime\":\"09:10:00\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"5000\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"15000\",\"scale\":0},\"descriptionDigest\":\"sha256:DG8uvU6Le30OD2NJ3dpDUlnrLC5uKeQ_a4iTY4uce78\",\"depositorDigest\":\"sha256:fwfU6uLxPUOkU6Emibjm7krnVixiYN_DYZnQcMB3IwY\",\"noteDigest\":\"sha256:nosmI_fOh_kdAR_GKzmKUefiFeBN2qL1J43SHdrYKOU\",\"referenceDigest\":\"sha256:pMv8wpxMgCYRlZh5jmRXvsXfdVw3KxnvGI7hRWq_GwY\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "5000",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "15000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "SYNTHETIC SALARY",
+                    "direction": "inflow",
+                    "sourceTime": {
+                      "localDate": "2026-08-03",
+                      "localTime": "09:10:00",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1785719400000
+                    },
+                    "effectiveOn": "2026-08-03",
+                    "transactionDateTimeLocal": "2026-08-03T09:10:00",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:Zetavwv3LnfmQ7XLFNxF21es1iMSKwF9s9FeY2RSEds",
+                      "fingerprint": "sha256:NlsaB4B6nGTQqqPnl_q5T4alD70vJLixAs4qWM0i2L8",
+                      "partitionDate": "2026-08-03",
+                      "ordinal": 1
+                    }
+                  },
+                  {
+                    "occurrenceKey": "sha256:NANlPjK2DtxtTotHeGaliC68wOia4Ze4XOogpj1tGIM",
+                    "collisionKey": "sha256:W1OVo-ivMWHMvG-7xsyjiBrWt2siULcdzA3sxlgYUkE",
+                    "providerKey": "sha256:ICqfFtK8a6LqExu2967YP7ERWIRkh4NjkyOOnqf7bbc",
+                    "contentHash": "sha256:lU_jkifH4cI-9AWtc9FsrPkn8H6ZCOuwWVgHxNfeKUI",
+                    "sequenceLexeme": "0:1",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"accountDigest\":\"sha256:q_VM3n_H4FmZUBTs5OqiKW6Fqp3vwKh9Ws9YX3BarsQ\",\"accountingDate\":\"2026-08-05\",\"transactionDate\":\"2026-08-05\",\"transactionTime\":\"14:20:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"1200\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"13800\",\"scale\":0},\"descriptionDigest\":\"sha256:jnFqZM2if9F8IpaYSqtxihnG6avKbdY7CJlJ-nTIar8\",\"depositorDigest\":\"sha256:fwfU6uLxPUOkU6Emibjm7krnVixiYN_DYZnQcMB3IwY\",\"noteDigest\":\"sha256:nosmI_fOh_kdAR_GKzmKUefiFeBN2qL1J43SHdrYKOU\",\"referenceDigest\":\"sha256:pMv8wpxMgCYRlZh5jmRXvsXfdVw3KxnvGI7hRWq_GwY\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "1200",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "13800",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "SYNTHETIC RENT",
+                    "direction": "outflow",
+                    "sourceTime": {
+                      "localDate": "2026-08-05",
+                      "localTime": "14:20:00",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1785910800000
+                    },
+                    "effectiveOn": "2026-08-05",
+                    "transactionDateTimeLocal": "2026-08-05T14:20:00",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:Zetavwv3LnfmQ7XLFNxF21es1iMSKwF9s9FeY2RSEds",
+                      "fingerprint": "sha256:00I-X1Ae3xbp7M6Ox_75T2_z71eCC8wqZbqnJUJQuoc",
+                      "partitionDate": "2026-08-05",
+                      "ordinal": 1
+                    }
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:Zetavwv3LnfmQ7XLFNxF21es1iMSKwF9s9FeY2RSEds",
+                    "startDate": "2026-08-01",
+                    "endDate": "2026-08-31",
+                    "contractVersion": "human-attested-v1"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "provider": "hncb",
+          "product": "domestic-deposit",
+          "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-1",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-1",
+                "authorityRoute": "hncb/domestic-deposit/human-attested-v1",
+                "contractVersion": "human-attested-v1",
+                "identity": {
+                  "integrationNamespace": "hncb",
+                  "sourceConnectionKey": "sha256:4lVg-KsX6hGGgyoEdIiv256jPbESasqYN8HyiDJ2QzI",
+                  "identityEpochKey": "sha256:aG5jYi1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBobmNiLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjdhNGZkN2EwZjIyZjRjNWQ5MzNkNWYzYjViNWJmOWFjNTJmMWRkMGU5ZDZiNGQ0ZDBkOWFkNGExZmNiNWUzYjE",
+                  "stream": "domestic-deposit",
+                  "recordKind": "hncb-domestic-deposit",
+                  "subjectDigest": "sha256:zLIoHZOxj90Wp-HYcmNxPP5HjXCSoNYn-GUAUXE6Xms",
+                  "accountNo": "9000_0000_0022",
+                  "accountNumber": {
+                    "value": "9000_0000_0022",
+                    "kind": "depository-account",
+                    "evidenceVersion": "hncb/domestic-deposit/account-number-v2",
+                    "sourceField": "select#acct1 option.value + option.text"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-01T12:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-08-01",
+                  "endDate": "2026-08-31",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "exact-ui-range-terminal-export",
+                  "completenessRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "absenceAuthority": "provider-explicit-no-data",
+                  "contractFingerprint": "sha256:nv29dhRuKGScf9FYLMqM2AeNMWtau6GvkV_TiVWKwoE",
+                  "preflightFingerprint": "sha256:PRLdwySFByzx4salFjW6oa_DTDzSI63IPMLFRtqd08k",
+                  "pageCount": 1,
+                  "withdrawalPolicy": "never-infer"
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "hncb/domestic-deposit/human-attested-v1",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true,
+                  "providerGuaranteed": false,
+                  "occurrenceProviderGuaranteed": false
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+                    "proofKind": "exact-ui-range-terminal-export",
+                    "contractFingerprint": "sha256:nv29dhRuKGScf9FYLMqM2AeNMWtau6GvkV_TiVWKwoE",
+                    "preflightFingerprint": "sha256:PRLdwySFByzx4salFjW6oa_DTDzSI63IPMLFRtqd08k",
+                    "metadataJson": "{\"pageOrdinal\":0,\"filenameDigest\":\"sha256:w7XJbnKFsAiC6I7SxSmEwIGFh9S237lmrdifU4orr_U\",\"contentDigest\":\"sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU\",\"rowCount\":0,\"zeroResultAuthority\":\"provider-explicit-no-data\",\"providerGuaranteed\":false}"
+                  }
+                ],
+                "records": [],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:N5KHQRe06Cfy65-1VDDrJq8ddbVw6S_w3hMGpiepcqg",
+                    "startDate": "2026-08-01",
+                    "endDate": "2026-08-31",
+                    "contractVersion": "human-attested-v1"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "collection",
+      "code": "collection-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "decoding",
+      "code": "source-decoding-completed",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "account-no-data",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}
