@@ -101,7 +101,10 @@
   let basisOpen = false;
   const currenciesCache = new WeakMap<object, readonly string[]>();
 
-  $: report = $spendingState.report;
+  // The session publishes a new state for every pairing step. An object
+  // reassignment counts as a change here even when it is the same report, and
+  // every month reading and chart below derives from the report.
+  $: if ($spendingState.report !== report) report = $spendingState.report;
   $: isUpdating = $spendingState.isUpdating;
   $: canonical = $spendingState.canonical;
   $: activeMonth = $spendingState.activeMonth;
