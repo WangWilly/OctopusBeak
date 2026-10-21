@@ -8,7 +8,7 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import type { WorkflowBrowserPort, WorkflowFinancialCommitPort, WorkflowRunEvent } from "../workflow-executor.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
@@ -248,7 +248,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: {
+      workerPorts: {
         financialCommit,
         now: () => now.toISOString(),
       },
@@ -282,24 +282,30 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
       },
     };
     let cancellationRun: ActiveAutomationTaskRun | undefined;
-    const cancelledResult = await executeTaskRunForCheck(task, provider.automation, {
+    const cancelOnCollectionStart = new Proxy(provider.automation, {
+      get(target, key) {
+        if (key === "appendRunEvent") {
+          return async (event: WorkflowRunEvent) => {
+            await target.appendRunEvent(event);
+            if (event.code === "collection-started") {
+              void cancellationRun?.requestStop("cancelled");
+              await new Promise((resolve) => setTimeout(resolve, 75));
+            }
+          };
+        }
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const cancelledResult = await executeTaskRunForCheck(task, cancelOnCollectionStart, {
       taskRunId: cancelRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      workflowPorts: {
+      workerPorts: {
         financialCommit,
         now: () => now.toISOString(),
-        events: {
-          async append(event) {
-            await provider.automation.appendRunEvent(event);
-            if (event.code === "collection-started") {
-              void cancellationRun?.requestStop("cancelled");
-              await new Promise((resolve) => setTimeout(resolve, 75));
-            }
-          },
-        },
       },
       workflowBrowserPortFactory: () => cancelBrowser,
     });
@@ -331,7 +337,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: {
+      workerPorts: {
         financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
         now: () => now.toISOString(),
       },
