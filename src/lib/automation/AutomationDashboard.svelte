@@ -166,7 +166,8 @@ import type {
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
-  let copiedErrorCode: string | null = null;
+  let copiedErrorTaskId: string | null = null;
+  let copiedErrorTimer: ReturnType<typeof setTimeout> | undefined;
   let runDetailsOverview: OverviewPageDto | null = null;
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
@@ -212,6 +213,7 @@ import type {
     }
   }
   onDestroy(() => stopRunDetailsOverview?.());
+  onDestroy(() => clearTimeout(copiedErrorTimer));
 
   function watchRunDetailsOverview(store: Readable<ViewState<OverviewPageDto>> | null) {
     if (store === watchedOverview) return;
@@ -447,9 +449,15 @@ import type {
     return Number.isFinite(milliseconds) && milliseconds >= 0 ? Math.round(milliseconds / 1000) : null;
   }
 
-  async function copyErrorCode(code: string) {
-    await navigator.clipboard.writeText(code);
-    copiedErrorCode = code;
+  async function copyErrorCode(taskId: string, code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      return;
+    }
+    copiedErrorTaskId = taskId;
+    clearTimeout(copiedErrorTimer);
+    copiedErrorTimer = setTimeout(() => (copiedErrorTaskId = null), 2000);
   }
 
   function latestTaskTime(task: AutomationTaskRow) {
@@ -809,6 +817,11 @@ import type {
 
   function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape") return;
+    if (syncOpen && !credentialsOpen) {
+      event.preventDefault();
+      syncOpen = false;
+      return;
+    }
     closeCredentialsOnEscape(event);
   }
 
@@ -1801,8 +1814,8 @@ import type {
                               {$t.automation.structureReport.share}
                             </button>
                           {/if}
-                          <button class="copy-error-code" type="button" onclick={() => void copyErrorCode(errorCode)}>
-                            {copiedErrorCode === errorCode ? $t.automation.errorCodeCopied : $t.automation.copyErrorCode}
+                          <button class="copy-error-code" type="button" onclick={() => void copyErrorCode(task.id, errorCode)}>
+                            {copiedErrorTaskId === task.id ? $t.automation.errorCodeCopied : $t.automation.copyErrorCode}
                           </button>
                         </div>
                       {/if}

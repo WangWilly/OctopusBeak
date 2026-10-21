@@ -57,16 +57,21 @@ export function runStageTrack(
 ): RunStage[] {
   const events = latestAttempt(runEvents);
   const latest = events.at(-1) ?? null;
+  // The executor closes every failed or cancelled run with a finalization event; the run stopped before it.
+  const stoppedStage = events.findLast((event) => event.stage !== "finalization")?.stage;
+  // Older events past the retention limit are gone, so stages before the first kept one already finished.
+  const firstStageIndex = events.length ? WORKFLOW_STAGES.indexOf(events[0].stage) : 0;
   const running = ACTIVE_STATUSES.includes(status);
-  const incomplete = status === "failed" || status === "partial" || status === "interrupted" || status === "cancelled";
+  const stopped = status === "failed" || status === "interrupted" || status === "cancelled";
+  const incomplete = stopped || status === "partial";
   const productFailed = collectionFailures(outcome) !== null;
-  return WORKFLOW_STAGES.map((stage) => {
+  return WORKFLOW_STAGES.map((stage, index) => {
     const stageEvents = events.filter((event) => event.stage === stage);
     const lastEvent = stageEvents.at(-1) ?? null;
     return { stage, lastEvent, state: stageState() };
 
     function stageState(): RunStageState {
-      if (!lastEvent) return "pending";
+      if (!lastEvent) return index < firstStageIndex ? "done" : "pending";
       if (running && latest?.stage === stage) return "active";
       if (stageEvents.some((event) => FAILURE_CODE.test(event.code))) return "failed";
       if (stage === "collection" && productFailed) return "failed";
@@ -74,7 +79,8 @@ export function runStageTrack(
         if (status === "failed" || status === "interrupted") return "failed";
         if (status === "partial" || status === "cancelled") return "warning";
       }
-      if (incomplete && latest?.stage === stage) return "failed";
+      // A failed product already explains the failure on the collection node.
+      if (stopped && stoppedStage === stage && !productFailed) return "failed";
       if (stage === "commit" && incomplete) return "warning";
       return "done";
     }
