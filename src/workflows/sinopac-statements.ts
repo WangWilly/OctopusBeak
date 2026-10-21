@@ -988,7 +988,7 @@ async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Pr
   signal?.throwIfAborted();
   for (const selector of sinopacPasswordExpiryNoticeDismissTargets()) {
     const dismiss = page.locator(selector).first();
-    if (await waitForSinopacSignal(dismiss.isVisible({ timeout: 5_000 }).catch(() => false), signal)) {
+    if (await waitForSinopacSignal(dismiss.isVisible().catch(() => false), signal)) {
       await waitForSinopacSignal(dismiss.click(), signal);
       await waitForSinopacSignal(
         dismiss.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {}),
@@ -1161,7 +1161,7 @@ async function openTransactionPage(
   const detailLink = page
     .locator('a[title="往來明細"], a[href*="mma_transdetail"]')
     .first();
-  if (await waitForSinopacSignal(detailLink.isVisible({ timeout: 10_000 }).catch(() => false), signal)) {
+  if (await waitForSinopacSignal(detailLink.isVisible().catch(() => false), signal)) {
     await waitForSinopacSignal(detailLink.click(), signal);
   } else {
     await waitForSinopacSignal(page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" }), signal);
