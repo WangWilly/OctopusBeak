@@ -42,12 +42,20 @@ export function collectionFailures(outcome: TypedWorkflowOutcome | null): Collec
   return { typeIds, attempted: products.filter((product) => product.status !== "skipped").length };
 }
 
-/** One node per workflow stage, coloured by where the run got to and how it ended. */
+/** A retry starts over at preparation, so the last return to it begins the latest attempt. */
+function latestAttempt(events: readonly WorkflowRunEvent[]): readonly WorkflowRunEvent[] {
+  const start = events.findLastIndex((event, index) =>
+    event.stage === "preparation" && index > 0 && events[index - 1].stage !== "preparation");
+  return start === -1 ? events : events.slice(start);
+}
+
+/** One node per workflow stage, coloured by where the latest attempt got to and how the run ended. */
 export function runStageTrack(
-  events: readonly WorkflowRunEvent[],
+  runEvents: readonly WorkflowRunEvent[],
   status: AutomationTaskStatus,
   outcome: TypedWorkflowOutcome | null,
 ): RunStage[] {
+  const events = latestAttempt(runEvents);
   const latest = events.at(-1) ?? null;
   const running = ACTIVE_STATUSES.includes(status);
   const incomplete = status === "failed" || status === "partial" || status === "interrupted" || status === "cancelled";

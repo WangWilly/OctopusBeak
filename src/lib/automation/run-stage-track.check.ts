@@ -79,3 +79,21 @@ test("collection failures count failed products out of the ones the run tried", 
   assert.equal(collectionFailures(outcome([product("deposit", "success")])), null);
   assert.equal(collectionFailures(null), null);
 });
+
+test("a retried run judges each stage by its latest attempt", () => {
+  const track = runStageTrack(
+    [
+      event("preparation", "run-started"),
+      event("authentication", "human-assistance-failed"),
+      event("finalization", "run-failed"),
+      event("preparation", "run-started"),
+      event("authentication", "authentication-completed"),
+      event("collection", "collection-started"),
+      event("finalization", "run-completed"),
+    ],
+    "completed",
+    null,
+  );
+  assert.deepEqual(states(track), ["done", "done", "done", "pending", "pending", "pending", "done"]);
+  assert.equal(track[1].lastEvent?.code, "authentication-completed");
+});
