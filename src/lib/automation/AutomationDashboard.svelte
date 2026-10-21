@@ -1613,7 +1613,7 @@ import type {
           {#if !multiStage || stageOpen[stage.id]}
           <div class="stage-body" id={`${stage.id}-stage-body`} transition:disclosureSlide>
             <div class="table-reveal">
-              <div class="table-wrap">
+              <div class="table-wrap task-table-wrap">
               <table class="table automation-table">
           <colgroup>
             <col style="width: 22%" />
@@ -3210,7 +3210,16 @@ import type {
     scroll-margin-top: 88px;
   }
 
+  /* The task table scrolls sideways when narrow; its details stay pinned to the visible width. */
+  .task-table-wrap {
+    container-type: inline-size;
+  }
+
   .inline-run-details {
+    position: sticky;
+    left: 0;
+    box-sizing: border-box;
+    width: 100cqi;
     display: grid;
     gap: var(--space-4);
     padding: var(--space-4) var(--space-5) var(--space-5);
@@ -4781,7 +4790,6 @@ import type {
 
     .inline-run-details-head {
       align-items: flex-start;
-      flex-direction: column;
     }
 
     .workflow-event-row {
