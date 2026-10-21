@@ -111,7 +111,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit },
+      workerPorts: { financialCommit },
       workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
         observedBrowserProfile = browserProfile;
