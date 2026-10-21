@@ -90,6 +90,7 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
   previewWrite?: WorkflowPreviewWritePort;
+  accountIdentity?: WorkflowAccountIdentityPort;
   now?: WorkflowExecutorPorts["now"];
 }>;
 
@@ -346,7 +347,7 @@ export async function runAppWorkflowWorker(
       });
       await abortable(childRpc.ready, controller.signal);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
+    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || (definition.requiresAccountIdentity && !options.accountIdentity) || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
     const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
       ? {
         session: tdccSessionPort,
@@ -354,7 +355,8 @@ export async function runAppWorkflowWorker(
       }
       : undefined;
     const accountIdentity: WorkflowAccountIdentityPort | undefined = definition.requiresAccountIdentity
-      ? { continuity: (request) => childRpc!.financial.request("financial.accountIdentity.continuity", [request]) }
+      ? options.accountIdentity
+        ?? { continuity: (request) => childRpc!.financial.request("financial.accountIdentity.continuity", [request]) }
       : undefined;
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
