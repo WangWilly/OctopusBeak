@@ -55,10 +55,8 @@ import {
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
   SinopacCaptchaRejectedError,
-  SINOPAC_DIALOG_OWNER_ENV,
   isSinopacCaptchaRejectionDialog,
   isSinopacDuplicateLoginDialog,
-  sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
   SINOPAC_IDENTITY_FIELD_NAMES,
@@ -841,49 +839,14 @@ export type SinopacLoginAttemptDependencies = {
   submit: () => Promise<void>;
   waitForSuccess: (signal: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
-  dialogOwner?: "host" | "workflow";
   onDialog?: (captchaRejected: boolean) => void | Promise<void>;
   onDuplicateLoginConfirmed?: () => void | Promise<void>;
 };
 
-/**
- * The desktop host owns provider dialogs when the workflow has a host
- * transport.  A direct CLI run has no host and keeps the local fail-fast
- * fallback so it cannot wait for the full navigation timeout.
- */
-export function sinopacPostSubmitDialogOwner(
-  session: string,
-  env: NodeJS.ProcessEnv = process.env,
-): "host" | "workflow" {
-  return env[SINOPAC_DIALOG_OWNER_ENV]?.trim() === sinopacHostDialogOwner(session)
-    ? "host"
-    : "workflow";
-}
-
 export async function runSinopacLoginAttempt(
   page: Page,
-  session: string,
   dependencies: SinopacLoginAttemptDependencies,
 ): Promise<void> {
-  const dialogOwner = dependencies.dialogOwner
-    ?? sinopacPostSubmitDialogOwner(session);
-  if (dialogOwner === "host") {
-    dependencies.signal?.throwIfAborted();
-    const probeAbortController = new AbortController();
-    const successSignal = dependencies.signal
-      ? AbortSignal.any([probeAbortController.signal, dependencies.signal])
-      : probeAbortController.signal;
-    const successProbe = dependencies.waitForSuccess(successSignal);
-    void successProbe.catch(() => undefined);
-    try {
-      await waitForSinopacSignal(dependencies.submit(), dependencies.signal);
-      await waitForSinopacSignal(successProbe, dependencies.signal);
-    } finally {
-      probeAbortController.abort();
-    }
-    return;
-  }
-
   const probeAbortController = new AbortController();
   let rejectDialog!: (error: Error) => void;
   const dialogDetected = new Promise<never>((_resolve, reject) => {
@@ -1108,9 +1071,7 @@ async function signInSinopacForApp(
       `SinoPac CAPTCHA assistance ended with ${status}, but no answer was entered.`,
     );
   }
-  await runSinopacLoginAttempt(page, context.runId, {
-    // The provider dismisses dialogs and returns a typed rejection to the App.
-    dialogOwner: "workflow",
+  await runSinopacLoginAttempt(page, {
     signal: context.signal,
     onDuplicateLoginConfirmed: () => context.event("authentication", "duplicate-login-confirmed"),
     onDialog: async (captchaRejected) => {
