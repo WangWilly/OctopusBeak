@@ -1085,15 +1085,9 @@ async function runPostStatements(
       throw error;
     }
     overrides.signal?.throwIfAborted();
-    indexPostCurrentDepositFinancialCaptures(financialCaptures);
+    const admittedCaptureFor = indexPostCurrentDepositFinancialCaptures(financialCaptures);
     for (const row of currentRows) {
-      const matching = financialCaptures.find((candidate) => {
-        const identity = candidate.identity;
-        return (
-          identity.stream === row.stream &&
-          (identity.sourceAccountKey ?? identity.accountNo) === row.sourceAccountKey
-        );
-      });
+      const matching = admittedCaptureFor(row);
       if (!matching)
         throw new Error(
           "Post current deposit snapshot contains an account without an existing admitted identity.",

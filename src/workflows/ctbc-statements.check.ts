@@ -204,14 +204,16 @@ assert.doesNotMatch(
   /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|deviceId/u,
 );
 
-const currentIdentityMap = indexCtbcCurrentDepositFinancialCaptures([
+const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures([
   existingIdentity,
 ]);
 assert.equal(
-  currentIdentityMap.get(
-    `sha256:ctbc-connection\u0000sha256:ctbc-epoch\u0000domestic-deposit\u0000${syntheticCtbcAccountNumber}`,
-  ),
+  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }),
   existingIdentity,
+);
+assert.equal(
+  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }),
+  undefined,
 );
 assert.throws(
   () =>
