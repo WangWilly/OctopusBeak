@@ -612,8 +612,14 @@ export function admitPostDomesticDepositFinancialCapture(
   const records: CanonicalFinancialDepositRecord[] = [];
   const rangeStart = input.capture.queryRange.startDate.replaceAll("/", "-");
   const rangeEnd = input.capture.queryRange.endDate.replaceAll("/", "-");
+  // iPost also returns rows posted the day before the requested start.
+  // That day is not proven complete, so its rows stay out of this range.
+  const providerExtraDay = new Date(Date.parse(`${rangeStart}T00:00:00Z`) - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
   for (const row of input.capture.response.rows) {
     const transactionDate = postIsoDate(row.values[1] ?? "");
+    if (transactionDate === providerExtraDay) continue;
     if (
       transactionDate &&
       (transactionDate < rangeStart || transactionDate > rangeEnd)

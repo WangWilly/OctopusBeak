@@ -530,6 +530,10 @@ assert.deepEqual(
   "a row posted before the requested start stays out of the complete-range capture",
 );
 assert.ok(
+  admitPostRangeRows(["1150419", "1150621"]).diagnostics.includes("row-outside-query-range"),
+  "a row posted two days before the requested start still blocks admission",
+);
+assert.ok(
   admitPostRangeRows(["1150621", "1151022"]).diagnostics.includes("row-outside-query-range"),
   "a row posted after the requested end still blocks admission",
 );
