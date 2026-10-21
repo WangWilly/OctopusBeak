@@ -1,0 +1,608 @@
+{
+  "executions": [
+    {
+      "options": {
+        "provider": "post",
+        "product": "financial"
+      },
+      "items": [
+        {
+          "provider": "post",
+          "product": "domestic-deposit",
+          "itemKey": "post-financial-post-source-5f04162076297bdc7b464f67-1790_3376_0000_0-0",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "post-financial-post-source-5f04162076297bdc7b464f67-1790_3376_0000_0-0",
+                "authorityRoute": "post/domestic-deposit/human-attested-v1",
+                "contractVersion": "human-attested-v1",
+                "identity": {
+                  "integrationNamespace": "post",
+                  "sourceConnectionKey": "sha256:k4C5cEd6QkDHORWElsH67n-QI1YsWEvYl9tFx6dzOFs",
+                  "identityEpochKey": "sha256:cG9zdC1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBwb3N0LWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjViMjY5OGM5OThmMTMzNTQ3NmZmMWQwYmM5MDA5Mjk0YWZkYmQxODU3NmZhNzI4YzIwYTA1NjNmY2RiMzBiZjQ",
+                  "stream": "domestic-deposit",
+                  "recordKind": "post-domestic-deposit",
+                  "subjectDigest": "sha256:PgY9iyMWIWBXbGEHABrfIFA9y3z270ScpVsq_a68XEw",
+                  "accountNo": "9999_0000_0000_01",
+                  "accountNumber": {
+                    "value": "9999_0000_0000_01",
+                    "kind": "depository-account",
+                    "evidenceVersion": "post/domestic-deposit/account-number-v1",
+                    "sourceField": "request.body._USER_ID"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T20:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-03-01",
+                  "endDate": "2026-09-24",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "accepted-range-terminal-http-200-nonempty-item",
+                  "completenessRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "absenceAuthority": null,
+                  "contractFingerprint": "sha256:Wf1hzeSXgllVKBv2tsYwZxnTQOSkpuJP3sb6tawXwbE",
+                  "preflightFingerprint": "sha256:jusSHLC6jtG8Ybd20nbeeOiKBFZKDLtWrjEs96u1Q44",
+                  "pageCount": 1,
+                  "withdrawalPolicy": "never-infer"
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "effectiveTimeBasis": "accounting",
+                  "effectiveTimeRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true,
+                  "providerGuaranteed": false,
+                  "occurrenceProviderGuaranteed": false
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 2,
+                    "responseDigest": "sha256:4cKYC_WRMkoQufM9YJDzmV8oVMLVEb6t1pcIDff66Tk",
+                    "proofKind": "accepted-range-terminal-http-200-nonempty-item",
+                    "contractFingerprint": "sha256:Wf1hzeSXgllVKBv2tsYwZxnTQOSkpuJP3sb6tawXwbE",
+                    "preflightFingerprint": "sha256:jusSHLC6jtG8Ybd20nbeeOiKBFZKDLtWrjEs96u1Q44",
+                    "metadataJson": "{\"itemShape\":\"array\",\"rowCount\":2,\"providerGuaranteed\":false,\"absenceAuthority\":null}"
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:VrIBupGDn72lok8rbX8rMy7UYqT9njvter3EWKT7YdQ",
+                    "collisionKey": "sha256:feaUpu3oXZdclYNCATINsxWQ2m0QRMfnvIlxke1rpik",
+                    "providerKey": "sha256:deA-xzTJvWznqTc-8YLRfyVPUDCVTbbAKeodCWrClOA",
+                    "contentHash": "sha256:4SJdx_3WwqF-JWs3edp28VzHIE4hMslR31_OnO6AbGU",
+                    "sequenceLexeme": "0",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:PgY9iyMWIWBXbGEHABrfIFA9y3z270ScpVsq_a68XEw\",\"accountingDate\":\"2026-08-03\",\"transactionDate\":\"2026-08-03\",\"transactionTime\":\"09:08:07\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"1234\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"5678\",\"scale\":0},\"descriptionDigest\":\"sha256:aAsXOjcad4ererLOzdPwWJKdE8BVZB30_zcpqzXDdQ0\",\"noteDigest\":\"sha256:Uo19y9hxSEXC_lcAGH4DIQ0trYSKEOS4kElVVw5ZVAA\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "1234",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "5678",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "Synthetic salary · synthetic note",
+                    "direction": "inflow",
+                    "sourceTime": {
+                      "localDate": "2026-08-03",
+                      "localTime": "09:08:07",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1785719287000
+                    },
+                    "effectiveOn": "2026-08-03",
+                    "transactionDateTimeLocal": "2026-08-03T09:08:07",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:lLJY6fMXLFB_lLji1bF4i-QP7Gom1A2e0FTwnSAVmcA",
+                      "fingerprint": "sha256:6BjsiJBdHmCtaTchEUB_aM306zzdQKj2X5_ixyikUjg",
+                      "partitionDate": "2026-08-03",
+                      "ordinal": 1
+                    }
+                  },
+                  {
+                    "occurrenceKey": "sha256:g8cZLC-h5HOJAkRhxFjm_cTniDFjhSdBEDzKfnYIN-w",
+                    "collisionKey": "sha256:JL6U6WQ4C-yy0v5uU-65dhbI8JmE-j7VqeXGOzB1ssI",
+                    "providerKey": "sha256:4z0dfwmMBuAF2fimFNCI6iyzV8z-BLqOPoYWDMcEgmk",
+                    "contentHash": "sha256:rR_lV4YNKaD8XHg7GNXrwjeFG3lrVbld7NZu5z_SKeQ",
+                    "sequenceLexeme": "1",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:PgY9iyMWIWBXbGEHABrfIFA9y3z270ScpVsq_a68XEw\",\"accountingDate\":\"2026-08-15\",\"transactionDate\":\"2026-08-15\",\"transactionTime\":\"13:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"800\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"4878\",\"scale\":0},\"descriptionDigest\":\"sha256:dHdSD5_FGiwz3dd8ie6x83wCrOOThOo_Y0If5ux5eM4\",\"noteDigest\":\"sha256:Uo19y9hxSEXC_lcAGH4DIQ0trYSKEOS4kElVVw5ZVAA\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "800",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "4878",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "Synthetic rent · synthetic note",
+                    "direction": "outflow",
+                    "sourceTime": {
+                      "localDate": "2026-08-15",
+                      "localTime": "13:00:00",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1786770000000
+                    },
+                    "effectiveOn": "2026-08-15",
+                    "transactionDateTimeLocal": "2026-08-15T13:00:00",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:lLJY6fMXLFB_lLji1bF4i-QP7Gom1A2e0FTwnSAVmcA",
+                      "fingerprint": "sha256:_EZfp1jUp2bPKBSwJTGTwkj9Qe3JDNJnOEauLnIQ-dA",
+                      "partitionDate": "2026-08-15",
+                      "ordinal": 1
+                    }
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:lLJY6fMXLFB_lLji1bF4i-QP7Gom1A2e0FTwnSAVmcA",
+                    "startDate": "2026-03-01",
+                    "endDate": "2026-09-24",
+                    "contractVersion": "human-attested-v1"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "provider": "post",
+          "product": "domestic-deposit",
+          "itemKey": "post-financial-post-source-dd5076b3ddec5617f4ef7f38-1790_3376_0000_0-1",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "post-financial-post-source-dd5076b3ddec5617f4ef7f38-1790_3376_0000_0-1",
+                "authorityRoute": "post/domestic-deposit/human-attested-v1",
+                "contractVersion": "human-attested-v1",
+                "identity": {
+                  "integrationNamespace": "post",
+                  "sourceConnectionKey": "sha256:k4C5cEd6QkDHORWElsH67n-QI1YsWEvYl9tFx6dzOFs",
+                  "identityEpochKey": "sha256:cG9zdC1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBwb3N0LWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjViMjY5OGM5OThmMTMzNTQ3NmZmMWQwYmM5MDA5Mjk0YWZkYmQxODU3NmZhNzI4YzIwYTA1NjNmY2RiMzBiZjQ",
+                  "stream": "domestic-deposit",
+                  "recordKind": "post-domestic-deposit",
+                  "subjectDigest": "sha256:sQMp3KOrl1eYS8pQ8i1GxJ-WxjAuyOOPgT3oa1_tNlY",
+                  "accountNo": "9999_0000_0000_02",
+                  "accountNumber": {
+                    "value": "9999_0000_0000_02",
+                    "kind": "depository-account",
+                    "evidenceVersion": "post/domestic-deposit/account-number-v1",
+                    "sourceField": "request.body._USER_ID"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T20:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-03-01",
+                  "endDate": "2026-09-24",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "accepted-range-terminal-http-200-nonempty-item",
+                  "completenessRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "absenceAuthority": null,
+                  "contractFingerprint": "sha256:Wf1hzeSXgllVKBv2tsYwZxnTQOSkpuJP3sb6tawXwbE",
+                  "preflightFingerprint": "sha256:mjjGcAvaNYqF80kdX42OHc-Fnt06vcYlV8AW1SapPPI",
+                  "pageCount": 1,
+                  "withdrawalPolicy": "never-infer"
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "effectiveTimeBasis": "accounting",
+                  "effectiveTimeRuleVersion": "post/domestic-deposit/human-attested-v1",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true,
+                  "providerGuaranteed": false,
+                  "occurrenceProviderGuaranteed": false
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 2,
+                    "responseDigest": "sha256:zn4MPT_AAT5lbJGAOgqIuFk4ZtOZAZaa1-Cdvd_RE4c",
+                    "proofKind": "accepted-range-terminal-http-200-nonempty-item",
+                    "contractFingerprint": "sha256:Wf1hzeSXgllVKBv2tsYwZxnTQOSkpuJP3sb6tawXwbE",
+                    "preflightFingerprint": "sha256:mjjGcAvaNYqF80kdX42OHc-Fnt06vcYlV8AW1SapPPI",
+                    "metadataJson": "{\"itemShape\":\"array\",\"rowCount\":2,\"providerGuaranteed\":false,\"absenceAuthority\":null}"
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:12O-lnGx1wTobDHThU4LqfJOg10H2gAGTvG8WDOQzH4",
+                    "collisionKey": "sha256:m4ZoE7QqK_XL4VAOtFA4626o57DDSVQdl_r2GJlTrBY",
+                    "providerKey": "sha256:a7swM_5p8jMfB4vrMtZ_irmSdyUu9nt7e9LBMYx6NPs",
+                    "contentHash": "sha256:4XsJSe7fRY2QGRzQAuRojpb7p8mv19r6IMRH0ghHhQc",
+                    "sequenceLexeme": "0",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:sQMp3KOrl1eYS8pQ8i1GxJ-WxjAuyOOPgT3oa1_tNlY\",\"accountingDate\":\"2026-07-20\",\"transactionDate\":\"2026-07-20\",\"transactionTime\":\"08:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"300\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"700\",\"scale\":0},\"descriptionDigest\":\"sha256:ylE04mx--u24wYzAK0mk2l6kSjJXWqKq1mYM1Zdmz2Q\",\"noteDigest\":\"sha256:Uo19y9hxSEXC_lcAGH4DIQ0trYSKEOS4kElVVw5ZVAA\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "300",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "700",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "Synthetic card payment · synthetic note",
+                    "direction": "outflow",
+                    "sourceTime": {
+                      "localDate": "2026-07-20",
+                      "localTime": "08:00:00",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1784505600000
+                    },
+                    "effectiveOn": "2026-07-20",
+                    "transactionDateTimeLocal": "2026-07-20T08:00:00",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:3sw7KDH7UTJodml30oPvGMXogUV3MHDncNVQbHPmt8o",
+                      "fingerprint": "sha256:EocWN7nbDuJI_d7xbJTWvnA3E2u8P9yslppJXQCuqkk",
+                      "partitionDate": "2026-07-20",
+                      "ordinal": 1
+                    }
+                  },
+                  {
+                    "occurrenceKey": "sha256:QpAdDVuc2R7HD8UacDNZ02T9vh_QbFx-sxCdhRd9XE8",
+                    "collisionKey": "sha256:S_QIFYgrSK84eUzX1HU4IJM1UFUdOnXoMPzTpRwpZEk",
+                    "providerKey": "sha256:TgMe93j-i--7sWclItaQrtOWWFy3VOVZIZwkp-KgeW4",
+                    "contentHash": "sha256:AZiEyMABLToTrmZSePC9qszvz3QS6qzoEO1g-L5qPaQ",
+                    "sequenceLexeme": "1",
+                    "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:sQMp3KOrl1eYS8pQ8i1GxJ-WxjAuyOOPgT3oa1_tNlY\",\"accountingDate\":\"2026-09-21\",\"transactionDate\":\"2026-09-21\",\"transactionTime\":\"18:30:45\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"50\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"750\",\"scale\":0},\"descriptionDigest\":\"sha256:i52cGDH06mmjtnIHYj0JNfkEmj6LHfrqQ3wUFE5EJ4M\",\"noteDigest\":\"sha256:Uo19y9hxSEXC_lcAGH4DIQ0trYSKEOS4kElVVw5ZVAA\",\"providerGuaranteed\":false}",
+                    "amount": {
+                      "coefficient": "50",
+                      "scale": 0
+                    },
+                    "balanceAfter": {
+                      "coefficient": "750",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "Synthetic refund · synthetic note",
+                    "direction": "inflow",
+                    "sourceTime": {
+                      "localDate": "2026-09-21",
+                      "localTime": "18:30:45",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1789986645000
+                    },
+                    "effectiveOn": "2026-09-21",
+                    "transactionDateTimeLocal": "2026-09-21T18:30:45",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:3sw7KDH7UTJodml30oPvGMXogUV3MHDncNVQbHPmt8o",
+                      "fingerprint": "sha256:AE-iw5IqeVvvX6ZFojGnE-8f17VzCfFm0qiBTfOOQzw",
+                      "partitionDate": "2026-09-21",
+                      "ordinal": 1
+                    }
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:3sw7KDH7UTJodml30oPvGMXogUV3MHDncNVQbHPmt8o",
+                    "startDate": "2026-03-01",
+                    "endDate": "2026-09-24",
+                    "contractVersion": "human-attested-v1"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "provider": "post",
+          "product": "current-balance",
+          "itemKey": "current-balance:9999_0000_0000_01",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "post-current-uuid-1",
+                "integrationNamespace": "post",
+                "sourceConnectionKey": "sha256:k4C5cEd6QkDHORWElsH67n-QI1YsWEvYl9tFx6dzOFs",
+                "identityEpoch": "sha256:cG9zdC1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBwb3N0LWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjViMjY5OGM5OThmMTMzNTQ3NmZmMWQwYmM5MDA5Mjk0YWZkYmQxODU3NmZhNzI4YzIwYTA1NjNmY2RiMzBiZjQ",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "post/domestic-deposit/current-balance-v1",
+                "contractVersion": "post/current-deposit-balance-v1",
+                "subjectDigest": "sha256:PgY9iyMWIWBXbGEHABrfIFA9y3z270ScpVsq_a68XEw",
+                "observedAt": "2026-09-25T20:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "post/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "contractFingerprint": "sha256:917uyR_LPTl4k2cETpyoPuWn_vecUHW2qVVsrXZ17Jk",
+                  "preflightFingerprint": "sha256:IwUX1cGJGUqWEbuA1MxkelumdElhiue9L67rR9SlHfU",
+                  "sourceAccountKey": "9999_0000_0000_01"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "source": "post-current-deposit-overview",
+                      "endpoint": "/pst/EsoafDispatcher",
+                      "txnCode": "EB100103",
+                      "bizCode": "getOverViewById",
+                      "pageCount": 50,
+                      "accountNumber": "9999_0000_0000_01",
+                      "balanceSourceLexeme": "4878",
+                      "effectiveAt": "2026-09-25T11:59:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "contractVersion": "post/current-deposit-balance-v1",
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:6pP3PAk1VoxIzgOQ-T2Cv5yu5Npbq6hGp2-OJCT6aco",
+                    "collisionKey": "sha256:6pP3PAk1VoxIzgOQ-T2Cv5yu5Npbq6hGp2-OJCT6aco",
+                    "providerKey": "sha256:Xb6eGbFdiYDlYa3tcoBktrUXF_jbZTjWCWWDKEIiHjU",
+                    "contentHash": "sha256:qHIufecCd3jxMwgwMYmTJegk1GXyeEyCSlSv-Md6nK4",
+                    "compact": {
+                      "source": "post",
+                      "accountNumber": "9999_0000_0000_01",
+                      "sourceAccountKey": "9999_0000_0000_01",
+                      "currency": "TWD",
+                      "balanceSourceLexeme": "4878",
+                      "effectiveAt": "2026-09-25T11:59:00.000000000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/pst/EsoafDispatcher",
+                        "status": 200,
+                        "contentType": "application/json; charset=UTF-8",
+                        "cacheControl": "no-store",
+                        "txnCode": "EB100103",
+                        "bizCode": "getOverViewById",
+                        "pageCount": 50,
+                        "contractVersion": "post/current-deposit-balance-v1"
+                      },
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceField": "BAL",
+                      "balanceKind": "ledger",
+                      "value": {
+                        "coefficient": "4878",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:6pP3PAk1VoxIzgOQ-T2Cv5yu5Npbq6hGp2-OJCT6aco",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9999_0000_0000_01",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:lfYG4ssZSyZ73nCFx7XjnFl3xo4FEWZ44VAAb4UFJWA",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "4878",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T11:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "post/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:6pP3PAk1VoxIzgOQ-T2Cv5yu5Npbq6hGp2-OJCT6aco",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                  "evidenceContractVersion": "post/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:6pP3PAk1VoxIzgOQ-T2Cv5yu5Npbq6hGp2-OJCT6aco",
+                  "evidenceEndpoint": "https://ipost.post.gov.tw/pst/EsoafDispatcher",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "provider": "post",
+          "product": "current-balance",
+          "itemKey": "current-balance:9999_0000_0000_02",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "post-current-uuid-2",
+                "integrationNamespace": "post",
+                "sourceConnectionKey": "sha256:k4C5cEd6QkDHORWElsH67n-QI1YsWEvYl9tFx6dzOFs",
+                "identityEpoch": "sha256:cG9zdC1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBwb3N0LWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjViMjY5OGM5OThmMTMzNTQ3NmZmMWQwYmM5MDA5Mjk0YWZkYmQxODU3NmZhNzI4YzIwYTA1NjNmY2RiMzBiZjQ",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "post/domestic-deposit/current-balance-v1",
+                "contractVersion": "post/current-deposit-balance-v1",
+                "subjectDigest": "sha256:sQMp3KOrl1eYS8pQ8i1GxJ-WxjAuyOOPgT3oa1_tNlY",
+                "observedAt": "2026-09-25T20:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "post/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "contractFingerprint": "sha256:917uyR_LPTl4k2cETpyoPuWn_vecUHW2qVVsrXZ17Jk",
+                  "preflightFingerprint": "sha256:skeel2-PBSYbTNrJr5qBfIx5p_t8Q-A2NZAELVcWKYI",
+                  "sourceAccountKey": "9999_0000_0000_02"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "source": "post-current-deposit-overview",
+                      "endpoint": "/pst/EsoafDispatcher",
+                      "txnCode": "EB100103",
+                      "bizCode": "getOverViewById",
+                      "pageCount": 50,
+                      "accountNumber": "9999_0000_0000_02",
+                      "balanceSourceLexeme": "750",
+                      "effectiveAt": "2026-09-25T11:59:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "contractVersion": "post/current-deposit-balance-v1",
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:fqHiopD93EypGip61Zj1zf9SZekXYgRSkKEn_6cM914",
+                    "collisionKey": "sha256:fqHiopD93EypGip61Zj1zf9SZekXYgRSkKEn_6cM914",
+                    "providerKey": "sha256:ZWVf1WOxf9jnf3vXLJaaog1_b8kGPJZZWHCs6q7OqlQ",
+                    "contentHash": "sha256:la_XW-8FVOXsAUnTYozdVyg8NqTylVpCaxurg3Sa9kY",
+                    "compact": {
+                      "source": "post",
+                      "accountNumber": "9999_0000_0000_02",
+                      "sourceAccountKey": "9999_0000_0000_02",
+                      "currency": "TWD",
+                      "balanceSourceLexeme": "750",
+                      "effectiveAt": "2026-09-25T11:59:00.000000000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/pst/EsoafDispatcher",
+                        "status": 200,
+                        "contentType": "application/json; charset=UTF-8",
+                        "cacheControl": "no-store",
+                        "txnCode": "EB100103",
+                        "bizCode": "getOverViewById",
+                        "pageCount": 50,
+                        "contractVersion": "post/current-deposit-balance-v1"
+                      },
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceField": "BAL",
+                      "balanceKind": "ledger",
+                      "value": {
+                        "coefficient": "750",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:fqHiopD93EypGip61Zj1zf9SZekXYgRSkKEn_6cM914",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9999_0000_0000_02",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:m2cOvGhifMtNrvHwn0hazTFw-q-P4ISNSRtMArtl3FU",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "750",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T11:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "post/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:fqHiopD93EypGip61Zj1zf9SZekXYgRSkKEn_6cM914",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                  "evidenceContractVersion": "post/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:fqHiopD93EypGip61Zj1zf9SZekXYgRSkKEn_6cM914",
+                  "evidenceEndpoint": "https://ipost.post.gov.tw/pst/EsoafDispatcher",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "authentication",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "validation",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-started",
+      "counts": {
+        "completed": 0,
+        "total": 4
+      }
+    },
+    {
+      "stage": "commit",
+      "code": "canonical-commit-completed",
+      "counts": {
+        "completed": 4,
+        "total": 4
+      }
+    }
+  ]
+}
