@@ -10,8 +10,8 @@ The banks looked alike from outside: 750 to 2,100 lines each, the same four stag
 
 - **Occurrence key fields.** CTBC and Post hash description and note. Yuanta adds a check number. HNCB adds depositor and reference. SinoPac hashes three raw columns. Fubon hashes the fence and the content hash.
 - **Fence fields.** Fubon also includes the attestation ID, evidence version, currency, and a combined date-time.
-- **Record body.** The compact JSON uses `subjectDigest` or `accountDigest`, carries different extra digests, and SinoPac serializes it with a stable key order. `effectiveOn` is the accounting date for CTBC and Post but the transaction date for HNCB and SinoPac. Occurrence groups partition by `effectiveOn` for CTBC, by the local transaction date for Post and HNCB, and by the accounting date for Yuanta.
-- **Capture semantics.** SinoPac's effective time is the transaction time at minute precision. The others use the accounting date at second precision. HNCB, Yuanta, and Fubon carry their semantics in their own objects.
+- **Record body.** The compact JSON uses `subjectDigest` or `accountDigest`, carries different extra digests, and SinoPac serializes it with a stable key order. `effectiveOn` is the accounting date for CTBC and Post but the transaction date for HNCB and SinoPac. Occurrence groups partition by `effectiveOn` for CTBC, by the local transaction date for Post, HNCB, and Fubon, and by the accounting date for Yuanta and SinoPac.
+- **Capture semantics.** CTBC and Post take the effective time from the accounting date. HNCB, Yuanta, and Fubon take it from the transaction time and carry their semantics in their own objects. All five use second precision. SinoPac also uses the transaction time, but at minute precision.
 - **Orchestration.** CTBC, Post, HNCB, and SinoPac run their stages inline. Yuanta and Fubon run through `collectSelectedProducts`, with different event codes that runtime suffix regexes and the dashboard consume.
 
 An adapter would have to pass every one of these as a parameter. Its interface would be as wide as the code it replaced, so deleting the module would only move that code back into each bank.
