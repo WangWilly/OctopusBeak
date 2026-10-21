@@ -41,7 +41,7 @@ type Cells = [date: string, time: string, memo: string, outflow: string, inflow:
 type DepositStubs = Pick<
   FubonStatementsRunDependencies,
   "readDepositAccountOptions" | "fetchDepositStatement" | "readCurrentDepositBalances"
->;
+> & Partial<Pick<FubonStatementsRunDependencies, "accountIdentityContinuity">>;
 
 function option(value: string, label: string, branchName: string): FubonDepositAccountOptionEvidence {
   const accountNumber = deriveFubonDomesticDepositAccountNumberEvidence({ value, label });
@@ -184,7 +184,7 @@ async function runGolden(name: string, stubs: DepositStubs, dateRanges: readonly
     startSessionKeepAlive: () => () => undefined,
     collectDeposit,
   });
-  await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...(recorder.recorded() as object) }));
+  await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...recorder.recorded() }));
 }
 
 const CAPTURE_CLOCK = /(?<=fubon-(?:financial|source)-)\d{13}(?=-)/gu;
@@ -319,4 +319,30 @@ test("a USD-coded composite account that does not reconcile stays source-only", 
     [primary.value, primaryStatement],
     [usdCoded.value, statement(usdCoded, pages(usdCoded, secondRows))],
   ]), [primaryBalance, balance(secondNumber, "013", "4999", "4999"), balance(secondNumber, "013", "864213", "864213", "USD")]));
+});
+
+test("an account continued from an earlier identity commits under its prior source account key", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
+  await runGolden("fubon-continued-identity", {
+    ...stubs(new Map([
+      [primary.value, primaryStatement],
+      [second.value, statement(second, pages(second, secondRows))],
+    ]), [primaryBalance, secondBalance]),
+    accountIdentityContinuity: async ({ identifier }) => identifier.value === secondNumber
+      ? { status: "continued", sourceAccountKey: "sha256:synthetic-prior-fubon-account" }
+      : { status: "unseen" },
+  });
+});
+
+test("an account matching several earlier identities is excluded to source-only evidence", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
+  await runGolden("fubon-ambiguous-identity", {
+    ...stubs(new Map([
+      [primary.value, primaryStatement],
+      [second.value, statement(second, pages(second, secondRows))],
+    ]), [primaryBalance, secondBalance]),
+    accountIdentityContinuity: async ({ identifier }) => identifier.value === secondNumber
+      ? { status: "ambiguous", accountCount: 2 }
+      : { status: "unseen" },
+  });
 });
