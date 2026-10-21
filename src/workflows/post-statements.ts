@@ -33,6 +33,7 @@ import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
+import { withAbort } from "./abort.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
@@ -450,23 +451,23 @@ export async function dismissPostNoticeIfPresent(
   const closeButton = closeButtons.first();
   // isVisible ignores its timeout; iPost opens this notice about a second
   // after the login form, over the CAPTCHA image.
-  const appeared = await waitForSignal(
+  const appeared = await withAbort(
     closeButton.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false),
     signal,
   );
-  if (!appeared || !(await waitForSignal(closeButton.isVisible().catch(() => false), signal))) {
+  if (!appeared || !(await withAbort(closeButton.isVisible().catch(() => false), signal))) {
     return false;
   }
 
   try {
-    await waitForSignal(closeButton.click({ timeout: 2_000 }), signal);
+    await withAbort(closeButton.click({ timeout: 2_000 }), signal);
   } catch (error) {
     signal?.throwIfAborted();
     const remainingVisibleButtons = await closeButtons.count().catch(() => 1);
     if (remainingVisibleButtons > 0) throw error;
     return false;
   }
-  await waitForSignal(page.waitForTimeout(250), signal);
+  await withAbort(page.waitForTimeout(250), signal);
   return true;
 }
 
@@ -491,23 +492,23 @@ async function signInPostWithAssistance(
   const { cifId, userCode, password } = postLoginFieldValues(credentials);
   signal.throwIfAborted();
   if (!postLoginEntryUrl(page.url()))
-    await waitForSignal(
+    await withAbort(
       page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
       signal,
     );
-  await waitForSignal(
+  await withAbort(
     page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }),
     signal,
   );
   await dismissPostNoticeIfPresent(page, signal);
-  await waitForSignal(page.locator("#cifID").fill(cifId), signal);
-  await waitForSignal(page.locator("#userID_1_Input").fill(userCode), signal);
-  await waitForSignal(page.locator("#userPWD_1_Input").fill(password), signal);
+  await withAbort(page.locator("#cifID").fill(cifId), signal);
+  await withAbort(page.locator("#userID_1_Input").fill(userCode), signal);
+  await withAbort(page.locator("#userPWD_1_Input").fill(password), signal);
   await dismissPostNoticeIfPresent(page, signal);
   const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
-  await waitForSignal(captchaInput.focus(), signal);
+  await withAbort(captchaInput.focus(), signal);
   const assistanceUrl = page.url();
-  const assistedCaptchaElement = await waitForSignal(
+  const assistedCaptchaElement = await withAbort(
     captchaInput.elementHandle(),
     signal,
   );
@@ -523,7 +524,7 @@ async function signInPostWithAssistance(
     signal.throwIfAborted();
     if (await isSignedIn(page)) return;
     const currentCaptchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
-    const sameCaptchaElement = await waitForSignal(
+    const sameCaptchaElement = await withAbort(
       currentCaptchaInput
         .evaluate(
           (current, assisted) => current === assisted,
@@ -536,7 +537,7 @@ async function signInPostWithAssistance(
       throw new Error(
         "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
       );
-    const currentCaptchaValue = await waitForSignal(
+    const currentCaptchaValue = await withAbort(
       currentCaptchaInput.inputValue(),
       signal,
     );
@@ -574,15 +575,15 @@ async function openDetailPageWithSignal(
   index: number,
   signal?: AbortSignal,
 ): Promise<void> {
-  await waitForSignal(page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }), signal);
-  await waitForSignal(
+  await withAbort(page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }), signal);
+  await withAbort(
     visibleDetailLinks(page)
       .first()
       .waitFor({ state: "visible", timeout: 60_000 }),
     signal,
   );
-  await waitForSignal(visibleDetailLinks(page).nth(index).click(), signal);
-  await waitForSignal(
+  await withAbort(visibleDetailLinks(page).nth(index).click(), signal);
+  await withAbort(
     sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000 }),
     signal,
   );
@@ -617,29 +618,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function waitForSignal<T>(
-  operation: Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  if (!signal) return await operation;
-  signal.throwIfAborted();
-  let abortListener: (() => void) | undefined;
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    abortListener = () => reject(
-      signal.reason instanceof Error
-        ? signal.reason
-        : new Error("Post workflow was cancelled."),
-    );
-    signal.addEventListener("abort", abortListener, { once: true });
-    if (signal.aborted) abortListener();
-  });
-  void operation.catch(() => undefined);
-  try {
-    return await Promise.race([operation, cancelled]);
-  } finally {
-    if (abortListener) signal.removeEventListener("abort", abortListener);
-  }
-}
 
 export function parsePostStatementResponse(input: Readonly<{
   bytes: Uint8Array;
@@ -745,8 +723,8 @@ async function queryCurrentStatement(
   text: SourceTextPort = strictSourceText,
   signal?: AbortSignal,
 ) {
-  if (!(await waitForSignal(sixMonthDateInput(page).isChecked(), signal))) {
-    await waitForSignal(sixMonthDateLabel(page).click(), signal);
+  if (!(await withAbort(sixMonthDateInput(page).isChecked(), signal))) {
+    await withAbort(sixMonthDateLabel(page).click(), signal);
   }
   const responsePromise = page.waitForResponse(
     isEsoafResponse("EB100200", "inquire"),
@@ -754,7 +732,7 @@ async function queryCurrentStatement(
   );
   void responsePromise.catch(() => undefined);
   signal?.throwIfAborted();
-  await waitForSignal(
+  await withAbort(
     page
       .locator("a.css_btn_class:visible")
       .filter({ hasText: "查詢" })
@@ -762,10 +740,10 @@ async function queryCurrentStatement(
       .click(),
     signal,
   );
-  const response = await waitForSignal(responsePromise, signal);
+  const response = await withAbort(responsePromise, signal);
   signal?.throwIfAborted();
   const [body, headers] = await Promise.all([
-    waitForSignal(response.body(), signal),
+    withAbort(response.body(), signal),
     response.allHeaders(),
   ]);
   return parsePostStatementResponse({
@@ -788,17 +766,17 @@ async function collectPostStatementSources(
   event?: WorkflowContext["event"],
 ): Promise<PostQueriedStatement[]> {
   signal?.throwIfAborted();
-  await waitForSignal(
+  await withAbort(
     page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }),
     signal,
   );
-  await waitForSignal(
+  await withAbort(
     visibleDetailLinks(page)
       .first()
       .waitFor({ state: "visible", timeout: 60_000 }),
     signal,
   );
-  const accountCount = await waitForSignal(visibleDetailLinks(page).count(), signal);
+  const accountCount = await withAbort(visibleDetailLinks(page).count(), signal);
   if (accountCount === 0)
     throw new Error("No Post accounts are visible in the authenticated session.");
   await event?.("collection", "collection-started", {
@@ -887,7 +865,7 @@ async function readPostCurrentDepositBalancesWithText(
     currentUrl?.origin !== pageUrl.origin ||
     currentUrl.pathname !== pageUrl.pathname
   ) {
-    await waitForSignal(
+    await withAbort(
       page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
         waitUntil: "domcontentloaded",
         timeout: timeoutMs,
@@ -897,7 +875,7 @@ async function readPostCurrentDepositBalancesWithText(
   }
   signal.throwIfAborted();
   const overview = page.getByText("資產總覽", { exact: true }).first();
-  await waitForSignal(
+  await withAbort(
     overview.waitFor({ state: "visible", timeout: timeoutMs }),
     signal,
   );
@@ -906,10 +884,10 @@ async function readPostCurrentDepositBalancesWithText(
   });
   void responsePromise.catch(() => undefined);
   signal.throwIfAborted();
-  await waitForSignal(overview.click(), signal);
-  const response = await waitForSignal(responsePromise, signal);
+  await withAbort(overview.click(), signal);
+  const response = await withAbort(responsePromise, signal);
   const [body, headers] = await Promise.all([
-    waitForSignal(response.body(), signal),
+    withAbort(response.body(), signal),
     response.allHeaders(),
   ]);
   const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
@@ -1152,7 +1130,7 @@ export async function runPostProviderWorkflow(
   await context.event("authentication", "authentication-started");
 
   return await context.browser.withPage(async (page) => {
-    await waitForSignal(
+    await withAbort(
       page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
       context.signal,
     );
