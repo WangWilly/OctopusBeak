@@ -1814,25 +1814,6 @@ async function collectAndCommitSinopacStatements(
       });
       throw new Error("SinoPac financial capture is missing.");
     }
-    const occurrenceKeys = new Set<string>();
-    const collisionKeys = new Map<string, string>();
-    const ambiguous = financialCapture.records.some((record) => {
-      if (occurrenceKeys.has(record.occurrenceKey)) return true;
-      occurrenceKeys.add(record.occurrenceKey);
-      if (record.collisionKey) {
-        const prior = collisionKeys.get(record.collisionKey);
-        if (prior && prior !== record.occurrenceKey) return true;
-        collisionKeys.set(record.collisionKey, record.occurrenceKey);
-      }
-      return false;
-    });
-    if (ambiguous) {
-      items.push({
-        provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
-        command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
-      });
-      continue;
-    }
     items.push({
       provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
       command: {
