@@ -136,50 +136,6 @@ export type YuantaDomesticDepositCaptureDiagnostic =
   | "terminal-evidence-missing"
   | "provenance-invalid";
 
-export type YuantaDomesticDepositTelemetryRow = {
-  rowOrdinal: number;
-  rowFingerprint: `sha256:${string}`;
-  cellDigests: `sha256:${string}`[];
-  cellCount: 11;
-  amountShape: "inflow" | "outflow" | "empty" | "invalid" | "conflict";
-  /**
-   * Privacy-safe direction-column diagnostics.  These categories describe
-   * syntax only; they never include the observed amount lexeme.
-   */
-  amountClasses: {
-    outflow: "empty" | "valid-zero" | "valid-nonzero" | "invalid";
-    inflow: "empty" | "valid-zero" | "valid-nonzero" | "invalid";
-  };
-};
-
-export type YuantaDomesticDepositTelemetryManifest = {
-  telemetryVersion: typeof YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION;
-  evidenceVersion: typeof YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
-  source: "yuanta";
-  observedAt: string;
-  account: {
-    valueDigest: `sha256:${string}`;
-    labelDigest: `sha256:${string}`;
-  };
-  queryRange: {
-    dateRange: string;
-    startDate: string;
-    endDate: string;
-  };
-  downloads: {
-    filenameDigest: `sha256:${string}`;
-    byteLength: number;
-    contentDigest: `sha256:${string}`;
-    columnNames: string[];
-    columnCount: 11;
-    rowCount: number;
-    rows: YuantaDomesticDepositTelemetryRow[];
-  }[];
-  /** This boundary records source observation only; it cannot admit finance. */
-  canonicalAdmission: "blocked";
-  sourceStage: "telemetry-only";
-};
-
 const VALIDATED_YUANTA_EVIDENCE = new WeakSet<object>();
 
 function yuantaDigest(
@@ -262,12 +218,12 @@ function validSourceAmount(value: string): boolean {
   );
 }
 
-type YuantaDomesticDepositTelemetryAmountClass =
+type YuantaSourceAmountClass =
   "empty" | "valid-zero" | "valid-nonzero" | "invalid";
 
 function sourceAmountCellClass(
   value: unknown,
-): YuantaDomesticDepositTelemetryAmountClass {
+): YuantaSourceAmountClass {
   const normalized = normalizedCell(value);
   if (!normalized) return "empty";
   if (!validSourceAmount(normalized)) return "invalid";
@@ -277,7 +233,7 @@ function sourceAmountCellClass(
 
 function sourceAmountShape(
   cells: readonly string[],
-): YuantaDomesticDepositTelemetryRow["amountShape"] {
+): "inflow" | "outflow" | "empty" | "invalid" | "conflict" {
   const outflowClass = sourceAmountCellClass(cells[6]);
   const inflowClass = sourceAmountCellClass(cells[7]);
   if (outflowClass === "invalid" || inflowClass === "invalid") return "invalid";
@@ -465,70 +421,6 @@ export function isAdmittedYuantaDomesticDepositCaptureEvidence(
 }
 
 /**
- * Redact one admitted source capture for workflow output. The input may carry
- * account selectors and CSV cells transiently, but this return value contains
- * only opaque digests, fixed column names, row ordinals, and shape metadata.
- * No financial admission or canonical writer is reachable from this seam.
- */
-export function createYuantaDomesticDepositTelemetryManifest(
-  capture: YuantaDomesticDepositValidatedEvidence,
-): YuantaDomesticDepositTelemetryManifest {
-  if (!isAdmittedYuantaDomesticDepositCaptureEvidence(capture))
-    throw new Error("Yuanta telemetry requires structural source admission.");
-
-  return {
-    telemetryVersion: YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
-    evidenceVersion: capture.evidenceVersion,
-    source: "yuanta",
-    observedAt: capture.observedAt,
-    account: {
-      valueDigest: yuantaDigest(
-        "yuanta-telemetry-account-value-v1",
-        capture.account.value,
-      ),
-      labelDigest: yuantaDigest(
-        "yuanta-telemetry-account-label-v1",
-        capture.account.label,
-      ),
-    },
-    queryRange: { ...capture.queryRange },
-    downloads: capture.downloads.map((download) => ({
-      filenameDigest: yuantaDigest(
-        "yuanta-telemetry-filename-v1",
-        download.filename,
-      ),
-      byteLength: download.byteLength,
-      contentDigest: download.contentDigest,
-      columnNames: [...YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES],
-      columnCount: 11,
-      rowCount: download.rows.length,
-      rows: download.rows.map((row) => {
-        const cells = row.values.map(normalizedCell);
-        return {
-          rowOrdinal: row.rowOrdinal,
-          rowFingerprint: yuantaDigest(
-            "yuanta-telemetry-row-v1",
-            String(row.rowOrdinal),
-            ...cells,
-          ),
-          cellDigests: cells.map((cell) =>
-            yuantaDigest("yuanta-telemetry-cell-v1", cell),
-          ),
-          cellCount: 11,
-          amountShape: sourceAmountShape(cells),
-          amountClasses: {
-            outflow: sourceAmountCellClass(cells[6]),
-            inflow: sourceAmountCellClass(cells[7]),
-          },
-        };
-      }),
-    })),
-    canonicalAdmission: "blocked",
-    sourceStage: "telemetry-only",
-  };
-}
-
-/**
  * Convert the validated CSV boundary into de-identified durable source
  * evidence. Raw account values, labels, descriptions, notes, amounts and
  * downloaded bytes never enter the source ledger; only scoped digests and
@@ -690,13 +582,6 @@ export type YuantaDomesticDepositAccountNumberEvidence = Readonly<{
   sourceField: "#acctno option.value";
 }>;
 
-/** Legacy v1 identifiers remain available for read-only compatibility tests. */
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_ROUTE =
-  "yuanta/domestic-deposit/capture-evidence-v1" as const;
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RECORD_KIND =
-  "yuanta-domestic-deposit-capture-evidence" as const;
-export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RULE_VERSION =
-  "yuanta/domestic-deposit/capture-evidence-v1/terminal-download" as const;
 
 export type YuantaDomesticDepositAccountIdentity = {
   accountNo: string;
