@@ -281,7 +281,8 @@ test("records carry only a ****dddd card mask, the institution, and the latest s
     assert.deepEqual(source((record) => record.transaction?.transactionId === plain), { institution: "fubon", cardMask: null, billingPeriod: null });
     assert.equal(source((record) => record.invoice?.invoiceId === invoiceOnly && record.basis === "invoice"), null);
     assert.deepEqual(source((record) => record.basis === "linked"), { institution: "fubon", cardMask: "****7788", billingPeriod: null });
-    const wire = JSON.stringify(page);
+    // Random record IDs can contain "4311-" by chance, so only non-ID text is searched.
+    const wire = JSON.stringify(page).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<id>");
     for (const leak of ["4311-", "43111234", "leakytoken", "fixture-instrument"])
       assert.equal(wire.includes(leak), false, `the record page must not carry ${leak}`);
   } finally {
