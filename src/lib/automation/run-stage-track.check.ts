@@ -97,3 +97,25 @@ test("a retried run judges each stage by its latest attempt", () => {
   assert.deepEqual(states(track), ["done", "done", "done", "pending", "pending", "pending", "done"]);
   assert.equal(track[1].lastEvent?.code, "authentication-completed");
 });
+
+test("a run that failed or was cancelled marks the stage it stopped in, not just finalization", () => {
+  const stopped = [
+    event("preparation", "run-started"),
+    event("authentication", "authentication-completed"),
+    event("collection", "collection-started"),
+  ];
+  const failed = runStageTrack([...stopped, event("finalization", "run-failed")], "failed", null);
+  assert.deepEqual(states(failed), ["done", "done", "failed", "pending", "pending", "pending", "failed"]);
+  const cancelled = runStageTrack([...stopped, event("finalization", "run-cancelled")], "cancelled", null);
+  assert.deepEqual(states(cancelled), ["done", "done", "failed", "pending", "pending", "pending", "warning"]);
+});
+
+test("stages before the first kept event count as done when older events were dropped", () => {
+  const track = runStageTrack(
+    [event("collection", "account-collected"), event("commit", "canonical-commit-completed"), event("finalization", "run-completed")],
+    "completed",
+    null,
+  );
+  assert.deepEqual(states(track), ["done", "done", "done", "pending", "pending", "done", "done"]);
+  assert.equal(track[0].lastEvent, null);
+});
