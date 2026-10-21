@@ -491,6 +491,67 @@ assert.deepEqual(
 );
 assert.equal(repeatedPostFinancialCapture.capture!.occurrenceGroupCoverage?.length, 1);
 
+function admitPostRangeRows(postingDates: string[], startDate = "2026/04/21") {
+  const evidence = admitPostDomesticDepositCaptureEvidence(
+    buildPostDomesticDepositCapture(
+      {
+        accountId: syntheticPostAccountNumber,
+        queryPeriods: [`${startDate}~2026/10/21`],
+        queryRange: { startDate, endDate: "2026/10/21" },
+        httpStatus: 200,
+        itemShape: "array",
+        rows: postRowsToStatementRows(
+          syntheticPostAccountNumber,
+          postingDates.map((PRS_DATE, index) => ({
+            PRS_DATE,
+            TX_TIME: `09000${index}`,
+            MEM: "轉帳",
+            TX_AMT: "100.00",
+            BAL_AMT: `${1000 + index}.00`,
+            DR_FLG: "+",
+          })),
+        ),
+      },
+      "2026-10-21T10:54:28+08:00",
+    ),
+  );
+  assert.equal(evidence.status, "admissible");
+  return admitPostDomesticDepositFinancialCapture({
+    capture: evidence.capture!,
+    captureId: "post-range-edge-check",
+    humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
+  });
+}
+const earlyPostedRange = admitPostRangeRows(["1150420", "1150621"]);
+assert.deepEqual(earlyPostedRange.diagnostics, [], "iPost's extra day before the requested start does not block admission");
+assert.deepEqual(
+  earlyPostedRange.capture?.records.map((record) => record.sourceTime.localDate),
+  ["2026-06-21"],
+  "a row posted before the requested start stays out of the complete-range capture",
+);
+assert.deepEqual(
+  [earlyPostedRange.capture?.scope.startDate, earlyPostedRange.capture?.occurrenceGroupCoverage?.[0]?.startDate],
+  ["2026-04-21", "2026-04-21"],
+  "the extra day does not widen the complete range",
+);
+assert.deepEqual(
+  admitPostRangeRows(["1141231", "1150621"], "2026/01/01").capture?.records.map((record) => record.sourceTime.localDate),
+  ["2026-06-21"],
+  "the extra day before a January 1 start is the prior December 31",
+);
+assert.ok(
+  admitPostRangeRows(["1150420"]).diagnostics.includes("terminal-completeness-unproven"),
+  "a response holding only the extra day proves nothing about the range",
+);
+assert.ok(
+  admitPostRangeRows(["1150419", "1150621"]).diagnostics.includes("row-outside-query-range"),
+  "a row posted two days before the requested start still blocks admission",
+);
+assert.ok(
+  admitPostRangeRows(["1150621", "1151022"]).diagnostics.includes("row-outside-query-range"),
+  "a row posted after the requested end still blocks admission",
+);
+
 const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
   payload: [
     {
