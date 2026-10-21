@@ -34,7 +34,7 @@ export async function signInAttempt(
     interrupt(error);
   };
   const onDialog = (dialog: Dialog): void => {
-    void handleDialog(dialog).then((error) => {
+    void Promise.resolve().then(() => handleDialog(dialog)).then((error) => {
       if (error) end(error);
     }, end);
   };
