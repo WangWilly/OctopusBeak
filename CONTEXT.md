@@ -267,14 +267,6 @@ _Avoid_: Mutable assertion status, financial event, duplicate unchanged assertio
 The integration contract and sync preflight must resolve and validate every required candidate before it can become a Canonical Assertion; an indeterminate, unsupported, or mutually incompatible candidate cancels the attempted Source Capture, emits an operational error, and does not proceed into canonical storage or projection. Required canonical classifications never use `unknown`, while an unsupported optional fact is omitted rather than represented by an unknown assertion.
 _Avoid_: Persisted conflict candidate, last-write-wins, silent fallback
 
-**Domestic deposit admission**:
-The one shared admission that turns a bank's decoded domestic deposit captures into Canonical Financial Commit items or diagnostics under the Canonical Admission Boundary. It owns the stage order, generic validation, source-only fallback, and the match from a current balance to an admitted deposit identity; bank-specific knowledge enters only through a Deposit Source Adapter.
-_Avoid_: Per-bank admission pipeline, workflow-side admission
-
-**Deposit source adapter**:
-A bank's declaration of what Domestic Deposit Admission cannot know generically: how its rows decode, how its account identity, account-number evidence, and Identity Epoch are derived, how its completeness is proven, which diagnostics fall back to a source-only capture, and how a current balance matches an admitted deposit identity.
-_Avoid_: Bank admission module, provider admission
-
 **Canonical financial commit**:
 The indivisible visibility boundary that admits one complete Source Capture and makes its Source Records, canonical identities and facts, Assertion lineage, and affected current projections durable together. A failed admission, processing run, or Contract Purge exposes none of its partial financial effects; Sign-in Details, Integration configuration, and non-financial preferences are operational state outside this boundary.
 _Avoid_: Partial Capture commit, eventually consistent projection, cross-store financial write

@@ -8,9 +8,9 @@ import type {
 
 /**
  * Pins what a deposit workflow hands to the Canonical Financial Commit, and the
- * progress events around it, so the Domestic Deposit Admission refactor
- * (ADR 0054) can prove each bank's output is unchanged. Set
- * UPDATE_DEPOSIT_GOLDENS=1 to rewrite the recorded files.
+ * progress events around it, so a change to any bank's admission can prove
+ * its output is unchanged (ADR 0054). Set UPDATE_DEPOSIT_GOLDENS=1 to rewrite
+ * the recorded files.
  */
 export type DepositCommitRecorder = Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
