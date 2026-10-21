@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const ROOTS = ["src", "electron", "scripts"];
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const SOURCE_DIRECTORIES = ["src", "electron", "scripts"];
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|svelte)$/u;
 // Playwright ignores every isVisible option and returns at once, so a timeout
 // there reads as a wait that never happens. Waiting needs locator.waitFor.
-const VISIBILITY_OPTIONS = /\.isVisible\(\s*\{/gu;
+const VISIBILITY_OPTIONS = /\.isVisible\s*\(\s*\{/gu;
 
 function sourceFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -19,10 +21,10 @@ function sourceFiles(directory) {
 
 test("no Locator.isVisible call passes options Playwright ignores", () => {
   const offenders = [];
-  for (const file of ROOTS.flatMap(sourceFiles)) {
+  for (const file of SOURCE_DIRECTORIES.flatMap((directory) => sourceFiles(join(ROOT, directory)))) {
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(VISIBILITY_OPTIONS))
-      offenders.push(`${file}:${text.slice(0, match.index).split("\n").length}`);
+      offenders.push(`${relative(ROOT, file)}:${text.slice(0, match.index).split("\n").length}`);
   }
   assert.deepEqual(
     offenders,
