@@ -79,11 +79,6 @@ export type PGliteExpectedOccurrence = Readonly<{
   bucketKey: string;
 }>;
 
-/** A provider run may group several captures into one atomic command. */
-export type PGliteCanonicalFinancialCommitBatchRequest = Readonly<{
-  commits: readonly PGliteCanonicalFinancialCommitRequest[];
-}>;
-
 export type PGliteCanonicalCommitOptions = Readonly<{
   signal?: AbortSignal;
   /** Worker-local clock hook; never part of the serializable request. */
@@ -2019,48 +2014,6 @@ export async function commitPGliteCanonicalFinancialCapture(
   }
 }
 
-/**
- * Commit a provider run as one database transaction.  This preserves the
- * callback execution seam's all-or-nothing grouping while keeping every item
- * serializable and named.
- */
-export async function commitPGliteCanonicalFinancialBatch(
-  database: PGliteStore,
-  request: PGliteCanonicalFinancialCommitBatchRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<readonly PGliteCanonicalFinancialCommitResult[]> {
-  try {
-    if (request.commits.length === 0)
-      throw new PGliteCanonicalSourceAdmissionError(
-        "empty-batch",
-        "Canonical PGlite financial commit batch cannot be empty.",
-      );
-    const snapshots = request.commits.map(cloneFinancialRequest);
-    const captureKeys = new Set<string>();
-    for (const snapshot of snapshots) {
-      if (captureKeys.has(snapshot.capture.captureId))
-        throw new PGliteCanonicalSourceAdmissionError(
-          "capture-overwrite",
-          "Canonical PGlite financial commit batch contains a duplicate capture key.",
-        );
-      captureKeys.add(snapshot.capture.captureId);
-      validateFinancialRequest(snapshot);
-    }
-    throwIfCancelled(options.signal);
-    return await database.transaction(async (transaction) => {
-      const results: PGliteCanonicalFinancialCommitResult[] = [];
-      for (const snapshot of snapshots) {
-        throwIfCancelled(options.signal);
-        results.push(await commitFinancialRequestInTransaction(transaction, snapshot, options));
-      }
-      throwIfCancelled(options.signal);
-      return Object.freeze(results);
-    });
-  } catch (error) {
-    return classifyDatabaseError(error);
-  }
-}
-
 export type PGliteCanonicalSourceStore = Readonly<{
   admit(
     request: PGliteCanonicalSourceAdmissionRequest,
@@ -2070,10 +2023,6 @@ export type PGliteCanonicalSourceStore = Readonly<{
     request: PGliteCanonicalFinancialCommitRequest,
     options?: PGliteCanonicalCommitOptions,
   ): Promise<PGliteCanonicalFinancialCommitResult>;
-  commitBatch(
-    request: PGliteCanonicalFinancialCommitBatchRequest,
-    options?: PGliteCanonicalCommitOptions,
-  ): Promise<readonly PGliteCanonicalFinancialCommitResult[]>;
 }>;
 
 /** Bind the named commands to one already worker-owned PGlite store. */
@@ -2083,6 +2032,5 @@ export function createPGliteCanonicalSourceStore(
   return Object.freeze({
     admit: (request, options) => admitPGliteCanonicalSourceCapture(database, request, options),
     commit: (request, options) => commitPGliteCanonicalFinancialCapture(database, request, options),
-    commitBatch: (request, options) => commitPGliteCanonicalFinancialBatch(database, request, options),
   });
 }

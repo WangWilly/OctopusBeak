@@ -3,7 +3,6 @@ import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import {
-  commitPGliteCanonicalFinancialBatch,
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
 } from "./canonical-source-store.ts";
@@ -426,39 +425,17 @@ test("financial admission seeds local attestation and rejects a revoked durable 
   }
 });
 
-test("PGlite canonical financial batches retain one transaction boundary", async () => {
+test("a cancelled PGlite canonical financial commit writes nothing", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
-    const first = request("batch-1");
-    const second = {
-      ...request("batch-2", token("x"), token("y")),
-      transactions: [fact(token("x"), "batch-sequence-2")],
-    };
-    const results = await commitPGliteCanonicalFinancialBatch(store, {
-      commits: [first, second],
-    }, { clock: () => 10 });
-    assert.deepEqual(results.map((result) => result.commitSequence), [1, 3]);
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
-
-    const failedFirst = request("batch-rollback-1", token("p"), token("q"));
-    const failedSecond = {
-      ...request("batch-rollback-2", token("r"), token("s")),
-      transactions: [fact(token("missing"), "batch-invalid")],
-    };
-    await assert.rejects(
-      commitPGliteCanonicalFinancialBatch(store, { commits: [failedFirst, failedSecond] }, { clock: () => 10 }),
-      (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError && error.reason === "invalid-financial-fact",
-    );
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
-
     const cancelled = new AbortController();
     cancelled.abort();
     await assert.rejects(
       commitPGliteCanonicalFinancialCapture(store, request("cancelled"), { signal: cancelled.signal }),
       (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError && error.reason === "cancelled",
     );
-    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 4 }]);
+    assert.deepEqual((await store.query<{ value: number }>("SELECT COUNT(*)::int AS value FROM canonical_commits")).rows, [{ value: 0 }]);
   } finally {
     await store.close();
   }

@@ -10,8 +10,6 @@ export const PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND =
   "financial.source.admit" as const;
 export const PGLITE_CANONICAL_FINANCIAL_COMMIT_COMMAND =
   "financial.source.commit" as const;
-export const PGLITE_CANONICAL_FINANCIAL_COMMIT_BATCH_COMMAND =
-  "financial.source.commitBatch" as const;
 export const PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND =
   "financial.balance.capture" as const;
 export const PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND =
