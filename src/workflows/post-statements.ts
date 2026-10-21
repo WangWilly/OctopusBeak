@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../lib/automation/post-captcha.ts";
-import type { Dialog, Locator, Page, Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   SourceTextIntegrityError,
@@ -34,6 +34,7 @@ import {
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { withAbort } from "./abort.ts";
+import { signInAttempt } from "./sign-in-attempt.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
@@ -293,79 +294,32 @@ export async function runPostLoginAttempt(
   page: Page,
   { submit, waitForSuccess, signal, onDialog }: PostLoginAttemptDependencies,
 ): Promise<void> {
-  signal?.throwIfAborted();
-  const probeAbortController = new AbortController();
-  let rejectDialog!: (error: Error) => void;
-  let abortListener: (() => void) | undefined;
-  const dialogDetected = new Promise<never>((_resolve, reject) => {
-    rejectDialog = reject;
-  });
-  const dialogHandler = (dialog: Dialog): void => {
-    let type = "unknown";
-    try {
-      type = dialog.type();
-    } catch {
-      // Keep dialog cleanup fail-closed if the browser closes it concurrently.
-    }
-    let rejection: Error = postLoginDialogError();
-    try {
-      if (type === "alert" && dialog.message().trim() === "圖形驗證錯誤") {
-        rejection = new CaptchaProviderRejectedError();
+  await signInAttempt(page, {
+    submit,
+    waitForSuccess,
+    signal,
+    handleDialog: async (dialog) => {
+      let type = "unknown";
+      try {
+        type = dialog.type();
+      } catch {
+        // Keep dialog cleanup fail-closed if the browser closes it concurrently.
       }
-    } catch {
-      // An unreadable or unfamiliar dialog never authorizes a retry.
-    }
-    if (onDialog) {
-      void Promise.resolve(onDialog(type)).catch(() => undefined);
-    }
-    void dialog.dismiss().then(
-      () => {
-        probeAbortController.abort();
-        rejectDialog(rejection);
-      },
-      () => {
-        probeAbortController.abort();
-        rejectDialog(rejection);
-      },
-    );
-  };
-
-  page.on("dialog", dialogHandler);
-  try {
-    const successSignal = signal
-      ? AbortSignal.any([probeAbortController.signal, signal])
-      : probeAbortController.signal;
-    const successProbe = waitForSuccess(successSignal);
-    void successProbe.catch(() => undefined);
-    const cancellation = signal
-      ? new Promise<never>((_resolve, reject) => {
-          abortListener = () => {
-            probeAbortController.abort();
-            reject(
-              signal.reason instanceof Error
-                ? signal.reason
-                : new Error("Post login was cancelled."),
-            );
-          };
-          signal.addEventListener("abort", abortListener, { once: true });
-          if (signal.aborted) abortListener();
-        })
-      : undefined;
-    const loginOutcome = (async () => {
-      await submit();
-      await successProbe;
-    })();
-    await Promise.race(
-      cancellation
-        ? [loginOutcome, dialogDetected, cancellation]
-        : [loginOutcome, dialogDetected],
-    );
-  } finally {
-    if (signal && abortListener)
-      signal.removeEventListener("abort", abortListener);
-    probeAbortController.abort();
-    page.off("dialog", dialogHandler);
-  }
+      let rejection: Error = postLoginDialogError();
+      try {
+        if (type === "alert" && dialog.message().trim() === "圖形驗證錯誤") {
+          rejection = new CaptchaProviderRejectedError();
+        }
+      } catch {
+        // An unreadable or unfamiliar dialog never authorizes a retry.
+      }
+      if (onDialog) {
+        void Promise.resolve(onDialog(type)).catch(() => undefined);
+      }
+      await dialog.dismiss().catch(() => undefined);
+      return rejection;
+    },
+  });
 }
 
 export async function submitPostLoginAndWait(

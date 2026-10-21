@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Dialog, Page, Response } from "playwright";
+import type { Page, Response } from "playwright";
 import { z } from "zod";
 import {
   SourceTextIntegrityError,
@@ -7,6 +7,7 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
+import { signInAttempt } from "./sign-in-attempt.ts";
 import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
@@ -825,85 +826,66 @@ export async function runSinopacLoginAttempt(
   page: Page,
   dependencies: SinopacLoginAttemptDependencies,
 ): Promise<void> {
-  const probeAbortController = new AbortController();
-  let rejectDialog!: (error: Error) => void;
-  const dialogDetected = new Promise<never>((_resolve, reject) => {
-    rejectDialog = reject;
-  });
   let dialogHandled = false;
   let duplicateLoginConfirmed = false;
-  const dialogHandler = async (dialog: Dialog): Promise<void> => {
-    if (dialogHandled) return;
-    dialogHandled = true;
-    let type = "unknown";
-    let message = "";
-    let captchaRejected = false;
-    try {
-      type = dialog.type();
-      message = dialog.message();
-      // Only the exact provider warning admits a typed CAPTCHA rejection.
-      captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
-    } catch {
-      // Keep the fail-fast path usable if the browser closes the dialog while
-      // it is being inspected.
-    }
-    if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
-      duplicateLoginConfirmed = true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const accepted = await Promise.race([
-        Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-      if (accepted) {
+  await signInAttempt(page, {
+    submit: dependencies.submit,
+    waitForSuccess: dependencies.waitForSuccess,
+    signal: dependencies.signal,
+    handleDialog: async (dialog) => {
+      if (dialogHandled) return null;
+      dialogHandled = true;
+      let type = "unknown";
+      let message = "";
+      let captchaRejected = false;
+      try {
+        type = dialog.type();
+        message = dialog.message();
+        // Only the exact provider warning admits a typed CAPTCHA rejection.
+        captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
+      } catch {
+        // Keep the fail-fast path usable if the browser closes the dialog while
+        // it is being inspected.
+      }
+      if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
+        duplicateLoginConfirmed = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const accepted = await Promise.race([
+          Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (!accepted) return new Error("SinoPac duplicate login confirmation failed.");
         dialogHandled = false;
         try {
           await dependencies.onDuplicateLoginConfirmed?.();
         } catch {
           // Operational events must not change the authentication outcome.
         }
-        return;
+        return null;
       }
-      rejectDialog(new Error("SinoPac duplicate login confirmation failed."));
-      probeAbortController.abort();
-      return;
-    }
-    try {
-      await dependencies.onDialog?.(captchaRejected);
-    } catch {
-      // Operational event persistence must not change the authentication outcome.
-    }
-    const dismissal = Promise.resolve().then(() => dialog.dismiss());
-    void dismissal.catch(() => undefined);
-    let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
-    const dismissed = await Promise.race([
-      dismissal.then(() => true, () => false),
-      new Promise<boolean>((resolve) => {
-        dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-      }),
-    ]);
-    if (dismissalTimer) clearTimeout(dismissalTimer);
-    rejectDialog(captchaRejected && dismissed
-      ? new SinopacCaptchaRejectedError()
-      : new Error("SinoPac login was interrupted by a browser dialog."));
-    probeAbortController.abort();
-  };
-
-  page.on("dialog", dialogHandler);
-  try {
-    const successProbe = dependencies.waitForSuccess(probeAbortController.signal);
-    void successProbe.catch(() => undefined);
-    const loginOutcome = (async () => {
-      await withAbort(dependencies.submit(), dependencies.signal);
-      await successProbe;
-    })();
-    await withAbort(Promise.race([loginOutcome, dialogDetected]), dependencies.signal);
-  } finally {
-    probeAbortController.abort();
-    page.off("dialog", dialogHandler);
-  }
+      try {
+        await dependencies.onDialog?.(captchaRejected);
+      } catch {
+        // Operational event persistence must not change the authentication outcome.
+      }
+      const dismissal = Promise.resolve().then(() => dialog.dismiss());
+      void dismissal.catch(() => undefined);
+      let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
+      const dismissed = await Promise.race([
+        dismissal.then(() => true, () => false),
+        new Promise<boolean>((resolve) => {
+          dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+        }),
+      ]);
+      if (dismissalTimer) clearTimeout(dismissalTimer);
+      return captchaRejected && dismissed
+        ? new SinopacCaptchaRejectedError()
+        : new Error("SinoPac login was interrupted by a browser dialog.");
+    },
+  });
 }
 
 export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {

@@ -50,16 +50,12 @@ async function withPage(script: string, body: (page: Page) => Promise<void>): Pr
 function harness(page: Page) {
   const probeSignals: AbortSignal[] = [];
   const calls = { submit: 0 };
-  const clicks: Promise<void>[] = [];
   return {
     probeSignals,
     calls,
-    clicks,
     submit: () => {
       calls.submit += 1;
-      const click = page.click("#login");
-      clicks.push(click);
-      return click;
+      return page.click("#login");
     },
     waitForSuccess: (signal: AbortSignal) => {
       probeSignals.push(signal);
@@ -180,14 +176,14 @@ test("Post: aborting while waiting for success rejects with the reason and abort
     await assertUsable(page);
   }));
 
-test("Post: a non-Error abort reason rejects with the fixed cancellation message", () =>
+test("Post: a non-Error abort reason rejects with that reason", () =>
   withPage("", async (page) => {
     const h = harness(page);
     const controller = new AbortController();
     const run = failure(runPostLoginAttempt(page, { ...h, signal: controller.signal }));
     await delay(100);
     controller.abort("stop");
-    assertError(await run, Error, "Post login was cancelled.");
+    assert.equal(await run, "stop");
     await assertUsable(page);
   }));
 
@@ -311,7 +307,7 @@ async function unhandledRejections(body: () => Promise<void>): Promise<unknown[]
   return seen;
 }
 
-test("SinoPac: a pre-aborted signal rejects with the reason, leaks one unhandled rejection, and still submits", () =>
+test("SinoPac: a pre-aborted signal rejects before submit or the success probe run", () =>
   withPage("show()", async (page) => {
     const h = harness(page);
     const controller = new AbortController();
@@ -322,12 +318,9 @@ test("SinoPac: a pre-aborted signal rejects with the reason, leaks one unhandled
       error = await failure(runSinopacLoginAttempt(page, { ...h, signal: controller.signal }));
     });
     assert.equal(error, reason);
-    assert.deepEqual(leaked, [reason]);
-    assert.equal(h.calls.submit, 1);
-    assert.equal(h.probeSignals.length, 1);
-    assert.equal(h.probeSignals[0]?.aborted, true);
-    await h.clicks[0];
-    assert.equal(await page.locator("#ok").isVisible(), true);
+    assert.deepEqual(leaked, []);
+    assert.equal(h.calls.submit, 0);
+    assert.equal(h.probeSignals.length, 0);
     await assertUsable(page);
   }));
 
