@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { canonicalDigest } from "../canonical/canonical-digest.ts";
 import type {
   CanonicalSourceEvidence,
 } from "../canonical/canonical-source-evidence.ts";
@@ -182,15 +182,6 @@ export type SinopacStatementCaptureValidationResult = {
 const VALIDATED_SINOPAC_CAPTURE = new WeakSet<object>();
 
 const SOURCE_DIGEST = /^sha256:[A-Za-z0-9_-]+$/;
-
-function sinopacDigest(
-  domain: string,
-  ...values: readonly string[]
-): `sha256:${string}` {
-  const hash = createHash("sha256").update(domain);
-  for (const value of values) hash.update("\0").update(value);
-  return `sha256:${hash.digest("base64url")}`;
-}
 
 function normalizedCell(value: unknown): string {
   return String(value ?? "")
@@ -484,17 +475,17 @@ function deriveSinopacIdentity(
   capture: SinopacStatementCaptureEvidence,
 ): SinopacIdentity {
   const product = capture.product;
-  const subjectDigest = sinopacDigest(
+  const subjectDigest = canonicalDigest(
     `sinopac-${product}-subject-v1`,
     normalizedCell(capture.account.value),
     normalizedCell(capture.account.currency),
   );
   return {
-    sourceConnectionKey: sinopacDigest(
+    sourceConnectionKey: canonicalDigest(
       `sinopac-${product}-connection-v1`,
       product,
     ),
-    identityEpochKey: sinopacDigest(
+    identityEpochKey: canonicalDigest(
       `sinopac-${product}-identity-epoch-v1`,
       product,
     ),
@@ -570,7 +561,7 @@ function sourceEvidenceForCapture(
       rowCount: download.rows.length,
       terminal: download.terminal,
       metadata: {
-        filenameDigest: sinopacDigest(
+        filenameDigest: canonicalDigest(
           "sinopac-source-filename-v1",
           download.filename,
         ),
@@ -578,7 +569,7 @@ function sourceEvidenceForCapture(
         byteLength: download.byteLength,
         columnCount: download.columnNames.length,
         queryPeriodCount: download.queryPeriods?.length ?? 0,
-        accountDigest: sinopacDigest(
+        accountDigest: canonicalDigest(
           "sinopac-source-account-v1",
           capture.account.value,
         ),
@@ -593,7 +584,7 @@ function sourceEvidenceForCapture(
     records: pages.flatMap(({ download, pageOrdinal }) =>
       download.rows.map((row) => {
         const cells = row.values.map(normalizedCell);
-        const rowDigest = sinopacDigest(
+        const rowDigest = canonicalDigest(
           `sinopac-${capture.product}-row-v1`,
           String(pageOrdinal),
           String(row.rowOrdinal),
@@ -604,20 +595,20 @@ function sourceEvidenceForCapture(
         // Transaction identity because the provider has not established a
         // stable occurrence key contract.
         return {
-          occurrenceKey: sinopacDigest(
+          occurrenceKey: canonicalDigest(
             `sinopac-${capture.product}-occurrence-v1`,
             identity.subjectDigest,
             String(pageOrdinal),
             String(row.rowOrdinal),
             rowDigest,
           ),
-          collisionKey: sinopacDigest(
+          collisionKey: canonicalDigest(
             `sinopac-${capture.product}-collision-v1`,
             identity.subjectDigest,
             rowDigest,
           ),
           providerKey: rowDigest,
-          contentHash: sinopacDigest(
+          contentHash: canonicalDigest(
             `sinopac-${capture.product}-content-v1`,
             rowDigest,
           ),
@@ -756,9 +747,6 @@ function foreignTime(value: string): {
     : { value: normalized, precision: "second" };
 }
 
-function foreignToken(value: string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
-}
 
 function foreignCanonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, nested) =>
@@ -852,10 +840,10 @@ function sinopacForeignRecord(
       }
     : null;
   return {
-    occurrenceKey: foreignToken(`sinopac:occurrence:${sourceKey}`),
-    collisionKey: foreignToken(`sinopac:collision:${sourceKey}`),
-    providerKey: foreignToken(`sinopac:provider:${sourceKey}`),
-    contentHash: foreignToken(compactJson),
+    occurrenceKey: canonicalDigest(`sinopac:occurrence:${sourceKey}`),
+    collisionKey: canonicalDigest(`sinopac:collision:${sourceKey}`),
+    providerKey: canonicalDigest(`sinopac:provider:${sourceKey}`),
+    contentHash: canonicalDigest(compactJson),
     sequenceLexeme: payload.sequence,
     compactJson,
     amount,
@@ -947,7 +935,7 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
         record,
         partitionDate: record.sourceTime.localDate,
       })),
-      scopeKey: foreignToken(
+      scopeKey: canonicalDigest(
         JSON.stringify([
           "sinopac-foreign-deposit-occurrence-scope-v1",
           accountNo,
@@ -964,16 +952,16 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
         capture.downloads.every((download) => download.terminal),
     });
     const captureCurrencyScope = { kind: "currency" as const, currency };
-    const scopeFingerprint = foreignToken(
+    const scopeFingerprint = canonicalDigest(
       `${contractVersion}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`,
     );
-    const responseDigest = foreignToken(
+    const responseDigest = canonicalDigest(
       records.map((record) => record.contentHash).join("|"),
     );
     const connectionKey = "sinopac-foreign-current-login";
     const identityEpochKey =
       SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion;
-    const captureId = `foreign-sinopac-${foreignToken(`${connectionKey}:${identityEpochKey}:${captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`).slice("sha256:".length)}`;
+    const captureId = `foreign-sinopac-${canonicalDigest(`${connectionKey}:${identityEpochKey}:${captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`).slice("sha256:".length)}`;
     const first = records[0]?.sourceTime ?? {
       localDate: startDate,
       localTime: "00:00:00",
@@ -982,7 +970,7 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
       precision: "date",
       timeOrigin: "defaulted_local_midnight",
     };
-    const preflightFingerprint = foreignToken(`${scopeFingerprint}:preflight`);
+    const preflightFingerprint = canonicalDigest(`${scopeFingerprint}:preflight`);
     return {
       status: "admitted",
       diagnostics,
@@ -992,11 +980,11 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
         contractVersion,
         identity: {
           integrationNamespace: "sinopac",
-          sourceConnectionKey: foreignToken(connectionKey),
-          identityEpochKey: foreignToken(identityEpochKey),
+          sourceConnectionKey: canonicalDigest(connectionKey),
+          identityEpochKey: canonicalDigest(identityEpochKey),
           stream: "foreign-currency-deposit",
           recordKind: "sinopac-foreign-currency-deposit",
-          subjectDigest: foreignToken(
+          subjectDigest: canonicalDigest(
             `${accountNo}:sinopac-foreign-currency-deposit`,
           ),
           accountNo,
