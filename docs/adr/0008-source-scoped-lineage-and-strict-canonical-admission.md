@@ -2,6 +2,8 @@
 
 Accepted amendment: [ADR 0024](./0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements.
 
+Accepted amendment: [ADR 0055](./0055-revisable-payload-fields-continue-admitted-occurrences.md) lets a registered route continue an admitted occurrence when a recapture differs only in declared revisable payload fields, making the summary-free group collision key that route's stable claim identity.
+
 
 Status: accepted
 

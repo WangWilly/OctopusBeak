@@ -78,6 +78,12 @@ export type CanonicalSourceRouteRegistration = Readonly<{
   occurrenceGroups?: "required" | "optional";
   /** Query-inventory proof required when a route admits occurrence groups. */
   occurrenceGroupCoverage?: "queried-buckets";
+  /**
+   * Compact payload fields the provider may rewrite after an occurrence is
+   * admitted. A recapture differing only in these fields continues the
+   * admitted occurrence and revises its transaction (ADR 0055).
+   */
+  revisablePayloadFields?: readonly string[];
 }>;
 
 export type CanonicalSourceRuleCombination = Readonly<{
@@ -223,6 +229,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     contractVersions: ["human-attested-v2"],
     completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v2"],
     occurrenceGroups: "required",
+    revisablePayloadFields: ["descriptionDigest"],
     ruleCombinations: [sameRuleTuple("human-attested-v2", "yuanta/domestic-deposit/human-attested-v2")],
     humanAttestation: attestationFromContract(YUANTA_HUMAN_ATTESTED_V2_MANIFEST, yuantaHumanAttestationFingerprint(YUANTA_HUMAN_ATTESTED_V2_MANIFEST), "attested"),
   },
