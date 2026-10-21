@@ -18,12 +18,6 @@ import {
 
 export const POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
   "capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_ROUTE =
-  "post/domestic-deposit/capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_RULE_VERSION =
-  "post/domestic-deposit/capture-evidence-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_SOURCE_RECORD_KIND =
-  "post-domestic-deposit-row-v1" as const;
 export const POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS =
   "canonical-human-attested" as const;
 export const POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
@@ -277,8 +271,6 @@ export function isAdmittedPostDomesticDepositCaptureEvidence(
     VALIDATED_POST_EVIDENCE.has(value as PostDomesticDepositCaptureEvidence)
   );
 }
-
-
 
 export type PostDomesticDepositFinancialAdmissionInput = {
   capture: PostDomesticDepositValidatedEvidence;
@@ -580,7 +572,6 @@ export function admitPostDomesticDepositFinancialCapture(
   });
   return { status: "admitted", capture, diagnostics: [] };
 }
-
 
 export function isPostSha256Token(value: string): boolean {
   return SHA256_TOKEN.test(value);

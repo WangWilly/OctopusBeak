@@ -110,7 +110,7 @@ export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
 export type PostWorkflowOutput = Readonly<{
   accountCount: number;
   rowCount: number;
-  status: "source-only" | "financial-admitted";
+  status: "financial-admitted";
 }>;
 
 export type PostStatementsRunDependencies = {
@@ -1060,9 +1060,6 @@ async function runPostStatements(
     });
     financialCaptures.push({ identity: admission.capture.identity });
   }
-  let status: PostWorkflowOutput["status"] = "source-only";
-  if (financialInputs.length > 0) status = "financial-admitted";
-
   // The overview response is staged before opening the execution run. Each
   // row still commits only after its statement identity item has committed.
   const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
@@ -1133,7 +1130,7 @@ async function runPostStatements(
   return {
     accountCount: statements.length,
     rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
-    status,
+    status: "financial-admitted",
   };
 }
 
