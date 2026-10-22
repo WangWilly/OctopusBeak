@@ -1,5 +1,7 @@
 export function createBeforeQuitHandler(options: {
   cleanup(): Promise<void>;
+  closeDatabase(): Promise<void>;
+  closeDatabaseDeadlineMs: number;
   quit(): void;
 }) {
   let quittingAllowed = false;
@@ -14,10 +16,20 @@ export function createBeforeQuitHandler(options: {
     // Child trees are terminated best-effort by the cleanup hook. Closing the
     // app must never wait for a browser daemon or a stuck child process.
     void options.cleanup().catch(() => {});
-    quittingAllowed = true;
-    // Electron resets its quitting state when this prevented quit returns, so
-    // a nested quit is lost whenever the window closes after this handler.
-    setImmediate(options.quit);
+    // The ledger close is different: exiting before PGlite's shutdown
+    // checkpoint finishes makes the next launch replay the WAL first. Wait
+    // for it, but only up to the deadline.
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    void Promise.race([
+      options.closeDatabase().catch(() => {}),
+      new Promise<void>((resolve) => { deadline = setTimeout(resolve, options.closeDatabaseDeadlineMs); }),
+    ]).then(() => {
+      clearTimeout(deadline);
+      quittingAllowed = true;
+      // Electron resets its quitting state when this prevented quit returns,
+      // so a nested quit is lost whenever the window closes after this handler.
+      setImmediate(options.quit);
+    });
   };
 }
 
