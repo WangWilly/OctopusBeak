@@ -392,6 +392,77 @@ test("worker runs a definition through typed ports and the bounded host request 
   }
 });
 
+test("a browser workflow that needs only account identity reaches it through the authenticated RPC", async () => {
+  const continuityRequest = {
+    integrationNamespace: "fubon",
+    sourceConnectionKey: `sha256:${"C".repeat(43)}`,
+    identityEpochKey: `sha256:${"E".repeat(43)}`,
+    stream: "domestic-deposit",
+    identifier: { kind: "depository-account" as const, value: "1".repeat(14) },
+  };
+  const continued = { status: "continued", sourceAccountKey: `sha256:${"K".repeat(43)}` };
+  const continuityRequests: unknown[] = [];
+  const server = createPGliteChildRpcServer({
+    provider: {
+      operational: {},
+      financial: {
+        async request(operation: string, args: unknown[]) {
+          assert.equal(operation, "financial.accountIdentity.continuity");
+          continuityRequests.push(args[0]);
+          return continued;
+        },
+      },
+    } as never,
+  });
+  const channel = new MessageChannel();
+  const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
+    channel.port2.on("message", (value: unknown) => {
+      const frame = parseAppWorkflowWorkerOutboundFrame(value);
+      if (frame.kind === "event") {
+        channel.port2.postMessage({
+          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+          kind: "event-ack",
+          eventId: frame.eventId,
+          ok: true,
+        });
+      } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
+        resolve(frame);
+      }
+    });
+  });
+  const definition: WorkflowDefinition = {
+    id: "fixture-protocol",
+    requiresFinancialCommit: false,
+    requiresAccountIdentity: true,
+    async run(context) {
+      assert.deepEqual(await context.accountIdentity!.continuity(continuityRequest as never), continued);
+      return { status: "completed", count: 1 };
+    },
+  };
+  try {
+    await server.ready;
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: {
+        ...start,
+        pgliteRpc: {
+          endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+          token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+        },
+      },
+      resolveDefinition: () => definition,
+      browser: { async withPage(run) { return await run({} as never); } },
+    });
+    const frame = await terminal;
+    assert.equal(frame.kind, "completed", JSON.stringify(frame));
+    assert.deepEqual(continuityRequests, [continuityRequest]);
+  } finally {
+    channel.port1.close();
+    channel.port2.close();
+    await server.close();
+  }
+});
+
 test("a product failure inside a partial run appends one correlated diagnostic record", async () => {
   const channel = new MessageChannel();
   let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;

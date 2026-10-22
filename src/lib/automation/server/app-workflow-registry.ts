@@ -10,7 +10,7 @@ import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
 import { createTdccWorkflow } from "../tdcc-workflow.ts";
 import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
-import type { WorkflowDefinition } from "../workflow-executor.ts";
+import { requiredWorkflowCapabilities, type WorkflowDefinition } from "../workflow-executor.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, attachedStatementType } from "../../preview-sources/attached-products.ts";
 import {
@@ -53,6 +53,14 @@ import {
 export type AppWorkflowRuntime =
   | Readonly<{ kind: "browser"; startUrl?: string; browserProfile?: AppWorkflowBrowserProfile }>
   | Readonly<{ kind: "nonbrowser" }>;
+
+/** Every capability port is served from the PGlite RPC, which nonbrowser workflows also read through. */
+export function workflowNeedsPgliteRpc(
+  definition: WorkflowDefinition,
+  runtime: AppWorkflowRuntime,
+): boolean {
+  return runtime.kind === "nonbrowser" || requiredWorkflowCapabilities(definition).length > 0;
+}
 
 const NONBROWSER: AppWorkflowRuntime = { kind: "nonbrowser" };
 const browser = (startUrl?: string, browserProfile?: AppWorkflowBrowserProfile): AppWorkflowRuntime => ({
