@@ -15,10 +15,6 @@ import {
   createPGliteFinancialRpcServer,
   type PGliteFinancialRegistry,
 } from "../../../../electron/pglite-financial-registry.ts";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-} from "../../../../electron/pglite-child-rpc-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
@@ -27,7 +23,7 @@ import {
   registerCollectionScope,
 } from "./collection-scope.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -187,10 +183,9 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
     });
     const result = await executeTaskRunForCheck(fubon, provider.automation, {
       taskRunId,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
         ...automationConfigEnv({ baseEnv: {} }),
-        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
       },
       workflowBrowserPortFactory: () => ({
         async withPage(run) { return await run({} as never); },

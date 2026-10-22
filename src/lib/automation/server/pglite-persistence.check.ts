@@ -19,7 +19,6 @@ import { finalizePersistedActiveRuns } from "./task-run-finalization.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
-import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -104,14 +103,7 @@ try {
   );
   const provider = {
     ...createPgliteOperationalProvider(store),
-  pgliteWorkflow: {
-      required: true,
-      env: {
-        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "p".repeat(32),
-    },
-  },
+  pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: "p".repeat(32) },
   exchangeRates: {
     async readExchangeRates() { return []; },
     async upsertExchangeRates() {},
