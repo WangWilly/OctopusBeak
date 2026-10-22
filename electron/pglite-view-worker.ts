@@ -17,6 +17,7 @@ import {
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialLiveViews,
@@ -69,6 +70,9 @@ export async function startPGliteViewWorker(
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
     throw error;
   }
+  const walCheckpoints = startPgliteWalCheckpoints(database, {
+    onError: () => console.error("pglite-wal-checkpoint-failed"),
+  });
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
   const financialRegistry = createPGliteFinancialRegistry(
@@ -119,6 +123,7 @@ export async function startPGliteViewWorker(
             await operationalServer.close();
           } finally {
             try {
+              await walCheckpoints.stop();
               await database.close();
             } finally {
               if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });

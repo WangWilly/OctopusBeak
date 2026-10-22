@@ -114,8 +114,11 @@ const handleBeforeQuit = createBeforeQuitHandler({
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
     if (automationRuntime?.hasActive()) await automationRuntime.shutdown();
+  },
+  closeDatabase: async () => {
     await pgliteOperationalRuntime?.close();
   },
+  closeDatabaseDeadlineMs: 5_000,
   quit: () => app.quit(),
 });
 app.on("before-quit", handleBeforeQuit);
