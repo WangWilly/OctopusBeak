@@ -119,10 +119,22 @@ export type AutomationTaskSummary = {
   label: string;
   kind: AutomationTaskKind;
   credentialGroupId?: string;
+  /** The integration namespaces the task writes accounts under. */
+  integrationNamespaces: readonly string[];
   credentialKeys: readonly string[];
   dependencies: readonly string[];
   externalPrerequisites?: readonly AutomationExternalPrerequisite[];
 };
+
+/** What every Supported source, verified or preview, declares about its sign-in. */
+export type SupportedSource = Readonly<{
+  id: string;
+  displayName: AutomationLocalizedText;
+  searchAliases: readonly string[];
+  credentialFields: readonly AutomationCredentialField[];
+  setupGuide: AutomationSetupGuide;
+  sessionTakeoverNotice?: AutomationLocalizedText;
+}>;
 
 export type AutomationCredentialGroup = {
   id: string;

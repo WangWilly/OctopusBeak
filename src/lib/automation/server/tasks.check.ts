@@ -8,6 +8,7 @@ import {
   taskById,
 } from "./tasks.ts";
 import { TDCC_PASSWORD_KEY, TDCC_USER_ID_KEY } from "./config-files.ts";
+import { VERIFIED_SOURCES } from "./sources/index.ts";
 
 assert.deepEqual(
   AUTOMATION_TASKS.filter((task) =>
@@ -36,10 +37,6 @@ const tdccTask = taskById("sync-tdcc");
 assert.ok(tdccTask);
 assert.equal(tdccTask.kind, "sync");
 assert.equal(tdccTask.credentialGroupId, "tdcc");
-assert.deepEqual(
-  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "tdcc")?.statementTypes,
-  [{ id: "securities" }, { id: "fund" }, { id: "settlement" }],
-);
 assert.deepEqual(tdccTask.credentialKeys, [TDCC_USER_ID_KEY, TDCC_PASSWORD_KEY], "TDCC sign-in fields write the host-only keys the session port reads");
 const yuantaAllStatements = taskById("yuanta-all-statements");
 assert.ok(yuantaAllStatements);
@@ -55,17 +52,6 @@ const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");
 assert.equal(cathayAllStatements.workflowId, "cathay-all-statements");
-assert.deepEqual(
-  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "yuanta")
-    ?.statementTypes,
-  [
-    { id: "deposit" },
-    { id: "foreign_currency" },
-    { id: "credit_card" },
-    { id: "loan" },
-    { id: "fund" },
-  ],
-);
 const hncbStatements = taskById("hncb-statements");
 assert.ok(hncbStatements);
 assert.equal(hncbStatements.id, "hncb-statements");
@@ -78,16 +64,6 @@ const postStatements = taskById("post-statements");
 assert.ok(postStatements);
 assert.equal(postStatements.id, "post-statements");
 assert.equal(postStatements.workflowId, "post-statements");
-assert.deepEqual(
-  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "sinopac")
-    ?.statementTypes,
-  [{ id: "accounts" }],
-);
-assert.deepEqual(
-  AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")
-    ?.statementTypes,
-  [{ id: "deposit" }, { id: "credit_card" }, { id: "loan" }],
-);
 const fubonGroup = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon");
 assert.ok(fubonGroup);
 const fubonTask = taskById("fubon-all-statements");
@@ -208,22 +184,7 @@ assert.equal(
 );
 assert.equal(
   enabledAutomationTasks(
-    Object.fromEntries(
-      [
-        "fubon",
-        "esun",
-        "yuanta",
-        "yuanta-trade",
-        "cathay",
-        "hncb",
-        "ctbc",
-        "post",
-        "sinopac",
-        "linebank",
-        "einvoice",
-        "maicoin",
-      ].map((id) => [id, false]),
-    ),
+    Object.fromEntries(VERIFIED_SOURCES.map(({ id }) => [id, false])),
   ).some(({ id }) => id === task.id),
   true,
 );

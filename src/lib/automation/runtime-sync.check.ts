@@ -14,6 +14,7 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     id: "exchange-rates",
     label: "Exchange rates",
     kind: "sync",
+    integrationNamespaces: [],
     credentialKeys: [],
     dependencies: [],
     status: "queued",

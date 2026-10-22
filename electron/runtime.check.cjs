@@ -38,18 +38,6 @@ async function main() {
   const defaultSettings = {
     AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
-    LIBRETTO_CLOUD_ESUN_ENABLED: false,
-    LIBRETTO_CLOUD_YUANTA_ENABLED: false,
-    LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: false,
-    LIBRETTO_CLOUD_CATHAY_ENABLED: false,
-    LIBRETTO_CLOUD_HNCB_ENABLED: false,
-    LIBRETTO_CLOUD_CTBC_ENABLED: false,
-    LIBRETTO_CLOUD_POST_ENABLED: false,
-    LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
-    LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
-    LIBRETTO_CLOUD_EINVOICE_ENABLED: false,
-    MAX_ENABLED: false,
-    MAX_SUB_ACCOUNT: "main",
   };
 
   try {
@@ -99,7 +87,7 @@ async function main() {
     }), true);
     assert.equal(developmentEnvironment.PLAYWRIGHT_BROWSERS_PATH, "/tmp/developer-playwright-cache");
 
-    ensureDataRoot(root);
+    ensureDataRoot(root, defaultSettings);
     const settingsPath = path.join(root, "settings.json");
     const credentialsPath = path.join(root, "credentials.json");
     assert.equal(fs.existsSync(settingsPath), true);
@@ -115,7 +103,7 @@ async function main() {
     );
     const existingSettingsText = `${JSON.stringify({ CUSTOM_SETTING: "keep-me" }, null, 2)}\n`;
     fs.writeFileSync(settingsPath, existingSettingsText, "utf8");
-    ensureDataRoot(root);
+    ensureDataRoot(root, defaultSettings);
     assert.equal(fs.readFileSync(settingsPath, "utf8"), existingSettingsText);
 
     const missingBrowsersAppRoot = path.join(root, "missing-browsers-app");

@@ -2,7 +2,7 @@
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
   import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
-  import { sourceLogo, sourceLogoForTask } from "$lib/institutions/institutions.ts";
+  import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
   import {
@@ -1286,6 +1286,15 @@ import type {
     }
   }
 
+  function taskLogo(task: AutomationTaskRow) {
+    return task.credentialGroupId ? sourceLogo(task.credentialGroupId) : null;
+  }
+
+  function taskIdLogo(taskId: string) {
+    const task = automation.tasks.find((candidate) => candidate.id === taskId);
+    return task ? taskLogo(task) : null;
+  }
+
   function taskIdLabel(taskId: string, dictionary: Translation) {
     return (dictionary.automation.taskLabels as Record<string, string>)[taskId] ?? taskId;
   }
@@ -1498,8 +1507,8 @@ import type {
                 >
                   {#if task.status === "waiting_for_human"}
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
-                  {:else if sourceLogoForTask(task.id)}
-                    <InstitutionLogo institution={sourceLogoForTask(task.id)} size={22} />
+                  {:else if taskLogo(task)}
+                    <InstitutionLogo institution={taskLogo(task)} size={22} />
                   {:else if task.kind === "crawler"}
                     <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else}
@@ -1652,7 +1661,7 @@ import type {
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
-                    <span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(task.id)} /></span>
+                    <span class="task-logo"><InstitutionLogo institution={taskLogo(task)} /></span>
                     <strong>{taskLabel(task, $t)}</strong>
                   </div>
                 </td>
@@ -1926,7 +1935,7 @@ import type {
                         </section>
                       {/if}
                       {#if runDetailsOverview}
-                        {@const unvalued = unvaluedAccountLabels(task.id, runDetailsOverview, $t)}
+                        {@const unvalued = unvaluedAccountLabels(task.integrationNamespaces, runDetailsOverview, $t)}
                         {#if unvalued.length}
                           <div class="unvalued-accounts" aria-label={$t.automation.unvaluedAccounts.title}>
                             <strong>{$t.automation.unvaluedAccounts.title}</strong>
@@ -2576,7 +2585,7 @@ import type {
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={sourceLogoForTask(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
+                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={taskIdLogo(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>

@@ -130,6 +130,8 @@ function workspace() {
   };
 }
 
+const VERIFIED_SOURCE_DEFINITIONS = fileURLToPath(new URL("../../src/lib/automation/server/sources/", import.meta.url));
+
 function reachableModules(entry) {
   const seen = new Set();
   const pending = [entry];
@@ -140,7 +142,8 @@ function reachableModules(entry) {
     const source = readFileSync(path, "utf8");
     // Type stripping erases whole `import type` statements but still loads `import { type X }` modules.
     const statements = source.matchAll(/^\s*(?:import|export)\s+(type\s+)?(?:[^"';]*?\sfrom\s+)?"(\.{1,2}\/[^"]+)"/gmu);
-    const dynamic = source.matchAll(/import\(\s*"(\.{1,2}\/[^"]+)"\s*\)/gu);
+    // A Verified source definition imports its workflow only when the App starts that run (ADR 0057).
+    const dynamic = path.startsWith(VERIFIED_SOURCE_DEFINITIONS) ? [] : source.matchAll(/import\(\s*"(\.{1,2}\/[^"]+)"\s*\)/gu);
     const specifiers = [
       ...[...statements].filter(([, typeOnly]) => !typeOnly).map(([, , specifier]) => specifier),
       ...[...dynamic].map(([, specifier]) => specifier),

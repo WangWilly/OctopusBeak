@@ -218,6 +218,7 @@ test("task disclosure follows explicit workflow nodes and stays scoped to the se
   const disclosureTask = {
     ...task,
     label: "Bank workflow",
+    integrationNamespaces: [],
     credentialKeys: [],
     dependencies: [],
     attempt: 1,
