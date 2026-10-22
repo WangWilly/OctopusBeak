@@ -179,3 +179,16 @@ test("fits the coach beside a credential panel that leaves the reserved column f
     assert.equal(intersects(panel, result, result), false);
   }
 });
+
+test("keeps the step-2 coach off the panel around the source rail", () => {
+  for (const viewport of [{ width: 980, height: 700 }, { width: 1280, height: 726 }]) {
+    const space = viewport.width - 20 - ONBOARDING_COACH_RESERVE;
+    const panel = { left: 20, top: 20, width: Math.min(1040, space - 20), height: viewport.height - 40 };
+    const rail = { left: panel.left, top: panel.top + 96, width: 300, height: panel.height - 96 - 62 };
+    const result = placeOnboardingCoach(rail, { width: ONBOARDING_COACH_WIDTH, height: 287 }, viewport, [panel]);
+
+    assert.ok(result);
+    assert.ok(inside(result, result, viewport));
+    assert.equal(intersects(panel, result, result), false);
+  }
+});
