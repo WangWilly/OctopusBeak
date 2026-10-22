@@ -232,6 +232,7 @@ export async function runSupervisedAppWorkflow(
   let appendEvent = options.appendEvent;
   let recordCommitAttempt = options.recordCommitAttempt;
   let commitAttemptReportCount = 0;
+  let commitAttemptInFlight = false;
   let appendExchangeRateProgress = options.appendExchangeRateProgress;
   let requestHumanAssistance = options.requestHumanAssistance;
 
@@ -334,23 +335,30 @@ export async function runSupervisedAppWorkflow(
         ...(!ok ? { code: "event-persistence-failed" as const } : {}),
       });
     };
+    // ADR 0056: a stop does not discard a settlement in flight. Recording is
+    // not raced against the stop, and its ACK is sent even while the run is
+    // stopping; the cancel grace still bounds how long the worker may take.
     const finishCommitAttempt = async (eventId: string, attempt: CommitAttemptReport) => {
       let ok = false;
       try {
-        await abortable(Promise.resolve().then(() => recordCommitAttempt(attempt, signal)), signal);
+        await recordCommitAttempt(attempt, signal);
         ok = true;
       } catch {
         ok = false;
       }
-      eventInFlight = false;
-      if (settled || pendingOutcome || signal.aborted) return;
-      send({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "event-ack",
-        eventId,
-        ok,
-        ...(!ok ? { code: "event-persistence-failed" as const } : {}),
-      });
+      commitAttemptInFlight = false;
+      if (settled) return;
+      try {
+        worker.postMessage(parseAppWorkflowWorkerInboundFrame({
+          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+          kind: "event-ack",
+          eventId,
+          ok,
+          ...(!ok ? { code: "event-persistence-failed" as const } : {}),
+        }));
+      } catch {
+        if (!pendingOutcome) protocolFailure();
+      }
     };
     const finishExchangeRateProgress = async (
       frame: Extract<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>, { kind: "exchange-rate-progress" }>,
@@ -412,6 +420,23 @@ export async function runSupervisedAppWorkflow(
         rotatedTdccSessionFlush ??= setImmediate(flushRotatedTdccSession);
         return;
       }
+      if (frame.kind === "commit-attempt") {
+        // A stopping run may still have an event write unwinding; only a running one must be idle.
+        if (
+          (eventInFlight && !pendingOutcome)
+          || commitAttemptInFlight
+          || commitAttemptReportCount >= MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN
+          || eventIds.has(frame.eventId)
+        ) {
+          protocolFailure();
+          return;
+        }
+        commitAttemptReportCount += 1;
+        eventIds.add(frame.eventId);
+        commitAttemptInFlight = true;
+        void finishCommitAttempt(frame.eventId, frame.attempt);
+        return;
+      }
       if (pendingOutcome) {
         if (pendingOutcome.status === "cancelled"
           && (frame.kind === "failed" || frame.kind === "cancelled")
@@ -435,6 +460,7 @@ export async function runSupervisedAppWorkflow(
       if (frame.kind === "event") {
         if (
           eventInFlight
+          || commitAttemptInFlight
           || eventCount >= MAX_EVENTS_PER_RUN
           || eventIds.has(frame.eventId)
           || frame.event.runId !== options.runId
@@ -448,26 +474,12 @@ export async function runSupervisedAppWorkflow(
         void finishEvent(frame.eventId, frame.event);
         return;
       }
-      if (frame.kind === "commit-attempt") {
-        if (
-          eventInFlight
-          || commitAttemptReportCount >= MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN
-          || eventIds.has(frame.eventId)
-        ) {
-          protocolFailure();
-          return;
-        }
-        commitAttemptReportCount += 1;
-        eventIds.add(frame.eventId);
-        eventInFlight = true;
-        void finishCommitAttempt(frame.eventId, frame.attempt);
-        return;
-      }
       if (frame.kind === "exchange-rate-progress") {
         if (
           options.workflowId !== "exchange-rates"
           || !appendExchangeRateProgress
           || eventInFlight
+          || commitAttemptInFlight
           || eventCount >= MAX_EVENTS_PER_RUN
           || eventIds.has(frame.eventId)
         ) {
@@ -507,7 +519,7 @@ export async function runSupervisedAppWorkflow(
         return;
       }
 
-      if (eventInFlight || assistanceInFlight) {
+      if (eventInFlight || commitAttemptInFlight || assistanceInFlight) {
         protocolFailure();
         return;
       }
