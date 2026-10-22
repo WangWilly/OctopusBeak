@@ -604,38 +604,6 @@
         "completed": 2,
         "total": 2
       }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-started",
-      "counts": {
-        "completed": 0,
-        "total": 3
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "current-balance-commit-started",
-      "counts": {
-        "completed": 0,
-        "total": 1
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-completed",
-      "counts": {
-        "completed": 3,
-        "total": 3
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "current-balance-commit-completed",
-      "counts": {
-        "completed": 1,
-        "total": 1
-      }
     }
   ]
 }

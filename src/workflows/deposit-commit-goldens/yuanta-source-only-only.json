@@ -183,24 +183,6 @@
       }
     },
     {
-      "stage": "commit",
-      "code": "deposit-canonical-commit-started",
-      "counts": {
-        "completed": 0,
-        "total": 1,
-        "statementType": "deposit"
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "deposit-canonical-commit-completed",
-      "counts": {
-        "completed": 1,
-        "total": 1,
-        "statementType": "deposit"
-      }
-    },
-    {
       "stage": "validation",
       "code": "source-validation-completed",
       "counts": {

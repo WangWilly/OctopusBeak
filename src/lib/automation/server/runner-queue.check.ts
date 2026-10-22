@@ -43,6 +43,8 @@ function harness() {
       },
       async taskRunById(id: string) { return runs.get(id) ?? null; },
       async resolveTaskPrerequisiteNotices() {},
+      async recordCommitAttempt() {},
+      async commitAttempts() { return []; },
       async transitionTaskRunToActive(id: string, patch: Partial<AutomationTaskRun>) {
         Object.assign(runs.get(id)!, patch); return { applied: true };
       },

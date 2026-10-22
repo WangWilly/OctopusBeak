@@ -1872,29 +1872,17 @@ export async function runYuantaTradeProviderWorkflow(
         },
       }],
     }));
-    await context.event("commit", "canonical-commit-started", {
-      completed: 0,
-      total: items.length,
-    });
     const result = await financialCommit.execute(items, {
       provider: "yuanta-trade",
       product: "investment",
       signal: context.signal,
     });
-    if (
-      result.status !== "completed" ||
-      result.items.length !== items.length ||
-      result.items.some((item) => item.status !== "committed")
-    ) {
+    if (result.status !== "completed") {
       const codes = result.diagnostics
         .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
         .join(", ");
       throw new Error(`YuanTa Trade Canonical Financial Commit failed: ${codes || result.status}.`);
     }
-    await context.event("commit", "canonical-commit-completed", {
-      completed: items.length,
-      total: items.length,
-    });
     return {
       usedExistingSession,
       dateRange,

@@ -19,6 +19,7 @@ test("MaiCoin collector rejection retains original frames in the worker safe sna
       startRun: async () => undefined, finishRun: async () => undefined,
       appendSnapshots: async () => undefined, appendStatementRows: async () => undefined,
     },
+    commitAttempts: { record: async () => undefined },
     events: { append: async (event) => { events.push(event); } },
     now: () => "2026-10-02T00:00:00.000Z",
   });

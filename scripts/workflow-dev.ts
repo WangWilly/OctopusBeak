@@ -316,7 +316,14 @@ function makePorts(
     browser: createDevelopmentBrowserPort(signal, startUrl, undefined, { ...browserOptions, sessionKey }),
     text: strictSourceText,
     humanAssistance: createLocalSolverHumanAssistancePort(signal, { workflowId, sessionKey }),
-    ...(commitPort ? { financialCommit: commitPort } : {}),
+    ...(commitPort ? {
+      financialCommit: commitPort,
+      commitAttempts: {
+        async record(report) {
+          stdout.write(`commit-attempt ${report.phase}${report.phase === "settled" ? ` ${report.outcome}` : ""}\n`);
+        },
+      },
+    } : {}),
     events: { append: async (event) => printEvent(event) },
     now: () => new Date().toISOString(),
   };
@@ -363,6 +370,7 @@ async function runFixture() {
     text: strictSourceText,
     humanAssistance: { request: async () => "entered" },
     financialCommit: createDryRunFinancialCommitPort((count) => { dryRunCount = count; }),
+    commitAttempts: { record: async () => undefined },
     events: { append: async (event) => { events.push(event); } },
     now: () => "2026-09-25T00:00:00.000Z",
   });

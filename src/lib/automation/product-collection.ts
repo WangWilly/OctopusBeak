@@ -1,3 +1,4 @@
+import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
 import type {
   PGliteWorkflowRunItem,
   PGliteWorkflowRunResult,
@@ -10,6 +11,7 @@ import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workf
 import type {
   WorkflowEventCounts,
   WorkflowProductFailure,
+  WorkflowContextStage,
   WorkflowProgressActivity,
   WorkflowStage,
 } from "./workflow-executor.ts";
@@ -130,7 +132,7 @@ export type ProductCollectionRunSummary = Readonly<{
 }>;
 
 export type ProductCollectionStageEvent = (
-  stage: WorkflowStage,
+  stage: WorkflowContextStage,
   code: string,
   counts?: WorkflowEventCounts,
 ) => Promise<void>;
@@ -303,10 +305,6 @@ function summarize(
   });
 }
 
-function countCommittedItems(result: PGliteWorkflowRunResult<unknown>): number {
-  return result.items.filter((item) => item.status === "committed").length;
-}
-
 function itemIdentity(item: Pick<PGliteWorkflowRunItem, "provider" | "product" | "itemKey">): string {
   return JSON.stringify([item.provider, item.product, item.itemKey]);
 }
@@ -320,36 +318,6 @@ function hasUniqueStagedIdentities(items: readonly PGliteWorkflowRunItem[]): boo
     identities.add(identity);
   }
   return true;
-}
-
-function validateCommitReceipts(
-  stagedItems: readonly PGliteWorkflowRunItem[],
-  result: PGliteWorkflowRunResult<unknown>,
-): Readonly<{ valid: boolean; committedCount: number }> {
-  if (!hasUniqueStagedIdentities(stagedItems) || result.items.length > stagedItems.length) {
-    return { valid: false, committedCount: 0 };
-  }
-
-  const returnedIdentities = new Set<string>();
-  for (const [index, item] of result.items.entries()) {
-    const identity = itemIdentity(item);
-    if (returnedIdentities.has(identity)
-      || identity !== itemIdentity(stagedItems[index]!)) {
-      return { valid: false, committedCount: 0 };
-    }
-    returnedIdentities.add(identity);
-  }
-
-  return {
-    valid: true,
-    committedCount: countCommittedItems(result),
-  };
-}
-
-function hasFatalCommitFailure(result: PGliteWorkflowRunResult<unknown>): boolean {
-  return result.status === "cancelled"
-    || result.items.some((item) => item.status === "failed" && item.failureKind === "fatal")
-    || result.diagnostics.some((item) => item.stage === "run" || item.stage === "cancellation");
 }
 
 /**
@@ -391,7 +359,7 @@ export async function collectSelectedProducts<
     let productItemCount = 0;
     let lastStage: WorkflowStage = "collection";
     const emitProductEvent = (
-      stage: WorkflowStage,
+      stage: WorkflowContextStage,
       code: string,
       counts?: WorkflowEventCounts,
     ) => {
@@ -477,14 +445,14 @@ export async function collectSelectedProducts<
         total: productItemCount,
       });
       let commitResult: PGliteWorkflowRunResult<unknown>;
+      // The commit port reports this stage and has already verified the receipts (ADR 0056).
+      lastStage = "commit";
       try {
-        await emitProductEvent("commit", `${codePrefix}-canonical-commit-started`, {
-          completed: 0,
-          total: stagedItems.length,
-        });
         commitResult = await options.commit(typeId, stagedItems);
-      } catch {
-        const commitFailure = createOutcome(typeId, "failed", productItemCount, 0, {
+      } catch (error) {
+        const knownReceipts = error instanceof CommitOutcomeUnknownError ? error.committedCount : 0;
+        committedCount += knownReceipts;
+        const commitFailure = createOutcome(typeId, "failed", productItemCount, knownReceipts, {
           errorCode: "commit-outcome-unknown",
         });
         completedByType.set(typeId, commitFailure);
@@ -492,61 +460,24 @@ export async function collectSelectedProducts<
         throw new ProductCollectionInterruptedError("commit-outcome-unknown", partialSummary);
       }
 
-      const validatedReceipts = validateCommitReceipts(stagedItems, commitResult);
-      const receiptsForProduct = validatedReceipts.committedCount;
-      const resultShapeValid = Number.isSafeInteger(commitResult.committedCount)
-        && commitResult.committedCount >= 0
-        && commitResult.committedCount <= stagedItems.length
-        && receiptsForProduct === commitResult.committedCount
-        && validatedReceipts.valid
-        && (commitResult.items.length === stagedItems.length || hasFatalCommitFailure(commitResult));
+      const receiptsForProduct = commitResult.committedCount;
       committedCount += receiptsForProduct;
-      if (!resultShapeValid) {
+      if (commitResult.status === "cancelled") {
         completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
-          errorCode: "commit-outcome-unknown",
+          errorCode: "cancelled",
         }));
-        throw new ProductCollectionInterruptedError("commit-outcome-unknown", summarize(
+        throw new ProductCollectionInterruptedError("cancelled", summarize(
           orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
         ));
       }
-
-      if (hasFatalCommitFailure(commitResult)) {
-        await emitProductEvent("commit", signal.aborted
-          ? `${codePrefix}-canonical-commit-cancelled`
-          : `${codePrefix}-canonical-commit-failed`, {
-          completed: receiptsForProduct,
-          total: stagedItems.length,
-        });
-        const errorCode = signal.aborted || commitResult.status === "cancelled"
-          ? "cancelled"
-          : "commit-outcome-unknown";
-        completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
-          errorCode,
-        }));
-        throw new ProductCollectionInterruptedError(errorCode, summarize(
-          orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
-        ));
-      }
-
-      const fullyCommitted = commitResult.status === "completed"
-        && receiptsForProduct === stagedItems.length
-        && commitResult.items.every((item) => item.status === "committed");
-      if (!fullyCommitted) {
+      if (commitResult.status !== "completed") {
         completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
           errorCode: "canonical-commit-failed",
         }));
-        await emitProductEvent("commit", `${codePrefix}-canonical-commit-failed`, {
-          completed: receiptsForProduct,
-          total: stagedItems.length,
-        });
         continue;
       }
 
       completedByType.set(typeId, createOutcome(typeId, "success", productItemCount, receiptsForProduct));
-      await emitProductEvent("commit", `${codePrefix}-canonical-commit-completed`, {
-        completed: receiptsForProduct,
-        total: stagedItems.length,
-      });
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) throw error;
       const fatalCode = signal.aborted

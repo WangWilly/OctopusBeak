@@ -543,23 +543,7 @@ export async function runEinvoiceProviderWorkflow(
       });
       context.signal.throwIfAborted();
 
-      await context.event("commit", "canonical-commit-started", {
-        completed: 0,
-        total: admittedInvoiceCount,
-      });
-      let commit: PGliteCanonicalEInvoiceCommitResult;
-      try {
-        commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
-      } catch (error) {
-        if (error instanceof EInvoiceCommitRejectedError) {
-          await context.event("commit", "canonical-commit-failed");
-        }
-        throw error;
-      }
-      await context.event("commit", "canonical-commit-completed", {
-        completed: commit.invoiceCount,
-        total: admittedInvoiceCount,
-      });
+      const commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
 
       return outputSchema.parse({
         usedExistingSession: false,

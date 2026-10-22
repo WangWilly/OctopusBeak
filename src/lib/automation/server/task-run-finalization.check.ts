@@ -130,22 +130,32 @@ test("TDCC incomplete receipt outcomes finalize partial, with cancellation and u
   }
 }));
 
-test("persisted product commit event invalidates freshness when a later worker crash has no summary", () => withProvider(async (provider) => {
+test("a settled Commit attempt invalidates freshness when a later worker crash has no summary", () => withProvider(async (provider) => {
   const taskRunId = await createRun(provider, "yuanta-all-statements");
-  await provider.automation.appendRunEvent({
-    runId: taskRunId,
-    stage: "commit",
-    code: "deposit-canonical-commit-completed",
-    occurredAt: new Date().toISOString(),
-    completed: 1,
-    total: 1,
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "started", attemptId: "deposit-attempt", product: "deposit", total: 1,
+  });
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "settled", attemptId: "deposit-attempt", outcome: "completed", committedCount: 1,
   });
   const invalidations = createDataVersionStore();
   const saved = await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, {
     dataVersionStore: invalidations,
   });
   assert.equal(saved.status, "failed");
-  assert.equal(invalidations.snapshot().version, 1, "only a persisted commit-completed event proves earlier progress");
+  assert.equal(invalidations.snapshot().version, 1, "only a durable Commit attempt proves earlier progress");
+}));
+
+test("an unsettled Commit attempt invalidates freshness because the write may have landed", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "yuanta-all-statements");
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "started", attemptId: "deposit-attempt", product: "deposit", total: 1,
+  });
+  const invalidations = createDataVersionStore();
+  await finalize(provider, taskRunId, { errorCode: "commit-outcome-unknown", summary: null }, {
+    dataVersionStore: invalidations,
+  });
+  assert.equal(invalidations.snapshot().version, 1);
 }));
 
 test("a failure without receipts leaves fresh data alone", () => withProvider(async (provider) => {

@@ -18,6 +18,7 @@ import {
 } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
+import type { CommitAttemptRecorder } from "../commit-attempt.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
@@ -223,7 +224,7 @@ export async function runAppWorkflowWorker(
   options.port.on("message", onMessage);
 
   const request = <T extends Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" | "human-assistance-response" }>>(
-    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "human-assistance-request" | "exchange-rate-progress" }>,
+    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "commit-attempt" | "human-assistance-request" | "exchange-rate-progress" }>,
     pending: Map<string, (response: AppWorkflowWorkerInboundFrame) => void>,
     id: string,
   ): Promise<T> => new Promise<T>((resolve, reject) => {
@@ -305,7 +306,7 @@ export async function runAppWorkflowWorker(
   let progressQueue = Promise.resolve();
   let acknowledgedEventQueue = Promise.resolve();
   const sendAcknowledgedEvent = (
-    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "exchange-rate-progress" }>,
+    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "commit-attempt" | "exchange-rate-progress" }>,
   ) => {
     const result = acknowledgedEventQueue.then(async () => {
       const ack = await request<Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" }>>(
@@ -385,6 +386,14 @@ export async function runAppWorkflowWorker(
         });
       },
     };
+    const commitAttempts: CommitAttemptRecorder = {
+      record: (attempt) => sendAcknowledgedEvent({
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        kind: "commit-attempt",
+        eventId: randomUUID(),
+        attempt,
+      }),
+    };
     const humanAssistance: WorkflowExecutorPorts["humanAssistance"] = {
       async request(contract, signal) {
         signal.throwIfAborted();
@@ -411,6 +420,7 @@ export async function runAppWorkflowWorker(
       humanAssistance,
       ...capabilityPorts,
       ...(previewWritePort(definition, previewWrite, childRpc?.operationalProvider.preview)),
+      commitAttempts,
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,

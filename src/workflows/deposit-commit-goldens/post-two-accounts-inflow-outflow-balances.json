@@ -587,22 +587,6 @@
         "completed": 2,
         "total": 2
       }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-started",
-      "counts": {
-        "completed": 0,
-        "total": 4
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-completed",
-      "counts": {
-        "completed": 4,
-        "total": 4
-      }
     }
   ]
 }

@@ -4,6 +4,7 @@ import {
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import {
   isTypedWorkflowOutcomeSummary,
@@ -113,6 +114,13 @@ export type AppWorkflowWorkerOutboundFrame =
     kind: "human-assistance-request";
     requestId: string;
     contract: HumanAssistanceContractInput;
+  }>
+  /** ADR 0056: acknowledged by event-ack once the host has recorded it. */
+  | Readonly<{
+    protocolVersion: 2;
+    kind: "commit-attempt";
+    eventId: string;
+    attempt: CommitAttemptReport;
   }>
   | Readonly<{
     protocolVersion: 2;
@@ -439,6 +447,10 @@ export function parseAppWorkflowWorkerOutboundFrame(
   }
   if (value.kind === "event" && exactKeys(value, ["protocolVersion", "kind", "eventId", "event"])) {
     if (typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId) || !validEvent(value.event)) invalid();
+    return value as unknown as AppWorkflowWorkerOutboundFrame;
+  }
+  if (value.kind === "commit-attempt" && exactKeys(value, ["protocolVersion", "kind", "eventId", "attempt"])) {
+    if (typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId) || !isCommitAttemptReport(value.attempt)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
   if (value.kind === "human-assistance-request" && exactKeys(value, ["protocolVersion", "kind", "requestId", "contract"])) {

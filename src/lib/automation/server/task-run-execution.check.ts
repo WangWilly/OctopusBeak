@@ -148,14 +148,9 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
         const start = this.workerData as AppWorkflowWorkerStart;
         setImmediate(() => this.emit("message", {
           protocolVersion: 2,
-          kind: "event",
+          kind: "commit-attempt",
           eventId: "worker-commit-started",
-          event: {
-            runId: start.taskRunId,
-            stage: "commit",
-            code: "canonical-commit-started",
-            occurredAt: "2026-09-26T00:00:01.000Z",
-          },
+          attempt: { phase: "started", attemptId: `attempt-${start.taskRunId}`, product: "financial", total: 1 },
         }));
       }
       return;
@@ -499,14 +494,10 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       } else if (scenario === "commit-cancel") {
         const commitDeadline = Date.now() + 10_000;
         while (Date.now() < commitDeadline) {
-          const run = await provider.automation.taskRunById(taskRunId);
-          if (run?.events.some((event) => event.code === "canonical-commit-started")) break;
+          if ((await provider.automation.commitAttempts(taskRunId)).length > 0) break;
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
-        assert.equal(
-          (await provider.automation.taskRunById(taskRunId))?.events.some((event) => event.code === "canonical-commit-started"),
-          true,
-        );
+        assert.equal((await provider.automation.commitAttempts(taskRunId)).length, 1);
         void active?.requestStop("cancelled");
       }
 
@@ -527,6 +518,10 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(crashed.result.status, "failed");
     assert.equal(crashed.run?.status, "failed");
     assert.equal(crashed.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+    // ADR 0056: the worker died between start and settlement, and the record says so.
+    assert.deepEqual(await provider.automation.commitAttempts(crashed.taskRunId), [{
+      attemptId: `attempt-${crashed.taskRunId}`, product: "financial", total: 1, outcome: null, committedCount: 0,
+    }]);
 
     const cancelled = await runScenario("commit-cancel");
     assert.equal(cancelled.result.status, "failed");
