@@ -171,7 +171,8 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           // Only the commit port knows a request may have landed (ADR 0056).
           if (error instanceof CommitOutcomeUnknownError) throw safeError("commit-outcome-unknown", error);
           if (context.signal.aborted) throw cancellationError();
-          throw error;
+          // The commit's start could not be recorded, so nothing was committed.
+          throw safeError("operational-persistence-failed", error);
         }
         if (commit.status !== "completed") {
           throw safeError(commit.status === "cancelled"

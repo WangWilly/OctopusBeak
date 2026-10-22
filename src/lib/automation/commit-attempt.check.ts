@@ -64,7 +64,11 @@ test("the run's attempts decide its commit outcome over what the worker reported
 });
 
 test("every product a workflow commits under is a valid attempt product, through the worker frame", () => {
-  for (const product of [...COLLECTION_PRODUCT_TYPE_IDS, "financial", "personal-invoice", "current-balance"]) {
+  // Every product a production workflow passes to financialCommit.execute, plus the shared type ids.
+  for (const product of [
+    ...COLLECTION_PRODUCT_TYPE_IDS,
+    "financial", "personal-invoice", "current-balance", "credit-card", "investment",
+  ]) {
     const attempt = { phase: "started", attemptId: "attempt-1", product, total: 1 } as const;
     assert.equal(isCommitAttemptReport(attempt), true, product);
     assert.doesNotThrow(() => parseAppWorkflowWorkerOutboundFrame({

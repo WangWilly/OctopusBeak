@@ -209,6 +209,36 @@ test("a thrown commit request is recorded as an unknown outcome without its erro
   }
 });
 
+test("an unrecorded commit start commits nothing and is recorded as an operational failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const state = {
+    events: [] as WorkflowRunEvent[],
+    commits: [] as unknown[][],
+    records: { started: [], snapshots: [], statements: [], finished: [] } as {
+      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
+    },
+  };
+  try {
+    globalThis.fetch = validMaxFetch() as typeof fetch;
+    await assert.rejects(() => createRun({
+      ...ports(state),
+      commitAttempts: { record: async () => { throw new Error("event-persistence-failed"); } },
+    }).run(
+      "sync-maicoin",
+      "maicoin-run-unrecorded-start",
+      { credentials: { accessKey: "a", secretKey: "b", subAccount: "main" } },
+      new AbortController().signal,
+    ));
+    assert.equal(state.commits.length, 0, "the canonical request never starts");
+    assert.equal(
+      (state.records.finished[0] as { record: { errorCode: string } }).record.errorCode,
+      "operational-persistence-failed",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("MaiCoin cancellation aborts MAX requests, skips commit, and records cancellation", async () => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
