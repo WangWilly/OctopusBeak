@@ -175,6 +175,8 @@ export function recordedFinancialCommitPort(
   const newAttemptId = options.newAttemptId ?? randomUUID;
   return {
     async execute(items, executeOptions) {
+      // A cancelled run starts no new attempt; one already started still settles.
+      executeOptions?.signal?.throwIfAborted();
       const attemptId = newAttemptId();
       const product = executeOptions?.product ?? null;
       const total = items.length;

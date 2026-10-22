@@ -753,3 +753,65 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     channel.port2.close();
   }
 });
+
+test("a settlement that finishes after cancellation still reaches the host", async () => {
+  const channel = new MessageChannel();
+  const observed: AppWorkflowWorkerOutboundFrame[] = [];
+  const definition: WorkflowDefinition = {
+    id: "fixture-protocol",
+    requiresFinancialCommit: true,
+    async run(context) {
+      await context.browser.withPage(async () => undefined);
+      await context.financialCommit!.execute([runItem()], { signal: context.signal });
+      context.signal.throwIfAborted();
+      return null;
+    },
+  };
+  const financialCommit: WorkflowFinancialCommitPort = {
+    // The canonical request stops at the next item boundary once the run is cancelled.
+    async execute(_items, options) {
+      await new Promise<void>((resolve) => {
+        if (options?.signal?.aborted) resolve();
+        else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        status: "cancelled", items: [], committedCount: 0, failedCount: 0,
+        diagnostics: [{ provider: "fixture", product: "fixture", itemKey: "fixture-item", stage: "cancellation", errorCode: "cancelled", message: "cancelled" }],
+      };
+    },
+  };
+  // Like the supervisor: after asking the worker to stop, ACK only commit attempts.
+  let stopping = false;
+  const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
+    channel.port2.on("message", (value: unknown) => {
+      const frame = parseAppWorkflowWorkerOutboundFrame(value);
+      observed.push(frame);
+      if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolve(frame);
+      if (frame.kind === "commit-attempt" || (frame.kind === "event" && !stopping)) {
+        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      }
+      if (frame.kind === "commit-attempt" && frame.attempt.phase === "started") {
+        stopping = true;
+        channel.port2.postMessage({ protocolVersion: 2, kind: "cancel" });
+      }
+    });
+  });
+  try {
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: start,
+      resolveDefinition: () => definition,
+      browser: { async withPage(run) { return await run({} as never); } },
+      financialCommit,
+    });
+    assert.equal((await terminal).kind, "cancelled");
+    assert.deepEqual(
+      observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt] : []).map((attempt) =>
+        attempt.phase === "settled" ? [attempt.phase, attempt.outcome] : [attempt.phase]),
+      [["started"], ["settled", "cancelled"]],
+    );
+  } finally {
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
