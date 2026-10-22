@@ -13,6 +13,7 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
   return {
     id: "exchange-rates",
     label: "Exchange rates",
+    displayName: { en: "Exchange rates", "zh-TW": "匯率同步" },
     kind: "sync",
     integrationNamespaces: [],
     credentialKeys: [],
