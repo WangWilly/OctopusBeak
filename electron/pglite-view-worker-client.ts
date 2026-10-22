@@ -14,6 +14,12 @@ import {
 
 type WorkerPort = Pick<Worker, "on" | "off" | "postMessage" | "terminate">;
 
+/**
+ * How long close waits for the worker's own shutdown, which ends with PGlite's
+ * shutdown checkpoint, before terminating it.
+ */
+export const PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS = 5_000;
+
 export type PGliteViewWorkerClient = Pick<ViewPortClient, "subscribe"> & {
   /** Typed operational commands and queries over the same worker/database. */
   operationalProvider: PGliteOperationalRpcClient["provider"];
@@ -142,15 +148,17 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
       closePromise = views.close().then(async () => {
         operational.close(new Error("PGlite view worker is closed."));
         financial.close(new Error("PGlite view worker is closed."));
+        let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           worker.postMessage({ kind: "shutdown" });
           await Promise.race([
             stoppedPromise,
-            new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+            new Promise<void>((resolve) => { shutdownTimer = setTimeout(resolve, PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS); }),
           ]);
         } catch {
           // A crashed worker is handled by the bounded terminate fallback.
         } finally {
+          clearTimeout(shutdownTimer);
           detachReady();
           worker.off("error", onError);
           worker.off("exit", onExit);

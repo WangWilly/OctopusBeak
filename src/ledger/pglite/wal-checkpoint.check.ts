@@ -68,10 +68,39 @@ test("stopping the checkpoints waits for one in flight and schedules no more", a
     thresholdBytes: 0,
     onCheckpoint: () => { ticks += 1; },
   });
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  await checkpoints.stop();
-  const settled = ticks;
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(ticks, settled);
-  await store.close();
+  try {
+    const deadline = Date.now() + 5_000;
+    while (ticks === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(ticks > 0);
+    await checkpoints.stop();
+    const settled = ticks;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(ticks, settled);
+  } finally {
+    await checkpoints.stop();
+    await store.close();
+  }
+});
+
+test("each checkpoint runs through the caller's work queue", async () => {
+  // In the worker a CHECKPOINT blocks the thread, so it must wait its turn in
+  // the background lane rather than jump ahead of an interactive request.
+  const store = await storeWithBacklog(1);
+  const lanes: string[] = [];
+  let ticks = 0;
+  const checkpoints = startPgliteWalCheckpoints(store, {
+    intervalMs: 5,
+    thresholdBytes: 0,
+    run: (task) => { lanes.push("background"); return task(); },
+    onCheckpoint: () => { ticks += 1; },
+  });
+  try {
+    const deadline = Date.now() + 5_000;
+    while (ticks === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(ticks > 0);
+    assert.ok(lanes.length >= ticks);
+  } finally {
+    await checkpoints.stop();
+    await store.close();
+  }
 });
