@@ -11,6 +11,9 @@ type Position = {
 
 const MARGIN = 24;
 const GAP = 18;
+export const ONBOARDING_COACH_WIDTH = 360;
+/** Width a panel must leave free on its right for the coach to sit beside it. */
+export const ONBOARDING_COACH_RESERVE = ONBOARDING_COACH_WIDTH + GAP + MARGIN;
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
