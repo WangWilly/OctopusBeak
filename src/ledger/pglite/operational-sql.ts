@@ -20,6 +20,25 @@ END;
 $guard$;
 `;
 
+const COMMIT_ATTEMPTS_TABLE_SQL = String.raw`
+CREATE TABLE IF NOT EXISTS automation_task_run_commit_attempts (
+  task_run_id TEXT NOT NULL REFERENCES automation_task_runs(task_run_id),
+  attempt_id TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('started', 'settled')),
+  product TEXT,
+  total INTEGER CHECK (total >= 0),
+  outcome TEXT CHECK (outcome IN ('completed', 'failed', 'cancelled')),
+  committed_count INTEGER CHECK (committed_count >= 0),
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (task_run_id, attempt_id, phase),
+  CHECK (
+    (phase = 'started' AND total IS NOT NULL AND outcome IS NULL AND committed_count IS NULL)
+    OR (phase = 'settled' AND product IS NULL AND total IS NULL
+      AND outcome IS NOT NULL AND committed_count IS NOT NULL)
+  )
+);
+`;
+
 /**
  * Fresh operational persistence for automation lifecycle state and exchange
  * rates.  This schema is deliberately separate from the generated canonical
@@ -61,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_task_runs_status
   ON automation_task_runs(status, started_at);
 CREATE INDEX IF NOT EXISTS idx_automation_task_runs_started_at
   ON automation_task_runs(started_at DESC);
-
+${COMMIT_ATTEMPTS_TABLE_SQL}
 CREATE TABLE IF NOT EXISTS automation_task_prerequisite_notices (
   notice_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
@@ -103,7 +122,7 @@ EXECUTE FUNCTION pglite_guard_terminal_automation_task_run();
 INSERT INTO pglite_operational_baseline_metadata(
   singleton_id, baseline_version, table_count, index_count, trigger_count
 )
-VALUES (1, 3, 3, 5, 1)
+VALUES (1, 4, 4, 5, 1)
 ON CONFLICT (singleton_id) DO NOTHING;
 `;
 
@@ -119,4 +138,15 @@ ${TERMINAL_TASK_RUN_GUARD_SQL}
 UPDATE pglite_operational_baseline_metadata
 SET baseline_version = 3
 WHERE singleton_id = 1 AND baseline_version = 2;
+`;
+
+/**
+ * Forward step for an existing baseline-3 database: add the append-only
+ * Commit attempt record that decides a run's commit outcome (ADR 0056).
+ */
+export const PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL: string = String.raw`
+${COMMIT_ATTEMPTS_TABLE_SQL}
+UPDATE pglite_operational_baseline_metadata
+SET baseline_version = 4, table_count = 4
+WHERE singleton_id = 1 AND baseline_version = 3;
 `;

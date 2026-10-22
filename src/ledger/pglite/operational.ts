@@ -27,6 +27,13 @@ import {
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
+import {
+  applyCommitAttemptReport,
+  isCommitAttemptReport,
+  type CommitAttempt,
+  type CommitAttemptOutcome,
+  type CommitAttemptReport,
+} from "../../lib/automation/commit-attempt.ts";
 import type { BrowserRuntimeIdentity } from "../../lib/automation/server/browser-runtime.ts";
 import { sanitizeTypedWorkflowOutcome } from "../../lib/automation/server/typed-workflow-outcome.ts";
 import type {
@@ -40,16 +47,18 @@ import {
 import {
   PGLITE_OPERATIONAL_BASELINE_SQL,
   PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL,
+  PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL,
 } from "./operational-sql.ts";
 import {
   createPGliteMaicoinPersistence,
   type PGliteMaicoinPersistencePort,
 } from "./maicoin-operational.ts";
 
-export const PGLITE_OPERATIONAL_BASELINE_VERSION = 3;
+export const PGLITE_OPERATIONAL_BASELINE_VERSION = 4;
 
 const OPERATIONAL_TABLES = [
   "automation_task_runs",
+  "automation_task_run_commit_attempts",
   "automation_task_prerequisite_notices",
   "exchange_rates",
 ] as const;
@@ -331,6 +340,38 @@ async function taskRunByIdFrom(
   return row ? rowToTaskRun(row) : null;
 }
 
+async function commitAttemptsFrom(
+  database: QueryDatabase,
+  taskRunId: string,
+): Promise<readonly CommitAttempt[]> {
+  const result = await database.query<Row>(
+    `SELECT attempt_id, phase, product, total, outcome, committed_count
+     FROM automation_task_run_commit_attempts
+     WHERE task_run_id = $1
+     ORDER BY recorded_at ASC, attempt_id ASC`,
+    [taskRunId],
+  );
+  const reports: CommitAttemptReport[] = result.rows.map((row) => row.phase === "started"
+    ? {
+      phase: "started",
+      attemptId: String(row.attempt_id),
+      product: nullableString(row.product),
+      total: numeric(row.total),
+    }
+    : {
+      phase: "settled",
+      attemptId: String(row.attempt_id),
+      outcome: String(row.outcome) as CommitAttemptOutcome,
+      committedCount: numeric(row.committed_count),
+    });
+  // A settlement shares its start's instant at most; fold every start first.
+  const ordered = [
+    ...reports.filter((report) => report.phase === "started"),
+    ...reports.filter((report) => report.phase === "settled"),
+  ];
+  return ordered.reduce<readonly CommitAttempt[]>(applyCommitAttemptReport, []);
+}
+
 async function writeTaskRun(
   transaction: PGliteTransaction,
   taskRunId: string,
@@ -366,9 +407,10 @@ export async function applyPgliteOperationalBaseline(
       "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
     );
     const version = numeric(metadata.rows[0]?.baseline_version ?? -1);
-    if (version === 2) {
+    if (version === 2 || version === 3) {
       await database.transaction(async (transaction) => {
-        await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL);
+        if (version === 2) await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL);
+        await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL);
       });
       await assertPgliteOperationalBaseline(database);
       return;
@@ -535,6 +577,33 @@ export class PGliteOperationalStore
         [taskRunRecordJson({ ...run, events }), run.taskRunId],
       );
     });
+  }
+
+  /** Append one Commit attempt phase (ADR 0056). A finished run accepts none. */
+  async recordCommitAttempt(taskRunId: string, report: CommitAttemptReport): Promise<void> {
+    if (!isCommitAttemptReport(report)) throw new Error("Invalid commit attempt report.");
+    await this.#database.transaction(async (transaction) => {
+      const run = await taskRunByIdFrom(transaction, taskRunId);
+      if (!run) throw new Error(`Missing automation task run: ${taskRunId}`);
+      if (isTerminalTaskRunStatus(run.status)) {
+        throw new Error(`Terminal automation task run is immutable: ${taskRunId}`);
+      }
+      applyCommitAttemptReport(await commitAttemptsFrom(transaction, taskRunId), report);
+      await transaction.query(
+        `
+        INSERT INTO automation_task_run_commit_attempts (
+          task_run_id, attempt_id, phase, product, total, outcome, committed_count, recorded_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+        report.phase === "started"
+          ? [taskRunId, report.attemptId, "started", report.product, report.total, null, null, new Date().toISOString()]
+          : [taskRunId, report.attemptId, "settled", null, null, report.outcome, report.committedCount, new Date().toISOString()],
+      );
+    });
+  }
+
+  commitAttempts(taskRunId: string): Promise<readonly CommitAttempt[]> {
+    return commitAttemptsFrom(this.#database, taskRunId);
   }
 
   async pruneRunEvents(cutoffUtc: string): Promise<number> {

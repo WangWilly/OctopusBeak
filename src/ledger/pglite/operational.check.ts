@@ -83,6 +83,38 @@ try {
   assert.equal((await operational.taskRunById(created.taskRunId))?.status, "running");
   assert.equal((await operational.taskRunById(created.taskRunId))?.appWorkflowOutcome ?? null, null);
 
+  // ADR 0056: a started attempt reads as unsettled until its settlement lands.
+  await operational.recordCommitAttempt(created.taskRunId, {
+    phase: "started", attemptId: "attempt-1", product: "deposit", total: 3,
+  });
+  assert.deepEqual(await operational.commitAttempts(created.taskRunId), [
+    { attemptId: "attempt-1", product: "deposit", total: 3, outcome: null, committedCount: 0 },
+  ]);
+  await operational.recordCommitAttempt(created.taskRunId, {
+    phase: "settled", attemptId: "attempt-1", outcome: "failed", committedCount: 2,
+  });
+  assert.deepEqual(await operational.commitAttempts(created.taskRunId), [
+    { attemptId: "attempt-1", product: "deposit", total: 3, outcome: "failed", committedCount: 2 },
+  ]);
+  await assert.rejects(
+    operational.recordCommitAttempt(created.taskRunId, {
+      phase: "settled", attemptId: "attempt-1", outcome: "completed", committedCount: 3,
+    }),
+    /not awaiting settlement/u,
+  );
+  await assert.rejects(
+    operational.recordCommitAttempt(created.taskRunId, {
+      phase: "settled", attemptId: "attempt-never-started", outcome: "completed", committedCount: 0,
+    }),
+    /not awaiting settlement/u,
+  );
+  await assert.rejects(
+    operational.recordCommitAttempt(created.taskRunId, {
+      phase: "started", attemptId: "attempt-2", product: null, total: 1, extra: true,
+    } as never),
+    /Invalid commit attempt report/u,
+  );
+
   await operational.updateTaskRun(created.taskRunId, {
     appWorkflowOutcome: {
       errorCode: "source-validation-failed",
@@ -197,6 +229,12 @@ try {
     finishedAt: "2026-09-22T00:02:00.000Z",
   });
   assert.deepEqual(staleFinalizer, { status: "completed", applied: false });
+  await assert.rejects(
+    operational.recordCommitAttempt(created.taskRunId, {
+      phase: "started", attemptId: "attempt-after-finish", product: null, total: 1,
+    }),
+    /Terminal automation task run is immutable/u,
+  );
   await assert.rejects(
     operational.updateTaskRun(created.taskRunId, { logTail: "mutated" } as never),
     /Invalid automation task run update/u,
@@ -416,7 +454,7 @@ try {
   });
   await assert.rejects(
     applyPgliteOperationalBaseline(legacyStore),
-    /PGlite operational baseline reset required: found version 1, expected 3/u,
+    /PGlite operational baseline reset required: found version 1, expected 4/u,
   );
   const oldRunCount = await legacyStore.query<{ count: number | string }>(
     "SELECT COUNT(*) AS count FROM automation_task_runs WHERE task_run_id = 'legacy-run'",
@@ -478,7 +516,12 @@ try {
   const upgradedMetadata = await baselineV2Store.query<{ baseline_version: number | string }>(
     "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
   );
-  assert.equal(Number(upgradedMetadata.rows[0]?.baseline_version), 3);
+  assert.equal(Number(upgradedMetadata.rows[0]?.baseline_version), 4);
+  const attemptTable = await baselineV2Store.query<{ count: number | string }>(`
+    SELECT COUNT(*) AS count FROM information_schema.tables
+    WHERE table_schema = current_schema() AND table_name = 'automation_task_run_commit_attempts'
+  `);
+  assert.equal(Number(attemptTable.rows[0]?.count), 1);
   const retiredColumns = await baselineV2Store.query<{ column_name: string }>(`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = current_schema()
