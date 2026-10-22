@@ -8,7 +8,7 @@ import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../electron/pglite-financial-registry.ts";
+import { createPGliteFinancialLocalPort, createPGliteFinancialRegistry } from "../electron/pglite-financial-registry.ts";
 import { createWorkflowFinancialCommitPort } from "../src/lib/automation/workflow-financial-commit.ts";
 import { createWorkflowExecutor } from "../src/lib/automation/workflow-executor.ts";
 import { createMaicoinWorkflow } from "../src/lib/automation/maicoin-workflow.ts";
@@ -27,6 +27,7 @@ import {
   deriveFubonDomesticDepositAccountNumberEvidence,
   runFubonStatements,
   type FubonParsedDepositStatement,
+  type FubonStatementsRunDependencies,
 } from "../src/workflows/fubon-statements.ts";
 import { deriveFubonSourceConnectionKey, fubonStableLoginScope } from "../src/workflows/fubon-source-connection.ts";
 import {
@@ -70,7 +71,7 @@ const { buildYuantaTradeCanonicalCaptures } = await import("../src/workflows/yua
  *   OCTOPUSBEAK_USER_DATA=/tmp/octopusbeak-spending-demo npm run desktop:dev -- --lang=zh-TW
  */
 
-const TODAY = "2026-10-11";
+const TODAY = process.env.DEMO_TODAY ?? "2026-10-11";
 const FIRST_DAY = "2026-06-01";
 
 const money = (value: number) => value.toLocaleString("en-US");
@@ -172,7 +173,11 @@ function fubonStatementThrough(rows: readonly DepositRow[], through: string) {
   return { statement, balance, rowCount: statementRows.length };
 }
 
-async function collectFubon(rows: readonly DepositRow[], date: string): Promise<PGliteWorkflowRunItem[]> {
+async function collectFubon(
+  rows: readonly DepositRow[],
+  date: string,
+  accountIdentityContinuity: FubonStatementsRunDependencies["accountIdentityContinuity"],
+): Promise<PGliteWorkflowRunItem[]> {
   const { statement, balance, rowCount } = fubonStatementThrough(rows, date);
   if (rowCount === 0) return [];
   const at = `${date}T01:20:00.000Z`;
@@ -203,6 +208,7 @@ async function collectFubon(rows: readonly DepositRow[], date: string): Promise<
     deferredCommitItems: items,
     sourceText: strictSourceText,
     signal: new AbortController().signal,
+    accountIdentityContinuity,
     openTransactionDetailForAccountIndex: async () => "****7028",
     readDepositAccountOptions: async () => [FUBON_ACCOUNT],
     selectDepositAccount: async () => undefined,
@@ -434,7 +440,7 @@ export async function seedAppDemo(userData: string) {
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;
@@ -469,7 +475,7 @@ export async function seedAppDemo(userData: string) {
     const deposits = fubonRows(spending.cardBills);
     for (const date of SNAPSHOT_DATES) {
       runDate = date;
-      await run("fubon", await collectFubon(deposits, date));
+      await run("fubon", await collectFubon(deposits, date, (request) => child!.financial.request("financial.accountIdentity.continuity", [request])));
       await run("yuanta", await collectYuantaFx(date));
       await run("yuanta-trade", collectYuantaTrade(date));
       await run("yuanta-fund", collectYuantaFund(date));
