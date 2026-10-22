@@ -3,9 +3,13 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { MessageChannel, Worker } from "node:worker_threads";
 import test from "node:test";
-import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
+import {
+  createPGliteViewWorkerClient,
+  PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS,
+} from "./pglite-view-worker-client.ts";
 import { startPGliteViewWorker } from "./pglite-view-worker.ts";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -74,4 +78,33 @@ test("worker-owned temporary data is removed after shutdown", async () => {
     channel.port1.close();
     channel.port2.close();
   }
+});
+
+test("closing the client gives a slow worker shutdown its full bound before terminating", async (t) => {
+  // The worker's close ends with PGlite's shutdown checkpoint. Terminating it
+  // early leaves the ledger needing WAL recovery on the next launch.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const posted: unknown[] = [];
+  let terminated = 0;
+  const worker = Object.assign(new EventEmitter(), {
+    postMessage(message: unknown) { posted.push(message); },
+    terminate() { terminated += 1; return Promise.resolve(1); },
+  });
+  const client = createPGliteViewWorkerClient(
+    worker as unknown as Parameters<typeof createPGliteViewWorkerClient>[0],
+  );
+
+  const closing = client.close();
+  await settle();
+  assert.deepEqual(posted.at(-1), { kind: "shutdown" });
+  t.mock.timers.tick(PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS - 1);
+  await settle();
+  assert.equal(terminated, 0);
+
+  worker.emit("message", { kind: "worker-stopped" });
+  await closing;
+  assert.equal(terminated, 1);
 });

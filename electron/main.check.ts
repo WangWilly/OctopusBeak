@@ -22,6 +22,16 @@ assert.match(
   source,
   /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*scheduler\?\.stop\(\);\s*collectionScheduler\?\.stop\(\);/,
 );
+assert.match(
+  source,
+  /closeDatabase: async \(\) => \{\s*await pgliteOperationalRuntime\?\.close\(\);\s*\}/,
+  "quit waits for the PGlite shutdown checkpoint so the next launch does not replay the WAL",
+);
+assert.match(
+  source,
+  /closeDatabaseDeadlineMs: QUIT_CLEANUP_WAIT_MS \+ PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS \+ \d/,
+  "the quit deadline leaves the worker its whole shutdown bound after cleanup",
+);
 assert.match(source, /app\.on\("before-quit", handleBeforeQuit\)/);
 assert.match(
   source,

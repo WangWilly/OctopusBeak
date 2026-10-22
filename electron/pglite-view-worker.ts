@@ -17,6 +17,7 @@ import {
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialLiveViews,
@@ -79,6 +80,13 @@ export async function startPGliteViewWorker(
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();
+  const walCheckpoints = startPgliteWalCheckpoints(database, {
+    run: (task) => scheduler.schedule("background", task),
+    onError: (error) => console.error(
+      "pglite-wal-checkpoint-failed",
+      error instanceof Error ? error.message : String(error),
+    ),
+  });
   const financialViews = createPGliteFinancialLiveViews(
     db,
     financialRegistry,
@@ -119,6 +127,7 @@ export async function startPGliteViewWorker(
             await operationalServer.close();
           } finally {
             try {
+              await walCheckpoints.stop();
               await database.close();
             } finally {
               if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
