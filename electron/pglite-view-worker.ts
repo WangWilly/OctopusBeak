@@ -70,9 +70,6 @@ export async function startPGliteViewWorker(
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
     throw error;
   }
-  const walCheckpoints = startPgliteWalCheckpoints(database, {
-    onError: () => console.error("pglite-wal-checkpoint-failed"),
-  });
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
   const financialRegistry = createPGliteFinancialRegistry(
@@ -83,6 +80,13 @@ export async function startPGliteViewWorker(
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();
+  const walCheckpoints = startPgliteWalCheckpoints(database, {
+    run: (task) => scheduler.schedule("background", task),
+    onError: (error) => console.error(
+      "pglite-wal-checkpoint-failed",
+      error instanceof Error ? error.message : String(error),
+    ),
+  });
   const financialViews = createPGliteFinancialLiveViews(
     db,
     financialRegistry,

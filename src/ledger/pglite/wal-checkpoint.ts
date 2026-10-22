@@ -37,18 +37,21 @@ export function startPgliteWalCheckpoints(
   options: {
     intervalMs?: number;
     thresholdBytes?: number;
+    /** Queue that owns the database; a CHECKPOINT blocks its thread while it runs. */
+    run?: <T>(task: () => Promise<T>) => Promise<T>;
     onCheckpoint?: () => void;
     onError?: (error: unknown) => void;
   } = {},
 ): PgliteWalCheckpoints {
   const intervalMs = options.intervalMs ?? PGLITE_WAL_CHECKPOINT_INTERVAL_MS;
   const thresholdBytes = options.thresholdBytes ?? PGLITE_WAL_CHECKPOINT_THRESHOLD_BYTES;
+  const run = options.run ?? (<T>(task: () => Promise<T>) => task());
   let stopped = false;
   let running: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
     timer = setTimeout(() => {
-      running = checkpointPgliteWalBacklog(store, thresholdBytes)
+      running = run(() => checkpointPgliteWalBacklog(store, thresholdBytes))
         .then((checkpointed) => { if (checkpointed) options.onCheckpoint?.(); })
         .catch((error: unknown) => { if (!stopped) options.onError?.(error); })
         .finally(() => { if (!stopped) schedule(); });
