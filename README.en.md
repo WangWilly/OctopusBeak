@@ -32,15 +32,21 @@ The Assets page groups bank, fund, brokerage, crypto, and foreign-currency accou
 
 ![OctopusBeak Assets page (Traditional Chinese UI)](site/assets/screens/assets.webp)
 
+### Track credit cards and loans
+
+The Liabilities page shows credit-card and loan balance trends, upcoming payments, and credit utilization. Filter by credit cards or loans, then open an account to inspect its transactions, history, and statements.
+
+![OctopusBeak Liabilities page (Traditional Chinese UI)](site/assets/screens/liabilities.webp)
+
 ### Organize E-Invoices and account spending
 
-The Spending page combines E-Invoices and account expenses, grouped by month and category. You can inspect invoice items and correct their categories.
+The Spending page combines E-Invoices and account expenses, grouped by month and category. You can inspect invoice items and correct their categories. In Merge review, merge an invoice with the payment for the same purchase so the purchase is counted once.
 
 ![OctopusBeak Spending page (Traditional Chinese UI)](site/assets/screens/spending.webp)
 
 ### Collect data from the desktop app
 
-The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect.
+The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect. With Daily scheduled collection on, the App syncs every enabled source at a set time while it is open and notifies you when a source needs attention. Foreign-currency and crypto exchange rates update once a day.
 
 ![OctopusBeak sign-in settings (Traditional Chinese UI)](site/assets/screens/credentials.webp)
 
@@ -48,7 +54,9 @@ The Automation page keeps sources, sign-in details, and run history in one place
 
 1. Open OctopusBeak and use Welcome to choose a language and whether to start setup.
 2. Choose one source, enter its sign-in details, and select statement types.
-3. Start collection. The App solves provider CAPTCHAs on your device. Cathay United Bank needs a one-time device registration in its sign-in settings before the first run.
+3. Start collection. The App solves provider CAPTCHAs on your device. Some sources need extra preparation:
+   - Cathay and TDCC e-Passbook: register this device once in the source's sign-in settings before the first run. TDCC trusts one device at a time, so every sync signs the TDCC e-Passbook phone App out. If you sign in to the phone App again, register this device again before the next sync.
+   - Yuanta Trade: install Yuanta's official ServiSign security component, as described in its sign-in settings.
 4. The app validates source completeness and writes accepted data directly to the local database.
 5. Return to Overview to review the result.
 
@@ -70,14 +78,39 @@ The app remembers onboarding progress, so you can quit and continue later. You c
 | LINE Bank | TWD deposits and foreign currency |
 | E-Invoice | Personal invoices and purchased items |
 | MAX / MaiCoin | Crypto balances and statement rows |
+| TDCC e-Passbook | Securities, funds, settlement accounts |
 
 Foreign-currency transaction details are currently supported for SinoPac, Yuanta, Cathay, and LINE Bank.
+
+### Preview sources
+
+Turn on Preview features in Settings to connect the following sources, which have not been verified with real accounts. This is an experimental feature.
+
+| Source | Available data |
+| --- | --- |
+| Next Bank | Deposits, time deposits |
+| Shin Kong Bank | Deposits, credit cards |
+| Rakuten | Deposits |
+| Mega Bank | Deposits, credit cards |
+| Taishin | Deposits, credit cards |
+| O-Bank | Deposits, time deposits |
+| First Bank | Deposits, credit cards |
+| KGI Bank | Deposits |
+| CTBC | Credit cards |
+| Cathay | Credit cards, time deposits, collected in the same sign-in as the verified source |
+| HNCB | Credit cards, collected in the same sign-in as the verified source |
+| SinoPac | Credit cards, collected in the same sign-in as the verified source |
+| ESun | Deposits, collected in the same sign-in as the verified source |
+
+Preview data is stored apart from verified data. Preview balances count toward assets, liabilities, and net worth with a preview marker; preview transactions appear only in their account's details, outside spending and categories. Turning Preview features off hides preview sources and their data but keeps the data. You can delete all preview data in Settings.
 
 ## Your data stays on your device
 
 Financial records, automation settings, and run summaries are stored in the local database. The app processes source content in memory without saving source downloads, generated CSV/JSON, or raw logs; structured run events are kept for 30 days. Sign-in details stay on your Mac and are encrypted with Electron `safeStorage`. If secure encryption is unavailable, OctopusBeak stops at startup instead of writing plaintext passwords.
 
-CAPTCHAs, OTPs, session cookies, and other authentication material are not sent to a model. CAPTCHAs are solved by an on-device recognizer. A verification the App cannot complete fails that run and shows the reason.
+CAPTCHAs, OTPs, session cookies, and other authentication material are not sent to a model. CAPTCHAs are solved by an on-device recognizer, and audio CAPTCHAs by on-device speech recognition. A verification the App cannot complete fails that run and shows the reason.
+
+When a preview source run fails, you can use Share structure report in its run details to help improve that source. The report describes only the field structure of the responses, never account numbers, names, amounts, dates, or other content. You review the full report and paste it into a prefilled public GitHub issue yourself; the App sends nothing.
 
 ## Developer information
 
@@ -131,9 +164,12 @@ Both development and packaged builds store financial data in `~/Library/Applicat
 | --- | --- |
 | `src/workflows/` | Bank and source workflow definitions; production tasks run through the desktop App's typed runtime |
 | `src/ledger/` | Source parsing, PGlite storage, and financial queries |
-| `src/lib/overview/`, `src/lib/assets/`, `src/lib/liabilities/` | Financial overview UI |
+| `src/lib/overview/`, `src/lib/assets/` | Overview and Assets UI |
+| `src/lib/liabilities/` | Liabilities UI |
 | `src/lib/spending/` | E-Invoice and spending UI |
 | `src/lib/automation/` | Automation UI and server helpers |
+| `src/lib/preview-sources/` | Preview source workflows and preview data access |
+| `src/lib/settings/` | Settings UI |
 | `electron/` | Electron main process and runtime helpers |
 | `~/Library/Application Support/OctopusBeak/` | App runtime data, including the local ledger in `data/pglite/` |
 
