@@ -47,6 +47,7 @@ function verifiedTask(source: VerifiedSource): AutomationTask {
   return {
     id: source.task.id,
     label: source.task.label,
+    displayName: source.displayName,
     workflowId: source.task.id,
     kind: source.task.kind,
     credentialGroupId: source.id,
@@ -77,6 +78,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
 const previewTasks: readonly AutomationTask[] = PREVIEW_SOURCE_REGISTRY.map((source) => ({
   id: previewTaskId(source),
   label: source.displayName.en,
+  displayName: source.displayName,
   workflowId: previewTaskId(source),
   kind: "crawler",
   credentialGroupId: source.id,
@@ -89,6 +91,7 @@ const previewTasks: readonly AutomationTask[] = PREVIEW_SOURCE_REGISTRY.map((sou
 const EXCHANGE_RATE_TASK: AutomationTask = {
   id: "exchange-rates",
   label: "Exchange rates",
+  displayName: { en: "Exchange rates", "zh-TW": "匯率同步" },
   workflowId: "exchange-rates",
   kind: "sync",
   integrationNamespaces: [],
@@ -105,6 +108,10 @@ const coreAutomationTasks: readonly AutomationTask[] = [
   ...VERIFIED_TASKS.filter((task) => task.kind === "sync"),
 ];
 
+const fixtureLabel = (index: number) => index === 0
+  ? "Packaged browser fixture success"
+  : "Packaged browser fixture cancellation";
+
 export function automationTasksForEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): readonly AutomationTask[] {
@@ -112,9 +119,8 @@ export function automationTasksForEnvironment(
     packagedBrowserFixtureEnabled(environment)
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ taskId, workflowId }, index) => ({
       id: taskId,
-      label: index === 0
-        ? "Packaged browser fixture success"
-        : "Packaged browser fixture cancellation",
+      label: fixtureLabel(index),
+      displayName: { en: fixtureLabel(index), "zh-TW": fixtureLabel(index) },
       workflowId,
       kind: "crawler",
       integrationNamespaces: [],

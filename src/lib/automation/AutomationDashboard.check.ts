@@ -76,7 +76,7 @@ assert.match(source, /class="active-task-jump"/);
 assert.match(source, /class:failed=\{task\.status === "failed"\}/);
 assert.match(
   source,
-  /aria-label=\{`\$\{\$t\.automation\.runDetails\} · \$\{taskLabel\(task, \$t\)\}`\}/,
+  /aria-label=\{`\$\{\$t\.automation\.runDetails\} · \$\{taskLabel\(task, \$locale\)\}`\}/,
 );
 assert.match(source, /\{#each task\.events as event, index/);
 assert.match(source, /\$t\.automation\.workflowStages\[event\.stage\]/);
@@ -89,7 +89,7 @@ assert.match(source, /Object\.entries\(task\.appWorkflowOutcome\.summary\.counts
 assert.doesNotMatch(source, /eventDisplayMode/);
 assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
 assert.doesNotMatch(source, /inline-log-path|task\.logPath|task\.logTail/);
-assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
+assert.match(source, /title=\{taskLabel\(task, \$locale\)\}/);
 assert.match(source, /onclick=\{\(\) => void revealTaskDetails\(task\)\}/);
 assert.match(source, /async function revealTaskDetails\(task: AutomationTaskRow\)/);
 assert.match(source, /expandedRunDetailsTaskId = task\.id/);

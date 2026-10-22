@@ -39,7 +39,7 @@
     deviceRegistrationSource,
     type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
-  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Locale, type Translation } from "$lib/i18n/i18n.ts";
 import {
   canSubmitCredentials,
   onboardingTaskDisclosure,
@@ -332,7 +332,7 @@ import type {
   $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
-      && (!term || taskIdLabel(run.taskId, $t).toLowerCase().includes(term));
+      && (!term || taskIdLabel(run.taskId, $locale).toLowerCase().includes(term));
   });
   $: historyCounts = catalogHistoryRows.reduce(
     (counts, run) => {
@@ -1058,7 +1058,7 @@ import type {
       const result = await window.octopusBeak.automation.runMany(actionTokens.map((token) => token.taskId));
       if (result.errors && Object.keys(result.errors).length) {
         actionError = Object.entries(result.errors)
-          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $t)}: ${runStartErrorMessage(message)}`)
+          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $locale)}: ${runStartErrorMessage(message)}`)
           .join("\n");
       }
       for (const task of tasks) {
@@ -1169,7 +1169,7 @@ import type {
       await runTask(task);
       return;
     }
-    if (!confirm($t.automation.confirmCancel(taskLabel(task, $t)))) return;
+    if (!confirm($t.automation.confirmCancel(taskLabel(task, $locale)))) return;
     const token = beginActionToken(task.id, "cancel");
     if (!token) return;
     try {
@@ -1295,12 +1295,13 @@ import type {
     return task ? taskLogo(task) : null;
   }
 
-  function taskIdLabel(taskId: string, dictionary: Translation) {
-    return (dictionary.automation.taskLabels as Record<string, string>)[taskId] ?? taskId;
+  function taskIdLabel(taskId: string, language: Locale) {
+    const task = automation.tasks.find((candidate) => candidate.id === taskId);
+    return task ? taskLabel(task, language) : taskId;
   }
 
-  function taskLabel(task: AutomationTaskRow, dictionary: Translation) {
-    return (dictionary.automation.taskLabels as Record<string, string>)[task.id] ?? task.label;
+  function taskLabel(task: AutomationTaskRow, language: Locale) {
+    return task.displayName[language];
   }
 
   function taskStatusLabel(task: AutomationTaskRow, dictionary: Translation) {
@@ -1496,9 +1497,9 @@ import type {
                   class:failed={task.status === "failed"}
                   class:sync-task={task.kind === "sync"}
                   type="button"
-                  aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
+                  aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $locale)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
-                  title={taskLabel(task, $t)}
+                  title={taskLabel(task, $locale)}
                   onpointerenter={(event) => showTaskTooltip(task, event)}
                   onpointerleave={hideTaskTooltip}
                   onfocus={(event) => showTaskTooltip(task, event)}
@@ -1564,7 +1565,7 @@ import type {
                 {#each group.notices as notice (notice.noticeId)}
                   {@const task = detailsAutomation.tasks.find((candidate) => candidate.id === notice.taskId)}
                   <div class="prerequisite-task-row">
-                    <span>{task ? taskLabel(task, $t) : notice.taskId}</span>
+                    <span>{task ? taskLabel(task, $locale) : notice.taskId}</span>
                     {#if task}
                       <button class="button primary task-control" type="button" onclick={() => void runTask(task)}>
                         {$t.automation.prerequisiteRunAgain}
@@ -1662,7 +1663,7 @@ import type {
                 <td>
                   <div class="task-name">
                     <span class="task-logo"><InstitutionLogo institution={taskLogo(task)} /></span>
-                    <strong>{taskLabel(task, $t)}</strong>
+                    <strong>{taskLabel(task, $locale)}</strong>
                   </div>
                 </td>
                 <td class="credential-state">
@@ -1694,7 +1695,7 @@ import type {
                       aria-valuemax="100"
                       aria-valuenow={task.progressPercent ?? undefined}
                       aria-valuetext={progressLabel(task, $t)}
-                      aria-label={taskLabel(task, $t)}
+                      aria-label={taskLabel(task, $locale)}
                       aria-busy={workflowProgressIsWorking(task)}
                     >
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
@@ -1758,7 +1759,7 @@ import type {
                       class="button secondary task-control"
                       class:active-details={expandedRunDetailsTaskId === task.id}
                       type="button"
-                      aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
+                      aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $locale)}`}
                       title={$t.automation.runDetails}
                       aria-expanded={expandedRunDetailsTaskId === task.id}
                       aria-controls={`${task.id}-run-details`}
@@ -1777,7 +1778,7 @@ import type {
                     <div class="inline-run-details" tabindex="-1" transition:disclosureSlide>
                       <div class="inline-run-details-head">
                         <div class="inline-run-details-title">
-                          <strong>{$t.automation.workflowEventTitle(taskLabel(task, $t))}</strong>
+                          <strong>{$t.automation.workflowEventTitle(taskLabel(task, $locale))}</strong>
                           <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                           {#if task.runId || duration !== null}
                             <span class="run-meta">
@@ -1959,7 +1960,7 @@ import type {
                               <code>{latest.code}</code>
                             </span>
                           </summary>
-                          <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
+                          <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $locale))}>
                             {#each task.events as event, index (index)}
                               {@const failureLabel = workflowEventFailureLabel(event)}
                               <li class="workflow-event-row">
@@ -2011,7 +2012,7 @@ import type {
     role="tooltip"
     style={`left: ${taskTooltipPosition.left}px; top: ${taskTooltipPosition.top}px;`}
   >
-    <strong>{taskLabel(hoveredTask, $t)}</strong>
+    <strong>{taskLabel(hoveredTask, $locale)}</strong>
     <span>{taskStageTitle(hoveredTask, $t)} · {taskStatusLabel(hoveredTask, $t)}</span>
     <span>{latestTaskTime(hoveredTask)}</span>
   </div>
@@ -2034,7 +2035,7 @@ import type {
         <ul class="sync-task-list">
           {#each syncTasks as task}
             <li>
-              <span>{taskLabel(task, $t)}</span>
+              <span>{taskLabel(task, $locale)}</span>
             </li>
           {/each}
         </ul>
@@ -2585,7 +2586,7 @@ import type {
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={taskIdLogo(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
+                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={taskIdLogo(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $locale)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>

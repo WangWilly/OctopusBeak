@@ -117,6 +117,8 @@ export type DeviceRegistrationStatus = Readonly<{ registered: boolean }>;
 export type AutomationTaskSummary = {
   id: string;
   label: string;
+  /** The Supported source name, or the task's own name when it has no source. */
+  displayName: AutomationLocalizedText;
   kind: AutomationTaskKind;
   credentialGroupId?: string;
   /** The integration namespaces the task writes accounts under. */
