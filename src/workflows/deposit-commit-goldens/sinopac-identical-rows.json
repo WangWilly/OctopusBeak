@@ -384,22 +384,6 @@
         "completed": 0,
         "total": 0
       }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-started",
-      "counts": {
-        "completed": 0,
-        "total": 1
-      }
-    },
-    {
-      "stage": "commit",
-      "code": "canonical-commit-completed",
-      "counts": {
-        "completed": 1,
-        "total": 1
-      }
     }
   ]
 }

@@ -6,6 +6,7 @@ import type {
 import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import { taskById } from "./tasks.ts";
+import { commitAttemptsMayHaveCommitted } from "../commit-attempt.ts";
 import {
   isTerminalTaskRunStatus,
   type AutomationPersistencePort,
@@ -87,11 +88,9 @@ export async function finalizeAutomationTaskRun(
     const committedProductCount = outcome.summary?.counts.committedCount
       ?? outcome.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
       ?? 0;
-    const commitCompleted = current.events.some((event) => event.stage === "commit"
-      && /(?:canonical-)?commit-completed$/u.test(event.code)
-      && (event.completed ?? 0) > 0);
     if (outcome.status === "completed" || outcome.status === "partial"
-      || committedProductCount > 0 || commitCompleted) {
+      || committedProductCount > 0
+      || commitAttemptsMayHaveCommitted(await persistence.commitAttempts(taskRunId))) {
       (options.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
     }
     if (outcome.status === "completed") {

@@ -188,7 +188,7 @@ function createContext(options: {
         committed.push(materialized);
         return {
           status: "completed",
-          items: materialized.map(() => ({ status: "committed" })),
+          items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
           committedCount: materialized.length,
           failedCount: 0,
@@ -325,10 +325,6 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
         ["validation", "current-balance-validation-started"],
         ["validation", "current-balance-validation-completed"],
         ["validation", "source-validation-completed"],
-        ["commit", "canonical-commit-started"],
-        ["commit", "current-balance-commit-started"],
-        ["commit", "canonical-commit-completed"],
-        ["commit", "current-balance-commit-completed"],
       ],
     );
   } finally {

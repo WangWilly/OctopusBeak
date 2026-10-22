@@ -159,10 +159,6 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
 
         context.signal.throwIfAborted();
         stage = "commit";
-        await context.event("commit", "canonical-commit-started", {
-          completed: 0,
-          total: items.length,
-        });
         let commit;
         try {
           commit = await context.financialCommit!.execute(items, {
@@ -172,19 +168,14 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           });
         } catch (error) {
           if (context.signal.aborted) throw cancellationError();
-          await context.event("commit", "canonical-commit-failed");
-          throw safeError("canonical-commit-failed", error);
+          // A thrown commit request has no known outcome (ADR 0056).
+          throw safeError("commit-outcome-unknown", error);
         }
         if (commit.status !== "completed") {
-          await context.event("commit", "canonical-commit-failed");
           throw safeError(commit.status === "cancelled"
             ? "canonical-commit-cancelled"
             : "canonical-commit-failed");
         }
-        await context.event("commit", "canonical-commit-completed", {
-          completed: commit.committedCount,
-          total: items.length,
-        });
 
         stage = "operational";
         for (const chunk of snapshotChunks)

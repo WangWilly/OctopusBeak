@@ -165,7 +165,6 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     assert.equal(submitInvocations, 1, "the provider's export submit action is invoked once");
     assert.equal(commitItems.length, 1);
     assert.equal(commitItems[0]?.length, 1);
-    assert.ok(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
     assert.equal(downloadEvents, 0);
     assert.deepEqual(await readdir(workingDirectory), []);
 
@@ -338,7 +337,6 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     assert.equal(result.count, 1);
     assert.equal(commitItems.length, 1);
     assert.ok(events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
-    assert.ok(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(workingDirectory), []);
 
     const cancelled = new AbortController();

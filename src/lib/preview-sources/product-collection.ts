@@ -16,7 +16,7 @@ import {
 } from "../automation/product-collection.ts";
 import { productRunStatus } from "../automation/product-run-status.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
-import type { WorkflowEventCounts, WorkflowStage } from "../automation/workflow-executor.ts";
+import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 
 /** Explicit provider evidence that the person holds no such product, or that it holds nothing. */
@@ -55,7 +55,7 @@ export type PreviewProductRunOptions = Readonly<{
   collectors: PreviewProductCollectors;
   write: PreviewProductWriter;
   signal: AbortSignal;
-  event?: (stage: WorkflowStage, code: string, counts?: WorkflowEventCounts) => Promise<void>;
+  event?: (stage: WorkflowContextStage, code: string, counts?: WorkflowEventCounts) => Promise<void>;
   /** Throws a session-loss failure when the signed-in session is gone. */
   assertSession?: () => Promise<void>;
 }>;
@@ -127,7 +127,7 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
     ?? outcome(product, "skipped", 0, { skipReason: selected.has(product) ? "not_attempted" : "not_selected" }));
   const interrupted = (errorCode: TypedWorkflowErrorCode, error: unknown): PreviewProductRun =>
     ({ products: ordered(), receipts, interrupted: { errorCode, error }, firstFailure });
-  const event = (product: PreviewProduct, stage: WorkflowStage, code: string, counts?: WorkflowEventCounts) =>
+  const event = (product: PreviewProduct, stage: WorkflowContextStage, code: string, counts?: WorkflowEventCounts) =>
     options.event?.(stage, `${product.replaceAll("_", "-")}-${code}`, { ...counts, statementType: product });
 
   for (const product of options.products) {
@@ -152,7 +152,6 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
         continue;
       }
       done.set(product, outcome(product, "success", receipt.accounts));
-      await event(product, "commit", "preview-write-completed", { completed: receipt.accounts, total: receipt.accounts });
     } catch (error) {
       if (options.signal.aborted) return interrupted("cancelled", error);
       const fatal = fatalCode(error);

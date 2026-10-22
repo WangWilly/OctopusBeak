@@ -62,12 +62,15 @@ function runItem(): PGliteWorkflowRunItem {
   } as unknown as PGliteWorkflowRunItem;
 }
 
-function successfulCommit(): PGliteWorkflowRunResult<unknown> {
+function successfulCommit(items: readonly PGliteWorkflowRunItem[] = [runItem()]): PGliteWorkflowRunResult<unknown> {
   return {
     status: "completed",
-    items: [],
+    items: items.map((item) => ({
+      itemKey: item.itemKey, provider: item.provider, product: item.product,
+      status: "committed", admissionSummaries: [], value: null, relationWarnings: [],
+    })),
     diagnostics: [],
-    committedCount: 1,
+    committedCount: items.length,
     failedCount: 0,
   };
 }
@@ -315,15 +318,10 @@ test("worker runs a definition through typed ports and the bounded host request 
   let commitCalls = 0;
   const financialCommit: WorkflowFinancialCommitPort = {
     async execute(items) {
-      const values: PGliteWorkflowRunItem[] = [];
-      if (Symbol.asyncIterator in Object(items)) {
-        for await (const item of items as AsyncIterable<PGliteWorkflowRunItem>) values.push(item);
-      } else {
-        for (const item of items as Iterable<PGliteWorkflowRunItem>) values.push(item);
-      }
+      const values = [...items];
       assert.equal(values[0]?.itemKey, "fixture-item");
       commitCalls += 1;
-      return successfulCommit();
+      return successfulCommit(values);
     },
   };
   const definition: WorkflowDefinition = {
@@ -337,7 +335,6 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.equal(await context.humanAssistance.request(contract, context.signal), "verified");
       const committed = await context.financialCommit!.execute([runItem()]);
       assert.equal(committed.status, "completed");
-      await context.event("commit", "canonical-commit-completed");
       return { status: "completed", count: 1, accountNumber: "must-not-cross-worker-boundary" };
     },
   };
@@ -346,7 +343,7 @@ test("worker runs a definition through typed ports and the bounded host request 
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     observed.push(frame);
     if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolveTerminal(frame);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({
         protocolVersion: 2,
         kind: "event-ack",
@@ -382,7 +379,11 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.equal(JSON.stringify(terminal).includes("must-not-cross-worker-boundary"), false);
     }
     assert.equal(JSON.stringify(observed).includes("sensitive-fixture"), false);
-    assert.equal(observed.filter((frame) => frame.kind === "event").length, 4);
+    assert.equal(observed.filter((frame) => frame.kind === "event").length, 5);
+    assert.deepEqual(
+      observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt.phase] : []),
+      ["started", "settled"],
+    );
     assert.equal(observed.filter((frame) => frame.kind === "human-assistance-request").length, 1);
     assert.equal(browserCalls, 1);
     assert.equal(commitCalls, 1);
@@ -418,7 +419,7 @@ test("a browser workflow that needs only account identity reaches it through the
   const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
     channel.port2.on("message", (value: unknown) => {
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
-      if (frame.kind === "event") {
+      if (frame.kind === "event" || frame.kind === "commit-attempt") {
         channel.port2.postMessage({
           protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
           kind: "event-ack",
@@ -469,7 +470,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
@@ -552,7 +553,7 @@ test("worker failures cross the boundary only as a stable error code", async () 
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
@@ -591,7 +592,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     frames.push(frame);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
@@ -639,7 +640,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
     channel.port2.on("message", (value: unknown) => {
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
       frames.push(frame);
-      if (frame.kind === "event") {
+      if (frame.kind === "event" || frame.kind === "commit-attempt") {
         channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
       } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
         resolveTerminal(frame);
@@ -678,7 +679,7 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
@@ -730,7 +731,7 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     observed.push(frame);
     if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolveTerminal(frame);
-    if (frame.kind === "event") {
+    if (frame.kind === "event" || frame.kind === "commit-attempt") {
       channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
     }
   });

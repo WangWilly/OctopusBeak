@@ -1,3 +1,10 @@
+import { randomUUID } from "node:crypto";
+import type {
+  PGliteWorkflowRunItem,
+  PGliteWorkflowRunResult,
+} from "../../ledger/pglite/workflow-run.ts";
+import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+
 /**
  * ADR 0056: one request a run makes to the Canonical Financial Commit
  * capability. The commit port reports it as started before the request and
@@ -89,4 +96,116 @@ export function commitAttemptsErrorCode(
 /** Whether financial data may have changed: an item committed, or an attempt never settled. */
 export function commitAttemptsMayHaveCommitted(attempts: readonly CommitAttempt[]): boolean {
   return attempts.some((attempt) => attempt.outcome === null || attempt.committedCount > 0);
+}
+
+/** The request threw or returned a result whose receipts cannot be trusted. */
+export class CommitOutcomeUnknownError extends Error {
+  readonly errorCode = "commit-outcome-unknown";
+  /** Receipts that still answer their own items; the rest of the request is unknown. */
+  readonly committedCount: number;
+
+  constructor(committedCount = 0, options?: ErrorOptions) {
+    super("Canonical Financial Commit outcome is unknown.", options);
+    this.name = "CommitOutcomeUnknownError";
+    this.committedCount = committedCount;
+  }
+}
+
+export type CommitEventCode =
+  | "canonical-commit-started"
+  | "canonical-commit-completed"
+  | "canonical-commit-failed"
+  | "canonical-commit-cancelled";
+
+export type RecordedFinancialCommitOptions = Readonly<{
+  commit: WorkflowFinancialCommitPort;
+  attempts: CommitAttemptRecorder;
+  /** Progress only; a failed event never changes the commit outcome. */
+  event(
+    code: CommitEventCode,
+    counts: Readonly<{ completed: number; total: number }>,
+    product: string | null,
+  ): Promise<void>;
+  newAttemptId?: () => string;
+}>;
+
+function itemIdentity(item: Pick<PGliteWorkflowRunItem, "provider" | "product" | "itemKey">): string {
+  return JSON.stringify([item.provider, item.product, item.itemKey]);
+}
+
+/** Committed receipts that answer their own items, or null when any receipt answers another. */
+function trustedCommittedCount(
+  items: readonly PGliteWorkflowRunItem[],
+  result: PGliteWorkflowRunResult<unknown>,
+): number | null {
+  if (result.items.length > items.length) return null;
+  if (result.items.some((item, index) => itemIdentity(item) !== itemIdentity(items[index]!))) return null;
+  return result.items.filter((item) => item.status === "committed").length;
+}
+
+/** A result is known only when every receipt answers its own item and no item lost its transport. */
+function knownOutcome(
+  items: readonly PGliteWorkflowRunItem[],
+  result: PGliteWorkflowRunResult<unknown>,
+  committed: number | null,
+): CommitAttemptOutcome | null {
+  if (committed === null || result.committedCount !== committed) return null;
+  if (result.status !== "cancelled" && result.items.length !== items.length) return null;
+  if (result.items.some((item) => item.status === "failed" && item.failureKind === "fatal")) return null;
+  if (result.diagnostics.some((diagnostic) => diagnostic.stage === "run")) return null;
+  if (result.status === "completed") return "completed";
+  return result.status === "cancelled" ? "cancelled" : "failed";
+}
+
+const SETTLED_EVENT: Readonly<Record<CommitAttemptOutcome, CommitEventCode>> = {
+  completed: "canonical-commit-completed",
+  failed: "canonical-commit-failed",
+  cancelled: "canonical-commit-cancelled",
+};
+
+/**
+ * ADR 0056: the one module that knows a commit happened. It records a started
+ * Commit attempt before the request and settles it only from a verifiable
+ * result; otherwise it throws CommitOutcomeUnknownError and leaves the attempt
+ * unsettled.
+ */
+export function recordedFinancialCommitPort(
+  options: RecordedFinancialCommitOptions,
+): WorkflowFinancialCommitPort {
+  const newAttemptId = options.newAttemptId ?? randomUUID;
+  return {
+    async execute(items, executeOptions) {
+      const attemptId = newAttemptId();
+      const product = executeOptions?.product ?? null;
+      const total = items.length;
+      await options.attempts.record({ phase: "started", attemptId, product, total });
+      await options.event("canonical-commit-started", { completed: 0, total }, product);
+      let result: PGliteWorkflowRunResult<unknown>;
+      try {
+        result = await options.commit.execute(items, executeOptions);
+      } catch (error) {
+        await options.event("canonical-commit-failed", { completed: 0, total }, product);
+        throw new CommitOutcomeUnknownError(0, { cause: error });
+      }
+      const committed = trustedCommittedCount(items, result);
+      const outcome = knownOutcome(items, result, committed);
+      if (outcome === null) {
+        await options.event("canonical-commit-failed", { completed: committed ?? 0, total }, product);
+        throw new CommitOutcomeUnknownError(committed ?? 0);
+      }
+      try {
+        await options.attempts.record({
+          phase: "settled",
+          attemptId,
+          outcome,
+          committedCount: result.committedCount,
+        });
+      } catch {
+        // A host that received the settlement folds it before persisting it;
+        // one that did not reads the attempt as unknown, the safe reading.
+      }
+      await options.event(SETTLED_EVENT[outcome], { completed: result.committedCount, total }, product);
+      return result;
+    },
+  };
 }

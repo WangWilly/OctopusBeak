@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { HumanAssistanceCompletionStatus, HumanAssistanceContractInput } from "../human-assistance.ts";
+import type { CommitAttemptReport } from "../commit-attempt.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcomeSummary, TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import {
@@ -68,6 +69,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
   forceSignal?: AbortSignal;
   appendEvent(event: WorkflowRunEvent, signal: AbortSignal): Promise<void>;
+  /** ADR 0056: resolves once the attempt phase is recorded; the worker waits on its ACK. */
+  recordCommitAttempt(attempt: CommitAttemptReport, signal: AbortSignal): Promise<void>;
   appendExchangeRateProgress?(progress: Readonly<{
     phaseCode: "load-request" | "sync" | "complete";
     completed: number;
@@ -96,6 +99,7 @@ function cancelled(summary: TypedWorkflowOutcomeSummary | null = null): AppWorkf
 
 const CANCELLED: AppWorkflowWorkerOutcome = cancelled();
 const MAX_EVENTS_PER_RUN = 512;
+const MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN = 128;
 const DEFAULT_CANCEL_GRACE_MS = 2_000;
 const DEFAULT_TERMINAL_GRACE_MS = 1_000;
 const MAX_TDCC_SESSION_REQUESTS_PER_RUN = 8;
@@ -226,6 +230,8 @@ export async function runSupervisedAppWorkflow(
   const assistanceIds = new Set<string>();
   const streamDrains: Array<{ stream: WorkerDataStream; listener: (chunk: unknown) => void }> = [];
   let appendEvent = options.appendEvent;
+  let recordCommitAttempt = options.recordCommitAttempt;
+  let commitAttemptReportCount = 0;
   let appendExchangeRateProgress = options.appendExchangeRateProgress;
   let requestHumanAssistance = options.requestHumanAssistance;
 
@@ -249,6 +255,7 @@ export async function runSupervisedAppWorkflow(
       for (const { stream, listener } of streamDrains) stream.off("data", listener);
       streamDrains.length = 0;
       appendEvent = undefined as unknown as typeof appendEvent;
+      recordCommitAttempt = undefined as unknown as typeof recordCommitAttempt;
       appendExchangeRateProgress = undefined;
       requestHumanAssistance = undefined as unknown as typeof requestHumanAssistance;
       worker = undefined as unknown as AppWorkflowWorkerHandle;
@@ -313,6 +320,24 @@ export async function runSupervisedAppWorkflow(
       let ok = false;
       try {
         await abortable(Promise.resolve().then(() => appendEvent(event, signal)), signal);
+        ok = true;
+      } catch {
+        ok = false;
+      }
+      eventInFlight = false;
+      if (settled || pendingOutcome || signal.aborted) return;
+      send({
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        kind: "event-ack",
+        eventId,
+        ok,
+        ...(!ok ? { code: "event-persistence-failed" as const } : {}),
+      });
+    };
+    const finishCommitAttempt = async (eventId: string, attempt: CommitAttemptReport) => {
+      let ok = false;
+      try {
+        await abortable(Promise.resolve().then(() => recordCommitAttempt(attempt, signal)), signal);
         ok = true;
       } catch {
         ok = false;
@@ -421,6 +446,21 @@ export async function runSupervisedAppWorkflow(
         eventIds.add(frame.eventId);
         eventInFlight = true;
         void finishEvent(frame.eventId, frame.event);
+        return;
+      }
+      if (frame.kind === "commit-attempt") {
+        if (
+          eventInFlight
+          || commitAttemptReportCount >= MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN
+          || eventIds.has(frame.eventId)
+        ) {
+          protocolFailure();
+          return;
+        }
+        commitAttemptReportCount += 1;
+        eventIds.add(frame.eventId);
+        eventInFlight = true;
+        void finishCommitAttempt(frame.eventId, frame.attempt);
         return;
       }
       if (frame.kind === "exchange-rate-progress") {

@@ -14,7 +14,13 @@ import {
 } from "../../workflows/sinopac-statements.ts";
 import { isSinopacDuplicateLoginDialog, SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import { classifyTypedWorkflowFailure } from "./server/typed-workflow-outcome.ts";
+import { classifyTypedWorkflowFailure, commitAwareErrorCode } from "./server/typed-workflow-outcome.ts";
+import {
+  applyCommitAttemptReport,
+  recordedFinancialCommitPort,
+  type CommitAttempt,
+  type CommitAttemptReport,
+} from "./commit-attempt.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowRunEvent } from "./workflow-executor.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
@@ -246,7 +252,6 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
     assert.equal(output.usedExistingSession, true);
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.length, 1);
-    assert.equal(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"), true);
     assert.equal(events.some((event) => event.code === "source-validation-completed"), true);
     assert.deepEqual(await readdir(outputDir, { recursive: true }), []);
   } finally {
@@ -257,12 +262,25 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
 
 test("a failed SinoPac Canonical Financial Commit is classified as a commit failure", async () => {
   const events: WorkflowRunEvent[] = [];
-  const failingCommit: WorkflowFinancialCommitPort = {
-    async execute(items) {
-      for await (const _item of items);
-      return { status: "failed", items: [], diagnostics: [], committedCount: 0, failedCount: 1 };
+  const reports: CommitAttemptReport[] = [];
+  const failingCommit = recordedFinancialCommitPort({
+    commit: {
+      async execute(items) {
+        return {
+          status: "failed",
+          items: items.map((item) => ({
+            itemKey: item.itemKey, provider: item.provider, product: item.product,
+            status: "failed" as const, failureKind: "item" as const, diagnostics: [],
+          })),
+          diagnostics: [],
+          committedCount: 0,
+          failedCount: items.length,
+        };
+      },
     },
-  };
+    attempts: { record: async (report) => { reports.push(report); } },
+    event: async () => undefined,
+  });
   const context = makeContext({
     page: pageFixture(),
     financialCommit: failingCommit,
@@ -288,7 +306,12 @@ test("a failed SinoPac Canonical Financial Commit is classified as a commit fail
   }).then(() => null, (thrown: unknown) => thrown);
 
   assert.ok(error instanceof Error);
-  assert.equal(classifyTypedWorkflowFailure(error, events), "canonical-commit-failed");
+  assert.equal(commitAwareErrorCode({
+    attempts: reports.reduce<readonly CommitAttempt[]>(applyCommitAttemptReport, []),
+    completed: false,
+    reported: null,
+    classify: () => classifyTypedWorkflowFailure(error, events),
+  }), "canonical-commit-failed");
 });
 
 test("typed SinoPac workflow rejects incomplete source before Canonical Financial Commit", async () => {

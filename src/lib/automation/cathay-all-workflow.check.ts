@@ -350,11 +350,6 @@ test("Cathay all workflow collects and commits selected products independently w
         (event) => event.code === "all-source-admission-completed",
       ),
     );
-    assert.ok(
-      harness.events.some(
-        (event) => event.code === "canonical-commit-completed",
-      ),
-    );
     assert.equal(existsSync(join(temporaryDirectory, "downloads")), false);
   } finally {
     process.chdir(previousCwd);

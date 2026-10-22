@@ -1407,24 +1407,15 @@ async function collectEsunCreditCard(
     });
   }
 
-  await context.event("commit", "canonical-commit-started", {
-    completed: 0,
-    total: items.length,
-  });
   const result = await financialCommit.execute(items, {
     provider: "esun",
     product: "credit-card",
     signal: context.signal,
   });
-  if (result.status !== "completed" || result.items.length !== items.length ||
-    result.items.some((item) => item.status !== "committed")) {
+  if (result.status !== "completed") {
     const codes = result.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
     throw new Error(`E.SUN Canonical Financial Commit failed: ${codes || result.status}.`);
   }
-  await context.event("commit", "canonical-commit-completed", {
-    completed: items.length,
-    total: items.length,
-  });
   return {
     count: rows.length,
     query: { startDate, endDate },

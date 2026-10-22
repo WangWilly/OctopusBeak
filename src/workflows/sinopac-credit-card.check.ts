@@ -422,8 +422,12 @@ for (const timing of ["after verified commit", "after attached write"] as const)
     const context: WorkflowContext = {
       ...base,
       signal: controller.signal,
-      event: async (_stage, code) => {
-        if (timing === "after verified commit" && code === "canonical-commit-completed") controller.abort();
+      financialCommit: {
+        async execute(items, options) {
+          const result = await base.financialCommit!.execute(items, options);
+          if (timing === "after verified commit") controller.abort();
+          return result;
+        },
       },
       previewWrite: {
         async write(input) {

@@ -23,9 +23,11 @@ import {
 import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 import {
   classifyTypedWorkflowFailure,
+  commitAwareErrorCode,
   summarizeInterruptedProductCollection,
   type TypedWorkflowOutcome,
 } from "./typed-workflow-outcome.ts";
+import { applyCommitAttemptReport, type CommitAttempt } from "../commit-attempt.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
@@ -303,6 +305,7 @@ async function executeSupervisedAppWorkflow(
   let result: TypedWorkflowOutcome;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
+  let commitAttempts: readonly CommitAttempt[] = [];
   let priorEventCount: number | null = null;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
@@ -358,11 +361,15 @@ async function executeSupervisedAppWorkflow(
         signal,
         forceSignal,
         appendEvent: async (event) => {
-          // The supervisor ACKs only after this callback completes. Record the
-          // attempted event first so commit ambiguity remains detectable even
-          // if persistence fails and the worker later crashes.
           observedEvents.push(event);
           await progressReporter.appendEvent(event);
+        },
+        recordCommitAttempt: async (report) => {
+          // The worker commits only after a start is ACKed, so fold a start once
+          // it is durable. A settlement describes a commit that already ran.
+          if (report.phase === "settled") commitAttempts = applyCommitAttemptReport(commitAttempts, report);
+          await execution.run.recordCommitAttempt(report);
+          if (report.phase === "started") commitAttempts = applyCommitAttemptReport(commitAttempts, report);
         },
         ...(workflowId === "exchange-rates" ? {
           appendExchangeRateProgress: async (progress: Readonly<{
@@ -410,7 +417,15 @@ async function executeSupervisedAppWorkflow(
     }
 
     if (outcome.status === "completed") {
-      result = sanitizedWorkerResult(outcome, "workflow-failed");
+      result = {
+        errorCode: commitAwareErrorCode({
+          attempts: commitAttempts,
+          completed: true,
+          reported: null,
+          classify: () => "workflow-failed",
+        }),
+        summary: outcome.summary,
+      };
     } else {
       const explicitCode = outcome.status === "failed"
         ? typedWorkerFailureCode(outcome.errorCode)
@@ -420,13 +435,18 @@ async function executeSupervisedAppWorkflow(
       const productConfirmsCode = outcome.summary?.products?.some(
         (product) => product.status === "failed" && product.errorCode === explicitCode,
       );
-      const errorCode = explicitCode && (explicitCode !== "workflow-failed" || productConfirmsCode)
-        ? explicitCode
-        : classifyTypedWorkflowFailure(
-            new Error("App workflow worker failed."),
-            eventsForExecution,
-            outcome.status === "cancelled",
-          );
+      const errorCode = commitAwareErrorCode({
+        attempts: commitAttempts,
+        completed: false,
+        reported: explicitCode && (explicitCode !== "workflow-failed" || productConfirmsCode)
+          ? explicitCode
+          : null,
+        classify: () => classifyTypedWorkflowFailure(
+          new Error("App workflow worker failed."),
+          eventsForExecution,
+          outcome.status === "cancelled",
+        ),
+      })!;
       result = sanitizedWorkerResult(outcome, errorCode);
       if (outcome.status === "failed") {
         await recordWorkflowFailure(execution, options, {
@@ -457,11 +477,12 @@ async function executeSupervisedAppWorkflow(
     } catch {
       // Do not include provider error text in the task outcome.
     }
-    const errorCode = classifyTypedWorkflowFailure(
-      error,
-      eventsForExecution,
-      cancelled,
-    );
+    const errorCode = commitAwareErrorCode({
+      attempts: commitAttempts,
+      completed: false,
+      reported: null,
+      classify: () => classifyTypedWorkflowFailure(error, eventsForExecution, cancelled),
+    })!;
     result = sanitizedWorkerResult(
       cancelled ? {
         status: "cancelled",

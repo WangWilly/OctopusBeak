@@ -51,6 +51,8 @@ function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
       return { status: runs.get(taskRunId)!.status, applied: true };
     },
     async resolveTaskPrerequisiteNotices() {},
+    async recordCommitAttempt() {},
+    async commitAttempts() { return []; },
     ...overrides,
   } as unknown as AutomationPersistencePort;
   return { runs, automation };

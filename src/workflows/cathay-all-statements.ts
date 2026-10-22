@@ -610,12 +610,6 @@ export async function runCathayAllProviderWorkflow(
           total: summary.itemCount,
         });
       }
-      if (summary.status === "completed" && summary.committedCount > 0) {
-        await context.event("commit", "canonical-commit-completed", {
-          completed: summary.committedCount,
-          total: summary.itemCount,
-        });
-      }
     }
 
     const overall = finishAttachedProductRun(summary, input.attachedPreviewProducts.length === 0
