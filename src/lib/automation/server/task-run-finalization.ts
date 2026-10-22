@@ -90,7 +90,8 @@ export async function finalizeAutomationTaskRun(
       ?? 0;
     if (outcome.status === "completed" || outcome.status === "partial"
       || committedProductCount > 0
-      || commitAttemptsMayHaveCommitted(await persistence.commitAttempts(taskRunId))) {
+      // An unreadable attempt record may hide a write, so treat it as one.
+      || await persistence.commitAttempts(taskRunId).then(commitAttemptsMayHaveCommitted, () => true)) {
       (options.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
     }
     if (outcome.status === "completed") {

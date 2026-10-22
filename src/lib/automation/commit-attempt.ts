@@ -32,7 +32,8 @@ export interface CommitAttemptRecorder {
 }
 
 const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
-const PRODUCT = /^[a-z][a-z0-9-]{0,63}$/u;
+/** Workflows pass product type ids such as `credit_card` as the attempt's product. */
+const PRODUCT = /^[a-z][a-z0-9_-]{0,63}$/u;
 const OUTCOMES = new Set<CommitAttemptOutcome>(["completed", "failed", "cancelled"]);
 const MAX_COUNT = 1_000_000_000;
 

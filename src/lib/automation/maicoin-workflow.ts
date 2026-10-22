@@ -15,6 +15,7 @@ import {
   type MaxCredentials,
 } from "../../ledger/sync-maicoin.ts";
 import type { WorkflowDefinition } from "./workflow-executor.ts";
+import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
 
 export type MaicoinWorkflowInput = Readonly<{
   credentials: MaxCredentials;
@@ -167,9 +168,10 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             signal: context.signal,
           });
         } catch (error) {
+          // Only the commit port knows a request may have landed (ADR 0056).
+          if (error instanceof CommitOutcomeUnknownError) throw safeError("commit-outcome-unknown", error);
           if (context.signal.aborted) throw cancellationError();
-          // A thrown commit request has no known outcome (ADR 0056).
-          throw safeError("commit-outcome-unknown", error);
+          throw error;
         }
         if (commit.status !== "completed") {
           throw safeError(commit.status === "cancelled"
