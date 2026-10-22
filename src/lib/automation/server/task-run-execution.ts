@@ -246,8 +246,9 @@ function typedWorkerFailureCode(code: string): TypedWorkflowErrorCode | null {
 }
 
 function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWorkflowRpc {
-  if (!options.pgliteRpc) throw new Error("PGlite workflow transport is unavailable.");
-  return options.pgliteRpc;
+  const rpc = options.pgliteRpc;
+  if (!rpc?.endpoint.trim() || !rpc.token.trim()) throw new Error("PGlite workflow transport is unavailable.");
+  return rpc;
 }
 
 function sanitizedWorkerResult(

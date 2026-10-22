@@ -274,7 +274,10 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.equal(run?.events.some((event) => event.code === "human-assistance-requested"), false);
-    assert.equal(run?.humanAssistanceContract, null, "LINE Bank automatic sign-in must not request human assistance");
+    assert.ok(
+      !run?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "LINE Bank automatic sign-in must not request human assistance",
+    );
     assert.ok(run?.events.some((event) => event.code === "source-validation-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "App dispatch writes no source, output, or log files");
@@ -324,7 +327,10 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }),
     });
     assert.equal(cancelled.status, "cancelled");
-    assert.equal(cancelled.run.humanAssistanceContract, null, "LINE Bank automatic sign-in must not request human assistance");
+    assert.ok(
+      !cancelled.run.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "LINE Bank automatic sign-in must not request human assistance",
+    );
     assert.equal(committed.length, 1, "cancelled LINE Bank run does not commit");
     assert.deepEqual(await readdir(root), []);
   } finally {
