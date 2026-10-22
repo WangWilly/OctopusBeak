@@ -83,6 +83,7 @@ import type {
     registerOnboardingTarget,
     type OnboardingTargetRegistry,
   } from "$lib/onboarding/target-observer.ts";
+  import { ONBOARDING_COACH_RESERVE } from "$lib/onboarding/placement.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
@@ -129,6 +130,8 @@ import type {
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onboardingTrackedTaskId: string | null = null;
   export let onboardingTargets: OnboardingTargetRegistry = createOnboardingTargetRegistry();
+  // A second registration on one element needs its own directive name.
+  const registerOnboardingRegion = registerOnboardingTarget;
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
   export let signInSettingsGroupId: string | null = null;
   export let onSignInSettingsOpened: () => void = () => {};
@@ -2035,7 +2038,14 @@ import type {
 {/if}
 
 {#if credentialsOpen}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials-title">
+  <div
+    class="modal"
+    class:onboarding-guided={onboardingSourceSelection}
+    style={`--onboarding-coach-reserve:${ONBOARDING_COACH_RESERVE}px`}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="credentials-title"
+  >
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} disabled={onboardingSourceSelection} onclick={closeCredentials}></button>
     <form
       class="modal-panel credential-modal"
@@ -2045,6 +2055,10 @@ import type {
         id: onboardingSourceSelection && onboardingNodeId === "credentials"
           ? "automation.credentials"
           : null,
+      }}
+      use:registerOnboardingRegion={{
+        registry: onboardingTargets,
+        id: onboardingSourceSelection ? "automation.credentials.panel" : null,
       }}
     >
       <div class="modal-head credential-modal-head">
@@ -3939,6 +3953,15 @@ import type {
     background: color-mix(in oklch, var(--danger) 6%, white);
   }
 
+  /* Onboarding keeps a column free beside the panel so the coach never covers it. */
+  .modal.onboarding-guided {
+    padding-right: var(--onboarding-coach-reserve);
+  }
+
+  .modal.onboarding-guided .credential-modal {
+    container-type: inline-size;
+  }
+
   .credential-modal {
     width: min(1040px, 100%);
     height: min(800px, calc(100vh - 40px));
@@ -4892,6 +4915,38 @@ import type {
 
     .sync-sheet {
       width: min(455px, 100vw);
+    }
+  }
+
+  /* The guided panel is narrowed by the coach column, not the viewport, so it
+   * stacks like the narrow-window layout above based on its own width. */
+  @container (max-width: 720px) {
+    .credential-layout {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow-y: auto;
+    }
+
+    .credential-provider-list {
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .credential-provider-list nav {
+      max-height: 160px;
+    }
+
+    .credential-body {
+      overflow: visible;
+      padding: var(--space-4);
+    }
+
+    .credential-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .credential-row .credential-label {
+      grid-column: 1 / -1;
     }
   }
 </style>
