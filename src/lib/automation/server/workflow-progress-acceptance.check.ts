@@ -6,10 +6,6 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-} from "../../../../electron/pglite-child-rpc-client.ts";
 import { taskById } from "./tasks.ts";
 import type {
   AppWorkflowWorkerHandle,
@@ -20,7 +16,7 @@ import type {
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -236,8 +232,6 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       LIBRETTO_CLOUD_CATHAY_ACCOUNT: "synthetic-account",
       LIBRETTO_CLOUD_CATHAY_PASSWORD: "synthetic-password",
       LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,foreign_currency",
-      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
     const createRun = async (runTask: NonNullable<ReturnType<typeof taskById>>) =>
       (await persistence.createTaskRun({
@@ -260,6 +254,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       const outcome = await runAutomationTaskExecution(task, input.run, {
         attempt: input.attempt,
         maxAttempts: 3,
+        pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv,
         workflowBrowserPortFactory: () => ({
           async withPage(run) { return await run({} as never); },
@@ -407,6 +402,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       taskRunId: await createRun(exchangeRateTask),
       attempt: 1,
       maxAttempts: 1,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
       workflowBrowserPortFactory: () => {
         throw new Error("Exchange-rate progress must not open a browser.");

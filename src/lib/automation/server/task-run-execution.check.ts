@@ -15,7 +15,7 @@ import type {
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import {
   registerAppWorkflowHumanAssistanceRequestHandler,
@@ -23,10 +23,6 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-} from "../../../../electron/pglite-child-rpc-client.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -216,12 +212,11 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
     const taskRunId = await createRun(provider, task);
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
         LIBRETTO_CLOUD_CTBC_USER_ID: "private-user-id",
         LIBRETTO_CLOUD_CTBC_ACCOUNT: "private-account-id",
         LIBRETTO_CLOUD_CTBC_PASSWORD: "private-password",
-        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
         OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: diagnosticPath,
         OCTOPUSBEAK_APP_ROOT: process.cwd(),
       },
@@ -377,10 +372,8 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
       const taskRunId = await createRun(provider, task);
       const result = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
-        launchEnv: {
-          [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "/tmp/worker-test.sock",
-          [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
-        },
+        pgliteRpc: { endpoint: "/tmp/worker-test.sock", token: "a".repeat(32) },
+        launchEnv: {},
         workflowBrowserPortFactory: () => { throw new Error("Nonbrowser task opened a browser."); },
         appWorkflowWorkerFactory: (_path, options) => {
           start = options.workerData as AppWorkflowWorkerStart;
@@ -424,8 +417,6 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
       [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
       [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
-      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
 
     const runScenario = async (
@@ -440,6 +431,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
       const execution = executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
+        pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv,
         onRunOpened: (run) => {
           active = run;
@@ -488,8 +480,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.ok(startData, "the task creates the supervised worker");
       assert.equal(startData.workflowId, task.workflowId);
       assert.equal(startData.input && typeof startData.input, "object");
-      assert.equal(startData.pgliteRpc?.endpoint, launchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]);
-      assert.equal(startData.pgliteRpc?.token, launchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]);
+      assert.deepEqual(startData.pgliteRpc, CHECK_PGLITE_RPC);
       assert.ok(startData.browserConnection);
       assert.match(startData.browserConnection.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/u);
       assert.ok(startData.browserConnection.targetId.length > 0);
@@ -570,14 +561,13 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     const launchEnv = {
       LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
       [einvoicePasswordFixtureEnvKey]: "fixture-password",
-      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
     const taskRunId = await createRun(provider, task);
     let workerStart: AppWorkflowWorkerStart | undefined;
     let hostInput: Record<string, unknown> | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
     const outcome = await runAutomationTaskExecution(task, active, {
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
       workflowBrowserPortFactory: (input) => {
         hostInput = input as unknown as Record<string, unknown>;
@@ -638,12 +628,11 @@ test("runtime identity remains on a failed run when browser launch fails before 
     const launchEnv = {
       LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
       [einvoicePasswordFixtureEnvKey]: "fixture-password",
-      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
     const taskRunId = await createRun(provider, task);
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
       workflowBrowserPortFactory: (input) => ({
         async withPage() {
@@ -678,11 +667,10 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
     const taskRunId = await createRun(provider, task);
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
         LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
         [einvoicePasswordFixtureEnvKey]: "fixture-password",
-        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
       },
       workflowBrowserPortFactory: () => {
         throw new BrowserRuntimeConfigurationError("unsupported-profile");
@@ -756,12 +744,11 @@ test("supervised product invariant failures retain the worker code instead of gu
     const taskRunId = await createRun(provider, task);
     await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
         LIBRETTO_CLOUD_CTBC_USER_ID: "synthetic-user",
         LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
         LIBRETTO_CLOUD_CTBC_PASSWORD: "synthetic-password",
-        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
       },
       workflowBrowserPortFactory: () => ({ async withPage(run) { return await run({} as never); } }),
       appWorkflowBrowserConnectionForRun: (id) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${id}` }),

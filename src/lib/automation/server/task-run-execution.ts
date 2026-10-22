@@ -51,10 +51,7 @@ import {
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-} from "../../../../electron/pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 
 /** One workflow execution within an Active Automation Task Run. */
 type AutomationTaskRunExecution = Readonly<{
@@ -67,6 +64,8 @@ export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
+  /** The authenticated PGlite endpoint, required by every workflow that commits or reads through it. */
+  pgliteRpc?: PGliteWorkflowRpc;
   launchVerificationSettings?: AutomationSettingsFile;
   /** The surrounding CAPTCHA campaign installs this task's App route. */
   verificationRouteOwnedByCampaign?: boolean;
@@ -246,13 +245,9 @@ function typedWorkerFailureCode(code: string): TypedWorkflowErrorCode | null {
     : null;
 }
 
-function pgliteRpcForWorker(environment: NodeJS.ProcessEnv) {
-  const endpoint = environment[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim();
-  const token = environment[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim();
-  if (!endpoint || !token) {
-    throw new Error("PGlite workflow transport is unavailable.");
-  }
-  return { endpoint, token };
+function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWorkflowRpc {
+  if (!options.pgliteRpc) throw new Error("PGlite workflow transport is unavailable.");
+  return options.pgliteRpc;
 }
 
 function sanitizedWorkerResult(
@@ -322,7 +317,7 @@ async function executeSupervisedAppWorkflow(
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const runtime = workflowRuntimeForTask(workflowId);
     const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime)
-      ? pgliteRpcForWorker(launchEnv)
+      ? pgliteRpcForWorker(options)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const browser = runtime.kind === "nonbrowser" ? undefined : options.workflowBrowserPortFactory?.({
@@ -520,14 +515,7 @@ export async function runAutomationTaskExecution(
   if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
   }
-  const nonbrowserLaunchEnv = workflowRuntimeForTask(task.workflowId).kind === "nonbrowser"
-    ? options.launchEnv ?? automationProcessEnv()
-    : undefined;
-  if (nonbrowserLaunchEnv
-    && (!nonbrowserLaunchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim()
-      || !nonbrowserLaunchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim())) {
-    throw new Error("PGlite workflow transport is unavailable.");
-  }
+  if (workflowRuntimeForTask(task.workflowId).kind === "nonbrowser") pgliteRpcForWorker(options);
   const attempt = options.attempt ?? 1;
   const current = run.current();
   const started = await run.transition("running", {

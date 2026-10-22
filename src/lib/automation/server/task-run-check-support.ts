@@ -1,9 +1,6 @@
 import { EventEmitter } from "node:events";
 import { MessageChannel } from "node:worker_threads";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-} from "../../../../electron/pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
@@ -15,12 +12,17 @@ import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.t
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
 import {
-  automationProcessEnv,
   runAutomationTaskExecution,
   type AutomationTaskExecutionOptions,
 } from "./task-run-execution.ts";
 import type { taskById } from "./tasks.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+
+/** A well-formed PGlite endpoint for checks whose worker never dials it. */
+export const CHECK_PGLITE_RPC: PGliteWorkflowRpc = Object.freeze({
+  endpoint: "http://127.0.0.1:43121/rpc",
+  token: "a".repeat(32),
+});
 
 /** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
 export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "workerData">;
@@ -65,14 +67,9 @@ function supervisedWithCheckWorker(
   workerPorts: CheckWorkerPorts,
 ): AutomationTaskExecutionOptions {
   let workerBrowser: WorkflowBrowserPort | undefined;
-  const launchEnv = options.launchEnv ?? automationProcessEnv();
   return {
     ...options,
-    launchEnv: {
-      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
-      ...launchEnv,
-    },
+    pgliteRpc: options.pgliteRpc ?? CHECK_PGLITE_RPC,
     workflowBrowserPortFactory: (input) => {
       workerBrowser = options.workflowBrowserPortFactory?.(input);
       return hostPageForWorker;

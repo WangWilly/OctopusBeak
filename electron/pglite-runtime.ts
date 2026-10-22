@@ -7,6 +7,7 @@ import {
   createPGliteChildRpcServer,
   type PGliteChildRpcServer,
 } from "./pglite-child-rpc.ts";
+import type { PGliteWorkflowRpc } from "./pglite-child-rpc-client.ts";
 import {
   createPGliteViewWorkerClient,
   type PGliteViewWorkerClient,
@@ -16,10 +17,7 @@ export type PGliteOperationalProvider = PGliteOperationalDomains & {
   /** Same-worker overview query used to derive exchange-rate coverage. */
   financial: PGliteFinancialPort;
   /** Child workflows must use the authenticated parent endpoint. */
-  pgliteWorkflow: Readonly<{
-    required: true;
-    env: PGliteChildRpcServer["env"];
-  }>;
+  pgliteWorkflow: PGliteWorkflowRpc;
 };
 
 export type PGliteOperationalRuntime = Readonly<{
@@ -62,7 +60,7 @@ export function createPGliteOperationalRuntime(
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
     ...worker.operationalProvider,
     financial: worker.financial,
-    pgliteWorkflow: Object.freeze({ required: true, env: childRpc.env }),
+    pgliteWorkflow: Object.freeze({ endpoint: childRpc.endpoint, token: childRpc.token }),
   });
   return Object.freeze({
     dataDir: options.dataDir,

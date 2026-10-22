@@ -3,8 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
-import { createAutomationRunner, pgliteWorkflowRuntimeEnv } from "./runner.ts";
+import { createAutomationRunner, requirePGliteWorkflowRpc } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 import type {
@@ -60,14 +59,7 @@ function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
 function providerStub(automation: Record<string, unknown> | AutomationPersistencePort = memoryAutomation().automation) {
   return {
     automation,
-    pgliteWorkflow: {
-      required: true,
-      env: {
-        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "test-token",
-      },
-    },
+    pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: "test-token" },
     exchangeRates: {
       async readExchangeRates() { return []; },
       async upsertExchangeRates() {},
@@ -95,23 +87,42 @@ const freshRunner = () => createAutomationRunner({ runtime: createAutomationRunt
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
-  const provided = (provider as unknown as {
-    pgliteWorkflow: { required: boolean; env: NodeJS.ProcessEnv };
-  }).pgliteWorkflow.env;
-  const launched = pgliteWorkflowRuntimeEnv(provider);
-  assert.deepEqual(launched, provided);
-  assert.notEqual(launched, provided);
+  assert.deepEqual(requirePGliteWorkflowRpc(provider), {
+    endpoint: "http://127.0.0.1:43121/rpc",
+    token: "test-token",
+  });
 });
 
 test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
   assert.throws(
-    () => pgliteWorkflowRuntimeEnv({ automation: {} } as unknown as AutomationPersistenceProvider),
+    () => requirePGliteWorkflowRpc({ automation: {} } as unknown as AutomationPersistenceProvider),
     /PGlite workflow transport is unavailable/u,
   );
-  const provider = providerStub({});
-  (provider as unknown as { pgliteWorkflow: { required: boolean; env: NodeJS.ProcessEnv } })
-    .pgliteWorkflow.required = false;
-  assert.throws(() => pgliteWorkflowRuntimeEnv(provider), /PGlite workflow transport is unavailable/u);
+  assert.throws(
+    () => requirePGliteWorkflowRpc({
+      ...providerStub({}),
+      pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
+    }),
+    /PGlite workflow transport is unavailable/u,
+  );
+});
+
+test("the runner hands the PGlite capability to the execution as a typed value, not process environment", async () => {
+  const runner = freshRunner();
+  const provider = providerStub();
+  const finished = deferred<AutomationTaskRun>();
+  let options: Parameters<typeof runAutomationTaskExecution>[2] | undefined;
+  const runExecution: typeof runAutomationTaskExecution = async (_task, _run, executionOptions) => {
+    options = executionOptions;
+    return { errorCode: null, summary: null };
+  };
+  await runner.start("exchange-rates", provider, { runExecution, onFinished: finished.resolve });
+  await finished.promise;
+  assert.deepEqual(options?.pgliteRpc, provider.pgliteWorkflow);
+  assert.equal(
+    Object.keys(options?.launchEnv ?? {}).some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
+    false,
+  );
 });
 
 test("Fubon cannot start with missing or unknown statement selections", async () => {
