@@ -292,6 +292,37 @@ const signal = () => new AbortController();
   );
 }
 
+{
+  // An unrecorded start commits nothing and stops the run instead of failing each product's source.
+  const controller = signal();
+  let commits = 0;
+  await assert.rejects(
+    collectSelectedProducts({
+      productIds: ["deposit", "loan"],
+      selectedIds: ["deposit", "loan"],
+      signal: controller.signal,
+      collect: async (typeId, staged) => {
+        staged.push(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      },
+      commit: async () => {
+        commits += 1;
+        throw new Error("event-persistence-failed");
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "workflow-failed");
+      assert.deepEqual(error.summary.products.map(({ typeId, status, errorCode, skipReason }) => [typeId, status, errorCode ?? skipReason]), [
+        ["deposit", "failed", "workflow-failed"],
+        ["loan", "skipped", "not_attempted"],
+      ]);
+      return true;
+    },
+  );
+  assert.equal(commits, 1, "no later product attempts a commit");
+}
+
 console.log("product-collection checks passed");
 
 {

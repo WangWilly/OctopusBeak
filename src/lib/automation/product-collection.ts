@@ -451,8 +451,12 @@ export async function collectSelectedProducts<
         commitResult = await options.commit(typeId, stagedItems);
       } catch (error) {
         // Only the commit port knows a request may have landed; any other error
-        // (cancellation before the request, an unrecorded start) committed nothing.
-        if (!(error instanceof CommitOutcomeUnknownError)) throw error;
+        // committed nothing. A cancellation stays a cancellation; an unrecorded
+        // start means the run cannot record commits, so no later product may try.
+        if (!(error instanceof CommitOutcomeUnknownError)) {
+          if (signal.aborted) throw error;
+          throw new ProductCollectionFatalError("workflow-failed");
+        }
         committedCount += error.committedCount;
         const commitFailure = createOutcome(typeId, "failed", productItemCount, error.committedCount, {
           errorCode: "commit-outcome-unknown",

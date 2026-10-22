@@ -296,3 +296,14 @@ test("a leftover run with no Commit attempt is interrupted with the quit's error
   assert.equal(saved?.appWorkflowOutcome?.errorCode, "cancelled");
   assert.equal(invalidations.snapshot().version, 0);
 }));
+
+test("an unreadable Commit attempt record after a failure still marks data stale", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "post-statements");
+  provider.automation.commitAttempts = async () => { throw new Error("operational RPC unavailable"); };
+  const invalidations = createDataVersionStore();
+  const saved = await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, {
+    dataVersionStore: invalidations,
+  });
+  assert.equal(saved.status, "failed", "the terminal write stands");
+  assert.equal(invalidations.snapshot().version, 1, "an unreadable record may hide a write");
+}));
