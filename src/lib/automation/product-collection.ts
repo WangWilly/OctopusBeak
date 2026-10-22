@@ -450,9 +450,11 @@ export async function collectSelectedProducts<
       try {
         commitResult = await options.commit(typeId, stagedItems);
       } catch (error) {
-        const knownReceipts = error instanceof CommitOutcomeUnknownError ? error.committedCount : 0;
-        committedCount += knownReceipts;
-        const commitFailure = createOutcome(typeId, "failed", productItemCount, knownReceipts, {
+        // Only the commit port knows a request may have landed; any other error
+        // (cancellation before the request, an unrecorded start) committed nothing.
+        if (!(error instanceof CommitOutcomeUnknownError)) throw error;
+        committedCount += error.committedCount;
+        const commitFailure = createOutcome(typeId, "failed", productItemCount, error.committedCount, {
           errorCode: "commit-outcome-unknown",
         });
         completedByType.set(typeId, commitFailure);

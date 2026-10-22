@@ -267,5 +267,7 @@ export function commitAwareErrorCode(input: Readonly<{
   const commit = commitAttemptsErrorCode(input.attempts);
   if (commit === "commit-outcome-unknown") return commit;
   if (input.completed) return null;
-  return input.reported ?? commit ?? input.classify();
+  // Every unknown commit leaves an unsettled attempt; a worker's claim without one is not evidence.
+  const reported = input.reported === "commit-outcome-unknown" ? null : input.reported;
+  return reported ?? commit ?? input.classify();
 }

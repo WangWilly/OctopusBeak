@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyCommitAttemptReport,
+  isCommitAttemptReport,
   commitAttemptsErrorCode,
   commitAttemptsMayHaveCommitted,
   type CommitAttempt,
   type CommitAttemptOutcome,
 } from "./commit-attempt.ts";
 import { commitAwareErrorCode } from "./server/typed-workflow-outcome.ts";
+import { COLLECTION_PRODUCT_TYPE_IDS } from "./product-collection.ts";
+import { parseAppWorkflowWorkerOutboundFrame } from "./server/app-workflow-worker-protocol.ts";
 
 function attempt(outcome: CommitAttemptOutcome | null, committedCount = 0): CommitAttempt {
   return { attemptId: `attempt-${outcome}-${committedCount}`, product: null, total: 2, outcome, committedCount };
@@ -58,4 +61,23 @@ test("the run's attempts decide its commit outcome over what the worker reported
   }), "source-validation-failed");
   assert.equal(commitAwareErrorCode({ attempts: [attempt("failed")], completed: false, reported: null, classify }), "canonical-commit-failed");
   assert.equal(commitAwareErrorCode({ attempts: [], completed: false, reported: null, classify }), "authentication-failed");
+});
+
+test("every product a workflow commits under is a valid attempt product, through the worker frame", () => {
+  for (const product of [...COLLECTION_PRODUCT_TYPE_IDS, "financial", "personal-invoice", "current-balance"]) {
+    const attempt = { phase: "started", attemptId: "attempt-1", product, total: 1 } as const;
+    assert.equal(isCommitAttemptReport(attempt), true, product);
+    assert.doesNotThrow(() => parseAppWorkflowWorkerOutboundFrame({
+      protocolVersion: 2, kind: "commit-attempt", eventId: "frame-1", attempt,
+    }), product);
+  }
+  assert.equal(isCommitAttemptReport({ phase: "started", attemptId: "attempt-1", product: "Credit Card", total: 1 }), false);
+});
+
+test("a worker's commit-outcome-unknown without an unsettled attempt is not evidence", () => {
+  const classify = () => "cancelled" as const;
+  assert.equal(commitAwareErrorCode({ attempts: [], completed: false, reported: "commit-outcome-unknown", classify }), "cancelled");
+  assert.equal(commitAwareErrorCode({
+    attempts: [attempt("completed", 1)], completed: false, reported: "commit-outcome-unknown", classify,
+  }), "cancelled");
 });

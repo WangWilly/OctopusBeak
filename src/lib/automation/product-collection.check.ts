@@ -270,6 +270,28 @@ const signal = () => new AbortController();
   );
 }
 
+{
+  // A cancellation raised before the commit request records no attempt and commits nothing.
+  const controller = signal();
+  await assert.rejects(
+    collectSelectedProducts({
+      productIds: ["deposit"],
+      selectedIds: ["deposit"],
+      signal: controller.signal,
+      collect: async (_typeId, staged) => {
+        staged.push(item("deposit", "deposit-1"));
+        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      },
+      commit: async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+        throw new Error("unreachable");
+      },
+    }),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
+  );
+}
+
 console.log("product-collection checks passed");
 
 {
