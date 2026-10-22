@@ -58,6 +58,8 @@ export type OnboardingStoryNode = {
   ordinal: 1 | 2 | 3 | 4 | 5;
   copyKey: OnboardingCopyKey;
   targetId: string | null;
+  /** Region the coach must stay clear of, beyond the target itself. */
+  coachAvoidId?: string;
   route: OnboardingRoute;
   commands: readonly OnboardingCommandId[];
   previous?: {
@@ -101,6 +103,7 @@ export const FIRST_OVERVIEW_STORY = {
       ordinal: 2,
       copyKey: "sourceSelection",
       targetId: "automation.credentials",
+      coachAvoidId: "automation.credentials.panel",
       route: "automation",
       commands: ["previous", "exit"],
       previous: { nodeId: "source-entry", presentation: "close-credentials" },
@@ -110,6 +113,7 @@ export const FIRST_OVERVIEW_STORY = {
       ordinal: 3,
       copyKey: "credentials",
       targetId: "automation.credentials",
+      coachAvoidId: "automation.credentials.panel",
       route: "automation",
       commands: ["previous", "exit"],
       previous: { nodeId: "source-selection", presentation: "show-picker" },

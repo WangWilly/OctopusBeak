@@ -134,6 +134,7 @@ export function createOnboardingController(port: OnboardingControllerPort) {
       ordinal: definition.ordinal,
       copyKey: definition.copyKey,
       targetId: definition.targetId,
+      coachAvoidId: definition.coachAvoidId,
       route: definition.route,
       previous: definition.previous,
       previousDisabledReason: definition.previousDisabledReason,
