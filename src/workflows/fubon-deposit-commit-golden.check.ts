@@ -124,14 +124,12 @@ function balance(
 // Expand each item's relation thunk so the golden pins the relation commands
 // rather than the helper's "[function]" placeholder. The thunks ignore the
 // commit value, so the stub commit's null stands in for it.
-async function* expandRelationCommands(
-  items: Iterable<PGliteWorkflowRunItem> | AsyncIterable<PGliteWorkflowRunItem>,
-): AsyncIterable<PGliteWorkflowRunItem> {
-  for await (const item of items) {
-    yield (item.relationCommands
-      ? { ...item, relationCommands: item.relationCommands(null) }
-      : item) as PGliteWorkflowRunItem;
-  }
+function expandRelationCommands(
+  items: readonly PGliteWorkflowRunItem[],
+): readonly PGliteWorkflowRunItem[] {
+  return items.map((item) => (item.relationCommands
+    ? { ...item, relationCommands: item.relationCommands(null) }
+    : item) as PGliteWorkflowRunItem);
 }
 
 function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {

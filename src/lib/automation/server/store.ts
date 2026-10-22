@@ -9,6 +9,7 @@ import {
   type HumanAssistanceCompletionStatus,
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import type { CommitAttempt, CommitAttemptReport } from "../commit-attempt.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
@@ -105,6 +106,8 @@ export interface AutomationPersistencePort {
   hasOccurrenceBeenAttempted(taskId: string, occurrenceUtc: string): Promise<boolean>;
   recentTaskRuns(limit?: number): Promise<AutomationTaskHistoryRow[]>;
   appendRunEvent(event: WorkflowRunEvent): Promise<void>;
+  recordCommitAttempt(taskRunId: string, report: CommitAttemptReport): Promise<void>;
+  commitAttempts(taskRunId: string): Promise<readonly CommitAttempt[]>;
   pruneRunEvents(cutoffUtc: string): Promise<number>;
   upsertTaskPrerequisiteNotice(input: {
     taskId: string;

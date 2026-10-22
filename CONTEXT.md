@@ -881,6 +881,18 @@ _Avoid_: Time remaining estimate, financial completeness, elapsed-time percentag
 The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
+**Commit attempt**:
+One request an Automation Task Run makes to the Canonical Financial Commit capability, recorded durably before the request starts and settled afterward with a known outcome: completed, failed, or cancelled. It is the only authority for whether a run's financial writes happened; stage events only report it.
+_Avoid_: Commit event, commit stage, financial write
+
+**Commit outcome unknown**:
+The terminal state of an Automation Task Run with a Commit attempt that never settled, because the request threw, returned an unverifiable receipt, lost its worker, or outlived the App process that started it. A returned result, even a failed one, is a known outcome.
+_Avoid_: Commit failure, partial commit, interrupted run
+
+**Interrupted run**:
+An Automation Task Run that the App process ended before the run could, through a quit or a crash, while every one of its financial writes is known. A run with an unsettled Commit attempt is never interrupted, and a workflow worker lost while the App lives is a failure, not an interruption.
+_Avoid_: Cancelled run, failed run, partial run
+
 **Browser execution profile**:
 A named, versioned browser environment required by an automation source, applied consistently throughout an Automation Task Run. A run uses its selected profile without silently trying alternative profiles when the source rejects access.
 _Avoid_: Solver profile, browser engine selection, arbitrary launch settings

@@ -195,9 +195,11 @@ function createContext(page: Page) {
         const materialized: unknown[] = [];
         for await (const item of items) materialized.push(item);
         committed.push(materialized);
+        // The port, not the workflow, reports the commit stage; mark where it ran.
+        events.push({ stage: "commit", code: "commit-port-called" });
         return {
           status: "completed",
-          items: materialized.map(() => ({ status: "committed" })),
+          items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
         } as never;
       },
@@ -249,8 +251,7 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
           ["decoding", "source-decoding-completed"],
           ["validation", "source-validation-started"],
           ["validation", "source-validation-completed"],
-          ["commit", "canonical-commit-started"],
-          ["commit", "canonical-commit-completed"],
+          ["commit", "commit-port-called"],
         ],
       );
     }
@@ -405,7 +406,7 @@ test("the attached deposit writes Preview Financial Data for the E.SUN group aft
   assert.equal((output as Output).status, "completed");
   assert.deepEqual(deposit.calls, ["init", "preQueryTWTransactionDetail", "queryTWTransactionDetail", "init", "preQueryFRTransactionDetail"]);
   const eventCodes = harness.events.map(({ code }) => code);
-  assert.ok(eventCodes.indexOf("canonical-commit-completed") < eventCodes.indexOf("deposit-collection-started"));
+  assert.ok(eventCodes.indexOf("commit-port-called") < eventCodes.indexOf("deposit-collection-started"));
 }));
 
 test("a failing attached deposit leaves the card committed and reported", () => withManagedSecret(async () => {

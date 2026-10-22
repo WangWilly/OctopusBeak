@@ -15,6 +15,7 @@ import {
   type MaxCredentials,
 } from "../../ledger/sync-maicoin.ts";
 import type { WorkflowDefinition } from "./workflow-executor.ts";
+import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
 
 export type MaicoinWorkflowInput = Readonly<{
   credentials: MaxCredentials;
@@ -159,10 +160,6 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
 
         context.signal.throwIfAborted();
         stage = "commit";
-        await context.event("commit", "canonical-commit-started", {
-          completed: 0,
-          total: items.length,
-        });
         let commit;
         try {
           commit = await context.financialCommit!.execute(items, {
@@ -171,20 +168,17 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             signal: context.signal,
           });
         } catch (error) {
+          // Only the commit port knows a request may have landed (ADR 0056).
+          if (error instanceof CommitOutcomeUnknownError) throw safeError("commit-outcome-unknown", error);
           if (context.signal.aborted) throw cancellationError();
-          await context.event("commit", "canonical-commit-failed");
-          throw safeError("canonical-commit-failed", error);
+          // The commit's start could not be recorded, so nothing was committed.
+          throw safeError("operational-persistence-failed", error);
         }
         if (commit.status !== "completed") {
-          await context.event("commit", "canonical-commit-failed");
           throw safeError(commit.status === "cancelled"
             ? "canonical-commit-cancelled"
             : "canonical-commit-failed");
         }
-        await context.event("commit", "canonical-commit-completed", {
-          completed: commit.committedCount,
-          total: items.length,
-        });
 
         stage = "operational";
         for (const chunk of snapshotChunks)

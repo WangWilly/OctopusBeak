@@ -104,7 +104,7 @@ function createHarness(options: {
         committed.push(materialized);
         return {
           status: "completed",
-          items: materialized.map(() => ({ status: "committed" })),
+          items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
         } as never;
       },
@@ -159,7 +159,6 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     assert.equal("files" in (output as object), false);
     assert.deepEqual(await readdir(temp), []);
     assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-completed"));
-    assert.ok(harness.events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
   } finally {
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });

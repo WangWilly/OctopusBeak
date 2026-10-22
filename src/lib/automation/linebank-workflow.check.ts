@@ -214,7 +214,7 @@ function createContext(options: {
         commits.push(received);
         return {
           status: "completed",
-          items: received.map(() => ({ status: "committed" })),
+          items: received.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
           committedCount: received.length,
           failedCount: 0,
@@ -262,7 +262,6 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
     assert.equal("downloads" in result, false);
     assert.deepEqual(await readdir(directory), []);
     assert.ok(harness.events.some((event) => event.code === "source-validation-completed"));
-    assert.ok(harness.events.some((event) => event.code === "canonical-commit-completed"));
     const stages = new Set([
       "preparation", "authentication", "collection", "decoding",
       "validation", "commit", "finalization",
@@ -310,6 +309,7 @@ test("LINE Bank waits for delayed automatic sign-in without human fallback and h
     text: cancelled.context.text,
     humanAssistance: cancelled.context.humanAssistance,
     financialCommit: cancelled.context.financialCommit,
+    commitAttempts: { record: async () => undefined },
     events: { async append(event) { cancelledEvents.push(event); } },
     now: cancelled.context.now,
   });

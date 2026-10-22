@@ -13,6 +13,7 @@ import {
   type TaskRunStop,
 } from "./task-run-finalization.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import type { CommitAttemptReport } from "../commit-attempt.ts";
 
 export type ActiveTaskRunFields = Pick<AutomationTaskRunUpdate, "attempt" | "maxAttempts" | "progress">;
 
@@ -33,6 +34,8 @@ export type ActiveAutomationTaskRun = Readonly<{
   transition(status: ActiveTaskRunStatus, fields?: ActiveTaskRunFields): Promise<boolean>;
   /** Record non-status fields. Ignored once the run has finished. */
   update(fields: ActiveTaskRunFields): Promise<void>;
+  /** Durably append one Commit attempt phase (ADR 0056). */
+  recordCommitAttempt(report: CommitAttemptReport): Promise<void>;
   requestStop(reason: TaskRunStop): Promise<void>;
   /** Persist the terminal outcome. Later calls return the first result. */
   finish(report: TypedWorkflowOutcome): Promise<AutomationTaskRun>;
@@ -105,6 +108,7 @@ export function openActiveTaskRun(input: Readonly<{
       row = { ...row, ...fields };
       publish();
     }),
+    recordCommitAttempt: (report) => persistence.recordCommitAttempt(taskRunId, report),
     async requestStop(reason) {
       if (finishing) return;
       if (stop === null || STOP_RANK[reason] > STOP_RANK[stop]) stop = reason;

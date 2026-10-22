@@ -75,8 +75,8 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
     const terminal = new Promise<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>>((resolve) => {
       channel.port2.on("message", (value: unknown) => {
         const frame = parseAppWorkflowWorkerOutboundFrame(value);
-        if (frame.kind === "event") {
-          observedCodes.push(frame.event.code);
+        if (frame.kind === "event" || frame.kind === "commit-attempt") {
+          if (frame.kind === "event") observedCodes.push(frame.event.code);
           channel.port2.postMessage({
             protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
             kind: "event-ack",

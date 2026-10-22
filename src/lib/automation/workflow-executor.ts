@@ -19,6 +19,7 @@ import {
   COLLECTION_PRODUCT_TYPE_IDS,
   interruptedProductCollectionFromOutput,
 } from "./product-collection.ts";
+import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -28,6 +29,9 @@ export type WorkflowStage =
   | "validation"
   | "commit"
   | "finalization";
+
+/** ADR 0056: only the commit port reports the commit stage. */
+export type WorkflowContextStage = Exclude<WorkflowStage, "commit">;
 
 export type WorkflowProgressActivity = "query" | "download";
 export const WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS = [
@@ -83,7 +87,7 @@ export interface WorkflowHumanAssistancePort {
 /** The App injects this port; its adapter uses the existing canonical worker. */
 export interface WorkflowFinancialCommitPort {
   execute(
-    items: Iterable<PGliteWorkflowRunItem> | AsyncIterable<PGliteWorkflowRunItem>,
+    items: readonly PGliteWorkflowRunItem[],
     options?: Readonly<{ provider?: string; product?: string; signal?: AbortSignal }>,
   ): Promise<PGliteWorkflowRunResult<unknown>>;
 }
@@ -111,7 +115,7 @@ export type WorkflowContext = Readonly<{
   accountIdentity?: WorkflowAccountIdentityPort;
   previewWrite?: WorkflowPreviewWritePort;
   event(
-    stage: WorkflowStage,
+    stage: WorkflowContextStage,
     code: string,
     counts?: WorkflowEventCounts,
   ): Promise<void>;
@@ -144,6 +148,8 @@ export type WorkflowExecutorPorts = Readonly<{
   tdcc?: WorkflowTdccPort;
   accountIdentity?: WorkflowAccountIdentityPort;
   previewWrite?: WorkflowPreviewWritePort;
+  /** Required with financialCommit: each request is recorded before it starts. */
+  commitAttempts?: CommitAttemptRecorder;
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
@@ -185,6 +191,30 @@ export function requiredCapabilityPorts(
 }
 
 const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
+const PROGRESS_STATEMENT_TYPES = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
+
+/** The executor's own event writer, which unlike WorkflowContext.event may report the commit stage. */
+type StageEvent = (stage: WorkflowStage, code: string, counts?: WorkflowEventCounts) => Promise<void>;
+
+/** Preview rows are written outside canonical admission, but the writer still owns its commit stage. */
+function reportedPreviewWritePort(
+  port: WorkflowPreviewWritePort,
+  event: StageEvent,
+): WorkflowPreviewWritePort {
+  return {
+    async write(input) {
+      const receipt = await port.write(input);
+      if (receipt.accounts > 0) {
+        await event("commit", `${input.product.replaceAll("_", "-")}-preview-write-completed`, {
+          completed: receipt.accounts,
+          total: receipt.accounts,
+          statementType: input.product,
+        });
+      }
+      return receipt;
+    },
+  };
+}
 
 /** Common composition point for provider definitions and App-owned ports. */
 export function createWorkflowExecutor(
@@ -213,7 +243,7 @@ export function createWorkflowExecutor(
           throw new Error(`${WORKFLOW_CAPABILITIES[capability].label} port is unavailable.`);
         }
       }
-      const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
+      const appendEvent: StageEvent = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
         await ports.events.append({
           runId,
@@ -226,7 +256,7 @@ export function createWorkflowExecutor(
           ...(counts?.statementType === undefined ? {} : { statementType: counts.statementType }),
         });
       };
-      const event: WorkflowContext["event"] = async (stage, code, counts) => {
+      const event: StageEvent = async (stage, code, counts) => {
         try {
           await appendEvent(stage, code, counts);
         } catch {
@@ -246,6 +276,20 @@ export function createWorkflowExecutor(
           // A diagnostic sink cannot change the workflow outcome.
         }
       };
+      let financialCommit: WorkflowFinancialCommitPort | undefined;
+      if (capabilityPorts.financialCommit) {
+        if (!ports.commitAttempts) throw new Error("Commit attempt recorder is unavailable.");
+        financialCommit = recordedFinancialCommitPort({
+          commit: capabilityPorts.financialCommit,
+          attempts: ports.commitAttempts,
+          event: (code, counts, product) => event("commit", code, {
+            ...counts,
+            ...(product !== null && PROGRESS_STATEMENT_TYPES.has(product)
+              ? { statementType: product as WorkflowProgressStatementType }
+              : {}),
+          }),
+        });
+      }
       const context: WorkflowContext = {
         runId,
         signal,
@@ -254,7 +298,10 @@ export function createWorkflowExecutor(
         text: ports.text,
         humanAssistance: ports.humanAssistance,
         ...capabilityPorts,
-        ...(workflowUsesPreviewWrite(definition) && ports.previewWrite ? { previewWrite: ports.previewWrite } : {}),
+        ...(financialCommit ? { financialCommit } : {}),
+        ...(workflowUsesPreviewWrite(definition) && ports.previewWrite
+          ? { previewWrite: reportedPreviewWritePort(ports.previewWrite, event) }
+          : {}),
         event,
         productFailure,
       };

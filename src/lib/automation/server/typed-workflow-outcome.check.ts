@@ -363,18 +363,15 @@ test("typed failures use stable privacy-safe categories", () => {
     code: "source-validation-rejected",
     occurredAt: "2026-09-25T00:00:00.000Z",
   }]), "source-validation-failed");
-  assert.equal(classifyTypedWorkflowFailure(new Error("commit/conflict"), [{
-    runId: "run-1",
-    stage: "commit",
-    code: "canonical-commit-failed",
-    occurredAt: "2026-09-25T00:00:00.000Z",
-  }]), "canonical-commit-failed");
-  assert.equal(classifyTypedWorkflowFailure(new Error("provider disconnected"), [{
-    runId: "run-1",
-    stage: "commit",
-    code: "canonical-commit-started",
-    occurredAt: "2026-09-25T00:00:00.000Z",
-  }]), "commit-outcome-unknown");
+  // ADR 0056: commit stage events report progress; only Commit attempts decide the commit outcome.
+  for (const code of ["canonical-commit-failed", "canonical-commit-started"]) {
+    assert.equal(classifyTypedWorkflowFailure(new Error("provider disconnected"), [{
+      runId: "run-1",
+      stage: "commit",
+      code,
+      occurredAt: "2026-09-25T00:00:00.000Z",
+    }]), "workflow-failed");
+  }
   assert.equal(classifyTypedWorkflowFailure(new Error("user stopped"), [], true), "cancelled");
   assert.equal(classifyTypedWorkflowFailure(new Error("provider details"), [{
     runId: "run-1",
@@ -418,7 +415,7 @@ test("stage diagnostics survive storage sanitization without exception details",
   assert.equal(workflowFailureExplanation("toString", "zh-TW"), null);
 });
 
-test("fallback stage diagnostics preserve cancellation and commit uncertainty", () => {
+test("fallback stage diagnostics preserve cancellation and ignore commit events", () => {
   const event = (stage: WorkflowRunEvent["stage"], code: string): WorkflowRunEvent => ({
     runId: "run-1", stage, code, occurredAt: "2026-09-29T12:00:00.000Z",
   });
@@ -427,7 +424,7 @@ test("fallback stage diagnostics preserve cancellation and commit uncertainty", 
   const auth = event("authentication", "authentication-started");
   const finalized = event("finalization", "run-failed");
   assert.equal(classifyTypedWorkflowFailure(error, [auth, finalized], true), "cancelled");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("commit", "canonical-commit-started"), auth, finalized]), "commit-outcome-unknown");
+  assert.equal(classifyTypedWorkflowFailure(error, [event("commit", "canonical-commit-started"), auth, finalized]), "authentication-timeout");
   assert.equal(classifyTypedWorkflowFailure(error, [event("collection", "collection-started"), event("preparation", "run-started"), auth, finalized]), "authentication-timeout");
   assert.equal(classifyTypedWorkflowFailure(error, [event("authentication", "authentication-started"), event("preparation", "run-started"), finalized]), "workflow-failed");
 });

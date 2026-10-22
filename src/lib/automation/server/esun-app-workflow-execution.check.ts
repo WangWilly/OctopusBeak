@@ -233,7 +233,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         committed.push(received);
         return {
           status: "completed",
-          items: received.map(() => ({ status: "committed" })),
+          items: received.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
           committedCount: received.length,
           failedCount: 0,

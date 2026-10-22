@@ -6,6 +6,7 @@ import type {
 import { tdccIncompleteCollectionHasDurableReceipts } from "../tdcc-collection-summary.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import { taskById } from "./tasks.ts";
+import { commitAttemptsErrorCode, commitAttemptsMayHaveCommitted } from "../commit-attempt.ts";
 import {
   isTerminalTaskRunStatus,
   type AutomationPersistencePort,
@@ -87,11 +88,10 @@ export async function finalizeAutomationTaskRun(
     const committedProductCount = outcome.summary?.counts.committedCount
       ?? outcome.summary?.products?.reduce((total, product) => total + product.committedCount, 0)
       ?? 0;
-    const commitCompleted = current.events.some((event) => event.stage === "commit"
-      && /(?:canonical-)?commit-completed$/u.test(event.code)
-      && (event.completed ?? 0) > 0);
     if (outcome.status === "completed" || outcome.status === "partial"
-      || committedProductCount > 0 || commitCompleted) {
+      || committedProductCount > 0
+      // An unreadable attempt record may hide a write, so treat it as one.
+      || await persistence.commitAttempts(taskRunId).then(commitAttemptsMayHaveCommitted, () => true)) {
       (options.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
     }
     if (outcome.status === "completed") {
@@ -116,24 +116,36 @@ export async function finalizeAutomationTaskRun(
   return finalized;
 }
 
-/** Record a run left active by a previous process. No Active Automation Task Run owns it. */
+/**
+ * Record a run left active by a previous process. No Active Automation Task Run
+ * owns it. An unsettled Commit attempt makes it commit outcome unknown; any
+ * other leftover row is an Interrupted run (ADR 0056).
+ */
 export async function finalizePersistedRun(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
   _reason: string,
   status: Extract<TerminalTaskRunStatus, "failed" | "interrupted"> = "failed",
+  options: { dataVersionStore?: DataVersionStore } = {},
 ): Promise<void> {
   const current = await provider.automation.taskRunById(run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
-  const appWorkflowOutcome = current.appWorkflowOutcome
-    ?? (status === "failed"
-      ? { errorCode: "workflow-failed" as const, summary: null }
-      : undefined);
-  await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
-    status,
+  const attempts = await provider.automation.commitAttempts(run.taskRunId);
+  const summary = current.appWorkflowOutcome?.summary ?? null;
+  const [terminal, appWorkflowOutcome]: readonly [TerminalTaskRunStatus, TypedWorkflowOutcome] =
+    commitAttemptsErrorCode(attempts) === "commit-outcome-unknown"
+      ? ["failed", { errorCode: "commit-outcome-unknown", summary }]
+      : status === "interrupted"
+        ? [status, { errorCode: "cancelled", summary }]
+        : [status, current.appWorkflowOutcome ?? { errorCode: "workflow-failed", summary: null }];
+  const transition = await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
+    status: terminal,
     finishedAt: new Date().toISOString(),
-    ...(appWorkflowOutcome === undefined ? {} : { appWorkflowOutcome }),
+    appWorkflowOutcome,
   });
+  if (transition.applied && commitAttemptsMayHaveCommitted(attempts)) {
+    (options.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
+  }
 }
 
 export async function finalizePersistedActiveRuns(

@@ -1646,38 +1646,15 @@ export async function runLineBankProviderWorkflow(
     context.signal.throwIfAborted();
 
     const commitItems = [...statementItems, ...balanceItems];
-    await context.event("commit", "canonical-commit-started", {
-      completed: 0,
-      total: commitItems.length,
-    });
-    if (balanceItems.length > 0)
-      await context.event("commit", "current-balance-commit-started", {
-        completed: 0,
-        total: balanceItems.length,
-      });
     const committed = await financialCommit.execute(commitItems, {
       provider: "linebank",
       product: "financial",
       signal: context.signal,
     });
-    if (
-      committed.status !== "completed" ||
-      committed.items.length !== commitItems.length ||
-      committed.items.some((item) => item.status !== "committed")
-    ) {
+    if (committed.status !== "completed") {
       const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
-      await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed");
       throw new Error(`LINE Bank Canonical Financial Commit failed: ${codes || committed.status}.`);
     }
-    await context.event("commit", "canonical-commit-completed", {
-      completed: commitItems.length,
-      total: commitItems.length,
-    });
-    if (balanceItems.length > 0)
-      await context.event("commit", "current-balance-commit-completed", {
-        completed: balanceItems.length,
-        total: balanceItems.length,
-      });
     const hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
     return {
       dateRange,

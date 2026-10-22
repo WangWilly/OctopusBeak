@@ -43,7 +43,7 @@ function productStageFraction(event: WorkflowRunEvent): number {
   if (event.stage === "decoding") return 0.52 + (ratio ?? 1) * 0.12;
   if (event.stage === "validation") return 0.66 + (ratio ?? 1) * 0.1;
   if (event.stage === "commit") {
-    if (codeHas(event, /commit-completed$/u)) return 0.95;
+    if (event.code === "canonical-commit-completed") return 0.95;
     return 0.78 + (ratio ?? 0) * 0.12;
   }
   return 0.08;
@@ -67,7 +67,7 @@ function genericStagePercent(event: WorkflowRunEvent): number {
     case "validation":
       return codeHas(event, /(?:completed|complete|admitted)$/u) ? 78 : 68;
     case "commit":
-      if (codeHas(event, /commit-completed$/u)) return 95;
+      if (event.code === "canonical-commit-completed") return 95;
       return 84 + (ratio ?? 0) * 8;
     case "finalization":
       return 0;

@@ -1,3 +1,4 @@
+import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
 import assert from "node:assert/strict";
 import type {
   PGliteWorkflowItemResult,
@@ -36,17 +37,6 @@ function committed(itemValue: PGliteWorkflowRunItem): PGliteWorkflowItemResult<u
     admissionSummaries: [{ captureId: `capture-${itemValue.itemKey}`, commitSequence: 1 }],
     value: null,
     relationWarnings: [],
-  };
-}
-
-function failed(itemValue: PGliteWorkflowRunItem): PGliteWorkflowItemResult<unknown> {
-  return {
-    provider: itemValue.provider,
-    product: itemValue.product,
-    itemKey: itemValue.itemKey,
-    status: "failed",
-    failureKind: "fatal",
-    diagnostics: [],
   };
 }
 
@@ -162,11 +152,8 @@ const signal = () => new AbortController();
         return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
       },
       commit: async (typeId, staged) => {
-        if (typeId === "deposit") return result("completed", staged.map(committed));
+        if (typeId === "deposit") controller.abort();
         return result("completed", staged.map(committed));
-      },
-      event: async (stage, code) => {
-        if (stage === "commit" && code === "deposit-canonical-commit-completed") controller.abort();
       },
     }),
     (error: unknown) => {
@@ -224,11 +211,8 @@ const signal = () => new AbortController();
       },
       commit: async (typeId, staged) => {
         if (typeId === "deposit") return result("completed", staged.map(committed));
-        const wrong = item(typeId, "different-product-item");
-        return result("failed", [committed(wrong)], [{
-          provider: "fubon", product: typeId, itemKey: wrong.itemKey,
-          stage: "run", errorCode: "worker-failure", message: "safe",
-        }]);
+        // The commit port verified the receipts and found none that answers its item.
+        throw new CommitOutcomeUnknownError(0);
       },
     }),
     (error: unknown) => {
@@ -273,10 +257,7 @@ const signal = () => new AbortController();
         staged.push(item("domestic", "deposit-1"), item("domestic", "deposit-2"));
         return { sourceCaptureCount: 2, rowCount: 2, itemCount: 2 };
       },
-      commit: async (_typeId, staged) => result("failed", [committed(staged[0]!), failed(staged[1]!)], [{
-        provider: "fubon", product: "domestic", itemKey: staged[1]!.itemKey,
-        stage: "run", errorCode: "worker-failure", message: "safe",
-      }]),
+      commit: async () => { throw new CommitOutcomeUnknownError(1); },
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -287,6 +268,59 @@ const signal = () => new AbortController();
       return true;
     },
   );
+}
+
+{
+  // A cancellation raised before the commit request records no attempt and commits nothing.
+  const controller = signal();
+  await assert.rejects(
+    collectSelectedProducts({
+      productIds: ["deposit"],
+      selectedIds: ["deposit"],
+      signal: controller.signal,
+      collect: async (_typeId, staged) => {
+        staged.push(item("deposit", "deposit-1"));
+        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      },
+      commit: async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+        throw new Error("unreachable");
+      },
+    }),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
+  );
+}
+
+{
+  // An unrecorded start commits nothing and stops the run instead of failing each product's source.
+  const controller = signal();
+  let commits = 0;
+  await assert.rejects(
+    collectSelectedProducts({
+      productIds: ["deposit", "loan"],
+      selectedIds: ["deposit", "loan"],
+      signal: controller.signal,
+      collect: async (typeId, staged) => {
+        staged.push(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      },
+      commit: async () => {
+        commits += 1;
+        throw new Error("event-persistence-failed");
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "workflow-failed");
+      assert.deepEqual(error.summary.products.map(({ typeId, status, errorCode, skipReason }) => [typeId, status, errorCode ?? skipReason]), [
+        ["deposit", "failed", "workflow-failed"],
+        ["loan", "skipped", "not_attempted"],
+      ]);
+      return true;
+    },
+  );
+  assert.equal(commits, 1, "no later product attempts a commit");
 }
 
 console.log("product-collection checks passed");

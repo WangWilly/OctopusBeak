@@ -121,7 +121,6 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
   assert.equal(output.invoiceCount, 0);
   assert.ok(events.some((event) => event.code === "authentication-completed"));
   assert.ok(events.some((event) => event.code === "month-completed"));
-  assert.ok(events.some((event) => event.code === "canonical-commit-completed"));
   assert.equal(commits.length, 1);
 }
 
