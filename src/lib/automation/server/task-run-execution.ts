@@ -47,6 +47,7 @@ import {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowRuntimeForTask,
+  workflowNeedsPgliteRpc,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
@@ -320,7 +321,7 @@ async function executeSupervisedAppWorkflow(
     const input = workflowInputForTask(workflowId, launchEnv);
     const progressReporter = createWorkflowProgressReporter(execution, options, input);
     const runtime = workflowRuntimeForTask(workflowId);
-    const pgliteRpc = (definition.requiresFinancialCommit || definition.requiresPreviewWrite || runtime.kind === "nonbrowser")
+    const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime)
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
