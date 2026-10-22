@@ -117,12 +117,14 @@ test("controller story view advances only on explicit source events and Previous
   view = controller.getStoryView();
   assert.equal(view?.id, "source-selection");
   assert.equal(view?.ordinal, 2);
+  assert.equal(view?.coachAvoidId, "automation.credentials.panel");
   assert.ok(view?.commands.some((command) => command.id === "previous" && command.enabled));
 
   assert.equal(controller.chooseSource("bank"), true);
   view = controller.getStoryView();
   assert.equal(view?.id, "credentials");
   assert.equal(view?.ordinal, 3);
+  assert.equal(view?.coachAvoidId, "automation.credentials.panel");
   assert.equal(controller.state?.selectedCredentialGroupId, "bank");
 
   const backToPicker = controller.previous();

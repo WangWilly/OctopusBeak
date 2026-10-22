@@ -5,7 +5,7 @@
   import type { OnboardingState } from "./state.ts";
   import type { OnboardingCommandId, OnboardingDisabledReason, OnboardingStoryView } from "./story.ts";
   import { focusOnboardingTarget, type OnboardingTargetRegistry } from "./target-observer.ts";
-  import { placeOnboardingCoach } from "./placement.ts";
+  import { ONBOARDING_COACH_WIDTH, placeOnboardingCoach } from "./placement.ts";
 
   export let story: OnboardingStoryView | null;
   export let state: OnboardingState;
@@ -19,13 +19,12 @@
   export let onRetryOverview: () => Promise<void>;
   export let onCancelWorkflow: () => Promise<void>;
 
-  const COACH_BASE_WIDTH = 360;
   const COACH_VIEWPORT_MARGIN = 24;
   let target: HTMLElement | null = null;
   let coachElement: HTMLElement | null = null;
   let targetRect: DOMRect | null = null;
   let obstacleRects: DOMRect[] = [];
-  let coachWidth = COACH_BASE_WIDTH;
+  let coachWidth = ONBOARDING_COACH_WIDTH;
   let coachHeight = 0;
   let viewportWidth = 0;
   let viewportHeight = 0;
@@ -158,7 +157,7 @@
       coachMeasureFrame = null;
       if (!node.isConnected) return;
       const width = Math.max(1, Math.min(
-        COACH_BASE_WIDTH,
+        ONBOARDING_COACH_WIDTH,
         innerWidth - COACH_VIEWPORT_MARGIN * 2,
       ));
       // Measure the natural, unscrolled content height so viewport placement
@@ -189,7 +188,8 @@
     viewportWidth = innerWidth;
     viewportHeight = innerHeight;
     targetRect = target?.getBoundingClientRect() ?? null;
-    obstacleRects = [];
+    const avoided = target && story?.coachAvoidId ? targets.get(story.coachAvoidId)?.element : null;
+    obstacleRects = avoided ? [avoided.getBoundingClientRect()] : [];
     scheduleCoachMeasurement();
   }
 
