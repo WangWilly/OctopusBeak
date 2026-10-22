@@ -25,12 +25,11 @@ const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewWorkflowDefinition, takePreviewObservations } = await import("./workflow.ts");
 const { runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
-const { executeTaskRunForCheck } = await import("../automation/server/task-run-check-support.ts");
+const { CHECK_PGLITE_RPC, executeTaskRunForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
 const { createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
 const { createTestPGlite } = await import("../../ledger/pglite/baseline-test-template.ts");
 const { PGliteStore } = await import("../../ledger/pglite/transaction.ts");
-const { PGLITE_CHILD_RPC_ENDPOINT_ENV, PGLITE_CHILD_RPC_TOKEN_ENV } = await import("../../../electron/pglite-child-rpc-client.ts");
 
 type OutboundFrame = ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>;
 type ResponseShapes = ReturnType<typeof previewResponseShapes>;
@@ -236,10 +235,8 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
       });
       const result = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
-        launchEnv: {
-          [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
-          [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
-        },
+        pgliteRpc: CHECK_PGLITE_RPC,
+        launchEnv: {},
         workflowBrowserPortFactory: () => ({ async withPage(work) { return await work({} as never); } }),
         appWorkflowBrowserConnectionForRun: (runId) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${runId}` }),
         appWorkflowWorkerFactory: (_path, options) => new TerminalFakeWorker(options.workerData, terminal),

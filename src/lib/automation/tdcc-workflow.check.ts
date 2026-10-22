@@ -24,11 +24,8 @@ import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createWorkflowExecutor, type WorkflowRunEvent } from "./workflow-executor.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
-import { EventEmitter } from "node:events";
-import { MessageChannel } from "node:worker_threads";
-import { runSupervisedAppWorkflow, type AppWorkflowWorkerHandle } from "./server/app-workflow-worker-supervisor.ts";
-import { runAppWorkflowWorker } from "./server/app-workflow-worker-runtime.ts";
-import { parseAppWorkflowWorkerOutboundFrame } from "./server/app-workflow-worker-protocol.ts";
+import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
+import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";
 
 // Built at runtime so the repository privacy and secret scanners do not read fixtures as real accounts.
 const USER_ID = ["Q", "2", "87654321"].join("");
@@ -645,37 +642,6 @@ test("a fund account TDCC no longer lists commits an empty holding snapshot", as
   });
 });
 
-/** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
-function inProcessWorker(workerData: unknown, fetch: ReturnType<typeof fakeTdcc>["fetch"]): AppWorkflowWorkerHandle {
-  const channel = new MessageChannel();
-  const worker = new EventEmitter() as EventEmitter & AppWorkflowWorkerHandle;
-  channel.port2.on("message", (value: unknown) => {
-    worker.emit("message", value);
-    const { kind } = parseAppWorkflowWorkerOutboundFrame(value);
-    if (kind === "completed" || kind === "failed" || kind === "cancelled") {
-      channel.port2.close();
-      worker.emit("exit", 0);
-    }
-  });
-  Object.assign(worker, {
-    postMessage: (frame: unknown) => channel.port2.postMessage(frame),
-    terminate: () => {
-      channel.port1.close();
-      worker.emit("exit", 1);
-      return 1;
-    },
-  });
-  setImmediate(() => {
-    worker.emit("online");
-    void runAppWorkflowWorker({
-      port: channel.port1,
-      workerData,
-      resolveDefinition: () => createTdccWorkflow({ fetch }),
-    });
-  });
-  return worker;
-}
-
 test("through the supervised worker frames, a rotated token is saved when the run fails part way", async () => {
   await withHarness(async ({ secrets, pgliteRpc }) => {
     const fake = fakeTdcc({ acceptedToken: null, httpFailureAt: "tsp/TSP007" });
@@ -688,7 +654,7 @@ test("through the supervised worker frames, a rotated token is saved when the ru
       appendEvent: async () => undefined,
       requestHumanAssistance: async () => "failed",
       tdccSession: createTdccSessionHost(secrets),
-      workerFactory: (_path, options) => inProcessWorker(options.workerData, fake.fetch),
+      workerFactory: (_path, options) => inProcessAppWorkflowWorker(options.workerData, { resolveDefinition: () => createTdccWorkflow({ fetch: fake.fetch }) }),
     });
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");

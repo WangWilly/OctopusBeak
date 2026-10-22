@@ -35,7 +35,10 @@ test("the worker exposes operational start/read/write/failure through one provid
   const rawClient = createPGliteOperationalRpcClient(worker);
   const runtime = createPGliteOperationalRuntime({ dataDir, worker: client });
   try {
-    assert.equal(runtime.provider.pgliteWorkflow.required, true);
+    assert.deepEqual(runtime.provider.pgliteWorkflow, {
+      endpoint: runtime.childRpc.endpoint,
+      token: runtime.childRpc.token,
+    });
     const created = await runtime.provider.automation.createTaskRun({
       taskId: "exchange-rates",
       kind: "sync",

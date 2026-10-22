@@ -12,6 +12,7 @@ import {
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import {
   sanitizeSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
@@ -48,7 +49,7 @@ export type AppWorkflowWorkerStart = Readonly<{
   taskRunId: string;
   input: unknown;
   browserConnection?: Readonly<{ endpoint: string; targetId: string }>;
-  pgliteRpc?: Readonly<{ endpoint: string; token: string }>;
+  pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
 export type AppWorkflowWorkerInboundFrame =

@@ -1,4 +1,14 @@
+import { EventEmitter } from "node:events";
+import { MessageChannel } from "node:worker_threads";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
+import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
+import {
+  runAppWorkflowWorker,
+  type AppWorkflowWorkerRuntimeOptions,
+} from "./app-workflow-worker-runtime.ts";
+import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
 import {
@@ -7,6 +17,73 @@ import {
 } from "./task-run-execution.ts";
 import type { taskById } from "./tasks.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+
+/** A well-formed PGlite endpoint for checks whose worker never dials it. */
+export const CHECK_PGLITE_RPC: PGliteWorkflowRpc = Object.freeze({
+  endpoint: "http://127.0.0.1:43121/rpc",
+  token: "a".repeat(32),
+});
+
+/** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
+export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "workerData">;
+
+/** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
+export function inProcessAppWorkflowWorker(
+  workerData: unknown,
+  ports: CheckWorkerPorts = {},
+): AppWorkflowWorkerHandle {
+  const channel = new MessageChannel();
+  const worker = new EventEmitter() as EventEmitter & AppWorkflowWorkerHandle;
+  channel.port2.on("message", (value: unknown) => {
+    worker.emit("message", value);
+    const { kind } = parseAppWorkflowWorkerOutboundFrame(value);
+    if (kind === "completed" || kind === "failed" || kind === "cancelled") {
+      channel.port2.close();
+      worker.emit("exit", 0);
+    }
+  });
+  Object.assign(worker, {
+    postMessage: (frame: unknown) => channel.port2.postMessage(frame),
+    terminate: () => {
+      channel.port1.close();
+      worker.emit("exit", 1);
+      return 1;
+    },
+  });
+  setImmediate(() => {
+    worker.emit("online");
+    void runAppWorkflowWorker({ ...ports, port: channel.port1, workerData });
+  });
+  return worker;
+}
+
+const hostPageForWorker: WorkflowBrowserPort = {
+  async withPage(run) { return await run({} as never); },
+};
+
+/** The host keeps its production wiring; the page and RPC-backed ports reach the worker from the check. */
+function supervisedWithCheckWorker(
+  options: AutomationTaskExecutionOptions,
+  workerPorts: CheckWorkerPorts,
+): AutomationTaskExecutionOptions {
+  let workerBrowser: WorkflowBrowserPort | undefined;
+  return {
+    ...options,
+    pgliteRpc: options.pgliteRpc ?? CHECK_PGLITE_RPC,
+    workflowBrowserPortFactory: (input) => {
+      workerBrowser = options.workflowBrowserPortFactory?.(input);
+      return hostPageForWorker;
+    },
+    appWorkflowBrowserConnectionForRun: (runId) => ({
+      endpoint: "http://127.0.0.1:43121",
+      targetId: `host-page-${runId}`,
+    }),
+    appWorkflowWorkerFactory: (_path, worker) => inProcessAppWorkflowWorker(worker.workerData, {
+      ...workerPorts,
+      ...(workerBrowser ? { browser: workerBrowser } : {}),
+    }),
+  };
+}
 
 /** Own an existing persisted run in a check, publishing to a private runtime snapshot. */
 export async function openTaskRunForCheck(
@@ -29,6 +106,8 @@ export async function executeTaskRunForCheck(
   options: AutomationTaskExecutionOptions & Readonly<{
     taskRunId: string;
     onRunOpened?: (run: ActiveAutomationTaskRun) => void;
+    /** Run the production supervised path against an in-process worker holding these ports. */
+    workerPorts?: CheckWorkerPorts;
   }>,
 ): Promise<{
   status: AutomationTaskRun["status"];
@@ -36,10 +115,14 @@ export async function executeTaskRunForCheck(
   run: AutomationTaskRun;
   outcome: TypedWorkflowOutcome;
 }> {
-  const { taskRunId, onRunOpened, ...executionOptions } = options;
+  const { taskRunId, onRunOpened, workerPorts, ...executionOptions } = options;
   const active = await openTaskRunForCheck(persistence, taskRunId);
   onRunOpened?.(active);
-  const outcome = await runAutomationTaskExecution(task, active, executionOptions);
+  const outcome = await runAutomationTaskExecution(
+    task,
+    active,
+    workerPorts ? supervisedWithCheckWorker(executionOptions, workerPorts) : executionOptions,
+  );
   const run = await active.finish(outcome);
   return { status: run.status, taskRunId, run, outcome };
 }

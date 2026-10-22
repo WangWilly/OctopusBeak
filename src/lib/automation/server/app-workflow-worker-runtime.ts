@@ -7,10 +7,15 @@ import type {
   WorkflowFinancialCommitPort,
   WorkflowRunEvent,
   WorkflowAccountIdentityPort,
-  WorkflowTdccPort,
+  WorkflowCapabilityPorts,
 } from "../workflow-executor.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
-import { createWorkflowExecutor, workflowUsesPreviewWrite } from "../workflow-executor.ts";
+import {
+  createWorkflowExecutor,
+  requiredCapabilityPorts,
+  requiredWorkflowCapabilities,
+  workflowUsesPreviewWrite,
+} from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
@@ -42,7 +47,10 @@ import {
   type AppWorkflowRegistryDependencies,
 } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
-import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rpc-client.ts";
+import {
+  createPGliteChildRpcClient,
+  type PGliteChildRpcClient,
+} from "../../../../electron/pglite-child-rpc-client.ts";
 import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
 import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
@@ -90,8 +98,27 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
   previewWrite?: WorkflowPreviewWritePort;
+  accountIdentity?: WorkflowAccountIdentityPort;
   now?: WorkflowExecutorPorts["now"];
 }>;
+
+function childRpcCapabilityPorts(
+  child: PGliteChildRpcClient,
+  tdccSession: TdccSessionPort,
+): Required<WorkflowCapabilityPorts> {
+  return {
+    financialCommit: createWorkflowFinancialCommitPort(child.workflow),
+    maicoinPersistence: child.operationalProvider.maicoin,
+    tdcc: {
+      session: tdccSession,
+      admittedFundAccounts: (connection) => child.financial.request("financial.tdccFundAccounts.list", [connection]),
+    },
+    accountIdentity: {
+      continuity: (request) => child.financial.request("financial.accountIdentity.continuity", [request]),
+    },
+    previewWrite: child.operationalProvider.preview,
+  };
+}
 
 function throwOnProtocolFailure() {
   return new AppWorkflowWorkerProtocolError();
@@ -273,7 +300,7 @@ export async function runAppWorkflowWorker(
     },
   };
 
-  let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
+  let childRpc: PGliteChildRpcClient | undefined;
   let previewWorkflow = false;
   let progressQueue = Promise.resolve();
   let acknowledgedEventQueue = Promise.resolve();
@@ -289,14 +316,18 @@ export async function runAppWorkflowWorker(
     acknowledgedEventQueue = result.catch(() => undefined);
     return result;
   };
+  const connectChildRpc = async (rpc: NonNullable<AppWorkflowWorkerStart["pgliteRpc"]>) => {
+    childRpc = createPGliteChildRpcClient({
+      endpoint: rpc.endpoint,
+      token: rpc.token,
+      diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
+    });
+    await abortable(childRpc.ready, controller.signal);
+    return childRpc;
+  };
   try {
     if (start.pgliteRpc && workflowRuntimeForTask(start.workflowId).kind === "nonbrowser") {
-      childRpc = createPGliteChildRpcClient({
-        endpoint: start.pgliteRpc.endpoint,
-        token: start.pgliteRpc.token,
-        diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
-      });
-      await abortable(childRpc.ready, controller.signal);
+      await connectChildRpc(start.pgliteRpc);
     }
     const definitionDependencies: AppWorkflowRegistryDependencies = {
       ...(start.workflowId === "exchange-rates" && childRpc ? {
@@ -324,38 +355,22 @@ export async function runAppWorkflowWorker(
     const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
     previewWorkflow = definition.requiresPreviewWrite === true;
-    let financialCommit = options.financialCommit;
-    if (definition.requiresFinancialCommit && !financialCommit) {
-      if (!childRpc && start.pgliteRpc) {
-        childRpc = createPGliteChildRpcClient({
-          endpoint: start.pgliteRpc.endpoint,
-          token: start.pgliteRpc.token,
-          diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
-        });
-        await abortable(childRpc.ready, controller.signal);
-      }
-      if (!childRpc) throw new Error("worker-start-failed");
-      financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
-    }
     const previewWrite = workflowUsesPreviewWrite(definition) ? options.previewWrite : undefined;
-    if (definition.requiresPreviewWrite && !previewWrite && !childRpc && start.pgliteRpc) {
-      childRpc = createPGliteChildRpcClient({
-        endpoint: start.pgliteRpc.endpoint,
-        token: start.pgliteRpc.token,
-        diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
-      });
-      await abortable(childRpc.ready, controller.signal);
+    const injected: Partial<WorkflowCapabilityPorts> = {
+      ...(options.financialCommit ? { financialCommit: options.financialCommit } : {}),
+      ...(options.accountIdentity ? { accountIdentity: options.accountIdentity } : {}),
+      ...(previewWrite ? { previewWrite } : {}),
+    };
+    const servedByInjection = requiredCapabilityPorts(definition, injected);
+    if (!childRpc && requiredWorkflowCapabilities(definition).some((capability) => !servedByInjection[capability])) {
+      if (!start.pgliteRpc) throw new Error("worker-start-failed");
+      await connectChildRpc(start.pgliteRpc);
     }
-    if ((definition.requiresMaicoinPersistence || definition.requiresTdcc || definition.requiresAccountIdentity || (definition.requiresPreviewWrite && !previewWrite)) && !childRpc) throw new Error("worker-start-failed");
-    const tdcc: WorkflowTdccPort | undefined = definition.requiresTdcc
-      ? {
-        session: tdccSessionPort,
-        admittedFundAccounts: (connection) => childRpc!.financial.request("financial.tdccFundAccounts.list", [connection]),
-      }
-      : undefined;
-    const accountIdentity: WorkflowAccountIdentityPort | undefined = definition.requiresAccountIdentity
-      ? { continuity: (request) => childRpc!.financial.request("financial.accountIdentity.continuity", [request]) }
-      : undefined;
+    const capabilityPorts = requiredCapabilityPorts(
+      definition,
+      injected,
+      childRpc && childRpcCapabilityPorts(childRpc, tdccSessionPort),
+    );
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
       async append(event) {
@@ -394,10 +409,7 @@ export async function runAppWorkflowWorker(
       browser,
       text: strictSourceText,
       humanAssistance,
-      ...(financialCommit ? { financialCommit } : {}),
-      ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
-      ...(tdcc ? { tdcc } : {}),
-      ...(accountIdentity ? { accountIdentity } : {}),
+      ...capabilityPorts,
       ...(previewWritePort(definition, previewWrite, childRpc?.operationalProvider.preview)),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),

@@ -150,6 +150,40 @@ export type WorkflowExecutorPorts = Readonly<{
   productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
+/** Each capability a definition can require: the flag that requires it and the port that serves it. */
+const WORKFLOW_CAPABILITIES = {
+  financialCommit: { flag: "requiresFinancialCommit", label: "Canonical Financial Commit" },
+  maicoinPersistence: { flag: "requiresMaicoinPersistence", label: "MaiCoin operational persistence" },
+  tdcc: { flag: "requiresTdcc", label: "TDCC session" },
+  accountIdentity: { flag: "requiresAccountIdentity", label: "Account identity" },
+  previewWrite: { flag: "requiresPreviewWrite", label: "Preview write" },
+} as const satisfies Record<string, Readonly<{ flag: keyof WorkflowDefinition; label: string }>>;
+
+export type WorkflowCapability = keyof typeof WORKFLOW_CAPABILITIES;
+export type WorkflowCapabilityPorts = Pick<WorkflowExecutorPorts, WorkflowCapability>;
+type WorkflowCapabilityFlags = Pick<WorkflowDefinition, (typeof WORKFLOW_CAPABILITIES)[WorkflowCapability]["flag"]>;
+
+/** The capability ports a definition cannot run without. */
+export function requiredWorkflowCapabilities(
+  definition: WorkflowCapabilityFlags,
+): readonly WorkflowCapability[] {
+  return (Object.keys(WORKFLOW_CAPABILITIES) as WorkflowCapability[])
+    .filter((capability) => definition[WORKFLOW_CAPABILITIES[capability].flag] === true);
+}
+
+/** The definition's required capability ports, each from the first source that serves it. */
+export function requiredCapabilityPorts(
+  definition: WorkflowCapabilityFlags,
+  ...sources: readonly (Partial<WorkflowCapabilityPorts> | undefined)[]
+): Partial<WorkflowCapabilityPorts> {
+  const ports: Partial<Record<WorkflowCapability, unknown>> = {};
+  for (const capability of requiredWorkflowCapabilities(definition)) {
+    const port = sources.find((source) => source?.[capability])?.[capability];
+    if (port) ports[capability] = port;
+  }
+  return ports as Partial<WorkflowCapabilityPorts>;
+}
+
 const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 
 /** Common composition point for provider definitions and App-owned ports. */
@@ -173,20 +207,11 @@ export function createWorkflowExecutor(
     ): Promise<unknown> {
       const definition = byId.get(id);
       if (!definition) throw new Error(`Unknown workflow ID: ${id}`);
-      if (definition.requiresFinancialCommit && !ports.financialCommit) {
-        throw new Error("Canonical Financial Commit port is unavailable.");
-      }
-      if (definition.requiresMaicoinPersistence && !ports.maicoinPersistence) {
-        throw new Error("MaiCoin operational persistence port is unavailable.");
-      }
-      if (definition.requiresTdcc && !ports.tdcc) {
-        throw new Error("TDCC session port is unavailable.");
-      }
-      if (definition.requiresAccountIdentity && !ports.accountIdentity) {
-        throw new Error("Account identity port is unavailable.");
-      }
-      if (definition.requiresPreviewWrite && !ports.previewWrite) {
-        throw new Error("Preview write port is unavailable.");
+      const capabilityPorts = requiredCapabilityPorts(definition, ports);
+      for (const capability of requiredWorkflowCapabilities(definition)) {
+        if (!capabilityPorts[capability]) {
+          throw new Error(`${WORKFLOW_CAPABILITIES[capability].label} port is unavailable.`);
+        }
       }
       const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
@@ -228,14 +253,7 @@ export function createWorkflowExecutor(
         browser: ports.browser,
         text: ports.text,
         humanAssistance: ports.humanAssistance,
-        ...(definition.requiresFinancialCommit
-          ? { financialCommit: ports.financialCommit }
-          : {}),
-        ...(definition.requiresMaicoinPersistence
-          ? { maicoinPersistence: ports.maicoinPersistence }
-          : {}),
-        ...(definition.requiresTdcc ? { tdcc: ports.tdcc } : {}),
-        ...(definition.requiresAccountIdentity ? { accountIdentity: ports.accountIdentity } : {}),
+        ...capabilityPorts,
         ...(workflowUsesPreviewWrite(definition) && ports.previewWrite ? { previewWrite: ports.previewWrite } : {}),
         event,
         productFailure,
