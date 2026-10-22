@@ -1,5 +1,4 @@
 import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
-import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,
@@ -24,6 +23,7 @@ import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runti
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -46,33 +46,15 @@ export type StartAutomationTaskOptions = {
   runExecution?: typeof runAutomationTaskExecution;
 };
 
-type PGliteWorkflowCapability = Readonly<{
-  required: boolean;
-  env: NodeJS.ProcessEnv;
-}>;
-
-/**
- * Carry the authenticated PGlite service capability into the typed App
- * workflow financial-commit adapter. No workflow process is launched.
- */
-export function pgliteWorkflowRuntimeEnv(
+/** The authenticated PGlite endpoint typed App workflows commit through. */
+export function requirePGliteWorkflowRpc(
   provider: AutomationPersistenceProvider,
-): NodeJS.ProcessEnv {
-  const workflow = (provider as AutomationPersistenceProvider & {
-    pgliteWorkflow?: PGliteWorkflowCapability;
-  }).pgliteWorkflow;
-  if (!workflow) throw new Error("PGlite workflow transport is unavailable.");
-  const values = Object.values(workflow.env);
-  if (
-    !workflow.required
-    || workflow.env[PGLITE_WORKFLOW_REQUIRED_ENV] !== "1"
-    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT?.trim()
-    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN?.trim()
-    || values.some((value) => typeof value !== "string" || value.length === 0)
-  ) {
+): PGliteWorkflowRpc {
+  const rpc = provider.pgliteWorkflow;
+  if (!rpc?.endpoint.trim() || !rpc.token.trim()) {
     throw new Error("PGlite workflow transport is unavailable.");
   }
-  return { ...workflow.env };
+  return rpc;
 }
 
 export type StartedAutomationTask = {
@@ -179,10 +161,8 @@ export function createAutomationRunner(options: Readonly<{
         return CANCELLED;
       }
       if (run.signal.aborted) return CANCELLED;
-      const workflowEnvironment = {
-        ...workflowEnvironmentFromSettings(),
-        ...pgliteWorkflowRuntimeEnv(provider),
-      };
+      const workflowEnvironment = workflowEnvironmentFromSettings();
+      const pgliteRpc = requirePGliteWorkflowRpc(provider);
       const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
         taskId: task.id,
@@ -194,6 +174,7 @@ export function createAutomationRunner(options: Readonly<{
         execute: (executionOptions) => runExecution(task, run, {
           ...executionOptions,
           launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
+          pgliteRpc,
         }),
       });
     } finally {

@@ -6,7 +6,6 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { AutomationRuntimeTaskSnapshot } from "$lib/desktop/api.ts";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
@@ -25,14 +24,7 @@ const runner = createAutomationRunner({ runtime });
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {
     automation,
-    pgliteWorkflow: {
-      required: true,
-      env: {
-        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "p".repeat(32),
-      },
-    },
+    pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: "p".repeat(32) },
   } as unknown as AutomationPersistenceProvider;
 }
 

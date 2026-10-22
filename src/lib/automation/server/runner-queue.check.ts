@@ -7,7 +7,6 @@ import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 
 let previousDirectory: string;
@@ -35,11 +34,7 @@ function harness() {
   let active = 0;
   let peak = 0;
   const provider = {
-    pgliteWorkflow: { required: true, env: {
-      [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
-      OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
-      OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "test-token",
-    } },
+    pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: "test-token" },
     automation: {
       async createTaskRun(input: Record<string, unknown>) {
         const taskRunId = `queue-${input.taskId}`;

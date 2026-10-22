@@ -27,6 +27,9 @@ export const PGLITE_CHILD_RPC_ENDPOINT_ENV =
 export const PGLITE_CHILD_RPC_TOKEN_ENV =
   "OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN" as const;
 export const PGLITE_CHILD_RPC_VERSION = 1 as const;
+
+/** The authenticated parent endpoint through which App workflows reach PGlite. */
+export type PGliteWorkflowRpc = Readonly<{ endpoint: string; token: string }>;
 export const PGLITE_CHILD_RPC_TOKEN_BYTES = 32 as const;
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;

@@ -199,14 +199,9 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: {
+      workerPorts: {
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
-        humanAssistance: {
-          async request(contract) {
-            assert.fail("A delayed CTBC login must not become human assistance.");
-          },
-        },
       },
       workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
@@ -234,6 +229,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(!run?.events.some((event) => event.code === "human-assistance-requested"));
+    assert.ok(
+      !run?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "A delayed CTBC login must not become human assistance.",
+    );
     assert.ok(run?.events.some((event) => event.code === "canonical-admission-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no statement files or logs");
@@ -248,7 +247,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const incomplete = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit },
+      workerPorts: { financialCommit },
       workflowBrowserPortFactory: () => incompleteBrowser,
     });
     assert.equal(incomplete.status, "failed");
@@ -268,7 +267,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const malformed = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: { financialCommit },
+      workerPorts: { financialCommit },
       workflowBrowserPortFactory: () => malformedBrowser,
     });
     assert.equal(malformed.status, "failed");
@@ -295,20 +294,20 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      workflowPorts: {
+      workerPorts: {
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
-        humanAssistance: {
-          async request(contract) {
-            assert.fail("Cancellation during normal login must not request human assistance.");
-          },
-        },
       },
       workflowBrowserPortFactory: () => cancellationBrowser,
     });
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.outcome.errorCode, "cancelled");
-    assert.equal((await provider.automation.taskRunById(cancellationRunId))?.appWorkflowOutcome?.errorCode, "cancelled");
+    const cancelledRun = await provider.automation.taskRunById(cancellationRunId);
+    assert.equal(cancelledRun?.appWorkflowOutcome?.errorCode, "cancelled");
+    assert.ok(
+      !cancelledRun?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "Cancellation during normal login must not request human assistance.",
+    );
     assert.equal(committed.length, 1, "cancelled CTBC run does not commit");
     assert.deepEqual(await readdir(root), []);
 
@@ -323,7 +322,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const ambiguous = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: ambiguousRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workflowPorts: {
+      workerPorts: {
         financialCommit: {
           async execute() {
             commitAttempts += 1;

@@ -10,6 +10,7 @@ import {
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
@@ -124,6 +125,8 @@ export interface AutomationPersistencePort {
 /** Shared injection object for domain boundaries during the PGlite cutover. */
 export type AutomationPersistenceProvider = Readonly<{
   automation: AutomationPersistencePort;
+  /** Present on the App's provider; typed workflows fail closed without it. */
+  pgliteWorkflow?: PGliteWorkflowRpc;
 }>;
 
 export function createAutomationPersistenceProvider(
