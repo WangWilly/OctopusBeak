@@ -130,6 +130,7 @@ export function buildAutomationPageModel(input: {
       label: task.label,
       kind: task.kind,
       credentialGroupId: task.credentialGroupId,
+      integrationNamespaces: task.integrationNamespaces,
       credentialKeys: task.credentialKeys,
       dependencies: task.dependencies,
       externalPrerequisites: task.externalPrerequisites,

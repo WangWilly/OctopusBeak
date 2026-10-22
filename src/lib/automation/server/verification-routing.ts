@@ -38,6 +38,7 @@ import {
 import { appWorkflowPageForSession } from "./app-browser-host.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import { taskById } from "./tasks.ts";
+import { VERIFIED_SOURCES } from "./sources/index.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
@@ -174,28 +175,21 @@ export type VerificationRoutingOutcome =
 
 const defaultLocalSolver = localVerificationSolver();
 
-const TEXT_CAPTCHA_APP_TASK_IDS: ReadonlySet<string> = new Set([
-  "fubon-all-statements",
-  "yuanta-all-statements",
-  "hncb-statements",
-  "post-statements",
-  "einvoice-personal-invoices",
-  "sinopac-statements",
-]);
+const verificationOf = (taskId: string) =>
+  VERIFIED_SOURCES.find((source) => source.task.id === taskId)?.workflow.verification;
 
 /** App browser workflows whose verification stages reach the solver route. */
 export function appWorkflowRoutesVerification(taskId: string) {
-  return TEXT_CAPTCHA_APP_TASK_IDS.has(taskId) || taskId === "yuanta-trade-statements";
+  return verificationOf(taskId) !== undefined;
 }
 
 /**
  * These providers classify submission results inside the workflow. Join the
  * completed execution instead of racing a second owner of browser dialogs.
  */
-export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set([
-  "sinopac-statements", "post-statements", "einvoice-personal-invoices", "yuanta-all-statements",
-  "fubon-all-statements",
-]);
+export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set(
+  VERIFIED_SOURCES.filter((source) => source.workflow.verification?.ownsSubmissionOutcome).map((source) => source.task.id),
+);
 
 export function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
   return async (viewerKey, contract, resume) =>

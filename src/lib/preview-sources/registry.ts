@@ -1,9 +1,4 @@
-import type {
-  AutomationCredentialField,
-  AutomationCredentialGroup,
-  AutomationLocalizedText,
-  AutomationSetupGuide,
-} from "../automation/types.ts";
+import type { AutomationCredentialGroup, SupportedSource } from "../automation/types.ts";
 import type { InstitutionKey } from "../institutions/institutions.ts";
 import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
 import { PREVIEW_PRODUCTS, PREVIEW_SOURCE_ID } from "./source-id.ts";
@@ -19,16 +14,10 @@ import { FIRSTBANK_PREVIEW_SOURCE } from "./firstbank-source.ts";
 import { KGIBANK_PREVIEW_SOURCE } from "./kgibank-source.ts";
 import { CTBC_CARD_PREVIEW_SOURCE } from "./ctbc-card-source.ts";
 
-export type PreviewSource = Readonly<{
-  id: string;
+export type PreviewSource = SupportedSource & Readonly<{
   institution: InstitutionKey;
   /** The products the source can collect, in Statement Selection order. Never empty. */
   products: readonly PreviewProduct[];
-  displayName: AutomationLocalizedText;
-  searchAliases: readonly string[];
-  credentialFields: readonly AutomationCredentialField[];
-  setupGuide: AutomationSetupGuide;
-  sessionTakeoverNotice?: AutomationLocalizedText;
   startUrl: string;
   run: PreviewWorkflowRun;
 }>;

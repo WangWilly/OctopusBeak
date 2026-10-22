@@ -530,7 +530,7 @@ assert.match(
 );
 assert.match(
   source,
-  /unvaluedAccountLabels\(task\.id, runDetailsOverview, \$t\)[\s\S]*?class="unvalued-accounts"/,
+  /unvaluedAccountLabels\(task\.integrationNamespaces, runDetailsOverview, \$t\)[\s\S]*?class="unvalued-accounts"/,
   "run details list the task's accounts without a current value",
 );
 

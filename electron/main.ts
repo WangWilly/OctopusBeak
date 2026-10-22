@@ -8,6 +8,7 @@ import {
   type AutomationRuntime,
 } from "../src/lib/automation/server/automation-runtime.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
@@ -46,7 +47,7 @@ const { buildDesktopEnv, ensureDataRoot } = runtime as {
     appRoot: string;
     electronPath?: string;
   }) => NodeJS.ProcessEnv;
-  ensureDataRoot: (userData: string) => void;
+  ensureDataRoot: (userData: string, defaultSettings: Readonly<Record<string, unknown>>) => void;
 };
 
 const requestedDevRemoteDebuggingPort = Number(process.env.OCTOPUSBEAK_CDP_PORT ?? "9222");
@@ -278,7 +279,7 @@ async function start() {
     assertDisposableVerificationFixtureRoot(userData);
     useTdccRegistrationFixture(createTdccRegistrationFixtureFetch());
   }
-  ensureDataRoot(userData);
+  ensureDataRoot(userData, DEFAULT_AUTOMATION_SETTINGS);
   stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
     isActive: (name) => automationRuntime?.activeTaskIds().includes(name) ?? false,
