@@ -886,8 +886,12 @@ One request an Automation Task Run makes to the Canonical Financial Commit capab
 _Avoid_: Commit event, commit stage, financial write
 
 **Commit outcome unknown**:
-The terminal state of an Automation Task Run with a Commit attempt that never settled, because the request threw, returned an unverifiable receipt, or lost its worker. A returned result, even a failed one, is a known outcome.
+The terminal state of an Automation Task Run with a Commit attempt that never settled, because the request threw, returned an unverifiable receipt, lost its worker, or outlived the App process that started it. A returned result, even a failed one, is a known outcome.
 _Avoid_: Commit failure, partial commit, interrupted run
+
+**Interrupted run**:
+An Automation Task Run that the App process ended before the run could, through a quit or a crash, while every one of its financial writes is known. A run with an unsettled Commit attempt is never interrupted, and a workflow worker lost while the App lives is a failure, not an interruption.
+_Avoid_: Cancelled run, failed run, partial run
 
 **Browser execution profile**:
 A named, versioned browser environment required by an automation source, applied consistently throughout an Automation Task Run. A run uses its selected profile without silently trying alternative profiles when the source rejects access.
