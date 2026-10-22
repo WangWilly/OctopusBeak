@@ -25,4 +25,5 @@ So the [Commit attempt](../../CONTEXT.md) recorded by the commit port is the onl
 
 - Operational baseline 4 adds an append-only commit attempt table; a baseline-3 database is upgraded in place on open.
 - Product-prefixed and `current-balance-` commit codes are removed. Product collection keeps per-product outcomes from the returned result and no longer validates receipts itself; the port does.
-- Startup recovery still records rows left by a previous process as `interrupted`. Using an unsettled attempt to record such a row as commit outcome unknown is a separate change.
+- A cancellation or App quit no longer discards a settlement in flight. The supervisor still accepts and acknowledges `commit-attempt` frames after it asks the worker to stop, and the worker's settlement report does not reject on cancellation, within the existing cancel grace. Only a worker that outlives the grace and is terminated leaves an unknown outcome.
+- Recovery of rows left active by a previous process, at App start or at quit, refines [ADR 0052](0052-active-automation-task-run-owns-run-lifecycle.md): a row with an unsettled Commit attempt is recorded `failed` with commit outcome unknown and marks financial data stale; any other row is an Interrupted run recorded `interrupted` with error code `cancelled`, the same code a quit gives a run its owner finalizes.
