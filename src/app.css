@@ -1003,6 +1003,11 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   border-bottom: 1px solid var(--border);
 }
 
+.modal-head > .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .modal-head h2 {
   margin: 0;
   font-size: 22px;
