@@ -28,6 +28,7 @@ import {
   createPGliteOperationalRuntime,
   type PGliteOperationalRuntime,
 } from "./pglite-runtime.ts";
+import { PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS } from "./pglite-view-worker-client.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX,
   packagedBrowserFixtureEnabled,
@@ -106,6 +107,9 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   "models",
   "sherpa-onnx-paraformer-zh-small",
 );
+// Automation shutdown records each run's outcome through the ledger, so the
+// ledger close waits for it this long before going ahead.
+const QUIT_CLEANUP_WAIT_MS = 2_000;
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
     scheduler?.stop();
@@ -114,8 +118,12 @@ const handleBeforeQuit = createBeforeQuitHandler({
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
     if (automationRuntime?.hasActive()) await automationRuntime.shutdown();
+  },
+  cleanupWaitMs: QUIT_CLEANUP_WAIT_MS,
+  closeDatabase: async () => {
     await pgliteOperationalRuntime?.close();
   },
+  closeDatabaseDeadlineMs: QUIT_CLEANUP_WAIT_MS + PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS + 1_000,
   quit: () => app.quit(),
 });
 app.on("before-quit", handleBeforeQuit);
