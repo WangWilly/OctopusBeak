@@ -323,7 +323,6 @@ test("Post typed workflow gets human assistance, admits complete source, and com
     assert.ok(harness.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(harness.events.some((event) => event.code === "human-assistance-completed"));
     assert.ok(harness.events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
-    assert.ok(harness.events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(outputDir), []);
   } finally {
     process.chdir(previousDirectory);

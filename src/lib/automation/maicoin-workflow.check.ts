@@ -87,6 +87,7 @@ function ports(options: {
       async appendStatementRows(value) { options.records.statements.push(...value); },
       async finishRun(value) { options.records.finished.push(value); },
     },
+    commitAttempts: { record: async () => undefined },
     events: { async append(event) { options.events.push(event); } },
     now: () => "2026-09-25T00:00:00.000Z",
   };
@@ -172,7 +173,7 @@ test("incomplete MAX wallet source is rejected before Canonical Financial Commit
   }
 });
 
-test("canonical commit errors are reduced to a stable code in operational state and events", async () => {
+test("a thrown commit request is recorded as an unknown outcome without its error text", async () => {
   const originalFetch = globalThis.fetch;
   const state = {
     events: [] as WorkflowRunEvent[],
@@ -200,10 +201,39 @@ test("canonical commit errors are reduced to a stable code in operational state 
     assert.equal(state.records.snapshots.length, 0);
     assert.deepEqual(
       (state.records.finished[0] as { record: { errorCode: string } }).record.errorCode,
-      "canonical-commit-failed",
+      "commit-outcome-unknown",
     );
-    assert.equal(state.events.some((event) => event.code === "canonical-commit-failed"), true);
     assert.equal(JSON.stringify(state.records).includes("sensitive provider response"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an unrecorded commit start commits nothing and is recorded as an operational failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const state = {
+    events: [] as WorkflowRunEvent[],
+    commits: [] as unknown[][],
+    records: { started: [], snapshots: [], statements: [], finished: [] } as {
+      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
+    },
+  };
+  try {
+    globalThis.fetch = validMaxFetch() as typeof fetch;
+    await assert.rejects(() => createRun({
+      ...ports(state),
+      commitAttempts: { record: async () => { throw new Error("event-persistence-failed"); } },
+    }).run(
+      "sync-maicoin",
+      "maicoin-run-unrecorded-start",
+      { credentials: { accessKey: "a", secretKey: "b", subAccount: "main" } },
+      new AbortController().signal,
+    ));
+    assert.equal(state.commits.length, 0, "the canonical request never starts");
+    assert.equal(
+      (state.records.finished[0] as { record: { errorCode: string } }).record.errorCode,
+      "operational-persistence-failed",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

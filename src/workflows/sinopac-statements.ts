@@ -1804,28 +1804,16 @@ async function collectAndCommitSinopacStatements(
   }
   signal?.throwIfAborted();
   const commitItems = [...items, ...balanceItems];
-  await overrides.event?.("commit", "canonical-commit-started", {
-    completed: 0,
-    total: commitItems.length,
-  });
   const committed = await overrides.financialCommit.execute(commitItems, {
     provider: "sinopac",
     product: "financial",
     signal,
   });
   if (committed.status !== "completed") {
-    await overrides.event?.("commit", signal?.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed", {
-      completed: committed.committedCount,
-      total: commitItems.length,
-    });
     throw new Error(
       `SinoPac Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
     );
   }
-  await overrides.event?.("commit", "canonical-commit-completed", {
-    completed: committed.committedCount,
-    total: commitItems.length,
-  });
   return {
     dateRange,
     accountCount: captureInputs.length,

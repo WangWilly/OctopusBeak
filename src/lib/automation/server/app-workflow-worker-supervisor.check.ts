@@ -19,6 +19,7 @@ const base: Omit<RunSupervisedAppWorkflowOptions, "workerPath" | "workerFactory"
   browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
   signal: new AbortController().signal,
   appendEvent: async () => undefined,
+  recordCommitAttempt: async () => undefined,
   requestHumanAssistance: async () => "verified" as const,
   cancelGraceMs: 15,
   terminalGraceMs: 15,

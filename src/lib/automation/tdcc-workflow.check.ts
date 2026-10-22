@@ -259,6 +259,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
             },
             admittedFundAccounts: (connection) => childRpc.financial.request("financial.tdccFundAccounts.list", [connection]),
           },
+          commitAttempts: { record: async () => undefined },
           events: { append: async (event) => { events.push(event); runOptions.onEvent?.(event); } },
           now: () => NOW,
         });
@@ -505,7 +506,7 @@ test("cooperative cancellation at commit start retains collection exclusions and
     }), {
       signal: controller.signal,
       onEvent: (event) => {
-        if (event.stage === "commit" && event.code === "settlement-canonical-commit-started") controller.abort();
+        if (event.code === "canonical-commit-started" && event.statementType === "settlement") controller.abort();
       },
     }));
     assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -652,6 +653,7 @@ test("through the supervised worker frames, a rotated token is saved when the ru
       pgliteRpc,
       signal: new AbortController().signal,
       appendEvent: async () => undefined,
+      recordCommitAttempt: async () => undefined,
       requestHumanAssistance: async () => "failed",
       tdccSession: createTdccSessionHost(secrets),
       workerFactory: (_path, options) => inProcessAppWorkflowWorker(options.workerData, { resolveDefinition: () => createTdccWorkflow({ fetch: fake.fetch }) }),

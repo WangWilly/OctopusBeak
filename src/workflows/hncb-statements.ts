@@ -1429,10 +1429,6 @@ export async function runHncbStatements(
       } as const)),
     ];
     overrides.signal?.throwIfAborted();
-    await overrides.event?.("commit", "canonical-commit-started", {
-      completed: 0,
-      total: items.length,
-    });
     const committed = await overrides.financialCommit.execute(items, {
       provider: "hncb",
       product: "financial",
@@ -1442,10 +1438,6 @@ export async function runHncbStatements(
       throw new Error(
         `HNCB Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
       );
-    await overrides.event?.("commit", "canonical-commit-completed", {
-      completed: committed.committedCount,
-      total: items.length,
-    });
     return {
       dateRange,
       usedExistingSession: overrides.usedExistingSession ?? false,

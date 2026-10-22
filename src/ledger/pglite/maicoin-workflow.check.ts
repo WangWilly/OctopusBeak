@@ -66,6 +66,7 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
       humanAssistance: { request: async () => { throw new Error("MaiCoin does not request assistance."); } },
       financialCommit: createWorkflowFinancialCommitPort(child.workflow),
       maicoinPersistence: child.operationalProvider.maicoin,
+      commitAttempts: { record: async () => undefined },
       events: { append: async (event) => { events.push(event); } },
       now: () => "2026-09-25T00:00:00.000Z",
     });

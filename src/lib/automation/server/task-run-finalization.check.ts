@@ -12,6 +12,7 @@ import {
   decideAutomationTaskRunOutcome,
   finalizeAutomationTaskRun,
   finalizePersistedActiveRuns,
+  finalizePersistedRun,
   type TaskRunStop,
 } from "./task-run-finalization.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
@@ -130,22 +131,32 @@ test("TDCC incomplete receipt outcomes finalize partial, with cancellation and u
   }
 }));
 
-test("persisted product commit event invalidates freshness when a later worker crash has no summary", () => withProvider(async (provider) => {
+test("a settled Commit attempt invalidates freshness when a later worker crash has no summary", () => withProvider(async (provider) => {
   const taskRunId = await createRun(provider, "yuanta-all-statements");
-  await provider.automation.appendRunEvent({
-    runId: taskRunId,
-    stage: "commit",
-    code: "deposit-canonical-commit-completed",
-    occurredAt: new Date().toISOString(),
-    completed: 1,
-    total: 1,
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "started", attemptId: "deposit-attempt", product: "deposit", total: 1,
+  });
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "settled", attemptId: "deposit-attempt", outcome: "completed", committedCount: 1,
   });
   const invalidations = createDataVersionStore();
   const saved = await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, {
     dataVersionStore: invalidations,
   });
   assert.equal(saved.status, "failed");
-  assert.equal(invalidations.snapshot().version, 1, "only a persisted commit-completed event proves earlier progress");
+  assert.equal(invalidations.snapshot().version, 1, "only a durable Commit attempt proves earlier progress");
+}));
+
+test("an unsettled Commit attempt invalidates freshness because the write may have landed", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "yuanta-all-statements");
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "started", attemptId: "deposit-attempt", product: "deposit", total: 1,
+  });
+  const invalidations = createDataVersionStore();
+  await finalize(provider, taskRunId, { errorCode: "commit-outcome-unknown", summary: null }, {
+    dataVersionStore: invalidations,
+  });
+  assert.equal(invalidations.snapshot().version, 1);
 }));
 
 test("a failure without receipts leaves fresh data alone", () => withProvider(async (provider) => {
@@ -183,7 +194,7 @@ test("typed cancellation code produces a cancelled terminal run", () => withProv
   assert.equal(saved.terminationMode, undefined);
 }));
 
-test("App-close interruption preserves typed outcome without a file-log contract", () => withProvider(async (provider) => {
+test("App-close interruption keeps the typed summary under the quit's error code", () => withProvider(async (provider) => {
   const taskRunId = await createRun(provider, "exchange-rates");
   await provider.automation.updateTaskRun(taskRunId, {
     appWorkflowOutcome: {
@@ -195,7 +206,7 @@ test("App-close interruption preserves typed outcome without a file-log contract
   const saved = await provider.automation.taskRunById(taskRunId);
   assert.equal(saved?.status, "interrupted");
   assert.deepEqual(saved?.appWorkflowOutcome, {
-    errorCode: null,
+    errorCode: "cancelled",
     summary: { status: "completed", counts: { itemCount: 4 } },
   });
 }));
@@ -242,4 +253,57 @@ test("competing finalizers persist one decision and apply freshness and notices 
     assert.equal(invalidations.snapshot().version, 1, "durable receipts invalidate once for every terminal status");
     assert.equal(noticesResolved, status === "completed" ? 1 : 0);
   }
+}));
+
+for (const recovery of ["startup", "shutdown"] as const) {
+  test(`${recovery} recovery records an unsettled Commit attempt as commit outcome unknown`, () => withProvider(async (provider) => {
+    const taskRunId = await createRun(provider, "post-statements");
+    await provider.automation.recordCommitAttempt(taskRunId, {
+      phase: "started", attemptId: "post-attempt", product: "financial", total: 2,
+    });
+    if (recovery === "startup") await recoverInterruptedAutomationRuns(provider);
+    else await finalizePersistedActiveRuns(provider, "App closed");
+    const saved = await provider.automation.taskRunById(taskRunId);
+    assert.equal(saved?.status, "failed", "an uncertain financial write outranks the interruption");
+    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: "commit-outcome-unknown", summary: null });
+  }));
+}
+
+test("a leftover run whose attempts all settled is an Interrupted run that still marks data stale", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "post-statements");
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "started", attemptId: "post-attempt", product: "financial", total: 2,
+  });
+  await provider.automation.recordCommitAttempt(taskRunId, {
+    phase: "settled", attemptId: "post-attempt", outcome: "completed", committedCount: 2,
+  });
+  const run = await provider.automation.taskRunById(taskRunId);
+  const invalidations = createDataVersionStore();
+  await finalizePersistedRun(provider, run!, "App closed", "interrupted", { dataVersionStore: invalidations });
+  const saved = await provider.automation.taskRunById(taskRunId);
+  assert.equal(saved?.status, "interrupted");
+  assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: "cancelled", summary: null });
+  assert.equal(invalidations.snapshot().version, 1);
+}));
+
+test("a leftover run with no Commit attempt is interrupted with the quit's error code and leaves data fresh", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "post-statements");
+  const run = await provider.automation.taskRunById(taskRunId);
+  const invalidations = createDataVersionStore();
+  await finalizePersistedRun(provider, run!, "App closed", "interrupted", { dataVersionStore: invalidations });
+  const saved = await provider.automation.taskRunById(taskRunId);
+  assert.equal(saved?.status, "interrupted");
+  assert.equal(saved?.appWorkflowOutcome?.errorCode, "cancelled");
+  assert.equal(invalidations.snapshot().version, 0);
+}));
+
+test("an unreadable Commit attempt record after a failure still marks data stale", () => withProvider(async (provider) => {
+  const taskRunId = await createRun(provider, "post-statements");
+  provider.automation.commitAttempts = async () => { throw new Error("operational RPC unavailable"); };
+  const invalidations = createDataVersionStore();
+  const saved = await finalize(provider, taskRunId, { errorCode: "workflow-failed", summary: null }, {
+    dataVersionStore: invalidations,
+  });
+  assert.equal(saved.status, "failed", "the terminal write stands");
+  assert.equal(invalidations.snapshot().version, 1, "an unreadable record may hide a write");
 }));

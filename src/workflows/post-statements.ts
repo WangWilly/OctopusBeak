@@ -1042,10 +1042,6 @@ async function runPostStatements(
         },
       } as const)),
   ];
-  await overrides.event?.("commit", "canonical-commit-started", {
-    completed: 0,
-    total: items.length,
-  });
   const committed = await overrides.financialCommit.execute(items, {
     provider: "post",
     product: "financial",
@@ -1055,10 +1051,6 @@ async function runPostStatements(
     throw new Error(
       `Post Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
     );
-  await overrides.event?.("commit", "canonical-commit-completed", {
-    completed: committed.committedCount,
-    total: items.length,
-  });
   return {
     accountCount: statements.length,
     rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),

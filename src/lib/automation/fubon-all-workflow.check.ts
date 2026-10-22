@@ -203,7 +203,6 @@ try {
     assert.ok(calls.includes("human:fubon-login-captcha"));
     assert.ok(calls.includes("event:authentication:authentication-started"));
     assert.ok(calls.includes("event:authentication:authentication-completed"));
-    assert.ok(calls.includes("event:commit:deposit-canonical-commit-completed"));
     assert.ok(
       calls.indexOf("event:collection:deposit-current-balance-excluded-account-number-evidence-missing")
         > calls.indexOf("deposit-collected"),
@@ -219,8 +218,6 @@ try {
         > calls.indexOf("deposit-collected"),
       "a statement account excluded for an ambiguous identity is reported as an operational event",
     );
-    assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
-    assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));
     assert.deepEqual(await readdir(temp), [], "typed provider path must not write source or log files");
   }
 

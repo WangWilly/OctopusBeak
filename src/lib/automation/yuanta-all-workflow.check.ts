@@ -157,11 +157,6 @@ try {
     assert.ok(calls.includes("human:yuanta-bank-login-captcha"));
     assert.ok(calls.includes("event:authentication:authentication-completed"));
     assert.ok(calls.includes("event:validation:source-validation-completed"));
-    assert.ok(calls.includes("event:commit:deposit-canonical-commit-completed"));
-    assert.ok(calls.includes("event:commit:foreign-currency-canonical-commit-completed"));
-    assert.ok(calls.includes("event:commit:credit-card-canonical-commit-completed"));
-    assert.ok(calls.includes("event:commit:loan-canonical-commit-completed"));
-    assert.ok(calls.includes("event:commit:fund-canonical-commit-completed"));
     assert.ok(calls.indexOf("investment-collected") < calls.lastIndexOf("commit"));
   }
 

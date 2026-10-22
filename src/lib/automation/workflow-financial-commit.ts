@@ -1,6 +1,4 @@
-import {
-  executePGliteWorkflowRun,
-} from "../../ledger/pglite/workflow-run.ts";
+import { executePGliteWorkflowRun } from "../../ledger/pglite/workflow-run.ts";
 import type { PGliteWorkflowClient } from "../../ledger/pglite/workflow-client.ts";
 import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 

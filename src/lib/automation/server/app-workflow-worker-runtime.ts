@@ -18,6 +18,7 @@ import {
 } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
+import type { CommitAttemptRecorder, CommitAttemptReport } from "../commit-attempt.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
@@ -153,6 +154,11 @@ export async function runAppWorkflowWorker(
 
   const controller = new AbortController();
   const pendingEvents = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
+  /** Survives cancellation: a settlement must still reach the host (ADR 0056). */
+  const pendingCommitAttempts = new Map<string, Readonly<{
+    resolve(frame: AppWorkflowWorkerInboundFrame): void;
+    reject(error: Error): void;
+  }>>();
   const pendingAssistance = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
   const pendingTdccSession = new Map<string, Readonly<{
     operation: TdccSessionOperation;
@@ -189,6 +195,12 @@ export async function runAppWorkflowWorker(
       return;
     }
     if (frame.kind === "event-ack") {
+      const commitAttempt = pendingCommitAttempts.get(frame.eventId);
+      if (commitAttempt) {
+        pendingCommitAttempts.delete(frame.eventId);
+        commitAttempt.resolve(frame);
+        return;
+      }
       const resolve = pendingEvents.get(frame.eventId);
       if (!resolve) {
         protocolFailure = true;
@@ -316,6 +328,26 @@ export async function runAppWorkflowWorker(
     acknowledgedEventQueue = result.catch(() => undefined);
     return result;
   };
+  const sendCommitAttempt = (attempt: CommitAttemptReport) => {
+    const eventId = randomUUID();
+    const result = acknowledgedEventQueue.then(() => new Promise<void>((resolve, reject) => {
+      pendingCommitAttempts.set(eventId, {
+        resolve: (frame) => {
+          if (frame.kind === "event-ack" && frame.ok) resolve();
+          else reject(new Error("event-persistence-failed"));
+        },
+        reject,
+      });
+      try {
+        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "commit-attempt", eventId, attempt });
+      } catch {
+        pendingCommitAttempts.delete(eventId);
+        reject(new AppWorkflowWorkerProtocolError());
+      }
+    }));
+    acknowledgedEventQueue = result.catch(() => undefined);
+    return result;
+  };
   const connectChildRpc = async (rpc: NonNullable<AppWorkflowWorkerStart["pgliteRpc"]>) => {
     childRpc = createPGliteChildRpcClient({
       endpoint: rpc.endpoint,
@@ -385,6 +417,7 @@ export async function runAppWorkflowWorker(
         });
       },
     };
+    const commitAttempts: CommitAttemptRecorder = { record: sendCommitAttempt };
     const humanAssistance: WorkflowExecutorPorts["humanAssistance"] = {
       async request(contract, signal) {
         signal.throwIfAborted();
@@ -411,6 +444,7 @@ export async function runAppWorkflowWorker(
       humanAssistance,
       ...capabilityPorts,
       ...(previewWritePort(definition, previewWrite, childRpc?.operationalProvider.preview)),
+      commitAttempts,
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,
@@ -489,6 +523,8 @@ export async function runAppWorkflowWorker(
     options.port.off("message", onMessage);
     controller.signal.removeEventListener("abort", onAbort);
     failPending();
+    for (const pending of pendingCommitAttempts.values()) pending.reject(abortError());
+    pendingCommitAttempts.clear();
     childRpc?.close();
   }
 }

@@ -3,6 +3,7 @@ import type {
   AutomationPersistenceProvider,
 } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
+import { isCommitAttemptReport } from "../src/lib/automation/commit-attempt.ts";
 import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
 import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
@@ -35,6 +36,8 @@ const AUTOMATION_METHODS = [
   "hasOccurrenceBeenAttempted",
   "recentTaskRuns",
   "appendRunEvent",
+  "recordCommitAttempt",
+  "commitAttempts",
   "pruneRunEvents",
   "upsertTaskPrerequisiteNotice",
   "activeTaskPrerequisiteNotices",
@@ -239,6 +242,10 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
       return args.length === 1 && stringFields(args[0], ["runId", "stage", "code", "occurredAt"])
         && ["preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization"].includes(String((args[0] as Record<string, unknown>).stage))
         && (args[0] as Record<string, unknown>).code!.toString().length <= 64;
+    case "automation.recordCommitAttempt":
+      return args.length === 2 && stringValue(args[0]) && isCommitAttemptReport(args[1]);
+    case "automation.commitAttempts":
+      return args.length === 1 && stringValue(args[0]);
     case "automation.pruneRunEvents":
       return args.length === 1 && stringValue(args[0]) && dateValue(args[0]);
     case "automation.upsertTaskPrerequisiteNotice":
@@ -354,6 +361,13 @@ async function invokeOperation(
       );
       case "appendRunEvent": return provider.automation.appendRunEvent(
         args[0] as Parameters<AutomationPersistencePort["appendRunEvent"]>[0],
+      );
+      case "recordCommitAttempt": return provider.automation.recordCommitAttempt(
+        args[0] as Parameters<AutomationPersistencePort["recordCommitAttempt"]>[0],
+        args[1] as Parameters<AutomationPersistencePort["recordCommitAttempt"]>[1],
+      );
+      case "commitAttempts": return provider.automation.commitAttempts(
+        args[0] as Parameters<AutomationPersistencePort["commitAttempts"]>[0],
       );
       case "pruneRunEvents": return provider.automation.pruneRunEvents(
         args[0] as Parameters<AutomationPersistencePort["pruneRunEvents"]>[0],
@@ -615,6 +629,8 @@ export function createPGliteOperationalRpcClient(
     hasOccurrenceBeenAttempted: (...args) => automationMethod("hasOccurrenceBeenAttempted", args),
     recentTaskRuns: (...args) => automationMethod("recentTaskRuns", args),
     appendRunEvent: (...args) => automationMethod("appendRunEvent", args),
+    recordCommitAttempt: (...args) => automationMethod("recordCommitAttempt", args),
+    commitAttempts: (...args) => automationMethod("commitAttempts", args),
     pruneRunEvents: (...args) => automationMethod("pruneRunEvents", args),
     upsertTaskPrerequisiteNotice: (...args) => automationMethod("upsertTaskPrerequisiteNotice", args),
     activeTaskPrerequisiteNotices: (...args) => automationMethod("activeTaskPrerequisiteNotices", args),

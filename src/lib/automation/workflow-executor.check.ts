@@ -16,6 +16,7 @@ function ports(events: WorkflowRunEvent[]): WorkflowExecutorPorts {
     financialCommit: { execute: async () => ({
       status: "completed", items: [], diagnostics: [], committedCount: 0, failedCount: 0,
     }) },
+    commitAttempts: { record: async () => undefined },
     events: { append: async (event) => { events.push(event); } },
     now: () => "2026-09-25T00:00:00.000Z",
   };
@@ -28,7 +29,7 @@ test("executor injects the financial port and records typed stage events", async
     id: "financial-example",
     requiresFinancialCommit: true,
     async run(context, input) {
-      assert.equal(context.financialCommit, injected.financialCommit);
+      assert.ok(context.financialCommit);
       assert.equal(context.text, injected.text);
       await context.event("collection", "source-complete", { completed: 2, total: 2 });
       return input;
@@ -91,7 +92,7 @@ test("an event write failure after work starts does not relabel the outcome", as
     id: "event-failure-example",
     requiresFinancialCommit: false,
     async run(context) {
-      await context.event("commit", "commit-finished");
+      await context.event("collection", "collection-finished");
       return "committed";
     },
   }], {
@@ -185,4 +186,30 @@ test("abort during finalization still converts only a product result to interrup
     },
   );
   assert.deepEqual(events.map(({ code }) => code), ["run-started", "run-completed", "run-cancelled"]);
+});
+
+test("the preview write port, not the workflow, reports a preview write's commit stage", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const executor = createWorkflowExecutor([{
+    id: "preview-write-example",
+    requiresFinancialCommit: false,
+    requiresPreviewWrite: true,
+    async run(context) {
+      await context.previewWrite!.write({ sourceId: "fixture", institution: "esun", product: "credit_card", collection: {} } as never);
+      await context.previewWrite!.write({ sourceId: "fixture", institution: "esun", product: "time_deposit", collection: {} } as never);
+      return null;
+    },
+  }], {
+    ...ports(events),
+    previewWrite: {
+      write: async (input) => ({
+        accounts: input.product === "credit_card" ? 2 : 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0,
+      }),
+    },
+  });
+  await executor.run("preview-write-example", "run-preview", null, new AbortController().signal);
+  assert.deepEqual(
+    events.filter((event) => event.stage === "commit").map(({ code, completed, statementType }) => [code, completed, statementType]),
+    [["credit-card-preview-write-completed", 2, "credit_card"]],
+  );
 });

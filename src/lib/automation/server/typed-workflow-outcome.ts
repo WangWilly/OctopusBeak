@@ -1,3 +1,4 @@
+import { commitAttemptsErrorCode, type CommitAttempt } from "../commit-attempt.ts";
 import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
@@ -200,7 +201,10 @@ export function isTypedWorkflowOutcomeSummary(value: unknown): value is TypedWor
   return Buffer.byteLength(JSON.stringify(summary), "utf8") <= MAX_SUMMARY_BYTES;
 }
 
-/** Classify from typed failure evidence only; never persist the thrown message. */
+/**
+ * Classify from typed failure evidence only; never persist the thrown message.
+ * Commit outcome is not decided here: see commitAwareErrorCode (ADR 0056).
+ */
 export function classifyTypedWorkflowFailure(
   error: unknown,
   events: readonly WorkflowRunEvent[],
@@ -215,14 +219,6 @@ export function classifyTypedWorkflowFailure(
   if (error instanceof SourceUnavailableError) return "source-unavailable";
   if (error instanceof ProviderProtocolOutdatedError) return "provider-protocol-outdated";
   if (error instanceof ExternalPrerequisiteUnavailableError) return "external-prerequisite-unavailable";
-
-  const commitEvents = events.filter((event) => event.stage === "commit");
-  const commitFailed = commitEvents.some((event) => /(?:canonical-)?commit-failed$/u.test(event.code));
-  if (commitFailed) return "canonical-commit-failed";
-
-  const commitStarted = commitEvents.some((event) => /(?:canonical-)?commit-started$/u.test(event.code));
-  const commitCompleted = commitEvents.some((event) => /(?:canonical-)?commit-completed$/u.test(event.code));
-  if (commitStarted && !commitCompleted) return "commit-outcome-unknown";
 
   if (signalAborted) return "cancelled";
   if (events.some((event) => event.stage === "authentication" && event.code === "verification-solver-exhausted")) {
@@ -254,4 +250,24 @@ export function classifyTypedWorkflowFailure(
     return "source-collection-failed";
   }
   return "workflow-failed";
+}
+
+/**
+ * ADR 0056: a run's Commit attempts outrank what its worker reported. An
+ * unsettled attempt makes any run commit outcome unknown; a failed attempt
+ * explains a failed run that the worker could not name more precisely.
+ */
+export function commitAwareErrorCode(input: Readonly<{
+  attempts: readonly CommitAttempt[];
+  completed: boolean;
+  /** A specific code the worker proved, or null. */
+  reported: TypedWorkflowErrorCode | null;
+  classify(): TypedWorkflowErrorCode;
+}>): TypedWorkflowErrorCode | null {
+  const commit = commitAttemptsErrorCode(input.attempts);
+  if (commit === "commit-outcome-unknown") return commit;
+  if (input.completed) return null;
+  // Every unknown commit leaves an unsettled attempt; a worker's claim without one is not evidence.
+  const reported = input.reported === "commit-outcome-unknown" ? null : input.reported;
+  return reported ?? commit ?? input.classify();
 }

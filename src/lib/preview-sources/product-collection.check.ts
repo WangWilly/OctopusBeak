@@ -72,7 +72,6 @@ test("a product's failure stays with that product, and the others still write", 
   assert.deepEqual(writes, ["credit_card", "time_deposit"], "the complete empty time-deposit list is still written, so it can close deposits");
   assert.equal(result.interrupted, null);
   assert.ok(events.includes("deposit-source-validation-rejected"));
-  assert.ok(events.includes("credit-card-preview-write-completed"));
   const output = previewRunOutput(result);
   assert.deepEqual([output.status, output.accountCount], ["partial", 1]);
 });
