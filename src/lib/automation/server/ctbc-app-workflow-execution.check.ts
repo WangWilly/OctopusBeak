@@ -229,7 +229,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(!run?.events.some((event) => event.code === "human-assistance-requested"));
-    assert.equal(run?.humanAssistanceContract, null, "A delayed CTBC login must not become human assistance.");
+    assert.ok(
+      !run?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "A delayed CTBC login must not become human assistance.",
+    );
     assert.ok(run?.events.some((event) => event.code === "canonical-admission-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no statement files or logs");
@@ -301,7 +304,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(cancelled.outcome.errorCode, "cancelled");
     const cancelledRun = await provider.automation.taskRunById(cancellationRunId);
     assert.equal(cancelledRun?.appWorkflowOutcome?.errorCode, "cancelled");
-    assert.equal(cancelledRun?.humanAssistanceContract, null, "Cancellation during normal login must not request human assistance.");
+    assert.ok(
+      !cancelledRun?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
+      "Cancellation during normal login must not request human assistance.",
+    );
     assert.equal(committed.length, 1, "cancelled CTBC run does not commit");
     assert.deepEqual(await readdir(root), []);
 

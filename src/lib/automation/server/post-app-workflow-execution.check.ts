@@ -261,7 +261,6 @@ test("Post App task dispatches the typed provider with human assistance, complet
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      verificationRouteOwnedByCampaign: true,
       workerPorts: {
         financialCommit: commitPort,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -355,7 +354,6 @@ test("Post App dispatch cancellation during human assistance does not collect or
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      verificationRouteOwnedByCampaign: true,
       workerPorts: {
         financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
       },
