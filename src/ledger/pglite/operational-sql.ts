@@ -153,7 +153,7 @@ WHERE singleton_id = 1 AND baseline_version = 3;
 
 /**
  * Forward step for an existing baseline-4 database: a Commit attempt refused
- * before admission settles as `refused` (ADR 0057).
+ * before admission settles as `refused` (ADR 0058).
  */
 export const PGLITE_OPERATIONAL_BASELINE_V4_TO_V5_SQL: string = String.raw`
 ALTER TABLE automation_task_run_commit_attempts
