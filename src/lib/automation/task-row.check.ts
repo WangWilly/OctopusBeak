@@ -28,7 +28,6 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     appWorkflowOutcome: null,
     events: [],
     progressPercent: null,
-    progressText: "Completed",
     humanSession: null,
     humanAssistanceContract: null,
     forceTerminateAvailable: false,

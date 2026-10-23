@@ -195,7 +195,6 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   appWorkflowOutcome: TypedWorkflowOutcome | null;
   events: readonly WorkflowRunEvent[];
   progressPercent: number | null;
-  progressText: string;
   humanSession: string | null;
   humanAssistanceContract: HumanAssistanceContract | null;
   forceTerminateAvailable?: boolean;

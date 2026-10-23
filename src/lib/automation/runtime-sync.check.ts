@@ -26,7 +26,6 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     appWorkflowOutcome: null,
     events: [],
     progressPercent: null,
-    progressText: "Queued",
     humanSession: null,
     humanAssistanceContract: null,
     forceTerminateAvailable: false,
@@ -82,7 +81,6 @@ test("runtime merge gives live status, progress, outcome, and action precedence"
   assert.equal(item.status, "running");
   assert.equal(item.isActive, true);
   assert.equal(item.progressPercent, 50);
-  assert.equal(item.progressText, "50%");
   assert.equal(item.appWorkflowOutcome, null);
   assert.equal("logTail" in item, false);
   assert.equal(item.primaryAction, "Cancel");
@@ -280,7 +278,6 @@ test("a newer terminal run replaces a stale terminal block row", () => {
       isActive: false,
       runId: "run-old",
       progressPercent: 100,
-      progressText: "100%",
       primaryAction: "Run",
     }),
   };
@@ -309,7 +306,6 @@ test("an accepted active snapshot replaces a stale active block row", () => {
       isActive: true,
       runId: "run-old",
       progressPercent: 18,
-      progressText: "18%",
       primaryAction: "Cancel",
     }),
   };
@@ -324,14 +320,13 @@ test("an accepted active snapshot replaces a stale active block row", () => {
   assert.equal(merged.runId, "run-new");
   assert.equal(merged.status, "running");
   assert.equal(merged.progressPercent, 42);
-  assert.equal(merged.progressText, "42%");
   assert.equal(merged.appWorkflowOutcome, null);
 });
 
 test("each task receives only its own run progress update", () => {
   const source = model([
-    task({ id: "task-a", progressPercent: 10, progressText: "10%" }),
-    task({ id: "task-b", progressPercent: 80, progressText: "80%" }),
+    task({ id: "task-a", progressPercent: 10 }),
+    task({ id: "task-b", progressPercent: 80 }),
   ]);
   const merged = mergeAutomationRuntime(source, {
     sessionId: "session-1",

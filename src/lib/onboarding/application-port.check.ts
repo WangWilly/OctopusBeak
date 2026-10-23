@@ -64,7 +64,6 @@ function model(taskOverrides: Partial<AutomationTaskRow> = {}): AutomationDeskto
     appWorkflowOutcome: null,
     events: [],
     progressPercent: null,
-    progressText: "Running",
     humanSession: null,
     humanAssistanceContract: null,
     isActive: true,

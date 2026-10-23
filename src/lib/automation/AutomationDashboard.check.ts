@@ -80,7 +80,7 @@ assert.match(
 );
 assert.match(source, /\{#each task\.events as event, index/);
 assert.match(source, /\$t\.automation\.workflowStages\[event\.stage\]/);
-assert.match(source, /workflowEventFailureLabel\(event\)/);
+assert.match(source, /workflowEventFailureLabel\(event, \$t\)/);
 assert.match(source, /<code>\{event\.code\}<\/code>/);
 assert.match(source, /formatTime\(event\.occurredAt\)/);
 assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
@@ -120,7 +120,7 @@ assert.match(
   /onpointerenter=\{\(event\) => showTaskTooltip\(task, event\)\}/,
 );
 assert.match(source, /onpointerleave=\{hideTaskTooltip\}/);
-assert.match(source, /taskStatusLabel\(hoveredTask, \$t\)/);
+assert.match(source, /present\(hoveredTask\)\.statusLabel/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
 assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
@@ -134,17 +134,12 @@ assert.match(source, /<ProgressiveBlock label="list"[^>]*showSpinner=\{false\}/)
 assert.doesNotMatch(source, /<ProgressiveBlock label="summary"[^>]*showSpinner=\{false\}/);
 assert.match(source, /role="progressbar"/);
 assert.match(source, /aria-valuenow=\{task\.progressPercent/);
-assert.match(source, /aria-valuetext=\{progressLabel\(task, \$t\)\}/);
-assert.match(source, /function workflowProgressStageLabel\(/);
-assert.match(source, /progressQueryingProduct\(product\)/);
-assert.match(source, /progressDownloadingProduct\(product\)/);
-assert.match(source, /task\.workflowProgress\?\.params\?\.retrying === true/);
-assert.match(source, /function shouldShowWorkflowProgress\(/);
+assert.match(source, /aria-valuetext=\{present\(task\)\.progressLabel\}/);
 const onboardingProgressTaskSource = source.slice(
-  source.indexOf("function isOnboardingProgressTask"),
-  source.indexOf("function shouldShowWorkflowProgress"),
+  source.indexOf("const ONBOARDING_PROGRESS_NODES"),
+  source.indexOf("$: present ="),
 );
-assert.match(onboardingProgressTaskSource, /task\.id === onboardingTrackedTaskId/);
+assert.match(onboardingProgressTaskSource, /\? onboardingTrackedTaskId : null/);
 for (const step of [
   "collection-progress",
   "collection-failed",
@@ -153,13 +148,8 @@ for (const step of [
 ]) {
   assert.match(onboardingProgressTaskSource, new RegExp(`"${step}"`));
 }
-assert.match(source, /function shouldShowWorkflowProgress\([\s\S]*?isOnboardingProgressTask\(task\)/);
 assert.match(source, /task\.status === "waiting_for_human"/);
-assert.match(source, /class:working=\{workflowProgressIsWorking\(task\)\}/);
-assert.match(
-  source,
-  /if \(task\.status === "waiting_for_human"\) \{\s*return task\.isActive;/,
-);
+assert.match(source, /class:working=\{present\(task\)\.progressWorking\}/);
 assert.match(source, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.progress-bar\.working::after/);
 assert.match(
   source,
@@ -180,14 +170,6 @@ assert.match(forceTerminateTaskSource, /automation\.forceTerminate\(task\.id\)/)
 assert.match(
   source,
   /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
-);
-assert.match(
-  source,
-  /function taskStatusLabel[\s\S]*?if \(task\.status === "waiting_for_human"\) \{\s*return dictionary\.automation\.progressAutomaticVerification;/,
-);
-assert.match(
-  source,
-  /const waiting = dictionary\.automation\.progressAutomaticVerification;/,
 );
 assert.doesNotMatch(source, /automation\.forceQuit\(/);
 assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
@@ -355,7 +337,6 @@ assert.match(source, /selectedStatementTypeIds/);
 assert.doesNotMatch(source, /statementSelectionAllSupported/);
 assert.doesNotMatch(source, /selectedCredentialGroup\.id !== "fubon"/);
 assert.match(source, /task\.primaryAction === "Configure"/);
-assert.match(source, /task\.status === "partial"/);
 assert.match(
   source,
   /import type \{ CertificateFileValidationReason, CredentialGroupDto \} from "\$lib\/desktop\/api\.ts"/,
@@ -410,14 +391,6 @@ assert.match(
   /if \(invalid\) \{[\s\S]*?credentialSearch = "";[\s\S]*?selectedCredentialGroupId = invalid\.id;[\s\S]*?await tick\(\);[\s\S]*?getElementById\(`\$\{invalid\.id\}-statement-selection`\)\?\.focus\(\)/,
 );
 
-const railStatusSource = source.slice(
-  source.indexOf("function credentialGroupSyncStatus"),
-  source.indexOf("function lastSyncSummary"),
-);
-assert.match(railStatusSource, /credentialState\(key, sourceAutomation\) === "missing"/);
-assert.match(railStatusSource, /task\.status === "needs_setup"/);
-assert.match(railStatusSource, /if \(!time\) return \{ tone: "muted", label: labels\.never/);
-assert.doesNotMatch(railStatusSource, /group\.id === "fubon"/);
 assert.match(source, /\{#each railEnabledGroups as group \(group\.id\)\}/);
 assert.match(source, /\{#each railAvailableGroups as group \(group\.id\)\}/);
 assert.match(source, /onclick=\{\(\) => enableAndSelectGroup\(group\.id\)\}/);

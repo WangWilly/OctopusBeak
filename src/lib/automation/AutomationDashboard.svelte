@@ -1,7 +1,6 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
-  import { countsOutsideTdccExclusions, tdccExclusionLines } from "$lib/automation/tdcc-run-outcome.ts";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -69,9 +68,13 @@ import {
     type PendingCredentialChange,
   } from "$lib/automation/credential-changes.ts";
   import {
-    isVerificationSolverExhaustedEvent,
+    countsOutsideTdccExclusions,
+    presentTaskRow,
+    tdccExclusionLines,
     verificationSolverExhausted,
-  } from "$lib/automation/verification-actor-ui.ts";
+    workflowEventFailureLabel,
+    type TaskRowViewContext,
+  } from "$lib/automation/task-row-view.ts";
 import type { OnboardingWorkflowToken } from "$lib/onboarding/controller.ts";
 import type {
   OnboardingNodeId,
@@ -582,86 +585,6 @@ import type {
 
   function credentialGroupTask(groupId: string, sourceAutomation: AutomationPageModel) {
     return sourceAutomation.tasks.find((task) => task.credentialGroupId === groupId);
-  }
-
-  function formatShortTime(value: string | null) {
-    if (!value) return "";
-    return new Intl.DateTimeFormat($locale, {
-      timeZone: $systemTimezone,
-      month: "numeric",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).format(new Date(value)).replace(",", "");
-  }
-
-  type CredentialSyncTone = "good" | "warn" | "bad" | "muted" | "active";
-
-  function credentialGroupSyncStatus(
-    group: CredentialGroupDto,
-    sourceAutomation: AutomationPageModel,
-    dictionary: Translation,
-  ): { tone: CredentialSyncTone; label: string; time: string } | null {
-    const task = credentialGroupTask(group.id, sourceAutomation);
-    if (!task) return null;
-    const labels = dictionary.automation.credentialSyncStatuses;
-    if (task.isActive) return { tone: "active", label: labels.running, time: "" };
-    if (group.credentialKeys.some((key) => credentialState(key, sourceAutomation) === "missing")) {
-      return { tone: "warn", label: labels.missingCredentials, time: "" };
-    }
-    if (task.status === "needs_setup") return { tone: "warn", label: dictionary.automation.needsSetup, time: "" };
-    return taskRunStatus(task, dictionary);
-  }
-
-  function taskRunStatus(
-    task: AutomationTaskRow,
-    dictionary: Translation,
-  ): { tone: CredentialSyncTone; label: string; time: string } {
-    const labels = dictionary.automation.credentialSyncStatuses;
-    const time = formatShortTime(task.latestFinishedAt ?? task.latestStartedAt);
-    if (!time) return { tone: "muted", label: labels.never, time: "" };
-    if (task.status === "completed") return { tone: "good", label: labels.completed, time };
-    if (task.status === "partial") return { tone: "warn", label: labels.partial, time };
-    if (task.status === "failed" || task.status === "locked") return { tone: "bad", label: labels.failed, time };
-    if (task.status === "cancelled") return { tone: "muted", label: labels.cancelled, time };
-    if (task.status === "interrupted") return { tone: "muted", label: labels.interrupted, time };
-    return { tone: "muted", label: dictionary.automation.statusLabels[task.status], time };
-  }
-
-  function lastSyncSummary(task: AutomationTaskRow, dictionary: Translation) {
-    const outcome = task.appWorkflowOutcome;
-    const products = (outcome?.summary?.products ?? []).filter((product) => product.status !== "skipped");
-    if (products.length) {
-      return products.map((product) => {
-        const label = dictionary.automation.statementTypeLabels[product.typeId] ?? product.typeId;
-        const summary = product.status === "success"
-          ? dictionary.automation.productCommittedSummary(label, product.committedCount)
-          : dictionary.automation.productStatusSummary(label, dictionary.automation.productOutcomeStatuses[product.status]);
-        const collectionStatus = product.collection?.status;
-        return collectionStatus && collectionStatus !== "complete"
-          ? `${summary}${dictionary.automation.summarySeparator}${dictionary.automation.tdccCollectionStatuses[collectionStatus]}`
-          : summary;
-      }).join(dictionary.automation.summarySeparator);
-    }
-    if (outcome?.errorCode) return workflowFailureExplanation(outcome.errorCode, $locale) ?? outcome.errorCode;
-    return "";
-  }
-
-  function statementLastResult(task: AutomationTaskRow | undefined, typeId: string, dictionary: Translation) {
-    const product = task?.appWorkflowOutcome?.summary?.products?.find((candidate) => candidate.typeId === typeId);
-    if (!product || product.status === "skipped") return null;
-    if (product.status === "success") {
-      const text = dictionary.automation.statementLastSuccess(product.committedCount);
-      return {
-        tone: product.collection?.status === "incomplete" ? "warn" : "good",
-        text: product.collection?.status && product.collection.status !== "complete"
-          ? `${text} · ${dictionary.automation.tdccCollectionStatuses[product.collection.status]}`
-          : text,
-      };
-    }
-    if (product.status === "failed") return { tone: "bad", text: dictionary.automation.statementLastFailed };
-    return { tone: "muted", text: dictionary.automation.productOutcomeStatuses[product.status] };
   }
 
   function pendingChangeLabel(change: PendingCredentialChange, dictionary: Translation) {
@@ -1287,137 +1210,26 @@ import type {
     return task.displayName[language];
   }
 
-  function taskStatusLabel(task: AutomationTaskRow, dictionary: Translation) {
-    if (task.status === "waiting_for_human") {
-      return dictionary.automation.progressAutomaticVerification;
-    }
-    return dictionary.automation.statusLabels[task.status];
-  }
+  const ONBOARDING_PROGRESS_NODES: readonly string[] = [
+    "collection-progress",
+    "collection-failed",
+    "workflow-review",
+    "overview-preparing",
+    "overview-preparation-failed",
+  ];
 
-  function workflowProgressStageLabel(
-    task: AutomationTaskRow,
-    dictionary: Translation,
-  ): string | null {
-    const phaseCode = task.workflowProgress?.phaseCode;
-    if (!phaseCode?.startsWith("workflow-")) return null;
-    const stage = phaseCode.slice("workflow-".length);
-    if (![
-      "preparation",
-      "authentication",
-      "collection",
-      "decoding",
-      "validation",
-      "commit",
-      "finalization",
-    ].includes(stage)) return null;
-
-    if (stage === "collection") {
-      const activity = task.workflowProgress?.params?.activity;
-      const statementType = task.workflowProgress?.params?.statementType;
-      const product = typeof statementType === "string"
-        ? dictionary.automation.statementTypeLabels[statementType] ?? statementType
-        : null;
-      if (activity === "query") {
-        return product
-          ? dictionary.automation.progressQueryingProduct(product)
-          : dictionary.automation.progressQuerying;
-      }
-      if (activity === "download") {
-        return product
-          ? dictionary.automation.progressDownloadingProduct(product)
-          : dictionary.automation.progressDownloading;
-      }
-      return product
-        ? dictionary.automation.progressStageProduct(dictionary.automation.progressStages[stage], product)
-        : dictionary.automation.progressStages[stage] ?? null;
-    }
-
-    const stageLabel = dictionary.automation.progressStages[stage];
-    const statementType = task.workflowProgress?.params?.statementType;
-    const product = typeof statementType === "string"
-      ? dictionary.automation.statementTypeLabels[statementType] ?? statementType
-      : null;
-    return product && stageLabel
-      ? dictionary.automation.progressStageProduct(stageLabel, product)
-      : stageLabel ?? null;
-  }
-
-  function workflowProgressIsWorking(task: AutomationTaskRow) {
-    if (task.status === "waiting_for_human") {
-      return task.isActive;
-    }
-    return task.isActive && ["preparing", "running", "cancelling"].includes(task.status);
-  }
-
-  function isOnboardingProgressTask(task: AutomationTaskRow) {
-    return task.id === onboardingTrackedTaskId
-      && [
-        "collection-progress",
-        "collection-failed",
-        "workflow-review",
-        "overview-preparing",
-        "overview-preparation-failed",
-      ].includes(onboardingNodeId ?? "");
-  }
-
-  function shouldShowWorkflowProgress(task: AutomationTaskRow) {
-    const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status);
-    return workflowProgressIsWorking(task)
-      || (task.isActive && task.status === "waiting_for_human")
-      || (terminal && (task.status !== "completed" || isOnboardingProgressTask(task)));
-  }
-
-  function shouldShowProgressStatus(task: AutomationTaskRow) {
-    return ["waiting_for_human", "cancelling"].includes(task.status);
-  }
-
-  function workflowEventFailureLabel(event: AutomationTaskRow["events"][number]): string | null {
-    return isVerificationSolverExhaustedEvent(event) ? $t.automation.verificationSolverExhausted : null;
-  }
-
-  function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
-    if (task.status === "waiting_for_human") {
-      const waiting = dictionary.automation.progressAutomaticVerification;
-      return task.progressPercent === null
-        ? waiting
-        : dictionary.automation.progressWaitingWithPercent(waiting, task.progressPercent);
-    }
-    if (["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
-      return task.progressPercent === null
-        ? taskStatusLabel(task, dictionary)
-        : dictionary.automation.progressTerminalWithPercent(
-            taskStatusLabel(task, dictionary),
-            task.progressPercent,
-          );
-    }
-    const stage = workflowProgressStageLabel(task, dictionary);
-    if (stage) {
-      const stageWithProgress = task.progressPercent === null
-        ? stage
-        : dictionary.automation.progressStagePercent(stage, task.progressPercent);
-      const retrying = task.workflowProgress?.params?.retrying === true;
-      return retrying
-        ? dictionary.automation.progressRetryingStage(
-          stageWithProgress,
-          task.attempt || 1,
-          task.maxAttempts,
-        )
-        : stageWithProgress;
-    }
-    if (task.status === "preparing") {
-      return dictionary.automation.progressStagePercent(
-        dictionary.automation.progressStages.preparation,
-        task.progressPercent ?? 0,
-      );
-    }
-    if (task.progressPercent !== null) return `${task.progressPercent}%`;
-    if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
-    if (task.status === "completed") return dictionary.automation.progressCompleted;
-    if (task.status === "partial") return dictionary.automation.progressPartial;
-    if (task.status === "failed") return dictionary.automation.progressFailed;
-    if (task.status === "needs_setup") return dictionary.automation.progressNeedsSetup;
-    return dictionary.automation.progressQueued;
-  }
+  $: taskRowViewContext = {
+    dictionary: $t,
+    locale: $locale,
+    timeZone: $systemTimezone,
+    onboardingProgressTaskId: ONBOARDING_PROGRESS_NODES.includes(onboardingNodeId ?? "") ? onboardingTrackedTaskId : null,
+    credentialState: (key: string) => credentialState(key, automation),
+  } satisfies TaskRowViewContext;
+  $: present = (task: AutomationTaskRow) => presentTaskRow(task, taskRowViewContext);
+  $: groupSyncStatus = (group: CredentialGroupDto) => {
+    const task = credentialGroupTask(group.id, automation);
+    return task ? present(task).syncStatus : null;
+  };
 </script>
 
 <svelte:window onkeydowncapture={handleWindowKeydown} />
@@ -1662,31 +1474,31 @@ import type {
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
-                  {#if shouldShowWorkflowProgress(task)}
+                  {#if present(task).showProgress}
                   <div
                     class="progress-cell"
                     use:registerOnboardingTarget={{
                       registry: onboardingTargets,
-                      id: isOnboardingProgressTask(task) ? "automation.progress" : null,
+                      id: present(task).isOnboardingProgress ? "automation.progress" : null,
                     }}
                   >
                     <div
                       class="progress-bar"
-                      class:working={workflowProgressIsWorking(task)}
+                      class:working={present(task).progressWorking}
                       role="progressbar"
                       aria-valuemin="0"
                       aria-valuemax="100"
                       aria-valuenow={task.progressPercent ?? undefined}
-                      aria-valuetext={progressLabel(task, $t)}
+                      aria-valuetext={present(task).progressLabel}
                       aria-label={taskLabel(task, $locale)}
-                      aria-busy={workflowProgressIsWorking(task)}
+                      aria-busy={present(task).progressWorking}
                     >
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
                     <div class="progress-description">
-                      <span class="progress-copy" data-status={task.status}>{progressLabel(task, $t)}</span>
-                      {#if shouldShowProgressStatus(task)}
-                        <span class={`chip ${statusClass(task.status)}`}>{taskStatusLabel(task, $t)}</span>
+                      <span class="progress-copy" data-status={task.status}>{present(task).progressLabel}</span>
+                      {#if present(task).showProgressStatus}
+                        <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
                     {#if ["failed", "cancelled"].includes(task.status) && task.appWorkflowOutcome?.errorCode}
@@ -1705,7 +1517,7 @@ import type {
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
-                    {taskStatusLabel(task, $t)}
+                    {present(task).statusLabel}
                   </span>
                   {/if}
                 </td>
@@ -1762,7 +1574,7 @@ import type {
                       <div class="inline-run-details-head">
                         <div class="inline-run-details-title">
                           <strong>{$t.automation.workflowEventTitle(taskLabel(task, $locale))}</strong>
-                          <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
+                          <span class={`chip ${statusClass(task.status)}`}>{present(task).progressLabel}</span>
                           {#if task.runId || duration !== null}
                             <span class="run-meta">
                               {[task.runId, duration === null ? null : $t.automation.runDuration(duration)].filter(Boolean).join(" · ")}
@@ -1820,7 +1632,7 @@ import type {
                           <span class="run-details-label">{$t.automation.runStages}</span>
                           <ol class="run-stages">
                             {#each runStageTrack(task.events, task.status, task.appWorkflowOutcome) as stage (stage.stage)}
-                              {@const failureLabel = stage.lastEvent ? workflowEventFailureLabel(stage.lastEvent) : null}
+                              {@const failureLabel = stage.lastEvent ? workflowEventFailureLabel(stage.lastEvent, $t) : null}
                               {@const productFailures = stage.stage === "collection" ? collectionFailures(task.appWorkflowOutcome) : null}
                               <li class="run-stage" data-state={stage.state}>
                                 <span class="run-stage-node-row">
@@ -1945,7 +1757,7 @@ import type {
                           </summary>
                           <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $locale))}>
                             {#each task.events as event, index (index)}
-                              {@const failureLabel = workflowEventFailureLabel(event)}
+                              {@const failureLabel = workflowEventFailureLabel(event, $t)}
                               <li class="workflow-event-row">
                                 <div class="workflow-event-main">
                                   <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
@@ -1996,7 +1808,7 @@ import type {
     style={`left: ${taskTooltipPosition.left}px; top: ${taskTooltipPosition.top}px;`}
   >
     <strong>{taskLabel(hoveredTask, $locale)}</strong>
-    <span>{taskStageTitle(hoveredTask, $t)} · {taskStatusLabel(hoveredTask, $t)}</span>
+    <span>{taskStageTitle(hoveredTask, $t)} · {present(hoveredTask).statusLabel}</span>
     <span>{latestTaskTime(hoveredTask)}</span>
   </div>
 {/if}
@@ -2083,7 +1895,7 @@ import type {
               <h3 class="rail-heading"><span>{$t.automation.credentialGroupsEnabled}</span><span class="tabular">{railEnabledGroups.length}</span></h3>
               <ul class="rail-list">
                 {#each railEnabledGroups as group (group.id)}
-                  {@const syncStatus = credentialGroupSyncStatus(group, automation, $t)}
+                  {@const syncStatus = groupSyncStatus(group)}
                   <li>
                     <button
                       type="button"
@@ -2161,8 +1973,8 @@ import type {
 
             {#if groupOn && selectedGroupTask && (selectedGroupTask.isActive || selectedGroupTask.latestStartedAt || selectedGroupTask.latestFinishedAt)}
               {@const syncTask = selectedGroupTask}
-              {@const syncStatus = taskRunStatus(syncTask, $t)}
-              {@const summary = lastSyncSummary(syncTask, $t)}
+              {@const syncStatus = present(syncTask).runStatus}
+              {@const summary = present(syncTask).lastSyncSummary}
               <div class="last-sync" data-tone={syncTask.isActive ? "active" : syncStatus.tone} aria-live="polite">
                 <span class="last-sync-icon" aria-hidden="true">
                   {#if syncTask.isActive}<span class="spinner"></span>{:else}<CircleAlert size={16} />{/if}
@@ -2175,8 +1987,8 @@ import type {
                       {$t.automation.lastSync(syncStatus.time, syncStatus.label)}
                     {/if}
                   </strong>
-                  {#if syncTask.isActive && syncTask.progressText}
-                    <span>{syncTask.progressText}</span>
+                  {#if syncTask.isActive}
+                    <span>{present(syncTask).progressLabel}</span>
                   {:else if !syncTask.isActive && summary}
                     <span>{summary}</span>
                   {/if}
@@ -2366,7 +2178,7 @@ import type {
                 <ul class="statement-type-list">
                   {#each group.statementTypes as type (type.id)}
                     {@const checked = selectedTypes.includes(type.id)}
-                    {@const lastResult = statementLastResult(selectedGroupTask, type.id, $t)}
+                    {@const lastResult = (selectedGroupTask ? present(selectedGroupTask).statementResults[type.id] : undefined) ?? null}
                     <li>
                       <label class="statement-type-option">
                         <input

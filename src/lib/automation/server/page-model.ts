@@ -76,18 +76,6 @@ function rowStatus(
   return run?.status ?? "queued";
 }
 
-function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts: number, progress: number | null) {
-  if (progress !== null) return `${progress}%`;
-  if (status === "running") return `Running attempt ${attempt}/${maxAttempts}`;
-  if (status === "waiting_for_human") return "Waiting for human";
-  if (status === "completed") return "Completed";
-  if (status === "partial") return "Partial";
-  if (status === "needs_setup") return "Needs setup";
-  if (status === "failed") return "Failed";
-  if (status === "locked") return "Locked";
-  return "Queued";
-}
-
 export function buildAutomationPageModel(input: {
   tasks: readonly AutomationTask[];
   latestRuns: Record<string, AutomationTaskRun>;
@@ -135,7 +123,6 @@ export function buildAutomationPageModel(input: {
       appWorkflowOutcome: run?.appWorkflowOutcome ?? null,
       events: pageWorkflowEvents(run?.events, run?.taskRunId),
       progressPercent,
-      progressText: progressText(status, attempt, maxAttempts, progressPercent),
       humanSession: null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,
       forceTerminateAvailable: false,
