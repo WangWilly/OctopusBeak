@@ -7,12 +7,10 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createDataVersionStore } from "../../shared-shell/data-version.ts";
 import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.ts";
 import { userActionForFailure, workflowFailureExplanation } from "../workflow-failures.ts";
-import {
-  decideAutomationTaskRunOutcome,
-  finalizeAutomationTaskRun,
-} from "./task-run-finalization.ts";
+import { openActiveTaskRun, type TaskRunReport } from "./active-task-run.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
-import { classifyTypedWorkflowFailure, type TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import { classifyTypedWorkflowFailure } from "./typed-workflow-outcome.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
@@ -25,7 +23,7 @@ const missingComponent = [
   { runId: "r", stage: "authentication", code: "servisign-unavailable", occurredAt: "2026-10-20T00:00:01.000Z" },
 ] as const;
 
-async function runYuantaTrade(report: TypedWorkflowOutcome, unavailable: boolean) {
+async function runYuantaTrade(report: TaskRunReport, unavailable: boolean) {
   const { taskRunId } = await automation.createTaskRun({
     taskId: "yuanta-trade-statements",
     kind: "crawler",
@@ -42,12 +40,13 @@ async function runYuantaTrade(report: TypedWorkflowOutcome, unavailable: boolean
       occurredAt: new Date().toISOString(),
     });
   }
-  await finalizeAutomationTaskRun(
-    automation,
-    taskRunId,
-    decideAutomationTaskRunOutcome(report, null),
-    { dataVersionStore: createDataVersionStore() },
-  );
+  const run = await automation.taskRunById(taskRunId);
+  await openActiveTaskRun({
+    run: run!,
+    persistence: automation,
+    runtime: createAutomationRuntimeState(),
+    dataVersionStore: createDataVersionStore(),
+  }).finish(report);
   return taskRunId;
 }
 
@@ -66,7 +65,7 @@ test("the prerequisite names the run event its workflow records", () => {
 });
 
 test("a missing component raises one notice that a later successful run resolves", async () => {
-  const unavailable = { errorCode: "external-prerequisite-unavailable", summary: null } as const;
+  const unavailable = { summary: null, failure: { code: "external-prerequisite-unavailable", proven: true } } as const;
   const first = await runYuantaTrade(unavailable, true);
   let notices = await automation.activeTaskPrerequisiteNotices();
   assert.deepEqual(notices.map((notice) => [notice.taskId, notice.prerequisiteId, notice.latestTaskRunId]), [
@@ -78,16 +77,16 @@ test("a missing component raises one notice that a later successful run resolves
   assert.equal(notices.length, 1, "a repeated failure keeps one notice");
   assert.equal(notices[0]?.latestTaskRunId, second);
 
-  await runYuantaTrade({ errorCode: "authentication-failed", summary: null }, false);
+  await runYuantaTrade({ summary: null, failure: { code: "authentication-failed", proven: true } }, false);
   assert.equal((await automation.activeTaskPrerequisiteNotices()).length, 1, "an unrelated failure leaves the notice");
 
-  const repaired = await runYuantaTrade({ errorCode: null, summary: null }, false);
+  const repaired = await runYuantaTrade({ summary: null, failure: null }, false);
   assert.deepEqual(await automation.activeTaskPrerequisiteNotices(), []);
   const [resolved] = await automation.allTaskPrerequisiteNotices();
   assert.equal(resolved?.resolvedByTaskRunId, repaired);
 });
 
 test("a prerequisite failure without the prerequisite's event raises no notice", async () => {
-  await runYuantaTrade({ errorCode: "external-prerequisite-unavailable", summary: null }, false);
+  await runYuantaTrade({ summary: null, failure: { code: "external-prerequisite-unavailable", proven: true } }, false);
   assert.deepEqual(await automation.activeTaskPrerequisiteNotices(), []);
 });

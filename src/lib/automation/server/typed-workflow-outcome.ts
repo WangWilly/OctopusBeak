@@ -1,4 +1,3 @@
-import { commitAttemptsErrorCode, type CommitAttempt } from "../commit-attempt.ts";
 import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
@@ -203,7 +202,8 @@ export function isTypedWorkflowOutcomeSummary(value: unknown): value is TypedWor
 
 /**
  * Classify from typed failure evidence only; never persist the thrown message.
- * Commit outcome is not decided here: see commitAwareErrorCode (ADR 0056).
+ * Commit outcome is not decided here: the Active Automation Task Run applies the
+ * run's Commit attempts (ADR 0056).
  */
 export function classifyTypedWorkflowFailure(
   error: unknown,
@@ -250,25 +250,4 @@ export function classifyTypedWorkflowFailure(
     return "source-collection-failed";
   }
   return "workflow-failed";
-}
-
-/**
- * ADR 0056: a run's Commit attempts outrank what its worker reported. An
- * unsettled attempt makes any run commit outcome unknown, and a refused one
- * makes it collection scope changed (ADR 0057); a failed attempt
- * explains a failed run that the worker could not name more precisely.
- */
-export function commitAwareErrorCode(input: Readonly<{
-  attempts: readonly CommitAttempt[];
-  completed: boolean;
-  /** A specific code the worker proved, or null. */
-  reported: TypedWorkflowErrorCode | null;
-  classify(): TypedWorkflowErrorCode;
-}>): TypedWorkflowErrorCode | null {
-  const commit = commitAttemptsErrorCode(input.attempts);
-  if (commit === "commit-outcome-unknown" || commit === "collection-scope-changed") return commit;
-  if (input.completed) return null;
-  // Every unknown commit leaves an unsettled attempt; a worker's claim without one is not evidence.
-  const reported = input.reported === "commit-outcome-unknown" ? null : input.reported;
-  return reported ?? commit ?? input.classify();
 }

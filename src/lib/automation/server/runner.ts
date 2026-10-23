@@ -1,16 +1,11 @@
 import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
 import {
-  finalizePersistedActiveRuns,
-  finalizePersistedRun,
-} from "./task-run-finalization.ts";
-import {
   automationProcessEnv as workflowEnvironmentFromSettings,
   runAutomationTaskExecution,
 } from "./task-run-execution.ts";
 import type {
   AutomationPersistenceProvider,
   AutomationTaskRun,
-  AutomationTaskStatus,
 } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import {
@@ -21,8 +16,12 @@ import { readAutomationSettings } from "./settings.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
-import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
-import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import {
+  finalizeOrphanedRuns,
+  openActiveTaskRun,
+  type ActiveAutomationTaskRun,
+  type TaskRunReport,
+} from "./active-task-run.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 
 export async function hydrateAutomationRuntimeState(
@@ -65,7 +64,7 @@ export type StartedAutomationTask = {
 
 type AutomationTask = NonNullable<ReturnType<typeof taskById>>;
 
-const CANCELLED: TypedWorkflowOutcome = { errorCode: "cancelled", summary: null };
+const CANCELLED: TaskRunReport = { summary: null, failure: { code: "cancelled", proven: true } };
 
 function appExecutorTask(taskId: string): AutomationTask {
   const task = taskById(taskId);
@@ -100,35 +99,6 @@ type ClaimedTask = {
   lifecycle?: Promise<void>;
 };
 
-export type InterruptedAutomationRecoveryDependencies = {
-  finalizeRunWithPersistence?: (
-    provider: AutomationPersistenceProvider,
-    run: AutomationTaskRun,
-    reason: string,
-    status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
-  ) => Promise<void>;
-};
-
-export async function recoverInterruptedAutomationRuns(
-  provider: AutomationPersistenceProvider,
-  dependencies: InterruptedAutomationRecoveryDependencies = {},
-): Promise<void> {
-  const errors: unknown[] = [];
-  for (const run of await provider.automation.activeTaskRuns()) {
-    try {
-      await (dependencies.finalizeRunWithPersistence ?? finalizePersistedRun)(
-        provider,
-        run,
-        "App 前次異常結束",
-        "interrupted",
-      );
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
-}
-
 export function createAutomationRunner(options: Readonly<{
   runtime: AutomationRuntimeState;
   forceQuitAvailableAfterMs?: number;
@@ -143,7 +113,7 @@ export function createAutomationRunner(options: Readonly<{
     run: ActiveAutomationTaskRun,
     provider: AutomationPersistenceProvider,
     runOptions: StartAutomationTaskOptions,
-  ): Promise<TypedWorkflowOutcome> {
+  ): Promise<TaskRunReport> {
     let ticket: ReturnType<typeof queue.enter>;
     try {
       ticket = queue.enter(run.signal);
@@ -189,12 +159,12 @@ export function createAutomationRunner(options: Readonly<{
     provider: AutomationPersistenceProvider,
     runOptions: StartAutomationTaskOptions,
   ) {
-    let report: TypedWorkflowOutcome;
+    let report: TaskRunReport;
     try {
       report = await execute(task, run, provider, runOptions);
     } catch {
       console.error("automation-task-run-failed");
-      report = { errorCode: "workflow-failed", summary: null };
+      report = { summary: null, failure: { code: "workflow-failed", proven: false } };
     }
     try {
       return await run.finish(report);
@@ -346,7 +316,7 @@ export function createAutomationRunner(options: Readonly<{
     async shutdown(
       provider: AutomationPersistenceProvider,
       dependencies: Partial<{
-        finalizePersistedRuns: typeof finalizePersistedActiveRuns;
+        finalizePersistedRuns: typeof finalizeOrphanedRuns;
       }> = {},
     ): Promise<void> {
       shuttingDown = true;
@@ -359,10 +329,7 @@ export function createAutomationRunner(options: Readonly<{
       ).catch((error: unknown) => { errors.push(error); })));
       await Promise.all(entries.map((entry) => entry.lifecycle));
       try {
-        await (dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns)(
-          provider,
-          "App 關閉，人工操作未完成",
-        );
+        await (dependencies.finalizePersistedRuns ?? finalizeOrphanedRuns)(provider);
       } catch (error) {
         errors.push(error);
       }

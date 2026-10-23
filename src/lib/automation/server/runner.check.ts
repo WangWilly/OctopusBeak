@@ -116,7 +116,7 @@ test("the runner hands the PGlite capability to the execution as a typed value, 
   let options: Parameters<typeof runAutomationTaskExecution>[2] | undefined;
   const runExecution: typeof runAutomationTaskExecution = async (_task, _run, executionOptions) => {
     options = executionOptions;
-    return { errorCode: null, summary: null };
+    return { summary: null, failure: null };
   };
   await runner.start("exchange-rates", provider, { runExecution, onFinished: finished.resolve });
   await finished.promise;
@@ -317,6 +317,24 @@ test("the task catalog contains only typed workflows and the two typed nonbrowse
   }
 });
 
+test("an execution that throws after starting a commit still ends commit outcome unknown", async () => {
+  const runner = freshRunner();
+  const { automation } = memoryAutomation();
+  const finished = deferred<AutomationTaskRun>();
+  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+    await run.transition("running");
+    await run.recordCommitAttempt({ phase: "started", attemptId: "lost-attempt", product: null, total: 1 });
+    throw new Error("worker host crashed mid-commit");
+  };
+  await runner.start("exchange-rates", providerStub(automation), {
+    runExecution,
+    onFinished: finished.resolve,
+  });
+  const run = await finished.promise;
+  assert.equal(run.status, "failed");
+  assert.equal(run.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+});
+
 test("cancellation reaches the typed execution through the run's signal and ends the run cancelled", async () => {
   const runner = freshRunner();
   const { runs, automation } = memoryAutomation();
@@ -361,7 +379,7 @@ test("force-quit aborts the run's force signal and settles only after the execut
     await aborted(run.forceSignal);
     forced.resolve();
     await releaseExecution.promise;
-    return { errorCode: "cancelled", summary: null };
+    return { summary: null, failure: { code: "cancelled", proven: true } };
   };
   const { runId } = await runner.start("exchange-rates", provider, {
     runExecution,
@@ -409,7 +427,7 @@ test("a cancellation still persisting for a finished run never reaches the task'
     executions.push(run);
     if (executions.length === 1) await aborted(run.signal);
     else await releaseNext.promise;
-    return { errorCode: null, summary: null };
+    return { summary: null, failure: null };
   };
   const firstFinished = deferred<AutomationTaskRun>();
   const first = await runner.start("exchange-rates", provider, { runExecution, onFinished: firstFinished.resolve });
@@ -434,9 +452,9 @@ test("a cancellation still persisting for a finished run never reaches the task'
 test("shutdown finalizes persisted runs after stopping active App workflows", async () => {
   const calls: string[] = [];
   await freshRunner().shutdown(providerStub(), {
-    finalizePersistedRuns: async (_provider, reason) => { calls.push(reason); },
+    finalizePersistedRuns: async () => { calls.push("finalized"); },
   });
-  assert.deepEqual(calls, ["App 關閉，人工操作未完成"]);
+  assert.deepEqual(calls, ["finalized"]);
 });
 
 test("runner source has no Libretto command, patch, or session-resume path", async () => {
