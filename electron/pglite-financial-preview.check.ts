@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
-import {
-  createPGliteFinancialLiveViews,
-  createPGliteFinancialRegistry,
-} from "./pglite-financial-registry.ts";
+import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
+import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
 import { readOverview } from "../src/lib/overview/overview-model.ts";
+import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
@@ -402,6 +401,97 @@ test("live overview republishes on a preview collection and on a visibility chan
       await until(() => !published.at(-1)!.accounts.some((account) => account.preview));
     } finally {
       await stop();
+    }
+  }, database as unknown as PGlite);
+});
+
+test("live liabilities republish on a preview credit collection and on a visibility change", async () => {
+  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
+  await withLedger(async ({ registry, preview }) => {
+    let visibility: PreviewVisibility = { visible: [{ sourceId: "synthetic", product: "credit_card" }] };
+    const shown = registry(() => visibility);
+    const views = createPGliteFinancialLiveViews(database, shown);
+    const published: LiabilitiesPageDto[] = [];
+    const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
+    const until = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 5_000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error("live liabilities did not republish");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    try {
+      await until(() => published.length >= 1);
+      assert.equal(published.at(-1)!.accounts.some((account) => account.preview), false);
+      await preview.write({
+        sourceId: "synthetic",
+        institution: "bank-017",
+        product: "credit_card",
+        collection: {
+          collectedAt: "2026-10-05T03:00:00.000Z",
+          accounts: [{
+            sourceAccountKey: "known", displayLabel: "Known card", currency: "TWD", creditLimit: "50000",
+            cards: [], purchases: [], statements: [],
+            balances: [{
+              amount: "300", currency: "TWD", observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" },
+              basis: { kind: "provider-used-credit", usedCredit: "300" },
+            }],
+          }],
+        },
+      });
+      await until(() => published.at(-1)!.accounts.some((account) => account.preview));
+      visibility = HIDDEN;
+      await shown["financial.preview.visibilityChanged"]([]);
+      await until(() => !published.at(-1)!.accounts.some((account) => account.preview));
+    } finally {
+      await stop();
+    }
+  }, database as unknown as PGlite);
+});
+
+test("each live view republishes on exactly the dependencies it reads", async () => {
+  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
+  await withLedger(async ({ registry, writePreview, addUsdRate }) => {
+    const shown = registry(() => VISIBLE);
+    const views = createPGliteFinancialLiveViews(database, shown);
+    const expected = {
+      "financial.overview.current": { preview: true, exchangeRates: true },
+      "financial.assets.current": { preview: true, exchangeRates: false },
+      "financial.liabilities.current": { preview: true, exchangeRates: false },
+      "financial.spending.current": { preview: false, exchangeRates: false },
+    } satisfies Record<PGliteFinancialLiveView, { preview: boolean; exchangeRates: boolean }>;
+    const counts = new Map<string, number>();
+    const stops: Array<() => Promise<void>> = [];
+    const settle = async (dependency: "preview" | "exchangeRates", change: () => Promise<unknown>) => {
+      const before = new Map(counts);
+      await change();
+      const deadline = Date.now() + 5_000;
+      const pending = () => Object.entries(expected)
+        .filter(([view, reads]) => reads[dependency] && counts.get(view) === before.get(view));
+      while (pending().length > 0) {
+        if (Date.now() > deadline) throw new Error(`${pending().map(([view]) => view).join(", ")} did not republish on ${dependency}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      // Every subscriber hears the same live query round; give the others time to (wrongly) publish.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      for (const [view, reads] of Object.entries(expected)) {
+        if (!reads[dependency]) assert.equal(counts.get(view), before.get(view), `${view} republished on ${dependency}`);
+      }
+    };
+    try {
+      for (const view of Object.keys(expected)) {
+        counts.set(view, 0);
+        stops.push(await views.subscribe(view, {}, () => counts.set(view, counts.get(view)! + 1)));
+      }
+      await settle("preview", () => writePreview(twdSavings));
+      await settle("preview", () => shown["financial.preview.visibilityChanged"]([]));
+      await settle("exchangeRates", addUsdRate);
+    } finally {
+      await Promise.all(stops.map((stop) => stop()));
     }
   }, database as unknown as PGlite);
 });

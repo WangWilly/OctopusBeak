@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
+import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
   createPGliteFinancialRegistry,
-  createPGliteFinancialLiveViews,
   prewarmPGlitePairingCandidates,
   PGliteFinancialError,
   PGLITE_FINANCIAL_OPERATIONS,

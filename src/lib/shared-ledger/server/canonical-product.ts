@@ -31,6 +31,11 @@ export type CanonicalProductDto = CurrentProjectionStateDto & {
   dailyHistory: DailyHistoryRowDto[];
 };
 
+/** Whether an account row lists on the Assets or the Liabilities page. */
+export function isProductAccount(product: "assets" | "liabilities", account: Pick<AccountRowDto, "group">): boolean {
+  return product === "assets" ? account.group !== "liability" : account.group === "liability";
+}
+
 export function mapCanonicalProduct(
   projection: CanonicalOverviewProjection,
   product: "assets" | "liabilities",
@@ -41,7 +46,7 @@ export function mapCanonicalProduct(
 ): CanonicalProductDto {
   const allAccounts = projection.accounts.map(mapAccount);
   const accounts = allAccounts
-    .filter((account) => product === "assets" ? account.group !== "liability" : account.group === "liability")
+    .filter((account) => isProductAccount(product, account))
   const marginAccounts = product === "liabilities"
     ? allAccounts
       .filter((account) => account.group === "investment" && (account.marginAmountLines?.length ?? 0) > 0)
