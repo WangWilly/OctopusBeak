@@ -214,29 +214,10 @@ async function executeAppWorkflow(
     options.launchEnv ?? automationProcessEnv(),
   );
   try {
-    const result = await executeSupervisedAppWorkflow(execution, options);
-    return scope.refused() ? collectionScopeChangedResult(result) : result;
+    return await executeSupervisedAppWorkflow(execution, options);
   } finally {
     scope.release();
   }
-}
-
-function collectionScopeChangedResult(
-  result: TypedWorkflowOutcome,
-): TypedWorkflowOutcome {
-  const { summary } = result;
-  return {
-    errorCode: "collection-scope-changed",
-    summary: summary?.products
-      ? {
-        ...summary,
-        products: summary.products.map((product) =>
-          product.errorCode === "commit-outcome-unknown"
-            ? { ...product, errorCode: "collection-scope-changed" }
-            : product),
-      }
-      : summary,
-  };
 }
 
 const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>(WORKFLOW_ERROR_CODES);

@@ -675,6 +675,7 @@ export function createPGliteFinancialRegistry(
   });
 }
 
+/** Throws to refuse a workflow's canonical write before it reaches the database. */
 export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
 
 /**
@@ -805,7 +806,11 @@ export function createPGliteFinancialRpcServer(
         if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
         if (assertCommitAdmissible && value.diagnosticContext && contract.canonicalCommit) {
-          assertCommitAdmissible(value.diagnosticContext);
+          try {
+            assertCommitAdmissible(value.diagnosticContext);
+          } catch {
+            throw new PGliteFinancialError("operation-failed", "refused");
+          }
         }
         return financial.request(operation, read.args as never, { signal: controller.signal });
       });
@@ -824,11 +829,12 @@ export function createPGliteFinancialRpcServer(
           ? captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())
           : undefined;
         if (!controller.signal.aborted && value.diagnosticContext) {
+          const refused = error instanceof PGliteFinancialError && error.category === "refused";
           await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
             workflowId: value.diagnosticContext.workflowId,
             taskRunId: value.diagnosticContext.taskRunId,
             source: "financial-rpc",
-            errorCode: "workflow-failed",
+            errorCode: refused ? "collection-scope-changed" : "workflow-failed",
             stage: operation === "financial.source.admit" ? "validation" : "commit",
             operation,
             safeError: diagnosticError,

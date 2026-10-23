@@ -33,7 +33,8 @@ export type PGliteWorkflowItemResult<T> =
       provider: string;
       product: string;
       status: "failed";
-      failureKind: "item" | "fatal";
+      /** `refused`: the host refused the write before admission, so nothing was written. */
+      failureKind: "item" | "fatal" | "refused";
       diagnostics: readonly PGliteWorkflowDiagnostic[];
     }>;
 
@@ -65,7 +66,7 @@ export type PGliteWorkflowRunRequest = Readonly<{
 
 type DiagnosticIdentity = Pick<PGliteWorkflowRunItem, "provider" | "product" | "itemKey">;
 type ClassifiedFailure = Readonly<{
-  kind: "item" | "fatal" | "cancelled";
+  kind: "item" | "fatal" | "refused" | "cancelled";
   category?: PGliteWorkflowFailureCategory;
   code: string;
 }>;
@@ -81,6 +82,7 @@ function classify(error: unknown, signal?: AbortSignal): ClassifiedFailure {
   if (error && typeof error === "object") {
     const value = error as { code?: unknown; category?: unknown };
     if (value.code === "cancelled") return { kind: "cancelled", code: "cancelled" };
+    if (value.code === "operation-failed" && value.category === "refused") return { kind: "refused", code: "refused" };
     if (value.code === "operation-failed"
       && (value.category === "admission" || value.category === "stale"
         || value.category === "ineligible" || value.category === "conflict")) {
@@ -184,7 +186,7 @@ export async function executePGliteWorkflowRun(
           diagnostics.push(diagnostic(item, "cancellation", failure.code));
           break;
         }
-        const problem = diagnostic(item, failure.kind === "item" ? "commit" : "run", failure.code);
+        const problem = diagnostic(item, failure.kind === "fatal" ? "run" : "commit", failure.code);
         diagnostics.push(problem);
         results.push(Object.freeze({
           itemKey: item.itemKey,
@@ -198,6 +200,8 @@ export async function executePGliteWorkflowRun(
           fatal = true;
           break;
         }
+        // A refusal holds for the rest of the run, so later items would only be refused too.
+        if (failure.kind === "refused") break;
         continue;
       }
       let summaries: readonly PGliteWorkflowAdmissionSummary[];
@@ -257,4 +261,9 @@ export async function executePGliteWorkflowRun(
     committedCount,
     failedCount: results.length - committedCount,
   });
+}
+
+/** Whether the host refused this run's writes before admission (ADR 0057). */
+export function pgliteWorkflowRunRefused(result: PGliteWorkflowRunResult<unknown>): boolean {
+  return result.items.some((item) => item.status === "failed" && item.failureKind === "refused");
 }

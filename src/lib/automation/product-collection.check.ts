@@ -200,6 +200,44 @@ const signal = () => new AbortController();
 
 {
   const controller = signal();
+  const commits: string[] = [];
+  await assert.rejects(
+    collectSelectedProducts({
+      productIds: ["deposit", "credit_card", "loan"],
+      selectedIds: ["deposit", "credit_card", "loan"],
+      signal: controller.signal,
+      collect: async (typeId, staged) => {
+        staged.push(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      },
+      commit: async (typeId, staged) => {
+        commits.push(typeId);
+        if (typeId === "deposit") return result("completed", staged.map(committed));
+        return result("failed", staged.map((entry) => ({
+          provider: entry.provider,
+          product: entry.product,
+          itemKey: entry.itemKey,
+          status: "failed" as const,
+          failureKind: "refused" as const,
+          diagnostics: [],
+        })));
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "collection-scope-changed");
+      assert.deepEqual(commits, ["deposit", "credit_card"], "no product commits after a refusal");
+      assert.deepEqual(error.summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]).slice(0, 2), [
+        ["deposit", "success", undefined],
+        ["credit_card", "failed", "collection-scope-changed"],
+      ]);
+      return true;
+    },
+  );
+}
+
+{
+  const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
       productIds: ["deposit", "credit_card"],

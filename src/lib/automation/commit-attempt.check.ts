@@ -16,12 +16,14 @@ function attempt(outcome: CommitAttemptOutcome | null, committedCount = 0): Comm
   return { attemptId: `attempt-${outcome}-${committedCount}`, product: null, total: 2, outcome, committedCount };
 }
 
-test("an unsettled attempt outranks a failed one, which outranks success", () => {
+test("an unsettled attempt outranks a refused one, which outranks a failed one, which outranks success", () => {
   for (const [attempts, expected] of [
     [[], null],
     [[attempt("completed", 2)], null],
     [[attempt("cancelled", 1)], null],
     [[attempt("completed", 2), attempt("failed", 1)], "canonical-commit-failed"],
+    [[attempt("failed", 1), attempt("refused")], "collection-scope-changed"],
+    [[attempt("refused"), attempt(null)], "commit-outcome-unknown"],
     [[attempt("failed"), attempt(null)], "commit-outcome-unknown"],
     [[attempt(null), attempt("completed", 2)], "commit-outcome-unknown"],
   ] as const) {

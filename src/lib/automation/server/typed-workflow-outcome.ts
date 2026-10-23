@@ -254,7 +254,8 @@ export function classifyTypedWorkflowFailure(
 
 /**
  * ADR 0056: a run's Commit attempts outrank what its worker reported. An
- * unsettled attempt makes any run commit outcome unknown; a failed attempt
+ * unsettled attempt makes any run commit outcome unknown, and a refused one
+ * makes it collection scope changed (ADR 0057); a failed attempt
  * explains a failed run that the worker could not name more precisely.
  */
 export function commitAwareErrorCode(input: Readonly<{
@@ -265,7 +266,7 @@ export function commitAwareErrorCode(input: Readonly<{
   classify(): TypedWorkflowErrorCode;
 }>): TypedWorkflowErrorCode | null {
   const commit = commitAttemptsErrorCode(input.attempts);
-  if (commit === "commit-outcome-unknown") return commit;
+  if (commit === "commit-outcome-unknown" || commit === "collection-scope-changed") return commit;
   if (input.completed) return null;
   // Every unknown commit leaves an unsettled attempt; a worker's claim without one is not evidence.
   const reported = input.reported === "commit-outcome-unknown" ? null : input.reported;

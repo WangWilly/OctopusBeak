@@ -376,6 +376,7 @@ export type PGliteFinancialFailureCategory =
   | "stale"
   | "ineligible"
   | "conflict"
+  | "refused"
   | "fatal";
 
 /** The worker-owned implementation of every financial operation. */
@@ -431,6 +432,7 @@ function isFailureCategory(value: unknown): value is PGliteFinancialFailureCateg
     || value === "stale"
     || value === "ineligible"
     || value === "conflict"
+    || value === "refused"
     || value === "fatal";
 }
 
