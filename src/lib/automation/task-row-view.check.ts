@@ -37,6 +37,7 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     isActive: true,
     ranToday: false,
     credentialsReady: true,
+    setupRequired: false,
     primaryAction: "Cancel",
     canRun: true,
     ...overrides,

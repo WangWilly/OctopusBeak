@@ -202,6 +202,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   ranToday: boolean;
   /** Every credential the task needs has been read and is present. */
   credentialsReady: boolean;
+  /** The source needs Statement Selection setup before it can run. */
+  setupRequired: boolean;
   primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };

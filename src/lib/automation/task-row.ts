@@ -56,6 +56,19 @@ export function isTerminalAutomationStatus(status: string): status is TerminalAu
   return TERMINAL.has(status);
 }
 
+/**
+ * A source that needs setup shows it over any finished run, so the person is
+ * sent to Configure instead of a Run that would be refused.  A run still in
+ * progress keeps the row, so it can be cancelled.
+ */
+export function automationRowStatus(
+  lifecycleStatus: AutomationTaskStatus,
+  isActive: boolean,
+  setupRequired: boolean,
+): AutomationTaskStatus {
+  return setupRequired && !isActive ? "needs_setup" : lifecycleStatus;
+}
+
 type RowActions = Pick<AutomationTaskRow, "primaryAction" | "canRun">;
 
 /** The primary action and whether it is enabled, from the authoritative lifecycle status. */
@@ -91,7 +104,7 @@ export function applyAutomationRuntime(
   runtime: AutomationRuntimeTaskSnapshot,
 ): AutomationTaskRow {
   const isActive = isActiveAutomationRuntimeStatus(runtime.status);
-  const status = runtime.status as AutomationTaskStatus;
+  const status = automationRowStatus(runtime.status, isActive, row.setupRequired);
   const isSameRun = runtime.runId !== null && row.runId === runtime.runId;
   // Progress never moves backwards within one run.
   const observedPercent = isSameRun && row.progressPercent !== null
