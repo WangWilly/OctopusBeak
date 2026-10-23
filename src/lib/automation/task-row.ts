@@ -91,7 +91,6 @@ export function applyAutomationRuntime(
     appWorkflowOutcome: runtime.appWorkflowOutcome,
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
     progressPercent,
-    progressText: runtimeProgressText(row, runtime, progressPercent),
     ...automationTaskRowActions(status, isActive, row.credentialsReady),
   };
 }
@@ -115,7 +114,6 @@ export function applyOptimisticAutomationAction(
       appWorkflowOutcome: null,
       events: [],
       progressPercent: 0,
-      progressText: "Preparing",
       workflowProgress: null,
       humanSession: null,
       humanAssistanceContract: null,
@@ -141,20 +139,4 @@ export function parallelRunnableAutomationTaskIds(rows: readonly AutomationTaskR
       && row.primaryAction !== "Configure"
       && row.primaryAction !== "Locked")
     .map((row) => row.id);
-}
-
-function runtimeProgressText(
-  row: AutomationTaskRow,
-  runtime: AutomationRuntimeTaskSnapshot,
-  percent: number | null,
-) {
-  if (percent !== null) return `${percent}%`;
-  if (runtime.status === "running") return `Running attempt ${runtime.attempt}/${runtime.maxAttempts}`;
-  if (runtime.status === "waiting_for_human") return "Waiting for human";
-  if (runtime.status === "completed") return "Completed";
-  if (runtime.status === "partial") return "Partial";
-  if (runtime.status === "failed") return "Failed";
-  if (runtime.status === "cancelled") return "Cancelled";
-  if (runtime.status === "interrupted") return "Interrupted";
-  return row.progressText;
 }

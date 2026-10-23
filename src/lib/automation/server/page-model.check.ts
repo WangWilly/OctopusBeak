@@ -249,7 +249,6 @@ const setupRequiredFubon = setupRequiredModel.tasks.find(
   (task) => task.id === "fubon-all-statements",
 );
 assert.equal(setupRequiredFubon?.status, "needs_setup");
-assert.equal(setupRequiredFubon?.progressText, "Needs setup");
 assert.equal(setupRequiredFubon?.primaryAction, "Configure");
 assert.equal(setupRequiredModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
@@ -275,7 +274,6 @@ assert.equal(activeFubonRow?.isActive, true);
 assert.equal(activeFubonRow?.canRun, true);
 assert.equal(activeFubonRow?.primaryAction, "Cancel");
 assert.equal(activeFubonRow?.progressPercent, null);
-assert.equal(activeFubonRow?.progressText, "Running attempt 1/2");
 assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
 const legacyWaitingTask = AUTOMATION_TASKS.find((task) => task.workflowId);
@@ -390,7 +388,6 @@ const partialModel = buildAutomationPageModel({
 const partialRow = partialModel.tasks.find((task) => task.id === "fubon-all-statements");
 assert.equal(partialRow?.status, "partial");
 assert.equal(partialRow?.primaryAction, "Run");
-assert.equal(partialRow?.progressText, "Partial");
 assert.deepEqual(partialRow?.appWorkflowOutcome, {
   errorCode: null,
   summary: {
