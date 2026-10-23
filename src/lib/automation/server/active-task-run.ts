@@ -95,7 +95,7 @@ export const FORCE_QUIT_AVAILABLE_AFTER_MS = 10_000;
 
 /**
  * The run's Commit attempts outrank its report: an unsettled attempt makes it
- * commit outcome unknown and a refused one collection scope changed (ADR 0057).
+ * commit outcome unknown and a refused one collection scope changed (ADR 0058).
  * Unknown also outranks every stop so an uncertain financial write is never
  * hidden; a person's cancellation outranks shutdown.
  */
