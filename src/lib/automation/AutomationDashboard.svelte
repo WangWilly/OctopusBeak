@@ -29,7 +29,7 @@
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
-  import { isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
+  import { applyOptimisticAutomationAction, isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
   import type {
     AutomationActionKind,
     AutomationActionToken,
@@ -1000,24 +1000,7 @@ import type {
       active: true,
       activeTaskCount: Math.max(automation.activeTaskCount, 1),
       tasks: automation.tasks.map((task) => task.id === taskId
-        ? {
-          ...task,
-          runId: null,
-          status: "preparing",
-          isActive: true,
-          primaryAction: "Cancel",
-          canRun: true,
-          attempt: 1,
-          latestStartedAt: null,
-          latestFinishedAt: null,
-          appWorkflowOutcome: null,
-          events: [],
-          progressPercent: 0,
-          progressText: "Preparing",
-          workflowProgress: null,
-          humanSession: null,
-          humanAssistanceContract: null,
-        }
+        ? applyOptimisticAutomationAction(task, "run")
         : task),
     };
   }
