@@ -1,30 +1,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const defaultAutomationSettings = {
-  AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
-  LIBRETTO_CLOUD_FUBON_ENABLED: false,
-  LIBRETTO_CLOUD_ESUN_ENABLED: false,
-  LIBRETTO_CLOUD_YUANTA_ENABLED: false,
-  LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: false,
-  LIBRETTO_CLOUD_CATHAY_ENABLED: false,
-  LIBRETTO_CLOUD_HNCB_ENABLED: false,
-  LIBRETTO_CLOUD_CTBC_ENABLED: false,
-  LIBRETTO_CLOUD_POST_ENABLED: false,
-  LIBRETTO_CLOUD_SINOPAC_ENABLED: false,
-  LIBRETTO_CLOUD_LINEBANK_ENABLED: false,
-  LIBRETTO_CLOUD_EINVOICE_ENABLED: false,
-  MAX_ENABLED: false,
-  MAX_SUB_ACCOUNT: "main",
-};
-
-function ensureDataRoot(userData) {
+function ensureDataRoot(userData, defaultSettings) {
   fs.mkdirSync(path.join(userData, "data"), { recursive: true });
   const settingsPath = path.join(userData, "settings.json");
   if (!fs.existsSync(settingsPath)) {
     fs.writeFileSync(
       settingsPath,
-      `${JSON.stringify(defaultAutomationSettings, null, 2)}\n`,
+      `${JSON.stringify(defaultSettings, null, 2)}\n`,
       {
         encoding: "utf8",
         mode: 0o600,

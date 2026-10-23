@@ -1,5 +1,5 @@
 import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
-import { BANK_STATEMENT_CAPABILITIES } from "../automation/statement-selection.ts";
+import { verifiedSourceById } from "../automation/server/sources/index.ts";
 import type { WorkflowContext, WorkflowDefinition } from "../automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, type AttachedPreviewGroupId } from "./attached-products.ts";
 import {
@@ -85,7 +85,7 @@ export function selectedAttachedPreviewProducts(
   environment: NodeJS.ProcessEnv,
 ): readonly PreviewProduct[] {
   const attached = ATTACHED_PREVIEW_PRODUCTS[groupId];
-  const raw = environment[BANK_STATEMENT_CAPABILITIES[groupId].statementSelectionKey] ?? "";
+  const raw = environment[verifiedSourceById(groupId)!.statementSelection!.key] ?? "";
   const chosen = new Set(raw.split(",").map((id) => id.trim()));
   const selected = attached.products.filter((product) => chosen.has(product));
   return visibleProducts(previewVisibilityFromEnvironment(environment, []), { sourceId: attached.sourceId, products: selected });

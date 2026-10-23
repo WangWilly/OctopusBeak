@@ -117,12 +117,26 @@ export type DeviceRegistrationStatus = Readonly<{ registered: boolean }>;
 export type AutomationTaskSummary = {
   id: string;
   label: string;
+  /** The Supported source name, or the task's own name when it has no source. */
+  displayName: AutomationLocalizedText;
   kind: AutomationTaskKind;
   credentialGroupId?: string;
+  /** The integration namespaces the task writes accounts under. */
+  integrationNamespaces: readonly string[];
   credentialKeys: readonly string[];
   dependencies: readonly string[];
   externalPrerequisites?: readonly AutomationExternalPrerequisite[];
 };
+
+/** What every Supported source, verified or preview, declares about its sign-in. */
+export type SupportedSource = Readonly<{
+  id: string;
+  displayName: AutomationLocalizedText;
+  searchAliases: readonly string[];
+  credentialFields: readonly AutomationCredentialField[];
+  setupGuide: AutomationSetupGuide;
+  sessionTakeoverNotice?: AutomationLocalizedText;
+}>;
 
 export type AutomationCredentialGroup = {
   id: string;

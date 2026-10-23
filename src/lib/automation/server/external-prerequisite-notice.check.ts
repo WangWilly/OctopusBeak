@@ -11,7 +11,7 @@ import {
   decideAutomationTaskRunOutcome,
   finalizeAutomationTaskRun,
 } from "./task-run-finalization.ts";
-import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
+import { YUANTA_SERVISIGN_PREREQUISITE } from "./sources/yuanta-trade.ts";
 import { classifyTypedWorkflowFailure, type TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 

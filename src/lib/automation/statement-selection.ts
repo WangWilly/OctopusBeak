@@ -73,99 +73,11 @@ export class StatementSelectionError extends Error {
   }
 }
 
-const types = (...ids: string[]) => ids.map((id) => ({ id }));
-
 export function allSupportedStatementTypeIds(
   group: StatementSelectionGroup,
 ): string[] {
   return group.statementTypes.map((type) => type.id);
 }
-
-export const BANK_STATEMENT_CAPABILITIES = {
-  fubon: {
-    id: "fubon",
-    label: "Fubon",
-    enabledKey: "LIBRETTO_CLOUD_FUBON_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES",
-    statementTypes: types("deposit", "credit_card", "loan"),
-  },
-  esun: {
-    id: "esun",
-    label: "ESun",
-    enabledKey: "LIBRETTO_CLOUD_ESUN_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES",
-    statementTypes: types("credit_card"),
-  },
-  yuanta: {
-    id: "yuanta",
-    label: "Yuanta",
-    enabledKey: "LIBRETTO_CLOUD_YUANTA_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES",
-    statementTypes: types(
-      "deposit",
-      "foreign_currency",
-      "credit_card",
-      "loan",
-      "fund",
-    ),
-  },
-  "yuanta-trade": {
-    id: "yuanta-trade",
-    label: "Yuanta Trade",
-    enabledKey: "LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
-    statementTypes: types("brokerage"),
-  },
-  cathay: {
-    id: "cathay",
-    label: "Cathay",
-    enabledKey: "LIBRETTO_CLOUD_CATHAY_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES",
-    statementTypes: types("domestic", "foreign_currency"),
-  },
-  hncb: {
-    id: "hncb",
-    label: "HNCB",
-    enabledKey: "LIBRETTO_CLOUD_HNCB_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES",
-    statementTypes: types("deposit"),
-  },
-  ctbc: {
-    id: "ctbc",
-    label: "CTBC",
-    enabledKey: "LIBRETTO_CLOUD_CTBC_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES",
-    statementTypes: types("deposit"),
-  },
-  post: {
-    id: "post",
-    label: "Post Office",
-    enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_POST_STATEMENT_TYPES",
-    statementTypes: types("deposit"),
-  },
-  sinopac: {
-    id: "sinopac",
-    label: "SinoPac",
-    enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
-    statementTypes: types("accounts"),
-  },
-  linebank: {
-    id: "linebank",
-    label: "LINE Bank",
-    enabledKey: "LIBRETTO_CLOUD_LINEBANK_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES",
-    statementTypes: types("accounts"),
-  },
-  tdcc: {
-    id: "tdcc",
-    label: "TDCC",
-    enabledKey: "LIBRETTO_CLOUD_TDCC_ENABLED",
-    statementSelectionKey: "LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES",
-    statementTypes: types("securities", "fund", "settlement"),
-  },
-} as const satisfies Record<string, StatementSelectionGroup>;
 
 export function selectStatementTypes(
   group: StatementSelectionGroup,

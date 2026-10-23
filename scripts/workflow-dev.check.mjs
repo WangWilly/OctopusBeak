@@ -55,11 +55,11 @@ test("workflow development CLI lists only typed definitions enabled by the App",
 test("workflow development CLI validates a provider definition export", () => {
   const result = invoke(
     "validate",
-    "src/lib/automation/linebank-workflow.ts",
-    "linebankStatementsWorkflow",
+    "src/lib/automation/example-workflow.ts",
+    "exampleWorkflow",
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /valid WorkflowDefinition: linebank-statements; financialCommit=required/u);
+  assert.match(result.stdout, /valid WorkflowDefinition: example-workflow; financialCommit=not-required/u);
 });
 
 test("workflow development CLI refuses definition imports outside its automation module root", () => {
@@ -74,7 +74,7 @@ test("workflow development CLI requires an explicit opt-in before opening a remo
   assert.notEqual(inspect.status, 0);
   assert.match(inspect.stderr, /live-source-confirmation-required/u);
 
-  const run = invoke("run", "src/lib/automation/linebank-workflow.ts", "linebankStatementsWorkflow", "--input-env", "WORKFLOW_DEV_INPUT_JSON");
+  const run = invoke("run", "src/lib/automation/example-workflow.ts", "exampleWorkflow", "--input-env", "WORKFLOW_DEV_INPUT_JSON");
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /live-source-confirmation-required/u);
 });
@@ -83,8 +83,8 @@ test("workflow development CLI parses input from an environment variable without
   const secretFixture = "synthetic-sensitive-input";
   const result = invokeWithEnv({ WORKFLOW_DEV_INPUT_JSON: `{${secretFixture}}` },
     "validate",
-    "src/lib/automation/linebank-workflow.ts",
-    "linebankStatementsWorkflow",
+    "src/lib/automation/example-workflow.ts",
+    "exampleWorkflow",
     "--input-env",
     "WORKFLOW_DEV_INPUT_JSON",
   );

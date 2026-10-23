@@ -143,38 +143,6 @@ assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent
 assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will run, up to 3 at a time; the rest will wait in the queue.");
 assert.equal(translations.en.automation.startSyncHeading, "Start sync");
 assert.equal(translations["zh-TW"].automation.startSyncHeading, "開始同步");
-assert.deepEqual(translations.en.automation.taskLabels, {
-  "fubon-all-statements": "Taipei Fubon Bank",
-  "esun-credit-card-statements": "E.SUN Bank",
-  "yuanta-all-statements": "Yuanta Bank",
-  "yuanta-trade-statements": "Yuanta Securities",
-  "cathay-all-statements": "Cathay United Bank",
-  "hncb-statements": "Hua Nan Bank",
-  "ctbc-statements": "CTBC Bank",
-  "post-statements": "Chunghwa Post",
-  "sinopac-statements": "Bank SinoPac",
-  "linebank-statements": "LINE Bank",
-  "einvoice-personal-invoices": "E-Invoice",
-  "exchange-rates": "Exchange rates",
-  "sync-maicoin": "MaiCoin",
-  "sync-tdcc": "TDCC e-Passbook",
-});
-assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
-  "fubon-all-statements": "台北富邦銀行（Taipei Fubon Bank）",
-  "esun-credit-card-statements": "玉山銀行（E.SUN Bank）",
-  "yuanta-all-statements": "元大銀行（Yuanta Bank）",
-  "yuanta-trade-statements": "元大證券（Yuanta Securities）",
-  "cathay-all-statements": "國泰世華銀行（Cathay United Bank）",
-  "hncb-statements": "華南銀行（Hua Nan Bank）",
-  "ctbc-statements": "中國信託銀行（CTBC Bank）",
-  "post-statements": "中華郵政（Chunghwa Post）",
-  "sinopac-statements": "永豐銀行（Bank SinoPac）",
-  "linebank-statements": "LINE Bank",
-  "einvoice-personal-invoices": "電子發票（E-Invoice）",
-  "exchange-rates": "匯率同步",
-  "sync-maicoin": "MaiCoin",
-  "sync-tdcc": "集保e手掌握",
-});
 assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
 assert.equal(
   translations.en.historyTable.rateDates(["2026-07-10", "2026-07-11"]),
