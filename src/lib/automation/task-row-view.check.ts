@@ -82,6 +82,38 @@ test("the sync line puts an active run first, then missing credentials, then the
   assert.equal(presentTaskRow(row({ status: "completed", isActive: false, latestStartedAt: null }), context("en")).runStatus.label, translations.en.automation.credentialSyncStatuses.never);
 });
 
+test("collection progress names the activity and product, and a retry names the attempt", () => {
+  const copy = translations.en.automation;
+  const collecting = (params: Record<string, string | number | boolean>, overrides: Partial<AutomationTaskRow> = {}) =>
+    presentTaskRow(row({
+      workflowProgress: { phaseCode: "workflow-collection", completed: null, total: null, percent: null, attempt: 1, params },
+      ...overrides,
+    }), context("en")).progressLabel;
+  const product = copy.statementTypeLabels.deposit ?? "deposit";
+  assert.equal(collecting({ activity: "query", statementType: "deposit" }), copy.progressQueryingProduct(product));
+  assert.equal(collecting({ activity: "query" }), copy.progressQuerying);
+  assert.equal(collecting({ activity: "download", statementType: "deposit" }), copy.progressDownloadingProduct(product));
+  assert.equal(collecting({}), copy.progressStages.collection);
+  assert.equal(
+    collecting({ retrying: true }, { attempt: 2, progressPercent: 30 }),
+    copy.progressRetryingStage(copy.progressStagePercent(copy.progressStages.collection, 30), 2, 2),
+  );
+});
+
+test("each finished status has its own tone on the run line, and a source that needs setup says so", () => {
+  const tone = (status: AutomationTaskRow["status"]) =>
+    presentTaskRow(row({ status, isActive: false }), context("en")).runStatus.tone;
+  assert.equal(tone("completed"), "good");
+  assert.equal(tone("partial"), "warn");
+  assert.equal(tone("failed"), "bad");
+  assert.equal(tone("locked"), "bad");
+  assert.equal(tone("cancelled"), "muted");
+  assert.deepEqual(
+    presentTaskRow(row({ status: "needs_setup", isActive: false }), context("en")).syncStatus,
+    { tone: "warn", label: translations.en.automation.needsSetup, time: "" },
+  );
+});
+
 test("statement results come from the first product reported for each type", () => {
   const outcome = {
     summary: {
