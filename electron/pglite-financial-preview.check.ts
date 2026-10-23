@@ -2,10 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
-import {
-  createPGliteFinancialLiveViews,
-  createPGliteFinancialRegistry,
-} from "./pglite-financial-registry.ts";
+import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
+import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
 import { readOverview } from "../src/lib/overview/overview-model.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
