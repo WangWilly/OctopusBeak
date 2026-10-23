@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { buildAutomationPageModel } from "./page-model.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
+import { runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
+import { mergeAutomationRuntime } from "../runtime-sync.ts";
 
 const completedRun: AutomationTaskRun = {
   taskRunId: "run-1",
@@ -251,6 +253,55 @@ const setupRequiredFubon = setupRequiredModel.tasks.find(
 assert.equal(setupRequiredFubon?.status, "needs_setup");
 assert.equal(setupRequiredFubon?.primaryAction, "Configure");
 assert.equal(setupRequiredModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
+
+// A source that ran before and now needs Statement Selection setup. The App
+// hydrates a runtime record from every latest run, finished ones included.
+for (const finished of [
+  completedRun,
+  { ...completedRun, status: "failed", appWorkflowOutcome: { errorCode: "workflow-failed" } } as AutomationTaskRun,
+]) {
+  const runtime = {
+    sessionId: "session-1",
+    revision: 1,
+    tasks: [runtimeTaskSnapshotFromRun(finished)],
+  };
+  const setupAfterRunModel = buildAutomationPageModel({
+    tasks: AUTOMATION_TASKS,
+    latestRuns: { "fubon-all-statements": finished },
+    credentials,
+    setupRequiredGroupIds: new Set(["fubon"]),
+    active: false,
+    businessDate: "2026-06-30",
+    runtime,
+  });
+  for (const [where, page] of [
+    ["App page model", setupAfterRunModel],
+    ["renderer runtime merge", mergeAutomationRuntime(setupAfterRunModel, runtime)],
+  ] as const) {
+    const fubon = page.tasks.find((task) => task.id === "fubon-all-statements");
+    assert.equal(fubon?.status, "needs_setup", `${where} after a ${finished.status} run`);
+    assert.equal(fubon?.primaryAction, "Configure", `${where} after a ${finished.status} run`);
+    assert.equal(page.parallelRunnableTaskIds.includes("fubon-all-statements"), false, `${where} after a ${finished.status} run`);
+  }
+}
+
+// A run in progress still owns the row, so it can be cancelled.
+{
+  const runningRun = { ...completedRun, taskRunId: "run-active", status: "running", finishedAt: null } as AutomationTaskRun;
+  const runtime = { sessionId: "session-1", revision: 2, tasks: [runtimeTaskSnapshotFromRun(runningRun)] };
+  const page = buildAutomationPageModel({
+    tasks: AUTOMATION_TASKS,
+    latestRuns: { "fubon-all-statements": runningRun },
+    credentials,
+    setupRequiredGroupIds: new Set(["fubon"]),
+    active: true,
+    businessDate: "2026-06-30",
+    runtime,
+  });
+  const fubon = mergeAutomationRuntime(page, runtime).tasks.find((task) => task.id === "fubon-all-statements");
+  assert.equal(fubon?.status, "running");
+  assert.equal(fubon?.primaryAction, "Cancel");
+}
 
 const activeModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,

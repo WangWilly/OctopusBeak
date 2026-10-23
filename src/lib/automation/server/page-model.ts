@@ -11,6 +11,7 @@ import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import {
   applyAutomationRuntime,
   automationRowPercent,
+  automationRowStatus,
   automationTaskRowActions,
   isActiveAutomationRuntimeStatus,
   isWorkflowStage,
@@ -54,16 +55,13 @@ function pageWorkflowEvents(
 }
 
 function rowStatus(
-  task: AutomationTask,
   run: AutomationTaskRun | undefined,
   isActive: boolean,
-  setupRequiredGroupIds: ReadonlySet<string>,
 ) {
   if (run?.appWorkflowOutcome?.errorCode === "cancelled") return "cancelled";
   if (run?.appWorkflowOutcome?.errorCode) return "failed";
   if (run?.status === "waiting_for_human") return "waiting_for_human";
   if (isActive) return "running";
-  if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
   if (run?.status === "running") return "failed";
   return run?.status ?? "queued";
 }
@@ -88,7 +86,9 @@ export function buildAutomationPageModel(input: {
     const run = input.latestRuns[task.id];
     const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
     const isActive = activeTaskIds.has(task.id);
-    const status = rowStatus(task, run, isActive, setupRequiredGroupIds);
+    const setupRequired = Boolean(task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId));
+    const latestRunStatus = rowStatus(run, isActive);
+    const status = automationRowStatus(latestRunStatus, isActive, setupRequired);
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
@@ -107,6 +107,7 @@ export function buildAutomationPageModel(input: {
       dependencies: task.dependencies,
       externalPrerequisites: task.externalPrerequisites,
       status,
+      latestRunStatus,
       attempt,
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
@@ -121,6 +122,7 @@ export function buildAutomationPageModel(input: {
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       credentialsReady,
+      setupRequired,
       ...automationTaskRowActions(status, isActive, credentialsReady),
     } satisfies AutomationTaskRow;
     const row = runtime ? applyAutomationRuntime(persisted, runtime) : persisted;

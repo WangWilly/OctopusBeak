@@ -219,6 +219,7 @@ test("task disclosure follows explicit workflow nodes and stays scoped to the se
     ...task,
     label: "Bank workflow",
     displayName: { en: "Bank workflow", "zh-TW": "Bank workflow" },
+    latestRunStatus: task.status,
     integrationNamespaces: [],
     credentialKeys: [],
     dependencies: [],
@@ -231,6 +232,7 @@ test("task disclosure follows explicit workflow nodes and stays scoped to the se
     isActive: false,
     ranToday: true,
     credentialsReady: true,
+    setupRequired: false,
     primaryAction: "Run again" as const,
     canRun: true,
   } satisfies AutomationTaskRow;

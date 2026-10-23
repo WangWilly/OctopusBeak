@@ -123,12 +123,12 @@ function taskRunStatus(row: AutomationTaskRow, context: TaskRowViewContext): Tas
   const labels = dictionary.automation.credentialSyncStatuses;
   const time = formatShortTime(row.latestFinishedAt ?? row.latestStartedAt, context);
   if (!time) return { tone: "muted", label: labels.never, time: "" };
-  if (row.status === "completed") return { tone: "good", label: labels.completed, time };
-  if (row.status === "partial") return { tone: "warn", label: labels.partial, time };
-  if (row.status === "failed" || row.status === "locked") return { tone: "bad", label: labels.failed, time };
-  if (row.status === "cancelled") return { tone: "muted", label: labels.cancelled, time };
-  if (row.status === "interrupted") return { tone: "muted", label: labels.interrupted, time };
-  return { tone: "muted", label: dictionary.automation.statusLabels[row.status], time };
+  if (row.latestRunStatus === "completed") return { tone: "good", label: labels.completed, time };
+  if (row.latestRunStatus === "partial") return { tone: "warn", label: labels.partial, time };
+  if (row.latestRunStatus === "failed" || row.latestRunStatus === "locked") return { tone: "bad", label: labels.failed, time };
+  if (row.latestRunStatus === "cancelled") return { tone: "muted", label: labels.cancelled, time };
+  if (row.latestRunStatus === "interrupted") return { tone: "muted", label: labels.interrupted, time };
+  return { tone: "muted", label: dictionary.automation.statusLabels[row.latestRunStatus], time };
 }
 
 function syncStatus(row: AutomationTaskRow, runStatus: TaskRowStatusLine, context: TaskRowViewContext): TaskRowStatusLine {
