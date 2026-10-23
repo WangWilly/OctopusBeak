@@ -1,5 +1,5 @@
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
-import { isActiveAutomationRuntimeStatus } from "./runtime-status.ts";
+import { isActiveAutomationRuntimeStatus } from "./task-row.ts";
 
 export type AutomationRuntimeInvariantDetails = {
   code: "automation-unknown-active-task";
