@@ -7,19 +7,16 @@ import type {
   AutomationTaskPrerequisiteNotice,
   AutomationTaskRow,
 } from "../types.ts";
-import { isActiveAutomationRuntimeStatus } from "../runtime-status.ts";
 import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
-import { primaryActionForAutomationTask } from "../primary-action.ts";
+import {
+  applyAutomationRuntime,
+  automationRowPercent,
+  automationTaskRowActions,
+  isActiveAutomationRuntimeStatus,
+  isWorkflowStage,
+  parallelRunnableAutomationTaskIds,
+} from "../task-row.ts";
 
-const workflowStages = new Set<WorkflowStage>([
-  "preparation",
-  "authentication",
-  "collection",
-  "decoding",
-  "validation",
-  "commit",
-  "finalization",
-]);
 const MAX_WORKFLOW_EVENTS = 200;
 const SAFE_WORKFLOW_EVENT_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 
@@ -35,7 +32,7 @@ function pageWorkflowEvents(
     if (
       event.runId !== runId
       || typeof event.stage !== "string"
-      || !workflowStages.has(event.stage as WorkflowStage)
+      || !isWorkflowStage(event.stage)
       || typeof event.code !== "string"
       || !SAFE_WORKFLOW_EVENT_CODE.test(event.code)
       || typeof event.occurredAt !== "string"
@@ -71,18 +68,6 @@ function rowStatus(
   return run?.status ?? "queued";
 }
 
-function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts: number, progress: number | null) {
-  if (progress !== null) return `${progress}%`;
-  if (status === "running") return `Running attempt ${attempt}/${maxAttempts}`;
-  if (status === "waiting_for_human") return "Waiting for human";
-  if (status === "completed") return "Completed";
-  if (status === "partial") return "Partial";
-  if (status === "needs_setup") return "Needs setup";
-  if (status === "failed") return "Failed";
-  if (status === "locked") return "Locked";
-  return "Queued";
-}
-
 export function buildAutomationPageModel(input: {
   tasks: readonly AutomationTask[];
   latestRuns: Record<string, AutomationTaskRun>;
@@ -102,31 +87,17 @@ export function buildAutomationPageModel(input: {
   const tasks = input.tasks.map((task) => {
     const run = input.latestRuns[task.id];
     const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
-    const isActive = runtime
-      ? isActiveAutomationRuntimeStatus(runtime.status)
-      : activeTaskIds.has(task.id);
-    const status = runtime?.status ?? rowStatus(task, run, isActive, setupRequiredGroupIds);
-    const action = primaryActionForAutomationTask(status, isActive);
+    const isActive = activeTaskIds.has(task.id);
+    const status = rowStatus(task, run, isActive, setupRequiredGroupIds);
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
-    const rawProgressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
-    const progressPercent = status === "completed"
-      ? 100
-      : rawProgressPercent === null
-        ? null
-        : Math.min(99, rawProgressPercent);
-    const runProgress = runtime?.progress ?? run?.progress ?? null;
-    const workflowProgress = runProgress
-      ? { ...runProgress, percent: progressPercent }
-      : null;
-    const attempt = runtime?.attempt ?? run?.attempt ?? 0;
-    const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
-    const events = pageWorkflowEvents(run?.events, run?.taskRunId);
-    const appWorkflowOutcome = runtime?.appWorkflowOutcome ?? run?.appWorkflowOutcome ?? null;
-    return {
+    const progressPercent = automationRowPercent(status, run?.progress?.percent ?? null);
+    const attempt = run?.attempt ?? 0;
+    const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
+    const persisted = {
       id: task.id,
-      runId: runtime?.runId ?? run?.taskRunId ?? null,
+      runId: run?.taskRunId ?? null,
       label: task.label,
       displayName: task.displayName,
       kind: task.kind,
@@ -140,22 +111,26 @@ export function buildAutomationPageModel(input: {
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
       latestFinishedAt: run?.finishedAt ?? null,
-      workflowProgress,
-      appWorkflowOutcome,
-      events,
+      workflowProgress: run?.progress ? { ...run.progress, percent: progressPercent } : null,
+      appWorkflowOutcome: run?.appWorkflowOutcome ?? null,
+      events: pageWorkflowEvents(run?.events, run?.taskRunId),
       progressPercent,
-      progressText: progressText(status, attempt, maxAttempts, progressPercent),
-      humanSession: status === "waiting_for_human"
+      humanSession: null,
+      humanAssistanceContract: run?.humanAssistanceContract ?? null,
+      forceTerminateAvailable: false,
+      isActive,
+      ranToday: todayRunTaskIds.has(task.id),
+      credentialsReady,
+      ...automationTaskRowActions(status, isActive, credentialsReady),
+    } satisfies AutomationTaskRow;
+    const row = runtime ? applyAutomationRuntime(persisted, runtime) : persisted;
+    return {
+      ...row,
+      humanSession: row.status === "waiting_for_human"
         && task.workflowId
         && task.kind === "crawler"
         ? run?.taskRunId ?? runtime?.runId ?? null
         : null,
-      humanAssistanceContract: run?.humanAssistanceContract ?? null,
-      forceTerminateAvailable: runtime?.forceTerminateAvailable === true,
-      isActive,
-      ranToday: todayRunTaskIds.has(task.id),
-      primaryAction: action,
-      canRun: action === "Cancel" || (!isActive && action !== "Locked" && credentialsReady),
     } satisfies AutomationTaskRow;
   });
   return {
@@ -165,15 +140,7 @@ export function buildAutomationPageModel(input: {
     activeTaskCount: input.runtime?.tasks.filter((task) =>
       isActiveAutomationRuntimeStatus(task.status),
     ).length ?? activeTaskIds.size,
-    parallelRunnableTaskIds: tasks
-      .filter((task) =>
-        task.canRun
-        && task.primaryAction !== "Cancel"
-        && task.primaryAction !== "Configure"
-        && !task.isActive
-        && task.credentialKeys.every((key) => input.credentials[key])
-      )
-      .map((task) => task.id),
+    parallelRunnableTaskIds: parallelRunnableAutomationTaskIds(tasks),
     credentials: input.credentials,
     credentialStates: input.credentialStates,
     externalPrerequisiteNotices: [...(input.externalPrerequisiteNotices ?? [])],

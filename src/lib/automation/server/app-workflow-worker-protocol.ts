@@ -5,6 +5,7 @@ import {
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
+import { WORKFLOW_STAGES } from "../task-row.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import {
   isTypedWorkflowOutcomeSummary,
@@ -30,9 +31,7 @@ const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_TARGET_ID = /^[A-Za-z0-9._:-]{1,200}$/u;
 const PGLITE_TOKEN = /^[A-Za-z0-9_-]{32,128}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const stages = new Set<WorkflowRunEvent["stage"]>([
-  "preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization",
-]);
+const stages = new Set<WorkflowRunEvent["stage"]>(WORKFLOW_STAGES);
 const progressActivities = new Set(["query", "download"]);
 const progressStatementTypes = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
 const completionStatuses = new Set<Exclude<HumanAssistanceCompletionStatus, "pending">>([
