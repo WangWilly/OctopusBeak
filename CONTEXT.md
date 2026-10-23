@@ -886,7 +886,7 @@ The App-owned production runtime that starts typed workflow definitions, injects
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
 **Commit attempt**:
-One request an Automation Task Run makes to the Canonical Financial Commit capability, recorded durably before the request starts and settled afterward with a known outcome: completed, failed, or cancelled. It is the only authority for whether a run's financial writes happened; stage events only report it.
+One request an Automation Task Run makes to the Canonical Financial Commit capability, recorded durably before the request starts and settled afterward with a known outcome: completed, failed, cancelled, or refused. A refused attempt is one the App turned away before admission because the run's Collection scope version changed, so it wrote nothing after its earlier receipts. It is the only authority for whether a run's financial writes happened; stage events only report it.
 _Avoid_: Commit event, commit stage, financial write
 
 **Commit outcome unknown**:
@@ -906,7 +906,7 @@ An Automation Task Run that has not yet reached a terminal outcome, from the mom
 _Avoid_: Pending run, running task, in-flight execution
 
 **Automation task run finalization**:
-The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session.
+The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session. The Active automation task run decides the outcome from its Commit attempts, its stop, and what its execution observed; a run no live process owns is decided the same way from its stored attempts.
 
 **Automation task run finalization intent**:
 The stated outcome and safe result summary that guide how an automation task run is finalized.

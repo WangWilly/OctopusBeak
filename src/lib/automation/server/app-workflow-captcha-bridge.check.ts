@@ -149,13 +149,13 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
             await assistance.request(providerContract, controller.signal);
           } catch {
             assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
-            return { errorCode: "workflow-failed" as const, summary: null };
+            return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
           }
           const rejected = attempt === 2;
           // Worker cleanup aborts the request before the host joins execution.
           // Progress events are deliberately absent: they must not drive retries.
           controller.abort(new Error("Worker finished"));
-          return { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null };
+          return { summary: null, failure: rejected ? { code: "captcha-provider-rejected" as const, proven: true } : null };
         },
       });
 
@@ -210,7 +210,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
           await assistance.request(sinopacContract, controller.signal);
           throw new Error("Cancellation did not interrupt verification assistance.");
         } catch {
-          return { errorCode: "cancelled" as const, summary: null };
+          return { summary: null, failure: { code: "cancelled" as const, proven: true } };
         }
       },
     });
@@ -219,7 +219,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     void run.requestStop("cancelled");
     controller.abort(new Error("App closed"));
     const report = await campaign;
-    assert.equal(report.errorCode, "cancelled");
+    assert.equal(run.assess(report).errorCode, "cancelled");
     await run.finish(report);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "cancelled");
@@ -278,7 +278,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
             }
           }
           return {
-            errorCode: (options.attempt ?? 1) === 1 ? "workflow-failed" as const : null,
+            failure: (options.attempt ?? 1) === 1 ? { code: "workflow-failed" as const, proven: true } : null,
             summary: null,
           };
         },
@@ -336,10 +336,10 @@ test("exhausted App solver retries finalize with a typed verification failure an
         } catch {
           // Reject the current challenge so the campaign can admit its next round.
         }
-        return { errorCode: "workflow-failed" as const, summary: null };
+        return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
       },
     });
-    assert.equal(result.errorCode, "verification-failed");
+    assert.deepEqual(result.failure, { code: "verification-failed", proven: true });
     await run.finish(result);
     assert.deepEqual(attempts, [1, 2, 3]);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
@@ -393,7 +393,7 @@ for (const scenario of [
             const assistance = createAppWorkflowHumanAssistancePort({ run });
             await assistance.request(sinopacContract, controller.signal).catch(() => undefined);
           }
-          return { errorCode: "workflow-failed" as const, summary: null };
+          return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
         },
       });
       assert.equal((await run.finish(result)).status, "failed");
@@ -446,7 +446,7 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
           }
         }
         return {
-          errorCode: (options.attempt ?? 1) === 1 ? "workflow-failed" as const : null,
+          failure: (options.attempt ?? 1) === 1 ? { code: "workflow-failed" as const, proven: true } : null,
           summary: null,
         };
       },

@@ -6,7 +6,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcServer,
-  type PGliteCanonicalCommitAssertion,
+  type PGliteCanonicalCommitAdmission,
   type PGliteFinancialPort,
 } from "./pglite-financial-registry.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../src/ledger/pglite/workflow-client.ts";
@@ -103,7 +103,7 @@ export type PGliteChildRpcServer = Readonly<{
 
 export type PGliteChildRpcServerOptions = {
   provider: PGliteChildProvider;
-  assertCommitAdmissible?: PGliteCanonicalCommitAssertion;
+  isCommitAdmissible?: PGliteCanonicalCommitAdmission;
   /** Deterministic socket values for protocol tests. */
   endpoint?: string;
   token?: string;
@@ -117,7 +117,7 @@ export type PGliteChildRpcServerOptions = {
  */
 export function createPGliteChildRpcServer({
   provider,
-  assertCommitAdmissible,
+  isCommitAdmissible,
   endpoint = createEndpoint(),
   token = randomBytes(PGLITE_CHILD_RPC_TOKEN_BYTES).toString("base64url"),
   onProtocolError,
@@ -201,7 +201,7 @@ export function createPGliteChildRpcServer({
           ok: true,
         } satisfies AuthResponse);
         operationalServer = createPGliteOperationalRpcServer(port, provider.operational);
-        financialServer = createPGliteFinancialRpcServer(port, provider.financial, assertCommitAdmissible);
+        financialServer = createPGliteFinancialRpcServer(port, provider.financial, isCommitAdmissible);
         return;
       }
       if (!validRpcEnvelope(value)) {

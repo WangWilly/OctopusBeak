@@ -118,11 +118,11 @@ export async function executeTaskRunForCheck(
   const { taskRunId, onRunOpened, workerPorts, ...executionOptions } = options;
   const active = await openTaskRunForCheck(persistence, taskRunId);
   onRunOpened?.(active);
-  const outcome = await runAutomationTaskExecution(
+  const report = await runAutomationTaskExecution(
     task,
     active,
     workerPorts ? supervisedWithCheckWorker(executionOptions, workerPorts) : executionOptions,
   );
-  const run = await active.finish(outcome);
-  return { status: run.status, taskRunId, run, outcome };
+  const run = await active.finish(report);
+  return { status: run.status, taskRunId, run, outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } };
 }

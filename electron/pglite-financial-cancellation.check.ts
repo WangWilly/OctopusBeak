@@ -161,7 +161,7 @@ test("an account identity continuity read crosses the workflow port only in its 
     },
   } as unknown as PGliteFinancialRegistry;
   const [clientPort, serverPort] = memoryPair();
-  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), () => undefined);
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), () => true);
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     const { identifier: _identifier, ...withoutIdentifier } = request;

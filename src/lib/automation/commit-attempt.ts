@@ -11,7 +11,7 @@ import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
  * settles it only when the request returns a verifiable result; an attempt that
  * never settles is the run's commit outcome unknown.
  */
-export type CommitAttemptOutcome = "completed" | "failed" | "cancelled";
+export type CommitAttemptOutcome = "completed" | "failed" | "cancelled" | "refused";
 
 export type CommitAttemptReport =
   | Readonly<{ phase: "started"; attemptId: string; product: string | null; total: number }>
@@ -34,7 +34,7 @@ export interface CommitAttemptRecorder {
 const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 /** Workflows pass product type ids such as `credit_card` as the attempt's product. */
 const PRODUCT = /^[a-z][a-z0-9_-]{0,63}$/u;
-const OUTCOMES = new Set<CommitAttemptOutcome>(["completed", "failed", "cancelled"]);
+const OUTCOMES = new Set<CommitAttemptOutcome>(["completed", "failed", "cancelled", "refused"]);
 const MAX_COUNT = 1_000_000_000;
 
 function count(value: unknown): value is number {
@@ -88,8 +88,9 @@ export function applyCommitAttemptReport(
 /** A run's commit outcome: unknown outranks failure, and otherwise nothing to report. */
 export function commitAttemptsErrorCode(
   attempts: readonly CommitAttempt[],
-): "commit-outcome-unknown" | "canonical-commit-failed" | null {
+): "commit-outcome-unknown" | "collection-scope-changed" | "canonical-commit-failed" | null {
   if (attempts.some((attempt) => attempt.outcome === null)) return "commit-outcome-unknown";
+  if (attempts.some((attempt) => attempt.outcome === "refused")) return "collection-scope-changed";
   if (attempts.some((attempt) => attempt.outcome === "failed")) return "canonical-commit-failed";
   return null;
 }
@@ -97,6 +98,11 @@ export function commitAttemptsErrorCode(
 /** Whether financial data may have changed: an item committed, or an attempt never settled. */
 export function commitAttemptsMayHaveCommitted(attempts: readonly CommitAttempt[]): boolean {
   return attempts.some((attempt) => attempt.outcome === null || attempt.committedCount > 0);
+}
+
+/** Whether the host refused the request's writes before admission (ADR 0058). */
+export function commitRefused(result: PGliteWorkflowRunResult<unknown>): boolean {
+  return result.items.some((item) => item.status === "failed" && item.failureKind === "refused");
 }
 
 /** The request threw or returned a result whose receipts cannot be trusted. */
@@ -151,9 +157,11 @@ function knownOutcome(
   committed: number | null,
 ): CommitAttemptOutcome | null {
   if (committed === null || result.committedCount !== committed) return null;
-  if (result.status !== "cancelled" && result.items.length !== items.length) return null;
   if (result.items.some((item) => item.status === "failed" && item.failureKind === "fatal")) return null;
   if (result.diagnostics.some((diagnostic) => diagnostic.stage === "run")) return null;
+  // A refused run stops at its first refused item; the items after it were never sent.
+  if (commitRefused(result)) return "refused";
+  if (result.status !== "cancelled" && result.items.length !== items.length) return null;
   if (result.status === "completed") return "completed";
   return result.status === "cancelled" ? "cancelled" : "failed";
 }
@@ -162,6 +170,7 @@ const SETTLED_EVENT: Readonly<Record<CommitAttemptOutcome, CommitEventCode>> = {
   completed: "canonical-commit-completed",
   failed: "canonical-commit-failed",
   cancelled: "canonical-commit-cancelled",
+  refused: "canonical-commit-failed",
 };
 
 /**

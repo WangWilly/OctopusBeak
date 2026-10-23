@@ -80,7 +80,7 @@ import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einv
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = Readonly<{
   accepts(args: readonly unknown[]): boolean;
-  /** Canonical writes from a workflow run must pass assertCommitAdmissible first. */
+  /** Canonical writes from a workflow run must pass isCommitAdmissible first. */
   canonicalCommit?: true;
   /** Type-only: the argument tuple a caller sends and the result it receives. */
   contract?: (args: Args) => Result;
@@ -376,6 +376,7 @@ export type PGliteFinancialFailureCategory =
   | "stale"
   | "ineligible"
   | "conflict"
+  | "refused"
   | "fatal";
 
 /** The worker-owned implementation of every financial operation. */
@@ -431,6 +432,7 @@ function isFailureCategory(value: unknown): value is PGliteFinancialFailureCateg
     || value === "stale"
     || value === "ineligible"
     || value === "conflict"
+    || value === "refused"
     || value === "fatal";
 }
 

@@ -64,6 +64,23 @@ test("PGlite run treats unknown worker failure as fatal and stops later items", 
   assert.doesNotMatch(JSON.stringify(result), /SQL details/u);
 });
 
+test("PGlite run stops at a refused write and keeps the receipts before it", async () => {
+  let calls = 0;
+  const result = await executePGliteWorkflowRun({
+    client: client(async () => {
+      calls += 1;
+      if (calls === 2) throw Object.assign(new Error("scope changed"), { code: "operation-failed", category: "refused" });
+      return { captureId: "capture-ok", commitSequence: 3 };
+    }),
+    items: [item("first"), item("second"), item("third")],
+  });
+  assert.equal(calls, 2, "the item after the refusal is never sent");
+  assert.equal(result.status, "partially-completed");
+  assert.equal(result.committedCount, 1);
+  assert.equal(result.items[1]?.status === "failed" && result.items[1].failureKind, "refused");
+  assert.equal(result.diagnostics.some((diagnostic) => diagnostic.stage === "run"), false);
+});
+
 test("PGlite run keeps a durable result when cancellation wins after the commit", async () => {
   const controller = new AbortController();
   let calls = 0;

@@ -8,7 +8,6 @@ import {
   type CommitAttempt,
   type CommitAttemptOutcome,
 } from "./commit-attempt.ts";
-import { commitAwareErrorCode } from "./server/typed-workflow-outcome.ts";
 import { COLLECTION_PRODUCT_TYPE_IDS } from "./product-collection.ts";
 import { parseAppWorkflowWorkerOutboundFrame } from "./server/app-workflow-worker-protocol.ts";
 
@@ -16,12 +15,14 @@ function attempt(outcome: CommitAttemptOutcome | null, committedCount = 0): Comm
   return { attemptId: `attempt-${outcome}-${committedCount}`, product: null, total: 2, outcome, committedCount };
 }
 
-test("an unsettled attempt outranks a failed one, which outranks success", () => {
+test("an unsettled attempt outranks a refused one, which outranks a failed one, which outranks success", () => {
   for (const [attempts, expected] of [
     [[], null],
     [[attempt("completed", 2)], null],
     [[attempt("cancelled", 1)], null],
     [[attempt("completed", 2), attempt("failed", 1)], "canonical-commit-failed"],
+    [[attempt("failed", 1), attempt("refused")], "collection-scope-changed"],
+    [[attempt("refused"), attempt(null)], "commit-outcome-unknown"],
     [[attempt("failed"), attempt(null)], "commit-outcome-unknown"],
     [[attempt(null), attempt("completed", 2)], "commit-outcome-unknown"],
   ] as const) {
@@ -46,23 +47,6 @@ test("a settlement needs its own unsettled start and cannot exceed it", () => {
   assert.throws(() => applyCommitAttemptReport(settled, { phase: "settled", attemptId: "a", outcome: "failed", committedCount: 0 }));
 });
 
-test("the run's attempts decide its commit outcome over what the worker reported", () => {
-  const classify = () => "authentication-failed" as const;
-  // A completed worker hides only an unknown commit.
-  assert.equal(commitAwareErrorCode({ attempts: [attempt(null)], completed: true, reported: null, classify }), "commit-outcome-unknown");
-  assert.equal(commitAwareErrorCode({ attempts: [attempt("failed")], completed: true, reported: null, classify }), null);
-  // An unknown commit outranks a code the worker proved.
-  assert.equal(commitAwareErrorCode({
-    attempts: [attempt(null)], completed: false, reported: "source-validation-failed", classify,
-  }), "commit-outcome-unknown");
-  // A proved code outranks a failed attempt; a failed attempt outranks the event guess.
-  assert.equal(commitAwareErrorCode({
-    attempts: [attempt("failed")], completed: false, reported: "source-validation-failed", classify,
-  }), "source-validation-failed");
-  assert.equal(commitAwareErrorCode({ attempts: [attempt("failed")], completed: false, reported: null, classify }), "canonical-commit-failed");
-  assert.equal(commitAwareErrorCode({ attempts: [], completed: false, reported: null, classify }), "authentication-failed");
-});
-
 test("every product a workflow commits under is a valid attempt product, through the worker frame", () => {
   // Every product a production workflow passes to financialCommit.execute, plus the shared type ids.
   for (const product of [
@@ -76,12 +60,4 @@ test("every product a workflow commits under is a valid attempt product, through
     }), product);
   }
   assert.equal(isCommitAttemptReport({ phase: "started", attemptId: "attempt-1", product: "Credit Card", total: 1 }), false);
-});
-
-test("a worker's commit-outcome-unknown without an unsettled attempt is not evidence", () => {
-  const classify = () => "cancelled" as const;
-  assert.equal(commitAwareErrorCode({ attempts: [], completed: false, reported: "commit-outcome-unknown", classify }), "cancelled");
-  assert.equal(commitAwareErrorCode({
-    attempts: [attempt("completed", 1)], completed: false, reported: "commit-outcome-unknown", classify,
-  }), "cancelled");
 });
