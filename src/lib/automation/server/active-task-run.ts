@@ -78,7 +78,7 @@ export type ActiveAutomationTaskRun = Readonly<{
   /** Durably append one Commit attempt phase and keep it for the run's outcome (ADR 0056). */
   recordCommitAttempt(report: CommitAttemptReport): Promise<void>;
   requestStop(reason: TaskRunStop): Promise<void>;
-  /** The outcome the run would end with if it finished with this report now. */
+  /** The outcome this report and the run's Commit attempts give, before any stop is applied. */
   assess(report: TaskRunReport): TaskRunOutcome;
   /** Persist the terminal outcome. Later calls return the first result. */
   finish(report: TaskRunReport): Promise<AutomationTaskRun>;
@@ -281,7 +281,7 @@ export function openActiveTaskRun(input: Readonly<{
       if (reason === "shutdown") return;
       if (!(await transition("cancelling")) && !finishing) publish();
     },
-    assess: (report) => decide(attempts, report, stop),
+    assess: (report) => decide(attempts, report, null),
     finish(report) {
       finishing ??= serialized(async () => {
         if (forceQuitTimer) clearTimeout(forceQuitTimer);

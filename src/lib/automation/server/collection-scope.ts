@@ -32,14 +32,6 @@ export function collectionScopeFingerprint(
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
 }
 
-export class CollectionScopeChangedError extends Error {
-  readonly name = "CollectionScopeChangedError";
-
-  constructor() {
-    super("Collection scope changed after this run started.");
-  }
-}
-
 type RunScope = {
   readonly task: Pick<AutomationTask, "credentialGroupId">;
   readonly launchFingerprint: string;
@@ -70,15 +62,16 @@ export function registerCollectionScope(
   };
 }
 
-export function assertCollectionScopeCurrent(
+/** False once the run's Collection scope version changed; it stays false for the rest of the run. */
+export function collectionScopeCurrent(
   taskRunId: string,
   currentEnvironment: () => ScopeEnvironment = automationConfigEnv,
-): void {
+): boolean {
   const scope = runScopes.get(taskRunId);
-  if (!scope) return;
+  if (!scope) return true;
   if (!scope.refused
     && collectionScopeFingerprint(scope.task, currentEnvironment()) !== scope.launchFingerprint) {
     scope.refused = true;
   }
-  if (scope.refused) throw new CollectionScopeChangedError();
+  return !scope.refused;
 }

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { assertCollectionScopeCurrent } from "../src/lib/automation/server/collection-scope.ts";
+import { collectionScopeCurrent } from "../src/lib/automation/server/collection-scope.ts";
 import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
 import type { PGliteFinancialPort } from "./pglite-financial-registry.ts";
 import {
@@ -55,7 +55,7 @@ export function createPGliteOperationalRuntime(
       operational: worker.operationalProvider,
       financial: worker.financial,
     },
-    assertCommitAdmissible: ({ taskRunId }) => assertCollectionScopeCurrent(taskRunId),
+    isCommitAdmissible: ({ taskRunId }) => collectionScopeCurrent(taskRunId),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
     ...worker.operationalProvider,

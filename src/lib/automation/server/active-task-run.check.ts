@@ -241,12 +241,14 @@ for (const scenario of scenarios) {
     for (const attempt of scenario.attempts ?? []) await run.recordCommitAttempt(attempt);
     for (const stop of scenario.stops ?? []) await run.requestStop(stop);
     const expected = { forced: false, ...scenario.expected };
-    const assessed = run.assess(scenario.report);
-    assert.deepEqual(
-      { status: assessed.status, errorCode: assessed.errorCode, forced: assessed.forced },
-      expected,
-      "assess answers what finish persists",
-    );
+    if (!scenario.stops?.length) {
+      const assessed = run.assess(scenario.report);
+      assert.deepEqual(
+        { status: assessed.status, errorCode: assessed.errorCode, forced: assessed.forced },
+        expected,
+        "without a stop, assess answers what finish persists",
+      );
+    }
     const finished = await run.finish(scenario.report);
     assert.deepEqual(
       { status: finished.status, errorCode: finished.appWorkflowOutcome?.errorCode ?? null, forced: finished.terminationMode === "forced" },
@@ -255,6 +257,16 @@ for (const scenario of scenarios) {
     assert.equal((await persistence.taskRunById(taskRunId))?.status, expected.status);
   });
 }
+
+test("assess leaves the stop to the caller", async () => {
+  const { run } = await open();
+  await run.recordCommitAttempt(started("a"));
+  await run.recordCommitAttempt(settled("a", "completed", 1));
+  await run.requestStop("cancelled");
+  assert.equal(run.assess(fail("captcha-provider-rejected")).errorCode, "captcha-provider-rejected");
+  assert.equal(run.assess(ok(complete)).status, "completed");
+  assert.equal((await run.finish(ok(complete))).status, "cancelled");
+});
 
 test("the outcome keeps the reported summary", async () => {
   const { run } = await open();
