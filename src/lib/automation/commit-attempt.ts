@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import {
-  pgliteWorkflowRunRefused,
-  type PGliteWorkflowRunItem,
-  type PGliteWorkflowRunResult,
+import type {
+  PGliteWorkflowRunItem,
+  PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 
@@ -101,6 +100,11 @@ export function commitAttemptsMayHaveCommitted(attempts: readonly CommitAttempt[
   return attempts.some((attempt) => attempt.outcome === null || attempt.committedCount > 0);
 }
 
+/** Whether the host refused the request's writes before admission (ADR 0058). */
+export function commitRefused(result: PGliteWorkflowRunResult<unknown>): boolean {
+  return result.items.some((item) => item.status === "failed" && item.failureKind === "refused");
+}
+
 /** The request threw or returned a result whose receipts cannot be trusted. */
 export class CommitOutcomeUnknownError extends Error {
   readonly errorCode = "commit-outcome-unknown";
@@ -156,7 +160,7 @@ function knownOutcome(
   if (result.items.some((item) => item.status === "failed" && item.failureKind === "fatal")) return null;
   if (result.diagnostics.some((diagnostic) => diagnostic.stage === "run")) return null;
   // A refused run stops at its first refused item; the items after it were never sent.
-  if (pgliteWorkflowRunRefused(result)) return "refused";
+  if (commitRefused(result)) return "refused";
   if (result.status !== "cancelled" && result.items.length !== items.length) return null;
   if (result.status === "completed") return "completed";
   return result.status === "cancelled" ? "cancelled" : "failed";
