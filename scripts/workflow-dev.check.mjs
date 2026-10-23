@@ -74,7 +74,7 @@ test("workflow development CLI requires an explicit opt-in before opening a remo
   assert.notEqual(inspect.status, 0);
   assert.match(inspect.stderr, /live-source-confirmation-required/u);
 
-  const run = invoke("run", "src/lib/automation/linebank-workflow.ts", "linebankStatementsWorkflow", "--input-env", "WORKFLOW_DEV_INPUT_JSON");
+  const run = invoke("run", "src/lib/automation/example-workflow.ts", "exampleWorkflow", "--input-env", "WORKFLOW_DEV_INPUT_JSON");
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /live-source-confirmation-required/u);
 });
