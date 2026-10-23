@@ -675,7 +675,11 @@ export function createPGliteFinancialRegistry(
   });
 }
 
-export type PGliteCanonicalCommitAssertion = (context: WorkflowFailureCorrelation) => void;
+/**
+ * False refuses a workflow's canonical write before it reaches the database
+ * (ADR 0058). A throw is an ordinary failure, not a refusal.
+ */
+export type PGliteCanonicalCommitAdmission = (context: WorkflowFailureCorrelation) => boolean;
 
 /**
  * Pairing, its page actions, and the purchase list they change answer a click;
@@ -759,7 +763,7 @@ export function createPGliteFinancialLocalPort(registry: PGliteFinancialRegistry
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
   financial: PGliteFinancialPort,
-  assertCommitAdmissible?: PGliteCanonicalCommitAssertion,
+  isCommitAdmissible?: PGliteCanonicalCommitAdmission,
   scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
 ): PGliteFinancialRpcServer {
   let closed = false;
@@ -804,8 +808,9 @@ export function createPGliteFinancialRpcServer(
       outcome = scheduler.schedule(INTERACTIVE_OPERATIONS.has(operation) ? "interactive" : "background", async () => {
         if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (assertCommitAdmissible && value.diagnosticContext && contract.canonicalCommit) {
-          assertCommitAdmissible(value.diagnosticContext);
+        if (isCommitAdmissible && value.diagnosticContext && contract.canonicalCommit
+          && !isCommitAdmissible(value.diagnosticContext)) {
+          throw new PGliteFinancialError("operation-failed", "refused");
         }
         return financial.request(operation, read.args as never, { signal: controller.signal });
       });
@@ -824,11 +829,12 @@ export function createPGliteFinancialRpcServer(
           ? captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())
           : undefined;
         if (!controller.signal.aborted && value.diagnosticContext) {
+          const refused = error instanceof PGliteFinancialError && error.category === "refused";
           await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
             workflowId: value.diagnosticContext.workflowId,
             taskRunId: value.diagnosticContext.taskRunId,
             source: "financial-rpc",
-            errorCode: "workflow-failed",
+            errorCode: refused ? "collection-scope-changed" : "workflow-failed",
             stage: operation === "financial.source.admit" ? "validation" : "commit",
             operation,
             safeError: diagnosticError,

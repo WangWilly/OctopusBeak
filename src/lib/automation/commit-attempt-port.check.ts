@@ -29,7 +29,7 @@ function committed(item: PGliteWorkflowRunItem) {
   };
 }
 
-function failed(item: PGliteWorkflowRunItem, failureKind: "item" | "fatal") {
+function failed(item: PGliteWorkflowRunItem, failureKind: "item" | "fatal" | "refused") {
   return {
     itemKey: item.itemKey,
     provider: item.provider,
@@ -71,6 +71,18 @@ test("a completed result settles the attempt as completed", async () => {
     "canonical-commit-started:0/2:deposit",
     "canonical-commit-completed:2/2:deposit",
   ]);
+});
+
+test("a write refused before admission settles as refused, keeping the items committed before it", async () => {
+  const { port, reports } = harness(async () => result("failed", [committed(items[0]!), failed(items[1]!, "refused")]));
+  assert.equal((await port.execute(items, { product: "deposit" })).status, "failed");
+  assert.deepEqual(reports.at(-1), { phase: "settled", attemptId: "attempt-1", outcome: "refused", committedCount: 1 });
+});
+
+test("a refusal settles even though the items after it were never sent", async () => {
+  const { port, reports } = harness(async () => result("failed", [failed(items[0]!, "refused")]));
+  await port.execute(items, { product: "deposit" });
+  assert.deepEqual(reports.at(-1), { phase: "settled", attemptId: "attempt-1", outcome: "refused", committedCount: 0 });
 });
 
 test("a returned item failure is a known failed outcome", async () => {

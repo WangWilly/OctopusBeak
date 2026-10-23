@@ -53,10 +53,10 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
       },
       async execute() {
         executions += 1;
-        return { errorCode: null, summary: null };
+        return { summary: null, failure: null };
       },
     });
-    assert.deepEqual(report, { errorCode: null, summary: null });
+    assert.deepEqual(report, { summary: null, failure: null });
     assert.equal(executions, 1);
     assert.equal(verificationRoutes, 0);
     assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
@@ -77,7 +77,8 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
       initialExecutionOptions: {},
       async execute() {
         executions += 1;
-        return { errorCode: "commit-outcome-unknown", summary: null };
+        await run.recordCommitAttempt({ phase: "started", attemptId: "sinopac-attempt", product: null, total: 1 });
+        return { summary: null, failure: { code: "workflow-failed", proven: false } };
       },
     });
     assert.equal(executions, 1);

@@ -12,10 +12,9 @@ import {
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,
-  recoverInterruptedAutomationRuns,
 } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { finalizePersistedActiveRuns } from "./task-run-finalization.ts";
+import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
@@ -152,7 +151,7 @@ try {
   const active = await openTaskRunForCheck(provider.automation, run.taskRunId);
   await active.requestStop("cancelled");
   assert.equal((await provider.automation.taskRunById(run.taskRunId))?.status, "cancelling");
-  const cancelled = await active.finish({ errorCode: null, summary: null });
+  const cancelled = await active.finish({ summary: null, failure: null });
   assert.equal(cancelled.status, "cancelled");
   assert.equal(cancelled.appWorkflowOutcome?.errorCode, "cancelled");
 
@@ -164,7 +163,7 @@ try {
     maxAttempts: 1,
     startedAt: "2026-09-21T00:00:00.000Z",
   });
-  await recoverInterruptedAutomationRuns(provider);
+  await finalizeOrphanedRuns(provider);
   assert.equal((await provider.automation.taskRunById(abandoned.taskRunId))?.status, "interrupted");
 
   const closing = await provider.automation.createTaskRun({
@@ -192,7 +191,7 @@ try {
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.events.length, 2);
   assert.equal(await provider.automation.pruneRunEvents("2026-09-24T00:00:00.000Z"), 1);
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.events[0]?.code, "source-complete");
-  await finalizePersistedActiveRuns(provider, "App closed");
+  await finalizeOrphanedRuns(provider);
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeWorkerStarts = 0;
@@ -225,7 +224,7 @@ try {
   // Exercise the App runner boundary with a deterministic execution seam.
   const deterministicExecution: typeof runAutomationTaskExecution = async (_task, activeRun) => {
     await activeRun.transition("running");
-    return { errorCode: null, summary: null };
+    return { summary: null, failure: null };
   };
   const executionResult = await runner.run("exchange-rates", provider, {
     runExecution: deterministicExecution,

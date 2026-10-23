@@ -454,7 +454,7 @@ try {
   });
   await assert.rejects(
     applyPgliteOperationalBaseline(legacyStore),
-    /PGlite operational baseline reset required: found version 1, expected 4/u,
+    /PGlite operational baseline reset required: found version 1, expected 5/u,
   );
   const oldRunCount = await legacyStore.query<{ count: number | string }>(
     "SELECT COUNT(*) AS count FROM automation_task_runs WHERE task_run_id = 'legacy-run'",
@@ -516,7 +516,7 @@ try {
   const upgradedMetadata = await baselineV2Store.query<{ baseline_version: number | string }>(
     "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
   );
-  assert.equal(Number(upgradedMetadata.rows[0]?.baseline_version), 4);
+  assert.equal(Number(upgradedMetadata.rows[0]?.baseline_version), 5);
   const attemptTable = await baselineV2Store.query<{ count: number | string }>(`
     SELECT COUNT(*) AS count FROM information_schema.tables
     WHERE table_schema = current_schema() AND table_name = 'automation_task_run_commit_attempts'
@@ -538,6 +538,15 @@ try {
   ]);
   assert.equal("exitCode" in history[1]!, false);
   assert.equal("signal" in history[1]!, false);
+  await upgraded.recordCommitAttempt("v2-running", {
+    phase: "started", attemptId: "attempt-refused", product: null, total: 1,
+  });
+  await upgraded.recordCommitAttempt("v2-running", {
+    phase: "settled", attemptId: "attempt-refused", outcome: "refused", committedCount: 0,
+  });
+  assert.deepEqual(await upgraded.commitAttempts("v2-running"), [
+    { attemptId: "attempt-refused", product: null, total: 1, outcome: "refused", committedCount: 0 },
+  ]);
 
   await assert.rejects(
     baselineV2Store.query(

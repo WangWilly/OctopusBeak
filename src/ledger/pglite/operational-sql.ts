@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS automation_task_run_commit_attempts (
   phase TEXT NOT NULL CHECK (phase IN ('started', 'settled')),
   product TEXT,
   total INTEGER CHECK (total >= 0),
-  outcome TEXT CHECK (outcome IN ('completed', 'failed', 'cancelled')),
+  outcome TEXT CHECK (outcome IN ('completed', 'failed', 'cancelled', 'refused')),
   committed_count INTEGER CHECK (committed_count >= 0),
   recorded_at TEXT NOT NULL,
   PRIMARY KEY (task_run_id, attempt_id, phase),
@@ -122,7 +122,7 @@ EXECUTE FUNCTION pglite_guard_terminal_automation_task_run();
 INSERT INTO pglite_operational_baseline_metadata(
   singleton_id, baseline_version, table_count, index_count, trigger_count
 )
-VALUES (1, 4, 4, 5, 1)
+VALUES (1, 5, 4, 5, 1)
 ON CONFLICT (singleton_id) DO NOTHING;
 `;
 
@@ -149,4 +149,18 @@ ${COMMIT_ATTEMPTS_TABLE_SQL}
 UPDATE pglite_operational_baseline_metadata
 SET baseline_version = 4, table_count = 4
 WHERE singleton_id = 1 AND baseline_version = 3;
+`;
+
+/**
+ * Forward step for an existing baseline-4 database: a Commit attempt refused
+ * before admission settles as `refused` (ADR 0058).
+ */
+export const PGLITE_OPERATIONAL_BASELINE_V4_TO_V5_SQL: string = String.raw`
+ALTER TABLE automation_task_run_commit_attempts
+  DROP CONSTRAINT automation_task_run_commit_attempts_outcome_check,
+  ADD CONSTRAINT automation_task_run_commit_attempts_outcome_check
+    CHECK (outcome IN ('completed', 'failed', 'cancelled', 'refused'));
+UPDATE pglite_operational_baseline_metadata
+SET baseline_version = 5
+WHERE singleton_id = 1 AND baseline_version = 4;
 `;

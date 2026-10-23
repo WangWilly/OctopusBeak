@@ -8,10 +8,8 @@ import {
   CaptchaRetryCampaignTransitionError,
   type CaptchaRetryCampaign,
 } from "./captcha-retry-campaign.ts";
-import { decideAutomationTaskRunOutcome } from "./task-run-finalization.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
   appProviderPostSubmitProbe,
@@ -39,7 +37,7 @@ export type CaptchaRetryCoordinatorDependencies = {
   run: ActiveAutomationTaskRun;
   launchVerificationSettings: AutomationSettingsFile;
   initialExecutionOptions: AutomationTaskExecutionOptions;
-  execute: (options: AutomationTaskExecutionOptions) => Promise<TypedWorkflowOutcome>;
+  execute: (options: AutomationTaskExecutionOptions) => Promise<TaskRunReport>;
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
   /** Injection point so coordinator tests do not wait out real cooldowns. */
@@ -86,8 +84,8 @@ function markCaptchaCampaignCancelled(campaign: CaptchaRetryCampaign) {
   });
 }
 
-function failed(report: TypedWorkflowOutcome): TypedWorkflowOutcome {
-  return { errorCode: report.errorCode ?? "workflow-failed", summary: report.summary };
+function failed(report: TaskRunReport): TaskRunReport {
+  return { summary: report.summary, failure: report.failure ?? { code: "workflow-failed", proven: false } };
 }
 
 // Fubon refuses a login that follows the previous session within seconds.
@@ -125,7 +123,7 @@ export function waitForCaptchaRetryCooldown(
  */
 export async function runCaptchaRetryCampaign(
   dependencies: CaptchaRetryCoordinatorDependencies,
-): Promise<TypedWorkflowOutcome> {
+): Promise<TaskRunReport> {
   const {
     taskId,
     provider,
@@ -156,7 +154,7 @@ export async function runCaptchaRetryCampaign(
   const executeAppCaptchaAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
   ): Promise<{
-    report: TypedWorkflowOutcome;
+    report: TaskRunReport;
     routing?: VerificationRoutingOutcome;
   }> => {
     const appExecutionOptions = {
@@ -165,8 +163,8 @@ export async function runCaptchaRetryCampaign(
       ...(routesYuantaTradeCaptcha ? { verificationRouteOwnedByCampaign: true } : {}),
     };
     let routing: VerificationRoutingOutcome | undefined;
-    let settleExecution!: (report: TypedWorkflowOutcome) => void;
-    const executionSettled = new Promise<TypedWorkflowOutcome>((resolve) => {
+    let settleExecution!: (report: TaskRunReport) => void;
+    const executionSettled = new Promise<TaskRunReport>((resolve) => {
       settleExecution = resolve;
     });
     let routePromise: Promise<void> | null = null;
@@ -215,9 +213,8 @@ export async function runCaptchaRetryCampaign(
                     await resume();
                     // Join the worker and browser cleanup before starting another round.
                     // Cleanup normally aborts the assistance request signal.
-                    const report = await executionSettled;
-                    if (report.errorCode === "captcha-provider-rejected") return "provider-rejected";
-                    const { status } = decideAutomationTaskRunOutcome(report, null);
+                    const { status, errorCode } = run.assess(await executionSettled);
+                    if (errorCode === "captcha-provider-rejected") return "provider-rejected";
                     return status === "completed" || status === "partial"
                       ? "none" : "unrecognized-dialog";
                   }
@@ -274,7 +271,7 @@ export async function runCaptchaRetryCampaign(
   const executeAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
   ): Promise<{
-    report: TypedWorkflowOutcome;
+    report: TaskRunReport;
     routing?: VerificationRoutingOutcome;
   }> => {
     if (routesCaptcha) {
@@ -305,9 +302,10 @@ export async function runCaptchaRetryCampaign(
 
     // Cancellation or CAPTCHA routing must not replace an uncertain financial
     // commit with a cancelled outcome or admit another execution of the run.
-    if (report.errorCode === "commit-outcome-unknown") return report;
+    const assessed = run.assess(report);
+    if (assessed.errorCode === "commit-outcome-unknown") return report;
     if (routing?.kind === "failed") return failed(report);
-    if (run.signal.aborted || report.errorCode === "cancelled") {
+    if (run.signal.aborted || assessed.status === "cancelled") {
       campaign = markCaptchaCampaignCancelled(campaign);
       return report;
     }
@@ -331,7 +329,7 @@ export async function runCaptchaRetryCampaign(
           code: "verification-solver-exhausted",
           occurredAt: new Date().toISOString(),
         });
-        return { errorCode: "verification-failed", summary: report.summary };
+        return { summary: report.summary, failure: { code: "verification-failed", proven: true } };
       }
       const nextRound = campaign.nextRound;
       if (nextRound === undefined) return failed(report);
@@ -360,8 +358,7 @@ export async function runCaptchaRetryCampaign(
     }
 
     if (campaign.status === "awaiting-outcome") {
-      const { status } = decideAutomationTaskRunOutcome(report, null);
-      if (status === "completed" || status === "partial") {
+      if (assessed.status === "completed" || assessed.status === "partial") {
         campaign = transitionCaptchaRetryCampaign(campaign, {
           kind: "round-outcome",
           executionId: campaign.activeExecutionId,
