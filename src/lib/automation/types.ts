@@ -188,6 +188,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   /** Structured progress for the current run, kept renderer-local for labels. */
   workflowProgress?: AutomationTaskProgress | null;
   status: AutomationTaskStatus;
+  /** The latest run's own status, before a source that needs setup takes over the row. */
+  latestRunStatus: AutomationTaskStatus;
   attempt: number;
   maxAttempts: number;
   latestStartedAt: string | null;

@@ -115,6 +115,7 @@ export function applyAutomationRuntime(
     ...row,
     runId: runtime.runId,
     status,
+    latestRunStatus: runtime.status,
     isActive,
     attempt: runtime.attempt,
     maxAttempts: runtime.maxAttempts,
@@ -136,6 +137,7 @@ export function applyOptimisticAutomationAction(
       ...row,
       runId: null,
       status: "preparing",
+      latestRunStatus: "preparing",
       isActive: true,
       primaryAction: "Cancel",
       canRun: true,
@@ -153,6 +155,7 @@ export function applyOptimisticAutomationAction(
   return {
     ...row,
     status: "cancelling",
+    latestRunStatus: "cancelling",
     isActive: true,
     primaryAction: "Cancel",
     canRun: true,
