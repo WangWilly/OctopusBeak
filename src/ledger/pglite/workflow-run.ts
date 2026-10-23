@@ -262,8 +262,3 @@ export async function executePGliteWorkflowRun(
     failedCount: results.length - committedCount,
   });
 }
-
-/** Whether the host refused this run's writes before admission (ADR 0058). */
-export function pgliteWorkflowRunRefused(result: PGliteWorkflowRunResult<unknown>): boolean {
-  return result.items.some((item) => item.status === "failed" && item.failureKind === "refused");
-}
