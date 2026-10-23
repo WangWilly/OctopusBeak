@@ -34,8 +34,10 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     isActive: false,
     ranToday: false,
     credentialsReady: true,
+    setupRequired: false,
     primaryAction: "Run",
     canRun: true,
+    latestRunStatus: overrides.status ?? "completed",
     ...overrides,
   };
 }
@@ -109,4 +111,16 @@ test("an optimistic run clears the previous run, and an optimistic cancel keeps 
   const cancelling = applyOptimisticAutomationAction(row({ status: "running", isActive: true }), "cancel");
   assert.equal(cancelling.status, "cancelling");
   assert.equal(cancelling.runId, "run-1");
+});
+
+test("a source that needs setup shows it over a finished run, but not over a run in progress", () => {
+  const source = row({ setupRequired: true, status: "needs_setup", primaryAction: "Configure" });
+  for (const status of ["completed", "partial", "failed", "cancelled", "interrupted"] as const) {
+    const finished = applyAutomationRuntime(source, runtime({ status }));
+    assert.equal(finished.status, "needs_setup", status);
+    assert.equal(finished.primaryAction, "Configure", status);
+  }
+  const running = applyAutomationRuntime(source, runtime({ status: "running" }));
+  assert.equal(running.status, "running");
+  assert.equal(running.primaryAction, "Cancel");
 });

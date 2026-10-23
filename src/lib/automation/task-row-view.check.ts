@@ -37,8 +37,10 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     isActive: true,
     ranToday: false,
     credentialsReady: true,
+    setupRequired: false,
     primaryAction: "Cancel",
     canRun: true,
+    latestRunStatus: overrides.status ?? "running",
     ...overrides,
   };
 }
@@ -112,6 +114,19 @@ test("each finished status has its own tone on the run line, and a source that n
     presentTaskRow(row({ status: "needs_setup", isActive: false }), context("en")).syncStatus,
     { tone: "warn", label: translations.en.automation.needsSetup, time: "" },
   );
+});
+
+test("the last sync line keeps a finished run's result after its source starts needing setup", () => {
+  const view = presentTaskRow(row({
+    status: "needs_setup",
+    latestRunStatus: "failed",
+    isActive: false,
+    setupRequired: true,
+    primaryAction: "Configure",
+  }), context("en"));
+  assert.equal(view.runStatus.tone, "bad");
+  assert.equal(view.runStatus.label, translations.en.automation.credentialSyncStatuses.failed);
+  assert.equal(view.syncStatus.label, translations.en.automation.needsSetup);
 });
 
 test("statement results come from the first product reported for each type", () => {

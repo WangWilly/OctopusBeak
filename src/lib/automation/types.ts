@@ -188,6 +188,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   /** Structured progress for the current run, kept renderer-local for labels. */
   workflowProgress?: AutomationTaskProgress | null;
   status: AutomationTaskStatus;
+  /** The latest run's own status, before a source that needs setup takes over the row. */
+  latestRunStatus: AutomationTaskStatus;
   attempt: number;
   maxAttempts: number;
   latestStartedAt: string | null;
@@ -202,6 +204,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   ranToday: boolean;
   /** Every credential the task needs has been read and is present. */
   credentialsReady: boolean;
+  /** The source needs Statement Selection setup before it can run. */
+  setupRequired: boolean;
   primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };
