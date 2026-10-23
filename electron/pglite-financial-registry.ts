@@ -1068,7 +1068,7 @@ export function createPGliteFinancialLiveViews(
             });
           });
         }
-        const showsPreview = view === "financial.overview.current" || view === "financial.assets.current";
+        const showsPreview = view === "financial.overview.current" || view === "financial.assets.current" || view === "financial.liabilities.current";
         if (showsPreview && registry.onPreviewVisibilityChanged)
           stopPreviewVisibilityListener = registry.onPreviewVisibilityChanged(trigger);
         // Financial pages depend on every canonical commit because source
