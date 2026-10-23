@@ -3,7 +3,7 @@ import type {
   AutomationRuntimeSnapshot,
 } from "../desktop/api.ts";
 import { mergeAutomationRuntime } from "../automation/runtime-sync.ts";
-import { isActiveAutomationRuntimeStatus } from "../automation/runtime-status.ts";
+import { isActiveAutomationRuntimeStatus } from "../automation/task-row.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
 import type { OnboardingControllerPort } from "./controller.ts";
 import type { OnboardingOverviewReadiness, OnboardingRun } from "./state.ts";
