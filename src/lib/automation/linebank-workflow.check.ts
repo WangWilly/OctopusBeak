@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
 import type { HumanAssistanceContractInput } from "./human-assistance.ts";
-import { linebankStatementsWorkflow } from "./linebank-workflow.ts";
+import { workflowDefinitionForTask } from "./server/app-workflow-registry.ts";
 import { strictSourceText } from "./source-text.ts";
 import type {
   WorkflowContext,
@@ -14,9 +14,12 @@ import type {
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
+  runLineBankProviderWorkflow,
   type LineBankAccount,
   type LineBankTransactionsResponse,
 } from "../../workflows/linebank-statements.ts";
+
+const linebankStatementsWorkflow = workflowDefinitionForTask("linebank-statements")!;
 
 const account: LineBankAccount = {
   acctNbr: "123456789012",
@@ -252,7 +255,7 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
   try {
     process.chdir(directory);
     const harness = createContext();
-    const result = await linebankStatementsWorkflow.run(harness.context, input);
+    const result = await runLineBankProviderWorkflow(harness.context, input);
 
     assert.equal(result.status, "financial-admitted");
     assert.equal(result.accountCount, 1);
@@ -275,12 +278,12 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
 
 test("LINE Bank rejects malformed and incomplete sources before any commit", async () => {
   const malformed = createContext({ page: createPage({ malformedTransactions: true }) });
-  await assert.rejects(linebankStatementsWorkflow.run(malformed.context, input));
+  await assert.rejects(runLineBankProviderWorkflow(malformed.context, input));
   assert.equal(malformed.commits.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ incompleteTransactions: true }) });
-  await assert.rejects(linebankStatementsWorkflow.run(incomplete.context, input));
+  await assert.rejects(runLineBankProviderWorkflow(incomplete.context, input));
   assert.equal(incomplete.commits.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
 });
@@ -291,7 +294,7 @@ test("LINE Bank waits for delayed automatic sign-in without human fallback and h
     page,
     onAssistance: () => page.setSignedIn?.(true),
   });
-  const result = await linebankStatementsWorkflow.run(automatic.context, input);
+  const result = await runLineBankProviderWorkflow(automatic.context, input);
   assert.equal(result.status, "financial-admitted");
   assert.deepEqual(automatic.assistance, []);
   assert.ok(!automatic.events.some((event) => event.code === "human-assistance-requested"));
@@ -328,7 +331,7 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
     page: createPage({ signedIn: false, onPoll: () => { elapsed += 30_000; } }),
   });
   await assert.rejects(
-    linebankStatementsWorkflow.run(pending.context, input),
+    runLineBankProviderWorkflow(pending.context, input),
     /Timed out waiting for LINE Bank signed-in state/u,
   );
   assert.equal(elapsed, 120_000);

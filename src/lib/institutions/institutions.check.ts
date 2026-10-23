@@ -11,7 +11,6 @@ import {
   institutionForBrokerBranch,
   institutionForNamespace,
   sourceLogo,
-  sourceLogoForTask,
   institutionLogoFile,
   institutionLogo,
   institutionNames,
@@ -21,7 +20,7 @@ import {
 } from "./institutions.ts";
 import { PREVIEW_SOURCES } from "../preview-sources/registry.ts";
 import { VERIFIED_SOURCE_COVERAGE } from "../preview-sources/visibility.ts";
-import { PREVIEW_SOURCE_INSTITUTIONS, previewTaskId } from "../preview-sources/source-id.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "../preview-sources/source-id.ts";
 
 const logoExists = (key: Parameters<typeof institutionLogoFile>[0]) =>
   existsSync(new URL(`../../../site/assets/logos/${institutionLogoFile(key)}`, import.meta.url));
@@ -42,17 +41,15 @@ test("collection namespaces and automation tasks resolve to their institution", 
   assert.equal(institutionForNamespace("fubon"), "fubon");
   assert.equal(institutionForNamespace("unknown-bank"), null);
   assert.equal(institutionForNamespace(undefined), null);
-  assert.equal(sourceLogoForTask("cathay-all-statements"), "cathay");
-  assert.equal(sourceLogoForTask("sync-maicoin"), "maicoin");
-  assert.equal(sourceLogoForTask("einvoice-personal-invoices"), "einvoice");
-  assert.equal(sourceLogoForTask("exchange-rates"), null);
+  assert.equal(sourceLogo("cathay"), "cathay");
+  assert.equal(sourceLogo("maicoin"), "maicoin");
+  assert.equal(sourceLogo("einvoice"), "einvoice");
 });
 
 test("TDCC is an Intermediary source with its own logo, never an Institution", () => {
   assert.equal(institutionForNamespace("tdcc"), null);
   assert.equal(sourceLogo("tdcc"), "tdcc");
   assert.equal(sourceLogo("yuanta-trade"), "yuanta-securities");
-  assert.equal(sourceLogoForTask("sync-tdcc"), "tdcc");
   assert.ok(existsSync(new URL(`../../../site/assets/logos/${institutionLogoFile("tdcc")}`, import.meta.url)), "the TDCC logo exists");
 });
 
@@ -173,11 +170,10 @@ test("every Preview source's task, sign-in group, and accounts show its Institut
     const logo = institutionLogo(source.institution);
     assert.equal(logo, source.institution, `${source.id} accounts show the ${source.institution} logo`);
     assert.ok(logoExists(logo), `${source.institution} logo must exist in site/assets/logos`);
-    assert.equal(sourceLogoForTask(previewTaskId(source)), logo, `${previewTaskId(source)} shows the ${logo} logo`);
     assert.equal(sourceLogo(source.id), logo, `the ${source.id} sign-in group shows the ${logo} logo`);
   }
-  assert.equal(sourceLogoForTask("preview-mega-deposit"), "bank-017");
-  assert.equal(sourceLogoForTask("preview-unknown"), null);
+  assert.equal(sourceLogo("mega-deposit"), "bank-017");
+  assert.equal(sourceLogo("unknown"), null);
 });
 
 test("a Preview source never becomes a direct source, and shares an Institution only for products no verified source covers", () => {

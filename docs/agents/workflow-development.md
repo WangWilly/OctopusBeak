@@ -28,7 +28,7 @@ This command checks JSON syntax and definition shape; it does not validate provi
 
 ## Add a workflow
 
-Create a provider function and export its typed definition from `src/lib/automation/<workflow>-workflow.ts`:
+While you build a provider, export a typed definition from a module under `src/lib/automation`, as `src/lib/automation/example-workflow.ts` does:
 
 ```ts
 import type { WorkflowDefinition } from "./workflow-executor.ts";
@@ -89,7 +89,7 @@ The development browser has no persistent user-data directory. The CLI creates n
 
 ## Activate for production
 
-For a new provider, first add its definition and credential/start-URL mapping to `src/lib/automation/server/app-workflow-registry.ts`, then add the App task with the matching `workflowId` in `src/lib/automation/server/tasks.ts`. All existing catalog tasks already use the App-owned execution path. Focused checks should cover the real injected Canonical Financial Commit contract, malformed-source rejection, cancellation, solver-routed verification where needed, and the absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
+For a new provider, add a Verified source definition in `src/lib/automation/server/sources/<id>.ts` and list it in `sources/index.ts` ([ADR 0057](../adr/0057-verified-source-definition-owns-every-per-source-fact.md)). It declares the sign-in fields, products, start URL, capability flags, and a `load()` that imports the provider's `run` function. The credential group, App task, workflow registration, Overview expectation, preview coverage, and CAPTCHA routing are derived from it. All existing catalog tasks already use the App-owned execution path. Focused checks should cover the real injected Canonical Financial Commit contract, malformed-source rejection, cancellation, solver-routed verification where needed, and the absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
 
 ## Test evidence and live service acceptance
 

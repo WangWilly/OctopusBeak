@@ -3,7 +3,10 @@ import test from "node:test";
 import { translations } from "../i18n/i18n.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
+import { taskById } from "./server/tasks.ts";
 import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
+
+const namespacesOf = (taskId: string) => taskById(taskId)!.integrationNamespaces;
 
 function account(id: string, overrides: Partial<AccountRowDto>): AccountRowDto {
   return {
@@ -46,29 +49,28 @@ const overview: Pick<OverviewPageDto, "accounts" | "sourceGaps"> = {
 };
 
 test("a task lists its own accounts without a current value in the interface language", () => {
-  assert.deepEqual(unvaluedAccountLabels("sync-tdcc", overview, translations["zh-TW"]), ["富邦 · 投資帳戶 · 0462817"]);
-  assert.deepEqual(unvaluedAccountLabels("sync-tdcc", overview, translations.en), ["富邦 · Investment account · 0462817"]);
+  assert.deepEqual(unvaluedAccountLabels(namespacesOf("sync-tdcc"), overview, translations["zh-TW"]), ["富邦 · 投資帳戶 · 0462817"]);
+  assert.deepEqual(unvaluedAccountLabels(namespacesOf("sync-tdcc"), overview, translations.en), ["富邦 · Investment account · 0462817"]);
 });
 
 test("a task covers every namespace its workflow writes", () => {
-  assert.deepEqual(unvaluedAccountLabels("yuanta-all-statements", overview, translations["zh-TW"]), ["元大銀行 · 基金 · 1234"]);
+  assert.deepEqual(unvaluedAccountLabels(namespacesOf("yuanta-all-statements"), overview, translations["zh-TW"]), ["元大銀行 · 基金 · 1234"]);
 });
 
 test("a source that was not collected is not an account without a value", () => {
-  assert.deepEqual(unvaluedAccountLabels("fubon-all-statements", overview, translations["zh-TW"]), []);
+  assert.deepEqual(unvaluedAccountLabels(namespacesOf("fubon-all-statements"), overview, translations["zh-TW"]), []);
   assert.deepEqual(
-    unvaluedAccountLabels("sync-tdcc", { ...overview, sourceGaps: overview.sourceGaps.slice(2) }, translations["zh-TW"]),
+    unvaluedAccountLabels(namespacesOf("sync-tdcc"), { ...overview, sourceGaps: overview.sourceGaps.slice(2) }, translations["zh-TW"]),
     [],
   );
 });
 
 test("every canonical source task names the namespaces it writes", async () => {
   const { AUTOMATION_CREDENTIAL_GROUPS, AUTOMATION_TASKS } = await import("./server/tasks.ts");
-  const { taskIntegrationNamespaces } = await import("../institutions/institutions.ts");
   const previewGroups = new Set(AUTOMATION_CREDENTIAL_GROUPS.filter((group) => group.preview).map((group) => group.id));
   const missing = AUTOMATION_TASKS
     .filter((task) => task.credentialGroupId !== undefined && !previewGroups.has(task.credentialGroupId))
-    .filter((task) => taskIntegrationNamespaces(task.id).length === 0)
+    .filter((task) => task.integrationNamespaces.length === 0)
     .map((task) => task.id);
   assert.deepEqual(missing, []);
 });
