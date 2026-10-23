@@ -49,7 +49,6 @@ type RunScope = {
 const runScopes = new Map<string, RunScope>();
 
 export type CollectionScopeRegistration = Readonly<{
-  refused(): boolean;
   release(): void;
 }>;
 
@@ -65,7 +64,6 @@ export function registerCollectionScope(
   };
   runScopes.set(taskRunId, scope);
   return {
-    refused: () => scope.refused,
     release: () => {
       if (runScopes.get(taskRunId) === scope) runScopes.delete(taskRunId);
     },

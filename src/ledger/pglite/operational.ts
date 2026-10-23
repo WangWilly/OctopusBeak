@@ -48,13 +48,14 @@ import {
   PGLITE_OPERATIONAL_BASELINE_SQL,
   PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL,
   PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL,
+  PGLITE_OPERATIONAL_BASELINE_V4_TO_V5_SQL,
 } from "./operational-sql.ts";
 import {
   createPGliteMaicoinPersistence,
   type PGliteMaicoinPersistencePort,
 } from "./maicoin-operational.ts";
 
-export const PGLITE_OPERATIONAL_BASELINE_VERSION = 4;
+export const PGLITE_OPERATIONAL_BASELINE_VERSION = 5;
 
 const OPERATIONAL_TABLES = [
   "automation_task_runs",
@@ -407,10 +408,11 @@ export async function applyPgliteOperationalBaseline(
       "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
     );
     const version = numeric(metadata.rows[0]?.baseline_version ?? -1);
-    if (version === 2 || version === 3) {
+    if (version >= 2 && version <= 4) {
       await database.transaction(async (transaction) => {
-        if (version === 2) await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL);
-        await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL);
+        if (version <= 2) await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V2_TO_V3_SQL);
+        if (version <= 3) await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL);
+        await transaction.exec(PGLITE_OPERATIONAL_BASELINE_V4_TO_V5_SQL);
       });
       await assertPgliteOperationalBaseline(database);
       return;

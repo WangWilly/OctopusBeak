@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PGliteWorkflowClient, PGliteWorkflowCommand } from "./workflow-client.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "./workflow-run.ts";
+import { executePGliteWorkflowRun, pgliteWorkflowRunRefused, type PGliteWorkflowRunItem } from "./workflow-run.ts";
 
 function item(key: string, relationCommands?: PGliteWorkflowRunItem["relationCommands"]): PGliteWorkflowRunItem {
   return {
@@ -62,6 +62,24 @@ test("PGlite run treats unknown worker failure as fatal and stops later items", 
   assert.equal(calls, 1);
   assert.equal(result.items[0]?.status, "failed");
   assert.doesNotMatch(JSON.stringify(result), /SQL details/u);
+});
+
+test("PGlite run stops at a refused write and keeps the receipts before it", async () => {
+  let calls = 0;
+  const result = await executePGliteWorkflowRun({
+    client: client(async () => {
+      calls += 1;
+      if (calls === 2) throw Object.assign(new Error("scope changed"), { code: "operation-failed", category: "refused" });
+      return { captureId: "capture-ok", commitSequence: 3 };
+    }),
+    items: [item("first"), item("second"), item("third")],
+  });
+  assert.equal(calls, 2, "the item after the refusal is never sent");
+  assert.equal(result.status, "partially-completed");
+  assert.equal(result.committedCount, 1);
+  assert.equal(result.items[1]?.status === "failed" && result.items[1].failureKind, "refused");
+  assert.equal(pgliteWorkflowRunRefused(result), true);
+  assert.equal(result.diagnostics.some((diagnostic) => diagnostic.stage === "run"), false);
 });
 
 test("PGlite run keeps a durable result when cancellation wins after the commit", async () => {

@@ -1,7 +1,8 @@
 import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
-import type {
-  PGliteWorkflowRunItem,
-  PGliteWorkflowRunResult,
+import {
+  pgliteWorkflowRunRefused,
+  type PGliteWorkflowRunItem,
+  type PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "./source-access.ts";
@@ -468,11 +469,13 @@ export async function collectSelectedProducts<
 
       const receiptsForProduct = commitResult.committedCount;
       committedCount += receiptsForProduct;
-      if (commitResult.status === "cancelled") {
+      if (commitResult.status === "cancelled" || pgliteWorkflowRunRefused(commitResult)) {
+        // A refused collection scope refuses every later product as well.
+        const errorCode = commitResult.status === "cancelled" ? "cancelled" : "collection-scope-changed";
         completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
-          errorCode: "cancelled",
+          errorCode,
         }));
-        throw new ProductCollectionInterruptedError("cancelled", summarize(
+        throw new ProductCollectionInterruptedError(errorCode, summarize(
           orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
         ));
       }
