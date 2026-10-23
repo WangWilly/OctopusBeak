@@ -201,6 +201,8 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   forceTerminateAvailable?: boolean;
   isActive: boolean;
   ranToday: boolean;
+  /** Every credential the task needs has been read and is present. */
+  credentialsReady: boolean;
   primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };

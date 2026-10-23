@@ -5,9 +5,9 @@ import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 import {
   isAutomationBlockStale,
   mergeAutomationRuntime,
-  mergeAutomationRuntimeTask,
   selectAutomationBlockModel,
 } from "./runtime-sync.ts";
+import { applyAutomationRuntime } from "./task-row.ts";
 
 function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
   return {
@@ -32,6 +32,7 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     forceTerminateAvailable: false,
     isActive: false,
     ranToday: false,
+    credentialsReady: true,
     primaryAction: "Run",
     canRun: true,
     ...overrides,
@@ -122,12 +123,12 @@ test("same-run progress never moves backwards while a new run starts at its own 
     progressPercent: 60,
     workflowProgress: currentProgress,
   });
-  const regressed = mergeAutomationRuntimeTask(source, {
+  const regressed = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     runId: "run-1",
     progress: { ...currentProgress, phaseCode: "workflow-authentication", percent: 25 },
   });
-  const restarted = mergeAutomationRuntimeTask(source, {
+  const restarted = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     runId: "run-2",
     progress: { ...currentProgress, phaseCode: "workflow-preparation", percent: 4 },
@@ -197,7 +198,7 @@ test("stale detection compares the captured session and revision", () => {
 
 test("terminal runtime fields do not mutate the source block", () => {
   const source = task();
-  const merged = mergeAutomationRuntimeTask(source, {
+  const merged = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     status: "completed",
     progress: { ...runtime().tasks[0]!.progress, percent: 100 },
@@ -214,12 +215,12 @@ test("terminal runtime status derives the current action instead of stale block 
     primaryAction: "Cancel",
     canRun: true,
   });
-  const completed = mergeAutomationRuntimeTask(source, {
+  const completed = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     status: "completed",
     progress: { ...runtime().tasks[0]!.progress, percent: 100 },
   });
-  const partial = mergeAutomationRuntimeTask(source, {
+  const partial = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     status: "partial",
     progress: { ...runtime().tasks[0]!.progress, percent: 67 },
@@ -237,13 +238,13 @@ test("terminal runtime status derives the current action instead of stale block 
 
 test("only a successful terminal status reaches one hundred percent", () => {
   const source = task({ runId: "run-1", progressPercent: 94 });
-  const completed = mergeAutomationRuntimeTask(source, {
+  const completed = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     runId: "run-1",
     status: "completed",
     progress: { ...runtime().tasks[0]!.progress, percent: 94 },
   });
-  const partial = mergeAutomationRuntimeTask(source, {
+  const partial = applyAutomationRuntime(source, {
     ...runtime().tasks[0]!,
     runId: "run-1",
     status: "partial",
@@ -267,7 +268,7 @@ test("runtime updates carry the durable typed outcome into the row", () => {
       summary: { status: "partial" as const, counts: { skippedProductCount: 1, itemCount: 2 } },
     },
   };
-  const merged = mergeAutomationRuntimeTask(source, partialRuntime);
+  const merged = applyAutomationRuntime(source, partialRuntime);
 
   assert.deepEqual(merged.appWorkflowOutcome, partialRuntime.appWorkflowOutcome);
 });
@@ -293,7 +294,7 @@ test("a newer terminal run replaces a stale terminal block row", () => {
       summary: { status: "completed" as const, counts: { itemCount: 3 } },
     },
   };
-  const merged = mergeAutomationRuntimeTask(source, runtimeTask);
+  const merged = applyAutomationRuntime(source, runtimeTask);
 
   assert.equal(merged.runId, "run-new");
   assert.equal(merged.status, "completed");
@@ -318,7 +319,7 @@ test("an accepted active snapshot replaces a stale active block row", () => {
     status: "running" as const,
     progress: { ...runtime().tasks[0]!.progress, percent: 42 },
   };
-  const merged = mergeAutomationRuntimeTask(source, runtimeTask);
+  const merged = applyAutomationRuntime(source, runtimeTask);
 
   assert.equal(merged.runId, "run-new");
   assert.equal(merged.status, "running");

@@ -29,7 +29,7 @@
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
-  import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
+  import { isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
   import type {
     AutomationActionKind,
     AutomationActionToken,
