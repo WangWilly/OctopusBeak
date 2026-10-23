@@ -14,7 +14,7 @@ ADR 0056 put the run's commit outcome on one interpreter on the host. In practic
 
 ## Decision
 
-**A refusal is a known outcome.** The PGlite host reports a refused write with the `refused` failure category. The workflow run stops at the refused item, because the refusal holds for the rest of the run. The commit port settles the attempt as `refused` with the receipts committed before it. Product collection stops later products and names the product `collection-scope-changed`. Operational baseline 5 admits `refused` as a settled outcome. The post-run rewrite is removed.
+**A refusal is a known outcome.** The PGlite host asks whether the run's Collection scope version is still current, and reports a write it refuses with the `refused` failure category. Only a changed scope is a refusal; an error while reading the settings stays an ordinary failure. The workflow run stops at the refused item, because the refusal holds for the rest of the run. The commit port settles the attempt as `refused` with the receipts committed before it. Product collection stops later products and names the product `collection-scope-changed`. Operational baseline 5 admits `refused` as a settled outcome. The post-run rewrite is removed.
 
 **The Active Automation Task Run decides the outcome.** The owner keeps every Commit attempt it records, across every CAPTCHA round of the run. A settlement counts even if storing it fails, because the commit already ran; a start counts only once it is stored, because the worker commits only after that. The owner's one decision applies, in order:
 
@@ -25,7 +25,7 @@ ADR 0056 put the run's commit outcome on one interpreter on the host. In practic
 5. A failed attempt.
 6. A failure classified from the run's events.
 
-Execution reports what it observed and whether the worker proved its failure code. It never reports commit outcome unknown; the report type excludes that code. The CAPTCHA coordinator asks the owner to assess a round's report instead of deciding. Startup and shutdown recovery apply the same decision to stored attempts with a shutdown stop.
+Execution reports what it observed and whether the worker proved its failure code. The owner's assessment of a report leaves stops to the caller, so a pending cancellation does not change a round's diagnostics or its post-submit probe. It never reports commit outcome unknown; the report type excludes that code. The CAPTCHA coordinator asks the owner to assess a round's report instead of deciding. Startup and shutdown recovery apply the same decision to stored attempts with a shutdown stop.
 
 ## Considered options
 

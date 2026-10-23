@@ -18,7 +18,7 @@ import {
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
-  assertCollectionScopeCurrent,
+  collectionScopeCurrent,
   collectionScopeFingerprint,
   registerCollectionScope,
 } from "./collection-scope.ts";
@@ -64,13 +64,13 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
 test("a refused run stays refused after the setting is reverted, and a released run is no longer gated", () => {
   let current: Record<string, string> = { ...launchSettings, ...launchCredentials };
   const scope = registerCollectionScope("run-sticky", fubon, current);
-  assert.doesNotThrow(() => assertCollectionScopeCurrent("run-sticky", () => current));
+  assert.equal(collectionScopeCurrent("run-sticky", () => current), true);
   current = { ...current, [key("STATEMENT_TYPES")]: "deposit" };
-  assert.throws(() => assertCollectionScopeCurrent("run-sticky", () => current), { name: "CollectionScopeChangedError" });
+  assert.equal(collectionScopeCurrent("run-sticky", () => current), false);
   current = { ...current, [key("STATEMENT_TYPES")]: launchSettings[key("STATEMENT_TYPES")] };
-  assert.throws(() => assertCollectionScopeCurrent("run-sticky", () => current), { name: "CollectionScopeChangedError" });
+  assert.equal(collectionScopeCurrent("run-sticky", () => current), false);
   scope.release();
-  assert.doesNotThrow(() => assertCollectionScopeCurrent("run-sticky", () => current));
+  assert.equal(collectionScopeCurrent("run-sticky", () => current), true);
 });
 
 type Listener = (value: unknown) => void;
@@ -94,6 +94,29 @@ function memoryPair() {
   right.peer = left;
   return [left, right] as const;
 }
+
+test("an admission check that throws fails the write without calling it refused", async () => {
+  const ports = memoryPair();
+  let reached = 0;
+  const server = createPGliteFinancialRpcServer(
+    ports[1],
+    createPGliteFinancialLocalPort({
+      "financial.deposit.commit": async () => { reached += 1; return { captureId: "capture", commitSequence: 1 }; },
+    } as unknown as PGliteFinancialRegistry),
+    () => { throw new SyntaxError("settings file is not JSON"); },
+  );
+  const client = createPGliteFinancialRpcClient(ports[0], undefined, { workflowId: "fubon-all-statements", taskRunId: "run-unreadable" });
+  try {
+    await assert.rejects(
+      client.request("financial.deposit.commit", [{ capture: {} } as never]),
+      (error: unknown) => (error as { category?: string }).category === "fatal",
+    );
+    assert.equal(reached, 0);
+  } finally {
+    client.close();
+    await server.close();
+  }
+});
 
 class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
@@ -129,7 +152,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     const server = createPGliteFinancialRpcServer(
       ports[1],
       createPGliteFinancialLocalPort(this.registry),
-      ({ taskRunId }) => assertCollectionScopeCurrent(taskRunId),
+      ({ taskRunId }) => collectionScopeCurrent(taskRunId),
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
       workflowId: start.workflowId,
