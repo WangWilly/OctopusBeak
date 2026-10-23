@@ -13,18 +13,10 @@ import {
   automationRowPercent,
   automationTaskRowActions,
   isActiveAutomationRuntimeStatus,
+  isWorkflowStage,
   parallelRunnableAutomationTaskIds,
 } from "../task-row.ts";
 
-const workflowStages = new Set<WorkflowStage>([
-  "preparation",
-  "authentication",
-  "collection",
-  "decoding",
-  "validation",
-  "commit",
-  "finalization",
-]);
 const MAX_WORKFLOW_EVENTS = 200;
 const SAFE_WORKFLOW_EVENT_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 
@@ -40,7 +32,7 @@ function pageWorkflowEvents(
     if (
       event.runId !== runId
       || typeof event.stage !== "string"
-      || !workflowStages.has(event.stage as WorkflowStage)
+      || !isWorkflowStage(event.stage)
       || typeof event.code !== "string"
       || !SAFE_WORKFLOW_EVENT_CODE.test(event.code)
       || typeof event.occurredAt !== "string"

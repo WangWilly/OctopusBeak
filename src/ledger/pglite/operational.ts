@@ -27,6 +27,7 @@ import {
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
+import { WORKFLOW_STAGES } from "../../lib/automation/task-row.ts";
 import {
   applyCommitAttemptReport,
   isCommitAttemptReport,
@@ -199,10 +200,7 @@ function recordTerminationMode(recordJson: string): "forced" | undefined {
 }
 
 const MAX_RUN_EVENTS = 200;
-const RUN_EVENT_STAGES = new Set([
-  "preparation", "authentication", "collection", "decoding",
-  "validation", "commit", "finalization",
-]);
+const RUN_EVENT_STAGES: ReadonlySet<string> = new Set(WORKFLOW_STAGES);
 
 function recordEvents(recordJson: string): readonly WorkflowRunEvent[] {
   try {

@@ -2,6 +2,7 @@ import { appendFile, chmod, mkdir } from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
+import { WORKFLOW_STAGES } from "../task-row.ts";
 import {
   WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS,
   type WorkflowProgressStatementType,
@@ -20,9 +21,7 @@ const POSTGRES_SQLSTATES = new Set([
   "23503", "23505", "23514", "XX000",
 ]);
 const HTTP_FAILURE_STATUSES = new Set([400, 401, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504]);
-const STAGES = new Set<WorkflowRunEvent["stage"]>([
-  "preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization",
-]);
+const STAGES = new Set<WorkflowRunEvent["stage"]>(WORKFLOW_STAGES);
 const FAILURE_CODES = new Set<string>([
   ...TYPED_WORKFLOW_ERROR_CODES,
   "worker-start-failed", "worker-crash", "unexpected-exit", "protocol-invalid",
