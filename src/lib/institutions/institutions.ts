@@ -4,7 +4,7 @@ import {
   BROKER_FIRM_ROWS,
 } from "./institution-tables.generated.ts";
 import { TDCC_FUND_STREAM } from "../../ledger/canonical/tdcc-investment-contract.ts";
-import { PREVIEW_SOURCE_INSTITUTIONS, previewTaskId } from "../preview-sources/source-id.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "../preview-sources/source-id.ts";
 
 /**
  * The Institutions this app can name, keyed by a stable key the canonical
@@ -179,44 +179,6 @@ export function intermediarySourceName(key: IntermediarySourceLogoKey, locale: "
   return INTERMEDIARY_SOURCE_NAMES[key][locale];
 }
 
-const TASK_LOGOS: Readonly<Record<string, LogoKey>> = {
-  "fubon-all-statements": "fubon",
-  "esun-credit-card-statements": "esun",
-  "yuanta-all-statements": "yuanta-bank",
-  "yuanta-trade-statements": "yuanta-securities",
-  "cathay-all-statements": "cathay",
-  "hncb-statements": "hncb",
-  "ctbc-statements": "ctbc",
-  "post-statements": "post",
-  "sinopac-statements": "sinopac",
-  "linebank-statements": "linebank",
-  "einvoice-personal-invoices": "einvoice",
-  "sync-maicoin": "maicoin",
-  "sync-tdcc": "tdcc",
-  ...Object.fromEntries(Object.entries(PREVIEW_SOURCE_INSTITUTIONS).map(([id, institution]) => [previewTaskId({ id }), institution])),
-};
-
-const TASK_NAMESPACES: Readonly<Record<string, readonly string[]>> = {
-  "fubon-all-statements": ["fubon"],
-  "esun-credit-card-statements": ["esun"],
-  "yuanta-all-statements": ["yuanta", "yuanta-fund"],
-  "yuanta-trade-statements": ["yuanta-trade"],
-  "cathay-all-statements": ["cathay"],
-  "hncb-statements": ["hncb"],
-  "ctbc-statements": ["ctbc"],
-  "post-statements": ["post"],
-  "sinopac-statements": ["sinopac"],
-  "linebank-statements": ["linebank"],
-  "einvoice-personal-invoices": ["einvoice"],
-  "sync-maicoin": ["maicoin"],
-  "sync-tdcc": ["tdcc"],
-};
-
-/** The integration namespaces an automation task writes accounts under. */
-export function taskIntegrationNamespaces(taskId: string): readonly string[] {
-  return TASK_NAMESPACES[taskId] ?? [];
-}
-
 /** The Institution that operates a direct source; null for an Intermediary source or an unknown namespace. */
 export function institutionForNamespace(namespace: string | undefined): LogoInstitutionKey | null {
   const source = namespace === undefined ? null : sourceInstitution(namespace);
@@ -234,10 +196,6 @@ export function sourceLogo(namespace: string): LogoKey | null {
   const source = sourceInstitution(namespace);
   if (!source) return null;
   return source.kind === "direct" ? source.institution : source.logo;
-}
-
-export function sourceLogoForTask(taskId: string): LogoKey | null {
-  return TASK_LOGOS[taskId] ?? null;
 }
 
 export function institutionLogoFile(key: LogoKey): string {

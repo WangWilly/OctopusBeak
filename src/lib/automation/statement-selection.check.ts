@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { ESUN_SOURCE } from "./server/sources/esun.ts";
+import { FUBON_SOURCE } from "./server/sources/fubon.ts";
+import { statementSelectionGroup } from "./server/sources/index.ts";
+import { YUANTA_SOURCE } from "./server/sources/yuanta.ts";
 import {
-  BANK_STATEMENT_CAPABILITIES,
   allSupportedStatementTypeIds,
   automationFlagEnabled,
   isStatementSelectionGroup,
@@ -8,9 +11,9 @@ import {
   StatementSelectionError,
 } from "./statement-selection.ts";
 
-const fubon = BANK_STATEMENT_CAPABILITIES.fubon;
-const esun = BANK_STATEMENT_CAPABILITIES.esun;
-const yuanta = BANK_STATEMENT_CAPABILITIES.yuanta;
+const fubon = statementSelectionGroup(FUBON_SOURCE)!;
+const esun = statementSelectionGroup(ESUN_SOURCE)!;
+const yuanta = statementSelectionGroup(YUANTA_SOURCE)!;
 
 assert.deepEqual(allSupportedStatementTypeIds(fubon), [
   "deposit",

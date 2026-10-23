@@ -9,7 +9,7 @@ import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.t
 import { userActionForFailure, workflowFailureExplanation } from "../workflow-failures.ts";
 import { openActiveTaskRun, type TaskRunReport } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { YUANTA_SERVISIGN_PREREQUISITE } from "./tasks.ts";
+import { YUANTA_SERVISIGN_PREREQUISITE } from "./sources/yuanta-trade.ts";
 import { classifyTypedWorkflowFailure } from "./typed-workflow-outcome.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 

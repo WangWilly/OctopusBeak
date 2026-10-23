@@ -803,6 +803,10 @@ _Avoid_: macOS user, all personal-finance users
 A collection and import integration whose declared Institution and product coverage has been verified for the current Beta. A planned, previously working, or merely registered integration is not a supported source.
 _Avoid_: Institution, supported bank, available integration
 
+**Verified source**:
+A supported source whose collection has a live-verified source contract and writes Source Captures through canonical admission. It may carry Attached Preview Products, and while it covers an Institution and product, the Preview Source for them is hidden.
+_Avoid_: Bank workflow, provider definition, non-preview source
+
 **Supported source name**:
 The formal user-facing name of a supported source. In the Traditional Chinese UI, a distinct localized name is followed by its English name in parentheses; brand names without a distinct translation remain unchanged.
 _Avoid_: Workflow label, provider code, integration ID
