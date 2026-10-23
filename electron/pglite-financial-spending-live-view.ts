@@ -12,7 +12,7 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
     // avoid rebuilding the same full summary ahead of a Pairing click.
     // A separate commit still has a newer version and is recomputed.
     const version = await registry["financial.spending.version"]([]);
-    const published = (lastValue as SpendingPageDto | undefined)?.purchaseReport.knowledgeAt ?? -1;
+    const published = (lastValue() as SpendingPageDto | undefined)?.purchaseReport.knowledgeAt ?? -1;
     return version > published;
   },
   watch({ registry, lastValue, publish, recompute, fail }) {

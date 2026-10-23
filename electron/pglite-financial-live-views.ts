@@ -39,7 +39,7 @@ export type FinancialLiveViewDefinition = Readonly<{
   load(registry: LiveViewRegistry, params: object, sources: PGliteFinancialExpectedSources): Promise<unknown>;
   dependsOn: readonly LiveViewDependency[];
   /** Decides whether a dependency change needs a full recompute. */
-  shouldRecompute?(registry: LiveViewRegistry, lastValue: unknown): Promise<boolean>;
+  shouldRecompute?(registry: LiveViewRegistry, lastValue: () => unknown): Promise<boolean>;
   /** Subscribes to view-specific events; returns the unsubscribe. */
   watch?(context: Readonly<{
     registry: LiveViewRegistry;
@@ -145,7 +145,7 @@ export function createPGliteFinancialLiveViews(
         const trigger = () => {
           if (!initialReady) return;
           void (async () => {
-            if (definition.shouldRecompute && !await definition.shouldRecompute(registry, entry?.lastValue)) return;
+            if (definition.shouldRecompute && !await definition.shouldRecompute(registry, () => entry?.lastValue)) return;
             if (!stopped) await recompute();
           })().catch(fail);
         };

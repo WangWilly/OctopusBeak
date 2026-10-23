@@ -559,8 +559,12 @@ export function createPGliteFinancialRegistry(
         return mapOverview(result, rates, history, prices, preview.accounts);
       });
     },
-    "financial.assets.current": ([expectedSources = []]) => readProductPage("assets", expectedSources),
-    "financial.liabilities.current": ([expectedSources = []]) => readProductPage("liabilities", expectedSources),
+    async "financial.assets.current"([expectedSources = []]) {
+      return readProductPage("assets", expectedSources);
+    },
+    async "financial.liabilities.current"([expectedSources = []]) {
+      return readProductPage("liabilities", expectedSources);
+    },
     "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
     "financial.spending.recordPage": ([request]) => versioned(() => spending.recordPage(request)),
     "financial.spending.candidatePage": ([request]) => versioned(() => spending.candidatePage(request)),
