@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { HumanAssistanceCompletionStatus, HumanAssistanceContractInput } from "../human-assistance.ts";
 import type { CommitAttemptReport } from "../commit-attempt.ts";
-import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import type { TypedWorkflowOutcomeSummary, TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import {
   captureSafeWorkflowFailureError,

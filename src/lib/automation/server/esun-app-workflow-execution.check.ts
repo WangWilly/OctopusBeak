@@ -8,7 +8,8 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { WorkflowBrowserPort, WorkflowFinancialCommitPort, WorkflowRunEvent } from "../workflow-executor.ts";
+import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";

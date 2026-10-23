@@ -5,10 +5,10 @@ import type {
   WorkflowDefinition,
   WorkflowExecutorPorts,
   WorkflowFinancialCommitPort,
-  WorkflowRunEvent,
   WorkflowAccountIdentityPort,
   WorkflowCapabilityPorts,
 } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
 import {
   createWorkflowExecutor,

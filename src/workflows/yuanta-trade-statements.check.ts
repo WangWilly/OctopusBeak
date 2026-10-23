@@ -36,7 +36,8 @@ import {
 } from "./yuanta-trade-statements.ts";
 import { readFile } from "node:fs/promises";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { legacyRunEventOutcome, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 
@@ -790,7 +791,7 @@ test("records how many reports were collected when one report source fails", asy
     humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
     event: async (stage, code, counts) => {
-      events.push({ runId: "yuanta-trade-report-failure-fixture", stage, code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
+      events.push({ runId: "yuanta-trade-report-failure-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
     },
   };
   const failingReport = 16;

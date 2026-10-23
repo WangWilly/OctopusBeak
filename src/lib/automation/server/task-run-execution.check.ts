@@ -87,7 +87,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
         event: {
           runId: start.taskRunId,
           stage: "preparation",
-          code: "worker-check-started",
+          outcome: "started", code: "worker-check-started",
           occurredAt: "2026-09-26T00:00:00.000Z",
         },
       });
@@ -111,7 +111,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           if (frame.eventId === "worker-start-event") {
             this.emit("message", {
               protocolVersion: 2, kind: "event", eventId: "foreign-collection",
-              event: { runId: start.taskRunId, stage: "collection", code: "foreign-currency-collection-started", occurredAt: "2026-10-03T08:17:23.000Z" },
+              event: { runId: start.taskRunId, stage: "collection", outcome: "started", code: "foreign-currency-collection-started", occurredAt: "2026-10-03T08:17:23.000Z" },
             });
           } else {
             this.emit("message", {
@@ -339,7 +339,7 @@ class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
         event: {
           runId: start.taskRunId,
           stage: "preparation",
-          code: "run-started",
+          outcome: "started", code: "run-started",
           occurredAt: "2026-09-26T00:00:00.000Z",
         },
       });

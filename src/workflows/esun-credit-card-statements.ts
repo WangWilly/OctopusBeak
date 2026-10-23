@@ -31,7 +31,8 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
-import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { upgradeStoredRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
@@ -1484,7 +1485,7 @@ export async function runEsunCreditCardProviderWorkflow(
       const cardContext: WorkflowContext = {
         ...context,
         event: async (stage, code, counts) => {
-          cardEvents.push({ runId: context.runId, stage, code, occurredAt: context.now() });
+          cardEvents.push(upgradeStoredRunEvent({ runId: context.runId, stage, code, occurredAt: context.now() }) as WorkflowRunEvent);
           await context.event(stage, code, counts);
         },
       };

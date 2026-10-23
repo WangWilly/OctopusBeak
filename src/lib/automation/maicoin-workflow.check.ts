@@ -5,8 +5,8 @@ import { strictSourceText } from "./source-text.ts";
 import {
   createWorkflowExecutor,
   type WorkflowExecutorPorts,
-  type WorkflowRunEvent,
 } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import { taskById } from "./server/tasks.ts";
 
 const PROVIDER_DATE = "Wed, 02 Sep 2026 04:05:06 GMT";

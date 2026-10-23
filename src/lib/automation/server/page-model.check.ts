@@ -63,13 +63,13 @@ const typedRowModel = buildAutomationPageModel({
         {
           runId: typedRunId,
           stage: "authentication",
-          code: "authentication-completed",
+          outcome: "completed", code: "authentication-completed",
           occurredAt: "2026-06-30T01:00:01.000Z",
         },
         {
           runId: typedRunId,
           stage: "collection",
-          code: "source-collected",
+          outcome: "completed", code: "source-collected",
           occurredAt: "2026-06-30T01:00:02.000Z",
           completed: 2,
           total: 2,
@@ -88,13 +88,13 @@ assert.deepEqual(typedRow?.events, [
   {
     runId: typedRunId,
     stage: "authentication",
-    code: "authentication-completed",
+    outcome: "completed", code: "authentication-completed",
     occurredAt: "2026-06-30T01:00:01.000Z",
   },
   {
     runId: typedRunId,
     stage: "collection",
-    code: "source-collected",
+    outcome: "completed", code: "source-collected",
     occurredAt: "2026-06-30T01:00:02.000Z",
     completed: 2,
     total: 2,
@@ -182,6 +182,7 @@ const boundedEventsModel = buildAutomationPageModel({
       events: Array.from({ length: 205 }, (_, index) => ({
         runId: "typed-run-bounded",
         stage: "collection" as const,
+        outcome: "advanced" as const,
         code: `source-${index}`,
         occurredAt: `2026-06-30T01:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
       })),
@@ -384,7 +385,7 @@ const typedWaitingModel = buildAutomationPageModel({
         {
           runId: typedRunId,
           stage: "authentication",
-          code: "human-assistance-requested",
+          outcome: "advanced", code: "human-assistance-requested",
           occurredAt: "2026-06-30T01:00:01.000Z",
         },
       ],

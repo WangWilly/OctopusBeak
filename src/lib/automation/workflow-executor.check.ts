@@ -5,8 +5,8 @@ import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import {
   createWorkflowExecutor,
   type WorkflowExecutorPorts,
-  type WorkflowRunEvent,
 } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 
 function ports(events: WorkflowRunEvent[]): WorkflowExecutorPorts {
   return {

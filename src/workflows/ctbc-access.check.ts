@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { legacyRunEventOutcome, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
@@ -28,7 +29,7 @@ try {
     humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
     event: async (stage, code) => {
-      events.push({ runId: "ctbc-busy-fixture", stage, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+      events.push({ runId: "ctbc-busy-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-09-26T00:00:00.000Z" });
     },
   };
   let failure: unknown;
@@ -58,7 +59,7 @@ try {
     signal: acceptedController.signal,
     browser: { withPage: (run) => run(acceptedPage) },
     event: async (stage, code) => {
-      acceptedEvents.push({ runId: "ctbc-blank-202-fixture", stage, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+      acceptedEvents.push({ runId: "ctbc-blank-202-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-09-26T00:00:00.000Z" });
     },
   };
   let acceptedFailure: unknown;

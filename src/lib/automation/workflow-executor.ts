@@ -20,6 +20,7 @@ import {
   interruptedProductCollectionFromOutput,
 } from "./product-collection.ts";
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
+import { upgradeStoredRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -55,18 +56,6 @@ export type WorkflowProductFailure = Readonly<{
   statementType: WorkflowProgressStatementType;
   errorCode: TypedWorkflowErrorCode;
   error: unknown;
-}>;
-
-export type WorkflowRunEvent = Readonly<{
-  runId: string;
-  stage: WorkflowStage;
-  code: string;
-  occurredAt: string;
-  completed?: number;
-  total?: number;
-  activity?: WorkflowProgressActivity;
-  statementType?: WorkflowProgressStatementType;
-  retrying?: boolean;
 }>;
 
 export interface WorkflowEventPort {
@@ -245,7 +234,7 @@ export function createWorkflowExecutor(
       }
       const appendEvent: StageEvent = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
-        await ports.events.append({
+        await ports.events.append(upgradeStoredRunEvent({
           runId,
           stage,
           code,
@@ -254,7 +243,7 @@ export function createWorkflowExecutor(
           ...(counts?.total === undefined ? {} : { total: counts.total }),
           ...(counts?.activity === undefined ? {} : { activity: counts.activity }),
           ...(counts?.statementType === undefined ? {} : { statementType: counts.statementType }),
-        });
+        }) as WorkflowRunEvent);
       };
       const event: StageEvent = async (stage, code, counts) => {
         try {
