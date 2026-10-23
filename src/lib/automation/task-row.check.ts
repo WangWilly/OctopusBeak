@@ -37,6 +37,7 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     setupRequired: false,
     primaryAction: "Run",
     canRun: true,
+    latestRunStatus: overrides.status ?? "completed",
     ...overrides,
   };
 }

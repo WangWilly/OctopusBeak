@@ -55,7 +55,6 @@ function pageWorkflowEvents(
 }
 
 function rowStatus(
-  task: AutomationTask,
   run: AutomationTaskRun | undefined,
   isActive: boolean,
 ) {
@@ -88,7 +87,8 @@ export function buildAutomationPageModel(input: {
     const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
     const isActive = activeTaskIds.has(task.id);
     const setupRequired = Boolean(task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId));
-    const status = automationRowStatus(rowStatus(task, run, isActive), isActive, setupRequired);
+    const latestRunStatus = rowStatus(run, isActive);
+    const status = automationRowStatus(latestRunStatus, isActive, setupRequired);
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
@@ -107,6 +107,7 @@ export function buildAutomationPageModel(input: {
       dependencies: task.dependencies,
       externalPrerequisites: task.externalPrerequisites,
       status,
+      latestRunStatus,
       attempt,
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
