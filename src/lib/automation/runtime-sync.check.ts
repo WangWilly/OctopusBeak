@@ -159,7 +159,7 @@ test("optimistic new run clears stale progress and outcome details", () => {
     events: [{
       runId: "run-old",
       stage: "collection",
-      code: "source-collected",
+      outcome: "completed", code: "source-collected",
       occurredAt: "2026-09-21T00:00:00.000Z",
     }],
   });

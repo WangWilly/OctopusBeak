@@ -13,7 +13,8 @@ import {
   type PostStatementResponseMetadata,
 } from "../../workflows/post-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowContext } from "./workflow-executor.ts";
+import { legacyRunEventOutcome, type WorkflowRunEvent } from "./run-event.ts";
 
 const providerSource = readFileSync(
   new URL("../../workflows/post-statements.ts", import.meta.url),
@@ -269,6 +270,7 @@ function createContext(input: {
       events.push({
         runId: "run-post-check",
         stage,
+        outcome: legacyRunEventOutcome(code),
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,

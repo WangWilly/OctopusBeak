@@ -3,7 +3,7 @@ import {
   type HumanAssistanceCompletionStatus,
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
-import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
@@ -398,8 +398,8 @@ function validHumanContract(value: unknown): value is HumanAssistanceContractInp
 }
 
 function validEvent(value: unknown): value is WorkflowRunEvent {
-  if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "code", "occurredAt"], [
-    "completed", "total", "activity", "statementType", "retrying",
+  if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "outcome", "code", "occurredAt"], [
+    "signal", "completed", "total", "activity", "statementType", "retrying",
   ])) return false;
   if (
     typeof value.runId !== "string"
@@ -408,6 +408,7 @@ function validEvent(value: unknown): value is WorkflowRunEvent {
     || !stages.has(value.stage as WorkflowRunEvent["stage"])
     || typeof value.code !== "string"
     || !SAFE_CODE.test(value.code)
+    || !hasValidRunEventMeaning(value)
     || typeof value.occurredAt !== "string"
     || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.occurredAt)
     || !Number.isFinite(Date.parse(value.occurredAt))

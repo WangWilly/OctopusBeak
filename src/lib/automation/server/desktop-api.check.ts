@@ -85,13 +85,13 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
     await provider.automation.appendRunEvent({
       runId: created.taskRunId,
       stage: "authentication",
-      code: "authentication-completed",
+      outcome: "completed", code: "authentication-completed",
       occurredAt: "2026-09-22T00:00:01.000Z",
     });
     await provider.automation.appendRunEvent({
       runId: created.taskRunId,
       stage: "collection",
-      code: "source-collected",
+      outcome: "completed", code: "source-collected",
       occurredAt: "2026-09-22T00:00:02.000Z",
       completed: 2,
       total: 2,

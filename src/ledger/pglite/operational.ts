@@ -26,7 +26,11 @@ import {
   type AutomationPersistenceProvider,
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
-import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
+import {
+  hasValidRunEventMeaning,
+  upgradeStoredRunEvent,
+  type WorkflowRunEvent,
+} from "../../lib/automation/run-event.ts";
 import { WORKFLOW_STAGES } from "../../lib/automation/task-row.ts";
 import {
   applyCommitAttemptReport,
@@ -205,7 +209,7 @@ const RUN_EVENT_STAGES: ReadonlySet<string> = new Set(WORKFLOW_STAGES);
 function recordEvents(recordJson: string): readonly WorkflowRunEvent[] {
   try {
     const value = JSON.parse(recordJson) as { events?: unknown };
-    return Array.isArray(value.events) ? value.events as WorkflowRunEvent[] : [];
+    return Array.isArray(value.events) ? value.events.map(upgradeStoredRunEvent) as WorkflowRunEvent[] : [];
   } catch {
     return [];
   }
@@ -216,6 +220,7 @@ function assertRunEvent(event: WorkflowRunEvent): void {
     !event || typeof event.runId !== "string" || event.runId.length === 0
     || !RUN_EVENT_STAGES.has(event.stage)
     || typeof event.code !== "string" || !/^[a-z][a-z0-9-]{0,63}$/u.test(event.code)
+    || !hasValidRunEventMeaning(event)
     || typeof event.occurredAt !== "string"
     || Number.isNaN(Date.parse(event.occurredAt))
     || (event.completed !== undefined && (!Number.isSafeInteger(event.completed) || event.completed < 0))

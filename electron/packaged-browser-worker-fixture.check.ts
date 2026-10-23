@@ -36,6 +36,7 @@ function taskRun(
     events: [{
       runId: `${taskId}-run`,
       stage: "collection",
+      outcome: "advanced",
       code: "fixture-page-verified",
       occurredAt: "2026-09-29T00:00:00.100Z",
       completed: 1,

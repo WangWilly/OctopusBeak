@@ -16,7 +16,8 @@ import {
 import { createMaicoinWorkflow } from "../../lib/automation/maicoin-workflow.ts";
 import { createWorkflowFinancialCommitPort } from "../../lib/automation/workflow-financial-commit.ts";
 import { strictSourceText } from "../../lib/automation/source-text.ts";
-import { createWorkflowExecutor, type WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
+import { createWorkflowExecutor } from "../../lib/automation/workflow-executor.ts";
+import type { WorkflowRunEvent } from "../../lib/automation/run-event.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";

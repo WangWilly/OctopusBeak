@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createMaicoinWorkflow, MaicoinWorkflowError } from "./maicoin-workflow.ts";
-import { createWorkflowExecutor, type WorkflowRunEvent } from "./workflow-executor.ts";
+import { createWorkflowExecutor } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import { captureSafeWorkflowFailureError } from "./server/workflow-failure-diagnostics.ts";
 

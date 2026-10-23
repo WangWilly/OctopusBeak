@@ -3,7 +3,7 @@ import { SourceTextIntegrityError } from "../source-text.ts";
 import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
-import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import {
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
@@ -221,20 +221,18 @@ export function classifyTypedWorkflowFailure(
   if (error instanceof ExternalPrerequisiteUnavailableError) return "external-prerequisite-unavailable";
 
   if (signalAborted) return "cancelled";
-  if (events.some((event) => event.stage === "authentication" && event.code === "verification-solver-exhausted")) {
+  if (events.some((event) => event.signal === "verification-solver-exhausted")) {
     return "verification-failed";
   }
   if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
-  if (events.some((event) => event.stage === "authentication" && (
-    event.code === "solver-route-unavailable"
-    || event.code === "solver-challenge-unsupported"
-  ))) {
+  if (events.some((event) => event.signal === "solver-route-unavailable"
+    || event.signal === "solver-challenge-unsupported")) {
     return "verification-configuration-failed";
   }
-  if (events.some((event) => event.stage === "decoding" && /(?:rejected|failed|malformed)$/u.test(event.code))) {
+  if (events.some((event) => event.stage === "decoding" && event.outcome === "failed")) {
     return "source-integrity-failed";
   }
-  if (events.some((event) => event.stage === "validation" && /(?:rejected|failed)$/u.test(event.code))) {
+  if (events.some((event) => event.stage === "validation" && event.outcome === "failed")) {
     return "source-validation-failed";
   }
   // Finalization reports the terminal state; the preceding stage records the
@@ -242,8 +240,8 @@ export function classifyTypedWorkflowFailure(
   const operation = events.findLast((event) => event.stage !== "finalization");
   if (operation?.stage === "authentication") {
     if (error instanceof Error && error.name === "TimeoutError") return "authentication-timeout";
-    if (operation.code === "login-dialog-interrupted") return "authentication-dialog-interrupted";
-    if (operation.code === "human-assistance-failed") return "verification-failed";
+    if (operation.signal === "login-dialog-interrupted") return "authentication-dialog-interrupted";
+    if (operation.signal === "human-assistance-failed") return "verification-failed";
     return "authentication-failed";
   }
   if (operation?.stage === "collection" || operation?.stage === "decoding") {

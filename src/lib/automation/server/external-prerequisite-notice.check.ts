@@ -19,8 +19,8 @@ after(() => database.close());
 const { automation } = createPgliteOperationalProvider(store);
 
 const missingComponent = [
-  { runId: "r", stage: "authentication", code: "login-started", occurredAt: "2026-10-20T00:00:00.000Z" },
-  { runId: "r", stage: "authentication", code: "servisign-unavailable", occurredAt: "2026-10-20T00:00:01.000Z" },
+  { runId: "r", stage: "authentication", outcome: "started", code: "login-started", occurredAt: "2026-10-20T00:00:00.000Z" },
+  { runId: "r", stage: "authentication", outcome: "failed", code: "servisign-unavailable", occurredAt: "2026-10-20T00:00:01.000Z" },
 ] as const;
 
 async function runYuantaTrade(report: TaskRunReport, unavailable: boolean) {
@@ -36,7 +36,7 @@ async function runYuantaTrade(report: TaskRunReport, unavailable: boolean) {
     await automation.appendRunEvent({
       runId: taskRunId,
       stage: "authentication",
-      code: "servisign-unavailable",
+      outcome: "failed", code: "servisign-unavailable",
       occurredAt: new Date().toISOString(),
     });
   }

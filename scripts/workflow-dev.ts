@@ -15,8 +15,8 @@ import {
   type WorkflowDefinition,
   type WorkflowExecutorPorts,
   type WorkflowFinancialCommitPort,
-  type WorkflowRunEvent,
 } from "../src/lib/automation/workflow-executor.ts";
+import type { WorkflowRunEvent } from "../src/lib/automation/run-event.ts";
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
 import { parsePreviewWrite } from "../src/ledger/pglite/preview-financial-data.ts";
 import {

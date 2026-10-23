@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowContext } from "./workflow-executor.ts";
+import { legacyRunEventOutcome, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import {
   decodeYuantaTradeReportResponse,
@@ -113,6 +114,7 @@ function createHarness(options: {
       events.push({
         runId: "run-yuanta-trade-check",
         stage,
+        outcome: legacyRunEventOutcome(code),
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,

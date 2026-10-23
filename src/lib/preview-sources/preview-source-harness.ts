@@ -5,7 +5,8 @@ import type {
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import type { TextRecognitionEngine } from "../automation/server/text-captcha-solver.ts";
-import { createWorkflowExecutor, type WorkflowRunEvent } from "../automation/workflow-executor.ts";
+import { createWorkflowExecutor } from "../automation/workflow-executor.ts";
+import type { WorkflowRunEvent } from "../automation/run-event.ts";
 import { classifyTypedWorkflowFailure } from "../automation/server/typed-workflow-outcome.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { PreviewHttp, PreviewHttpOpener, PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";

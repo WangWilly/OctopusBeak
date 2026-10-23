@@ -86,7 +86,7 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     /protocol rejected/u,
   );
   assert.throws(
-    () => parseAppWorkflowWorkerOutboundFrame({ protocolVersion: 2, kind: "event", eventId: "e1", event: { runId: "run-fixture-1", stage: "collection", code: "valid-code", occurredAt: "2026-09-26T00:00:00.000Z", raw: "source bytes" } }),
+    () => parseAppWorkflowWorkerOutboundFrame({ protocolVersion: 2, kind: "event", eventId: "e1", event: { runId: "run-fixture-1", stage: "collection", outcome: "advanced", code: "valid-code", occurredAt: "2026-09-26T00:00:00.000Z", raw: "source bytes" } }),
     /protocol rejected/u,
   );
   const scopedProgressEvent = parseAppWorkflowWorkerOutboundFrame({
@@ -96,7 +96,7 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     event: {
       runId: "run-fixture-1",
       stage: "collection",
-      code: "statement-download-started",
+      outcome: "started", code: "statement-download-started",
       occurredAt: "2026-10-04T00:00:00.000Z",
       statementType: "deposit",
       activity: "download",
@@ -123,7 +123,7 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
       event: {
         runId: "run-fixture-1",
         stage: "collection",
-        code: "statement-download-started",
+        outcome: "started", code: "statement-download-started",
         occurredAt: "2026-10-04T00:00:00.000Z",
         ...metadata,
       },
@@ -626,11 +626,11 @@ test("a Cathay run that needs device registration keeps that code across the wor
 
 test("worker keeps the observed failure stage across the validated IPC boundary", async () => {
   const cases = [
-    { stage: "authentication", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
-    { stage: "authentication", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
-    { stage: "authentication", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
-    { stage: "authentication", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
-    { stage: "collection", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
+    { stage: "authentication", outcome: "started", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
+    { stage: "authentication", outcome: "failed", signal: "login-dialog-interrupted", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
+    { stage: "authentication", outcome: "failed", signal: "human-assistance-failed", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
+    { stage: "authentication", outcome: "completed", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
+    { stage: "collection", outcome: "failed", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
   ] as const;
   for (const scenario of cases) {
     const channel = new MessageChannel();

@@ -6,8 +6,8 @@ import { WORKFLOW_STAGES } from "../task-row.ts";
 import {
   WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS,
   type WorkflowProgressStatementType,
-  type WorkflowRunEvent,
 } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 
 const SAFE_WORKFLOW_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_TASK_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
