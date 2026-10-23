@@ -19,8 +19,8 @@ import {
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
+import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
-  createPGliteFinancialLiveViews,
   createPGliteFinancialRegistry,
   createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
