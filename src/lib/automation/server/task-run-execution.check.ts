@@ -312,7 +312,7 @@ test("resuming a missing App run fails closed without invoking a workflow", asyn
       taskRunId: "missing-app-run",
       runExecution: async () => {
         workflowCalls += 1;
-        return { errorCode: null, summary: null };
+        return { summary: null, failure: null };
       },
     }),
     /Missing automation task run: missing-app-run/u,
@@ -618,7 +618,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
       },
     });
 
-    assert.equal(outcome.errorCode, null);
+    assert.equal(outcome.failure, null);
     assert.ok(workerStart, "E-Invoice creates the supervised worker");
     assert.equal(workerStart.workflowId, "einvoice-personal-invoices");
     assert.ok(workerStart.browserConnection, "the worker receives the App browser connection");

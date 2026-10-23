@@ -7,9 +7,9 @@ import {
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,
-  recoverInterruptedAutomationRuns,
   type StartAutomationTaskOptions,
 } from "./runner.ts";
+import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
@@ -43,7 +43,7 @@ export function createAutomationRuntime(
     desktopModel,
     /** Finish rows a previous process left active, then publish the persisted runs. */
     async recover() {
-      await recoverInterruptedAutomationRuns(provider);
+      await finalizeOrphanedRuns(provider);
       await hydrateAutomationRuntimeState(provider, state);
     },
     rehydrate: () => hydrateAutomationRuntimeState(provider, state),

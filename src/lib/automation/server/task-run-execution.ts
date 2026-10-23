@@ -7,7 +7,7 @@ import {
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { ActiveAutomationTaskRun, TaskRunFailure, TaskRunReport } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
@@ -23,11 +23,8 @@ import {
 import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 import {
   classifyTypedWorkflowFailure,
-  commitAwareErrorCode,
   summarizeInterruptedProductCollection,
-  type TypedWorkflowOutcome,
 } from "./typed-workflow-outcome.ts";
-import { applyCommitAttemptReport, type CommitAttempt } from "../commit-attempt.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
@@ -207,7 +204,7 @@ function createBrowserRuntimeIdentityRecorder(
 async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
-): Promise<TypedWorkflowOutcome> {
+): Promise<TaskRunReport> {
   const scope = registerCollectionScope(
     execution.run.taskRunId,
     execution.task,
@@ -234,16 +231,9 @@ function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWork
   return rpc;
 }
 
-function sanitizedWorkerResult(
-  outcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>>,
-  errorCode: TypedWorkflowErrorCode,
-): TypedWorkflowOutcome {
-  // An ambiguous commit keeps its code through finalization. Marking it
-  // cancelled would hide the uncertain financial outcome from the App.
-  return {
-    errorCode: outcome.status === "completed" ? null : errorCode,
-    summary: outcome.summary,
-  };
+/** Only the run's Commit attempts can say a commit outcome is unknown (ADR 0056). */
+function classifiedFailure(code: TypedWorkflowErrorCode): TaskRunFailure {
+  return { code: code === "commit-outcome-unknown" ? "workflow-failed" : code, proven: false };
 }
 
 function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHost {
@@ -256,16 +246,11 @@ function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHo
 async function executeSupervisedAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
-): Promise<TypedWorkflowOutcome> {
+): Promise<TaskRunReport> {
   const workflowId = execution.task.workflowId;
   const definition = workflowDefinitionForTask(workflowId);
   if (!definition || !workflowId || definition.id !== workflowId) {
-    return sanitizedWorkerResult({
-      status: "failed",
-      errorCode: "worker-start-failed",
-      summary: null,
-      failureKind: "worker-start",
-    }, "workflow-failed");
+    return { summary: null, failure: { code: "workflow-failed", proven: true } };
   }
 
   previewStructureReports.clear(execution.task.id);
@@ -283,10 +268,9 @@ async function executeSupervisedAppWorkflow(
 
   const { signal, forceSignal } = execution.run;
   let unregisterHumanAssistance: (() => void) | undefined;
-  let result: TypedWorkflowOutcome;
+  let result: TaskRunReport;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
-  let commitAttempts: readonly CommitAttempt[] = [];
   let priorEventCount: number | null = null;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
@@ -345,13 +329,7 @@ async function executeSupervisedAppWorkflow(
           observedEvents.push(event);
           await progressReporter.appendEvent(event);
         },
-        recordCommitAttempt: async (report) => {
-          // The worker commits only after a start is ACKed, so fold a start once
-          // it is durable. A settlement describes a commit that already ran.
-          if (report.phase === "settled") commitAttempts = applyCommitAttemptReport(commitAttempts, report);
-          await execution.run.recordCommitAttempt(report);
-          if (report.phase === "started") commitAttempts = applyCommitAttemptReport(commitAttempts, report);
-        },
+        recordCommitAttempt: (report) => execution.run.recordCommitAttempt(report),
         ...(workflowId === "exchange-rates" ? {
           appendExchangeRateProgress: async (progress: Readonly<{
             phaseCode: "load-request" | "sync" | "complete";
@@ -398,15 +376,7 @@ async function executeSupervisedAppWorkflow(
     }
 
     if (outcome.status === "completed") {
-      result = {
-        errorCode: commitAwareErrorCode({
-          attempts: commitAttempts,
-          completed: true,
-          reported: null,
-          classify: () => "workflow-failed",
-        }),
-        summary: outcome.summary,
-      };
+      result = { summary: outcome.summary, failure: null };
     } else {
       const explicitCode = outcome.status === "failed"
         ? typedWorkerFailureCode(outcome.errorCode)
@@ -416,20 +386,19 @@ async function executeSupervisedAppWorkflow(
       const productConfirmsCode = outcome.summary?.products?.some(
         (product) => product.status === "failed" && product.errorCode === explicitCode,
       );
-      const errorCode = commitAwareErrorCode({
-        attempts: commitAttempts,
-        completed: false,
-        reported: explicitCode && (explicitCode !== "workflow-failed" || productConfirmsCode)
-          ? explicitCode
-          : null,
-        classify: () => classifyTypedWorkflowFailure(
-          new Error("App workflow worker failed."),
-          eventsForExecution,
-          outcome.status === "cancelled",
-        ),
-      })!;
-      result = sanitizedWorkerResult(outcome, errorCode);
+      result = {
+        summary: outcome.summary,
+        failure: explicitCode && explicitCode !== "commit-outcome-unknown"
+          && (explicitCode !== "workflow-failed" || productConfirmsCode)
+          ? { code: explicitCode, proven: true }
+          : classifiedFailure(classifyTypedWorkflowFailure(
+            new Error("App workflow worker failed."),
+            eventsForExecution,
+            outcome.status === "cancelled",
+          )),
+      };
       if (outcome.status === "failed") {
+        const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
         await recordWorkflowFailure(execution, options, {
           source: "workflow-worker",
           errorCode,
@@ -458,26 +427,12 @@ async function executeSupervisedAppWorkflow(
     } catch {
       // Do not include provider error text in the task outcome.
     }
-    const errorCode = commitAwareErrorCode({
-      attempts: commitAttempts,
-      completed: false,
-      reported: null,
-      classify: () => classifyTypedWorkflowFailure(error, eventsForExecution, cancelled),
-    })!;
-    result = sanitizedWorkerResult(
-      cancelled ? {
-        status: "cancelled",
-        errorCode: "cancelled",
-        summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
-      } : {
-        status: "failed",
-        errorCode: "workflow-failed",
-        summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
-        failureKind: "worker-crash",
-      },
-      errorCode,
-    );
+    result = {
+      summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
+      failure: classifiedFailure(classifyTypedWorkflowFailure(error, eventsForExecution, cancelled)),
+    };
     if (!cancelled) {
+      const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
       await recordWorkflowFailure(execution, options, {
         source: "workflow-host",
         errorCode,
@@ -506,14 +461,14 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
   };
 }
 
-const CANCELLED: TypedWorkflowOutcome = { errorCode: "cancelled", summary: null };
+const CANCELLED: TaskRunReport = { summary: null, failure: { code: "cancelled", proven: true } };
 
 /** Execute one workflow round of an Active Automation Task Run and report its outcome. */
 export async function runAutomationTaskExecution(
   task: NonNullable<ReturnType<typeof taskById>>,
   run: ActiveAutomationTaskRun,
   options: AutomationTaskExecutionOptions,
-): Promise<TypedWorkflowOutcome> {
+): Promise<TaskRunReport> {
   if (run.signal.aborted) return CANCELLED;
   if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
