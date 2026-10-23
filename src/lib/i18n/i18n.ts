@@ -1,5 +1,7 @@
 import { derived, writable } from "svelte/store";
 import { institutionNames, type IntermediarySourceLogoKey } from "../institutions/institutions.ts";
+import type { RunStageState } from "../automation/run-stage-track.ts";
+import type { WorkflowStage } from "../automation/workflow-executor.ts";
 import type {
   DeviceRegistrationChannel,
   DeviceRegistrationFailure,
@@ -761,7 +763,7 @@ const en = {
       failed: "failed",
       active: "in progress",
       pending: "not reached",
-    } as Record<string, string>,
+    } satisfies Record<RunStageState, string>,
     productColumns: { product: "Product", result: "Result", note: "Note", errorCode: "Error code" },
     workflowEventsDisclosure: (count: number) => `Workflow events (${count})`,
     latestEvent: "Latest",
@@ -785,7 +787,7 @@ const en = {
       validation: "Validation",
       commit: "Commit",
       finalization: "Finalization",
-    } as Record<string, string>,
+    } satisfies Record<WorkflowStage, string>,
     progressStages: {
       preparation: "Preparing",
       authentication: "Signing in",
@@ -794,7 +796,7 @@ const en = {
       validation: "Checking results",
       commit: "Saving results",
       finalization: "Finishing",
-    } as Record<string, string>,
+    } satisfies Record<WorkflowStage, string>,
     progressQueryingProduct: (product: string) => `Querying ${product}`,
     progressDownloadingProduct: (product: string) => `Downloading ${product}`,
     progressQuerying: "Querying selected statements",
@@ -2046,7 +2048,7 @@ const zh: typeof en = {
       failed: "失敗",
       active: "進行中",
       pending: "未執行",
-    } as Record<string, string>,
+    } satisfies Record<RunStageState, string>,
     productColumns: { product: "產品", result: "結果", note: "備註", errorCode: "錯誤碼" },
     workflowEventsDisclosure: (count) => `工作流程事件（${count}）`,
     latestEvent: "最新",
@@ -2069,7 +2071,7 @@ const zh: typeof en = {
       validation: "檢查資料",
       commit: "寫入資料庫",
       finalization: "完成",
-    } as Record<string, string>,
+    } satisfies Record<WorkflowStage, string>,
     progressStages: {
       preparation: "準備中",
       authentication: "登入中",
@@ -2078,7 +2080,7 @@ const zh: typeof en = {
       validation: "檢查結果",
       commit: "儲存結果",
       finalization: "完成中",
-    } as Record<string, string>,
+    } satisfies Record<WorkflowStage, string>,
     progressQueryingProduct: (product) => `正在查詢${product}`,
     progressDownloadingProduct: (product) => `正在下載${product}`,
     progressQuerying: "正在查詢已選擇的帳戶資料",

@@ -1,15 +1,7 @@
 import type { AutomationTaskStatus, TypedWorkflowOutcome } from "./types.ts";
 import type { WorkflowRunEvent, WorkflowStage } from "./workflow-executor.ts";
+import { WORKFLOW_STAGES } from "./task-row.ts";
 
-export const WORKFLOW_STAGES = [
-  "preparation",
-  "authentication",
-  "collection",
-  "decoding",
-  "validation",
-  "commit",
-  "finalization",
-] as const satisfies readonly WorkflowStage[];
 
 export type RunStageState = "done" | "warning" | "failed" | "active" | "pending";
 

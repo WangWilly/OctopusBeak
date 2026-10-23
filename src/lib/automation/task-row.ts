@@ -1,12 +1,30 @@
 import type { AutomationRuntimeTaskSnapshot } from "../desktop/api.ts";
 import type { AutomationTaskRow, AutomationTaskStatus } from "./types.ts";
 import type { AutomationActionToken } from "./runtime-controller.ts";
+import type { WorkflowStage } from "./workflow-executor.ts";
 
 /**
  * The lifecycle rules of one Automation task row, shared by the App's page
  * model and the renderer's runtime merge.  Display copy lives in the
  * renderer; nothing here reads a dictionary.
  */
+
+/** Every workflow stage, in the order a run passes through them. */
+export const WORKFLOW_STAGES = [
+  "preparation",
+  "authentication",
+  "collection",
+  "decoding",
+  "validation",
+  "commit",
+  "finalization",
+] as const satisfies readonly WorkflowStage[];
+
+const STAGES: ReadonlySet<string> = new Set(WORKFLOW_STAGES);
+
+export function isWorkflowStage(value: string): value is WorkflowStage {
+  return STAGES.has(value);
+}
 
 export const ACTIVE_AUTOMATION_STATUSES = [
   "queued",

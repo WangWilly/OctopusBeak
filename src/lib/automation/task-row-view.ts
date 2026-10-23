@@ -4,7 +4,7 @@ import type { AutomationTaskRow } from "./types.ts";
 import type { WorkflowRunEvent } from "./workflow-executor.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "./tdcc-collection-summary.ts";
-import { isTerminalAutomationStatus } from "./task-row.ts";
+import { isTerminalAutomationStatus, isWorkflowStage } from "./task-row.ts";
 import { workflowFailureExplanation } from "./workflow-failures.ts";
 
 /**
@@ -39,16 +39,6 @@ export type TaskRowView = Readonly<{
   showProgressStatus: boolean;
   isOnboardingProgress: boolean;
 }>;
-
-const WORKFLOW_PROGRESS_STAGES = [
-  "preparation",
-  "authentication",
-  "collection",
-  "decoding",
-  "validation",
-  "commit",
-  "finalization",
-];
 
 export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewContext): TaskRowView {
   const { dictionary } = context;
@@ -201,7 +191,7 @@ function workflowProgressStageLabel(row: AutomationTaskRow, dictionary: Translat
   const phaseCode = row.workflowProgress?.phaseCode;
   if (!phaseCode?.startsWith("workflow-")) return null;
   const stage = phaseCode.slice("workflow-".length);
-  if (!WORKFLOW_PROGRESS_STAGES.includes(stage)) return null;
+  if (!isWorkflowStage(stage)) return null;
 
   const statementType = row.workflowProgress?.params?.statementType;
   const product = typeof statementType === "string"
@@ -221,13 +211,13 @@ function workflowProgressStageLabel(row: AutomationTaskRow, dictionary: Translat
     }
     return product
       ? dictionary.automation.progressStageProduct(dictionary.automation.progressStages[stage], product)
-      : dictionary.automation.progressStages[stage] ?? null;
+      : dictionary.automation.progressStages[stage];
   }
 
   const stageLabel = dictionary.automation.progressStages[stage];
-  return product && stageLabel
+  return product
     ? dictionary.automation.progressStageProduct(stageLabel, product)
-    : stageLabel ?? null;
+    : stageLabel;
 }
 
 function workflowProgressIsWorking(row: AutomationTaskRow) {
