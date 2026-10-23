@@ -30,7 +30,7 @@ import type {
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
 } from "../src/lib/spending/model.ts";
-import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
+import { isProductAccount, mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
 import type { AccountRowDto, CurrencyAmountDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
 import type {
   CanonicalOverviewAmount,
@@ -521,6 +521,29 @@ export function createPGliteFinancialRegistry(
       return { stale: true, knowledgeAt: error.knowledgeAt };
     }
   };
+  const readProductPage = (product: "assets" | "liabilities", expectedSources: PGliteFinancialExpectedSources) =>
+    store.transaction(async (transaction) => {
+      const result = await createPGliteCanonicalOverviewQuery(
+        transaction,
+        { expectedSources },
+      ).current();
+      const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
+      const projection = product === "assets"
+        ? selectPGliteOverviewAssets(result.projection)
+        : selectPGliteOverviewLiabilities(result.projection);
+      const productDto = mapCanonicalProduct(projection, product, canonical);
+      const previewAccounts = preview.accounts.filter((account) => isProductAccount(product, account));
+      return {
+        ...productDto,
+        accounts: [...productDto.accounts, ...previewAccounts],
+        dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
+        dailyHistoryByAccount: {
+          ...productDto.dailyHistoryByAccount,
+          ...Object.fromEntries(previewAccounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
+        },
+        exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+      };
+    });
   return Object.freeze({
     async "financial.overview.current"([expectedSources = []]) {
       // Keep the canonical projection, history, prices, and rate rows in one
@@ -536,48 +559,8 @@ export function createPGliteFinancialRegistry(
         return mapOverview(result, rates, history, prices, preview.accounts);
       });
     },
-    async "financial.assets.current"([expectedSources = []]) {
-      return store.transaction(async (transaction) => {
-        const result = await createPGliteCanonicalOverviewQuery(
-          transaction,
-          { expectedSources },
-        ).current();
-        const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
-        const product = mapCanonicalProduct(selectPGliteOverviewAssets(result.projection), "assets", canonical);
-        const previewAssets = preview.accounts.filter((account) => account.group !== "liability");
-        return {
-          ...product,
-          accounts: [...product.accounts, ...previewAssets],
-          dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
-          dailyHistoryByAccount: {
-            ...product.dailyHistoryByAccount,
-            ...Object.fromEntries(previewAssets.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
-          },
-          exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-        };
-      });
-    },
-    async "financial.liabilities.current"([expectedSources = []]) {
-      return store.transaction(async (transaction) => {
-        const result = await createPGliteCanonicalOverviewQuery(
-          transaction,
-          { expectedSources },
-        ).current();
-        const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
-        const product = mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities", canonical);
-        const previewLiabilities = preview.accounts.filter((account) => account.group === "liability");
-        return {
-          ...product,
-          accounts: [...product.accounts, ...previewLiabilities],
-          dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
-          dailyHistoryByAccount: {
-            ...product.dailyHistoryByAccount,
-            ...Object.fromEntries(previewLiabilities.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
-          },
-          exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-        };
-      });
-    },
+    "financial.assets.current": ([expectedSources = []]) => readProductPage("assets", expectedSources),
+    "financial.liabilities.current": ([expectedSources = []]) => readProductPage("liabilities", expectedSources),
     "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
     "financial.spending.recordPage": ([request]) => versioned(() => spending.recordPage(request)),
     "financial.spending.candidatePage": ([request]) => versioned(() => spending.candidatePage(request)),
