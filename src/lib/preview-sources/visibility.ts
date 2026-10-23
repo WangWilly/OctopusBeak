@@ -1,34 +1,17 @@
 import type { PreviewProduct, PreviewVisibility } from "../../ledger/pglite/preview-financial-data.ts";
 import type { InstitutionKey, InstitutionProduct } from "../institutions/institutions.ts";
-import { automationFlagEnabled, BANK_STATEMENT_CAPABILITIES } from "../automation/statement-selection.ts";
+import { automationFlagEnabled } from "../automation/statement-selection.ts";
+import { VERIFIED_SOURCES } from "../automation/server/sources/index.ts";
+import type { InstitutionProductCoverage } from "../automation/server/sources/verified-source.ts";
 import { ATTACHED_PREVIEW_SOURCES, type AttachedPreviewSource } from "./attached-products.ts";
 import type { PreviewSource } from "./registry.ts";
 
 export type CoveredProduct = PreviewProduct | InstitutionProduct;
 
-export type InstitutionProductCoverage = Readonly<{ institution: InstitutionKey; product: CoveredProduct }>;
-
-/**
- * What each verified credential group collects, by Institution and product.
- * While the group is enabled, a preview product with the same pair is hidden
- * and not collected.
- */
-export const VERIFIED_SOURCE_COVERAGE: Readonly<Record<string, readonly InstitutionProductCoverage[]>> = {
-  fubon: [{ institution: "fubon", product: "deposit" }, { institution: "fubon", product: "credit_card" }],
-  esun: [{ institution: "esun", product: "credit_card" }],
-  yuanta: [
-    { institution: "yuanta-bank", product: "deposit" },
-    { institution: "yuanta-bank", product: "credit_card" },
-    { institution: "yuanta-bank", product: "fund" },
-  ],
-  "yuanta-trade": [{ institution: "yuanta-securities", product: "securities" }],
-  cathay: [{ institution: "cathay", product: "deposit" }],
-  hncb: [{ institution: "hncb", product: "deposit" }],
-  ctbc: [{ institution: "ctbc", product: "deposit" }],
-  post: [{ institution: "post", product: "deposit" }],
-  sinopac: [{ institution: "sinopac", product: "deposit" }],
-  linebank: [{ institution: "linebank", product: "deposit" }],
-};
+/** What each enabled Verified source collects, by Institution and product. */
+export const VERIFIED_SOURCE_COVERAGE: Readonly<Record<string, readonly InstitutionProductCoverage[]>> = Object.fromEntries(
+  VERIFIED_SOURCES.flatMap((source) => source.coverage ? [[source.id, source.coverage]] : []),
+);
 
 export type PreviewVisibilitySource = Pick<PreviewSource, "id" | "institution" | "products">;
 
@@ -90,8 +73,8 @@ export function previewVisibilityFromEnvironment(
 ): PreviewVisibility {
   return previewVisibility({
     previewFeaturesEnabled: automationFlagEnabled(environment.PREVIEW_FEATURES_ENABLED),
-    enabledGroups: Object.fromEntries(Object.entries(BANK_STATEMENT_CAPABILITIES)
-      .map(([groupId, group]) => [groupId, automationFlagEnabled(environment[group.enabledKey])])),
+    enabledGroups: Object.fromEntries(VERIFIED_SOURCES
+      .map((source) => [source.id, automationFlagEnabled(environment[source.enabledKey])])),
     sources,
   });
 }

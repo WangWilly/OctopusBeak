@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Page, Response } from "playwright";
 import type { WorkflowContext } from "./workflow-executor.ts";
 import { strictSourceText } from "./source-text.ts";
-import { esunCreditCardStatementsWorkflow } from "./esun-credit-card-workflow.ts";
+import { runEsunCreditCardProviderWorkflow } from "../../workflows/esun-credit-card-statements.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
 import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import type { EsunPortalReply } from "../preview-sources/esun-portal.ts";
@@ -224,7 +224,7 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
   try {
     for (const monthCount of [12, 13]) {
       const harness = createContext(createPage({ monthCount }));
-      const output = await esunCreditCardStatementsWorkflow.run(harness.context, {
+      const output = await runEsunCreditCardProviderWorkflow(harness.context, {
         managedIdentitySecret: "synthetic-esun-managed-secret",
         credentials: {
           esun_user_id: "synthetic-user",
@@ -272,7 +272,7 @@ test("E.SUN typed workflow rejects malformed text and incomplete timelines befor
     ]) {
       const harness = createContext(page);
       await assert.rejects(
-        esunCreditCardStatementsWorkflow.run(harness.context, {
+        runEsunCreditCardProviderWorkflow(harness.context, {
           managedIdentitySecret: "synthetic-esun-managed-secret",
           credentials: {
             esun_user_id: "synthetic-user",
@@ -295,7 +295,7 @@ test("E.SUN typed workflow honors cancellation before opening a page or committi
   controller.abort(new Error("cancelled"));
   const context = { ...harness.context, signal: controller.signal };
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(context, {
+    runEsunCreditCardProviderWorkflow(context, {
       managedIdentitySecret: "synthetic-esun-managed-secret",
       credentials: {
         esun_user_id: "synthetic-user",
@@ -316,7 +316,7 @@ test("E.SUN typed workflow fails closed on a sign-in challenge without requestin
     const page = createPage({ initialSignedIn: false });
     const harness = createContext(page);
     await assert.rejects(
-      esunCreditCardStatementsWorkflow.run(harness.context, {
+      runEsunCreditCardProviderWorkflow(harness.context, {
         managedIdentitySecret: "synthetic-esun-managed-secret",
         credentials: {
           esun_user_id: "synthetic-user",
@@ -391,7 +391,7 @@ const outcomes = (output: unknown) => (output as Output).products.map(({ typeId,
 test("the attached deposit writes Preview Financial Data for the E.SUN group after the card commits", () => withManagedSecret(async () => {
   const deposit = depositPortal();
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 1, "the card still commits canonically");
   assert.deepEqual(harness.committed.flat().map((item) => (item as { product?: string }).product), ["credit-card"]);
@@ -412,7 +412,7 @@ test("the attached deposit writes Preview Financial Data for the E.SUN group aft
 test("a failing attached deposit leaves the card committed and reported", () => withManagedSecret(async () => {
   const deposit = depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } });
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 1);
   assert.equal(harness.previewWrites.length, 0, "a failed product writes nothing");
@@ -424,7 +424,7 @@ test("a failing attached deposit leaves the card committed and reported", () => 
 test("an attached-only selection signs in, skips the card, and writes the deposit", () => withManagedSecret(async () => {
   const deposit = depositPortal();
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 0, "no canonical commit without the card");
   assert.equal(harness.previewWrites.length, 1);
@@ -436,18 +436,18 @@ test("an attached-only selection signs in, skips the card, and writes the deposi
 test("an attached-only run fails with the deposit's own error and reports a stated absence as not_held", () => withManagedSecret(async () => {
   const failing = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("系統維護中") }).portal }));
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(failing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
+    runEsunCreditCardProviderWorkflow(failing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
     (error: unknown) => (error as { reason?: string }).reason === "unexpected-response",
   );
 
   const absent = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("查無臺幣帳號，或您尚未開立臺幣帳戶") }).portal }));
-  const output = await esunCreditCardStatementsWorkflow.run(absent.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsunCreditCardProviderWorkflow(absent.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
   assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "not_held", null]]);
   assert.equal(absent.previewWrites.length, 0, "not_held writes no account and no zero balance");
 
   const nothing = createContext(createPage());
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(nothing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: [] })),
+    runEsunCreditCardProviderWorkflow(nothing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: [] })),
     (error: unknown) => (error as { errorCode?: string }).errorCode === "collection-scope-changed",
   );
   assert.equal(nothing.withPageCount, 0);
@@ -455,7 +455,7 @@ test("an attached-only run fails with the deposit's own error and reports a stat
 
 test("no attached selection never touches the deposit portal", () => withManagedSecret(async () => {
   const harness = createContext(createPage());
-  const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: [] }));
+  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: [] }));
   assert.equal(harness.previewWrites.length, 0);
   assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "skipped", "not_selected"]]);
 }));
@@ -467,7 +467,7 @@ test("a card failure reports the card failed with its classified code beside the
   ];
   for (const [name, page, errorCode] of cases) {
     const harness = createContext(createPage({ ...page, portal: depositPortal().portal }));
-    const output = await esunCreditCardStatementsWorkflow.run(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
     assert.equal(harness.committed.length, 0, name);
     assert.equal(harness.previewWrites.length, 1, name);
     assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
@@ -482,14 +482,14 @@ test("a card failure with no deposit data fails the run with the card's own erro
     portal: depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } }).portal,
   }));
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    runEsunCreditCardProviderWorkflow(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
     /timeline did not reach a complete/u,
   );
   assert.equal(failedDeposit.previewWrites.length, 0);
 
   const cardOnly = createContext(createPage({ monthCount: 11, portal: depositPortal().portal }));
   await assert.rejects(
-    esunCreditCardStatementsWorkflow.run(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
+    runEsunCreditCardProviderWorkflow(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
     /timeline did not reach a complete/u,
   );
   assert.equal(cardOnly.previewWrites.length, 0);

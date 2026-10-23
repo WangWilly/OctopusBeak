@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
-import { einvoicePersonalInvoicesWorkflow } from "./einvoice-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import { stableCanonicalSourceJson } from "../../ledger/canonical/canonical-source-evidence.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
@@ -370,7 +369,3 @@ function oneInvoiceSource(
   );
   assert.equal(opened, false);
 }
-
-// The workflow definition still points at the entry point.
-assert.equal(einvoicePersonalInvoicesWorkflow.id, "einvoice-personal-invoices");
-assert.equal(einvoicePersonalInvoicesWorkflow.requiresFinancialCommit, true);
