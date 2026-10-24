@@ -18,7 +18,6 @@ import { createTdccSessionHost } from "./server/tdcc-session-host.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
-  summarizeTypedWorkflowOutput,
 } from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
@@ -300,7 +299,7 @@ test("a run reuses the saved session, commits every selected product, and report
     assert.equal(fake.calls.includes("AU001"), false, "a valid saved session needs no sign-in");
     assert.deepEqual(products(result), { securities: "success", fund: "success", settlement: "success" });
     assert.equal(result.status, "partial", "problematic TDCC exclusions make a run partial even when all admitted groups commit");
-    assert.deepEqual(summarizeTypedWorkflowOutput(result)?.counts, {
+    assert.deepEqual(result.counts, {
       committedCount: 5,
       excludedBankNotUpdatedCount: 1,
       excludedEmptyNonIsoCurrencyCount: 0,
@@ -353,12 +352,13 @@ test("intentional hidden-account and time-deposit exclusions complete without im
 
 test("problematic exclusions with zero admitted items fail without claiming absence", async () => {
   await withHarness(async ({ run, count }) => {
-    const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+    const stopped = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
       settlementSnapshot: problematicSettlementSnapshot(),
-    }));
-    const settlement = (result.products as {
-      typeId: string; status: string; committedCount: number; collection?: { status: string; exclusionCounts: Record<string, number> };
-    }[]).find(({ typeId }) => typeId === "settlement");
+    })));
+    assert.ok(stopped instanceof ProductCollectionInterruptedError, "a run without durable data throws its summary");
+    assert.equal(stopped.errorCode, "source-collection-failed");
+    const result = stopped.summary;
+    const settlement = result.products.find(({ typeId }) => typeId === "settlement");
     assert.equal(result.status, "failed");
     assert.equal(settlement?.status, "failed");
     assert.equal(settlement?.committedCount, 0);
@@ -409,14 +409,13 @@ test("each problematic settlement exclusion reason with zero admitted items rema
       },
     ] as const;
     for (const scenario of cases) {
-      const result = await run({ statementTypes: ["settlement"] }, fakeTdcc({
+      const stopped = await interruption(run({ statementTypes: ["settlement"] }, fakeTdcc({
         acceptedToken: secrets.read().session?.tokenId,
         settlementSnapshot: scenario.snapshot,
-      }));
-      const settlement = (result.products as {
-        typeId: string; status: string; committedCount: number;
-        collection?: { status: string; exclusionCounts: Record<string, number> };
-      }[]).find(({ typeId }) => typeId === "settlement");
+      })));
+      assert.ok(stopped instanceof ProductCollectionInterruptedError, `${scenario.name} throws its summary`);
+      const result = stopped.summary;
+      const settlement = result.products.find(({ typeId }) => typeId === "settlement");
       assert.equal(result.status, "failed", `${scenario.name} must not be reported as absence`);
       assert.equal(settlement?.status, "failed", `${scenario.name} leaves no complete collection evidence`);
       assert.equal(settlement?.committedCount, 0, `${scenario.name} admits no commit items`);

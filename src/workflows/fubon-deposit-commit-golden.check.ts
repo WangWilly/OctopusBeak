@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { FubonAllWorkflowDependencies } from "./fubon-all-statements.ts";
 import {
@@ -132,7 +132,7 @@ function expandRelationCommands(
     : item) as PGliteWorkflowRunItem);
 }
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit" | "accountIdentity"> {
   return {
     runId: "fubon-deposit-golden",
     signal: new AbortController().signal,
@@ -143,6 +143,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     },
     text: strictSourceText,
     humanAssistance: { request: async () => "verified" as const },
+    accountIdentity: { continuity: async () => ({ status: "unseen" }) },
     financialCommit: {
       execute: (items, options) => recorder.financialCommit.execute(expandRelationCommands(items), options),
     },

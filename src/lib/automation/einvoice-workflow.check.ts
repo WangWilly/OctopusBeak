@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "playwright";
 import { strictSourceText } from "./source-text.ts";
 import { stableCanonicalSourceJson } from "../../ledger/canonical/canonical-source-evidence.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
 import {
   runEinvoiceProviderWorkflow,
 } from "../../workflows/einvoice-personal-invoices.ts";
@@ -90,14 +90,14 @@ function makeCommit(commits: unknown[]): WorkflowFinancialCommitPort {
   };
 }
 
-function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]; events?: Array<{ stage: string; code: string }> }): {
-  context: WorkflowContext;
+function makeContext(overrides: Partial<WorkflowContextWith<"financialCommit">> & { commits?: unknown[]; events?: Array<{ stage: string; code: string }> }): {
+  context: WorkflowContextWith<"financialCommit">;
   commits: unknown[];
   events: Array<{ stage: string; code: string }>;
 } {
   const commits = overrides.commits ?? [];
   const events: Array<{ stage: string; code: string }> = overrides.events ?? [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "einvoice-test-run",
     signal: new AbortController().signal,
     now: () => new Date().toISOString(),
@@ -120,8 +120,7 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
 {
   const { context, commits, events } = makeContext({});
   const output = await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({}));
-  assert.equal(output.usedExistingSession, false);
-  assert.equal(output.invoiceCount, 0);
+  assert.deepEqual(output, { counts: { invoiceCount: 0, itemCount: 0 } });
   assert.ok(events.some((event) => event.code === "authentication-completed"));
   assert.ok(events.some((event) => event.code === "month-completed"));
   assert.equal(commits.length, 1);

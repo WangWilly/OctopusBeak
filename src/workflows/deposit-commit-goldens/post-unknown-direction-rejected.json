@@ -13,6 +13,15 @@
       "code": "authentication-completed"
     },
     {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
       "stage": "validation",
       "outcome": "completed",
       "code": "source-validation-completed",
@@ -28,6 +37,14 @@
       "counts": {
         "completed": 2,
         "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "failed",
+      "code": "deposit-source-validation-rejected",
+      "counts": {
+        "statementType": "deposit"
       }
     }
   ]

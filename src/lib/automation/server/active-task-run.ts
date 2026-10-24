@@ -12,8 +12,8 @@ import {
 import { runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 import type {
   TypedWorkflowErrorCode,
-  TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
+import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -46,7 +46,7 @@ export type TaskRunFailure = Readonly<{
 
 /** What an execution observed, before the run's Commit attempts and stop are applied. */
 export type TaskRunReport = Readonly<{
-  summary: TypedWorkflowOutcomeSummary | null;
+  summary: WorkflowRunResult | null;
   /** Null when the workflow completed. */
   failure: TaskRunFailure | null;
 }>;
@@ -54,7 +54,7 @@ export type TaskRunReport = Readonly<{
 export type TaskRunOutcome = Readonly<{
   status: TerminalTaskRunStatus;
   errorCode: TypedWorkflowErrorCode | null;
-  summary: TypedWorkflowOutcomeSummary | null;
+  summary: WorkflowRunResult | null;
   forced: boolean;
 }>;
 

@@ -73,8 +73,8 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
     });
     const result = await executor.run("sync-maicoin", "synthetic-maicoin-run", {
       credentials: { accessKey: "test-access", secretKey: "test-secret", subAccount: "main" },
-    }, new AbortController().signal) as { canonicalInvestmentCaptures: number };
-    assert.equal(result.canonicalInvestmentCaptures, 2);
+    }, new AbortController().signal) as { counts: { canonicalCaptureCount?: number } };
+    assert.equal(result.counts.canonicalCaptureCount, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
     assert.equal((await store.query<{ count: number }>(
       "SELECT COUNT(*)::int AS count FROM source_captures WHERE record_kind = 'investment-source-record' AND scope_start = '2017-12-11' AND scope_end = '2026-09-02'",

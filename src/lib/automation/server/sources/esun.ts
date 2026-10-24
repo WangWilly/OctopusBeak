@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
 export const ESUN_SOURCE: VerifiedSource = {
@@ -84,7 +84,7 @@ export const ESUN_SOURCE: VerifiedSource = {
     label: "ESun credit card statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.esun,
     runtime: browser("https://ebank.esunbank.com.tw/index.jsp", "esun-login"),
@@ -92,5 +92,5 @@ export const ESUN_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/esun-credit-card-statements.ts")).runEsunCreditCardProviderWorkflow;
     },
-  },
+  }),
 };

@@ -19,7 +19,7 @@ beforeEach(async () => {
     LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
     LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES: "credit_card",
     LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "deposit",
-    LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts",
+    LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit",
   });
 });
 afterEach(async () => {

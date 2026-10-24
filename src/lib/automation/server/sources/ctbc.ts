@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const CTBC_SOURCE: VerifiedSource = {
   id: "ctbc",
@@ -83,12 +83,12 @@ export const CTBC_SOURCE: VerifiedSource = {
     label: "CTBC statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", "ctbc-login"),
     input: { credentials: true },
     async load() {
       return (await import("../../../../workflows/ctbc-statements.ts")).runCtbcProviderWorkflow;
     },
-  },
+  }),
 };

@@ -7,10 +7,7 @@ import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts"
 import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
 import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
-import {
-  isTypedWorkflowOutcomeSummary,
-  type TypedWorkflowOutcomeSummary,
-} from "./typed-workflow-outcome.ts";
+import { isWorkflowRunResult, type WorkflowRunResult } from "../workflow-run-result.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
 import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
@@ -134,7 +131,7 @@ export type AppWorkflowWorkerOutboundFrame =
     protocolVersion: 2;
     kind: "completed";
     taskRunId: string;
-    summary: TypedWorkflowOutcomeSummary | null;
+    summary: WorkflowRunResult | null;
   }>
   | Readonly<{
     protocolVersion: 2;
@@ -142,14 +139,14 @@ export type AppWorkflowWorkerOutboundFrame =
     taskRunId: string | null;
     errorCode: string;
     diagnostic?: SafeWorkflowFailureError;
-    summary?: TypedWorkflowOutcomeSummary | null;
+    summary?: WorkflowRunResult | null;
     previewResponses?: PreviewResponseShapes;
   }>
   | Readonly<{
     protocolVersion: 2;
     kind: "cancelled";
     taskRunId: string;
-    summary?: TypedWorkflowOutcomeSummary | null;
+    summary?: WorkflowRunResult | null;
   }>
   | TdccSessionRequestFrame
   | TdccSessionRotatedFrame;
@@ -425,8 +422,8 @@ function validEvent(value: unknown): value is WorkflowRunEvent {
   return true;
 }
 
-function validSummary(value: unknown): value is TypedWorkflowOutcomeSummary | null {
-  return isTypedWorkflowOutcomeSummary(value);
+function validSummary(value: unknown): value is WorkflowRunResult | null {
+  return value === null || isWorkflowRunResult(value);
 }
 
 export function parseAppWorkflowWorkerOutboundFrame(
@@ -485,7 +482,7 @@ export function parseAppWorkflowWorkerOutboundFrame(
       kind: "failed",
       taskRunId: value.taskRunId as string | null,
       errorCode: value.errorCode,
-      ...(Object.hasOwn(value, "summary") ? { summary: value.summary as TypedWorkflowOutcomeSummary | null } : {}),
+      ...(Object.hasOwn(value, "summary") ? { summary: value.summary as WorkflowRunResult | null } : {}),
       ...(Object.hasOwn(value, "diagnostic")
         ? { diagnostic: sanitizeSafeWorkflowFailureError(value.diagnostic, diagnosticRepoRoot) }
         : {}),

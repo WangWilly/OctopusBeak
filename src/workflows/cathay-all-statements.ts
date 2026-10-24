@@ -6,7 +6,6 @@ import {
   type CollectionProductTypeId,
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
-  type ProductCollectionRunSummary,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.js";
@@ -48,12 +47,12 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
-  collectAttachedPreviewProducts,
+  attachedPreviewRun,
 } from "../lib/preview-sources/attached-products.ts";
-import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
 import {
   cathayAttachedPreviewCollectors,
   type CathayAttachedPreviewPort,
@@ -97,23 +96,6 @@ const typedCathayInputSchema = z.object({
 export type CathayAllProviderWorkflowInput = z.infer<
   typeof typedCathayInputSchema
 >;
-export type CathayAllProviderWorkflowOutput = Readonly<{
-  statementTypes: readonly ("domestic" | "foreign")[];
-  count: number;
-  rowCount: number;
-  sourceCaptureCount: number;
-  itemCount: number;
-  committedCount: number;
-  products: ProductCollectionRunSummary["products"];
-  productCollectionSummary: ProductCollectionRunSummary;
-  status:
-    | "source-only"
-    | "financial-admitted"
-    | "no-data"
-    | "partial"
-    | "failed";
-}>;
-
 export type CathayAllProviderWorkflowDependencies = Readonly<{
   signIn?: typeof signInCathayForApp;
   createSession?: (
@@ -246,40 +228,19 @@ function currentBalanceItems(
   }));
 }
 
-function noVerifiedProducts(
-  productIds: readonly CollectionProductTypeId[],
-): ProductCollectionRunSummary {
-  return {
-    products: productIds.map((typeId) => ({
-      typeId,
-      status: "skipped",
-      itemCount: 0,
-      committedCount: 0,
-      skipReason: "not_selected",
-    })),
-    sourceCaptureCount: 0,
-    rowCount: 0,
-    itemCount: 0,
-    committedCount: 0,
-    status: "completed",
-  };
-}
-
 /** App-owned Cathay group workflow. Every selected statement and balance
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
 export async function runCathayAllProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   dependencies: CathayAllProviderWorkflowDependencies = {},
-): Promise<CathayAllProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedCathayInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error(
       "Cathay credentials or selected workflow input are invalid.",
     );
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
@@ -318,6 +279,7 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
+    let verifiedRowCount = 0;
     if (selectedIds.length > 0) {
       await context.event("collection", "started", "statement-collection-started", {
         total: selectedIds.length,
@@ -445,9 +407,7 @@ export async function runCathayAllProviderWorkflow(
 
     // A person may select only attached preview products. The run then signs
     // in and reports every verified product as not selected.
-    const summary = selectedIds.length === 0
-      ? noVerifiedProducts(productIds)
-      : await collectSelectedProducts({
+    const summary = await collectSelectedProducts({
       productIds,
       selectedIds,
       signal: context.signal,
@@ -510,6 +470,7 @@ export async function runCathayAllProviderWorkflow(
           );
           stagedItems.push(...balances);
           statementCaptureCount += domestic.captureCount;
+          verifiedRowCount += domestic.rowCount;
           return {
             // Keep this legacy field scoped to statement-source captures;
             // balance command items are reflected by itemCount instead.
@@ -577,6 +538,7 @@ export async function runCathayAllProviderWorkflow(
         );
         stagedItems.push(...balances);
         statementCaptureCount += foreign.captures.length;
+        verifiedRowCount += foreign.rowCount;
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,
@@ -584,15 +546,28 @@ export async function runCathayAllProviderWorkflow(
         };
       },
       commit: async (typeId, stagedItems) =>
-        context.financialCommit!.execute(stagedItems, {
+        context.financialCommit.execute(stagedItems, {
           provider: "cathay",
           product: typeId,
           signal: context.signal,
         }),
+      attached: attachedPreviewRun({
+        context,
+        source: ATTACHED_PREVIEW_PRODUCTS.cathay,
+        selected: input.attachedPreviewProducts,
+        collectors: () => cathayAttachedPreviewCollectors(
+          (dependencies.attachedPreviewPort ??
+            playwrightCathayAttachedPreviewPort)(page, () => session, source),
+          context.now,
+        ),
+        assertSession,
+      }),
     });
 
     if (selectedIds.length > 0) {
-      const completedProducts = summary.products.filter(
+      const verifiedProducts = summary.products.filter((product) =>
+        (productIds as readonly string[]).includes(product.typeId));
+      const completedProducts = verifiedProducts.filter(
         (product) =>
           product.status === "success" ||
           product.status === "no_data" ||
@@ -603,51 +578,20 @@ export async function runCathayAllProviderWorkflow(
         total: selectedIds.length,
       });
       if (
-        summary.products
+        verifiedProducts
           .filter((product) => product.status !== "skipped")
           .every((product) => product.status !== "failed")
       ) {
+        const verifiedItemCount = verifiedProducts.reduce((total, product) => total + product.itemCount, 0);
         await context.event("validation", "completed", "all-source-admission-completed", {
-          completed: summary.itemCount,
-          total: summary.itemCount,
+          completed: verifiedItemCount,
+          total: verifiedItemCount,
         });
       }
     }
 
-    const overall = finishAttachedProductRun(summary, input.attachedPreviewProducts.length === 0
-      ? null
-      : await collectAttachedPreviewProducts({
-          context,
-          source: ATTACHED_PREVIEW_PRODUCTS.cathay,
-          selected: input.attachedPreviewProducts,
-          collectors: cathayAttachedPreviewCollectors(
-            (dependencies.attachedPreviewPort ??
-              playwrightCathayAttachedPreviewPort)(page, () => session, source),
-            context.now,
-          ),
-          assertSession,
-        }), context.signal);
-
-    const hasSuccessfulProduct = overall.products.some(
-      (product) => product.status === "success",
-    );
-    return {
-      statementTypes: selectedIds.map((typeId) =>
-        typeId === "foreign_currency" ? "foreign" : "domestic",
-      ),
-      count: statementCaptureCount,
-      rowCount: summary.rowCount,
-      sourceCaptureCount: summary.sourceCaptureCount,
-      itemCount: overall.itemCount,
-      committedCount: overall.committedCount,
-      products: overall.products,
-      productCollectionSummary: overall,
-      status:
-        overall.status === "completed"
-          ? hasSuccessfulProduct
-            ? "financial-admitted"
-            : "no-data"
-          : overall.status,
-    };
+    return productRunResult(summary, {
+      counts: { count: statementCaptureCount, rowCount: verifiedRowCount },
+    });
   });
 }

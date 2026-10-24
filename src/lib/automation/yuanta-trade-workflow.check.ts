@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
+import {
+  assertProductFailure,
+  assertStoppedRun,
+  STOPPED_COMMITS,
+  stoppedCommitPort,
+} from "./single-product-run.fixtures.ts";
 import {
   decodeYuantaTradeReportResponse,
   requestYuantaTradeAssistance,
@@ -81,7 +87,7 @@ function createHarness(options: {
       isVisible: async () => selector === "#btnLogout",
     }),
   } as unknown as Page;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-yuanta-trade-check",
     signal: options.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",
@@ -107,6 +113,8 @@ function createHarness(options: {
           status: "completed",
           items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
+          committedCount: materialized.length,
+          failedCount: 0,
         } as never;
       },
     },
@@ -160,10 +168,18 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     assert.equal(harness.committed.length, 1);
     assert.equal(harness.committed[0]?.length, 1);
     assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "yuanta-trade");
-    assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
-    assert.equal("files" in (output as object), false);
+    assert.deepEqual(output, {
+      status: "financial-admitted",
+      counts: {
+        sourceCaptureCount: 2, rowCount: 1, itemCount: 1, committedCount: 1,
+        holdingPageCount: 1, holdingGridCount: 1, holdingRowCount: 1,
+        tradePageCount: 1, tradeGridCount: 1, tradeRowCount: 0,
+        canonicalCaptureCount: 1,
+      },
+      products: [{ typeId: "securities", status: "success", itemCount: 1, committedCount: 1 }],
+    });
     assert.deepEqual(await readdir(temp), []);
-    assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-completed"));
+    assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "securities-source-validation-completed"));
   } finally {
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });
@@ -178,11 +194,24 @@ test("Yuanta Trade typed provider rejects incomplete selected pages before first
       captureReport: async (_page, reportType) =>
         reportType === "Stock" ? report("Stock") : report("OtherTrade"),
     }),
-    /source is incomplete/i,
+    assertProductFailure("source-validation-failed", /source is incomplete/i),
   );
   assert.equal(harness.committed.length, 0);
   assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-rejected"));
 });
+
+for (const { stop, errorCode } of STOPPED_COMMITS) {
+  test(`Yuanta Trade names a ${stop} commit ${errorCode}`, async () => {
+    const harness = createHarness();
+    await assert.rejects(
+      runYuantaTradeProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, selectedInput, {
+        authenticate: async () => true,
+        captureReport: async (_page, reportType) => reportType === "Stock" ? report("Stock") : report("StockTrade"),
+      }),
+      assertStoppedRun("securities", 1, errorCode),
+    );
+  });
+}
 
 function response(bytes: Uint8Array, headers: Record<string, string> = { "content-type": "text/html; charset=utf-8" }): Response {
   return {

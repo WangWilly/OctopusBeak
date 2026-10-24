@@ -18,6 +18,7 @@ import {
 } from "../src/lib/automation/workflow-executor.ts";
 import type { WorkflowRunEvent } from "../src/lib/automation/run-event.ts";
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
+import { workflowRunResult, type WorkflowRunResult } from "../src/lib/automation/workflow-run-result.ts";
 import { parsePreviewWrite } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   APP_WORKFLOW_DEFINITIONS,
@@ -352,7 +353,7 @@ const fixtureDefinition: WorkflowDefinition = {
     })) as unknown as PGliteWorkflowRunItem[];
     const result = await financialCommit.execute(items, { signal: context.signal });
     if (result.status !== "completed" || result.items.length !== rows.length) throw new Error("Fixture dry-run failed.");
-    return { rows: rows.length };
+    return workflowRunResult({ counts: { rowCount: rows.length } });
   },
 };
 
@@ -379,7 +380,7 @@ async function runFixture() {
     randomUUID(),
     undefined,
     new AbortController().signal,
-  ) as { rows: number };
+  ) as WorkflowRunResult;
   return { result, events, dryRunCount };
 }
 
@@ -440,7 +441,7 @@ async function main(args = process.argv.slice(2)) {
     if (rest.length) fail("usage");
     const { result, events, dryRunCount } = await runFixture();
     for (const event of events) printEvent(event);
-    stdout.write(`fixture completed; source rows=${result.rows}; dry-run financial items=${dryRunCount}; database writes=0; files=0\n`);
+    stdout.write(`fixture completed; source rows=${result.counts.rowCount}; dry-run financial items=${dryRunCount}; database writes=0; files=0\n`);
     return;
   }
   if (command === "inspect") {

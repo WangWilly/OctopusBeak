@@ -3,6 +3,7 @@ import { parseEnvText } from "./env-file.ts";
 import {
   AUTOMATION_SETTINGS_PATH,
   migrateAutomationEnvFile,
+  migrateStatementSelectionIds,
   readAutomationSettingsFile,
   type AutomationSettingsFile,
 } from "./config-files.ts";
@@ -27,6 +28,7 @@ export function envFlagEnabled(value: string | boolean | undefined) {
 
 export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) {
   migrateAutomationEnvFile({ envPath: AUTOMATION_ENV_PATH, settingsPath });
+  migrateStatementSelectionIds(settingsPath);
   return readAutomationSettingsFile(settingsPath);
 }
 

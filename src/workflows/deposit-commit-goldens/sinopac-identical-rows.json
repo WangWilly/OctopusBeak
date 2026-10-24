@@ -1,17 +1,14 @@
 {
   "output": {
-    "usedExistingSession": true,
-    "dateRange": {
-      "startDate": "20260901",
-      "endDate": "20260930"
-    },
-    "accountCount": 1,
-    "rowCount": 2,
-    "skippedAccountCount": 0,
-    "sourceCaptureCount": 1,
-    "itemCount": 1,
-    "committedCount": 1,
     "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 1,
+      "rowCount": 2,
+      "itemCount": 1,
+      "committedCount": 1,
+      "accountCount": 1,
+      "skippedAccountCount": 0
+    },
     "products": [
       {
         "typeId": "deposit",
@@ -19,22 +16,7 @@
         "itemCount": 1,
         "committedCount": 1
       }
-    ],
-    "productCollectionSummary": {
-      "products": [
-        {
-          "typeId": "deposit",
-          "status": "success",
-          "itemCount": 1,
-          "committedCount": 1
-        }
-      ],
-      "sourceCaptureCount": 1,
-      "rowCount": 2,
-      "itemCount": 1,
-      "committedCount": 1,
-      "status": "completed"
-    }
+    ]
   },
   "executions": [
     {
@@ -319,6 +301,15 @@
     {
       "stage": "collection",
       "outcome": "started",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
       "code": "account-list-collection-started"
     },
     {
@@ -396,6 +387,36 @@
       "counts": {
         "completed": 0,
         "total": 0
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "deposit-collection-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "deposit"
       }
     }
   ]

@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const POST_SOURCE: VerifiedSource = {
   id: "post",
@@ -83,7 +83,7 @@ export const POST_SOURCE: VerifiedSource = {
     label: "Post Office statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://ipost.post.gov.tw/pst/home.html"),
     verification: { ownsSubmissionOutcome: true },
@@ -91,5 +91,5 @@ export const POST_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/post-statements.ts")).runPostProviderWorkflow;
     },
-  },
+  }),
 };

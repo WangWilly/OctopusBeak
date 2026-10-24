@@ -6,47 +6,58 @@ import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavai
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import {
   classifyTypedWorkflowFailure,
-  isTypedWorkflowOutcomeSummary,
   sanitizeTypedWorkflowOutcome,
   summarizeInterruptedProductCollection,
-  summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
+import { isWorkflowRunResult, WORKFLOW_RUN_COUNT_NAMES } from "../workflow-run-result.ts";
 import { workflowFailureExplanation } from "../workflow-failures.ts";
 import type { RunEventOutcome, WorkflowRunEvent } from "../run-event.ts";
 import { ProductCollectionInterruptedError } from "../product-collection.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "../tdcc-collection-summary.ts";
 
-test("typed workflow summary keeps only bounded status and aggregate counts", () => {
-  const privateAccountNumber = ["12345", "67890"].join("");
-  const summary = summarizeTypedWorkflowOutput({
-    status: "financial-admitted",
-    accountCount: 4,
-    rowCount: 22,
-    itemCount: 17,
-    captureId: "account-identifier-must-not-survive",
-    accountNumber: privateAccountNumber,
-    response: { authorization: "secret-token" },
-    items: [{ amount: 2500 }],
-  });
+/**
+ * The run result a workflow would build from these fields: count names go
+ * under `counts`, anything else stays beside them, where the worker refuses it.
+ */
+function runResult(fields: unknown) {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) return isWorkflowRunResult(fields) ? fields : null;
+  const { status, products, ...rest } = fields as Record<string, unknown>;
+  const counts = Object.fromEntries(Object.entries(rest).filter(([name]) => (WORKFLOW_RUN_COUNT_NAMES as readonly string[]).includes(name)));
+  const extra = Object.fromEntries(Object.entries(rest).filter(([name]) => !(WORKFLOW_RUN_COUNT_NAMES as readonly string[]).includes(name)));
+  const candidate = {
+    ...(status === undefined ? {} : { status }),
+    counts,
+    ...(products === undefined ? {} : { products }),
+    ...extra,
+  };
+  return isWorkflowRunResult(candidate) ? candidate : null;
+}
 
-  assert.deepEqual(summary, {
-    status: "financial-admitted",
-    counts: { accountCount: 4, rowCount: 22, itemCount: 17 },
-  });
-  assert.ok(JSON.stringify(summary).length <= 512);
-  assert.ok(!JSON.stringify(summary).includes(privateAccountNumber));
-  assert.doesNotMatch(JSON.stringify(summary), /account-identifier|secret-token|2500/u);
+test("a run result carrying provider fields is refused", () => {
+  const privateAccountNumber = ["12345", "67890"].join("");
+  const counts = { accountCount: 4, rowCount: 22, itemCount: 17 };
+  assert.equal(isWorkflowRunResult({ status: "financial-admitted", counts }), true);
+  for (const leak of [
+    { captureId: "account-identifier-must-not-survive" },
+    { accountNumber: privateAccountNumber },
+    { response: { authorization: "secret-token" } },
+    { items: [{ amount: 2500 }] },
+  ]) {
+    assert.equal(isWorkflowRunResult({ status: "financial-admitted", counts, ...leak }), false, JSON.stringify(Object.keys(leak)));
+  }
+  assert.equal(isWorkflowRunResult({ status: "financial-admitted", counts: { ...counts, accountNumber: 1 } }), false,
+    "only known count names may appear under counts");
 });
 
 test("typed workflow summary ignores unsupported and invalid count fields", () => {
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "untrusted free-form status",
     rowCount: 1.5,
     itemCount: -1,
     accountCount: Number.MAX_SAFE_INTEGER + 1,
     credentialCount: 10,
   }), null);
-  assert.equal(summarizeTypedWorkflowOutput("raw provider output"), null);
+  assert.equal(runResult("raw provider output"), null);
 });
 
 test("product outcomes survive typed sanitization and persisted outcome round-trip", () => {
@@ -54,19 +65,19 @@ test("product outcomes survive typed sanitization and persisted outcome round-tr
     { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
     { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 1, errorCode: "canonical-commit-failed" },
   ] as const;
-  const summary = summarizeTypedWorkflowOutput({
+  assert.equal(runResult({ status: "partial", itemCount: 3, committedCount: 3, products, providerMessage: "private provider response" }), null);
+  const summary = runResult({
     status: "partial",
     itemCount: 3,
     committedCount: 3,
     products,
-    providerMessage: "private provider response",
   });
   assert.deepEqual(summary, {
     status: "partial",
     counts: { itemCount: 3, committedCount: 3 },
     products,
   });
-  assert.equal(isTypedWorkflowOutcomeSummary(summary), true);
+  assert.equal(isWorkflowRunResult(summary), true);
   assert.deepEqual(sanitizeTypedWorkflowOutcome({ errorCode: "cancelled", summary }), {
     errorCode: "cancelled",
     summary,
@@ -89,11 +100,11 @@ test("product outcomes survive typed sanitization and persisted outcome round-tr
     committedCount: 3,
   });
 
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     products: [{ ...products[0], extra: "rejected" }],
   }), null);
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     products: [products[0], products[0]],
   }), null);
@@ -110,7 +121,7 @@ test("TDCC collection evidence is bounded, consistent, private, and round-trips"
       exclusionCounts: { excludedUnknownInstitutionCount: 1 },
     },
   }] as const;
-  const summary = summarizeTypedWorkflowOutput({
+  const summary = runResult({
     status: "partial",
     committedCount: 2,
     itemCount: 2,
@@ -122,7 +133,7 @@ test("TDCC collection evidence is bounded, consistent, private, and round-trips"
     counts: { committedCount: 2, excludedUnknownInstitutionCount: 1, itemCount: 2 },
     products,
   });
-  assert.equal(isTypedWorkflowOutcomeSummary(summary), true);
+  assert.equal(isWorkflowRunResult(summary), true);
   assert.deepEqual(sanitizeTypedWorkflowOutcome({ errorCode: "source-unavailable", summary }), {
     errorCode: "source-unavailable",
     summary,
@@ -130,24 +141,24 @@ test("TDCC collection evidence is bounded, consistent, private, and round-trips"
   assert.ok(Buffer.byteLength(JSON.stringify(summary), "utf8") <= 4_096);
   assert.equal(JSON.stringify(summary).includes("account"), false);
 
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     committedCount: 0,
     excludedUnknownInstitutionCount: 1,
     products,
   }), null, "aggregate receipts must match product receipts");
-  assert.equal(isTypedWorkflowOutcomeSummary({
+  assert.equal(isWorkflowRunResult({
     status: "partial",
     counts: { committedCount: 0, excludedUnknownInstitutionCount: 1 },
     products,
   }), false, "worker frames reject contradictory receipts");
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     committedCount: 2,
     excludedUnknownInstitutionCount: 1_000_000_001,
     products,
   }), null, "collection totals reject overflow instead of clamping");
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     committedCount: 2,
     excludedUnknownInstitutionCount: 1,
@@ -179,17 +190,17 @@ test("TDCC top-level statuses agree with collection coverage and durable receipt
     collection: { status: "complete", exclusionCounts: {} },
   }] as const;
 
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "no-data",
     excludedTimeDepositCount: 1,
     products: intentionalOnly,
   }), null, "intentional exclusions cannot be labeled as provider absence");
-  assert.equal(summarizeTypedWorkflowOutput({
+  assert.equal(runResult({
     status: "partial",
     excludedUnknownInstitutionCount: 1,
     products: incompleteWithoutReceipts,
   }), null, "a partial run requires at least one durable receipt");
-  assert.equal(isTypedWorkflowOutcomeSummary({
+  assert.equal(isWorkflowRunResult({
     status: "partial",
     counts: { excludedUnknownInstitutionCount: 1 },
     products: incompleteWithoutReceipts,
@@ -203,7 +214,7 @@ test("TDCC top-level statuses agree with collection coverage and durable receipt
     },
   })?.summary, null, "persisted outcomes discard contradictory summaries");
 
-  const failed = summarizeTypedWorkflowOutput({
+  const failed = runResult({
     status: "failed",
     excludedUnknownInstitutionCount: 1,
     products: incompleteWithoutReceipts,
@@ -214,12 +225,12 @@ test("TDCC top-level statuses agree with collection coverage and durable receipt
     summary: failed,
   }, "cancellation keeps its terminal code while preserving a failed zero-receipt snapshot");
 
-  assert.ok(summarizeTypedWorkflowOutput({
+  assert.ok(runResult({
     status: "completed",
     excludedTimeDepositCount: 1,
     products: intentionalOnly,
   }), "intentional exclusions with zero receipts are completed");
-  assert.ok(summarizeTypedWorkflowOutput({
+  assert.ok(runResult({
     status: "financial-admitted",
     committedCount: 1,
     itemCount: 1,
@@ -232,12 +243,12 @@ test("TDCC top-level statuses agree with collection coverage and durable receipt
       collection: { status: "complete_with_exclusions", exclusionCounts: { hiddenAccountCount: 1 } },
     }],
   }), "intentional exclusions remain compatible with durable financial receipts");
-  assert.ok(summarizeTypedWorkflowOutput({
+  assert.ok(runResult({
     status: "no-data",
     products: explicitAbsence,
   }), "explicit provider absence retains the no-data label");
 
-  const completedLateCancellation = summarizeTypedWorkflowOutput({
+  const completedLateCancellation = runResult({
     status: "completed",
     committedCount: 1,
     itemCount: 1,
@@ -255,7 +266,7 @@ test("TDCC top-level statuses agree with collection coverage and durable receipt
     summary: completedLateCancellation,
   });
 
-  const unknownCommit = summarizeTypedWorkflowOutput({
+  const unknownCommit = runResult({
     status: "partial",
     committedCount: 1,
     itemCount: 1,
@@ -290,7 +301,7 @@ test("three-product TDCC exclusion aggregates stay bounded through normal and in
   const aggregateCounts = Object.fromEntries(
     TDCC_EXCLUSION_COUNT_NAMES.map((name) => [name, 999_999_999]),
   );
-  const normal = summarizeTypedWorkflowOutput({
+  const normal = runResult({
     status: "partial",
     sourceCaptureCount: 3,
     rowCount: 0,
@@ -301,7 +312,7 @@ test("three-product TDCC exclusion aggregates stay bounded through normal and in
   });
   assert.ok(normal);
   assert.ok(Buffer.byteLength(JSON.stringify(normal), "utf8") <= 4_096);
-  assert.equal(isTypedWorkflowOutcomeSummary(normal), true);
+  assert.equal(isWorkflowRunResult(normal), true);
   assert.deepEqual(sanitizeTypedWorkflowOutcome({ errorCode: "source-unavailable", summary: normal }), {
     errorCode: "source-unavailable",
     summary: normal,
@@ -327,7 +338,7 @@ test("three-product TDCC exclusion aggregates stay bounded through normal and in
     committedCount: 500_000_000,
     collection: { status: "incomplete", exclusionCounts: {} },
   }));
-  assert.equal(summarizeTypedWorkflowOutput({ status: "partial", products: overfullReceipts }), null,
+  assert.equal(runResult({ status: "partial", products: overfullReceipts }), null,
     "product receipt totals over the summary bound cannot pass when aggregate committedCount is omitted");
 });
 

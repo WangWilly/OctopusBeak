@@ -79,3 +79,16 @@ export async function collectAttachedPreviewProducts(options: AttachedPreviewCol
     ...(options.assertSession ? { assertSession: options.assertSession } : {}),
   });
 }
+
+/**
+ * The `attached` option of `collectSelectedProducts`: collects the selected
+ * attached products, or is absent when the person selected none. Collectors
+ * are built only when collection starts, so an unselected product never opens
+ * its provider port.
+ */
+export function attachedPreviewRun(
+  options: Omit<AttachedPreviewCollectionOptions, "collectors"> & Readonly<{ collectors: () => PreviewProductCollectors }>,
+): (() => Promise<PreviewProductRun>) | undefined {
+  if (options.selected.length === 0) return undefined;
+  return () => collectAttachedPreviewProducts({ ...options, collectors: options.collectors() });
+}

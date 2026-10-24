@@ -92,7 +92,7 @@ test("fixture success workflow verifies only the inert page marker and emits a b
   assert.ok(task);
   const { context, events } = fixtureContext(PACKAGED_BROWSER_FIXTURE_MARKER);
   const result = await packagedBrowserFixtureDefinition(task.workflowId).run(context, null);
-  assert.deepEqual(result, { status: "completed" });
+  assert.deepEqual(result, { status: "completed", counts: {} });
   assert.deepEqual(events, [PACKAGED_BROWSER_FIXTURE_EVENT]);
 });
 

@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import type { AutomationExternalPrerequisite } from "../../types.ts";
 
 export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
@@ -127,7 +127,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
     products: [
-      { id: "brokerage", stream: "investment" },
+      { id: "securities", stream: "investment" },
     ],
   },
   task: {
@@ -136,7 +136,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
     kind: "crawler",
     externalPrerequisites: [YUANTA_SERVISIGN_PREREQUISITE],
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020"),
     verification: { ownsSubmissionOutcome: false },
@@ -155,5 +155,5 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
         settings: readAutomationSettings(),
       });
     },
-  },
+  }),
 };

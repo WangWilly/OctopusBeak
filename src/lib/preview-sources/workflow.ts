@@ -1,13 +1,13 @@
+import type { ProductRunResult } from "../automation/workflow-run-result.ts";
 import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
 import { verifiedSourceById } from "../automation/server/sources/index.ts";
-import type { WorkflowContext, WorkflowDefinition } from "../automation/workflow-executor.ts";
+import { defineWorkflow, type WorkflowContext, type WorkflowDefinition } from "../automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, type AttachedPreviewGroupId } from "./attached-products.ts";
 import {
   boundPreviewWriter,
   collectPreviewProducts,
   previewRunOutput,
   type PreviewProductCollectors,
-  type PreviewRunOutput,
 } from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
 import { previewTaskId } from "./source-id.ts";
@@ -23,7 +23,7 @@ export type PreviewResponseObservation = Readonly<{ endpoint: string; status: nu
  * the only way a run produces its output.
  */
 export type PreviewSourceWriter = Readonly<{
-  collect(collectors: PreviewProductCollectors, options?: Readonly<{ assertSession?: () => Promise<void> }>): Promise<PreviewRunOutput>;
+  collect(collectors: PreviewProductCollectors, options?: Readonly<{ assertSession?: () => Promise<void> }>): Promise<ProductRunResult>;
   observe(response: PreviewResponseObservation): void;
 }>;
 
@@ -52,7 +52,7 @@ export type PreviewWorkflowInput = Readonly<{
 export type PreviewWorkflowRun = (
   context: PreviewWorkflowContext,
   input: PreviewWorkflowInput,
-) => Promise<PreviewRunOutput>;
+) => Promise<ProductRunResult>;
 
 export const previewStatementSelectionKey = (source: Pick<PreviewSource, "id">) =>
   `PREVIEW_${source.id.toUpperCase().replaceAll("-", "_")}_STATEMENT_TYPES`;
@@ -106,39 +106,38 @@ export function previewWorkflowInput(
 
 export function previewWorkflowDefinition(
   source: PreviewSource,
-): WorkflowDefinition<PreviewWorkflowInput, PreviewRunOutput> {
-  return {
+): WorkflowDefinition<PreviewWorkflowInput, ProductRunResult> {
+  return defineWorkflow({
     id: previewTaskId(source),
     requiresFinancialCommit: false,
     requiresPreviewWrite: true,
-    async run(context, input) {
-      const port = context.previewWrite!;
-      const { financialCommit: _commit, maicoinPersistence: _maicoin, tdcc: _tdcc, previewWrite: _port, ...rest } = context;
-      const observations: PreviewResponseObservation[] = [];
-      const write = boundPreviewWriter(port, { sourceId: source.id, institution: source.institution });
-      try {
-        return await source.run({
-          ...rest,
-          preview: {
-            collect: async (collectors, options = {}) => previewRunOutput(await collectPreviewProducts({
-              products: source.products,
-              selected: input.products,
-              collectors,
-              write,
-              signal: context.signal,
-              event: context.event,
-              ...(options.assertSession ? { assertSession: options.assertSession } : {}),
-            })),
-            observe(response) {
-              observations.push(response);
-              if (observations.length > MAX_OBSERVATIONS) observations.shift();
-            },
+  }, async (context, input: PreviewWorkflowInput): Promise<ProductRunResult> => {
+    const port = context.previewWrite;
+    const { financialCommit: _commit, maicoinPersistence: _maicoin, tdcc: _tdcc, previewWrite: _port, ...rest } = context;
+    const observations: PreviewResponseObservation[] = [];
+    const write = boundPreviewWriter(port, { sourceId: source.id, institution: source.institution });
+    try {
+      return await source.run({
+        ...rest,
+        preview: {
+          collect: async (collectors, options = {}) => previewRunOutput(await collectPreviewProducts({
+            products: source.products,
+            selected: input.products,
+            collectors,
+            write,
+            signal: context.signal,
+            event: context.event,
+            ...(options.assertSession ? { assertSession: options.assertSession } : {}),
+          })),
+          observe(response) {
+            observations.push(response);
+            if (observations.length > MAX_OBSERVATIONS) observations.shift();
           },
-        }, input);
-      } catch (error) {
-        if (typeof error === "object" && error !== null) failureObservations.set(error, [...observations]);
-        throw error;
-      }
-    },
-  };
+        },
+      }, input);
+    } catch (error) {
+      if (typeof error === "object" && error !== null) failureObservations.set(error, [...observations]);
+      throw error;
+    }
+  });
 }

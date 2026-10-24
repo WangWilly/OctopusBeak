@@ -1,3 +1,4 @@
+import type { WorkflowRunResult } from "./workflow-run-result.ts";
 import type { Page } from "playwright";
 import type {
   HumanAssistanceContractInput,
@@ -119,7 +120,10 @@ export type WorkflowContext = Readonly<{
   productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
-export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
+/** A workflow returns its run result, or nothing when it records no run counts. */
+export type WorkflowOutput = WorkflowRunResult | void;
+
+export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = WorkflowOutput> = Readonly<{
   id: string;
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
@@ -163,6 +167,52 @@ const WORKFLOW_CAPABILITIES = {
 } as const satisfies Record<string, Readonly<{ flag: keyof WorkflowDefinition; label: string }>>;
 
 export type WorkflowCapability = keyof typeof WORKFLOW_CAPABILITIES;
+type WorkflowCapabilityFlag<C extends WorkflowCapability> = (typeof WORKFLOW_CAPABILITIES)[C]["flag"];
+
+/** The capabilities whose flag a definition sets to a literal `true`. */
+export type RequiredCapabilities<Flags> = {
+  [C in WorkflowCapability]: Flags extends Readonly<Record<WorkflowCapabilityFlag<C>, true>> ? C : never;
+}[WorkflowCapability];
+
+/** The ports a definition may carry without requiring: preview writes for its attached products. */
+export type OptionalCapabilities<Flags> = Flags extends Readonly<{ attachedPreviewProducts: object }> ? "previewWrite" : never;
+
+/**
+ * A context whose required ports `C` are present, because the executor checks
+ * them before every run, and whose other ports are absent, except the optional
+ * ports `O` the definition may carry.
+ */
+export type WorkflowContextWith<C extends WorkflowCapability, O extends WorkflowCapability = never> =
+  Omit<WorkflowContext, WorkflowCapability>
+  & Readonly<{ [K in C]-?: NonNullable<WorkflowContext[K]> }>
+  & Readonly<{ [K in O]?: WorkflowContext[K] }>
+  & Readonly<{ [K in Exclude<WorkflowCapability, C | O>]?: never }>;
+
+/** A run that may use the ports its definition requires, and only those. */
+export type WorkflowRun<
+  C extends WorkflowCapability,
+  Input = unknown,
+  Output extends WorkflowOutput = WorkflowOutput,
+  O extends WorkflowCapability = never,
+> = (
+  context: WorkflowContextWith<C, O>,
+  input: Input,
+) => Promise<Output>;
+
+/**
+ * Declares a definition whose run is typed by its capability flags, so a run
+ * that uses a port its definition does not require fails to compile.
+ */
+export function defineWorkflow<
+  const Flags extends Omit<WorkflowDefinition, "run">,
+  Input = unknown,
+  Output extends WorkflowOutput = WorkflowOutput,
+>(
+  flags: Flags,
+  run: WorkflowRun<RequiredCapabilities<Flags>, Input, Output, OptionalCapabilities<Flags>>,
+): WorkflowDefinition<Input, Output> {
+  return { ...flags, run } as WorkflowDefinition<Input, Output>;
+}
 export type WorkflowCapabilityPorts = Pick<WorkflowExecutorPorts, WorkflowCapability>;
 type WorkflowCapabilityFlags = Pick<WorkflowDefinition, (typeof WORKFLOW_CAPABILITIES)[WorkflowCapability]["flag"]>;
 
