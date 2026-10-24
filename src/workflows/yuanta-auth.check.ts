@@ -194,7 +194,7 @@ test("the typed Yuanta App parent delegates authentication to shared assistance"
     /console\.(log|warn|error)\([^\n]*(?:password|captcha)/i,
   );
   assert.match(parentSource, /authenticateYuantaBankWithAssistance/);
-  assert.match(parentSource, /context\.humanAssistance\.request/);
+  assert.match(parentSource, /context\.verification\.complete/);
   assert.match(
     parentSource,
     /overrides\.authenticate \?\? authenticateYuantaForApp/u,

@@ -35,7 +35,7 @@ import {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../lib/automation/yuanta-trade-captcha.ts";
-import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
@@ -44,7 +44,6 @@ import {
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
-import type { HumanAssistanceContractInput } from "../lib/automation/human-assistance.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -202,35 +201,6 @@ export async function yuantaTradeImageAssistanceStage(
       initialZoom: 1.15,
     },
   };
-}
-
-export async function requestYuantaTradeAssistance(
-  context: WorkflowContext,
-  stage: VerificationStage,
-): Promise<"entered" | "verified"> {
-  context.signal.throwIfAborted();
-  let contract: HumanAssistanceContractInput;
-  try {
-    contract = await resolveVerificationStage(stage);
-  } catch (error) {
-    await context.signalEvent("human-assistance-failed");
-    throw error;
-  }
-  await context.event("authentication", "advanced", "human-assistance-requested");
-  let status: Awaited<ReturnType<WorkflowContext["humanAssistance"]["request"]>>;
-  try {
-    status = await context.humanAssistance.request(contract, context.signal);
-  } catch (error) {
-    await context.signalEvent("human-assistance-failed");
-    throw error;
-  }
-  context.signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    await context.signalEvent("human-assistance-failed");
-    throw new Error(`YuanTa Trade human assistance ended with status ${status}.`);
-  }
-  await context.event("authentication", "advanced", "human-assistance-completed");
-  return status;
 }
 
 type YuantaTradeCredentials = {
@@ -1615,7 +1585,7 @@ async function completeTypedCertificateIfPresent(
         contextRegionIds: ["certificate-form"],
       },
     };
-    await requestYuantaTradeAssistance(context, stage);
+    await context.verification.complete(stage);
     await passwordField.waitFor({ state: "visible", timeout: 60_000 });
   }
   await passwordField.fill(
@@ -1662,10 +1632,7 @@ async function authenticateYuantaTradePage(
   }
   const audioInput = page.locator("#verificationCode");
   if (await audioInput.isVisible().catch(() => false)) {
-    await requestYuantaTradeAssistance(
-      context,
-      yuantaTradeAudioAssistanceStage(page),
-    );
+    await context.verification.complete(yuantaTradeAudioAssistanceStage(page));
     if (!(await audioInput.inputValue()).trim()) {
       throw new Error("YuanTa Trade audio verification code was not entered.");
     }
@@ -1676,17 +1643,11 @@ async function authenticateYuantaTradePage(
     await checkbox.isVisible().catch(() => false) &&
     !(await checkbox.isChecked().catch(() => false))
   ) {
-    await requestYuantaTradeAssistance(
-      context,
-      yuantaTradeCaptchaCheckboxAssistanceStage(page),
-    );
+    await context.verification.complete(yuantaTradeCaptchaCheckboxAssistanceStage(page));
   }
   const modal = yuantaTradeCaptchaModal(page);
   if (await modal.isVisible().catch(() => false)) {
-    await requestYuantaTradeAssistance(
-      context,
-      await yuantaTradeImageAssistanceStage(page),
-    );
+    await context.verification.complete(await yuantaTradeImageAssistanceStage(page));
     if (await modal.isVisible().catch(() => false)) {
       throw new Error("YuanTa Trade image challenge was not completed.");
     }

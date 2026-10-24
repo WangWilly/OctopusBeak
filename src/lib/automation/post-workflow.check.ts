@@ -13,7 +13,7 @@ import {
   type PostStatementResponseMetadata,
 } from "../../workflows/post-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import type { WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import {
   assertProductFailure,
@@ -227,10 +227,7 @@ function createPage(signedInInitially: boolean): Page & { setSignedIn(value: boo
 function createContext(input: {
   page: Page & { setSignedIn(value: boolean): void };
   signal?: AbortSignal;
-  assistance?: (
-    contract: Parameters<WorkflowContext["humanAssistance"]["request"]>[0],
-    signal: AbortSignal,
-  ) => Promise<"entered" | "verified" | "failed">;
+  assistance?: () => Promise<void>;
 }) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
@@ -244,10 +241,10 @@ function createContext(input: {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract, signal) {
-        assert.equal(contract.stageId, "ipost-login-captcha");
-        return input.assistance?.(contract, signal) ?? "verified";
+    verification: {
+      async complete(stage) {
+        assert.equal(stage.stageId, "ipost-login-captcha");
+        await input.assistance?.();
       },
     },
     financialCommit: {
@@ -301,12 +298,12 @@ test("Post typed workflow gets human assistance, admits complete source, and com
   const outputDir = await mkdtemp(join(tmpdir(), "post-typed-workflow-"));
   const previousDirectory = process.cwd();
   const page = createPage(false);
+  let assisted = 0;
   const harness = createContext({
     page,
-    assistance: async (_contract, signal) => {
-      assert.equal(signal.aborted, false);
+    assistance: async () => {
+      assisted += 1;
       page.setSignedIn(true);
-      return "verified";
     },
   });
   let sourceCount = 0;
@@ -333,8 +330,7 @@ test("Post typed workflow gets human assistance, admits complete source, and com
     assert.equal(sourceCount, 1);
     assert.equal(harness.committed.length, 1);
     assert.ok(harness.committed[0]?.length);
-    assert.ok(harness.events.some((event) => event.code === "human-assistance-requested"));
-    assert.ok(harness.events.some((event) => event.code === "human-assistance-completed"));
+    assert.equal(assisted, 1);
     assert.ok(harness.events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
     assert.deepEqual(await readdir(outputDir), []);
   } finally {
@@ -423,10 +419,10 @@ test("Post typed workflow cancellation during human assistance stops before coll
   const harness = createContext({
     page,
     signal: controller.signal,
-    assistance: async (_contract, signal) => await new Promise((_, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    assistance: async () => {
       controller.abort(new Error("Post assistance cancelled"));
-    }),
+      throw controller.signal.reason;
+    },
   });
   await assert.rejects(
     runPostProviderWorkflow(harness.context, workflowInput, {
@@ -440,5 +436,4 @@ test("Post typed workflow cancellation during human assistance stops before coll
   );
   assert.equal(sourceCount, 0);
   assert.equal(harness.committed.length, 0);
-  assert.ok(harness.events.some((event) => event.code === "human-assistance-requested"));
 });

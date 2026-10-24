@@ -288,8 +288,6 @@ test("Post App task dispatches the typed provider with human assistance, complet
     assert.equal(run?.status, "completed");
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-completed"));
     assert.ok(run?.events.some((event) => event.code === "source-decoding-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source, output, or log files");

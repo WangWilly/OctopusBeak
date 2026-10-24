@@ -26,7 +26,7 @@ try {
     now: () => "2026-09-26T00:00:00.000Z",
     browser: { withPage: (run) => run(page) },
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    verification: { complete: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
     event: async (stage, outcome, code) => {
       events.push({ runId: "ctbc-busy-fixture", stage, outcome, code, occurredAt: "2026-09-26T00:00:00.000Z" });

@@ -100,7 +100,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     now: () => NOW,
     browser: { withPage: async <T>(run: (page: Page) => Promise<T>) => run({} as Page) },
     text: strictSourceText,
-    humanAssistance: { request: async () => "verified" as const },
+    verification: { complete: async () => undefined },
     financialCommit: {
       execute: (items, options) => recorder.financialCommit.execute(expandRelationCommands(items), options),
     },

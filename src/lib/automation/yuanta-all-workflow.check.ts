@@ -49,11 +49,9 @@ function context(
       withPage: async <T>(run: (page: Page) => Promise<T>) => run({} as Page),
     },
     text,
-    humanAssistance: {
-      request: async (contract: { stageId?: string }, receivedSignal: AbortSignal) => {
-        assert.equal(receivedSignal, signal);
-        calls.push(`human:${contract.stageId}`);
-        return "verified" as const;
+    verification: {
+      complete: async (stage) => {
+        calls.push(`human:${stage.stageId}`);
       },
     },
     financialCommit: {
@@ -111,11 +109,7 @@ const productTypes = ["deposit", "foreign_currency", "credit_card", "loan", "fun
 function collectors(calls: string[]) {
   return {
     authenticate: async (_page: Page, _credentials: unknown, workflowContext: WorkflowContext) => {
-      const status = await workflowContext.humanAssistance.request(
-        { stageId: "yuanta-bank-login-captcha" } as never,
-        workflowContext.signal,
-      );
-      assert.equal(status, "verified");
+      await workflowContext.verification.complete({ stageId: "yuanta-bank-login-captcha" } as never);
       calls.push("authenticated");
     },
     collectDeposit: collector(products[0]!, calls),

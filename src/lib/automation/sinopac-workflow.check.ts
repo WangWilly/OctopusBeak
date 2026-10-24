@@ -115,7 +115,7 @@ function makeContext(options: Readonly<{
   page: Page;
   signal?: AbortSignal;
   financialCommit: WorkflowFinancialCommitPort;
-  assistance?: WorkflowContext["humanAssistance"]["request"];
+  assistance?: WorkflowContext["verification"]["complete"];
   onEvent?: WorkflowContext["event"];
 }>): WorkflowContextWith<"financialCommit"> {
   const signal = options.signal ?? new AbortController().signal;
@@ -125,8 +125,8 @@ function makeContext(options: Readonly<{
     now: () => "2026-09-24T12:00:00.000+08:00",
     browser: { withPage: async (run) => await run(options.page) },
     text: strictSourceText,
-    humanAssistance: {
-      request: options.assistance ?? (async () => "entered"),
+    verification: {
+      complete: options.assistance ?? (async () => undefined),
     },
     financialCommit: options.financialCommit,
     event: options.onEvent ?? (async () => undefined),
@@ -341,23 +341,20 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
 test("typed SinoPac CAPTCHA assistance uses the existing solve contract and accepts human entry", async () => {
   const calls: unknown[][] = [];
   const page = pageFixture({ signedIn: false });
-  const stages: Array<{ stage: string; code: string }> = [];
   let assistanceCalls = 0;
   const context = makeContext({
     page,
     financialCommit: financialCommitStub(calls),
-    assistance: async (contract) => {
+    assistance: async (stage) => {
       assistanceCalls += 1;
-      assert.equal(contract.stageId, "sinopac-login-captcha");
-      assert.equal(contract.expectedAnswerLength, 6);
-      assert.equal(contract.solverConfidenceThreshold, 0.9);
-      assert.deepEqual(contract.ocrAttemptPlan, [
+      assert.equal(stage.stageId, "sinopac-login-captcha");
+      assert.equal(stage.expectedAnswerLength, 6);
+      assert.equal(stage.solverConfidenceThreshold, 0.9);
+      assert.deepEqual(stage.ocrAttemptPlan, [
         { imagePreprocessing: ["remove-interference-lines"] },
       ]);
       page.setSignedIn(true);
-      return "entered";
     },
-    onEvent: async (stage, _outcome, code) => { stages.push({ stage, code }); },
   });
 
   const output = await runSinopacProviderWorkflow(context, input, {
@@ -375,8 +372,6 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
   });
 
   assert.equal(assistanceCalls, 1);
-  assert.equal(stages.some((event) => event.code === "human-assistance-requested"), true);
-  assert.equal(stages.some((event) => event.code === "human-assistance-completed"), true);
   assert.equal(calls.length, 1);
 });
 
@@ -391,7 +386,6 @@ test("typed SinoPac login owns and dismisses post-submit dialogs instead of hang
     onEvent: async (stage, _outcome, code) => { events.push({ stage, code }); },
     assistance: async () => {
       page.enterCaptcha("123456");
-      return "entered";
     },
   });
   await assert.rejects(
@@ -411,13 +405,13 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
   const controller = new AbortController();
   const calls: unknown[][] = [];
   let readAccountsCalls = 0;
-  let rejectAssistance!: (error: Error) => void;
-  const assistance = new Promise<never>((_resolve, reject) => { rejectAssistance = reject; });
   const context = makeContext({
     page: pageFixture({ signedIn: false }),
     signal: controller.signal,
     financialCommit: financialCommitStub(calls),
-    assistance: async () => await assistance,
+    assistance: () => new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+    }),
   });
   const running = runSinopacProviderWorkflow(context, input, {
     readAccounts: async () => { readAccountsCalls += 1; return [account]; },
@@ -426,7 +420,6 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   controller.abort(new Error("cancelled by test"));
-  rejectAssistance(new Error("late assistance response"));
   await assert.rejects(running, /cancelled by test/u);
   assert.equal(readAccountsCalls, 0);
   assert.equal(calls.length, 0);
@@ -439,7 +432,7 @@ test("SinoPac unknown dialogs and failed dismissals cannot produce a retryable r
     const context = makeContext({
       page,
       financialCommit: financialCommitStub(calls),
-      assistance: async () => { page.enterCaptcha("123456"); return "entered"; },
+      assistance: async () => { page.enterCaptcha("123456"); },
     });
     await assert.rejects(runSinopacProviderWorkflow(context, input), (error) => {
       assert.ok(error instanceof Error);

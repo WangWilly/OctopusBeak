@@ -135,8 +135,8 @@ async function run(
     now: () => "2026-09-25T12:00:00.000Z",
     browser: { withPage: async (body) => body(signedInPage()) },
     text: strictSourceText,
-    humanAssistance: {
-      async request() {
+    verification: {
+      async complete() {
         throw new Error("A signed-in synthetic session needs no assistance.");
       },
     },

@@ -281,7 +281,7 @@ function workflowContext(writes: PreviewWrite[], commits: unknown[][]): Workflow
     now: () => COLLECTED_AT,
     browser: { withPage: async (run) => await run(signedInPage()) },
     text: strictSourceText,
-    humanAssistance: { request: async () => "entered" },
+    verification: { complete: async () => undefined },
     financialCommit,
     previewWrite: {
       async write(input) {

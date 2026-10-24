@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
-import type { HumanAssistanceContractInput } from "./human-assistance.ts";
 import { workflowDefinitionForTask } from "./server/app-workflow-registry.ts";
 import { strictSourceText } from "./source-text.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -12,6 +11,7 @@ import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-p
 import type {
   WorkflowContext,
   WorkflowContextWith,
+  WorkflowHumanAssistancePort,
 } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
@@ -184,11 +184,21 @@ function createPage(options: {
 function createContext(options: {
   page?: Page & { setSignedIn?(value: boolean): void };
   signal?: AbortSignal;
-  onAssistance?: (contract: HumanAssistanceContractInput) => void;
+  onAssistance?: () => void;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const commits: unknown[][] = [];
   const assistance: string[] = [];
+  const assist = (stageId: string) => {
+    assistance.push(stageId);
+    options.onAssistance?.();
+  };
+  const humanAssistance: WorkflowHumanAssistancePort = {
+    async request(contract) {
+      assist(contract.stageId);
+      return "verified";
+    },
+  };
   let commitStarted = false;
   const selectedPage = options.page ?? createPage({
     onSourceRead() {
@@ -205,11 +215,9 @@ function createContext(options: {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract) {
-        assistance.push(contract.stageId);
-        options.onAssistance?.(contract);
-        return "verified";
+    verification: {
+      async complete(stage) {
+        assist(stage.stageId);
       },
     },
     financialCommit: {
@@ -241,7 +249,7 @@ function createContext(options: {
       events.push(signalRunEvent(signal, { runId: "linebank-typed-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, events, commits, assistance, page: selectedPage };
+  return { context, humanAssistance, events, commits, assistance, page: selectedPage };
 }
 
 const input = {
@@ -333,7 +341,7 @@ test("LINE Bank waits for delayed automatic sign-in without human fallback and h
   const executor = createWorkflowExecutor([linebankStatementsWorkflow], {
     browser: cancelled.context.browser,
     text: cancelled.context.text,
-    humanAssistance: cancelled.context.humanAssistance,
+    humanAssistance: cancelled.humanAssistance,
     financialCommit: cancelled.context.financialCommit,
     commitAttempts: { record: async () => undefined },
     events: { async append(event) { cancelledEvents.push(event); } },

@@ -790,7 +790,7 @@ test("records how many reports were collected when one report source fails", asy
     now: () => "2026-10-06T00:16:19.000Z",
     browser: { withPage: (run) => run(page) },
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    verification: { complete: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
     event: async (stage, outcome, code, counts) => {
       events.push({ runId: "yuanta-trade-report-failure-fixture", stage, outcome, code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
@@ -869,7 +869,7 @@ function reportContext(): WorkflowContext {
     now: () => "2026-10-12T02:08:50.000Z",
     browser: { withPage: async () => { throw new Error("unused"); } },
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("unused"); } },
+    verification: { complete: async () => { throw new Error("unused"); } },
     event: async () => {},
     signalEvent: async () => {},
   };

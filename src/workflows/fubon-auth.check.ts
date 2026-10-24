@@ -74,7 +74,7 @@ test("duplicate-login terminal remains fail-closed without automatic recovery", 
     /runFubonDuplicateLoginRecovery|reopenLoginForm/,
   );
   assert.match(completeLogin, /runFubonCaptchaAcquisition/);
-  assert.match(completeLogin, /request\(contract, signal\)/);
+  assert.match(completeLogin, /await complete\(/);
 });
 
 type FakeInput = {
@@ -721,7 +721,7 @@ test("the App provider owns shared Fubon login and assistance", async () => {
     "utf8",
   );
   assert.match(source, /completeFubonHumanLoginWithAssistance/);
-  assert.match(source, /humanAssistance\.request/);
+  assert.match(source, /context\.verification\.complete/);
 });
 
 test("Fubon declares three distinct agreement-only OCR strategies", () => {

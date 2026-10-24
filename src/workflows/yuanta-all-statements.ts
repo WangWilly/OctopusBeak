@@ -1,4 +1,3 @@
-import { humanAssistanceEvent } from "./human-assistance.ts";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -176,8 +175,7 @@ async function authenticateYuantaForApp(
 ): Promise<void> {
   await authenticateYuantaBankWithAssistance(page, credentials, true, {
     signal: context.signal,
-    request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: humanAssistanceEvent(context),
+    complete: (stage) => context.verification.complete(stage),
   });
 }
 
