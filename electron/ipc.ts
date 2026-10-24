@@ -8,7 +8,10 @@ import {
   type OpenDialogOptions,
 } from "electron";
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
-import type { OctopusBeakInvokeChannels } from "./preload.ts";
+import {
+  financialForwardHandlers,
+  type OctopusBeakInvokeHandlers,
+} from "./ipc-channels.ts";
 import {
   automationRunHistory,
   automationSaveCredentials,
@@ -84,35 +87,7 @@ import {
 } from "./pglite-financial-registry.ts";
 import type {
   SpendingCandidatePageRequest,
-  SpendingPageActionRequest,
-  SpendingPurchaseCategoryRequest,
-  SpendingRecordPageRequest,
-  SpendingMergeLogRequest,
-  SpendingMerchantStatsRequest,
-  SpendingMonthInsightRequest,
-  SpendingPendingOverviewRequest,
-  SpendingStrongConfirmRequest,
 } from "../src/lib/spending/model.ts";
-
-
-type InvokeChannel = {
-  [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];
-}[keyof OctopusBeakInvokeChannels];
-
-type BridgeMethod<Channel extends InvokeChannel> = {
-  [Namespace in keyof OctopusBeakInvokeChannels]: {
-    [Method in keyof OctopusBeakInvokeChannels[Namespace]]: OctopusBeakInvokeChannels[Namespace][Method] extends Channel
-      ? OctopusBeakApi[Namespace][Method & keyof OctopusBeakApi[Namespace]]
-      : never;
-  }[keyof OctopusBeakInvokeChannels[Namespace]];
-}[keyof OctopusBeakInvokeChannels];
-
-/** One main-process handler per preload channel, returning what the bridge method promises. */
-type OctopusBeakInvokeHandlers = {
-  [Channel in InvokeChannel]: BridgeMethod<Channel> extends (...args: infer Args) => infer Result
-    ? (event: IpcMainInvokeEvent, ...args: Args) => Result | Awaited<Result>
-    : never;
-};
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
@@ -224,6 +199,7 @@ export function registerOctopusBeakIpc({
     return result;
   }
   const invokeHandlers: OctopusBeakInvokeHandlers = {
+    ...financialForwardHandlers(pgliteFinancial),
     "settings:load": () =>
       systemSettings(readAutomationSettings()),
     "settings:save": async (_event, input: SystemSettingsDto) => {
@@ -237,9 +213,6 @@ export function registerOctopusBeakIpc({
     },
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
-    "spending:record-page": async (_event, request: SpendingRecordPageRequest) => {
-      return pgliteFinancial.request("financial.spending.recordPage", [request]);
-    },
     "spending:candidate-page": async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
       if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
         throw new TypeError("Spending candidate page request id is invalid.");
@@ -261,37 +234,8 @@ export function registerOctopusBeakIpc({
       controller.abort();
       return true;
     },
-    "spending:page-action": async (_event, request: SpendingPageActionRequest) => {
-      return pgliteFinancial.request("financial.spending.pageAction", [request]);
-    },
-    "spending:set-purchase-category": async (_event, request: SpendingPurchaseCategoryRequest) => {
-      return pgliteFinancial.request("financial.spending.setPurchaseCategory", [request]);
-    },
-    "spending:pending-overview": async (_event, request: SpendingPendingOverviewRequest) => {
-      return pgliteFinancial.request("financial.spending.pendingOverview", [request]);
-    },
-    "spending:merge-log": async (_event, request: SpendingMergeLogRequest) => {
-      return pgliteFinancial.request("financial.spending.mergeLog", [request]);
-    },
-    "spending:month-insight": async (_event, request: SpendingMonthInsightRequest) => {
-      return pgliteFinancial.request("financial.spending.monthInsight", [request]);
-    },
-    "spending:merchant-stats": async (_event, request: SpendingMerchantStatsRequest) => {
-      return pgliteFinancial.request("financial.spending.merchantStats", [request]);
-    },
-    "spending:confirm-strong-candidates": async (_event, request: SpendingStrongConfirmRequest) => {
-      return pgliteFinancial.request("financial.spending.confirmStrongCandidates", [request]);
-    },
-    "spending:pairing-candidates": (_event, input) =>
-      financialPages.request("financial.spending.pairing", [input]),
     "spending:pairing-prewarm": (_event, input) =>
       prewarmPGlitePairingCandidates(financialPages, input),
-    "spending:confirmCandidate": (_event, input) =>
-      financialPages.request("financial.spending.confirmCandidate", [input]),
-    "spending:denyCandidate": (_event, input) =>
-      financialPages.request("financial.spending.denyCandidate", [input]),
-    "spending:revokeLink": (_event, input) =>
-      financialPages.request("financial.spending.revokeLink", [input]),
     "automation:block": async (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
         withExpectedDataVersion(
           options?.expectedVersion,
