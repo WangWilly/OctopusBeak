@@ -29,11 +29,11 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { applyOptimisticAutomationAction, isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
-  import type {
-    AutomationActionKind,
-    AutomationActionToken,
+  import {
     createAutomationRuntimeController,
+    type AutomationActionToken,
   } from "$lib/automation/runtime-controller.ts";
+  import { createAutomationActions } from "$lib/automation/automation-actions.ts";
   import {
     deviceRegistrationSource,
     type DeviceRegistrationSource,
@@ -121,8 +121,6 @@ import type {
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
   export let runtimeController: ReturnType<typeof createAutomationRuntimeController> | null = null;
-  export let appPendingTaskIds: ReadonlySet<string> = new Set<string>();
-  export let appPendingActions: readonly AutomationActionToken[] = [];
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   /** The current overview, read only while run details are open to list accounts without a current value. */
@@ -240,9 +238,17 @@ import type {
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  let pendingTaskIds = new Set<string>();
-  let localPendingActions: AutomationActionToken[] = [];
-  let preparingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  const controller = runtimeController ?? createAutomationRuntimeController();
+  let pendingActions: readonly AutomationActionToken[] = controller.pendingActions();
+  onDestroy(controller.subscribe(() => {
+    pendingActions = controller.pendingActions();
+  }));
+  const actions = createAutomationActions({
+    controller,
+    api: window.octopusBeak.automation,
+    onSnapshot: applyAuthoritativeRuntimeSnapshot,
+  });
+  onDestroy(actions.dispose);
   let actionError = "";
   let statementSelectionError = "";
   let hoveredTask: AutomationTaskRow | null = null;
@@ -271,7 +277,7 @@ import type {
     task.credentialKeys.every((key) => automation.credentials[key]),
   ).length;
   $: taskStages = taskStagesFor(automation);
-  $: renderedPendingActions = mergePendingActions(appPendingActions, localPendingActions);
+  $: pendingTaskIds = new Set(pendingActions.map((action) => action.taskId));
   $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
   $: pendingChanges = pendingCredentialChanges(credentialGroups, credentialChanges);
   $: credentialsDirty = pendingChanges.length > 0 || Boolean(credentialChanges.editor?.draft.trim());
@@ -345,7 +351,7 @@ import type {
     { running: 0, completed: 0, failed: 0 },
   );
 
-  $: if ((automation.active || pendingTaskIds.size > 0 || appPendingTaskIds.size > 0) && !pollTimer) {
+  $: if ((automation.active || pendingTaskIds.size > 0) && !pollTimer) {
     pollTimer = setInterval(() => {
       void reload();
     }, 2_000);
@@ -360,8 +366,6 @@ import type {
 
   onDestroy(() => {
     stopPolling();
-    for (const timeout of preparingTimeouts.values()) clearTimeout(timeout);
-    preparingTimeouts.clear();
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
   });
 
@@ -401,7 +405,7 @@ import type {
     sourceAutomation: AutomationPageModel,
     block?: Parameters<typeof automationStageTasks>[1],
     liveRuntime?: AutomationRuntimeSnapshot | null,
-    liveActions: readonly AutomationActionToken[] = appPendingActions,
+    liveActions: readonly AutomationActionToken[] = pendingActions,
   ) {
     return [{
       id: "sync",
@@ -490,23 +494,9 @@ import type {
     return task.credentialKeys.some((key) => credentialState(key, sourceAutomation) === "read_failed");
   }
 
-  function schedulePreparingTimeout(taskId: string) {
-    const timeout = setTimeout(() => {
-      void window.octopusBeak.automation.runtimeSnapshot()
-        .then((snapshot) => applyAuthoritativeRuntimeSnapshot(snapshot))
-        .catch((error) => {
-          console.error("automation-runtime-preparing-timeout", error);
-          void window.octopusBeak.automation.fatalRuntimeSnapshot();
-        });
-    }, 5_000);
-    preparingTimeouts.set(taskId, timeout);
-  }
-
   /** Component IPC responses must pass the shell's session/revision gate. */
   function applyAuthoritativeRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
-    const accepted = runtimeController
-      ? runtimeController.acceptSnapshot(snapshot)
-      : { accepted: true, sessionChanged: false, hadGap: false, snapshot };
+    const accepted = controller.acceptSnapshot(snapshot);
     if (!accepted.accepted) return false;
     runtimeSnapshot = accepted.snapshot;
     appliedRuntimeSnapshot = accepted.snapshot;
@@ -516,52 +506,11 @@ import type {
   }
 
   function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
-    const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
     // Keep the component on the same pure merge contract as list/details and
     // let the authoritative runtime status derive terminal actions and
     // partial summaries. This also means every task row receives the exact
     // progress belonging to the current runId in the snapshot.
     automation = mergeAutomationRuntime(automation, snapshot);
-    for (const taskId of [...pendingTaskIds]) {
-      if (byTaskId.has(taskId)) {
-        pendingTaskIds.delete(taskId);
-        const timeout = preparingTimeouts.get(taskId);
-        if (timeout) clearTimeout(timeout);
-        preparingTimeouts.delete(taskId);
-      }
-    }
-    localPendingActions = localPendingActions.filter((action) => !byTaskId.has(action.taskId));
-  }
-
-  function mergePendingActions(
-    appActions: readonly AutomationActionToken[],
-    localActions: readonly AutomationActionToken[],
-  ) {
-    const actions = new Map(appActions.map((action) => [action.taskId, action]));
-    for (const action of localActions) actions.set(action.taskId, action);
-    return [...actions.values()];
-  }
-
-  function beginActionToken(taskId: string, kind: AutomationActionKind) {
-    const token = runtimeController
-      ? runtimeController.beginAction(taskId, kind)
-      : {
-        token: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        taskId,
-        kind,
-        runId: null,
-        startedAt: performance.now(),
-      } satisfies AutomationActionToken;
-    if (!token) return null;
-    pendingTaskIds = new Set([...pendingTaskIds, taskId]);
-    localPendingActions = [...localPendingActions.filter((action) => action.taskId !== taskId), token];
-    return token;
-  }
-
-  function failActionToken(token: AutomationActionToken) {
-    runtimeController?.failAction(token);
-    pendingTaskIds = new Set([...pendingTaskIds].filter((taskId) => taskId !== token.taskId));
-    localPendingActions = localPendingActions.filter((action) => action.token !== token.token);
   }
 
   function localizedText(value: { en: string; "zh-TW": string }) {
@@ -889,32 +838,24 @@ import type {
   }
 
   async function runTask(task: AutomationTaskRow) {
-    if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
+    if (pendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
     if (registrationBlocksRun(task)) {
       actionError = $t.automation.deviceRegistrationBlocksSync;
       return;
     }
-    const token = beginActionToken(task.id, "run");
-    if (!token) return;
+    const start = actions.run(task.id);
+    if (!start) return;
     const onboardingToken = onOnboardingWorkflowStarting(task.id, task.credentialGroupId ?? null);
     applyLocalPreparing(task.id);
-    schedulePreparingTimeout(task.id);
-    try {
-      actionError = "";
-      const result = await window.octopusBeak.automation.run(task.id);
-      runtimeController?.bindRun(token, result.runId);
-      onOnboardingWorkflowStarted(onboardingToken, { taskId: task.id, runId: result.runId ?? null });
-      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
-      await reload();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      onOnboardingWorkflowStartFailed(onboardingToken, message);
-      failActionToken(token);
-      const pending = preparingTimeouts.get(task.id);
-      if (pending) clearTimeout(pending);
-      preparingTimeouts.delete(task.id);
-      actionError = runStartErrorMessage(message);
+    actionError = "";
+    const result = await start.settled;
+    if (result.error !== null) {
+      onOnboardingWorkflowStartFailed(onboardingToken, result.error);
+      actionError = runStartErrorMessage(result.error);
+      return;
     }
+    onOnboardingWorkflowStarted(onboardingToken, { taskId: task.id, runId: result.runId });
+    await reload();
   }
 
   function applyLocalPreparing(taskId: string) {
@@ -950,48 +891,19 @@ import type {
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
-    const actionTokens: AutomationActionToken[] = [];
-    for (const task of tasks) {
-      const token = beginActionToken(task.id, "run");
-      if (!token) continue;
-      actionTokens.push(token);
-      applyLocalPreparing(task.id);
-      schedulePreparingTimeout(task.id);
+    const start = actions.runMany(tasks.map((task) => task.id));
+    if (!start) return;
+    for (const taskId of start.taskIds) applyLocalPreparing(taskId);
+    actionError = "";
+    const result = await start.settled;
+    if (result.error !== null) {
+      actionError = result.error;
+      return;
     }
-    if (!actionTokens.length) return;
-    try {
-      actionError = "";
-      const result = await window.octopusBeak.automation.runMany(actionTokens.map((token) => token.taskId));
-      if (result.errors && Object.keys(result.errors).length) {
-        actionError = Object.entries(result.errors)
-          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $locale)}: ${runStartErrorMessage(message)}`)
-          .join("\n");
-      }
-      for (const task of tasks) {
-        if (result.results[task.id]?.status !== "error") continue;
-        const token = actionTokens.find((candidate) => candidate.taskId === task.id);
-        if (token) failActionToken(token);
-        const timeout = preparingTimeouts.get(task.id);
-        if (timeout) clearTimeout(timeout);
-        preparingTimeouts.delete(task.id);
-      }
-      for (const token of actionTokens) {
-        const resultTask = result.results[token.taskId];
-        if (resultTask?.runId) runtimeController?.bindRun(token, resultTask.runId);
-      }
-      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
-      await reload();
-    } catch (error) {
-      for (const token of actionTokens) {
-        failActionToken(token);
-        const task = tasks.find((candidate) => candidate.id === token.taskId);
-        if (!task) continue;
-        const timeout = preparingTimeouts.get(task.id);
-        if (timeout) clearTimeout(timeout);
-        preparingTimeouts.delete(task.id);
-      }
-      actionError = error instanceof Error ? error.message : String(error);
-    }
+    actionError = Object.entries(result.errors)
+      .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $locale)}: ${runStartErrorMessage(message)}`)
+      .join("\n");
+    await reload();
   }
 
   async function stopAllTasks() {
@@ -1007,16 +919,15 @@ import type {
 
   async function forceTerminateTask(task: AutomationTaskRow) {
     if (!confirm($t.automation.confirmForceQuit)) return;
-    const token = beginActionToken(task.id, "force-terminate");
-    if (!token) return;
-    try {
-      actionError = "";
-      await window.octopusBeak.automation.forceTerminate(task.id);
-      await reload();
-    } catch (error) {
-      failActionToken(token);
-      actionError = error instanceof Error ? error.message : String(error);
-    }
+    const stop = actions.forceTerminate(task.id);
+    if (stop) await settleStop(stop.settled);
+  }
+
+  async function settleStop(settled: Promise<Readonly<{ error: string | null }>>) {
+    actionError = "";
+    const { error } = await settled;
+    if (error !== null) actionError = error;
+    else await reload();
   }
 
   async function revealTaskDetails(task: AutomationTaskRow) {
@@ -1076,17 +987,8 @@ import type {
       return;
     }
     if (!confirm($t.automation.confirmCancel(taskLabel(task, $locale)))) return;
-    const token = beginActionToken(task.id, "cancel");
-    if (!token) return;
-    try {
-      actionError = "";
-      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceTerminate(task.id);
-      else await window.octopusBeak.automation.cancel(task.id);
-      await reload();
-    } catch (error) {
-      failActionToken(token);
-      actionError = error instanceof Error ? error.message : String(error);
-    }
+    const stop = actions.cancel(task);
+    if (stop) await settleStop(stop.settled);
   }
 
   async function openRunHistory() {
@@ -1267,7 +1169,7 @@ import type {
 
   <div class="content automation-content">
     <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
-    {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, renderedPendingActions)}
+    {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, pendingActions)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
         {#if summaryAutomation.active}
@@ -1331,7 +1233,7 @@ import type {
     </ProgressiveBlock>
 
     <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
-    {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, renderedPendingActions)}
+    {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, pendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
     {#if detailsNoticeGroups.length}
       <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
@@ -1386,8 +1288,8 @@ import type {
     </ProgressiveBlock>
 
     <ProgressiveBlock label="list" state={blockState(blocks, "list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
-    {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
-    {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
+    {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, pendingActions)}
+    {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, pendingActions)}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     {@const multiStage = listTaskStages.length > 1}
     <section class="card workflow-card" class:single-stage={!multiStage} aria-label={$t.automation.taskQueue}>
@@ -1997,7 +1899,7 @@ import type {
                   <button
                     class="button"
                     type="button"
-                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || appPendingTaskIds.has(syncTask.id) || registrationBlocksRun(syncTask)}
+                    disabled={!syncTask.canRun || pendingTaskIds.has(syncTask.id) || registrationBlocksRun(syncTask)}
                     onclick={() => void runTask(syncTask)}
                   ><RefreshCw size={14} />{$t.automation.resync}</button>
                 {/if}
