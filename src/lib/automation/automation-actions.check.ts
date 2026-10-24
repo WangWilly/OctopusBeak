@@ -141,6 +141,20 @@ test("no runtime read once the run appears or the start fails", async (t) => {
   failed.actions.dispose();
 });
 
+test("a run queued behind others reads no runtime once a snapshot shows it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { calls, controller, actions } = harness();
+  controller.acceptSnapshot(runtime(1, [{ taskId: "a", runId: null, status: "completed" }]));
+  await actions.runMany(["a"])!.settled;
+  controller.acceptSnapshot(runtime(2, [{ taskId: "a", runId: "run-a", status: "queued" }]));
+  assert.deepEqual([...controller.pendingTaskIds()], ["a"], "a queued run is still pending");
+
+  t.mock.timers.tick(5_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.snapshots, 0);
+  actions.dispose();
+});
+
 test("dispose stops a pending runtime read", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { calls, actions } = harness();

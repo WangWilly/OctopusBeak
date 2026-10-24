@@ -45,24 +45,32 @@ export function createAutomationActions(input: Readonly<{
   onSnapshot(snapshot: AutomationRuntimeSnapshot): void;
 }>) {
   const { controller, api, onSnapshot } = input;
-  const preparingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Each timer remembers the runtime it was set against. */
+  const preparingTimeouts = new Map<string, Readonly<{
+    timeout: ReturnType<typeof setTimeout>;
+    since: AutomationRuntimeSnapshot | null;
+  }>>();
 
   function clearPreparing(taskId: string) {
-    const timeout = preparingTimeouts.get(taskId);
-    if (timeout) clearTimeout(timeout);
+    const preparing = preparingTimeouts.get(taskId);
+    if (preparing) clearTimeout(preparing.timeout);
     preparingTimeouts.delete(taskId);
   }
 
+  // A newer runtime that shows the task answers the timer, even while the
+  // run is still queued and so still pending.
   const unsubscribe = controller.subscribe(() => {
     const pending = controller.pendingTaskIds();
-    for (const taskId of [...preparingTimeouts.keys()]) {
-      if (!pending.has(taskId)) clearPreparing(taskId);
+    const current = controller.snapshot();
+    for (const [taskId, { since }] of [...preparingTimeouts]) {
+      const shown = current !== since && current?.tasks.some((task) => task.taskId === taskId);
+      if (!pending.has(taskId) || shown) clearPreparing(taskId);
     }
   });
 
   function schedulePreparing(taskId: string) {
     clearPreparing(taskId);
-    preparingTimeouts.set(taskId, setTimeout(() => {
+    preparingTimeouts.set(taskId, { since: controller.snapshot(), timeout: setTimeout(() => {
       preparingTimeouts.delete(taskId);
       void api.runtimeSnapshot()
         .then(onSnapshot)
@@ -70,7 +78,7 @@ export function createAutomationActions(input: Readonly<{
           console.error("automation-runtime-preparing-timeout", error);
           void api.fatalRuntimeSnapshot();
         });
-    }, PREPARING_TIMEOUT_MS));
+    }, PREPARING_TIMEOUT_MS) });
   }
 
   function release(token: AutomationActionToken) {

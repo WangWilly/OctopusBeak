@@ -438,13 +438,13 @@ export type PGliteFinancialFailureCategory =
   | "refused"
   | "fatal";
 
-/** The worker-owned implementation of every financial operation. */
 /** A page read's handler returns its page; every other handler returns the operation's result. */
 export type PGliteFinancialHandlerResult<Op extends PGliteFinancialOperation> =
   (typeof PGLITE_FINANCIAL_CONTRACTS)[Op] extends Readonly<{ pageRead: true; page?: (args: never) => infer Page }>
     ? Page
     : PGliteFinancialResult<Op>;
 
+/** The worker-owned implementation of every financial operation. */
 export type PGliteFinancialRegistry = Readonly<{
   [Op in PGliteFinancialOperation]: (
     args: PGliteFinancialArgs<Op>,
