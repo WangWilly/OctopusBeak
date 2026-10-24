@@ -22,10 +22,7 @@ const runParallelTasksSource = source.slice(
 
 assert.doesNotMatch(runTaskSource, /expandedRunDetailsTaskId\s*=/);
 assert.doesNotMatch(runParallelTasksSource, /expandedRunDetailsTaskId\s*=/);
-assert.match(
-  runParallelTasksSource,
-  /automation\.runMany\((?:tasks\.map\(\(task\) => task\.id\)|actionTokens\.map\(\(token\) => token\.taskId\))\)/,
-);
+assert.match(runParallelTasksSource, /actions\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
 assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
 assert.match(source, /function disclosureSlide\(node: Element\)/);
@@ -124,7 +121,7 @@ assert.match(source, /present\(hoveredTask\)\.statusLabel/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
 assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
-assert.match(runTaskSource, /automation\.run\(task\.id\)/);
+assert.match(runTaskSource, /actions\.run\(task\.id\)/);
 assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
@@ -159,14 +156,14 @@ const primaryTaskActionSource = source.slice(
   source.indexOf("async function primaryTaskAction"),
   source.indexOf("async function openRunHistory"),
 );
-assert.match(primaryTaskActionSource, /task\.status === "waiting_for_human"[\s\S]*?automation\.forceTerminate\(task\.id\)/);
-assert.match(primaryTaskActionSource, /else await window\.octopusBeak\.automation\.cancel\(task\.id\)/);
+// automation-actions.check.ts covers force-terminating a run waiting for a person.
+assert.match(primaryTaskActionSource, /actions\.cancel\(task\)/);
 const forceTerminateTaskSource = source.slice(
   source.indexOf("async function forceTerminateTask"),
   source.indexOf("async function revealTaskDetails"),
 );
 assert.match(forceTerminateTaskSource, /confirm\(\$t\.automation\.confirmForceQuit\)/);
-assert.match(forceTerminateTaskSource, /automation\.forceTerminate\(task\.id\)/);
+assert.match(forceTerminateTaskSource, /actions\.forceTerminate\(task\.id\)/);
 assert.match(
   source,
   /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
@@ -184,15 +181,15 @@ assert.match(source, /stageRunnableTasks\(stage\.tasks, listParallelTaskIds\)/);
 assert.match(source, /dispatchAutomationStageSync\(/);
 assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)[\s\S]*?runtimeSnapshot/);
 assert.match(source, /function applyAuthoritativeRuntimeSnapshot\(snapshot: AutomationRuntimeSnapshot\)/);
-assert.match(source, /runtimeController\.acceptSnapshot\(snapshot\)/);
-assert.match(source, /runtimeSnapshot\(\)\s*\.then\(\(snapshot\) => applyAuthoritativeRuntimeSnapshot\(snapshot\)\)/);
+assert.match(source, /controller\.acceptSnapshot\(snapshot\)/);
+assert.match(source, /onSnapshot: applyAuthoritativeRuntimeSnapshot/);
 assert.doesNotMatch(runTaskSource, /applyRuntimeSnapshot\(result\.runtime\)/);
 assert.doesNotMatch(runParallelTasksSource, /applyRuntimeSnapshot\(result\.runtime\)/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
 assert.match(
   source,
-  /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*renderedPendingActions\)/,
+  /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*pendingActions\)/,
 );
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);
