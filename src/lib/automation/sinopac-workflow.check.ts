@@ -64,7 +64,9 @@ function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dial
   let captchaValue = "";
   const emitter = new EventEmitter();
   const makeLocator = (selector: string) => ({
-    waitFor: async () => undefined,
+    waitFor: async () => {
+      if (selector.includes("user-logout") && !signedIn) throw new Error("synthetic logout link timeout");
+    },
     isVisible: async () => signedIn && selector.includes("user-logout"),
     fill: async (value: string) => { if (selector.includes("sino_keyword3")) captchaValue = value; },
     focus: async () => undefined,

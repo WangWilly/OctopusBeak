@@ -42,7 +42,7 @@ const input: SinopacWorkflowInput = {
 function signedInPage(): Page {
   const locator = {
     isVisible: async () => true,
-    first() { return { isVisible: async () => false }; },
+    first() { return { isVisible: async () => false, waitFor: async () => undefined }; },
   };
   return {
     url: () => "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx",

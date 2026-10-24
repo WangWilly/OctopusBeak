@@ -170,19 +170,34 @@ export type RequiredCapabilities<Flags> = {
   [C in WorkflowCapability]: Flags extends Readonly<Record<WorkflowCapabilityFlag<C>, true>> ? C : never;
 }[WorkflowCapability];
 
-/** A context whose required ports are present: the executor checks them before every run. */
-export type WorkflowContextWith<C extends WorkflowCapability> = WorkflowContext
-  & Readonly<{ [K in C]-?: NonNullable<WorkflowContext[K]> }>;
+/** The ports a definition may carry without requiring: preview writes for its attached products. */
+export type OptionalCapabilities<Flags> = Flags extends Readonly<{ attachedPreviewProducts: object }> ? "previewWrite" : never;
+
+/**
+ * A context whose required ports `C` are present, because the executor checks
+ * them before every run, and whose other ports are absent, except the optional
+ * ports `O` the definition may carry.
+ */
+export type WorkflowContextWith<C extends WorkflowCapability, O extends WorkflowCapability = never> =
+  Omit<WorkflowContext, WorkflowCapability>
+  & Readonly<{ [K in C]-?: NonNullable<WorkflowContext[K]> }>
+  & Readonly<{ [K in O]?: WorkflowContext[K] }>
+  & Readonly<{ [K in Exclude<WorkflowCapability, C | O>]?: never }>;
 
 /** A run that may use the ports its definition requires, and only those. */
-export type WorkflowRun<C extends WorkflowCapability, Input = unknown, Output = unknown> = (
-  context: WorkflowContextWith<C>,
+export type WorkflowRun<
+  C extends WorkflowCapability,
+  Input = unknown,
+  Output = unknown,
+  O extends WorkflowCapability = never,
+> = (
+  context: WorkflowContextWith<C, O>,
   input: Input,
 ) => Promise<Output>;
 
 /**
  * Declares a definition whose run is typed by its capability flags, so a run
- * that reads a port its definition does not require fails to compile.
+ * that uses a port its definition does not require fails to compile.
  */
 export function defineWorkflow<
   const Flags extends Omit<WorkflowDefinition, "run">,
@@ -190,7 +205,7 @@ export function defineWorkflow<
   Output = unknown,
 >(
   flags: Flags,
-  run: WorkflowRun<RequiredCapabilities<Flags>, Input, Output>,
+  run: WorkflowRun<RequiredCapabilities<Flags>, Input, Output, OptionalCapabilities<Flags>>,
 ): WorkflowDefinition<Input, Output> {
   return { ...flags, run } as WorkflowDefinition<Input, Output>;
 }

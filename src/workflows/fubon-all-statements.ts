@@ -2,7 +2,7 @@ import { humanAssistanceEvent } from "./human-assistance.ts";
 import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowAccountIdentityPort } from "../lib/automation/workflow-executor.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
@@ -178,7 +178,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
   collectDeposit?: (
     page: Page,
     input: z.infer<typeof fubonStatementsInputSchema>,
-    context: WorkflowContextWith<"accountIdentity">,
+    context: WorkflowContext & Readonly<{ accountIdentity: WorkflowAccountIdentityPort }>,
     identity: FubonWorkflowIdentity,
     items: PGliteWorkflowRunItem[],
     reportActivity: ProductCollectionActivityReporter,
@@ -248,7 +248,7 @@ async function authenticateFubonForApp(
 async function collectFubonDepositForApp(
   page: Page,
   input: z.infer<typeof fubonStatementsInputSchema>,
-  context: WorkflowContextWith<"accountIdentity">,
+  context: WorkflowContext & Readonly<{ accountIdentity: WorkflowAccountIdentityPort }>,
   identity: FubonWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
   reportActivity: ProductCollectionActivityReporter,

@@ -235,7 +235,7 @@ function contextHarness(
       return makeResult(materialized) as never;
     },
   };
-  const context: WorkflowContextWith<"financialCommit"> = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     runId: "cathay-test-run",
     signal: controller.signal,
     now: () => "2026-09-25T01:00:00.000Z",
@@ -721,7 +721,7 @@ test("Cathay all workflow cancellation stops later products and retains prior re
 function attachedHarness() {
   const harness = contextHarness();
   const writes: PreviewWrite[] = [];
-  const context: WorkflowContextWith<"financialCommit"> = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     ...harness.context,
     previewWrite: {
       async write(input) {

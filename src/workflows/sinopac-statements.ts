@@ -1827,7 +1827,7 @@ async function collectSinopacStatements(
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   overrides: SinopacProviderWorkflowOverrides = {},
 ): Promise<SinopacWorkflowOutput> {
@@ -1863,8 +1863,15 @@ export async function runSinopacProviderWorkflow(
     const dateRange = resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
+    // The logout link can render after a dismissed notice, so give it time before calling the session lost.
     const assertSession = async () => {
-      if (!(await isSignedIn(page, context.signal))) throw new ProductCollectionFatalError("authentication-failed");
+      const signedIn = sinopacSignedInPageUrl(page.url()) && await withAbort(
+        page.locator('a#user-logout, a[href*="MMALogout"]').first()
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .then(() => true, () => false),
+        context.signal,
+      );
+      if (!signedIn) throw new ProductCollectionFatalError("authentication-failed");
     };
     let deposit: SinopacDepositCollection | null = null;
     const summary = await collectSelectedProducts({

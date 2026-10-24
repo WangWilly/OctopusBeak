@@ -259,7 +259,7 @@ function signedInPage(): Page {
   } as unknown as Page;
 }
 
-function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContextWith<"financialCommit"> {
+function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContextWith<"financialCommit", "previewWrite"> {
   const financialCommit: WorkflowFinancialCommitPort = {
     async execute(items) {
       const received = [];
@@ -420,7 +420,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
     const writes: PreviewWrite[] = [];
     const commits: unknown[][] = [];
     const base = workflowContext(writes, commits);
-    const context: WorkflowContextWith<"financialCommit"> = {
+    const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
       ...base,
       signal: controller.signal,
       financialCommit: {
@@ -466,7 +466,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
 
 test("a refused SinoPac verified commit names the run collection-scope-changed and skips the attached cards", async () => {
   const writes: PreviewWrite[] = [];
-  const context: WorkflowContextWith<"financialCommit"> = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     ...workflowContext(writes, []),
     financialCommit: {
       async execute(items) {

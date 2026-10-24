@@ -1411,7 +1411,7 @@ async function collectEsunCreditCard(
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
 export async function runEsunCreditCardProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
 ): Promise<EsunProviderWorkflowOutput> {
   const parsed = typedInputSchema.safeParse(rawInput);
@@ -1485,7 +1485,7 @@ function esunRunOutput(
     canonicalAdmission: creditCard ? "admitted" : card?.status === "failed" ? "failed" : "not-selected",
     canonicalCaptureCount: creditCard ? 1 : 0,
     sourceCaptureCount: summary.sourceCaptureCount,
-    rowCount: creditCard?.count ?? 0,
+    rowCount: summary.rowCount,
     itemCount: summary.itemCount,
     captureId: creditCard?.captureId ?? null,
     committedCount: summary.committedCount,
