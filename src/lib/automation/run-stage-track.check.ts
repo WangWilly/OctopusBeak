@@ -107,7 +107,7 @@ test("a run that failed or was cancelled marks the stage it stopped in, not just
   ];
   const failed = runStageTrack([...stopped, event("finalization", "failed", "run-failed")], "failed", null);
   assert.deepEqual(states(failed), ["done", "done", "failed", "pending", "pending", "pending", "failed"]);
-  const cancelled = runStageTrack([...stopped, event("finalization", "failed", "run-cancelled")], "cancelled", null);
+  const cancelled = runStageTrack([...stopped, event("finalization", "advanced", "run-cancelled")], "cancelled", null);
   assert.deepEqual(states(cancelled), ["done", "done", "failed", "pending", "pending", "pending", "warning"]);
 });
 

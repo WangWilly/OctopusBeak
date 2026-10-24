@@ -18,7 +18,7 @@ An Automation run event carried a closed `stage` and a free `code` string. Workf
 
 ## Decision
 
-**A run event states its meaning.** Every event carries a Run event outcome: `started`, `advanced`, `completed` or `failed`. `completed` means the stage finished for the event's scope: the run, or one statement type. A sub-item that finishes inside a stage, such as one account, is `advanced`. There is no `rejected` outcome, because no reader tells it apart from `failed`. There is no `cancelled` outcome, because the run status already says a run was cancelled.
+**A run event states its meaning.** Every event carries a Run event outcome: `started`, `advanced`, `completed` or `failed`. `completed` means the stage finished for the event's scope: the run, or one statement type. A sub-item that finishes inside a stage, such as one account, is `advanced`. There is no `rejected` outcome, because no reader tells it apart from `failed`. There is no `cancelled` outcome, because the run status already says a run was cancelled. A cancelled commit and the closing `run-cancelled` event are `advanced`, not `failed`, so a cancelled run is never drawn as a failure.
 
 **A few events carry a signal.** A Run event signal names an event that a reader needs by name: `verification-solver-exhausted`, `solver-route-unavailable`, `solver-challenge-unsupported`, `login-dialog-interrupted` and `human-assistance-failed`. Each signal fixes its stage and outcome, so a workflow emits it with `context.signalEvent(name)` and cannot pair it with another stage.
 
@@ -26,7 +26,7 @@ An Automation run event carried a closed `stage` and a free `code` string. Workf
 
 **Boundaries validate; readers trust the type.** The operational store, the worker protocol and the page model reject an event whose outcome or signal is outside the closed sets, or whose signal disagrees with its stage and outcome.
 
-**Stored events are upgraded once on read.** Events stored before this decision have no outcome. The operational store derives it from the code when it reads a run, using the union of the old failure suffixes, then the old completion suffixes, then `started`, and `advanced` for the rest. The upgrade is removed once no stored event predates this decision: run events are kept 30 days.
+**Stored events are upgraded once on read.** Events stored before this decision have no outcome. The operational store derives it from the code when it reads a run, using the union of the old failure suffixes except cancellation, then the old completion suffixes, then `started`, and `advanced` for the rest. The upgrade is removed once no stored event predates this decision: run events are kept 30 days.
 
 ## Considered options
 

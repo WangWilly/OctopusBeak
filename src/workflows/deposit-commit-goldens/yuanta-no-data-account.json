@@ -642,22 +642,27 @@
   "events": [
     {
       "stage": "preparation",
+      "outcome": "completed",
       "code": "input-validated"
     },
     {
       "stage": "authentication",
+      "outcome": "started",
       "code": "authentication-started"
     },
     {
       "stage": "authentication",
+      "outcome": "completed",
       "code": "authentication-completed"
     },
     {
       "stage": "decoding",
+      "outcome": "started",
       "code": "source-decoding-started"
     },
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "deposit-collection-started",
       "counts": {
         "activity": "query",
@@ -666,6 +671,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "deposit-collection-query-started",
       "counts": {
         "activity": "query",
@@ -674,6 +680,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "deposit-collection-query-started",
       "counts": {
         "activity": "query",
@@ -682,6 +689,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "deposit-collection-download-started",
       "counts": {
         "activity": "download",
@@ -690,6 +698,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "completed",
       "code": "deposit-collection-completed",
       "counts": {
         "completed": 2,
@@ -699,6 +708,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "completed",
       "code": "deposit-source-decoding-completed",
       "counts": {
         "completed": 2,
@@ -708,6 +718,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "deposit-source-validation-completed",
       "counts": {
         "completed": 4,
@@ -717,6 +728,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,

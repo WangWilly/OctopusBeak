@@ -330,7 +330,7 @@ export function createWorkflowExecutor(
         throwIfAbortedWithProductResults();
         return result;
       } catch (error) {
-        await event("finalization", "failed", signal.aborted ? "run-cancelled" : "run-failed");
+        await event("finalization", signal.aborted ? "advanced" : "failed", signal.aborted ? "run-cancelled" : "run-failed");
         throw error;
       }
     },

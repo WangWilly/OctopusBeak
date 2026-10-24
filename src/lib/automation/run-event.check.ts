@@ -11,13 +11,14 @@ import {
 
 const detail = { runId: "run-1", occurredAt: "2026-10-23T00:00:00.000Z" };
 
-test("a stored code takes the outcome the old suffix patterns gave it, failure first", () => {
+test("a stored code takes the outcome the old suffix patterns gave it, failure first and cancellation as progress", () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ["source-decoding-failed", "failed"],
     ["source-validation-rejected", "failed"],
     ["source-response-malformed", "failed"],
     ["servisign-unavailable", "failed"],
-    ["run-cancelled", "failed"],
+    ["run-cancelled", "advanced"],
+    ["canonical-commit-cancelled", "advanced"],
     ["collection-failed", "failed"],
     ["authentication-completed", "completed"],
     ["account-collected", "completed"],
@@ -36,9 +37,9 @@ test("a stored signal code becomes its signal only at the signal's stage", () =>
     upgradeStoredRunEvent({ ...detail, stage: "authentication", code: "verification-solver-exhausted" }),
     { ...detail, stage: "authentication", code: "verification-solver-exhausted", outcome: "failed", signal: "verification-solver-exhausted" },
   );
-  const misplaced = { ...detail, stage: "collection", code: "verification-solver-exhausted" };
-  assert.equal(upgradeStoredRunEvent(misplaced), misplaced);
-  assert.equal(hasValidRunEventMeaning(misplaced), false);
+  const misplaced = upgradeStoredRunEvent({ ...detail, stage: "collection", code: "verification-solver-exhausted" });
+  assert.deepEqual(misplaced, { ...detail, stage: "collection", code: "verification-solver-exhausted", outcome: "failed" });
+  assert.equal(hasValidRunEventMeaning(misplaced as Record<string, unknown>), false);
 });
 
 test("an event that already states its outcome is not reinterpreted", () => {

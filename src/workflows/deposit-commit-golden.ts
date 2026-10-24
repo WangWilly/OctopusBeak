@@ -46,11 +46,11 @@ export function recordDepositCommit(): DepositCommitRecorder {
         };
       },
     },
-    async event(stage, _outcome, code, counts) {
-      events.push(counts === undefined ? { stage, code } : { stage, code, counts });
+    async event(stage, outcome, code, counts) {
+      events.push(counts === undefined ? { stage, outcome, code } : { stage, outcome, code, counts });
     },
     async signalEvent(signal) {
-      events.push({ stage: RUN_EVENT_SIGNALS[signal].stage, code: signal });
+      events.push({ ...RUN_EVENT_SIGNALS[signal], code: signal, signal });
     },
     recorded: () => normalize({ executions, events }),
   };
