@@ -29,9 +29,9 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { applyOptimisticAutomationAction, isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
-  import {
+  import type {
+    AutomationActionToken,
     createAutomationRuntimeController,
-    type AutomationActionToken,
   } from "$lib/automation/runtime-controller.ts";
   import { createAutomationActions } from "$lib/automation/automation-actions.ts";
   import {
@@ -120,7 +120,7 @@ import type {
   export let credentialGroups: CredentialGroupDto[];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  export let runtimeController: ReturnType<typeof createAutomationRuntimeController> | null = null;
+  export let runtimeController: ReturnType<typeof createAutomationRuntimeController>;
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   /** The current overview, read only while run details are open to list accounts without a current value. */
@@ -238,7 +238,7 @@ import type {
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  const controller = runtimeController ?? createAutomationRuntimeController();
+  const controller = runtimeController;
   let pendingActions: readonly AutomationActionToken[] = controller.pendingActions();
   onDestroy(controller.subscribe(() => {
     pendingActions = controller.pendingActions();
