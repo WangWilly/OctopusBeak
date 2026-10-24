@@ -70,27 +70,29 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "data:acknowledgeVersion",
   "data:getVersion",
   "display:setScale",
+  "financial.spending.confirmCandidate",
+  "financial.spending.confirmStrongCandidates",
+  "financial.spending.denyCandidate",
+  "financial.spending.merchantStats",
+  "financial.spending.mergeLog",
+  "financial.spending.monthInsight",
+  "financial.spending.pageAction",
+  "financial.spending.pairing",
+  "financial.spending.pendingOverview",
+  "financial.spending.recordPage",
+  "financial.spending.revokeLink",
+  "financial.spending.setPurchaseCategory",
   "settings:deletePreviewData",
   "settings:load",
   "settings:save",
   "spending:candidate-page",
   "spending:candidate-page-cancel",
-  "spending:confirm-strong-candidates",
-  "spending:confirmCandidate",
-  "spending:denyCandidate",
-  "spending:merchant-stats",
-  "spending:merge-log",
-  "spending:month-insight",
-  "spending:page-action",
-  "spending:pairing-candidates",
   "spending:pairing-prewarm",
-  "spending:pending-overview",
-  "spending:record-page",
-  "spending:revokeLink",
-  "spending:set-purchase-category",
 ], "the bridge reaches exactly these request channels");
 assert.equal(invokedBy.get("automation.forceTerminate"), "automation:forceTerminate");
 assert.equal(invokedBy.get("data.getVersion"), "data:getVersion");
+assert.equal(invokedBy.get("spending.loadMerchantStats"), "financial.spending.merchantStats");
+assert.equal(invokedBy.get("spending.loadCandidatePage"), "spending:candidate-page");
 
 const automation = api.automation as Record<string, (listener: () => void) => () => void>;
 const data = api.data as Record<string, (listener: () => void) => () => void>;
