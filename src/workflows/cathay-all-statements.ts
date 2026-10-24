@@ -249,7 +249,7 @@ function currentBalanceItems(
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
 export async function runCathayAllProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   dependencies: CathayAllProviderWorkflowDependencies = {},
 ): Promise<CathayAllProviderWorkflowOutput> {

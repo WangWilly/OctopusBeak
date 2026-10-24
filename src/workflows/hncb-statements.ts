@@ -1274,7 +1274,7 @@ function hncbRunOutput(
     ...(dateRange ? { dateRange } : {}),
     accountCount: (succeeded?.accountCount ?? 0) + attached.reduce((total, product) => total + product.itemCount, 0),
     sourceCaptureCount: summary.sourceCaptureCount,
-    rowCount: succeeded?.rowCount ?? 0,
+    rowCount: summary.rowCount,
     itemCount: summary.itemCount,
     committedCount: summary.committedCount,
     status: summary.status !== "completed"
@@ -1504,7 +1504,7 @@ async function collectHncbDeposit(
 
 /** App-owned entry point for the HNCB domestic-deposit statement workflow. */
 export async function runHncbProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
 ): Promise<HncbWorkflowOutput> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);

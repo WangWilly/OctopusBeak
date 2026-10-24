@@ -90,7 +90,7 @@ function makeCommit(commits: unknown[]): WorkflowFinancialCommitPort {
   };
 }
 
-function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]; events?: Array<{ stage: string; code: string }> }): {
+function makeContext(overrides: Partial<WorkflowContextWith<"financialCommit">> & { commits?: unknown[]; events?: Array<{ stage: string; code: string }> }): {
   context: WorkflowContextWith<"financialCommit">;
   commits: unknown[];
   events: Array<{ stage: string; code: string }>;

@@ -26,7 +26,7 @@ ADR 0056 rejected moving every workflow onto selected-product collection, becaus
 
 **The run names an untyped failure from the stage it reported.** Each collector reports its own run events through a product-scoped reporter. When it reports a decoding or validation failure and then throws an untyped error, the run names the product `source-integrity-failed` or `source-validation-failed`, as the host did from run events. A typed error and a workflow's `classifyFailure` still win.
 
-**A run's capability ports are typed from its definition.** `defineWorkflow` and `verifiedWorkflow` give a run a context whose required ports are present, so a run that reads a port its flags do not require fails to compile. The executor's check before every run stays the only runtime guard.
+**A run's capability ports are typed from its definition.** `defineWorkflow` and `verifiedWorkflow` give a run a context whose required ports are present, so a run that uses a port its flags do not require fails to compile. The executor's check before every run stays the only runtime guard.
 
 **Statement Selection ids name their product type.** SinoPac and LINE Bank select `deposit`, and Yuanta trade selects `securities`. A migration rewrites the persisted selections when settings are read.
 
