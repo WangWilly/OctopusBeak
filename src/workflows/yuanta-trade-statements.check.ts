@@ -37,7 +37,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { legacyRunEventOutcome, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
+import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 
@@ -156,7 +156,8 @@ test("a missing YuanTa security component stops the run with its external prereq
   } as unknown as Page;
   const events: string[] = [];
   const context = {
-    event: async (stage: string, code: string) => { events.push(`${stage}:${code}`); },
+    event: async (stage: string, _outcome: string, code: string) => { events.push(`${stage}:${code}`); },
+    signalEvent: async (signal: RunEventSignal) => { events.push(`${RUN_EVENT_SIGNALS[signal].stage}:${signal}`); },
   } as unknown as WorkflowContext;
 
   await assert.rejects(
@@ -790,8 +791,11 @@ test("records how many reports were collected when one report source fails", asy
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
-    event: async (stage, code, counts) => {
-      events.push({ runId: "yuanta-trade-report-failure-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
+    event: async (stage, outcome, code, counts) => {
+      events.push({ runId: "yuanta-trade-report-failure-fixture", stage, outcome, code, occurredAt: "2026-10-06T00:16:19.000Z", ...counts });
+    },
+    signalEvent: async (signal) => {
+      events.push(signalRunEvent(signal, { runId: "yuanta-trade-report-failure-fixture", occurredAt: "2026-10-06T00:16:19.000Z" }));
     },
   };
   const failingReport = 16;
@@ -866,6 +870,7 @@ function reportContext(): WorkflowContext {
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("unused"); } },
     event: async () => {},
+    signalEvent: async () => {},
   };
 }
 

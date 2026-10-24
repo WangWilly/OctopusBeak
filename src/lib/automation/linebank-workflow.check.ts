@@ -10,7 +10,7 @@ import { strictSourceText } from "./source-text.ts";
 import type {
   WorkflowContext,
 } from "./workflow-executor.ts";
-import { legacyRunEventOutcome, type WorkflowRunEvent } from "./run-event.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
@@ -224,15 +224,18 @@ function createContext(options: {
         } as never;
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, outcome, code, counts) {
       events.push({
         runId: "linebank-typed-check",
         stage,
-        outcome: legacyRunEventOutcome(code),
+        outcome,
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,
       });
+    },
+    async signalEvent(signal) {
+      events.push(signalRunEvent(signal, { runId: "linebank-typed-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
   return { context, events, commits, assistance, page: selectedPage };

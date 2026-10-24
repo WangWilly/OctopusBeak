@@ -20,7 +20,7 @@ An Automation run event carried a closed `stage` and a free `code` string. Workf
 
 **A run event states its meaning.** Every event carries a Run event outcome: `started`, `advanced`, `completed` or `failed`. `completed` means the stage finished for the event's scope: the run, or one statement type. A sub-item that finishes inside a stage, such as one account, is `advanced`. There is no `rejected` outcome, because no reader tells it apart from `failed`. There is no `cancelled` outcome, because the run status already says a run was cancelled.
 
-**A few events carry a signal.** A Run event signal names an event that a reader needs by name: `verification-solver-exhausted`, `solver-route-unavailable`, `solver-challenge-unsupported`, `login-dialog-interrupted` and `human-assistance-failed`. Each signal fixes its stage and outcome, so a workflow emits it with `context.signal(name)` and cannot pair it with another stage.
+**A few events carry a signal.** A Run event signal names an event that a reader needs by name: `verification-solver-exhausted`, `solver-route-unavailable`, `solver-challenge-unsupported`, `login-dialog-interrupted` and `human-assistance-failed`. Each signal fixes its stage and outcome, so a workflow emits it with `context.signalEvent(name)` and cannot pair it with another stage.
 
 **Readers use the outcome and the signal, never the code.** The code stays as a sanitized diagnostic the dashboard shows. One exception is declared, not conventional: an External prerequisite names the exact code its workflow emits when the prerequisite is missing, and run finalization looks that code up.
 
@@ -37,5 +37,5 @@ An Automation run event carried a closed `stage` and a free `code` string. Workf
 ## Consequences
 
 - `src/lib/automation/run-event.ts` owns the event type, the outcomes, the signals and the stored-event upgrade. It is tested through `run-event.check.ts`.
-- `WorkflowContext.event` takes `(stage, outcome, code, counts?)`, and `WorkflowContext.signal` takes a signal name.
+- `WorkflowContext.event` takes `(stage, outcome, code, counts?)`, and `WorkflowContext.signalEvent` takes a signal name.
 - Progress no longer reaches the end of collection when the first account finishes. Workflow run progress stops at every failed event, including the solver events the stage track already showed as failed.

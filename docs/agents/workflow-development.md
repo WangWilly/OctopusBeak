@@ -40,7 +40,7 @@ export const exampleWorkflow: WorkflowDefinition<ExampleInput> = {
   requiresFinancialCommit: false,
   async run(context, input) {
     context.signal.throwIfAborted();
-    await context.event("collection", "collection-started");
+    await context.event("collection", "started", "collection-started");
     return await context.browser.withPage(async (page) => {
       await page.goto(input.startUrl);
       context.signal.throwIfAborted();
@@ -54,7 +54,8 @@ Provider code uses only the ports supplied by `WorkflowContext`:
 
 - `browser.withPage` supplies the App or development-owned Playwright page. Do not launch a browser or persist a browser profile inside a provider.
 - `text.decode`, `text.stream`, and `text.assertIntact` handle source bytes. Reject invalid or incomplete source before commit.
-- `event(stage, code, counts)` reports bounded progress. Event codes must be lowercase kebab-case.
+- `event(stage, outcome, code, counts)` reports bounded progress. The outcome is `started`, `advanced`, `completed` or `failed`. Use `completed` only when the stage finished for the run or for one statement type, and `advanced` for one account or page inside it. Readers use the outcome, never the code, which is a lowercase kebab-case diagnostic ([ADR 0059](../adr/0059-run-event-outcome-and-signal.md)).
+- `signalEvent(signal)` reports a Run event signal, such as `verification-solver-exhausted`. The signal fixes its own stage and outcome.
 - `humanAssistance.request(contract, signal)` declares a verification stage for the solver. Despite its name, no person completes it ([ADR 0039](../adr/0039-solver-only-verification.md)). The stage needs a registered solver route, or the run fails closed. The workflow must resume only after the provider's completion check succeeds.
 - Financial definitions set `requiresFinancialCommit: true` and call `context.financialCommit.execute(...)` only after source validation. Do not open a financial database or write an alternate output.
 

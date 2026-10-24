@@ -55,7 +55,7 @@ function harness(execute: () => Promise<PGliteWorkflowRunResult<unknown>>) {
   const port = recordedFinancialCommitPort({
     commit: { execute },
     attempts: { record: async (report) => { reports.push(report); } },
-    event: async (code, counts, product) => { events.push(`${code}:${counts.completed}/${counts.total}:${product}`); },
+    event: async (_outcome, code, counts, product) => { events.push(`${code}:${counts.completed}/${counts.total}:${product}`); },
     newAttemptId: () => "attempt-1",
   });
   return { port, reports, events };

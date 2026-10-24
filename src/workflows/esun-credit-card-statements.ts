@@ -32,7 +32,7 @@ import {
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { upgradeStoredRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
@@ -1232,11 +1232,11 @@ export async function authenticateEsunPage(
     ))
     .catch(() => []);
   for (const state of classifyEsunPostLoginPage(pageText.join("\n"))) {
-    await context.event("authentication", `esun-post-login-${state}`);
+    await context.event("authentication", "advanced", `esun-post-login-${state}`);
   }
   // E.SUN's provider verification has no solver; the App classifies this event
   // as a verification configuration failure.
-  await context.event("authentication", "solver-challenge-unsupported");
+  await context.signalEvent("solver-challenge-unsupported");
   throw new Error("E.SUN sign-in verification is not supported by the automatic solver.");
 }
 
@@ -1249,7 +1249,7 @@ async function readEsunResponseJson(
     context.text.assertIntact(decoded);
     return JSON.parse(decoded) as unknown;
   } catch (error) {
-    await context.event("decoding", "source-decoding-failed");
+    await context.event("decoding", "failed", "source-decoding-failed");
     if (error instanceof SourceTextIntegrityError) throw error;
     throw new Error("E.SUN provider response is not valid JSON.");
   }
@@ -1267,8 +1267,8 @@ async function collectEsunCreditCard(
       "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
     { timeout: 120_000 },
   ).catch(() => undefined);
-  await context.event("collection", "collection-started");
-  await context.event("decoding", "source-decoding-started");
+  await context.event("collection", "started", "collection-started");
+  await context.event("decoding", "started", "source-decoding-started");
   const endDate = formatDate(new Date(context.now()));
   let startDate = defaultStartDate(endDate);
   let rows: StatementRow[];
@@ -1279,10 +1279,10 @@ async function collectEsunCreditCard(
       signal: context.signal,
     }));
   } catch (error) {
-    await context.event("collection", "collection-failed");
+    await context.event("collection", "failed", "collection-failed");
     throw error;
   }
-  await context.event("collection", "timeline-collected", {
+  await context.event("collection", "advanced", "timeline-collected", {
     completed: timeline.pageCount,
     total: timeline.pageCount,
   });
@@ -1295,10 +1295,10 @@ async function collectEsunCreditCard(
       signal: context.signal,
     });
   } catch (error) {
-    await context.event("collection", "collection-failed");
+    await context.event("collection", "failed", "collection-failed");
     throw error;
   }
-  await context.event("collection", "bill-summaries-collected", {
+  await context.event("collection", "completed", "bill-summaries-collected", {
     completed: issuerSummaries.length,
     total: issuerSummaries.length,
   });
@@ -1317,13 +1317,13 @@ async function collectEsunCreditCard(
   try {
     settledPeriods = buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
   } catch {
-    await context.event("validation", "source-validation-rejected");
+    await context.event("validation", "failed", "source-validation-rejected");
     throw new Error("E.SUN bill summary source failed validation.");
   }
   const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(rows, settledPeriods);
   const unbilledRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "unbilled");
   const billedRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "billed");
-  await context.event("decoding", "source-decoding-completed");
+  await context.event("decoding", "completed", "source-decoding-completed");
 
   const isComplete =
     timeline.firstMonth === endDate.slice(0, 7) &&
@@ -1333,13 +1333,13 @@ async function collectEsunCreditCard(
     timeline.terminalCursor === 4 &&
     [...billedRows, ...unbilledRows].every((row) => cardKeyForRow(row).length === 4);
   if (!isComplete || issuerSummaries.length < 2) {
-    await context.event("validation", "source-validation-rejected", {
+    await context.event("validation", "failed", "source-validation-rejected", {
       completed: timeline.monthCount,
       total: 12,
     });
     throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
   }
-  await context.event("validation", "source-validation-started", {
+  await context.event("validation", "started", "source-validation-started", {
     completed: rows.length,
     total: rows.length,
   });
@@ -1372,14 +1372,14 @@ async function collectEsunCreditCard(
       settledPeriods,
     });
   } catch {
-    await context.event("validation", "source-validation-rejected");
+    await context.event("validation", "failed", "source-validation-rejected");
     throw new Error("E.SUN source failed canonical admission validation.");
   }
   if (!canonicalCapture) {
-    await context.event("validation", "source-validation-rejected");
+    await context.event("validation", "failed", "source-validation-rejected");
     throw new Error("E.SUN source failed canonical completeness validation.");
   }
-  await context.event("validation", "source-validation-completed", {
+  await context.event("validation", "completed", "source-validation-completed", {
     completed: rows.length,
     total: rows.length,
   });
@@ -1473,10 +1473,10 @@ export async function runEsunCreditCardProviderWorkflow(
     page.on("dialog", (dialog) => {
       void dialog.accept().catch(() => undefined);
     });
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     const usedExistingSession = await authenticateEsunPage(page, input.credentials, context);
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     let creditCard: EsunCreditCardResult | null = null;
     let creditCardFailure: EsunCreditCardFailure | null = null;
@@ -1484,9 +1484,13 @@ export async function runEsunCreditCardProviderWorkflow(
       const cardEvents: WorkflowRunEvent[] = [];
       const cardContext: WorkflowContext = {
         ...context,
-        event: async (stage, code, counts) => {
-          cardEvents.push(upgradeStoredRunEvent({ runId: context.runId, stage, code, occurredAt: context.now() }) as WorkflowRunEvent);
-          await context.event(stage, code, counts);
+        event: async (stage, outcome, code, counts) => {
+          cardEvents.push({ runId: context.runId, stage, outcome, code, occurredAt: context.now() });
+          await context.event(stage, outcome, code, counts);
+        },
+        signalEvent: async (signal) => {
+          cardEvents.push(signalRunEvent(signal, { runId: context.runId, occurredAt: context.now() }));
+          await context.signalEvent(signal);
         },
       };
       try {

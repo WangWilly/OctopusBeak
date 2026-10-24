@@ -1,3 +1,4 @@
+import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -243,8 +244,11 @@ function contextHarness(
     text: strictSourceText,
     humanAssistance: { request: async () => "entered" },
     financialCommit,
-    event: async (stage, code) => {
+    event: async (stage, _outcome, code) => {
       events.push({ stage, code });
+    },
+    signalEvent: async (signal) => {
+      events.push({ stage: RUN_EVENT_SIGNALS[signal].stage, code: signal });
     },
   };
   return { context, controller, events, committed };

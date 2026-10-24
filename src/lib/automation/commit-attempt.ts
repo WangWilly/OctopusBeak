@@ -1,3 +1,4 @@
+import type { RunEventOutcome } from "./run-event.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PGliteWorkflowRunItem,
@@ -129,6 +130,7 @@ export type RecordedFinancialCommitOptions = Readonly<{
   attempts: CommitAttemptRecorder;
   /** Progress only; a failed event never changes the commit outcome. */
   event(
+    outcome: RunEventOutcome,
     code: CommitEventCode,
     counts: Readonly<{ completed: number; total: number }>,
     product: string | null,
@@ -166,11 +168,12 @@ function knownOutcome(
   return result.status === "cancelled" ? "cancelled" : "failed";
 }
 
-const SETTLED_EVENT: Readonly<Record<CommitAttemptOutcome, CommitEventCode>> = {
-  completed: "canonical-commit-completed",
-  failed: "canonical-commit-failed",
-  cancelled: "canonical-commit-cancelled",
-  refused: "canonical-commit-failed",
+/** A cancelled commit is not a failure; the run status reports the cancellation (ADR 0059). */
+const SETTLED_EVENT: Readonly<Record<CommitAttemptOutcome, readonly [RunEventOutcome, CommitEventCode]>> = {
+  completed: ["completed", "canonical-commit-completed"],
+  failed: ["failed", "canonical-commit-failed"],
+  cancelled: ["advanced", "canonical-commit-cancelled"],
+  refused: ["failed", "canonical-commit-failed"],
 };
 
 /**
@@ -191,18 +194,18 @@ export function recordedFinancialCommitPort(
       const product = executeOptions?.product ?? null;
       const total = items.length;
       await options.attempts.record({ phase: "started", attemptId, product, total });
-      await options.event("canonical-commit-started", { completed: 0, total }, product);
+      await options.event("started", "canonical-commit-started", { completed: 0, total }, product);
       let result: PGliteWorkflowRunResult<unknown>;
       try {
         result = await options.commit.execute(items, executeOptions);
       } catch (error) {
-        await options.event("canonical-commit-failed", { completed: 0, total }, product);
+        await options.event("failed", "canonical-commit-failed", { completed: 0, total }, product);
         throw new CommitOutcomeUnknownError(0, { cause: error });
       }
       const committed = trustedCommittedCount(items, result);
       const outcome = knownOutcome(items, result, committed);
       if (outcome === null) {
-        await options.event("canonical-commit-failed", { completed: committed ?? 0, total }, product);
+        await options.event("failed", "canonical-commit-failed", { completed: committed ?? 0, total }, product);
         throw new CommitOutcomeUnknownError(committed ?? 0);
       }
       try {
@@ -216,7 +219,7 @@ export function recordedFinancialCommitPort(
         // A host that received the settlement folds it before persisting it;
         // one that did not reads the attempt as unknown, the safe reading.
       }
-      await options.event(SETTLED_EVENT[outcome], { completed: result.committedCount, total }, product);
+      await options.event(...SETTLED_EVENT[outcome], { completed: result.committedCount, total }, product);
       return result;
     },
   };

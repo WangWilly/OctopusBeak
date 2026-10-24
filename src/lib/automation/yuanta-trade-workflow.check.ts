@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
 import type { WorkflowContext } from "./workflow-executor.ts";
-import { legacyRunEventOutcome, type WorkflowRunEvent } from "./run-event.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import {
   decodeYuantaTradeReportResponse,
@@ -110,15 +110,18 @@ function createHarness(options: {
         } as never;
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, outcome, code, counts) {
       events.push({
         runId: "run-yuanta-trade-check",
         stage,
-        outcome: legacyRunEventOutcome(code),
+        outcome,
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,
       });
+    },
+    async signalEvent(signal) {
+      events.push(signalRunEvent(signal, { runId: "run-yuanta-trade-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
   return { context, events, committed, requestedContracts, page };

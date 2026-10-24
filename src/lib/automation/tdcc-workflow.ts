@@ -42,10 +42,10 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     async run(context, input) {
       const selectedIds = selectedProducts(input);
       const tdcc = context.tdcc!;
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const lease = await tdcc.session.open();
       if (lease.status !== "ready") {
-        await context.event("authentication", "device-registration-required");
+        await context.event("authentication", "advanced", "device-registration-required");
         throw new ProductCollectionFatalError("device-registration-required");
       }
       const session = new TdccRunSession(tdcc.session, lease, {

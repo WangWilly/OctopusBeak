@@ -47,7 +47,7 @@ test("exchange-rate progress reaches both the App callback and structured event 
   await workflow.run(context, undefined);
 
   assert.deepEqual(progress, [{ phaseCode: "sync", completed: 1, total: 3, percent: 33 }]);
-  assert.deepEqual(events, [["collection", "progress-update"]]);
+  assert.deepEqual(events, [["collection", "advanced", "progress-update"]]);
 });
 
 test("exchange-rate progress event is persisted before a sync failure escapes", async () => {
@@ -68,7 +68,7 @@ test("exchange-rate progress event is persisted before a sync failure escapes", 
 
   await assert.rejects(workflow.run(context, undefined), (error: Error) => {
     assert.equal(error.message, "rate source unavailable");
-    assert.deepEqual(events, [["collection", "progress-update"]]);
+    assert.deepEqual(events, [["collection", "advanced", "progress-update"]]);
     return true;
   });
 });

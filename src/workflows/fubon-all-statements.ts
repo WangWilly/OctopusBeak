@@ -1,3 +1,4 @@
+import { humanAssistanceEvent } from "./human-assistance.ts";
 import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
@@ -240,7 +241,7 @@ async function authenticateFubonForApp(
   await completeFubonHumanLoginWithAssistance(page, values, {
     signal: context.signal,
     request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: (code) => context.event("authentication", code),
+    event: humanAssistanceEvent(context),
   });
 }
 
@@ -342,19 +343,19 @@ export async function runFubonAllStatementsWorkflow(
   const assertSession = overrides.assertSession ?? assertFubonSession;
 
   context.signal.throwIfAborted();
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
     // A retained Fubon session cookie can route the next run straight to
     // NotAuth.jsp?type=dupLogin before credentials are entered.
     await page.context().clearCookies({ domain: /(?:^|\.)taipeifubon\.com\.tw$/u });
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     await authenticate(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
     const stop = stopKeepAlive(page);
     try {
-      await context.event("decoding", "source-decoding-started");
+      await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
         productIds,
@@ -365,9 +366,9 @@ export async function runFubonAllStatementsWorkflow(
           const collectDepositWithExclusionEvents = async () => {
             const deposit = await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity);
             for (const exclusion of deposit.currentBalanceExclusions ?? [])
-              await context.event("collection", `deposit-current-balance-excluded-${exclusion.reason}`);
+              await context.event("collection", "advanced", `deposit-current-balance-excluded-${exclusion.reason}`);
             for (const exclusion of deposit.statementExclusions ?? [])
-              await context.event("collection", `deposit-statement-excluded-${exclusion.reason}`);
+              await context.event("collection", "advanced", `deposit-statement-excluded-${exclusion.reason}`);
             return deposit;
           };
           const result = typeId === "deposit"
@@ -395,10 +396,10 @@ export async function runFubonAllStatementsWorkflow(
             signal: context.signal,
           });
         },
-        event: (stage, code, counts) => context.event(stage, code, counts),
+        event: context.event,
         productFailure: context.productFailure,
       });
-      await context.event("validation", "source-validation-completed", {
+      await context.event("validation", "completed", "source-validation-completed", {
         completed: summary.sourceCaptureCount,
         total: summary.sourceCaptureCount,
       });

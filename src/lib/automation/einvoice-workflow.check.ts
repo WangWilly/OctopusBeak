@@ -1,3 +1,4 @@
+import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -104,8 +105,11 @@ function makeContext(overrides: Partial<WorkflowContext> & { commits?: unknown[]
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("Unexpected human assistance request"); } },
     financialCommit: makeCommit(commits),
-    event: async (stage, code) => {
+    event: async (stage, _outcome, code) => {
       events.push({ stage, code });
+    },
+    signalEvent: async (signal) => {
+      events.push({ stage: RUN_EVENT_SIGNALS[signal].stage, code: signal });
     },
     ...overrides,
   };
