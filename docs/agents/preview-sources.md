@@ -35,8 +35,7 @@ A preview product is `deposit`, `credit_card`, or `time_deposit` (`PreviewProduc
 | --- | --- | --- |
 | Register a source | Add a `PreviewSource` with its `products` to `PRODUCTION_PREVIEW_SOURCES` | `src/lib/preview-sources/registry.ts` |
 | Collect and write the selected products | `context.preview.collect({ deposit: async () => ..., credit_card: async () => ... })` inside `PreviewSource.run`; it returns the run's `PreviewRunOutput` | `src/lib/preview-sources/workflow.ts`, `src/lib/preview-sources/product-collection.ts` |
-| Declare and collect attached products on a verified source | `ATTACHED_PREVIEW_PRODUCTS` and `collectAttachedPreviewProducts(...)` | `src/lib/preview-sources/attached-products.ts` |
-| Combine verified and attached product results | `finishAttachedProductRun(verified, attached, signal?)` | `src/lib/preview-sources/attached-product-results.ts` |
+| Declare and collect attached products on a verified source | `ATTACHED_PREVIEW_PRODUCTS`, and `attachedPreviewRun(...)` as the `attached` option of `collectSelectedProducts` | `src/lib/preview-sources/attached-products.ts`, `src/lib/automation/product-collection.ts` |
 | Data shapes | `PreviewDepositCollection`, `PreviewAccount`, `PreviewTimeDepositCollection`, `PreviewTimeDeposit`, `PreviewCreditCollection`, `PreviewCreditAccount`, `PreviewCard`, `PreviewCreditBalance`, `PreviewCreditBasis`, `PreviewPurchase`, `PreviewStatement` | `src/ledger/pglite/preview-financial-data.ts` (re-exports `preview-core.ts` and `preview-credit.ts`) |
 | Decide what is visible | `currentPreviewVisibility()` in the main process, or the pure `previewVisibility(...)`; `visibleProducts(visibility, source)` for one source | `src/lib/automation/server/settings.ts`, `src/lib/preview-sources/visibility.ts` |
 | Read preview data | `preview.accounts(visibility)`, `preview.transactions(visibility, id)`, `preview.creditAccounts(visibility)`, `preview.purchases(visibility, id)`, `preview.statements(visibility, id)` on the operational provider | `electron/pglite-operational-rpc.ts` |
@@ -82,27 +81,30 @@ The run details show 「分享結構報告」 for a failed preview run. The dial
 
 An Attached Preview Product (ADR 0051) is collected by a verified workflow during its own sign-in. The foundation declares the four sources in `ATTACHED_PREVIEW_PRODUCTS` (`src/lib/preview-sources/attached-products.ts`): Cathay `credit_card` and `time_deposit`, HNCB `credit_card`, SinoPac `credit_card`, E.SUN `deposit`. For each, the Verified source definition in `src/lib/automation/server/sources/<id>.ts` sets `attachedPreviewProducts`, and the registry passes `input.attachedPreviewProducts` (the selected, uncovered attached products, empty while Preview features are off). The Statement Selection shows the attached products with `preview: true` while Preview features are on, unselected by default. What is left to a bank worker is collection:
 
-1. In the verified workflow, after sign-in and after its verified products, call
+1. Pass the attached collection to the verified workflow's Product collection run (ADR 0060):
 
    ```ts
-   const attached = await collectAttachedPreviewProducts({
-     context,
-     source: ATTACHED_PREVIEW_PRODUCTS.cathay,
-     selected: input.attachedPreviewProducts,
-     collectors: { credit_card: async () => ..., time_deposit: async () => ... },
-     assertSession,
+   const summary = await collectSelectedProducts({
+     productIds, selectedIds, signal: context.signal, assertSession, collect, commit,
+     attached: attachedPreviewRun({
+       context,
+       source: ATTACHED_PREVIEW_PRODUCTS.cathay,
+       selected: input.attachedPreviewProducts,
+       collectors: () => ({ credit_card: async () => ..., time_deposit: async () => ... }),
+       assertSession,
+     }),
    });
    ```
 
-   It writes each product through a writer bound to the verified source (`sourceId` is the credential group id, so rows read back as that source), never through the canonical commit, and it never throws. An attached product never builds a Source Capture, and a verified product never calls the preview writer; review checks both.
+   `attachedPreviewRun` is absent when nothing is selected, and builds the collectors only when collection starts. The run collects the attached products after every verified product, unless a refusal, cancellation, uncertain commit or session loss already stopped it. Each product writes through a writer bound to the verified source (`sourceId` is the credential group id, so rows read back as that source), never through the canonical commit. An attached product never builds a Source Capture, and a verified product never calls the preview writer; review checks both.
 
-   Finish with `finishAttachedProductRun(verified, attached, context.signal)` from `src/lib/preview-sources/attached-product-results.ts`. Pass the verified `products`, `sourceCaptureCount`, `rowCount`, and optional `firstFailure` as `verified`; pass `null` as `attached` when no attached collection ran. The helper owns whole-run aggregation and failure policy: an ordinary product failure yields `partial` when durable commits exist, while fatal interruption and cancellation propagate errors with the full product snapshot under ADR 0036, preserving `commit-outcome-unknown` precedence. Do not reproduce this policy in the provider.
+   The run owns whole-run aggregation and failure policy: an ordinary product failure yields `partial` when durable commits exist, a run with nothing durable throws its summary with the failed product's code, and interruption and cancellation propagate with the full product snapshot under ADR 0036, preserving `commit-outcome-unknown` precedence. Do not reproduce this policy in the provider.
 
-   Keep bank-specific account/row counts and completed-status mapping in the provider's output adapter, and include the returned summary as `productCollectionSummary`. `interruptedProductCollectionFromOutput` in `src/lib/automation/product-collection.ts` uses that snapshot if cancellation wins after the workflow resolves. Preserve count units: verified commit items include balances; preview commit items count accounts and never Source Captures. This result seam changes neither authentication, collection and writer order nor the products' Preview status.
+   Keep bank-specific account/row counts and completed-status mapping in the provider's output adapter, and include the returned summary as `productCollectionSummary`. `interruptedProductCollectionFromOutput` in `src/lib/automation/product-collection.ts` uses that snapshot if cancellation wins after the workflow resolves. Preserve count units: verified commit items include balances; preview commit items count accounts and never Source Captures.
 2. Parse `input.attachedPreviewProducts` in the workflow's input schema as an optional list of `PreviewProduct` ids, default empty, and collect nothing for it when it is empty. The verified `statementTypes` input never contains an attached id; `statementTypeIdsFromEnvironment` strips them.
-3. A person may select only attached products. Decide how the workflow signs in with an empty verified selection (Cathay's input schema requires at least one verified type today) and document it in the workflow's section.
+3. A person may select only attached products. The run then takes an empty verified selection; decide how the workflow signs in for it and document it in the workflow's section.
 4. Keep the definition's `coverage` for the verified products only. When the attached product is promoted, remove it from `ATTACHED_PREVIEW_PRODUCTS`, add it to the coverage, and let the person delete and recollect (ADR 0047).
-5. Check the workflow with `collectAttachedPreviewProducts` against a recording `previewWrite` port, as `product-collection.check.ts` does: the attached product writes only `PreviewWrite`s with the group's `sourceId`, a failing attached product leaves the verified products' outcomes intact, and `attachedPreviewProducts: []` collects nothing.
+5. Check the workflow against a recording `previewWrite` port, as `product-collection.check.ts` does: the attached product writes only `PreviewWrite`s with the group's `sourceId`, a failing attached product leaves the verified products' outcomes intact, and `attachedPreviewProducts: []` collects nothing.
 
 A product that cannot share the verified sign-in (CTBC credit cards use the App protocol) is its own Preview Source with its own `products`; follow [Add a bank](#add-a-bank).
 
