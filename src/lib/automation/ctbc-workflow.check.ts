@@ -13,7 +13,7 @@ import { createPgliteOperationalProvider } from "../../ledger/pglite/operational
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -165,7 +165,7 @@ function createContext(options: {
   const committed: unknown[][] = [];
   let browserCalls = 0;
   let assistanceCalls = 0;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-ctbc-check",
     signal: options.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",

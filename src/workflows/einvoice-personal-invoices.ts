@@ -1,10 +1,7 @@
 import { randomUUID, createHash, randomBytes } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import type {
-  WorkflowContext,
-  WorkflowFinancialCommitPort,
-} from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
@@ -505,14 +502,13 @@ export function buildCanonicalEInvoiceCaptureFromApp(
 
 /** App-owned entry point for collecting and admitting E-Invoice statements. */
 export async function runEinvoiceProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   source: EinvoiceAppSource = liveEinvoiceAppSource,
 ): Promise<EinvoiceWorkflowOutput> {
   const parsed = workflowInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E-Invoice workflow credentials are missing or invalid.");
   const financialCommit = context.financialCommit;
-  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
 
   const credentials = parsed.data.credentials;
@@ -567,7 +563,6 @@ export async function commitCanonicalCapture(
   financialCommit: WorkflowFinancialCommitPort,
   signal?: AbortSignal,
 ) {
-  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   const result = await financialCommit.execute([{
     provider: "einvoice",
     product: "personal-invoice",

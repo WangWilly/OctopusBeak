@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
 export const CATHAY_SOURCE: VerifiedSource = {
@@ -81,7 +81,7 @@ export const CATHAY_SOURCE: VerifiedSource = {
     label: "Cathay all statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.cathay,
     runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
@@ -89,5 +89,5 @@ export const CATHAY_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/cathay-all-statements.ts")).runCathayAllProviderWorkflow;
     },
-  },
+  }),
 };

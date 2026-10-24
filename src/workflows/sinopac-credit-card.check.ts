@@ -5,7 +5,7 @@ import type { PreviewCreditCollection, PreviewWrite } from "../ledger/pglite/pre
 import { parsePreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError, interruptedProductCollectionFromOutput } from "../lib/automation/product-collection.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
@@ -259,7 +259,7 @@ function signedInPage(): Page {
   } as unknown as Page;
 }
 
-function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContext {
+function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContextWith<"financialCommit"> {
   const financialCommit: WorkflowFinancialCommitPort = {
     async execute(items) {
       const received = [];
@@ -420,7 +420,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
     const writes: PreviewWrite[] = [];
     const commits: unknown[][] = [];
     const base = workflowContext(writes, commits);
-    const context: WorkflowContext = {
+    const context: WorkflowContextWith<"financialCommit"> = {
       ...base,
       signal: controller.signal,
       financialCommit: {
@@ -466,7 +466,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
 
 test("a refused SinoPac verified commit names the run collection-scope-changed and skips the attached cards", async () => {
   const writes: PreviewWrite[] = [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     ...workflowContext(writes, []),
     financialCommit: {
       async execute(items) {

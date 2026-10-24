@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Page } from "playwright";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { PGlite } from "@electric-sql/pglite";
@@ -879,7 +879,7 @@ for (const scenario of ["unavailable portal", "cancellation while waiting for th
       browser: { withPage: async (run: (page: Page) => Promise<unknown>) => run(page) },
       event: async () => undefined,
       previewWrite: { write: async () => { throw new Error("no incomplete product may write"); } },
-    } as unknown as WorkflowContext;
+    } as unknown as WorkflowContextWith<"financialCommit">;
     await assert.rejects(runEsunCreditCardProviderWorkflow(context, {
       managedIdentitySecret: "synthetic-identity-secret",
       credentials: { esun_user_id: "synthetic-user", esun_account: "synthetic-account", esun_password: "synthetic-password" },

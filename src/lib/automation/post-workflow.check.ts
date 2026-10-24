@@ -13,7 +13,7 @@ import {
   type PostStatementResponseMetadata,
 } from "../../workflows/post-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import {
   assertProductFailure,
@@ -234,7 +234,7 @@ function createContext(input: {
 }) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-post-check",
     signal: input.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",

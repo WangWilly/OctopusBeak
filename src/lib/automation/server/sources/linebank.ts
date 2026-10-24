@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const LINEBANK_SOURCE: VerifiedSource = {
   id: "linebank",
@@ -77,12 +77,12 @@ export const LINEBANK_SOURCE: VerifiedSource = {
     label: "LINE Bank statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://accessibility.linebank.com.tw/login"),
     input: { credentials: true, extra: () => ({ accountFilters: [], currencyFilters: [] }) },
     async load() {
       return (await import("../../../../workflows/linebank-statements.ts")).runLineBankProviderWorkflow;
     },
-  },
+  }),
 };

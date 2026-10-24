@@ -36,7 +36,7 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1727,16 +1727,13 @@ export type YuantaTradeWorkflowDependencies = Readonly<{
 
 /** App-owned Yuanta Trade path: complete in-memory collection and admission precede one injected commit request. */
 export async function runYuantaTradeProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   dependencies: YuantaTradeWorkflowDependencies = {},
 ): Promise<YuantaTradeProviderWorkflowOutput> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     throw new Error("YuanTa Trade workflow credentials or selection are invalid.");
-  }
-  if (!context.financialCommit) {
-    throw new Error("Canonical Financial Commit port is unavailable.");
   }
   const financialCommit = context.financialCommit;
   const input = parsed.data;

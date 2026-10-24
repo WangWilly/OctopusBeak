@@ -163,6 +163,37 @@ const WORKFLOW_CAPABILITIES = {
 } as const satisfies Record<string, Readonly<{ flag: keyof WorkflowDefinition; label: string }>>;
 
 export type WorkflowCapability = keyof typeof WORKFLOW_CAPABILITIES;
+type WorkflowCapabilityFlag<C extends WorkflowCapability> = (typeof WORKFLOW_CAPABILITIES)[C]["flag"];
+
+/** The capabilities whose flag a definition sets to a literal `true`. */
+export type RequiredCapabilities<Flags> = {
+  [C in WorkflowCapability]: Flags extends Readonly<Record<WorkflowCapabilityFlag<C>, true>> ? C : never;
+}[WorkflowCapability];
+
+/** A context whose required ports are present: the executor checks them before every run. */
+export type WorkflowContextWith<C extends WorkflowCapability> = WorkflowContext
+  & Readonly<{ [K in C]-?: NonNullable<WorkflowContext[K]> }>;
+
+/** A run that may use the ports its definition requires, and only those. */
+export type WorkflowRun<C extends WorkflowCapability, Input = unknown, Output = unknown> = (
+  context: WorkflowContextWith<C>,
+  input: Input,
+) => Promise<Output>;
+
+/**
+ * Declares a definition whose run is typed by its capability flags, so a run
+ * that reads a port its definition does not require fails to compile.
+ */
+export function defineWorkflow<
+  const Flags extends Omit<WorkflowDefinition, "run">,
+  Input = unknown,
+  Output = unknown,
+>(
+  flags: Flags,
+  run: WorkflowRun<RequiredCapabilities<Flags>, Input, Output>,
+): WorkflowDefinition<Input, Output> {
+  return { ...flags, run } as WorkflowDefinition<Input, Output>;
+}
 export type WorkflowCapabilityPorts = Pick<WorkflowExecutorPorts, WorkflowCapability>;
 type WorkflowCapabilityFlags = Pick<WorkflowDefinition, (typeof WORKFLOW_CAPABILITIES)[WorkflowCapability]["flag"]>;
 

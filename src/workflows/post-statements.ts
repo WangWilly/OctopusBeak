@@ -12,7 +12,7 @@ import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1060,7 +1060,7 @@ async function stagePostStatements(
 }
 
 export async function runPostProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   overrides: Readonly<Pick<
     PostStatementsRunDependencies,
@@ -1070,8 +1070,6 @@ export async function runPostProviderWorkflow(
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("authentication", "started", "authentication-started");

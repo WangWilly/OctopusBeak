@@ -30,7 +30,7 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   collectSelectedProducts,
@@ -1411,7 +1411,7 @@ async function collectEsunCreditCard(
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
 export async function runEsunCreditCardProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
 ): Promise<EsunProviderWorkflowOutput> {
   const parsed = typedInputSchema.safeParse(rawInput);
@@ -1421,7 +1421,6 @@ export async function runEsunCreditCardProviderWorkflow(
   if (!creditCardSelected && input.attachedPreviewProducts.length === 0) {
     throw new ProductCollectionFatalError("collection-scope-changed");
   }
-  if (creditCardSelected && !context.financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   if (input.startDate || input.endDate) {
     throw new Error("E.SUN canonical collection requires the complete default one-year source.");
   }
@@ -1449,7 +1448,7 @@ export async function runEsunCreditCardProviderWorkflow(
         creditCard = collected;
         return { sourceCaptureCount: 0, rowCount: collected.count, itemCount: stagedItems.length };
       },
-      commit: async (_typeId, stagedItems) => await context.financialCommit!.execute(stagedItems, {
+      commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
         provider: "esun",
         product: "credit-card",
         signal: context.signal,

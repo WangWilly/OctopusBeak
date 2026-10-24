@@ -11,6 +11,7 @@ import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
 import type {
   WorkflowContext,
+  WorkflowContextWith,
 } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
@@ -194,7 +195,7 @@ function createContext(options: {
       assert.equal(commitStarted, false, "all provider sources are collected before commit");
     },
   });
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "linebank-typed-check",
     signal: options.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",

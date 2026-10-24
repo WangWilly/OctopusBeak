@@ -2,7 +2,7 @@ import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { strictSourceText } from "./source-text.ts";
 import { runEsunCreditCardProviderWorkflow } from "../../workflows/esun-credit-card-statements.ts";
@@ -168,7 +168,7 @@ function createContext(page: Page) {
   const previewWrites: PreviewWrite[] = [];
   let withPageCount = 0;
   let assistanceCount = 0;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-esun-check",
     signal: new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",
@@ -516,7 +516,7 @@ test("a card failure with no deposit data fails the run with the card's own erro
 test("a refused E.SUN card commit names the run collection-scope-changed and skips the attached deposit", () => withManagedSecret(async () => {
   const deposit = depositPortal();
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     ...harness.context,
     financialCommit: {
       async execute(items) {

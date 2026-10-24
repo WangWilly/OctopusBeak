@@ -2,7 +2,7 @@ import { humanAssistanceEvent } from "./human-assistance.ts";
 import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
@@ -178,7 +178,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
   collectDeposit?: (
     page: Page,
     input: z.infer<typeof fubonStatementsInputSchema>,
-    context: WorkflowContext,
+    context: WorkflowContextWith<"accountIdentity">,
     identity: FubonWorkflowIdentity,
     items: PGliteWorkflowRunItem[],
     reportActivity: ProductCollectionActivityReporter,
@@ -248,13 +248,12 @@ async function authenticateFubonForApp(
 async function collectFubonDepositForApp(
   page: Page,
   input: z.infer<typeof fubonStatementsInputSchema>,
-  context: WorkflowContext,
+  context: WorkflowContextWith<"accountIdentity">,
   identity: FubonWorkflowIdentity,
   items: PGliteWorkflowRunItem[],
   reportActivity: ProductCollectionActivityReporter,
 ): Promise<FubonDepositWorkflowCollection> {
   const accountIdentity = context.accountIdentity;
-  if (!accountIdentity) throw new Error("Account identity port is unavailable.");
   return await runFubonStatements(page, input, {
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
@@ -309,7 +308,7 @@ async function collectFubonLoanForApp(
 
 /** Collect selected Fubon products independently and commit each complete product. */
 export async function runFubonAllStatementsWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit" | "accountIdentity">,
   rawInput: unknown,
   overrides: FubonAllWorkflowDependencies = {},
 ): Promise<FubonAllWorkflowOutput> {
@@ -317,8 +316,6 @@ export async function runFubonAllStatementsWorkflow(
   if (!parsed.success)
     throw new Error("Fubon workflow credentials or input are missing or invalid.");
   const financialCommit = context.financialCommit;
-  if (!financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
 
   const productIds = ["deposit", "credit_card", "loan"] as const;
   const selectedIds = parsed.data.statementTypes as readonly (typeof productIds)[number][];

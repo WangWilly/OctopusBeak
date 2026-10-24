@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1396,14 +1396,12 @@ function sourceValidationError(error: unknown): boolean {
 
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
 export async function runLineBankProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
 ): Promise<LineBankProviderWorkflowOutput> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   const dateRange = resolveDateRange(parsed.data);

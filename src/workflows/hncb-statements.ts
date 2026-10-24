@@ -35,10 +35,7 @@ import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
-import type {
-  WorkflowContext,
-  WorkflowFinancialCommitPort,
-} from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   readHncbCurrentDepositBalances,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
@@ -1234,8 +1231,6 @@ export async function runHncbStatements(
   input: WorkflowInput & Readonly<{ statementTypes?: HncbWorkflowInput["statementTypes"] }>,
   overrides: HncbStatementsRunDependencies,
 ): Promise<HncbWorkflowOutput> {
-  if (!overrides.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const depositSelected = (input.statementTypes ?? ["deposit"]).includes("deposit");
   let deposit: HncbDepositCollection | null = null;
   const summary = await collectSelectedProducts({
@@ -1509,14 +1504,12 @@ async function collectHncbDeposit(
 
 /** App-owned entry point for the HNCB domestic-deposit statement workflow. */
 export async function runHncbProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
 ): Promise<HncbWorkflowOutput> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("HNCB workflow input or sign-in details are missing or invalid.");
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
 

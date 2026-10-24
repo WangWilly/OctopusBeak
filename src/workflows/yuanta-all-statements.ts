@@ -1,7 +1,7 @@
 import { humanAssistanceEvent } from "./human-assistance.ts";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
@@ -296,7 +296,7 @@ async function collectYuantaFundForApp(
 
 /** Collect selected Yuanta products independently and commit each complete product. */
 export async function runYuantaAllStatementsWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   overrides: YuantaAllWorkflowDependencies = {},
 ): Promise<YuantaAllWorkflowOutput> {
@@ -304,8 +304,6 @@ export async function runYuantaAllStatementsWorkflow(
   if (!parsed.success)
     throw new Error("Yuanta workflow credentials or input are missing or invalid.");
   const financialCommit = context.financialCommit;
-  if (!financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const credentials = parsed.data.credentials;
   const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
   const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);

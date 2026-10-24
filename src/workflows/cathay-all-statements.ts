@@ -48,7 +48,7 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
   attachedPreviewRun,
@@ -249,7 +249,7 @@ function currentBalanceItems(
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
 export async function runCathayAllProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   dependencies: CathayAllProviderWorkflowDependencies = {},
 ): Promise<CathayAllProviderWorkflowOutput> {
@@ -258,8 +258,6 @@ export async function runCathayAllProviderWorkflow(
     throw new Error(
       "Cathay credentials or selected workflow input are invalid.",
     );
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
@@ -565,7 +563,7 @@ export async function runCathayAllProviderWorkflow(
         };
       },
       commit: async (typeId, stagedItems) =>
-        context.financialCommit!.execute(stagedItems, {
+        context.financialCommit.execute(stagedItems, {
           provider: "cathay",
           product: typeId,
           signal: context.signal,

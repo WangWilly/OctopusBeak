@@ -38,7 +38,7 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1140,15 +1140,13 @@ async function readCtbcCurrentDepositBalancesForApp(
 
 /** App-owned CTBC statement provider. Source admission completes before either commit. */
 export async function runCtbcProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   dependencies: CtbcProviderWorkflowDependencies = {},
 ): Promise<CtbcProviderWorkflowOutput> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("CTBC workflow credentials or input are missing or invalid.");
-  if (!context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
