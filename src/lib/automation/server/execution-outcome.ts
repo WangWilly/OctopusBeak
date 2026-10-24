@@ -27,13 +27,19 @@ function classified(code: TypedWorkflowErrorCode): TaskRunFailure {
 }
 
 /**
- * A worker's code is proven when it is specific, or when a failed product
+ * The host's missing solver route proves a verification configuration failure:
+ * the worker sees only its rejected request, never the host's signal. Otherwise
+ * a worker's code is proven when it is specific, or when a failed product
  * confirms a generic workflow-failed. Anything else is classified from events.
  */
 function workerFailure(
   outcome: Exclude<AppWorkflowWorkerOutcome, { status: "completed" }>,
   events: readonly WorkflowRunEvent[],
 ): TaskRunFailure {
+  if (outcome.status === "failed" && events.some((event) => event.signal === "solver-route-unavailable"
+    || event.signal === "solver-challenge-unsupported")) {
+    return { code: "verification-configuration-failed", proven: true };
+  }
   if (outcome.status === "failed" && ERROR_CODES.has(outcome.errorCode)) {
     const code = outcome.errorCode as TypedWorkflowErrorCode;
     const productConfirms = outcome.summary?.products?.some(
