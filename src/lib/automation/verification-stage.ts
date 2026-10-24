@@ -14,6 +14,8 @@ import type {
   VerificationChallengeKind,
   VerificationContextRegion,
 } from "./human-assistance.ts";
+import type { WorkflowContext, WorkflowHumanAssistancePort } from "./workflow-executor.ts";
+import { withAbort } from "../../workflows/abort.ts";
 
 type BoxLocator = Pick<Locator, "boundingBox">;
 
@@ -95,5 +97,66 @@ export async function resolveVerificationStage(
     targets,
     contextRegions,
     ...(challengeImageRegion === undefined ? {} : { challengeImageRegion }),
+  };
+}
+
+/** How a workflow hands a Verification stage to the solver. */
+export interface WorkflowVerificationPort {
+  /**
+   * Resolves once the stage is entered or verified. Rejects with the run's
+   * abort reason when the run is cancelled, and otherwise with
+   * VerificationStageIncompleteError.
+   */
+  complete(stage: VerificationStage): Promise<void>;
+}
+
+/** The host keeps why the stage failed; the run records only the failed signal. */
+export class VerificationStageIncompleteError extends Error {
+  constructor() {
+    super("The Verification stage did not complete.");
+    this.name = "VerificationStageIncompleteError";
+  }
+}
+
+export type ReportedVerificationOptions = Readonly<{
+  humanAssistance: WorkflowHumanAssistancePort;
+  signal: AbortSignal;
+  event: WorkflowContext["event"];
+  signalEvent: WorkflowContext["signalEvent"];
+}>;
+
+/**
+ * The one module that reports a Verification stage: requested and completed
+ * as authentication progress, and any end but completion or cancellation as
+ * the human-assistance-failed signal (ADR 0059).
+ */
+export function reportedVerificationPort(options: ReportedVerificationOptions): WorkflowVerificationPort {
+  const { humanAssistance, signal, event, signalEvent } = options;
+  const incomplete = async (): Promise<never> => {
+    await signalEvent("human-assistance-failed");
+    throw new VerificationStageIncompleteError();
+  };
+  return {
+    async complete(stage) {
+      signal.throwIfAborted();
+      let contract: HumanAssistanceContractInput;
+      try {
+        contract = await withAbort(resolveVerificationStage(stage), signal);
+      } catch {
+        signal.throwIfAborted();
+        return await incomplete();
+      }
+      await event("authentication", "advanced", "human-assistance-requested");
+      let status: Awaited<ReturnType<WorkflowHumanAssistancePort["request"]>>;
+      try {
+        status = await withAbort(humanAssistance.request(contract, signal), signal);
+      } catch {
+        signal.throwIfAborted();
+        return await incomplete();
+      }
+      signal.throwIfAborted();
+      if (status !== "entered" && status !== "verified") return await incomplete();
+      await event("authentication", "advanced", "human-assistance-completed");
+    },
   };
 }
