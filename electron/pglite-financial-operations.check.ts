@@ -48,11 +48,16 @@ test("an interactive page read runs before queued background reads", async () =>
   });
   const order: string[] = [];
   let releaseFirst!: () => void;
-  const firstRunning = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let firstStarted!: () => void;
+  const firstRunning = new Promise<void>((resolve) => { firstStarted = resolve; });
   const financial = {
     async request(operation: string) {
       order.push(operation);
-      if (order.length === 1) await firstRunning;
+      if (order.length === 1) {
+        firstStarted();
+        await firstReleased;
+      }
       return {};
     },
   } as unknown as PGliteFinancialPort;
@@ -60,7 +65,7 @@ test("an interactive page read runs before queued background reads", async () =>
   const client = createPGliteFinancialRpcClient(port("client", "server") as never);
   try {
     const running = client.request("financial.overview.current", []);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await firstRunning;
     const queued = [
       client.request("financial.assets.current", []),
       client.request("financial.spending.mergeLog", [{ knowledgeAt: 1 } as never]),
