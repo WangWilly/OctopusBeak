@@ -518,7 +518,7 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
   assert.equal(output.status, "partial");
   assert.equal(output.rowCount, 0);
   assert.deepEqual(output.products, [
-    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" },
+    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
   ]);
 });

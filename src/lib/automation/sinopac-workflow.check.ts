@@ -322,7 +322,7 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
-      assert.equal(error.errorCode, "source-collection-failed");
+      assert.equal(error.errorCode, "source-validation-failed");
       assert.match(String((error as Error & { cause?: unknown }).cause), /zero-result-authority-unproven/u);
       return true;
     },

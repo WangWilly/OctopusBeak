@@ -37,7 +37,6 @@ import {
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1790,7 +1789,6 @@ export async function runYuantaTradeProviderWorkflow(
         category: "trade" as const,
       })),
     ];
-    const { context: productContext, classifyFailure } = failedStageClassifier(context);
     let collected: YuantaTradeCollectedCounts | undefined;
     const summary = await collectSelectedProducts({
       productIds: ["securities"],
@@ -1798,8 +1796,8 @@ export async function runYuantaTradeProviderWorkflow(
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      classifyFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event };
         await productContext.event("decoding", "started", "source-decoding-started");
         const holdings: ReportPage[] = [];
         const trades: ReportPage[] = [];

@@ -1245,8 +1245,8 @@ export async function runHncbStatements(
     ...(overrides.assertSession ? { assertSession: overrides.assertSession } : {}),
     ...(overrides.event ? { event: overrides.event } : {}),
     ...(overrides.productFailure ? { productFailure: overrides.productFailure } : {}),
-    collect: async (_typeId, stagedItems): Promise<ProductCollectionSummary> => {
-      const { sourceCaptureCount, itemCount, ...collected } = await collectHncbDeposit(page, input, overrides, stagedItems);
+    collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
+      const { sourceCaptureCount, itemCount, ...collected } = await collectHncbDeposit(page, input, { ...overrides, event }, stagedItems);
       deposit = collected;
       return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
     },

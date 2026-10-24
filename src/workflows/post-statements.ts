@@ -13,7 +13,6 @@ import type {
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1106,7 +1105,6 @@ export async function runPostProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "completed", "authentication-completed");
 
-    const { context: productContext, classifyFailure } = failedStageClassifier(context);
     let accountCount = 0;
     const summary = await collectSelectedProducts({
       productIds: ["deposit"],
@@ -1114,12 +1112,11 @@ export async function runPostProviderWorkflow(
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      classifyFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
         const staged = await stagePostStatements(page, {
           text: context.text,
           signal: context.signal,
-          event: productContext.event,
+          event,
           observedAt: postObservedAt(new Date(context.now())),
           ...(overrides.collectSourceStatements
             ? { collectSourceStatements: overrides.collectSourceStatements }
