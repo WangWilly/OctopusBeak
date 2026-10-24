@@ -120,7 +120,6 @@
   // events or lose the latest state while Automation is off-screen.
   let automationRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
   const automationRuntimeController = createAutomationRuntimeController();
-  let automationPendingTaskIds = new Set<string>();
   let automationPendingActions: readonly AutomationActionToken[] = [];
   let onboardingState: OnboardingState | null = null;
   let onboardingController: ReturnType<typeof createOnboardingController> | null = null;
@@ -597,7 +596,6 @@
     const result = automationRuntimeController.acceptSnapshot(snapshot);
     if (!result.accepted) return;
     automationRuntimeSnapshot = result.snapshot;
-    automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
     automationPendingActions = automationRuntimeController.pendingActions();
     if (result.hadGap || result.sessionChanged) {
       void loadRoute("automation", {
@@ -962,7 +960,6 @@
     const unsubscribeAutomationController = automationRuntimeController.subscribe(() => {
       const current = automationRuntimeController.snapshot();
       if (current) automationRuntimeSnapshot = current;
-      automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
       automationPendingActions = automationRuntimeController.pendingActions();
     });
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
@@ -1096,8 +1093,6 @@
       blocks={automationBlocks}
       runtimeSnapshot={automationRuntimeSnapshot}
       runtimeController={automationRuntimeController}
-      appPendingTaskIds={automationPendingTaskIds}
-      appPendingActions={automationPendingActions}
       retryBlock={retryAutomationBlock}
       reload={() => loadRoute("automation", { force: true })}
       overviewLive={financialLiveEnabled && financialLiveStores ? financialLiveStores.overview() : null}

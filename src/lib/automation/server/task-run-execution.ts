@@ -7,7 +7,7 @@ import {
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
-import type { ActiveAutomationTaskRun, TaskRunFailure, TaskRunReport } from "./active-task-run.ts";
+import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
 import { registerCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
@@ -20,11 +20,7 @@ import {
   projectWorkflowRunProgress,
   selectedWorkflowStatementTypes,
 } from "./workflow-run-progress.ts";
-import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
-import {
-  classifyTypedWorkflowFailure,
-  summarizeInterruptedProductCollection,
-} from "./typed-workflow-outcome.ts";
+import { reportExecution, type ExecutionEnding } from "./execution-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
@@ -216,23 +212,10 @@ async function executeAppWorkflow(
   }
 }
 
-const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>(WORKFLOW_ERROR_CODES);
-
-function typedWorkerFailureCode(code: string): TypedWorkflowErrorCode | null {
-  return TYPED_WORKFLOW_ERROR_CODES.has(code as TypedWorkflowErrorCode)
-    ? code as TypedWorkflowErrorCode
-    : null;
-}
-
 function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWorkflowRpc {
   const rpc = options.pgliteRpc;
   if (!rpc?.endpoint.trim() || !rpc.token.trim()) throw new Error("PGlite workflow transport is unavailable.");
   return rpc;
-}
-
-/** Only the run's Commit attempts can say a commit outcome is unknown (ADR 0056). */
-function classifiedFailure(code: TypedWorkflowErrorCode): TaskRunFailure {
-  return { code: code === "commit-outcome-unknown" ? "workflow-failed" : code, proven: false };
 }
 
 function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHost {
@@ -267,7 +250,7 @@ async function executeSupervisedAppWorkflow(
 
   const { signal, forceSignal } = execution.run;
   let unregisterHumanAssistance: (() => void) | undefined;
-  let result: TaskRunReport;
+  let ending: ExecutionEnding;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
   let priorEventCount: number | null = null;
@@ -360,90 +343,70 @@ async function executeSupervisedAppWorkflow(
       : await runWorker();
     workerOutcome = outcome;
     await browserRuntimeIdentity.flush();
-
-    let eventsForExecution = observedEvents;
-    try {
-      const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
-      if (persisted) {
-        eventsForExecution = priorEventCount === null
-          ? [...observedEvents]
-          : [...persisted.events.slice(priorEventCount), ...observedEvents];
-      }
-    } catch {
-      // Each worker action is ordered behind a main-thread event ACK, so the
-      // observed event list remains an authoritative boundary on commit entry.
-    }
-
-    if (outcome.status === "completed") {
-      result = { summary: outcome.summary, failure: null };
-    } else {
-      const explicitCode = outcome.status === "failed"
-        ? typedWorkerFailureCode(outcome.errorCode)
-        : null;
-      // A structured product failure is explicit evidence, even when its code
-      // is workflow-failed. Do not replace it with a guess from the last event.
-      const productConfirmsCode = outcome.summary?.products?.some(
-        (product) => product.status === "failed" && product.errorCode === explicitCode,
-      );
-      result = {
-        summary: outcome.summary,
-        failure: explicitCode && explicitCode !== "commit-outcome-unknown"
-          && (explicitCode !== "workflow-failed" || productConfirmsCode)
-          ? { code: explicitCode, proven: true }
-          : classifiedFailure(classifyTypedWorkflowFailure(
-            new Error("App workflow worker failed."),
-            eventsForExecution,
-            outcome.status === "cancelled",
-          )),
-      };
-      if (outcome.status === "failed") {
-        const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
-        await recordWorkflowFailure(execution, options, {
-          source: "workflow-worker",
-          errorCode,
-          stage: lastWorkflowStage(eventsForExecution),
-          safeError: outcome.diagnostic,
-        });
-        recordPreviewFailure(errorCode, eventsForExecution, outcome.previewResponses);
-      }
-    }
+    ending = { kind: "worker", outcome };
   } catch (error) {
     try {
       await browserRuntimeIdentity.flush();
     } catch {
       // Preserve only a stable workflow failure; persistence errors are opaque.
     }
-    const cancelled = signal.aborted;
-    let eventsForExecution: readonly WorkflowRunEvent[] = observedEvents;
-    try {
-      const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
-      if (persisted) {
-        eventsForExecution = [
-          ...(priorEventCount === null ? [] : persisted.events.slice(priorEventCount)),
-          ...observedEvents,
-        ];
-      }
-    } catch {
-      // Do not include provider error text in the task outcome.
-    }
-    result = {
-      summary: summarizeInterruptedProductCollection(error) ?? workerOutcome?.summary ?? null,
-      failure: classifiedFailure(classifyTypedWorkflowFailure(error, eventsForExecution, cancelled)),
+    ending = {
+      kind: "host-error",
+      error,
+      cancelled: signal.aborted,
+      workerSummary: workerOutcome?.summary ?? null,
     };
-    if (!cancelled) {
-      const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
-      await recordWorkflowFailure(execution, options, {
-        source: "workflow-host",
-        errorCode,
-        stage: lastWorkflowStage(eventsForExecution),
-        error,
-      });
-      recordPreviewFailure(errorCode, eventsForExecution);
-    }
   } finally {
     unregisterHumanAssistance?.();
   }
-  return result!;
+
+  const events = await executionEvents(execution, observedEvents, priorEventCount);
+  const result = reportExecution(ending, events);
+  const evidence = failureEvidence(ending);
+  if (evidence) {
+    const { shapes, ...diagnostic } = evidence;
+    const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
+    await recordWorkflowFailure(execution, options, {
+      ...diagnostic,
+      errorCode,
+      stage: lastWorkflowStage(events),
+    });
+    recordPreviewFailure(errorCode, events, shapes);
+  }
+  return result;
+}
+
+/** What a failed execution leaves for diagnostics; completion and cancellation leave nothing. */
+function failureEvidence(ending: ExecutionEnding) {
+  if (ending.kind === "host-error") {
+    return ending.cancelled ? null : { source: "workflow-host" as const, error: ending.error, shapes: undefined };
+  }
+  const { outcome } = ending;
+  return outcome.status === "failed"
+    ? { source: "workflow-worker" as const, safeError: outcome.diagnostic, shapes: outcome.previewResponses }
+    : null;
+}
+
+/**
+ * This execution's events: those persisted since it started, then those the
+ * worker reported. Each worker action is ordered behind a main-thread event
+ * ACK, so the observed list alone remains an authoritative boundary.
+ */
+async function executionEvents(
+  execution: AutomationTaskRunExecution,
+  observedEvents: readonly WorkflowRunEvent[],
+  priorEventCount: number | null,
+): Promise<readonly WorkflowRunEvent[]> {
+  try {
+    const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
+    if (!persisted) return observedEvents;
+    return [
+      ...(priorEventCount === null ? [] : persisted.events.slice(priorEventCount)),
+      ...observedEvents,
+    ];
+  } catch {
+    return observedEvents;
+  }
 }
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
