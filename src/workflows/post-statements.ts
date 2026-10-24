@@ -52,10 +52,8 @@ import {
   type ExistingPostCurrentDepositFinancialCapture,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import {
-  requestCaptchaAssistance,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
+import { requestCaptchaAssistance } from "./human-assistance.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -343,7 +341,7 @@ export async function submitPostLoginAndWait(
 
 export function postCaptchaAssistanceStage(
   page: Page,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
   return {
     stageId: "ipost-login-captcha",

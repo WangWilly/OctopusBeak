@@ -35,7 +35,7 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
 import { readFile } from "node:fs/promises";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -263,7 +263,7 @@ test("declares the audio verification challenge with a six-digit answer", async 
       return locator;
     },
   } as unknown as Page;
-  const contract = await emitHumanAssistanceStage(yuantaTradeAudioAssistanceStage(page));
+  const contract = await resolveVerificationStage(yuantaTradeAudioAssistanceStage(page));
 
   assert.equal(contract.challengeKind, "audio-captcha");
   assert.equal(contract.charset, "digits");

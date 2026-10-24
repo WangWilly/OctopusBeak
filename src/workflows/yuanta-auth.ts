@@ -4,10 +4,7 @@ import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
-import {
-  emitHumanAssistanceStage,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   assembleStableSourceLoginScope,
   deriveSourceConnectionIdentityKey,
@@ -170,7 +167,7 @@ async function waitForMainFrame(
 
 export function yuantaBankCaptchaAssistanceStage(
   loginFrame: Frame,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "yuanta-bank-login-captcha",
     title: "Enter the YuanTa Bank CAPTCHA",
@@ -515,7 +512,7 @@ export async function authenticateYuantaBankWithAssistance(
     let loginFrame = await withAbort(waitForMainFrame(page), signal);
     await withAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
     const contract = await withAbort(
-      emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame)),
+      resolveVerificationStage(yuantaBankCaptchaAssistanceStage(loginFrame)),
       signal,
     );
     signal.throwIfAborted();
