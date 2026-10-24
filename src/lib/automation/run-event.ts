@@ -68,7 +68,8 @@ export function hasValidRunEventMeaning(value: Readonly<Record<string, unknown>>
   return value.code === value.signal && value.stage === fixed.stage && value.outcome === fixed.outcome;
 }
 
-const LEGACY_FAILED = /(?:failed|rejected|malformed|exhausted|unavailable|unsupported|interrupted|cancelled|canceled|error)$/u;
+// A cancellation is not a failure: the run status reports it (ADR 0059).
+const LEGACY_FAILED = /(?:failed|rejected|malformed|exhausted|unavailable|unsupported|interrupted|error)$/u;
 const LEGACY_COMPLETED = /(?:completed|complete|collected|no-data|validated|ready|persisted|admitted)$/u;
 
 export function legacyRunEventOutcome(code: string): RunEventOutcome {
@@ -90,6 +91,5 @@ export function upgradeStoredRunEvent(value: unknown): unknown {
   if (isRunEventSignal(event.code) && event.stage === RUN_EVENT_SIGNALS[event.code].stage) {
     return { ...event, outcome: RUN_EVENT_SIGNALS[event.code].outcome, signal: event.code };
   }
-  if (isRunEventSignal(event.code)) return value;
   return { ...event, outcome: legacyRunEventOutcome(event.code) };
 }
