@@ -119,7 +119,7 @@ const typedWorkflowInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-  statementTypes: z.array(z.literal("accounts")).default(["accounts"]),
+  statementTypes: z.array(z.literal("deposit")).default(["deposit"]),
   attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
@@ -1868,7 +1868,7 @@ export async function runSinopacProviderWorkflow(
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("SinoPac workflow credentials or input are missing or invalid.");
-  const collectsAccounts = parsed.data.statementTypes.includes("accounts");
+  const collectsAccounts = parsed.data.statementTypes.includes("deposit");
   const attachedProducts = parsed.data.attachedPreviewProducts;
   if (!collectsAccounts && attachedProducts.length === 0)
     throw new Error("SinoPac workflow has no statement type or attached product selected.");

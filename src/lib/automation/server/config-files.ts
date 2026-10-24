@@ -392,6 +392,32 @@ export function migrateAutomationEnvFile({
   }
 }
 
+/**
+ * Statement Selection ids renamed to their Collection product type id
+ * (ADR 0060). A persisted selection keeps its order and any attached ids.
+ */
+const RENAMED_STATEMENT_SELECTION_IDS = [
+  { key: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES", from: "accounts", to: "deposit" },
+  { key: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES", from: "accounts", to: "deposit" },
+  { key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES", from: "brokerage", to: "securities" },
+] as const;
+
+/** Rewrites renamed Statement Selection ids in settings.json; a migrated file is left unchanged. */
+export function migrateStatementSelectionIds(settingsPath = AUTOMATION_SETTINGS_PATH) {
+  if (!existsSync(settingsPath)) return;
+  const settings = readAutomationSettingsFile(settingsPath);
+  let changed = false;
+  for (const { key, from, to } of RENAMED_STATEMENT_SELECTION_IDS) {
+    const value = settings[key];
+    if (typeof value !== "string") continue;
+    const ids = value.split(",").map((id) => id.trim()).filter(Boolean);
+    if (!ids.includes(from)) continue;
+    settings[key] = [...new Set(ids.map((id) => id === from ? to : id))].join(",");
+    changed = true;
+  }
+  if (changed) writeAutomationSettingsFile(settingsPath, settings);
+}
+
 export function automationConfigEnv({
   baseEnv = process.env,
   settings = readAutomationSettingsFile(),

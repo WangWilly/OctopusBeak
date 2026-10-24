@@ -17,6 +17,7 @@ import {
   isAutomationCredentialCodecConfigured,
   migrateAutomationCredentialsFileEncryption,
   migrateAutomationEnvFile,
+  migrateStatementSelectionIds,
   readAutomationCredentialsFile,
   readAutomationSettingsFile,
   setAutomationCredentialCodec,
@@ -285,6 +286,32 @@ try {
   assert.equal(readFileSync(legacyCredentialsPath, "utf8").includes("legacy-secret"), false);
   assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), false);
   setAutomationCredentialCodec(null);
+  {
+    const settingsPath = join(dir, "renamed-selection-settings.json");
+    writeAutomationSettingsFile(settingsPath, {
+      LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "accounts,credit_card",
+      LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts",
+      LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES: "brokerage",
+      LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "deposit",
+    });
+    migrateStatementSelectionIds(settingsPath);
+    const migrated = {
+      LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "deposit,credit_card",
+      LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit",
+      LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES: "securities",
+      LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "deposit",
+    };
+    assert.deepEqual(readAutomationSettingsFile(settingsPath), migrated, "renamed ids keep order and attached ids");
+    const written = readFileSync(settingsPath, "utf8");
+    migrateStatementSelectionIds(settingsPath);
+    assert.equal(readFileSync(settingsPath, "utf8"), written, "a migrated file is left unchanged");
+    writeAutomationSettingsFile(settingsPath, { LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "deposit,accounts" });
+    migrateStatementSelectionIds(settingsPath);
+    assert.deepEqual(readAutomationSettingsFile(settingsPath), { LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "deposit" });
+    migrateStatementSelectionIds(join(dir, "missing-settings.json"));
+    assert.equal(existsSync(join(dir, "missing-settings.json")), false, "no settings file is created");
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
+

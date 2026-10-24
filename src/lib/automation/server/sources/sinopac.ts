@@ -80,7 +80,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
     products: [
-      { id: "accounts", stream: "domestic-deposit" },
+      { id: "deposit", stream: "domestic-deposit" },
     ],
   },
   task: {
