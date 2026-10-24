@@ -9,12 +9,14 @@ import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workf
 import type { WorkflowProductFailure } from "./workflow-executor.ts";
 import {
   collectSelectedProducts,
+  interruptedProductCollectionFromOutput,
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
   type CollectionProductOutcome,
 } from "./product-collection.ts";
 import { productRunStatus } from "./product-run-status.ts";
+import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 
 function item(product: string, itemKey: string): PGliteWorkflowRunItem {
   return {
@@ -55,6 +57,15 @@ function result(
 }
 
 const signal = () => new AbortController();
+
+/** A run in which nothing produced durable data throws its summary with the failed product's code. */
+async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
+  const error = await run.then(() => null, (rejection: unknown) => rejection);
+  assert.ok(error instanceof ProductCollectionInterruptedError, "a failed run throws its summary");
+  assert.equal(error.errorCode, errorCode);
+  assert.equal(error.summary.status, "failed");
+  return error.summary;
+}
 
 {
   const controller = signal();
@@ -121,7 +132,7 @@ const signal = () => new AbortController();
   const controller = signal();
   const dispositions: Array<"no_data" | "not_held" | undefined> = ["no_data", "not_held", undefined];
   const absentFailures: string[] = [];
-  const summary = await collectSelectedProducts({
+  const summary = await failedRunSummary(collectSelectedProducts({
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
@@ -131,7 +142,7 @@ const signal = () => new AbortController();
     },
     commit: async () => { throw new Error("empty outcomes must not commit"); },
     productFailure: async (failure) => { absentFailures.push(failure.statementType); },
-  });
+  }), "source-collection-failed");
   assert.deepEqual(absentFailures, ["loan"], "explicit absence evidence is not a failure diagnostic");
   assert.deepEqual(summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
     ["deposit", "no_data", undefined],
@@ -383,4 +394,150 @@ console.log("product-collection checks passed");
   assert.equal(productRunStatus([outcome("failed")], 0), "failed");
   assert.equal(productRunStatus([outcome("success", incomplete)], 1), "partial", "incomplete coverage with receipts is partial");
   assert.equal(productRunStatus([outcome("no_data", incomplete)], 0), "failed", "incomplete coverage without receipts fails");
+}
+
+const previewRun = (overrides: Partial<PreviewProductRun> = {}): PreviewProductRun => ({
+  products: [{ typeId: "credit_card", status: "success", itemCount: 2, committedCount: 2 }],
+  receipts: [{ accounts: 2, transactions: 9, balances: 2, statements: 2, closedAccounts: 0 }],
+  interrupted: null,
+  firstFailure: null,
+  ...overrides,
+});
+const failedPreview = previewRun({
+  products: [{ typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" }],
+  receipts: [],
+  firstFailure: new Error("synthetic invalid card source"),
+});
+
+function depositRun(
+  attached: (() => Promise<PreviewProductRun>) | undefined,
+  options: Readonly<{ controller?: AbortController; collect?: "commit" | "fail" | "no_data"; commit?: PGliteWorkflowRunResult<unknown>["status"] | "refused" }> = {},
+) {
+  const controller = options.controller ?? signal();
+  return collectSelectedProducts({
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: controller.signal,
+    collect: async (typeId, staged) => {
+      if (options.collect === "fail") throw new Error("synthetic incomplete verified source");
+      if (options.collect === "no_data") return { sourceCaptureCount: 2, rowCount: 0, itemCount: 0, noDataEvidence: true };
+      staged.push(item(typeId, `${typeId}-1`), item(typeId, `${typeId}-2`));
+      return { sourceCaptureCount: 2, rowCount: 17, itemCount: 2 };
+    },
+    commit: async (_typeId, staged) => options.commit === "refused"
+      ? result("failed", staged.map((entry) => ({ ...committed(entry), status: "failed", failureKind: "refused" }) as never))
+      : result(options.commit ?? "completed", staged.map(committed)),
+    ...(attached ? { attached } : {}),
+  });
+}
+
+{
+  const summary = await depositRun(async () => previewRun());
+  assert.equal(summary.status, "completed");
+  assert.equal(summary.sourceCaptureCount, 2, "preview accounts are never Source Captures");
+  assert.equal(summary.rowCount, 26);
+  assert.equal(summary.itemCount, 4);
+  assert.equal(summary.committedCount, 4);
+  assert.deepEqual(summary.products.map((product) => product.typeId), ["deposit", "credit_card"]);
+}
+
+{
+  const summary = await depositRun(async () => failedPreview);
+  assert.equal(summary.status, "partial", "an attached failure cannot fail a committed verified product");
+  assert.equal(summary.committedCount, 2);
+}
+
+{
+  let attachedRan = false;
+  const summary = await depositRun(async () => {
+    attachedRan = true;
+    return previewRun({ products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }] });
+  }, { collect: "fail" });
+  assert.ok(attachedRan, "a recoverable verified failure still runs the attached products");
+  assert.equal(summary.status, "partial");
+  assert.equal(summary.products[0]?.status, "failed");
+}
+
+for (const commit of ["refused", "cancelled"] as const) {
+  let attachedRan = false;
+  await assert.rejects(depositRun(async () => {
+    attachedRan = true;
+    return previewRun();
+  }, { commit }), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, commit === "refused" ? "collection-scope-changed" : "cancelled");
+    return true;
+  });
+  assert.equal(attachedRan, false, `a ${commit} verified commit stops the attached products (ADR 0058)`);
+}
+
+{
+  const cause = new Error("synthetic session ended");
+  await assert.rejects(depositRun(async () => ({
+    ...failedPreview, interrupted: { errorCode: "authentication-failed", error: cause },
+  })), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "authentication-failed");
+    assert.equal(error.cause, cause);
+    assert.equal(error.summary.committedCount, 2);
+    assert.deepEqual(error.summary.products.map((product) => product.typeId), ["deposit", "credit_card"]);
+    return true;
+  });
+}
+
+for (const code of ["authentication-failed", "commit-outcome-unknown"] as const) {
+  const controller = signal();
+  await assert.rejects(depositRun(async () => {
+    controller.abort();
+    return { ...failedPreview, interrupted: { errorCode: code, error: new Error(code) } };
+  }, { controller }), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, code === "commit-outcome-unknown" ? code : "cancelled",
+      "cancellation wins over session loss, but never over an uncertain commit");
+    return true;
+  });
+}
+
+{
+  const collected = previewRun({
+    products: [{ typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" }],
+    receipts: [],
+    firstFailure: new Error("synthetic invalid card source"),
+  });
+  await assert.rejects(collectSelectedProducts({
+    productIds: ["deposit"],
+    selectedIds: [],
+    signal: signal().signal,
+    collect: async () => { throw new Error("an unselected verified product must not collect"); },
+    commit: async () => { throw new Error("an unselected verified product must not commit"); },
+    attached: async () => collected,
+  }), (error: unknown) => error === collected.firstFailure, "an attached-only sole failure keeps its original error");
+}
+
+for (const attached of [failedPreview, previewRun({ products: [{ typeId: "credit_card", status: "not_held", itemCount: 0, committedCount: 0 }], receipts: [] })]) {
+  const summary = await failedRunSummary(depositRun(async () => attached, { collect: "fail" }), "source-collection-failed");
+  assert.deepEqual(summary.products.map((product) => product.typeId), ["deposit", "credit_card"]);
+}
+
+{
+  const summary = await depositRun(async () => previewRun({
+    products: [
+      { typeId: "credit_card", status: "not_held", itemCount: 0, committedCount: 0 },
+      { typeId: "time_deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
+    ],
+    receipts: [],
+  }), { collect: "no_data" });
+  assert.equal(summary.status, "completed", "explicit absence completes without inventing receipts");
+  assert.equal(summary.committedCount, 0);
+  assert.equal(summary.products.length, 3);
+}
+
+{
+  const summary = await depositRun(undefined);
+  const output = { ...summary, rowCount: 99, productCollectionSummary: summary };
+  assert.deepEqual(interruptedProductCollectionFromOutput(output)?.summary, summary);
+  assert.equal(interruptedProductCollectionFromOutput({
+    ...output,
+    productCollectionSummary: { ...summary, products: [{ ...summary.products[0], accountNumber: "synthetic-private-value" }] },
+  }), undefined, "an invalid explicit snapshot cannot bypass the bounded product contract");
 }
