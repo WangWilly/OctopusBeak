@@ -10,7 +10,7 @@ import {
   sanitizeCollectionProductOutcomes,
   type CollectionProductOutcome,
 } from "../product-collection.ts";
-import { aggregateTdccExclusionCounts } from "../tdcc-collection-summary.ts";
+import { aggregateTdccExclusionCounts, TDCC_MAX_SUMMARY_COUNT } from "../tdcc-collection-summary.ts";
 import {
   isWorkflowRunResult,
   WORKFLOW_RUN_COUNT_NAMES,
@@ -46,7 +46,9 @@ function looseRunResult(
   const known: Partial<Record<WorkflowRunCountName, number>> = {};
   for (const name of WORKFLOW_RUN_COUNT_NAMES) {
     const value = counts[name];
-    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) known[name] = value;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= TDCC_MAX_SUMMARY_COUNT) {
+      known[name] = value;
+    }
   }
   let sanitized: readonly CollectionProductOutcome[] | undefined;
   if (products !== undefined) {

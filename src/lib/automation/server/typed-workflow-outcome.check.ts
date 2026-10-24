@@ -440,3 +440,13 @@ test("fallback stage diagnostics preserve cancellation and ignore commit events"
   assert.equal(classifyTypedWorkflowFailure(error, [event("collection", "started", "collection-started"), event("preparation", "started", "run-started"), auth, finalized]), "authentication-timeout");
   assert.equal(classifyTypedWorkflowFailure(error, [event("authentication", "started", "authentication-started"), event("preparation", "started", "run-started"), finalized]), "workflow-failed");
 });
+
+test("a stored count over the bound is dropped without losing the rest of the outcome", () => {
+  assert.deepEqual(sanitizeTypedWorkflowOutcome({
+    errorCode: null,
+    summary: { status: "financial-admitted", counts: { committedCount: 3, rowCount: 2_000_000_000 } },
+  }), {
+    errorCode: null,
+    summary: { status: "financial-admitted", counts: { committedCount: 3 } },
+  });
+});

@@ -279,7 +279,6 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    let verifiedRowCount = 0;
     if (selectedIds.length > 0) {
       await context.event("collection", "started", "statement-collection-started", {
         total: selectedIds.length,
@@ -470,7 +469,6 @@ export async function runCathayAllProviderWorkflow(
           );
           stagedItems.push(...balances);
           statementCaptureCount += domestic.captureCount;
-          verifiedRowCount += domestic.rowCount;
           return {
             // Keep this legacy field scoped to statement-source captures;
             // balance command items are reflected by itemCount instead.
@@ -538,7 +536,6 @@ export async function runCathayAllProviderWorkflow(
         );
         stagedItems.push(...balances);
         statementCaptureCount += foreign.captures.length;
-        verifiedRowCount += foreign.rowCount;
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,
@@ -591,7 +588,7 @@ export async function runCathayAllProviderWorkflow(
     }
 
     return productRunResult(summary, {
-      counts: { count: statementCaptureCount, rowCount: verifiedRowCount },
+      counts: { count: statementCaptureCount },
     });
   });
 }
