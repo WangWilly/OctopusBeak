@@ -281,7 +281,7 @@ export async function runCathayAllProviderWorkflow(
   if (!context.financialCommit)
     throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
 
   const input = parsed.data;
   const selectedIds = input.statementTypes;
@@ -299,14 +299,14 @@ export async function runCathayAllProviderWorkflow(
       text: context.text,
       signal: context.signal,
     };
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     const authenticate = dependencies.signIn ?? signInCathayForApp;
     await authenticate(page, input.credentials, {
       signal: context.signal,
-      event: async (code) => context.event("authentication", code),
+      event: async (code) => context.event("authentication", "advanced", code),
     });
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     const createSession =
       dependencies.createSession ??
@@ -319,7 +319,7 @@ export async function runCathayAllProviderWorkflow(
     const observedAt = context.now();
     let statementCaptureCount = 0;
     if (selectedIds.length > 0) {
-      await context.event("collection", "statement-collection-started", {
+      await context.event("collection", "started", "statement-collection-started", {
         total: selectedIds.length,
       });
     }
@@ -334,6 +334,7 @@ export async function runCathayAllProviderWorkflow(
       const label = typeId === "foreign_currency" ? "foreign" : "domestic";
       await context.event(
         "collection",
+        "started",
         `${label}-current-balance-started`,
       );
       let items: readonly PGliteWorkflowRunItem[];
@@ -412,6 +413,7 @@ export async function runCathayAllProviderWorkflow(
       }
       await context.event(
         "collection",
+        "completed",
         `${label}-current-balance-completed`,
         { completed: items.length, total: items.length },
       );
@@ -450,7 +452,7 @@ export async function runCathayAllProviderWorkflow(
       selectedIds,
       signal: context.signal,
       assertSession,
-      event: (stage, code, counts) => context.event(stage, code, counts),
+      event: context.event,
       productFailure: context.productFailure,
       collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
         if (typeId === "domestic") {
@@ -475,11 +477,11 @@ export async function runCathayAllProviderWorkflow(
           ) {
             throw new Error("Cathay domestic selected source set is incomplete.");
           }
-          await context.event("collection", "domestic-collection-completed", {
+          await context.event("collection", "completed", "domestic-collection-completed", {
             completed: domestic.captureCount,
             total: domestic.captureCount,
           });
-          await context.event("validation", "domestic-admission-started", {
+          await context.event("validation", "started", "domestic-admission-started", {
             total: domestic.requests.length,
           });
           const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
@@ -496,7 +498,7 @@ export async function runCathayAllProviderWorkflow(
               request: { steps: statementSteps },
             },
           });
-          await context.event("validation", "domestic-admission-completed", {
+          await context.event("validation", "completed", "domestic-admission-completed", {
             completed: domestic.requests.length,
             total: domestic.requests.length,
           });
@@ -539,11 +541,11 @@ export async function runCathayAllProviderWorkflow(
         ) {
           throw new Error("Cathay foreign selected source set is incomplete.");
         }
-        await context.event("collection", "foreign-collection-completed", {
+        await context.event("collection", "completed", "foreign-collection-completed", {
           completed: foreign.selectedStatementCount,
           total: foreign.selectedStatementCount,
         });
-        await context.event("validation", "foreign-admission-started", {
+        await context.event("validation", "started", "foreign-admission-started", {
           total: foreign.captures.length,
         });
         const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
@@ -563,7 +565,7 @@ export async function runCathayAllProviderWorkflow(
             request: { steps: statementSteps },
           },
         });
-        await context.event("validation", "foreign-admission-completed", {
+        await context.event("validation", "completed", "foreign-admission-completed", {
           completed: foreign.captures.length,
           total: foreign.captures.length,
         });
@@ -596,7 +598,7 @@ export async function runCathayAllProviderWorkflow(
           product.status === "no_data" ||
           product.status === "not_held",
       ).length;
-      await context.event("collection", "statement-collection-completed", {
+      await context.event("collection", "completed", "statement-collection-completed", {
         completed: completedProducts,
         total: selectedIds.length,
       });
@@ -605,7 +607,7 @@ export async function runCathayAllProviderWorkflow(
           .filter((product) => product.status !== "skipped")
           .every((product) => product.status !== "failed")
       ) {
-        await context.event("validation", "all-source-admission-completed", {
+        await context.event("validation", "completed", "all-source-admission-completed", {
           completed: summary.itemCount,
           total: summary.itemCount,
         });

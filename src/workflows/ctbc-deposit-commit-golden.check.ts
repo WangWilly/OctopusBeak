@@ -142,6 +142,7 @@ async function run(
     },
     financialCommit: recorder.financialCommit,
     event: recorder.event,
+    signalEvent: recorder.signalEvent,
   };
   const output = await runCtbcProviderWorkflow(context, input, {
     collectStatements: async () => collected(captures),

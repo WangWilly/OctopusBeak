@@ -733,7 +733,7 @@ async function collectPostStatementSources(
   const accountCount = await withAbort(visibleDetailLinks(page).count(), signal);
   if (accountCount === 0)
     throw new Error("No Post accounts are visible in the authenticated session.");
-  await event?.("collection", "collection-started", {
+  await event?.("collection", "started", "collection-started", {
     completed: 0,
     total: accountCount,
   });
@@ -742,7 +742,7 @@ async function collectPostStatementSources(
   for (let index = 0; index < accountCount; index += 1) {
     signal?.throwIfAborted();
     await openDetailPageWithSignal(page, index, signal);
-    await event?.("decoding", "source-decoding-started", {
+    await event?.("decoding", "started", "source-decoding-started", {
       completed: index,
       total: accountCount,
     });
@@ -752,6 +752,7 @@ async function collectPostStatementSources(
     } catch (error) {
       await event?.(
         error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+        "failed",
         error instanceof SourceTextIntegrityError
           ? "source-decode-rejected"
           : "source-response-rejected",
@@ -760,12 +761,12 @@ async function collectPostStatementSources(
       throw error;
     }
     signal?.throwIfAborted();
-    await event?.("decoding", "source-decoding-completed", {
+    await event?.("decoding", "advanced", "source-decoding-completed", {
       completed: index + 1,
       total: accountCount,
     });
     statements.push(statement);
-    await event?.("collection", "account-source-collected", {
+    await event?.("collection", "advanced", "account-source-collected", {
       completed: index + 1,
       total: accountCount,
     });
@@ -956,7 +957,7 @@ async function runPostStatements(
         `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
       );
     captures.push(admission.capture);
-    await overrides.event?.("validation", "source-validation-completed", {
+    await overrides.event?.("validation", "completed", "source-validation-completed", {
       completed: index + 1,
       total: statements.length,
     });
@@ -996,12 +997,12 @@ async function runPostStatements(
   // row still commits only after its statement identity item has committed.
   const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
   if (financialCaptures.length > 0) {
-    await overrides.event?.("collection", "current-balance-collection-started");
+    await overrides.event?.("collection", "started", "current-balance-collection-started");
     let currentRows: Awaited<ReturnType<typeof readCurrent>>;
     try {
       currentRows = await readCurrent(page, { observedAt });
     } catch (error) {
-      await overrides.event?.("validation", "current-balance-rejected");
+      await overrides.event?.("validation", "failed", "current-balance-rejected");
       throw error;
     }
     overrides.signal?.throwIfAborted();
@@ -1018,7 +1019,7 @@ async function runPostStatements(
         ),
       );
     }
-    await overrides.event?.("validation", "current-balance-validation-completed", {
+    await overrides.event?.("validation", "completed", "current-balance-validation-completed", {
       completed: currentBalanceCaptures.length,
       total: currentRows.length,
     });
@@ -1073,7 +1074,7 @@ export async function runPostProviderWorkflow(
     throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
-  await context.event("authentication", "authentication-started");
+  await context.event("authentication", "started", "authentication-started");
 
   return await context.browser.withPage(async (page) => {
     await withAbort(
@@ -1086,24 +1087,23 @@ export async function runPostProviderWorkflow(
         page,
         parsed.data.credentials,
         async (contract, signal) => {
-          await context.event("authentication", "human-assistance-requested");
+          await context.event("authentication", "advanced", "human-assistance-requested");
           const status = await context.humanAssistance.request(contract, signal);
-          await context.event(
-            "authentication",
-            status === "entered" || status === "verified"
-              ? "human-assistance-completed"
-              : "human-assistance-failed",
-          );
+          if (status === "entered" || status === "verified") {
+            await context.event("authentication", "advanced", "human-assistance-completed");
+          } else {
+            await context.signalEvent("human-assistance-failed");
+          }
           return status;
         },
         context.signal,
         () => {
-          void context.event("authentication", "login-dialog-interrupted");
+          void context.signalEvent("login-dialog-interrupted");
         },
       );
     }
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     const result = await runPostStatements(page, {
       text: context.text,

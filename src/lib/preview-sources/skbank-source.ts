@@ -476,7 +476,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
     },
     startUrl: `${API}/`,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const credentials = {
         idNumber: (input.credentials[KEY.idNumber] ?? "").trim(),
         alias: input.credentials[KEY.alias] ?? "",
@@ -486,7 +486,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
       return open(context, { pageUrl: input.startUrl, stripOriginFor: "*mbanking.skbank.com.tw*" }, async (http) => {
         const api = client(context, http, deviceId);
         await signIn(api, credentials);
-        await context.event("authentication", "authentication-completed");
+        await context.event("authentication", "completed", "authentication-completed");
         try {
           await api.get(PATH.userInformation);
           await api.get(PATH.megaMenu);

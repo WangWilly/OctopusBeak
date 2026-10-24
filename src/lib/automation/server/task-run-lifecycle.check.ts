@@ -65,6 +65,7 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
         event: {
           runId: start.taskRunId,
           stage: "preparation",
+          outcome: "started",
           code: "run-started",
           occurredAt: "2026-10-20T00:00:00.000Z",
         },

@@ -1,3 +1,4 @@
+import type { RunEventOutcome } from "./run-event.ts";
 import { CommitOutcomeUnknownError, commitRefused } from "./commit-attempt.ts";
 import type {
   PGliteWorkflowRunItem,
@@ -133,6 +134,7 @@ export type ProductCollectionRunSummary = Readonly<{
 
 export type ProductCollectionStageEvent = (
   stage: WorkflowContextStage,
+  outcome: RunEventOutcome,
   code: string,
   counts?: WorkflowEventCounts,
 ) => Promise<void>;
@@ -360,19 +362,20 @@ export async function collectSelectedProducts<
     let lastStage: WorkflowStage = "collection";
     const emitProductEvent = (
       stage: WorkflowContextStage,
+      outcome: RunEventOutcome,
       code: string,
       counts?: WorkflowEventCounts,
     ) => {
       lastStage = stage;
-      return options.event?.(stage, code, { ...counts, statementType: typeId });
+      return options.event?.(stage, outcome, code, { ...counts, statementType: typeId });
     };
 
     try {
       await options.assertSession?.();
       await options.prepare?.(typeId);
-      await emitProductEvent("collection", `${codePrefix}-collection-started`, { activity: "query" });
+      await emitProductEvent("collection", "started", `${codePrefix}-collection-started`, { activity: "query" });
       const reportActivity: ProductCollectionActivityReporter = async (activity) => {
-        await emitProductEvent("collection", `${codePrefix}-collection-${activity}-started`, { activity });
+        await emitProductEvent("collection", "advanced", `${codePrefix}-collection-${activity}-started`, { activity });
       };
       const collected = await options.collect(typeId, stagedItems, reportActivity);
       await options.assertSession?.();
@@ -401,7 +404,7 @@ export async function collectSelectedProducts<
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
           completedByType.set(typeId, createOutcome(typeId, "success"));
-          await emitProductEvent("collection", `${codePrefix}-collection-completed-with-exclusions`, {
+          await emitProductEvent("collection", "completed", `${codePrefix}-collection-completed-with-exclusions`, {
             completed: sourceCountForProduct,
             total: sourceCountForProduct,
           });
@@ -414,7 +417,7 @@ export async function collectSelectedProducts<
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
           completedByType.set(typeId, createOutcome(typeId, "no_data"));
-          await emitProductEvent("collection", `${codePrefix}-collection-no-data`);
+          await emitProductEvent("collection", "completed", `${codePrefix}-collection-no-data`);
           if (signal.aborted) {
             throw new ProductCollectionInterruptedError("cancelled", summarize(
               orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
@@ -424,7 +427,7 @@ export async function collectSelectedProducts<
           completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, {
             errorCode: "source-collection-failed",
           }));
-          await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);
+          await emitProductEvent("validation", "failed", `${codePrefix}-source-validation-rejected`);
         }
         continue;
       }
@@ -432,15 +435,15 @@ export async function collectSelectedProducts<
       itemCount += productItemCount;
       sourceCaptureCount += sourceCountForProduct;
       rowCount += rowsForProduct;
-      await emitProductEvent("collection", `${codePrefix}-collection-completed`, {
+      await emitProductEvent("collection", "completed", `${codePrefix}-collection-completed`, {
         completed: sourceCountForProduct,
         total: sourceCountForProduct,
       });
-      await emitProductEvent("decoding", `${codePrefix}-source-decoding-completed`, {
+      await emitProductEvent("decoding", "completed", `${codePrefix}-source-decoding-completed`, {
         completed: sourceCountForProduct,
         total: sourceCountForProduct,
       });
-      await emitProductEvent("validation", `${codePrefix}-source-validation-completed`, {
+      await emitProductEvent("validation", "completed", `${codePrefix}-source-validation-completed`, {
         completed: productItemCount,
         total: productItemCount,
       });
@@ -521,12 +524,12 @@ export async function collectSelectedProducts<
 
       if (error instanceof StatementComponentAbsentError && error.disposition) {
         completedByType.set(typeId, createOutcome(typeId, error.disposition));
-        await emitProductEvent("collection", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
+        await emitProductEvent("collection", "advanced", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
       } else {
         const errorCode = options.classifyFailure?.(error) ?? productFailureCode(error);
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
         await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
-        await emitProductEvent("validation", `${codePrefix}-source-validation-rejected`);
+        await emitProductEvent("validation", "failed", `${codePrefix}-source-validation-rejected`);
       }
 
       if (options.assertSession && !signal.aborted) {

@@ -1,3 +1,4 @@
+import { humanAssistanceEvent } from "./human-assistance.ts";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -185,7 +186,7 @@ async function authenticateYuantaForApp(
   await authenticateYuantaBankWithAssistance(page, credentials, true, {
     signal: context.signal,
     request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: (code) => context.event("authentication", code),
+    event: humanAssistanceEvent(context),
   });
 }
 
@@ -359,15 +360,15 @@ export async function runYuantaAllStatementsWorkflow(
   };
 
   context.signal.throwIfAborted();
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
   return await context.browser.withPage(async (page) => {
     try {
       context.signal.throwIfAborted();
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       await authenticate(page, credentials, context);
       context.signal.throwIfAborted();
-      await context.event("authentication", "authentication-completed");
-      await context.event("decoding", "source-decoding-started");
+      await context.event("authentication", "completed", "authentication-completed");
+      await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
         productIds,
@@ -408,10 +409,10 @@ export async function runYuantaAllStatementsWorkflow(
             signal: context.signal,
           });
         },
-        event: (stage, code, counts) => context.event(stage, code, counts),
+        event: context.event,
         productFailure: context.productFailure,
       });
-      await context.event("validation", "source-validation-completed", {
+      await context.event("validation", "completed", "source-validation-completed", {
         completed: summary.sourceCaptureCount,
         total: summary.sourceCaptureCount,
       });

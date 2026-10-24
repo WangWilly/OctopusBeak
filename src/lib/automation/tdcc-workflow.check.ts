@@ -22,7 +22,8 @@ import {
 } from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
-import { createWorkflowExecutor, type WorkflowRunEvent } from "./workflow-executor.ts";
+import { createWorkflowExecutor } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";

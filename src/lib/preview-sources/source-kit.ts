@@ -67,18 +67,18 @@ export async function solveChallengeRound(
     const answer = await solve(context, await nextChallenge());
     if (answer !== null) return answer;
   }
-  await context.event("authentication", "verification-solver-exhausted");
+  await context.signalEvent("verification-solver-exhausted");
   return fail("verification-exhausted", `no answer accepted in ${maxChallenges} CAPTCHA challenge(s)`);
 }
 
 /** ADR 0039: a challenge without a calibrated solver route ends the run. */
 export async function refuseUnsupportedVerification(context: PreviewWorkflowContext, challenge: string): Promise<never> {
-  await context.event("authentication", "solver-challenge-unsupported");
+  await context.signalEvent("solver-challenge-unsupported");
   return fail("verification-unsupported", challenge);
 }
 
 export async function requireDeviceRegistration(context: PreviewWorkflowContext, detail: string): Promise<never> {
-  await context.event("authentication", "device-registration-required");
+  await context.event("authentication", "advanced", "device-registration-required");
   return fail("device-registration-required", detail);
 }
 

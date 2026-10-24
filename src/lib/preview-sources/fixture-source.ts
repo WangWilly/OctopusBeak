@@ -33,7 +33,7 @@ export const PREVIEW_FIXTURE_SOURCE: PreviewSource = {
   },
   startUrl: "https://preview-fixture.invalid/",
   async run(context) {
-    await context.event("collection", "collection-started");
+    await context.event("collection", "started", "collection-started");
     const collectedAt = context.now();
     return context.preview.collect({ deposit: async () => ({
       collectedAt,
@@ -157,7 +157,7 @@ export const PREVIEW_PRODUCTS_FIXTURE_SOURCE: PreviewSource = {
   searchAliases: ["preview fixture products"],
   credentialFields: [{ ...PREVIEW_FIXTURE_SOURCE.credentialFields[0]!, key: "PREVIEW_SYNTHETIC_PRODUCTS_USER_ID" }],
   async run(context) {
-    await context.event("collection", "collection-started");
+    await context.event("collection", "started", "collection-started");
     const collectedAt = context.now();
     return context.preview.collect({
       deposit: async () => ({ absent: "not_held" }),

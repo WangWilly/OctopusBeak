@@ -1,3 +1,4 @@
+import { signalRunEvent } from "../run-event.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
@@ -80,12 +81,10 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
           const reason = isSolverChallengeKind(contract.challengeKind)
             ? "solver-route-unavailable"
             : "solver-challenge-unsupported";
-          await run.persistence.appendRunEvent({
+          await run.persistence.appendRunEvent(signalRunEvent(reason, {
             runId: run.taskRunId,
-            stage: "authentication",
-            code: reason,
             occurredAt: new Date().toISOString(),
-          });
+          }));
           throw new Error("App workflow solver route is unavailable for this verification stage.");
         }
         await run.persistence.updateHumanAssistanceContract(run.taskRunId, contract);

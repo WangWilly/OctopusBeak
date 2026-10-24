@@ -66,7 +66,7 @@ async function verifyFixturePage(context: WorkflowContext): Promise<void> {
   if (marker !== PACKAGED_BROWSER_FIXTURE_MARKER) {
     throw new Error("Packaged browser fixture page verification failed.");
   }
-  await context.event("collection", PACKAGED_BROWSER_FIXTURE_EVENT, {
+  await context.event("collection", "advanced", PACKAGED_BROWSER_FIXTURE_EVENT, {
     completed: 1,
     total: 1,
   });

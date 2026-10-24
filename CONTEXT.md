@@ -873,6 +873,14 @@ _Avoid_: Silent sign-out, account lock, device registration
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
 _Avoid_: Log file, raw stdout, source record, financial fact
 
+**Run event outcome**:
+What an Automation Run Event says happened in its Workflow Progress Stage: started, advanced, completed, or failed. Completed means the stage finished for the event's scope, the whole run or one statement type; a sub-item finishing inside the stage, such as one account, is advanced. Readers take an event's meaning from its outcome and Run Event Signal, never from its code, which is a diagnostic only (ADR 0059).
+_Avoid_: Event code suffix, rejected outcome, cancelled outcome
+
+**Run event signal**:
+A named Automation Run Event that a reader needs by name, such as the local solver exhausting its rounds. Each signal fixes its Workflow Progress Stage and Run Event Outcome, so it cannot be emitted at another stage.
+_Avoid_: Magic event code
+
 **Workflow progress stage**:
 A meaningful, user-recognizable phase of an Automation Task Run, such as signing in, querying statements, downloading, or preparing results. It describes the work currently underway rather than an individual browser interaction and identifies the selected statement type when work is specific to that type.
 _Avoid_: Browser action, verification stage

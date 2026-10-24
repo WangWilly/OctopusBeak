@@ -5,8 +5,8 @@ import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import {
   createWorkflowExecutor,
   type WorkflowExecutorPorts,
-  type WorkflowRunEvent,
 } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 
 function ports(events: WorkflowRunEvent[]): WorkflowExecutorPorts {
   return {
@@ -31,7 +31,7 @@ test("executor injects the financial port and records typed stage events", async
     async run(context, input) {
       assert.ok(context.financialCommit);
       assert.equal(context.text, injected.text);
-      await context.event("collection", "source-complete", { completed: 2, total: 2 });
+      await context.event("collection", "completed", "source-complete", { completed: 2, total: 2 });
       return input;
     },
   }], injected);
@@ -92,7 +92,7 @@ test("an event write failure after work starts does not relabel the outcome", as
     id: "event-failure-example",
     requiresFinancialCommit: false,
     async run(context) {
-      await context.event("collection", "collection-finished");
+      await context.event("collection", "advanced", "collection-finished");
       return "committed";
     },
   }], {

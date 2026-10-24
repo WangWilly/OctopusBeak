@@ -730,7 +730,7 @@ export function createTaishinSource(options: Readonly<{
     },
     startUrl: RWD_URL,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       return open(context, input.startUrl, async ({ http, form }) => {
         const api = client(context, http);
         await signIn(api, form, solve, context, {
@@ -738,14 +738,14 @@ export function createTaishinSource(options: Readonly<{
           userCode: input.credentials[KEY.userCode] ?? "",
           password: input.credentials[KEY.password] ?? "",
         });
-        await context.event("authentication", "authentication-completed");
-        await context.event("collection", "collection-started");
+        await context.event("authentication", "completed", "authentication-completed");
+        await context.event("collection", "started", "collection-started");
         const collectedAt = context.now();
         const output = await context.preview.collect({
           deposit: async () => ({ collectedAt, accounts: [...await twdAccounts(api, collectedAt), ...await fxAccounts(api, collectedAt)] }),
           credit_card: () => creditCards(api, collectedAt),
         }, { assertSession: () => assertSession(api) });
-        await context.event("collection", "collection-completed");
+        await context.event("collection", "completed", "collection-completed");
         return output;
       });
     },

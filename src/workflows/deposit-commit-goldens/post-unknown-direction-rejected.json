@@ -4,14 +4,17 @@
   "events": [
     {
       "stage": "authentication",
+      "outcome": "started",
       "code": "authentication-started"
     },
     {
       "stage": "authentication",
+      "outcome": "completed",
       "code": "authentication-completed"
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "source-validation-completed",
       "counts": {
         "completed": 1,
@@ -20,6 +23,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,

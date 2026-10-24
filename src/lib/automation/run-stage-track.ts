@@ -1,5 +1,6 @@
 import type { AutomationTaskStatus, TypedWorkflowOutcome } from "./types.ts";
-import type { WorkflowRunEvent, WorkflowStage } from "./workflow-executor.ts";
+import type { WorkflowStage } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import { WORKFLOW_STAGES } from "./task-row.ts";
 
 
@@ -11,7 +12,6 @@ export type RunStage = Readonly<{
   lastEvent: WorkflowRunEvent | null;
 }>;
 
-const FAILURE_CODE = /-(failed|rejected|exhausted|unavailable|unsupported|interrupted)$/;
 const ACTIVE_STATUSES: readonly AutomationTaskStatus[] = [
   "queued",
   "preparing",
@@ -65,12 +65,14 @@ export function runStageTrack(
     function stageState(): RunStageState {
       if (!lastEvent) return index < firstStageIndex ? "done" : "pending";
       if (running && latest?.stage === stage) return "active";
-      if (stageEvents.some((event) => FAILURE_CODE.test(event.code))) return "failed";
-      if (stage === "collection" && productFailed) return "failed";
+      // The run status, not its closing event, says how the run ended (ADR 0059).
       if (stage === "finalization") {
         if (status === "failed" || status === "interrupted") return "failed";
         if (status === "partial" || status === "cancelled") return "warning";
+        return "done";
       }
+      if (stageEvents.some((event) => event.outcome === "failed")) return "failed";
+      if (stage === "collection" && productFailed) return "failed";
       // A failed product already explains the failure on the collection node.
       if (stopped && stoppedStage === stage && !productFailed) return "failed";
       if (stage === "commit" && incomplete) return "warning";

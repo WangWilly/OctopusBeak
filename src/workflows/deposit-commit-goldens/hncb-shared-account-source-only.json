@@ -276,6 +276,7 @@
   "events": [
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "collection-started",
       "counts": {
         "completed": 0,
@@ -284,6 +285,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "started",
       "code": "source-decoding-started",
       "counts": {
         "completed": 0,
@@ -292,6 +294,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "advanced",
       "code": "source-decoding-completed",
       "counts": {
         "completed": 1,
@@ -300,6 +303,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 1,
@@ -308,6 +312,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "started",
       "code": "source-decoding-started",
       "counts": {
         "completed": 1,
@@ -316,6 +321,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "advanced",
       "code": "source-decoding-completed",
       "counts": {
         "completed": 2,
@@ -324,6 +330,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,

@@ -1402,25 +1402,25 @@ export async function runLineBankProviderWorkflow(
   context.signal.throwIfAborted();
   const dateRange = resolveDateRange(parsed.data);
   const windows = linebankQueryWindows(dateRange);
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     await linebankSignInForApp(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
     await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
     await withAbort(linebankEnsureTransactionPage(page), context.signal);
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     const client = new LineBankApiClient(page, {
       text: context.text,
       signal: context.signal,
     });
-    await context.event("collection", "collection-started");
-    await context.event("decoding", "source-decoding-started");
-    await context.event("collection", "current-balance-collection-started");
-    await context.event("decoding", "current-balance-decoding-started");
+    await context.event("collection", "started", "collection-started");
+    await context.event("decoding", "started", "source-decoding-started");
+    await context.event("collection", "started", "current-balance-collection-started");
+    await context.event("decoding", "started", "current-balance-decoding-started");
     let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
     let accounts: LineBankAccount[];
     let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
@@ -1441,13 +1441,13 @@ export async function runLineBankProviderWorkflow(
       );
     } catch (error) {
       if (sourceDecodeError(error))
-        await context.event("decoding", "source-decoding-failed");
+        await context.event("decoding", "failed", "source-decoding-failed");
       else
-        await context.event("collection", "current-balance-collection-failed");
+        await context.event("collection", "failed", "current-balance-collection-failed");
       throw error;
     }
-    await context.event("decoding", "current-balance-decoding-completed");
-    await context.event("collection", "current-balance-collection-completed", {
+    await context.event("decoding", "completed", "current-balance-decoding-completed");
+    await context.event("collection", "completed", "current-balance-collection-completed", {
       completed: currentBalanceRows.length,
       total: currentBalanceRows.length,
     });
@@ -1469,38 +1469,38 @@ export async function runLineBankProviderWorkflow(
             pages.flatMap((page) => page.rows),
           ).length;
         }
-        await context.event("collection", "account-collected", {
+        await context.event("collection", "advanced", "account-collected", {
           completed: selectedSources.length,
           total: expectedSourceCount,
         });
       }
     } catch (error) {
       if (sourceDecodeError(error))
-        await context.event("decoding", "source-decoding-failed");
+        await context.event("decoding", "failed", "source-decoding-failed");
       else if (sourceValidationError(error)) {
-        await context.event("validation", "source-validation-rejected", {
+        await context.event("validation", "failed", "source-validation-rejected", {
           completed: selectedSources.length,
           total: expectedSourceCount,
         });
       }
-      await context.event("collection", "collection-failed");
+      await context.event("collection", "failed", "collection-failed");
       throw error;
     }
     context.signal.throwIfAborted();
-    await context.event("decoding", "source-decoding-completed");
-    await context.event("collection", "collection-completed", {
+    await context.event("decoding", "completed", "source-decoding-completed");
+    await context.event("collection", "completed", "collection-completed", {
       completed: selectedSources.length,
       total: expectedSourceCount,
     });
     if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
-      await context.event("validation", "source-validation-rejected", {
+      await context.event("validation", "failed", "source-validation-rejected", {
         completed: selectedSources.length,
         total: expectedSourceCount,
       });
       throw new Error("LINE Bank source does not contain every selected account and date window.");
     }
 
-    await context.event("validation", "source-validation-started", {
+    await context.event("validation", "started", "source-validation-started", {
       completed: 0,
       total: selectedSources.length,
     });
@@ -1509,7 +1509,7 @@ export async function runLineBankProviderWorkflow(
     const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
     const statementItems: PGliteWorkflowRunItem[] = [];
     const captureOccurrenceId = randomUUID();
-    await context.event("validation", "canonical-admission-started", {
+    await context.event("validation", "started", "canonical-admission-started", {
       completed: 0,
       total: selectedSources.length,
     });
@@ -1559,20 +1559,20 @@ export async function runLineBankProviderWorkflow(
           });
           financialCaptures.push(admitted);
         }
-        await context.event("validation", "account-source-admitted", {
+        await context.event("validation", "advanced", "account-source-admitted", {
           completed: index + 1,
           total: selectedSources.length,
         });
       }
     } catch (error) {
-      await context.event("validation", "source-validation-rejected", {
+      await context.event("validation", "failed", "source-validation-rejected", {
         completed: statementItems.length,
         total: selectedSources.length,
       });
       throw error;
     }
 
-    await context.event("validation", "canonical-admission-completed", {
+    await context.event("validation", "completed", "canonical-admission-completed", {
       completed: statementItems.length,
       total: selectedSources.length,
     });
@@ -1593,13 +1593,13 @@ export async function runLineBankProviderWorkflow(
         currentBalanceRows.length !== selectedTwdAccountKeys.size ||
         selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
         [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
-        await context.event("validation", "current-balance-validation-rejected", {
+        await context.event("validation", "failed", "current-balance-validation-rejected", {
           completed: currentBalanceRows.length,
           total: selectedTwdAccountKeys.size,
         });
         throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
       }
-      await context.event("validation", "current-balance-validation-started", {
+      await context.event("validation", "started", "current-balance-validation-started", {
         completed: 0,
         total: currentBalanceRows.length,
       });
@@ -1628,18 +1628,18 @@ export async function runLineBankProviderWorkflow(
           });
         }
       } catch {
-        await context.event("validation", "current-balance-validation-rejected", {
+        await context.event("validation", "failed", "current-balance-validation-rejected", {
           completed: 0,
           total: currentBalanceRows.length,
         });
         throw new Error("LINE Bank current balance source admission was rejected.");
       }
-      await context.event("validation", "current-balance-validation-completed", {
+      await context.event("validation", "completed", "current-balance-validation-completed", {
         completed: balanceItems.length,
         total: currentBalanceRows.length,
       });
     }
-    await context.event("validation", "source-validation-completed", {
+    await context.event("validation", "completed", "source-validation-completed", {
       completed: selectedSources.length,
       total: expectedSourceCount,
     });

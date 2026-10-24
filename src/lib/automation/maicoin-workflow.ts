@@ -80,8 +80,8 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
         runStarted = true;
 
         stage = "collection";
-        await context.event("authentication", "authenticating");
-        await context.event("collection", "collecting-wallets");
+        await context.event("authentication", "advanced", "authenticating");
+        await context.event("collection", "advanced", "collecting-wallets");
         let source;
         try {
           source = await collectMaicoinSource(credentials, {
@@ -91,19 +91,21 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             now: context.now,
             onWalletsCollected: (count) => context.event(
               "collection",
+              "advanced",
               "wallets-collected",
               { completed: count, total: count },
             ),
-            onStatementsStarted: () => context.event("collection", "collecting-statements"),
+            onStatementsStarted: () => context.event("collection", "advanced", "collecting-statements"),
             onStatementsCollected: (count) => context.event(
               "collection",
+              "completed",
               "statements-collected",
               { completed: count, total: count },
             ),
           });
         } catch (error) {
           if (context.signal.aborted) throw cancellationError();
-          await context.event("validation", "source-rejected");
+          await context.event("validation", "failed", "source-rejected");
           throw safeError("source-rejected", error);
         }
 
@@ -133,10 +135,10 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             source.statementValues,
           ))];
         } catch (error) {
-          await context.event("validation", "source-rejected");
+          await context.event("validation", "failed", "source-rejected");
           throw safeError("source-rejected", error);
         }
-        await context.event("validation", "source-complete", {
+        await context.event("validation", "completed", "source-complete", {
           completed: captures.length,
           total: captures.length,
         });
@@ -206,7 +208,7 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           record: summary,
         });
         runFinished = true;
-        await context.event("finalization", "operational-records-persisted", {
+        await context.event("finalization", "completed", "operational-records-persisted", {
           completed: source.snapshots.length + statementRows,
           total: source.snapshots.length + statementRows,
         });

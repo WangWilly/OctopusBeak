@@ -8,7 +8,7 @@ export const exampleWorkflow: WorkflowDefinition<ExampleInput> = {
   requiresFinancialCommit: false,
   async run(context, input) {
     context.signal.throwIfAborted();
-    await context.event("collection", "collection-started");
+    await context.event("collection", "started", "collection-started");
     return await context.browser.withPage(async (page) => {
       await page.goto(input.startUrl);
       context.signal.throwIfAborted();
