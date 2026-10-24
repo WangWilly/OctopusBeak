@@ -135,6 +135,7 @@ export function classifyTypedWorkflowFailure(
     || event.signal === "solver-challenge-unsupported")) {
     return "verification-configuration-failed";
   }
+  if (events.some((event) => event.signal === "human-assistance-failed")) return "verification-failed";
   if (events.some((event) => event.stage === "decoding" && event.outcome === "failed")) {
     return "source-integrity-failed";
   }
@@ -147,7 +148,6 @@ export function classifyTypedWorkflowFailure(
   if (operation?.stage === "authentication") {
     if (error instanceof Error && error.name === "TimeoutError") return "authentication-timeout";
     if (operation.signal === "login-dialog-interrupted") return "authentication-dialog-interrupted";
-    if (operation.signal === "human-assistance-failed") return "verification-failed";
     return "authentication-failed";
   }
   if (operation?.stage === "collection" || operation?.stage === "decoding") {

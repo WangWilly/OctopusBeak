@@ -662,11 +662,21 @@ test("a Cathay run that needs device registration keeps that code across the wor
 
 test("worker keeps the observed failure stage across the validated IPC boundary", async () => {
   const cases = [
-    { stage: "authentication", outcome: "started", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
-    { stage: "authentication", outcome: "failed", signal: "login-dialog-interrupted", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
-    { stage: "authentication", outcome: "failed", signal: "human-assistance-failed", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
-    { stage: "authentication", outcome: "advanced", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
-    { stage: "collection", outcome: "failed", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
+    { events: [{ stage: "authentication", outcome: "started", code: "authentication-started" }], name: "TimeoutError", expected: "authentication-timeout" },
+    { events: [{ signal: "login-dialog-interrupted" }], name: "Error", expected: "authentication-dialog-interrupted" },
+    { events: [{ signal: "human-assistance-failed" }], name: "Error", expected: "verification-failed" },
+    {
+      events: [{ signal: "human-assistance-failed" }, { stage: "authentication", outcome: "advanced", code: "login-dialog-dismissed" }],
+      name: "Error",
+      expected: "verification-failed",
+    },
+    {
+      events: [{ signal: "solver-route-unavailable" }, { signal: "human-assistance-failed" }],
+      name: "Error",
+      expected: "verification-configuration-failed",
+    },
+    { events: [{ stage: "authentication", outcome: "advanced", code: "human-assistance-completed" }], name: "Error", expected: "authentication-failed" },
+    { events: [{ stage: "collection", outcome: "failed", code: "current-balance-collection-failed" }], name: "Error", expected: "source-collection-failed" },
   ] as const;
   for (const scenario of cases) {
     const channel = new MessageChannel();
@@ -686,8 +696,10 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       id: "fixture-protocol",
       requiresFinancialCommit: false,
       async run(context) {
-        if ("signal" in scenario) await context.signalEvent(scenario.signal);
-        else await context.event(scenario.stage, scenario.outcome, scenario.code);
+        for (const step of scenario.events) {
+          if ("signal" in step) await context.signalEvent(step.signal);
+          else await context.event(step.stage, step.outcome, step.code);
+        }
         const error = new Error("private-authentication-material must not cross the boundary");
         error.name = scenario.name;
         throw error;
@@ -701,7 +713,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
         browser: { async withPage() { throw new Error("unused"); } },
       });
       const terminal = await terminalReceived;
-      assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected);
+      assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected, JSON.stringify(scenario.events));
       assert.doesNotMatch(JSON.stringify(frames), /private-authentication-material/u);
     } finally {
       channel.port1.close();
