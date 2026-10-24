@@ -1934,7 +1934,6 @@ export async function runSinopacProviderWorkflow(
     return productRunResult(summary, {
       counts: {
         accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
-        rowCount: succeeded?.rowCount ?? 0,
         skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
       },
       sourceOnly: succeeded !== null && !succeeded.financial,

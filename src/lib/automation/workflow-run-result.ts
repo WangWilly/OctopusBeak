@@ -104,8 +104,9 @@ export type ProductRunResultOptions = Readonly<{
 /**
  * The run result of a Product collection run. A completed run with verified
  * receipts is `financial-admitted` or `source-only`. Without them it is
- * `no-data` when every attempted product reported absence, and `completed`
- * otherwise, including a run whose only writes were Preview Financial Data.
+ * `no-data` when products were attempted and every one reported absence, and
+ * `completed` otherwise, including a run whose only writes were Preview
+ * Financial Data.
  */
 export function productRunResult(
   summary: ProductCollectionRunSummary,
@@ -130,7 +131,7 @@ function productRunStatusLabel(summary: ProductCollectionRunSummary, options: Pr
     return options.sourceOnly ? "source-only" : "financial-admitted";
   }
   const attempted = summary.products.filter((product) => product.status !== "skipped");
-  return attempted.every((product) => product.status === "no_data" || product.status === "not_held")
+  return attempted.length > 0 && attempted.every((product) => product.status === "no_data" || product.status === "not_held")
     ? "no-data"
     : "completed";
 }
