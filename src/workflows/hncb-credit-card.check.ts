@@ -348,7 +348,7 @@ test("a recoverable HNCB verified failure still collects the attached cards", as
   assert.equal(output.status, "partial");
   assert.equal(output.rowCount, 0);
   assert.deepEqual(output.products, [
-    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" },
+    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     succeededCard.products[0],
   ]);
 });

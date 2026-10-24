@@ -1444,8 +1444,8 @@ export async function runEsunCreditCardProviderWorkflow(
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems): Promise<ProductCollectionSummary> => {
-        const collected = await collectEsunCreditCard(page, context, input, stagedItems);
+      collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
+        const collected = await collectEsunCreditCard(page, { ...context, event }, input, stagedItems);
         creditCard = collected;
         return { sourceCaptureCount: 0, rowCount: collected.count, itemCount: stagedItems.length };
       },

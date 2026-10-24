@@ -39,7 +39,6 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1165,7 +1164,6 @@ export async function runCtbcProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "completed", "authentication-completed");
 
-    const { context: productContext, classifyFailure } = failedStageClassifier(context);
     let count = 0;
     let financialAdmitted = false;
     const summary = await collectSelectedProducts({
@@ -1174,8 +1172,8 @@ export async function runCtbcProviderWorkflow(
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      classifyFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event };
         await productContext.event("decoding", "started", "source-decoding-started");
         const collected = await (dependencies.collectStatements ??
           ((target, input) => collectCtbcStatements(

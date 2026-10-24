@@ -228,10 +228,16 @@ export type CollectSelectedProductsOptions<
   prepare?: (typeId: TId) => Promise<void>;
   /** Must fail with a ProductCollectionFatalError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
+  /**
+   * `event` reports the collector's own run events. A decoding or validation
+   * failure it reports names the product's failure when the collector then
+   * throws an untyped error.
+   */
   collect: (
     typeId: TId,
     stagedItems: TItem[],
     reportActivity: ProductCollectionActivityReporter,
+    event: ProductCollectionStageEvent,
   ) => Promise<ProductCollectionSummary>;
   /** Called once for each non-empty, fully collected product staging group. */
   commit: (typeId: TId, stagedItems: readonly TItem[]) => Promise<PGliteWorkflowRunResult<unknown>>;
@@ -273,13 +279,20 @@ function defaultFatalCode(error: unknown): TypedWorkflowErrorCode | undefined {
   return undefined;
 }
 
-function productFailureCode(error: unknown): TypedWorkflowErrorCode {
+function typedProductFailureCode(error: unknown): TypedWorkflowErrorCode | undefined {
   if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
   if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
   if (error instanceof SourceUnavailableError) return "source-unavailable";
   if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
   if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
-  return "source-collection-failed";
+  return undefined;
+}
+
+/** The failed stages a collector reported, as the host would read them from run events (ADR 0058). */
+function failedStageCode(failed: ReadonlySet<WorkflowContextStage>): TypedWorkflowErrorCode | undefined {
+  if (failed.has("decoding")) return "source-integrity-failed";
+  if (failed.has("validation")) return "source-validation-failed";
+  return undefined;
 }
 
 function validateSelection<TId extends CollectionProductTypeId>(
@@ -378,6 +391,11 @@ export async function collectSelectedProducts<
     let rowsForProduct = 0;
     let productItemCount = 0;
     let lastStage: WorkflowStage = "collection";
+    const failedStages = new Set<WorkflowContextStage>();
+    const collectorEvent: ProductCollectionStageEvent = async (stage, outcome, code, counts) => {
+      if (outcome === "failed") failedStages.add(stage);
+      await options.event?.(stage, outcome, code, counts);
+    };
     const emitProductEvent = (
       stage: WorkflowContextStage,
       outcome: RunEventOutcome,
@@ -395,7 +413,7 @@ export async function collectSelectedProducts<
       const reportActivity: ProductCollectionActivityReporter = async (activity) => {
         await emitProductEvent("collection", "advanced", `${codePrefix}-collection-${activity}-started`, { activity });
       };
-      const collected = await options.collect(typeId, stagedItems, reportActivity);
+      const collected = await options.collect(typeId, stagedItems, reportActivity, collectorEvent);
       await options.assertSession?.();
 
       if (!isSafeCount(collected.sourceCaptureCount)
@@ -544,7 +562,10 @@ export async function collectSelectedProducts<
         completedByType.set(typeId, createOutcome(typeId, error.disposition));
         await emitProductEvent("collection", "advanced", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
       } else {
-        const errorCode = options.classifyFailure?.(error) ?? productFailureCode(error);
+        const errorCode = options.classifyFailure?.(error)
+          ?? typedProductFailureCode(error)
+          ?? failedStageCode(failedStages)
+          ?? "source-collection-failed";
         firstFailure ??= error;
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
         await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });

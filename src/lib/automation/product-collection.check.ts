@@ -16,6 +16,7 @@ import {
   type CollectionProductOutcome,
 } from "./product-collection.ts";
 import { productRunStatus } from "./product-run-status.ts";
+import { SourceUnavailableError } from "./source-access.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 
 function item(product: string, itemKey: string): PGliteWorkflowRunItem {
@@ -540,4 +541,35 @@ for (const attached of [failedPreview, previewRun({ products: [{ typeId: "credit
     ...output,
     productCollectionSummary: { ...summary, products: [{ ...summary.products[0], accountNumber: "synthetic-private-value" }] },
   }), undefined, "an invalid explicit snapshot cannot bypass the bounded product contract");
+}
+
+for (const [stage, expected] of [["validation", "source-validation-failed"], ["decoding", "source-integrity-failed"], [null, "source-collection-failed"]] as const) {
+  const forwarded: string[] = [];
+  const summary = await failedRunSummary(collectSelectedProducts({
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: signal().signal,
+    event: async (_stage, _outcome, code) => { forwarded.push(code); },
+    collect: async (_typeId, _staged, _reportActivity, event) => {
+      if (stage) await event(stage, "failed", "source-rejected");
+      throw new Error("synthetic untyped collector failure");
+    },
+    commit: async () => { throw new Error("a failed product must not commit"); },
+  }), expected);
+  assert.equal(summary.products[0]?.errorCode, expected, `a reported ${stage ?? "no"} failure names the product`);
+  if (stage) assert.ok(forwarded.includes("source-rejected"), "collector events still reach the run");
+}
+
+{
+  const summary = await failedRunSummary(collectSelectedProducts({
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: signal().signal,
+    collect: async (_typeId, _staged, _reportActivity, event) => {
+      await event("validation", "failed", "source-rejected");
+      throw new SourceUnavailableError();
+    },
+    commit: async () => { throw new Error("a failed product must not commit"); },
+  }), "source-unavailable");
+  assert.equal(summary.products[0]?.errorCode, "source-unavailable", "a typed error outranks a reported stage");
 }

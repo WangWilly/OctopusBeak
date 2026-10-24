@@ -221,7 +221,7 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
       }),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
-        assert.equal(error.errorCode, "source-collection-failed");
+        assert.equal(error.errorCode, "source-validation-failed");
         assert.match(String((error as Error & { cause?: unknown }).cause), /Occurrence collision keys must be unique/u);
         return true;
       },

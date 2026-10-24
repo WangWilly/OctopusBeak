@@ -1876,16 +1876,16 @@ export async function runSinopacProviderWorkflow(
       assertSession,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
         let accounts: SinopacAccount[];
         if (overrides.readAccounts) {
-          await context.event("collection", "started", "account-list-collection-started");
+          await event("collection", "started", "account-list-collection-started");
           accounts = await withAbort(
             overrides.readAccounts(dateRange),
             context.signal,
           );
           context.signal.throwIfAborted();
-          await context.event("collection", "advanced", "account-list-collected", {
+          await event("collection", "advanced", "account-list-collected", {
             completed: accounts.length,
             total: accounts.length,
           });
@@ -1894,7 +1894,7 @@ export async function runSinopacProviderWorkflow(
             page,
             context.text,
             context.signal,
-            context.event,
+            event,
           );
         }
         const { sourceCaptureCount, itemCount, ...collected } = await collectSinopacStatements(
@@ -1904,7 +1904,7 @@ export async function runSinopacProviderWorkflow(
           {
             text: context.text,
             signal: context.signal,
-            event: context.event,
+            event: event,
             observedAt: context.now(),
             ...(overrides.queryTransactions
               ? { queryTransactions: overrides.queryTransactions }

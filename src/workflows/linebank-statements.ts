@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
 import {
   collectSelectedProducts,
   type CollectionProductOutcome,
@@ -1424,7 +1423,6 @@ export async function runLineBankProviderWorkflow(
       text: context.text,
       signal: context.signal,
     });
-    const { context: productContext, classifyFailure } = failedStageClassifier(context);
     let accountCount = 0;
     let hasFinancialRecords = false;
     const summary = await collectSelectedProducts({
@@ -1433,8 +1431,8 @@ export async function runLineBankProviderWorkflow(
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      classifyFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event };
         await productContext.event("decoding", "started", "source-decoding-started");
         await productContext.event("collection", "started", "current-balance-collection-started");
         await productContext.event("decoding", "started", "current-balance-decoding-started");
