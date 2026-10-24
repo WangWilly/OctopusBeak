@@ -21,6 +21,7 @@ import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
+  WorkflowContextWith,
 } from "./workflow-executor.ts";
 import {
   decodeCathayApiSourceResponse,
@@ -234,7 +235,7 @@ function contextHarness(
       return makeResult(materialized) as never;
     },
   };
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     runId: "cathay-test-run",
     signal: controller.signal,
     now: () => "2026-09-25T01:00:00.000Z",
@@ -320,8 +321,13 @@ test("Cathay all workflow collects and commits selected products independently w
       bothProductsInput,
       collectionDependencies(),
     );
-    assert.deepEqual(output.statementTypes, ["domestic", "foreign"]);
-    assert.equal(output.sourceCaptureCount, 2);
+    assert.deepEqual(output.counts, {
+      sourceCaptureCount: 2,
+      rowCount: 4,
+      itemCount: 2,
+      committedCount: 2,
+      count: 2,
+    });
     assert.equal(harness.committed.length, 2);
     const statementItem = harness.committed[0]![0] as {
       product: string;
@@ -342,7 +348,7 @@ test("Cathay all workflow collects and commits selected products independently w
       ["deposit"],
     );
     assert.deepEqual(
-      output.products.map((product) => [product.typeId, product.status]),
+      output.products!.map((product) => [product.typeId, product.status]),
       [
         ["domestic", "success"],
         ["foreign_currency", "success"],
@@ -379,7 +385,7 @@ test("Cathay all workflow never invokes an unselected product collector", async 
   assert.equal(foreignCalls, 0);
   assert.equal(harness.committed.length, 1);
   assert.deepEqual(
-    output.products.map((product) => [
+    output.products!.map((product) => [
       product.typeId,
       product.status,
       product.skipReason,
@@ -409,7 +415,7 @@ test("Cathay all workflow can collect foreign currency without domestic products
   assert.equal(domesticCalls, 0);
   assert.equal(harness.committed.length, 1);
   assert.deepEqual(
-    output.products.map((product) => [
+    output.products!.map((product) => [
       product.typeId,
       product.status,
       product.skipReason,
@@ -437,7 +443,7 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
   );
   assert.equal(output.status, "partial");
   assert.deepEqual(
-    output.products.map((product) => [product.typeId, product.status]),
+    output.products!.map((product) => [product.typeId, product.status]),
     [
       ["domestic", "failed"],
       ["foreign_currency", "success"],
@@ -466,7 +472,7 @@ test("Cathay balance collection failure discards that product's staged statement
 
   assert.equal(output.status, "partial");
   assert.deepEqual(
-    output.products.map((product) => [product.typeId, product.status]),
+    output.products!.map((product) => [product.typeId, product.status]),
     [
       ["domestic", "failed"],
       ["foreign_currency", "success"],
@@ -528,7 +534,7 @@ test("Cathay balance admission failure keeps product receipts and does not block
 
   assert.equal(output.status, "partial");
   assert.deepEqual(
-    output.products.map((product) => [
+    output.products!.map((product) => [
       product.typeId,
       product.status,
       product.committedCount,
@@ -539,7 +545,7 @@ test("Cathay balance admission failure keeps product receipts and does not block
       ["foreign_currency", "success", 1, undefined],
     ],
   );
-  assert.equal(output.committedCount, 2);
+  assert.equal(output.counts.committedCount, 2);
   assert.equal(harness.committed.length, 2);
   assert.equal(harness.committed[0]!.length, 2);
 });
@@ -595,7 +601,7 @@ test("Cathay foreign collector reports a missing selected currency without block
   );
   assert.equal(output.status, "partial");
   assert.deepEqual(
-    output.products.map((product) => [product.typeId, product.status]),
+    output.products!.map((product) => [product.typeId, product.status]),
     [
       ["domestic", "success"],
       ["foreign_currency", "failed"],
@@ -629,7 +635,7 @@ test("Cathay malformed source decoding is isolated to its product and keeps the 
 
   assert.equal(output.status, "partial");
   assert.deepEqual(
-    output.products.map((product) => [product.typeId, product.status, product.errorCode]),
+    output.products!.map((product) => [product.typeId, product.status, product.errorCode]),
     [
       ["domestic", "failed", "source-integrity-failed"],
       ["foreign_currency", "success", undefined],
@@ -720,7 +726,7 @@ test("Cathay all workflow cancellation stops later products and retains prior re
 function attachedHarness() {
   const harness = contextHarness();
   const writes: PreviewWrite[] = [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     ...harness.context,
     previewWrite: {
       async write(input) {
@@ -760,14 +766,14 @@ test("a Cathay run with only an attached product signs in and collects only that
   ]);
   assert.equal(cathayCardTotals(cards).liabilities.incomplete, undefined, "the foreign bill leaves the totals complete");
   assert.ok(!fake.seen.includes("domesticOverview"));
-  assert.deepEqual(outcomes(output.products), [
+  assert.deepEqual(outcomes(output.products!), [
     ["domestic", "skipped", "not_selected"],
     ["foreign_currency", "skipped", "not_selected"],
     ["credit_card", "success", undefined],
     ["time_deposit", "skipped", "not_selected"],
   ]);
-  assert.deepEqual(output.statementTypes, []);
-  assert.equal(output.status, "financial-admitted");
+  assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 0, itemCount: 1, committedCount: 1, count: 0 });
+  assert.equal(output.status, "completed", "a preview-only run admits no financial data");
 });
 
 test("a failing attached product leaves the verified and other attached outcomes intact", async () => {
@@ -782,7 +788,7 @@ test("a failing attached product leaves the verified and other attached outcomes
   );
   assert.equal(harness.committed.length, 1);
   assert.deepEqual(harness.writes.map((write) => [write.sourceId, write.product]), [["cathay", "time_deposit"]]);
-  assert.deepEqual(outcomes(output.products), [
+  assert.deepEqual(outcomes(output.products!), [
     ["domestic", "success", undefined],
     ["foreign_currency", "skipped", "not_selected"],
     ["credit_card", "failed", "source-validation-failed"],
@@ -799,7 +805,7 @@ test("an empty attached selection collects nothing and keeps the verified summar
     { ...collectionDependencies(), attachedPreviewPort: () => { throw new Error("attached port must not open"); } },
   );
   assert.deepEqual(harness.writes, []);
-  assert.deepEqual(outcomes(output.products), [
+  assert.deepEqual(outcomes(output.products!), [
     ["domestic", "success", undefined],
     ["foreign_currency", "skipped", "not_selected"],
   ]);

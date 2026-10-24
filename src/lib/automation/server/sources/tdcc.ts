@@ -1,4 +1,4 @@
-import { field, link, localized, NONBROWSER, type VerifiedSource } from "./verified-source.ts";
+import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const TDCC_SOURCE: VerifiedSource = {
   id: "tdcc",
@@ -75,7 +75,7 @@ export const TDCC_SOURCE: VerifiedSource = {
     label: "TDCC e-Passbook sync",
     kind: "sync",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     requiresTdcc: true,
     runtime: NONBROWSER,
@@ -83,5 +83,5 @@ export const TDCC_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../tdcc-workflow.ts")).createTdccWorkflow().run;
     },
-  },
+  }),
 };

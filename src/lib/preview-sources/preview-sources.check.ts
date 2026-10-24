@@ -150,9 +150,7 @@ test("a preview workflow writes only through its bound preview port", async () =
   const signal = new AbortController().signal;
   assert.deepEqual(await executor.run("preview-synthetic", "run-1", { startUrl: "", credentials: {}, products: ["deposit"] }, signal), {
     status: "completed",
-    accountCount: 1,
-    itemCount: 1,
-    committedCount: 1,
+    counts: { sourceCaptureCount: 0, rowCount: 0, itemCount: 1, committedCount: 1, accountCount: 1 },
     products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
   });
   assert.equal(seenContextKeys.includes("financialCommit"), false);
@@ -229,7 +227,7 @@ test("an attached preview product is offered only while Preview features are on,
     { id: "domestic" }, { id: "foreign_currency" }, { id: "credit_card", preview: true }, { id: "time_deposit", preview: true },
   ]);
   assert.deepEqual(on.hncb, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
-  assert.deepEqual(on.sinopac, [{ id: "accounts" }, { id: "credit_card", preview: true }]);
+  assert.deepEqual(on.sinopac, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
   assert.deepEqual(on.esun, [{ id: "credit_card" }, { id: "deposit", preview: true }]);
   assert.deepEqual(on.fubon!.map((type) => type.preview), [undefined, undefined, undefined], "a group without attached products is unchanged");
 

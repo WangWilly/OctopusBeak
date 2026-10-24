@@ -2,7 +2,9 @@ import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import type { WorkflowRunResult } from "./workflow-run-result.ts";
 import { strictSourceText } from "./source-text.ts";
 import { runEsunCreditCardProviderWorkflow } from "../../workflows/esun-credit-card-statements.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
@@ -167,7 +169,7 @@ function createContext(page: Page) {
   const previewWrites: PreviewWrite[] = [];
   let withPageCount = 0;
   let assistanceCount = 0;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
     runId: "run-esun-check",
     signal: new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",
@@ -202,6 +204,8 @@ function createContext(page: Page) {
           status: "completed",
           items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
+          committedCount: materialized.length,
+          failedCount: 0,
         } as never;
       },
     },
@@ -240,14 +244,16 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
       assert.equal(harness.committed.length, 1);
       assert.equal(harness.committed[0]?.length, 1);
       assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "esun");
-      assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
-      assert.equal((output as { count?: number }).count, monthCount);
+      assert.equal(output.status, "financial-admitted");
+      assert.equal(output.counts.canonicalCaptureCount, 1);
+      assert.equal(output.counts.count, monthCount);
       assert.equal("files" in (output as object), false);
       assert.deepEqual(
         harness.events.map(({ stage, code }) => [stage, code]),
         [
           ["authentication", "authentication-started"],
           ["authentication", "authentication-completed"],
+          ["collection", "credit-card-collection-started"],
           ["collection", "collection-started"],
           ["decoding", "source-decoding-started"],
           ["collection", "timeline-collected"],
@@ -255,6 +261,9 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
           ["decoding", "source-decoding-completed"],
           ["validation", "source-validation-started"],
           ["validation", "source-validation-completed"],
+          ["collection", "credit-card-collection-completed"],
+          ["decoding", "credit-card-source-decoding-completed"],
+          ["validation", "credit-card-source-validation-completed"],
           ["commit", "commit-port-called"],
         ],
       );
@@ -388,8 +397,7 @@ async function withManagedSecret<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-type Output = Readonly<{ products: readonly { typeId: string; status: string; errorCode?: string; skipReason?: string }[]; status: string; canonicalAdmission: string }>;
-const outcomes = (output: unknown) => (output as Output).products.map(({ typeId, status, errorCode, skipReason }) =>
+const outcomes = (output: Pick<WorkflowRunResult, "products">) => (output.products ?? []).map(({ typeId, status, errorCode, skipReason }) =>
   [typeId, status, errorCode ?? skipReason ?? null]);
 
 test("the attached deposit writes Preview Financial Data for the E.SUN group after the card commits", () => withManagedSecret(async () => {
@@ -407,7 +415,7 @@ test("the attached deposit writes Preview Financial Data for the E.SUN group aft
     ["SYN-TW-0001:TWD", "500.00", [["50", "outflow"]]],
   ]);
   assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "success", null]]);
-  assert.equal((output as Output).status, "completed");
+  assert.equal(output.status, "financial-admitted");
   assert.deepEqual(deposit.calls, ["init", "preQueryTWTransactionDetail", "queryTWTransactionDetail", "init", "preQueryFRTransactionDetail"]);
   const eventCodes = harness.events.map(({ code }) => code);
   assert.ok(eventCodes.indexOf("commit-port-called") < eventCodes.indexOf("deposit-collection-started"));
@@ -421,8 +429,8 @@ test("a failing attached deposit leaves the card committed and reported", () => 
   assert.equal(harness.committed.length, 1);
   assert.equal(harness.previewWrites.length, 0, "a failed product writes nothing");
   assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "failed", "source-validation-failed"]]);
-  assert.equal((output as Output).status, "partial");
-  assert.equal((output as Output).canonicalAdmission, "admitted");
+  assert.equal(output.status, "partial");
+  assert.equal(output.counts.canonicalCaptureCount, 1);
 }));
 
 test("an attached-only selection signs in, skips the card, and writes the deposit", () => withManagedSecret(async () => {
@@ -433,7 +441,7 @@ test("an attached-only selection signs in, skips the card, and writes the deposi
   assert.equal(harness.committed.length, 0, "no canonical commit without the card");
   assert.equal(harness.previewWrites.length, 1);
   assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "success", null]]);
-  assert.equal((output as Output).canonicalAdmission, "not-selected");
+  assert.equal(output.counts.canonicalCaptureCount, 0);
   assert.equal(harness.events.some(({ code }) => code === "timeline-collected"), false);
 }));
 
@@ -461,7 +469,7 @@ test("no attached selection never touches the deposit portal", () => withManaged
   const harness = createContext(createPage());
   const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: [] }));
   assert.equal(harness.previewWrites.length, 0);
-  assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "skipped", "not_selected"]]);
+  assert.deepEqual(outcomes(output), [["credit_card", "success", null]]);
 }));
 
 test("a card failure reports the card failed with its classified code beside the written deposit", () => withManagedSecret(async () => {
@@ -475,10 +483,17 @@ test("a card failure reports the card failed with its classified code beside the
     assert.equal(harness.committed.length, 0, name);
     assert.equal(harness.previewWrites.length, 1, name);
     assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
-    assert.equal((output as Output).status, "partial", name);
-    assert.equal((output as Output).canonicalAdmission, "failed", name);
+    assert.equal(output.status, "partial", name);
+    assert.equal(output.counts.canonicalCaptureCount, 0, name);
   }
 }));
+
+const cardFailure = (error: unknown) => {
+  assert.ok(error instanceof ProductCollectionInterruptedError);
+  assert.equal(error.errorCode, "source-collection-failed");
+  assert.match(String((error as Error & { cause?: unknown }).cause), /timeline did not reach a complete/u);
+  return true;
+};
 
 test("a card failure with no deposit data fails the run with the card's own error", () => withManagedSecret(async () => {
   const failedDeposit = createContext(createPage({
@@ -487,14 +502,47 @@ test("a card failure with no deposit data fails the run with the card's own erro
   }));
   await assert.rejects(
     runEsunCreditCardProviderWorkflow(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
-    /timeline did not reach a complete/u,
+    cardFailure,
   );
   assert.equal(failedDeposit.previewWrites.length, 0);
 
   const cardOnly = createContext(createPage({ monthCount: 11, portal: depositPortal().portal }));
   await assert.rejects(
     runEsunCreditCardProviderWorkflow(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
-    /timeline did not reach a complete/u,
+    cardFailure,
   );
   assert.equal(cardOnly.previewWrites.length, 0);
+}));
+
+test("a refused E.SUN card commit names the run collection-scope-changed and skips the attached deposit", () => withManagedSecret(async () => {
+  const deposit = depositPortal();
+  const harness = createContext(createPage({ portal: deposit.portal }));
+  const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
+    ...harness.context,
+    financialCommit: {
+      async execute(items) {
+        const received = [];
+        for await (const item of items) received.push(item);
+        return {
+          status: "failed",
+          items: received.map((item) => ({
+            itemKey: item.itemKey, provider: item.provider, product: item.product,
+            status: "failed" as const, failureKind: "refused" as const, diagnostics: [],
+          })),
+          diagnostics: [], committedCount: 0, failedCount: received.length,
+        };
+      },
+    },
+  };
+  await assert.rejects(
+    runEsunCreditCardProviderWorkflow(context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "collection-scope-changed");
+      assert.deepEqual(outcomes({ products: error.summary.products }), [["credit_card", "failed", "collection-scope-changed"]]);
+      return true;
+    },
+  );
+  assert.deepEqual(deposit.calls, []);
+  assert.equal(harness.previewWrites.length, 0);
 }));

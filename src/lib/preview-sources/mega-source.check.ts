@@ -8,7 +8,7 @@ import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 import type { PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
-import type { PreviewRunOutput } from "./product-collection.ts";
+import type { ProductRunResult } from "../automation/workflow-run-result.ts";
 
 const credentials = {
   PREVIEW_MEGA_DEPOSIT_ID_NUMBER: "a000000001",
@@ -274,7 +274,7 @@ test("a missing currency, a malformed amount, a signed amount, and an unknown DR
 
 const BOTH: readonly PreviewProduct[] = ["deposit", "credit_card"];
 const creditWrites = (writes: readonly PreviewWrite[]) => writes.flatMap((write) => write.product === "credit_card" ? [write.collection] : []);
-const outcomes = (output: PreviewRunOutput | null) => Object.fromEntries((output?.products ?? []).map((product) => [product.typeId, product.status]));
+const outcomes = (output: ProductRunResult | null) => Object.fromEntries((output?.products ?? []).map((product) => [product.typeId, product.status]));
 
 test("one Mega sign-in writes deposits and a credit account per currency with an unclamped statement-minus-paid-plus-unbilled balance", async () => {
   const { writes, output, observations, http, resources } = await run({}, {}, BOTH);

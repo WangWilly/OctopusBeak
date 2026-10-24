@@ -17,7 +17,7 @@ So the [Commit attempt](../../CONTEXT.md) recorded by the commit port is the onl
 ## Considered options
 
 - **A `commitStage()` helper workflows call instead of the port.** Rejected. Calling it remains a convention a new workflow can skip.
-- **Move every workflow onto selected-product collection.** Rejected. Not every workflow is a selected-product run, and the change is far larger than the seam it fixes.
+- **Move every workflow onto selected-product collection.** Rejected. Not every workflow is a selected-product run, and the change is far larger than the seam it fixes. Superseded by [ADR 0060](0060-product-collection-run-owns-every-verified-product-outcome.md), once the Commit attempt owned commit outcome and the remaining seam was the product outcome.
 - **Typed commit events on the existing event stream.** Rejected. Outcome would still depend on the progress stream being complete, and run events are bounded diagnostics, not financial authority.
 - **Keep attempts only in host memory.** Rejected. An App crash would lose them and send finalization back to inferring from events.
 

@@ -115,10 +115,10 @@ test("MaiCoin executes through injected commit and operational ports without fil
         secretKey: "secret-key",
         subAccount: "main",
       },
-    }, new AbortController().signal) as Record<string, unknown>;
+    }, new AbortController().signal) as { status?: string; counts: Record<string, number> };
 
     assert.equal(result.status, "completed");
-    assert.equal(result.statementRows, 0);
+    assert.equal(result.counts.statementRowCount, 0);
     assert.equal(state.commits.length, 1);
     assert.equal(state.commits[0]?.length, 2);
     assert.equal(state.records.started.length, 1);

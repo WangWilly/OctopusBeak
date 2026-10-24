@@ -1,16 +1,21 @@
 {
   "output": {
-    "dateRange": {
-      "startDate": "2026/08/01",
-      "endDate": "2026/08/31"
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 2,
+      "rowCount": 4,
+      "itemCount": 4,
+      "committedCount": 4,
+      "accountCount": 2
     },
-    "usedExistingSession": false,
-    "count": 2,
-    "sourceCaptureCount": 2,
-    "rowCount": 4,
-    "itemCount": 4,
-    "committedCount": 4,
-    "status": "financial-admitted"
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "success",
+        "itemCount": 4,
+        "committedCount": 4
+      }
+    ]
   },
   "executions": [
     {
@@ -652,6 +657,15 @@
     {
       "stage": "collection",
       "outcome": "started",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
       "code": "collection-started",
       "counts": {
         "completed": 0,
@@ -710,6 +724,36 @@
       "counts": {
         "completed": 2,
         "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "deposit-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 4,
+        "total": 4,
+        "statementType": "deposit"
       }
     }
   ]

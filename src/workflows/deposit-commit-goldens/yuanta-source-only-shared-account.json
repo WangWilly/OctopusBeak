@@ -1,10 +1,13 @@
 {
   "result": {
-    "sourceCaptureCount": 2,
-    "rowCount": 3,
-    "itemCount": 3,
-    "committedCount": 3,
-    "skippedProductCount": 4,
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 2,
+      "rowCount": 3,
+      "itemCount": 3,
+      "committedCount": 3,
+      "skippedProductCount": 4
+    },
     "products": [
       {
         "typeId": "deposit",
@@ -40,8 +43,7 @@
         "committedCount": 0,
         "skipReason": "not_selected"
       }
-    ],
-    "status": "financial-admitted"
+    ]
   },
   "executions": [
     {

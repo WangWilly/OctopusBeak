@@ -1,10 +1,7 @@
 import { randomUUID, createHash, randomBytes } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import type {
-  WorkflowContext,
-  WorkflowFinancialCommitPort,
-} from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
@@ -29,6 +26,7 @@ import {
   type EinvoiceAppSource,
 } from "./einvoice-app-transport.ts";
 import type { EInvoiceAppSession } from "./einvoice-app-protocol.ts";
+import { workflowRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 
 export type EinvoiceCredentials = {
   einvoice_phone_number?: string;
@@ -51,26 +49,6 @@ const workflowInputSchema = z.object({
   credentials: z.object({
     einvoice_phone_number: z.string().trim().min(1),
     einvoice_password: z.string().trim().min(1),
-  }),
-});
-
-const outputSchema = z.object({
-  usedExistingSession: z.boolean(),
-  invoiceCount: z.number().int().nonnegative(),
-  itemCount: z.number().int().nonnegative(),
-  months: z.array(z.string()),
-  captureId: z.string(),
-  knowledgeAt: z.number().int().nonnegative(),
-  commit: z.object({
-    status: z.literal("committed"),
-    captureId: z.string(),
-    knowledgeAt: z.number().int().nonnegative(),
-    sourceRecordIds: z.array(z.string()),
-    invoiceCount: z.number().int().nonnegative(),
-    insertedInvoiceCount: z.number().int().nonnegative(),
-    insertedRevisionCount: z.number().int().nonnegative(),
-    observedDuplicateCount: z.number().int().nonnegative(),
-    itemCount: z.number().int().nonnegative(),
   }),
 });
 
@@ -357,7 +335,6 @@ function parseMonthLabel(value: string): YearMonth {
 }
 
 export type EinvoiceWorkflowInput = z.infer<typeof workflowInputSchema>;
-export type EinvoiceWorkflowOutput = z.infer<typeof outputSchema>;
 
 function randomAppDeviceId(): string {
   return randomBytes(8).toString("hex");
@@ -505,14 +482,13 @@ export function buildCanonicalEInvoiceCaptureFromApp(
 
 /** App-owned entry point for collecting and admitting E-Invoice statements. */
 export async function runEinvoiceProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   source: EinvoiceAppSource = liveEinvoiceAppSource,
-): Promise<EinvoiceWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = workflowInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E-Invoice workflow credentials are missing or invalid.");
   const financialCommit = context.financialCommit;
-  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
 
   const credentials = parsed.data.credentials;
@@ -545,14 +521,8 @@ export async function runEinvoiceProviderWorkflow(
 
       const commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
 
-      return outputSchema.parse({
-        usedExistingSession: false,
-        invoiceCount: admittedInvoiceCount,
-        itemCount: commit.itemCount,
-        months: result.months,
-        captureId: commit.captureId,
-        knowledgeAt: commit.knowledgeAt,
-        commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
+      return workflowRunResult({
+        counts: { invoiceCount: admittedInvoiceCount, itemCount: commit.itemCount },
       });
     } finally {
       await close();
@@ -567,7 +537,6 @@ export async function commitCanonicalCapture(
   financialCommit: WorkflowFinancialCommitPort,
   signal?: AbortSignal,
 ) {
-  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   const result = await financialCommit.execute([{
     provider: "einvoice",
     product: "personal-invoice",

@@ -21,7 +21,8 @@ import {
   type CommitAttempt,
   type CommitAttemptReport,
 } from "./commit-attempt.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -54,7 +55,7 @@ const input: SinopacWorkflowInput = {
   endDate: "20260903",
   accountFilters: [],
   currencyFilters: [],
-  statementTypes: ["accounts"],
+  statementTypes: ["deposit"],
   attachedPreviewProducts: [],
 };
 
@@ -63,7 +64,9 @@ function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dial
   let captchaValue = "";
   const emitter = new EventEmitter();
   const makeLocator = (selector: string) => ({
-    waitFor: async () => undefined,
+    waitFor: async () => {
+      if (selector.includes("user-logout") && !signedIn) throw new Error("synthetic logout link timeout");
+    },
     isVisible: async () => signedIn && selector.includes("user-logout"),
     fill: async (value: string) => { if (selector.includes("sino_keyword3")) captchaValue = value; },
     focus: async () => undefined,
@@ -114,7 +117,7 @@ function makeContext(options: Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   assistance?: WorkflowContext["humanAssistance"]["request"];
   onEvent?: WorkflowContext["event"];
-}>): WorkflowContext {
+}>): WorkflowContextWith<"financialCommit"> {
   const signal = options.signal ?? new AbortController().signal;
   return {
     runId: "sinopac-test-run",
@@ -249,8 +252,14 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
     });
 
     assert.equal(output.status, "financial-admitted");
-    assert.equal(output.rowCount, 1);
-    assert.equal(output.usedExistingSession, true);
+    assert.deepEqual(output.counts, {
+      sourceCaptureCount: 1,
+      rowCount: 1,
+      itemCount: 1,
+      committedCount: 1,
+      accountCount: 1,
+      skippedAccountCount: 0,
+    });
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.length, 1);
     assert.equal(events.some((event) => event.code === "source-validation-completed"), true);
@@ -319,7 +328,12 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
       queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
       readCurrentDepositBalances: async () => [],
     }),
-    /zero-result-authority-unproven/u,
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "source-validation-failed");
+      assert.match(String((error as Error & { cause?: unknown }).cause), /zero-result-authority-unproven/u);
+      return true;
+    },
   );
   assert.equal(calls.length, 0);
 });
@@ -360,7 +374,6 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
     readCurrentDepositBalances: async () => [],
   });
 
-  assert.equal(output.usedExistingSession, false);
   assert.equal(assistanceCalls, 1);
   assert.equal(stages.some((event) => event.code === "human-assistance-requested"), true);
   assert.equal(stages.some((event) => event.code === "human-assistance-completed"), true);

@@ -8,7 +8,7 @@ import type {
 } from "../../types.ts";
 import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
-import type { WorkflowDefinition } from "../../workflow-executor.ts";
+import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { AutomationPersistenceProvider } from "../store.ts";
 
@@ -91,6 +91,16 @@ export type VerifiedSource = SupportedSource & Readonly<{
   }>;
   workflow: VerifiedWorkflow;
 }>;
+
+/**
+ * Declares a verified workflow whose loaded run is typed by its capability
+ * flags, so a run that uses a port the flags do not require fails to compile.
+ */
+export function verifiedWorkflow<const W extends Omit<VerifiedWorkflow, "load">>(
+  workflow: W & Readonly<{ load: () => Promise<WorkflowRun<RequiredCapabilities<W>, never, WorkflowOutput, OptionalCapabilities<W>>> }>,
+): VerifiedWorkflow {
+  return workflow as VerifiedWorkflow;
+}
 
 export const localized = (en: string, zh: string): AutomationLocalizedText => ({ en, "zh-TW": zh });
 

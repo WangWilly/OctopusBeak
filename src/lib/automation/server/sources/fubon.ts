@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const FUBON_SOURCE: VerifiedSource = {
   id: "fubon",
@@ -91,7 +91,7 @@ export const FUBON_SOURCE: VerifiedSource = {
     label: "Fubon all statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     requiresAccountIdentity: true,
     runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
@@ -100,5 +100,5 @@ export const FUBON_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/fubon-all-statements.ts")).runFubonAllStatementsWorkflow;
     },
-  },
+  }),
 };

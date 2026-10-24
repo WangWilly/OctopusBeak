@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   runSinopacProviderWorkflow,
   type SinopacAccount,
@@ -34,14 +35,14 @@ const input: SinopacWorkflowInput = {
   endDate: "20260930",
   accountFilters: [],
   currencyFilters: [],
-  statementTypes: ["accounts"],
+  statementTypes: ["deposit"],
   attachedPreviewProducts: [],
 };
 
 function signedInPage(): Page {
   const locator = {
     isVisible: async () => true,
-    first() { return { isVisible: async () => false }; },
+    first() { return { isVisible: async () => false, waitFor: async () => undefined }; },
   };
   return {
     url: () => "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx",
@@ -107,7 +108,7 @@ type Scenario = Readonly<{
   current?: readonly SinopacCurrentDepositBalanceRow[];
 }>;
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "sinopac-golden-run",
     signal: new AbortController().signal,
@@ -218,7 +219,12 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
         ),
         readCurrentDepositBalances: async () => [],
       }),
-      /Occurrence collision keys must be unique/u,
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError);
+        assert.equal(error.errorCode, "source-validation-failed");
+        assert.match(String((error as Error & { cause?: unknown }).cause), /Occurrence collision keys must be unique/u);
+        return true;
+      },
     );
   } finally {
     mock.timers.reset();

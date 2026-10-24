@@ -7,8 +7,11 @@ import type { Page } from "playwright";
 import type { HumanAssistanceContractInput } from "./human-assistance.ts";
 import { workflowDefinitionForTask } from "./server/app-workflow-registry.ts";
 import { strictSourceText } from "./source-text.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
 import type {
   WorkflowContext,
+  WorkflowContextWith,
 } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
@@ -192,7 +195,7 @@ function createContext(options: {
       assert.equal(commitStarted, false, "all provider sources are collected before commit");
     },
   });
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "linebank-typed-check",
     signal: options.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",
@@ -261,14 +264,18 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
     const harness = createContext();
     const result = await runLineBankProviderWorkflow(harness.context, input);
 
-    assert.equal(result.status, "financial-admitted");
-    assert.equal(result.accountCount, 1);
-    assert.equal(result.sourceCaptureCount, 1);
+    assert.deepEqual(result, {
+      status: "financial-admitted",
+      counts: {
+        sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2,
+        accountCount: 1, statementRowCount: 1, financialItemCount: 2,
+      },
+      products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
+    });
     assert.equal(harness.commits.length, 1);
     assert.equal(harness.commits[0]?.length, 2);
-    assert.equal("downloads" in result, false);
     assert.deepEqual(await readdir(directory), []);
-    assert.ok(harness.events.some((event) => event.code === "source-validation-completed"));
+    assert.ok(harness.events.some((event) => event.code === "deposit-source-validation-completed"));
     const stages = new Set([
       "preparation", "authentication", "collection", "decoding",
       "validation", "commit", "finalization",
@@ -282,15 +289,27 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
 
 test("LINE Bank rejects malformed and incomplete sources before any commit", async () => {
   const malformed = createContext({ page: createPage({ malformedTransactions: true }) });
-  await assert.rejects(runLineBankProviderWorkflow(malformed.context, input));
+  await assert.rejects(runLineBankProviderWorkflow(malformed.context, input), (error: unknown) =>
+    error instanceof ProductCollectionInterruptedError && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.commits.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ incompleteTransactions: true }) });
-  await assert.rejects(runLineBankProviderWorkflow(incomplete.context, input));
+  await assert.rejects(runLineBankProviderWorkflow(incomplete.context, input), (error: unknown) =>
+    error instanceof ProductCollectionInterruptedError && error.errorCode === "source-validation-failed");
   assert.equal(incomplete.commits.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
 });
+
+for (const { stop, errorCode } of STOPPED_COMMITS) {
+  test(`LINE Bank names a ${stop} commit ${errorCode}`, async () => {
+    const harness = createContext();
+    await assert.rejects(
+      runLineBankProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, input),
+      assertStoppedRun("deposit", 2, errorCode),
+    );
+  });
+}
 
 test("LINE Bank waits for delayed automatic sign-in without human fallback and honors cancellation", async () => {
   const page = createPage({ signedIn: false, signInAfterPolls: 16 });

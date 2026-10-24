@@ -1,13 +1,13 @@
 import { humanAssistanceEvent } from "./human-assistance.ts";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
-  type CollectionProductOutcome,
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.ts";
 import {
@@ -102,15 +102,6 @@ const appInputSchema = z.object({
 });
 
 export type YuantaAllWorkflowInput = z.infer<typeof appInputSchema>;
-export type YuantaAllWorkflowOutput = Readonly<{
-  sourceCaptureCount: number;
-  rowCount: number;
-  itemCount: number;
-  committedCount: number;
-  skippedProductCount: number;
-  products: readonly CollectionProductOutcome[];
-  status: "financial-admitted" | "source-only" | "no-data" | "partial" | "failed";
-}>;
 
 type YuantaWorkflowCollectionSummary = Readonly<{
   sourceCount: number;
@@ -296,16 +287,14 @@ async function collectYuantaFundForApp(
 
 /** Collect selected Yuanta products independently and commit each complete product. */
 export async function runYuantaAllStatementsWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   overrides: YuantaAllWorkflowDependencies = {},
-): Promise<YuantaAllWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = appInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Yuanta workflow credentials or input are missing or invalid.");
   const financialCommit = context.financialCommit;
-  if (!financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   const credentials = parsed.data.credentials;
   const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
   const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);
@@ -418,20 +407,10 @@ export async function runYuantaAllStatementsWorkflow(
       });
       const sourceOnly = attemptedItems.length > 0
         && attemptedItems.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
-      const status = summary.status !== "completed"
-        ? summary.status
-        : summary.itemCount === 0
-          ? "no-data"
-          : sourceOnly ? "source-only" : "financial-admitted";
-      return {
-        sourceCaptureCount: summary.sourceCaptureCount,
-        rowCount: summary.rowCount,
-        itemCount: summary.itemCount,
-        committedCount: summary.committedCount,
-        skippedProductCount: summary.products.filter((product) => product.status === "skipped").length,
-        products: summary.products,
-        status,
-      };
+      return productRunResult(summary, {
+        counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
+        sourceOnly,
+      });
     } finally {
       await signOut(page).catch(() => undefined);
     }

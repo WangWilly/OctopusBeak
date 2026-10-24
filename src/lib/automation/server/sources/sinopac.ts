@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
 export const SINOPAC_SOURCE: VerifiedSource = {
@@ -80,7 +80,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
     products: [
-      { id: "accounts", stream: "domestic-deposit" },
+      { id: "deposit", stream: "domestic-deposit" },
     ],
   },
   task: {
@@ -88,7 +88,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
     label: "SinoPac statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.sinopac,
     runtime: browser("https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx"),
@@ -97,5 +97,5 @@ export const SINOPAC_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/sinopac-statements.ts")).runSinopacProviderWorkflow;
     },
-  },
+  }),
 };

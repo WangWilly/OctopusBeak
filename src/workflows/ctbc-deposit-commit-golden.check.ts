@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
@@ -129,7 +129,7 @@ async function run(
 ) {
   const recorder = recordDepositCommit();
   let balanceReads = 0;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-ctbc-golden",
     signal: new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",

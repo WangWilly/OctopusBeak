@@ -12,11 +12,14 @@ import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
-import type {
-  WorkflowContext,
-  WorkflowFinancialCommitPort,
-} from "../lib/automation/workflow-executor.ts";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
+import {
+  collectSelectedProducts,
+  ProductCollectionFatalError,
+  StatementComponentAbsentError,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -69,11 +72,7 @@ import {
   type SinopacIdentitySiteAssessment,
 } from "./sinopac-identity-evidence.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import type { CollectionProductOutcome, ProductCollectionRunSummary } from "../lib/automation/product-collection.ts";
-import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "../lib/preview-sources/attached-products.ts";
-import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
-import type { PreviewProductRun, PreviewRunOutput } from "../lib/preview-sources/product-collection.ts";
-import { fail } from "../lib/preview-sources/source-kit.ts";
+import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import {
   collectSinopacCreditCards,
   sinopacCardPageTransport,
@@ -119,7 +118,7 @@ const typedWorkflowInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-  statementTypes: z.array(z.literal("accounts")).default(["accounts"]),
+  statementTypes: z.array(z.literal("deposit")).default(["deposit"]),
   attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
@@ -168,7 +167,6 @@ export type SinopacStatementsRunDependencies = {
   text: SourceTextPort;
   signal: AbortSignal;
   event: WorkflowContext["event"];
-  financialCommit: WorkflowFinancialCommitPort;
   observedAt: string;
   queryTransactions?: (
     account: SinopacAccount,
@@ -198,21 +196,6 @@ export type SinopacJsonSourceResponse = Readonly<{
 }>;
 
 export type SinopacWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
-export type SinopacWorkflowOutput = Readonly<{
-  usedExistingSession: boolean;
-  dateRange: DateRange;
-  accountCount: number;
-  rowCount: number;
-  skippedAccountCount: number;
-  sourceCaptureCount: number;
-  itemCount: number;
-  committedCount: number;
-  status: "source-only" | "financial-admitted" | PreviewRunOutput["status"];
-  /** Verified deposit first, followed by attached preview product outcomes. */
-  products: readonly CollectionProductOutcome[];
-  productCollectionSummary: ProductCollectionRunSummary;
-}>;
-
 export type SinopacProviderWorkflowOverrides = Readonly<{
   readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
   queryTransactions?: SinopacStatementsRunDependencies["queryTransactions"];
@@ -1565,12 +1548,21 @@ function sinopacCaptureId(observedAt: string): string {
     .slice(0, 24)}-${Date.now()}`;
 }
 
-async function collectAndCommitSinopacStatements(
+/** SinoPac's own account counts and admission status for one deposit collection. */
+type SinopacDepositCollection = Readonly<{
+  accountCount: number;
+  rowCount: number;
+  skippedAccountCount: number;
+  financial: boolean;
+}>;
+
+async function collectSinopacStatements(
   page: Page,
   input: SinopacWorkflowInput,
   initialAccounts: SinopacAccount[],
   overrides: SinopacStatementsRunDependencies,
-): Promise<Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary">> {
+  stagedItems: PGliteWorkflowRunItem[],
+): Promise<SinopacDepositCollection & ProductCollectionSummary> {
   const signal = overrides.signal;
   const text = overrides.text;
   signal.throwIfAborted();
@@ -1805,84 +1797,37 @@ async function collectAndCommitSinopacStatements(
       total: currentRows.length,
     });
   }
-  signal?.throwIfAborted();
-  const commitItems = [...items, ...balanceItems];
-  const committed = await overrides.financialCommit.execute(commitItems, {
-    provider: "sinopac",
-    product: "financial",
-    signal,
-  });
-  if (committed.status !== "completed") {
-    throw new Error(
-      `SinoPac Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
-    );
-  }
+  stagedItems.push(...items, ...balanceItems);
   return {
-    dateRange,
     accountCount: captureInputs.length,
     rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
     skippedAccountCount: skippedAccounts.length,
     sourceCaptureCount: captureInputs.length,
-    itemCount: commitItems.length,
-    committedCount: committed.committedCount,
-    status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
-  };
-}
-
-/** Adapt complete product results while preserving SinoPac's verified account/row counts. */
-function sinopacRunOutput(
-  usedExistingSession: boolean,
-  dateRange: DateRange,
-  verified: Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary"> | null,
-  attached: PreviewProductRun | null,
-  signal: AbortSignal,
-): SinopacWorkflowOutput {
-  const summary = finishAttachedProductRun({
-    products: [verified
-      ? { typeId: "deposit", status: "success", itemCount: verified.itemCount, committedCount: verified.committedCount }
-      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }],
-    sourceCaptureCount: verified?.sourceCaptureCount ?? 0,
-    rowCount: verified?.rowCount ?? 0,
-  }, attached, signal);
-  return {
-    usedExistingSession,
-    dateRange,
-    accountCount: verified?.accountCount ?? attached?.receipts.reduce((total, receipt) => total + receipt.accounts, 0) ?? 0,
-    rowCount: verified?.rowCount ?? 0,
-    skippedAccountCount: verified?.skippedAccountCount ?? 0,
-    sourceCaptureCount: summary.sourceCaptureCount,
-    itemCount: summary.itemCount,
-    committedCount: summary.committedCount,
-    status: summary.status === "completed" ? verified?.status ?? "completed" : summary.status,
-    products: summary.products,
-    productCollectionSummary: summary,
+    itemCount: stagedItems.length,
+    financial: financialCapturesForCurrent.length > 0,
   };
 }
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   overrides: SinopacProviderWorkflowOverrides = {},
-): Promise<SinopacWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("SinoPac workflow credentials or input are missing or invalid.");
-  const collectsAccounts = parsed.data.statementTypes.includes("accounts");
+  const collectsAccounts = parsed.data.statementTypes.includes("deposit");
   const attachedProducts = parsed.data.attachedPreviewProducts;
   if (!collectsAccounts && attachedProducts.length === 0)
     throw new Error("SinoPac workflow has no statement type or attached product selected.");
-  if (collectsAccounts && !context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
     await context.event("authentication", "started", "authentication-started");
-    const usedExistingSession = await isSignedIn(page, context.signal);
-    if (!usedExistingSession)
+    if (!(await isSignedIn(page, context.signal)))
       await signInSinopacForApp(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
     await dismissPasswordExpiryNotice(page, context.signal);
@@ -1900,69 +1845,99 @@ export async function runSinopacProviderWorkflow(
     const dateRange = resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
-    let verified: Omit<SinopacWorkflowOutput, "usedExistingSession" | "products" | "productCollectionSummary"> | null = null;
-    if (collectsAccounts && financialCommit) {
-      let accounts: SinopacAccount[];
-      if (overrides.readAccounts) {
-        await context.event("collection", "started", "account-list-collection-started");
-        accounts = await withAbort(
-          overrides.readAccounts(dateRange),
-          context.signal,
-        );
-        context.signal.throwIfAborted();
-        await context.event("collection", "advanced", "account-list-collected", {
-          completed: accounts.length,
-          total: accounts.length,
-        });
-      } else {
-        accounts = await openTransactionPage(
-          page,
-          context.text,
-          context.signal,
-          context.event,
-        );
-      }
-
-      verified = await collectAndCommitSinopacStatements(
-        page,
-        workflowInput,
-        accounts,
-        {
-          text: context.text,
-          signal: context.signal,
-          event: context.event,
-          financialCommit,
-          observedAt: context.now(),
-          ...(overrides.queryTransactions
-            ? { queryTransactions: overrides.queryTransactions }
-            : {}),
-          readCurrentDepositBalances: overrides.readCurrentDepositBalances ??
-            ((target, balanceInput) => readSinopacCurrentDepositBalancesWithText(
-              target,
-              context.text,
-              context.signal,
-              balanceInput,
-            )),
-        },
+    // The logout link can render after a dismissed notice, so give it time before calling the session lost.
+    const assertSession = async () => {
+      const signedIn = sinopacSignedInPageUrl(page.url()) && await withAbort(
+        page.locator('a#user-logout, a[href*="MMALogout"]').first()
+          .waitFor({ state: "visible", timeout: 10_000 })
+          .then(() => true, () => false),
+        context.signal,
       );
-    }
-
-    let attached: PreviewProductRun | null = null;
-    if (attachedProducts.length > 0) {
-      const transport = overrides.cardTransport ?? sinopacCardPageTransport(page, context.signal);
-      attached = await collectAttachedPreviewProducts({
+      if (!signedIn) throw new ProductCollectionFatalError("authentication-failed");
+    };
+    let deposit: SinopacDepositCollection | null = null;
+    const summary = await collectSelectedProducts({
+      productIds: ["deposit"],
+      selectedIds: collectsAccounts ? ["deposit"] : [],
+      signal: context.signal,
+      assertSession,
+      event: context.event,
+      productFailure: context.productFailure,
+      collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
+        let accounts: SinopacAccount[];
+        if (overrides.readAccounts) {
+          await event("collection", "started", "account-list-collection-started");
+          accounts = await withAbort(
+            overrides.readAccounts(dateRange),
+            context.signal,
+          );
+          context.signal.throwIfAborted();
+          await event("collection", "advanced", "account-list-collected", {
+            completed: accounts.length,
+            total: accounts.length,
+          });
+        } else {
+          accounts = await openTransactionPage(
+            page,
+            context.text,
+            context.signal,
+            event,
+          );
+        }
+        const { sourceCaptureCount, itemCount, ...collected } = await collectSinopacStatements(
+          page,
+          workflowInput,
+          accounts,
+          {
+            text: context.text,
+            signal: context.signal,
+            event: event,
+            observedAt: context.now(),
+            ...(overrides.queryTransactions
+              ? { queryTransactions: overrides.queryTransactions }
+              : {}),
+            readCurrentDepositBalances: overrides.readCurrentDepositBalances ??
+              ((target, balanceInput) => readSinopacCurrentDepositBalancesWithText(
+                target,
+                context.text,
+                context.signal,
+                balanceInput,
+              )),
+          },
+          stagedItems,
+        );
+        deposit = collected;
+        return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
+      },
+      commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
+        provider: "sinopac",
+        product: "financial",
+        signal: context.signal,
+      }),
+      attached: attachedPreviewRun({
         context,
         source: ATTACHED_PREVIEW_PRODUCTS.sinopac,
         selected: attachedProducts,
-        collectors: {
-          // Attached products have no structure report yet, so responses are validated but not kept.
-          credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
+        collectors: () => {
+          const transport = overrides.cardTransport ?? sinopacCardPageTransport(page, context.signal);
+          return {
+            // Attached products have no structure report yet, so responses are validated but not kept.
+            credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
+          };
         },
-        assertSession: async () => {
-          if (!(await isSignedIn(page, context.signal))) fail("session-conflict", "the MMA page is no longer signed in");
-        },
-      });
-    }
-    return sinopacRunOutput(usedExistingSession, dateRange, verified, attached, context.signal);
+        assertSession,
+      }),
+    });
+    // SinoPac's account and row counts describe the verified deposit only.
+    const [verified, ...attached] = summary.products;
+    const succeeded = verified?.status === "success" ? deposit as SinopacDepositCollection | null : null;
+    return productRunResult(summary, {
+      counts: {
+        accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
+        rowCount: succeeded?.rowCount ?? 0,
+        skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
+      },
+      sourceOnly: succeeded !== null && !succeeded.financial,
+    });
   });
 }
