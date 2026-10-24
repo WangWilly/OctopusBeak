@@ -19,6 +19,7 @@ import type {
 import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
+import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -218,7 +219,10 @@ export type CollectSelectedProductsOptions<
 > = Readonly<{
   /** Every product supported by the parent workflow, in stable UI order. */
   productIds: readonly TId[];
-  /** The caller's saved selection; no implicit all-products fallback is used. */
+  /**
+   * The caller's saved selection; no implicit all-products fallback is used.
+   * It may be empty only when attached products are selected.
+   */
   selectedIds: readonly TId[];
   signal: AbortSignal;
   prepare?: (typeId: TId) => Promise<void>;
@@ -238,6 +242,18 @@ export type CollectSelectedProductsOptions<
   classifyFatal?: (error: unknown) => TypedWorkflowErrorCode | undefined;
   /** Names a recoverable product failure more precisely than source-collection-failed. */
   classifyFailure?: (error: unknown) => TypedWorkflowErrorCode | undefined;
+  /**
+   * Collects the selected Attached Preview Products (ADR 0051) after every
+   * verified product has run. Build it with `attachedPreviewRun`; it is
+   * absent when none is selected.
+   */
+  attached?: () => Promise<PreviewProductRun>;
+  /**
+   * Return a run in which nothing produced durable data as a failed summary
+   * instead of throwing it. Fubon, Yuanta and TDCC still report failure in
+   * their output this way.
+   */
+  failedRunInSummary?: true;
 }>;
 
 function isSafeCount(value: number): boolean {
@@ -269,12 +285,13 @@ function productFailureCode(error: unknown): TypedWorkflowErrorCode {
 function validateSelection<TId extends CollectionProductTypeId>(
   productIds: readonly TId[],
   selectedIds: readonly TId[],
+  attachedSelected: boolean,
 ): void {
   if (productIds.length === 0 || new Set(productIds).size !== productIds.length) {
     throw new ProductCollectionFatalError("workflow-failed");
   }
   const supported = new Set(productIds);
-  if (selectedIds.length === 0 || new Set(selectedIds).size !== selectedIds.length
+  if ((selectedIds.length === 0 && !attachedSelected) || new Set(selectedIds).size !== selectedIds.length
     || selectedIds.some((typeId) => !supported.has(typeId))) {
     throw new ProductCollectionFatalError("workflow-failed");
   }
@@ -332,7 +349,7 @@ export async function collectSelectedProducts<
   TItem extends PGliteWorkflowRunItem,
 >(options: CollectSelectedProductsOptions<TId, TItem>): Promise<ProductCollectionRunSummary> {
   const { productIds, selectedIds, signal } = options;
-  validateSelection(productIds, selectedIds);
+  validateSelection(productIds, selectedIds, options.attached !== undefined);
   const selected = new Set(selectedIds);
   const outcomes: CollectionProductOutcome[] = productIds
     .filter((typeId) => !selected.has(typeId))
@@ -344,6 +361,7 @@ export async function collectSelectedProducts<
   let rowCount = 0;
   let itemCount = 0;
   let committedCount = 0;
+  let firstFailure: unknown = null;
 
   const orderedOutcomes = () => productIds.map((typeId) => completedByType.get(typeId)
     ?? createOutcome(typeId, "skipped", 0, 0, { skipReason: "not_attempted" }));
@@ -527,6 +545,7 @@ export async function collectSelectedProducts<
         await emitProductEvent("collection", "advanced", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
       } else {
         const errorCode = options.classifyFailure?.(error) ?? productFailureCode(error);
+        firstFailure ??= error;
         completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
         await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
         await emitProductEvent("validation", "failed", `${codePrefix}-source-validation-rejected`);
@@ -558,5 +577,58 @@ export async function collectSelectedProducts<
 
   const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
   if (signal.aborted) throw new ProductCollectionInterruptedError("cancelled", summary);
-  return summary;
+  if (options.failedRunInSummary) return summary;
+  return finishProductCollectionRun(summary, firstFailure, options.attached ? await options.attached() : null, signal);
+}
+
+/**
+ * Combines the verified and attached results and ends the run. Counts keep
+ * their units: preview accounts are commit items, never Source Captures. A run
+ * in which nothing produced durable data throws with the combined summary, so
+ * the failed product's own code reaches the host.
+ */
+function finishProductCollectionRun(
+  verified: ProductCollectionRunSummary,
+  verifiedFailure: unknown,
+  attached: PreviewProductRun | null,
+  signal: AbortSignal,
+): ProductCollectionRunSummary {
+  const products = Object.freeze([...verified.products, ...(attached?.products ?? [])]);
+  const committed = products.reduce((total, product) => total + product.committedCount, 0);
+  const summary: ProductCollectionRunSummary = Object.freeze({
+    products,
+    sourceCaptureCount: verified.sourceCaptureCount,
+    rowCount: verified.rowCount + (attached?.receipts.reduce((total, receipt) => total + receipt.transactions, 0) ?? 0),
+    itemCount: products.reduce((total, product) => total + product.itemCount, 0),
+    committedCount: committed,
+    status: productRunStatus(products, committed),
+  });
+  // An uncertain commit remains a failure even when cancellation also wins.
+  const interruption = attached?.interrupted;
+  if (interruption && (interruption.errorCode === "commit-outcome-unknown" || !signal.aborted)) {
+    throw withCause(new ProductCollectionInterruptedError(interruption.errorCode, summary), interruption.error);
+  }
+  if (signal.aborted || interruption) {
+    throw withCause(new ProductCollectionInterruptedError("cancelled", summary), signal.reason ?? interruption?.error);
+  }
+  if (summary.status !== "failed") return summary;
+  const failedVerified = verified.products.find((product) => product.status === "failed");
+  if (failedVerified) {
+    throw withCause(
+      new ProductCollectionInterruptedError(failedVerified.errorCode ?? "source-collection-failed", summary),
+      verifiedFailure,
+    );
+  }
+  const attempted = products.filter((product) => product.status !== "skipped");
+  if (attempted.length === 1 && attached?.firstFailure != null) throw attached.firstFailure;
+  const failed = products.find((product) => product.status === "failed");
+  throw withCause(
+    new ProductCollectionInterruptedError(failed?.errorCode ?? "source-collection-failed", summary),
+    attached?.firstFailure,
+  );
+}
+
+function withCause(error: ProductCollectionInterruptedError, cause: unknown): ProductCollectionInterruptedError {
+  if (cause !== null && cause !== undefined) (error as Error & { cause?: unknown }).cause = cause;
+  return error;
 }

@@ -58,6 +58,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
       let collectedSummary: ProductCollectionRunSummary;
       try {
         collectedSummary = await collectSelectedProducts({
+          failedRunInSummary: true,
           productIds: TDCC_PRODUCT_IDS,
           selectedIds,
           signal: context.signal,

@@ -371,6 +371,7 @@ export async function runYuantaAllStatementsWorkflow(
       await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
+        failedRunInSummary: true,
         productIds,
         selectedIds: selected,
         signal: context.signal,
