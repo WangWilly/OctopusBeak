@@ -946,11 +946,11 @@ A workflow-declared visual region around a verification target that holds the ch
 _Avoid_: Whole-page context, inferred nearest region
 
 **Human assistance contract**:
-A structured, persisted description emitted by a workflow when an automation task reaches a verification stage. Despite its name, it is the solver's verification contract, and no person completes it (ADR 0039). It declares the actionable verification targets, the challenge and context regions, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth. The workflow emits structured updates through the `humanAssistance` port, and the host routes each stage to its registered solver route. While a stage is open the run status is `waiting_for_human`, labeled "verifying" in the UI. A single task run may publish versioned contract updates as the verification flow changes. The contract ends when the workflow succeeds, fails, or is force-quit. The host never infers interaction rules from screenshots, DOM proximity, or log text.
+A structured, persisted description emitted by a workflow when an automation task reaches a verification stage. Despite its name, it is the solver's verification contract, and no person completes it (ADR 0039). It declares the actionable verification targets, the challenge and context regions, and the completion condition that governs resumption. The automation server and task-run persistence are its sole source of truth. The workflow declares each Verification Stage through the Human Assistance Contract API, and the host routes each stage to its registered solver route. While a stage is open the run status is `waiting_for_human`, labeled "verifying" in the UI. A single task run may publish versioned contract updates as the verification flow changes. The contract ends when the workflow succeeds, fails, or is force-quit. The host never infers interaction rules from screenshots, DOM proximity, or log text.
 _Avoid_: Screenshot-derived affordance, log-derived interaction contract
 
 **Verification stage**:
-A versioned phase of a human assistance contract with a finite allowlist of actionable targets, emitted with `emitHumanAssistanceStage`. A stage may declare multiple controls within one verification modal, but controls outside the stage remain unavailable. Each stage needs a registered solver route. Completion moves the task run to the next contract version or out of verification.
+A versioned phase of a human assistance contract with a finite allowlist of actionable targets, declared by the workflow and resolved against the live page by the Human Assistance Contract API. A stage may declare multiple controls within one verification modal, but controls outside the stage remain unavailable. Each stage needs a registered solver route. Completion moves the task run to the next contract version or out of verification.
 _Avoid_: Human interaction stage, full viewer stage, unrestricted page interaction
 
 **Verification interaction mode**:
@@ -1066,7 +1066,7 @@ The judgment, made at a workflow-declared verification point, of whether the cha
 _Avoid_: Assumed challenge, unconditional solve
 
 **Human assistance contract resolution failure**:
-A state in which the current semantic target or challenge region cannot be resolved against the live browser session. The solver route does not fall back to another element or unrestricted page interaction; the stage fails closed.
+A state in which the current semantic target or challenge region cannot be resolved against the live browser session, whether the stage is being declared or the solver route is acting on it. Nothing falls back to another element or unrestricted page interaction; the stage fails closed as a failed verification, never as a sign-in failure.
 _Avoid_: Nearest-element fallback, silent target substitution
 
 **Human assistance contract freshness**:
@@ -1082,8 +1082,8 @@ The rule that challenge screenshots exist only in the automation host's memory f
 _Avoid_: Diagnostic screenshot archive, persisted challenge image
 
 **Human assistance contract API**:
-The shared host boundary through which a workflow creates or updates a human assistance contract. It owns persistence, task-run association, versioning, and fail-safe validation; provider workflows supply only their verification-specific targets, context regions, interaction modes, and completion rules.
-_Avoid_: Raw pause log, provider-specific persistence, UI-owned contract state
+The shared host boundary through which a workflow creates or updates a human assistance contract. It owns persistence, task-run association, versioning, and fail-safe validation; provider workflows supply only their verification-specific targets, context regions, interaction modes, and completion rules. It, not the workflow, reports each stage's Automation Run Events, and it ends a stage that fails or cannot be resolved with the `human-assistance-failed` Run Event Signal; only a cancellation ends a stage without it.
+_Avoid_: Raw pause log, provider-specific persistence, UI-owned contract state, workflow-emitted verification events
 
 **Provider verification adapter**:
 A provider-owned resolver and completion adapter that identifies the live verification controls, frames, challenge regions, allowed interaction modes, and provider-specific completion signals for a human assistance contract. The solver route uses it to capture challenge media and inject answers. The host does not infer these details from arbitrary page inputs.
