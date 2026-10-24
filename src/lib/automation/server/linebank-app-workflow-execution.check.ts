@@ -278,7 +278,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       !run?.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),
       "LINE Bank automatic sign-in must not request human assistance",
     );
-    assert.ok(run?.events.some((event) => event.code === "source-validation-completed"));
+    assert.ok(run?.events.some((event) => event.code === "deposit-source-validation-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "App dispatch writes no source, output, or log files");
 

@@ -22,6 +22,7 @@ import {
   type CommitAttemptReport,
 } from "./commit-attempt.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -319,7 +320,12 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
       queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
       readCurrentDepositBalances: async () => [],
     }),
-    /zero-result-authority-unproven/u,
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "source-collection-failed");
+      assert.match(String((error as Error & { cause?: unknown }).cause), /zero-result-authority-unproven/u);
+      return true;
+    },
   );
   assert.equal(calls.length, 0);
 });

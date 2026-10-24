@@ -193,26 +193,16 @@
     {
       "stage": "collection",
       "outcome": "started",
-      "code": "collection-started"
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
     },
     {
       "stage": "decoding",
       "outcome": "started",
       "code": "source-decoding-started"
-    },
-    {
-      "stage": "decoding",
-      "outcome": "completed",
-      "code": "source-decoding-completed"
-    },
-    {
-      "stage": "collection",
-      "outcome": "completed",
-      "code": "collection-completed",
-      "counts": {
-        "completed": 2,
-        "total": 2
-      }
     },
     {
       "stage": "validation",
@@ -242,12 +232,33 @@
       }
     },
     {
-      "stage": "validation",
+      "stage": "collection",
       "outcome": "completed",
-      "code": "source-validation-completed",
+      "code": "deposit-collection-completed",
       "counts": {
         "completed": 2,
-        "total": 2
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
       }
     }
   ]

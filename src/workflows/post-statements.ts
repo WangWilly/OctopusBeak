@@ -12,10 +12,14 @@ import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
-import type {
-  WorkflowContext,
-  WorkflowFinancialCommitPort,
-} from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
+import {
+  collectSelectedProducts,
+  type CollectionProductOutcome,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -112,14 +116,14 @@ export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
 export type PostWorkflowOutput = Readonly<{
   accountCount: number;
   rowCount: number;
-  status: "financial-admitted";
+  status: "financial-admitted" | "partial";
+  products: readonly CollectionProductOutcome[];
 }>;
 
 export type PostStatementsRunDependencies = {
   text?: SourceTextPort;
   signal?: AbortSignal;
   event?: WorkflowContext["event"];
-  financialCommit: WorkflowFinancialCommitPort;
   collectSourceStatements?: (
     page: Page,
     text: SourceTextPort,
@@ -934,10 +938,16 @@ function postCaptureId(observedAt: string, index: number): string {
     .slice(0, 24)}-${Date.now()}-${index}`;
 }
 
-async function runPostStatements(
+type StagedPostStatements = Readonly<{
+  accountCount: number;
+  rowCount: number;
+  items: readonly PGliteWorkflowRunItem[];
+}>;
+
+async function stagePostStatements(
   page: Page,
   overrides: PostStatementsRunDependencies,
-): Promise<PostWorkflowOutput> {
+): Promise<StagedPostStatements> {
   const text = overrides.text ?? strictSourceText;
   overrides.signal?.throwIfAborted();
   const statements = await (
@@ -1043,19 +1053,10 @@ async function runPostStatements(
         },
       } as const)),
   ];
-  const committed = await overrides.financialCommit.execute(items, {
-    provider: "post",
-    product: "financial",
-    ...(overrides.signal ? { signal: overrides.signal } : {}),
-  });
-  if (committed.status !== "completed")
-    throw new Error(
-      `Post Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
-    );
   return {
     accountCount: statements.length,
     rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
-    status: "financial-admitted",
+    items,
   };
 }
 
@@ -1105,24 +1106,51 @@ export async function runPostProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "completed", "authentication-completed");
 
-    const result = await runPostStatements(page, {
-      text: context.text,
+    const { context: productContext, classifyFailure } = failedStageClassifier(context);
+    let accountCount = 0;
+    const summary = await collectSelectedProducts({
+      productIds: ["deposit"],
+      selectedIds: ["deposit"],
       signal: context.signal,
       event: context.event,
-      financialCommit,
-      observedAt: postObservedAt(new Date(context.now())),
-      ...(overrides.collectSourceStatements
-        ? { collectSourceStatements: overrides.collectSourceStatements }
-        : {}),
-      readCurrentDepositBalances: overrides.readCurrentDepositBalances ?? ((candidatePage, input) =>
-        readPostCurrentDepositBalancesWithText(
-          candidatePage,
-          context.text,
-          context.signal,
-          input,
-        )),
+      productFailure: context.productFailure,
+      classifyFailure,
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+        const staged = await stagePostStatements(page, {
+          text: context.text,
+          signal: context.signal,
+          event: productContext.event,
+          observedAt: postObservedAt(new Date(context.now())),
+          ...(overrides.collectSourceStatements
+            ? { collectSourceStatements: overrides.collectSourceStatements }
+            : {}),
+          readCurrentDepositBalances: overrides.readCurrentDepositBalances ?? ((candidatePage, input) =>
+            readPostCurrentDepositBalancesWithText(
+              candidatePage,
+              context.text,
+              context.signal,
+              input,
+            )),
+        });
+        stagedItems.push(...staged.items);
+        accountCount = staged.accountCount;
+        return {
+          sourceCaptureCount: staged.accountCount,
+          rowCount: staged.rowCount,
+          itemCount: stagedItems.length,
+        };
+      },
+      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
+        provider: "post",
+        product: "financial",
+        signal: context.signal,
+      }),
     });
-    context.signal.throwIfAborted();
-    return result;
+    return {
+      accountCount,
+      rowCount: summary.rowCount,
+      status: summary.status === "partial" ? "partial" : "financial-admitted",
+      products: summary.products,
+    };
   });
 }

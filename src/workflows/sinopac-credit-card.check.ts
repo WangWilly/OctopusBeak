@@ -449,7 +449,13 @@ for (const timing of ["after verified commit", "after attached write"] as const)
       assert.equal(error.summary.sourceCaptureCount, 1);
       assert.equal(error.summary.committedCount, timing === "after verified commit" ? 1 : 4);
       assert.equal(error.summary.products[0]?.status, "success");
-      assert.equal(error.summary.products[1]?.status, timing === "after verified commit" ? "skipped" : "success");
+      assert.deepEqual(
+        error.summary.products.map((product) => [product.typeId, product.status]),
+        timing === "after verified commit"
+          ? [["deposit", "success"]]
+          : [["deposit", "success"], ["credit_card", "success"]],
+        "a cancellation before the attached products reports only the verified outcome",
+      );
       return true;
     });
     assert.equal(commits.length, 1);
@@ -457,3 +463,62 @@ for (const timing of ["after verified commit", "after attached write"] as const)
     if (timing === "after verified commit") assert.deepEqual(calls, []);
   });
 }
+
+test("a refused SinoPac verified commit names the run collection-scope-changed and skips the attached cards", async () => {
+  const writes: PreviewWrite[] = [];
+  const context: WorkflowContext = {
+    ...workflowContext(writes, []),
+    financialCommit: {
+      async execute(items) {
+        const received = [];
+        for await (const item of items) received.push(item);
+        return {
+          status: "failed",
+          items: received.map((item) => ({
+            itemKey: item.itemKey, provider: item.provider, product: item.product,
+            status: "failed" as const, failureKind: "refused" as const, diagnostics: [],
+          })),
+          diagnostics: [], committedCount: 0, failedCount: received.length,
+        };
+      },
+    },
+  };
+  const { transport, calls } = fakeTransport(bodies());
+  await assert.rejects(runSinopacProviderWorkflow(
+    context,
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
+    { ...verifiedOverrides, cardTransport: transport },
+  ), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "collection-scope-changed");
+    assert.deepEqual(error.summary.products, [
+      { typeId: "deposit", status: "failed", itemCount: 1, committedCount: 0, errorCode: "collection-scope-changed" },
+    ]);
+    return true;
+  });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(writes, []);
+});
+
+test("a recoverable SinoPac verified failure still collects the attached cards", async () => {
+  const writes: PreviewWrite[] = [];
+  const commits: unknown[][] = [];
+  const { transport } = fakeTransport(bodies());
+  const output = await runSinopacProviderWorkflow(
+    workflowContext(writes, commits),
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
+    {
+      ...verifiedOverrides,
+      queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
+      cardTransport: transport,
+    },
+  );
+  assert.deepEqual(commits, []);
+  assert.deepEqual(writes.map((write) => write.product), ["credit_card"]);
+  assert.equal(output.status, "partial");
+  assert.equal(output.rowCount, 0);
+  assert.deepEqual(output.products, [
+    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" },
+    { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
+  ]);
+});
