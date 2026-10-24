@@ -1268,7 +1268,7 @@ export async function runHncbStatements(
 
   {
     const accounts = await readAccounts(page, input.accountFilters);
-    await overrides.event?.("collection", "collection-started", {
+    await overrides.event?.("collection", "started", "collection-started", {
       completed: 0,
       total: accounts.length,
     });
@@ -1276,7 +1276,7 @@ export async function runHncbStatements(
       overrides.signal?.throwIfAborted();
       const resultFrame = await query(page, account, dateRange);
       if (!resultFrame) {
-        await overrides.event?.("collection", "account-no-data", {
+        await overrides.event?.("collection", "advanced", "account-no-data", {
           completed: accountIndex + 1,
           total: accounts.length,
         });
@@ -1288,13 +1288,13 @@ export async function runHncbStatements(
             `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
           );
         captures.push(structural.capture);
-        await overrides.event?.("validation", "source-validation-completed", {
+        await overrides.event?.("validation", "advanced", "source-validation-completed", {
           completed: accountIndex + 1,
           total: accounts.length,
         });
         continue;
       }
-      await overrides.event?.("decoding", "source-decoding-started", {
+      await overrides.event?.("decoding", "started", "source-decoding-started", {
         completed: accountIndex,
         total: accounts.length,
       });
@@ -1304,6 +1304,7 @@ export async function runHncbStatements(
       } catch (error) {
         await overrides.event?.(
           error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+          "failed",
           error instanceof SourceTextIntegrityError
             ? "source-decode-rejected"
             : "source-export-rejected",
@@ -1312,7 +1313,7 @@ export async function runHncbStatements(
         throw error;
       }
       overrides.signal?.throwIfAborted();
-      await overrides.event?.("decoding", "source-decoding-completed", {
+      await overrides.event?.("decoding", "advanced", "source-decoding-completed", {
         completed: accountIndex + 1,
         total: accounts.length,
       });
@@ -1324,7 +1325,7 @@ export async function runHncbStatements(
           `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
           );
       captures.push(structural.capture);
-      await overrides.event?.("validation", "source-validation-completed", {
+      await overrides.event?.("validation", "advanced", "source-validation-completed", {
         completed: accountIndex + 1,
         total: accounts.length,
       });
@@ -1464,7 +1465,7 @@ export async function runHncbProviderWorkflow(
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
 
-  await context.event("authentication", "authentication-started");
+  await context.event("authentication", "started", "authentication-started");
   return await context.browser.withPage(async (page) => {
     await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
     const usedExistingSession = await isSignedIn(page);
@@ -1473,21 +1474,21 @@ export async function runHncbProviderWorkflow(
         page,
         parsed.data.credentials,
         async (stage, signal) => {
-          await context.event("authentication", "human-assistance-requested");
+          await context.event("authentication", "advanced", "human-assistance-requested");
           const status = await requestCaptchaAssistance("HNCB", 
             stage,
             (contract, assistanceSignal) =>
               context.humanAssistance.request(contract, assistanceSignal),
             signal,
           );
-          await context.event("authentication", "human-assistance-completed");
+          await context.event("authentication", "advanced", "human-assistance-completed");
           return status;
         },
         context.signal,
       );
     }
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     let deposit: WorkflowOutput | null = null;
     if (parsed.data.statementTypes.includes("deposit")) {

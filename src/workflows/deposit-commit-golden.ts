@@ -1,3 +1,4 @@
+import { RUN_EVENT_SIGNALS } from "../lib/automation/run-event.ts";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -15,6 +16,7 @@ import type {
 export type DepositCommitRecorder = Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   event: WorkflowContext["event"];
+  signalEvent: WorkflowContext["signalEvent"];
   recorded(): Record<string, unknown>;
 }>;
 
@@ -44,8 +46,11 @@ export function recordDepositCommit(): DepositCommitRecorder {
         };
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, _outcome, code, counts) {
       events.push(counts === undefined ? { stage, code } : { stage, code, counts });
+    },
+    async signalEvent(signal) {
+      events.push({ stage: RUN_EVENT_SIGNALS[signal].stage, code: signal });
     },
     recorded: () => normalize({ executions, events }),
   };

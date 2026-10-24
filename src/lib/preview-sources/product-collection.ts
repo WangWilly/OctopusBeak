@@ -1,3 +1,4 @@
+import type { RunEventOutcome } from "../automation/run-event.ts";
 import type {
   PreviewProduct,
   PreviewProductCollection,
@@ -55,7 +56,7 @@ export type PreviewProductRunOptions = Readonly<{
   collectors: PreviewProductCollectors;
   write: PreviewProductWriter;
   signal: AbortSignal;
-  event?: (stage: WorkflowContextStage, code: string, counts?: WorkflowEventCounts) => Promise<void>;
+  event?: (stage: WorkflowContextStage, outcome: RunEventOutcome, code: string, counts?: WorkflowEventCounts) => Promise<void>;
   /** Throws a session-loss failure when the signed-in session is gone. */
   assertSession?: () => Promise<void>;
 }>;
@@ -127,28 +128,33 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
     ?? outcome(product, "skipped", 0, { skipReason: selected.has(product) ? "not_attempted" : "not_selected" }));
   const interrupted = (errorCode: TypedWorkflowErrorCode, error: unknown): PreviewProductRun =>
     ({ products: ordered(), receipts, interrupted: { errorCode, error }, firstFailure });
-  const event = (product: PreviewProduct, stage: WorkflowContextStage, code: string, counts?: WorkflowEventCounts) =>
-    options.event?.(stage, `${product.replaceAll("_", "-")}-${code}`, { ...counts, statementType: product });
+  const event = (
+    product: PreviewProduct,
+    stage: WorkflowContextStage,
+    outcome: RunEventOutcome,
+    code: string,
+    counts?: WorkflowEventCounts,
+  ) => options.event?.(stage, outcome, `${product.replaceAll("_", "-")}-${code}`, { ...counts, statementType: product });
 
   for (const product of options.products) {
     if (!selected.has(product)) continue;
     if (options.signal.aborted) return interrupted("cancelled", options.signal.reason);
     try {
       await options.assertSession?.();
-      await event(product, "collection", "collection-started", { activity: "query" });
+      await event(product, "collection", "started", "collection-started", { activity: "query" });
       const collector = options.collectors[product];
       if (!collector) throw new ProductCollectionFatalError("workflow-failed");
       const result = collectionFor(product, await collector() as PreviewProductCollectorResult<typeof product>);
       if ("absent" in result) {
         done.set(product, outcome(product, result.absent));
-        await event(product, "collection", `component-${result.absent.replaceAll("_", "-")}`);
+        await event(product, "collection", "advanced", `component-${result.absent.replaceAll("_", "-")}`);
         continue;
       }
       const receipt = await options.write(result);
       receipts.push(receipt);
       if (receipt.accounts === 0) {
         done.set(product, outcome(product, "not_held"));
-        await event(product, "collection", "component-not-held");
+        await event(product, "collection", "advanced", "component-not-held");
         continue;
       }
       done.set(product, outcome(product, "success", receipt.accounts));
@@ -161,7 +167,7 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
       }
       firstFailure ??= error;
       done.set(product, outcome(product, "failed", 0, { errorCode: failureCode(error) }));
-      await event(product, "validation", "source-validation-rejected");
+      await event(product, "validation", "failed", "source-validation-rejected");
       if (options.assertSession) {
         try {
           await options.assertSession();

@@ -663,14 +663,14 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
     startUrl: `${IMP}/`,
     async run(context, input) {
       if (!input.products.includes("credit_card")) return context.preview.collect({});
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       return open(context, { pageUrl: input.startUrl }, async (http) => {
         const credentials = input.credentials;
         const api = client(context, http, ctbcDeviceCode(credentials[KEY.idNumber] ?? "", credentials[KEY.userCode] ?? ""));
         try {
           await api.bootstrap();
           await api.login(credentials[KEY.idNumber] ?? "", credentials[KEY.userCode] ?? "", credentials[KEY.password] ?? "");
-          await context.event("authentication", "authentication-completed");
+          await context.event("authentication", "completed", "authentication-completed");
           return await context.preview.collect({
             credit_card: async () => {
               const collectedAt = context.now();

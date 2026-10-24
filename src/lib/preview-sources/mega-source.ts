@@ -634,7 +634,7 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
     },
     startUrl: START_URL,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const idNumber = (input.credentials[KEY.idNumber] ?? "").trim().toUpperCase();
       const userCode = (input.credentials[KEY.userCode] ?? "").trim().toUpperCase();
       const password = input.credentials[KEY.password] ?? "";
@@ -646,14 +646,14 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
           await api.adapterLogin();
           if (gate.secondFactor) return await requireDeviceRegistration(context, "Mega login requires a second factor (secondFactorFlag Y)");
           api.flagRemoteSignIn(gate.highIpFar);
-          await context.event("authentication", "authentication-completed");
-          await context.event("collection", "collection-started");
+          await context.event("authentication", "completed", "authentication-completed");
+          await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
           const output = await context.preview.collect({
             deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, collectedAt) }),
             credit_card: () => collectCards(api, collectedAt),
           });
-          await context.event("collection", "collection-completed");
+          await context.event("collection", "completed", "collection-completed");
           return output;
         } finally {
           await api.resource("megapmb", "/fco/fco02011/logout", {}, null, false).catch(() => undefined);

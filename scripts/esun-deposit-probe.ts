@@ -38,17 +38,17 @@ const probeDefinition: WorkflowDefinition<EsunCredentials, ProbeReport> = {
     return await context.browser.withPage(async (page) => {
       page.on("dialog", (dialog) => { void dialog.accept().catch(() => undefined); });
       const observedRequests = observePortalRequests(page);
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       await authenticateEsunPage(page, credentials, context);
-      await context.event("authentication", "authentication-completed");
+      await context.event("authentication", "completed", "authentication-completed");
       await waitForPortalSession(page);
       context.signal.throwIfAborted();
-      await context.event("collection", "collection-started");
+      await context.event("collection", "started", "collection-started");
       const report = await runDepositProbe(createPageTransport(page, context.signal), {
         now: new Date(context.now()),
         observedRequests,
       });
-      await context.event("collection", report.complete ? "collection-completed" : "collection-failed");
+      await context.event("collection", report.complete ? "completed" : "failed", report.complete ? "collection-completed" : "collection-failed");
       return report;
     });
   },

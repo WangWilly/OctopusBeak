@@ -307,7 +307,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
     },
     startUrl: WEB,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const solve = options.solveCaptcha ?? nextbankAudioCaptchaSolver();
       return open(context, { pageUrl: input.startUrl }, async (http) => {
         const api = client(context, http);
@@ -326,7 +326,7 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
           isAbnormalLogout: false,
         });
         api.setToken(text(login.data.acstkn, "CaptchaLogin.acstkn"));
-        await context.event("authentication", "authentication-completed");
+        await context.event("authentication", "completed", "authentication-completed");
         try {
           const collectedAt = context.now();
           let pockets: Promise<PocketList> | null = null;

@@ -291,6 +291,7 @@ function workflowContext(writes: PreviewWrite[], commits: unknown[][]): Workflow
       },
     },
     event: async () => undefined,
+    signalEvent: async () => undefined,
   };
 }
 

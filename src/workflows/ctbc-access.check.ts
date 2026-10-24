@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import { legacyRunEventOutcome, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
@@ -28,8 +28,11 @@ try {
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
-    event: async (stage, code) => {
-      events.push({ runId: "ctbc-busy-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    event: async (stage, outcome, code) => {
+      events.push({ runId: "ctbc-busy-fixture", stage, outcome, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    },
+    signalEvent: async (signal) => {
+      events.push(signalRunEvent(signal, { runId: "ctbc-busy-fixture", occurredAt: "2026-09-26T00:00:00.000Z" }));
     },
   };
   let failure: unknown;
@@ -58,8 +61,11 @@ try {
     runId: "ctbc-blank-202-fixture",
     signal: acceptedController.signal,
     browser: { withPage: (run) => run(acceptedPage) },
-    event: async (stage, code) => {
-      acceptedEvents.push({ runId: "ctbc-blank-202-fixture", stage, outcome: legacyRunEventOutcome(code), code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    event: async (stage, outcome, code) => {
+      acceptedEvents.push({ runId: "ctbc-blank-202-fixture", stage, outcome, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    },
+    signalEvent: async (signal) => {
+      acceptedEvents.push(signalRunEvent(signal, { runId: "ctbc-blank-202-fixture", occurredAt: "2026-09-26T00:00:00.000Z" }));
     },
   };
   let acceptedFailure: unknown;

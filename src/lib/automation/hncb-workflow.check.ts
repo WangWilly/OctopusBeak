@@ -140,7 +140,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
       queryAccount: async (candidatePage) => candidatePage.mainFrame(),
       readCurrentDepositBalances: async () => [],
       readCurrentDepositOverviewBalances: async () => [],
-      event: async (stage, code) => { events.push({ stage, code }); },
+      event: async (stage, _outcome, code) => { events.push({ stage, code }); },
       downloadStatement: async (candidatePage, fallbackAccount, frame, text) => {
         const statement = await downloadCurrentStatementInMemory(
           candidatePage,
@@ -318,7 +318,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     const result = await runHncbStatements(page, baseInput, {
       ...dependencies,
       usedExistingSession: true,
-      event: async (stage, code) => { events.push({ stage, code }); },
+      event: async (stage, _outcome, code) => { events.push({ stage, code }); },
       downloadStatement: async () => ({
         account,
         accountId: account,

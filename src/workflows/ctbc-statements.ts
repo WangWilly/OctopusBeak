@@ -416,7 +416,7 @@ async function signInCtbcForApp(
     await openCtbcLoginForm(page, context.signal);
   } catch (error) {
     if (error instanceof SourceUnavailableError)
-      await context.event("authentication", "source-unavailable");
+      await context.event("authentication", "failed", "source-unavailable");
     throw error;
   }
   await withAbort(page.locator("form input[type=text]").first().fill(userId), context.signal);
@@ -469,11 +469,11 @@ async function nextCtbcResource<T>(
       options.context.text,
     );
   } catch (error) {
-    await options.context.event("decoding", "source-decoding-failed");
+    await options.context.event("decoding", "failed", "source-decoding-failed");
     throw error;
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    await options.context.event("validation", "source-response-rejected");
+    await options.context.event("validation", "failed", "source-response-rejected");
     throw new Error("CTBC provider response shape is invalid.");
   }
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
@@ -838,7 +838,7 @@ async function collectCtbcStatements(
       expectedRangeCount: bootstrap.dateRanges?.length ?? 0,
       responses,
     });
-    await context.event("collection", "account-collected", {
+    await context.event("collection", "advanced", "account-collected", {
       completed: captures.length,
       total: accounts.length,
     });
@@ -1145,7 +1145,7 @@ export async function runCtbcProviderWorkflow(
     throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
@@ -1153,13 +1153,13 @@ export async function runCtbcProviderWorkflow(
       void dialog.accept().catch(() => undefined);
     });
 
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     await signInCtbcForApp(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
-    await context.event("collection", "collection-started");
-    await context.event("decoding", "source-decoding-started");
+    await context.event("collection", "started", "collection-started");
+    await context.event("decoding", "started", "source-decoding-started");
     let collected: CtbcCollectedStatements;
     try {
       collected = await (dependencies.collectStatements ??
@@ -1169,25 +1169,25 @@ export async function runCtbcProviderWorkflow(
           context,
         )))(page, parsed.data);
     } catch (error) {
-      await context.event("collection", "collection-failed");
+      await context.event("collection", "failed", "collection-failed");
       throw error;
     }
     context.signal.throwIfAborted();
-    await context.event("decoding", "source-decoding-completed");
+    await context.event("decoding", "completed", "source-decoding-completed");
     if (collected.captures.length === 0 ||
       collected.output.count !== collected.captures.length) {
-      await context.event("validation", "source-validation-rejected", {
+      await context.event("validation", "failed", "source-validation-rejected", {
         completed: collected.captures.length,
         total: collected.output.count,
       });
       throw new Error("CTBC source has no complete selected account capture.");
     }
-    await context.event("collection", "collection-completed", {
+    await context.event("collection", "completed", "collection-completed", {
       completed: collected.captures.length,
       total: collected.output.count,
     });
 
-    await context.event("validation", "source-validation-started", {
+    await context.event("validation", "started", "source-validation-started", {
       completed: 0,
       total: collected.captures.length,
     });
@@ -1199,7 +1199,7 @@ export async function runCtbcProviderWorkflow(
         buildCtbcCapture(observed, observedAt),
       );
       if (admission.status !== "admissible" || !admission.capture) {
-        await context.event("validation", "source-validation-rejected", {
+        await context.event("validation", "failed", "source-validation-rejected", {
           completed: validatedCaptures.length,
           total: collected.captures.length,
         });
@@ -1213,7 +1213,7 @@ export async function runCtbcProviderWorkflow(
     const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
     const financialCaptures: ExistingCtbcFinancialCapture[] = [];
     const items: PGliteWorkflowRunItem[] = [];
-    await context.event("validation", "canonical-admission-started", {
+    await context.event("validation", "started", "canonical-admission-started", {
       completed: 0,
       total: validatedCaptures.length,
     });
@@ -1236,7 +1236,7 @@ export async function runCtbcProviderWorkflow(
         humanAttestation: manifest,
       });
       if (admission.status !== "admitted" || !admission.capture) {
-        await context.event("validation", "canonical-admission-rejected", {
+        await context.event("validation", "failed", "canonical-admission-rejected", {
           completed: financialCaptures.length,
           total: validatedCaptures.length,
         });
@@ -1258,7 +1258,7 @@ export async function runCtbcProviderWorkflow(
         },
       });
     }
-    await context.event("validation", "canonical-admission-completed", {
+    await context.event("validation", "completed", "canonical-admission-completed", {
       completed: validatedCaptures.length,
       total: validatedCaptures.length,
     });
@@ -1266,23 +1266,23 @@ export async function runCtbcProviderWorkflow(
     const readCurrent = dependencies.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
     const balances: PGliteWorkflowRunItem[] = [];
     if (financialCaptures.length > 0) {
-      await context.event("collection", "current-balance-collection-started");
-      await context.event("decoding", "current-balance-decoding-started");
+      await context.event("collection", "started", "current-balance-collection-started");
+      await context.event("decoding", "started", "current-balance-decoding-started");
       let currentRows: readonly CtbcCurrentDepositBalanceRow[];
       try {
         currentRows = await readCtbcCurrentDepositBalancesForApp(page, context, readCurrent);
       } catch {
-        await context.event("decoding", "current-balance-decoding-failed");
-        await context.event("collection", "current-balance-collection-failed");
+        await context.event("decoding", "failed", "current-balance-decoding-failed");
+        await context.event("collection", "failed", "current-balance-collection-failed");
         throw new Error("CTBC current balance source collection failed.");
       }
-      await context.event("decoding", "current-balance-decoding-completed");
-      await context.event("collection", "current-balance-collection-completed", {
+      await context.event("decoding", "completed", "current-balance-decoding-completed");
+      await context.event("collection", "completed", "current-balance-collection-completed", {
         completed: currentRows.length,
         total: currentRows.length,
       });
       const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
-      await context.event("validation", "current-balance-validation-started", {
+      await context.event("validation", "started", "current-balance-validation-started", {
         completed: 0,
         total: currentRows.length,
       });
@@ -1305,19 +1305,19 @@ export async function runCtbcProviderWorkflow(
           });
         }
       } catch {
-        await context.event("validation", "current-balance-validation-rejected", {
+        await context.event("validation", "failed", "current-balance-validation-rejected", {
           completed: 0,
           total: currentRows.length,
         });
         throw new Error("CTBC current balance source admission was rejected.");
       }
-      await context.event("validation", "current-balance-validation-completed", {
+      await context.event("validation", "completed", "current-balance-validation-completed", {
         completed: balances.length,
         total: currentRows.length,
       });
     }
 
-    await context.event("validation", "source-validation-completed", {
+    await context.event("validation", "completed", "source-validation-completed", {
       completed: validatedCaptures.length,
       total: collected.captures.length,
     });

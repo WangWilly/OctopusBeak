@@ -517,7 +517,7 @@ export async function runEinvoiceProviderWorkflow(
 
   const credentials = parsed.data.credentials;
   return await context.browser.withPage(async (page) => {
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     const { client, close } = await source.open(page);
     try {
       const session = await client.login(
@@ -527,17 +527,17 @@ export async function runEinvoiceProviderWorkflow(
         context.signal,
       );
       context.signal.throwIfAborted();
-      await context.event("authentication", "authentication-completed");
+      await context.event("authentication", "completed", "authentication-completed");
 
-      await context.event("collection", "collection-started");
-      await context.event("decoding", "source-decoding-started");
+      await context.event("collection", "started", "collection-started");
+      await context.event("decoding", "started", "source-decoding-started");
       const result = await readAppProtocolInvoices(client, session, context.signal, async (completed, total) => {
-        await context.event("collection", "month-completed", { completed, total });
+        await context.event("collection", "advanced", "month-completed", { completed, total });
       });
       const capture = buildCanonicalEInvoiceCaptureFromApp(result, credentials);
       const admittedInvoiceCount = capture.invoices.length;
-      await context.event("decoding", "source-decoding-completed");
-      await context.event("validation", "source-validation-completed", {
+      await context.event("decoding", "completed", "source-decoding-completed");
+      await context.event("validation", "completed", "source-validation-completed", {
         completed: admittedInvoiceCount,
         total: admittedInvoiceCount,
       });

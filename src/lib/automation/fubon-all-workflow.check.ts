@@ -1,3 +1,4 @@
+import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,8 +107,11 @@ function context(
         };
       },
     },
-    event: async (stage, code) => {
+    event: async (stage, _outcome, code) => {
       calls.push(`event:${stage}:${code}`);
+    },
+    signalEvent: async (signal) => {
+      calls.push(`event:${RUN_EVENT_SIGNALS[signal].stage}:${signal}`);
     },
   };
 }

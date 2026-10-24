@@ -127,6 +127,7 @@ function makeContext(options: Readonly<{
     },
     financialCommit: options.financialCommit,
     event: options.onEvent ?? (async () => undefined),
+    signalEvent: async () => undefined,
   };
 }
 
@@ -226,7 +227,7 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
   const context = makeContext({
     page,
     financialCommit: financialCommitStub(calls),
-    onEvent: async (stage, code) => { events.push({ stage, code }); },
+    onEvent: async (stage, _outcome, code) => { events.push({ stage, code }); },
   });
   try {
     process.chdir(outputDir);
@@ -342,7 +343,7 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
       page.setSignedIn(true);
       return "entered";
     },
-    onEvent: async (stage, code) => { stages.push({ stage, code }); },
+    onEvent: async (stage, _outcome, code) => { stages.push({ stage, code }); },
   });
 
   const output = await runSinopacProviderWorkflow(context, input, {
@@ -374,7 +375,7 @@ test("typed SinoPac login owns and dismisses post-submit dialogs instead of hang
   const context = makeContext({
     page,
     financialCommit: financialCommitStub(calls),
-    onEvent: async (stage, code) => { events.push({ stage, code }); },
+    onEvent: async (stage, _outcome, code) => { events.push({ stage, code }); },
     assistance: async () => {
       page.enterCaptcha("123456");
       return "entered";

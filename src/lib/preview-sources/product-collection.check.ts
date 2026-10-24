@@ -49,7 +49,7 @@ function harness(collectors: PreviewProductCollectors, selected: readonly Previe
     collectors,
     write: async (write) => { writes.push(write.product); return previewReceipt({ sourceId: "s", institution: "bank-017", ...write }); },
     signal,
-    event: async (_stage, code) => { events.push(code); },
+    event: async (_stage, _outcome, code) => { events.push(code); },
     ...(assertSession ? { assertSession } : {}),
   });
   return { writes, events, run };

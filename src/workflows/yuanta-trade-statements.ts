@@ -208,23 +208,23 @@ export async function requestYuantaTradeAssistance(
   try {
     contract = await emitHumanAssistanceStage(stage);
   } catch (error) {
-    await context.event("authentication", "human-assistance-failed");
+    await context.signalEvent("human-assistance-failed");
     throw error;
   }
-  await context.event("authentication", "human-assistance-requested");
+  await context.event("authentication", "advanced", "human-assistance-requested");
   let status: Awaited<ReturnType<WorkflowContext["humanAssistance"]["request"]>>;
   try {
     status = await context.humanAssistance.request(contract, context.signal);
   } catch (error) {
-    await context.event("authentication", "human-assistance-failed");
+    await context.signalEvent("human-assistance-failed");
     throw error;
   }
   context.signal.throwIfAborted();
   if (status !== "entered" && status !== "verified") {
-    await context.event("authentication", "human-assistance-failed");
+    await context.signalEvent("human-assistance-failed");
     throw new Error(`YuanTa Trade human assistance ended with status ${status}.`);
   }
-  await context.event("authentication", "human-assistance-completed");
+  await context.event("authentication", "advanced", "human-assistance-completed");
   return status;
 }
 
@@ -1561,7 +1561,7 @@ export async function assertYuantaTradeServiSignAvailable(
   context: WorkflowContext,
 ): Promise<void> {
   if (!(await isYuantaSecurityComponentMissing(page))) return;
-  await context.event("authentication", "servisign-unavailable");
+  await context.event("authentication", "failed", "servisign-unavailable");
   throw new ExternalPrerequisiteUnavailableError("yuanta-servisign");
 }
 
@@ -1753,16 +1753,16 @@ export async function runYuantaTradeProviderWorkflow(
     page.on("dialog", (dialog) => {
       void dialog.accept().catch(() => undefined);
     });
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     let usedExistingSession: boolean;
     try {
       usedExistingSession = await authenticate(page, input.credentials, context);
     } catch (error) {
-      await context.event("authentication", "authentication-failed");
+      await context.event("authentication", "failed", "authentication-failed");
       throw error;
     }
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     const requestedHoldingTypes = input.holdingTypes as HoldingType[];
     const requestedTradeTypes = input.tradeTypes as TradeType[];
@@ -1778,11 +1778,11 @@ export async function runYuantaTradeProviderWorkflow(
         category: "trade" as const,
       })),
     ];
-    await context.event("collection", "collection-started", {
+    await context.event("collection", "started", "collection-started", {
       completed: 0,
       total: requests.length,
     });
-    await context.event("decoding", "source-decoding-started");
+    await context.event("decoding", "started", "source-decoding-started");
     const holdings: ReportPage[] = [];
     const trades: ReportPage[] = [];
     try {
@@ -1795,21 +1795,21 @@ export async function runYuantaTradeProviderWorkflow(
           context,
         );
         (request.category === "holding" ? holdings : trades).push(reportPage);
-        await context.event("collection", "report-collected", {
+        await context.event("collection", "advanced", "report-collected", {
           completed: index + 1,
           total: requests.length,
         });
       }
     } catch (error) {
-      await context.event("collection", "source-collection-failed", {
+      await context.event("collection", "failed", "source-collection-failed", {
         completed: holdings.length + trades.length,
         total: requests.length,
       });
       if (error instanceof SourceTextIntegrityError)
-        await context.event("decoding", "source-decoding-failed");
+        await context.event("decoding", "failed", "source-decoding-failed");
       throw error;
     }
-    await context.event("decoding", "source-decoding-completed");
+    await context.event("decoding", "completed", "source-decoding-completed");
     context.signal.throwIfAborted();
 
     const completeHoldings = isCompleteHoldingCapture(
@@ -1822,14 +1822,14 @@ export async function runYuantaTradeProviderWorkflow(
       dateRange,
     );
     if (!completeHoldings || !completeTrades) {
-      await context.event("validation", "source-validation-rejected", {
+      await context.event("validation", "failed", "source-validation-rejected", {
         completed: holdings.length + trades.length,
         total: requests.length,
       });
       throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
     }
 
-    await context.event("validation", "source-validation-started", {
+    await context.event("validation", "started", "source-validation-started", {
       completed: requests.length,
       total: requests.length,
     });
@@ -1847,10 +1847,10 @@ export async function runYuantaTradeProviderWorkflow(
         throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
       }
     } catch (error) {
-      await context.event("validation", "source-validation-rejected");
+      await context.event("validation", "failed", "source-validation-rejected");
       throw error;
     }
-    await context.event("validation", "source-validation-completed", {
+    await context.event("validation", "completed", "source-validation-completed", {
       completed: captures.length,
       total: captures.length,
     });

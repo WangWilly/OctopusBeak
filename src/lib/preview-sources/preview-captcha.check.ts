@@ -9,7 +9,10 @@ import type { PreviewWorkflowContext } from "./workflow.ts";
 function solve(family: PreviewCaptchaFamily, challenge: PreviewCaptchaChallenge, results: readonly { text: string; confidence: number }[] = []) {
   const engine = scriptedOcrEngine(results);
   const events: string[] = [];
-  const context = { event: async (_stage: string, code: string) => { events.push(code); } } as unknown as PreviewWorkflowContext;
+  const context = {
+    event: async (_stage: string, _outcome: string, code: string) => { events.push(code); },
+    signalEvent: async (signal: string) => { events.push(signal); },
+  } as unknown as PreviewWorkflowContext;
   return { engine, events, answer: calibratedCaptchaSolver(family, engine)(context, challenge) };
 }
 
@@ -140,7 +143,10 @@ const audioChallenge = (expectedLength = 5): PreviewCaptchaChallenge =>
 
 function audioContext(): PreviewWorkflowContext & { events: string[] } {
   const events: string[] = [];
-  const context = { event: async (_stage: string, code: string) => { events.push(code); } } as unknown as PreviewWorkflowContext & { events: string[] };
+  const context = {
+    event: async (_stage: string, _outcome: string, code: string) => { events.push(code); },
+    signalEvent: async (signal: string) => { events.push(signal); },
+  } as unknown as PreviewWorkflowContext & { events: string[] };
   context.events = events;
   return context;
 }

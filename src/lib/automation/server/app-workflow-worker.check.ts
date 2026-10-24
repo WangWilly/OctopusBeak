@@ -331,7 +331,7 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.deepEqual(input, start.input);
       await context.browser.withPage(async () => { browserCalls += 1; });
       assert.equal(context.text.decode(Uint8Array.of(0x41), "utf-8"), "A");
-      await context.event("collection", "fixture-started", { completed: 1, total: 1 });
+      await context.event("collection", "started", "fixture-started", { completed: 1, total: 1 });
       assert.equal(await context.humanAssistance.request(contract, context.signal), "verified");
       const committed = await context.financialCommit!.execute([runItem()]);
       assert.equal(committed.status, "completed");
@@ -490,7 +490,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
           return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
         },
         commit: (_typeId, staged) => context.financialCommit!.execute(staged),
-        event: (stage, code, counts) => context.event(stage, code, counts),
+        event: context.event,
         productFailure: context.productFailure,
       });
     },
@@ -602,7 +602,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
     id: "fixture-protocol",
     requiresFinancialCommit: false,
     async run(context) {
-      await context.event("authentication", "device-registration-required");
+      await context.event("authentication", "advanced", "device-registration-required");
       throw new ProductCollectionFatalError("device-registration-required");
     },
   };
@@ -629,7 +629,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
     { stage: "authentication", outcome: "started", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
     { stage: "authentication", outcome: "failed", signal: "login-dialog-interrupted", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
     { stage: "authentication", outcome: "failed", signal: "human-assistance-failed", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
-    { stage: "authentication", outcome: "completed", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
+    { stage: "authentication", outcome: "advanced", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
     { stage: "collection", outcome: "failed", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
   ] as const;
   for (const scenario of cases) {
@@ -650,7 +650,8 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       id: "fixture-protocol",
       requiresFinancialCommit: false,
       async run(context) {
-        await context.event(scenario.stage, scenario.code);
+        if ("signal" in scenario) await context.signalEvent(scenario.signal);
+        else await context.event(scenario.stage, scenario.outcome, scenario.code);
         const error = new Error("private-authentication-material must not cross the boundary");
         error.name = scenario.name;
         throw error;

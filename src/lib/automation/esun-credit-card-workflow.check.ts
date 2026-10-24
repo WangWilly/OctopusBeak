@@ -1,3 +1,4 @@
+import { RUN_EVENT_SIGNALS } from "./run-event.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page, Response } from "playwright";
@@ -204,8 +205,11 @@ function createContext(page: Page) {
         } as never;
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, outcome, code, counts) {
       events.push({ stage, code, counts });
+    },
+    async signalEvent(signal) {
+      events.push({ stage: RUN_EVENT_SIGNALS[signal].stage, code: signal, counts: undefined });
     },
   };
   return {
