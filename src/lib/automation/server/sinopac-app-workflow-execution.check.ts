@@ -156,7 +156,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       sinopac_account: "synthetic-account",
       sinopac_password: "synthetic-password",
     },
-    statementTypes: ["accounts"],
+    statementTypes: ["deposit"],
     attachedPreviewProducts: [],
   });
 

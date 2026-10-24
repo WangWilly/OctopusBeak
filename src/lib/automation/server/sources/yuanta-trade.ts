@@ -127,7 +127,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
     products: [
-      { id: "brokerage", stream: "investment" },
+      { id: "securities", stream: "investment" },
     ],
   },
   task: {

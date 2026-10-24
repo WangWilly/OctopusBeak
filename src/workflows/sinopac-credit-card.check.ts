@@ -317,7 +317,7 @@ test("the SinoPac workflow writes attached cards only through the preview port, 
   const { transport } = fakeTransport(bodies());
   const output = await runSinopacProviderWorkflow(
     workflowContext(writes, commits),
-    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
   );
   assert.equal(output.status, "financial-admitted");
@@ -341,7 +341,7 @@ test("a failing attached card product leaves the verified SinoPac result intact"
   const { transport } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
   const output = await runSinopacProviderWorkflow(
     workflowContext(writes, commits),
-    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
   );
   assert.equal(output.status, "partial");
@@ -383,7 +383,7 @@ test("the SinoPac workflow collects no attached product when none is selected", 
   const { transport, calls } = fakeTransport(bodies());
   const output = await runSinopacProviderWorkflow(
     workflowContext(writes, commits),
-    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: [] }),
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: [] }),
     { ...verifiedOverrides, cardTransport: transport },
   );
   assert.deepEqual(calls, []);
@@ -398,7 +398,7 @@ test("a session loss during the attached card product ends the SinoPac run after
   }));
   await assert.rejects(runSinopacProviderWorkflow(
     workflowContext([], commits),
-    workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+    workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
   ), (error) => {
     assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -441,7 +441,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
     const { transport, calls } = fakeTransport(bodies());
     await assert.rejects(runSinopacProviderWorkflow(
       context,
-      workflowInput({ statementTypes: ["accounts"], attachedPreviewProducts: ["credit_card"] }),
+      workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
       { ...verifiedOverrides, cardTransport: transport },
     ), (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);

@@ -54,7 +54,7 @@ const input: SinopacWorkflowInput = {
   endDate: "20260903",
   accountFilters: [],
   currencyFilters: [],
-  statementTypes: ["accounts"],
+  statementTypes: ["deposit"],
   attachedPreviewProducts: [],
 };
 

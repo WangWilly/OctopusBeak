@@ -229,7 +229,7 @@ test("an attached preview product is offered only while Preview features are on,
     { id: "domestic" }, { id: "foreign_currency" }, { id: "credit_card", preview: true }, { id: "time_deposit", preview: true },
   ]);
   assert.deepEqual(on.hncb, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
-  assert.deepEqual(on.sinopac, [{ id: "accounts" }, { id: "credit_card", preview: true }]);
+  assert.deepEqual(on.sinopac, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
   assert.deepEqual(on.esun, [{ id: "credit_card" }, { id: "deposit", preview: true }]);
   assert.deepEqual(on.fubon!.map((type) => type.preview), [undefined, undefined, undefined], "a group without attached products is unchanged");
 
