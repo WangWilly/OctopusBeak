@@ -181,7 +181,7 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
   return { products: ordered(), receipts, interrupted: null, firstFailure };
 }
 
-export function previewRunSummary(run: PreviewProductRun): ProductCollectionRunSummary {
+function previewRunSummary(run: PreviewProductRun): ProductCollectionRunSummary {
   const committed = run.products.reduce((total, product) => total + product.committedCount, 0);
   return Object.freeze({
     products: run.products,

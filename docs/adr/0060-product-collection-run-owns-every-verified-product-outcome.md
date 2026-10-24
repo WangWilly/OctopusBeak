@@ -24,6 +24,10 @@ ADR 0056 rejected moving every workflow onto selected-product collection, becaus
 
 **A run in which nothing produced durable data throws.** It throws the summary with the first failed verified product's code, so the host records that code instead of guessing from events. An attached product that was the only one attempted keeps its original error. Fubon, Yuanta and TDCC still report such a run as a failed status in their output, declared by `failedRunInSummary`, until their outputs are revisited.
 
+**The run names an untyped failure from the stage it reported.** Each collector reports its own run events through a product-scoped reporter. When it reports a decoding or validation failure and then throws an untyped error, the run names the product `source-integrity-failed` or `source-validation-failed`, as the host did from run events. A typed error and a workflow's `classifyFailure` still win.
+
+**A run's capability ports are typed from its definition.** `defineWorkflow` and `verifiedWorkflow` give a run a context whose required ports are present, so a run that reads a port its flags do not require fails to compile. The executor's check before every run stays the only runtime guard.
+
 **Statement Selection ids name their product type.** SinoPac and LINE Bank select `deposit`, and Yuanta trade selects `securities`. A migration rewrites the persisted selections when settings are read.
 
 ## Considered options
@@ -38,4 +42,5 @@ ADR 0056 rejected moving every workflow onto selected-product collection, becaus
 - ADR 0056's rejected option "Move every workflow onto selected-product collection" is superseded by this decision.
 - Event codes of the moved workflows follow the run's `<product>-collection-started` pattern. Readers use the outcome and signal ([ADR 0059](0059-run-event-outcome-and-signal.md)), so only the diagnostic text changes. Commit items are unchanged, and the deposit commit goldens pin them.
 - The four single-product sources now show product results on their task row.
+- A single-product commit that lands some receipts and fails others is now a `partial` run with a `canonical-commit-failed` product, as it already was for a multi-product run.
 - The attached merge that `finishAttachedProductRun` held is internal to `src/lib/automation/product-collection.ts`, and `src/lib/automation/product-collection.check.ts` covers the attached policy.
