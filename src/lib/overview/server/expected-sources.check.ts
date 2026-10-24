@@ -18,12 +18,12 @@ const sources = configuredOverviewSources({
 
 assert.deepEqual(sources.map((source) => source.sourceId), [
   "fubon:deposit",
-  "yuanta-trade:brokerage",
+  "yuanta-trade:securities",
 ]);
-assert.deepEqual(sources.find((source) => source.sourceId === "yuanta-trade:brokerage"), {
-  sourceId: "yuanta-trade:brokerage",
+assert.deepEqual(sources.find((source) => source.sourceId === "yuanta-trade:securities"), {
+  sourceId: "yuanta-trade:securities",
   integrationNamespace: "yuanta-trade",
-  label: "Yuanta Securities · brokerage",
+  label: "Yuanta Securities · securities",
   stream: "investment",
 });
 
