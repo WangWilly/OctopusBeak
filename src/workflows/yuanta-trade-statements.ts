@@ -37,6 +37,12 @@ import {
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
+import {
+  collectSelectedProducts,
+  type CollectionProductOutcome,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { HumanAssistanceContractInput } from "../lib/automation/human-assistance.ts";
@@ -293,9 +299,15 @@ export type YuantaTradeProviderWorkflowOutput = Readonly<{
   tradePageCount: number;
   tradeGridCount: number;
   tradeRowCount: number;
-  canonicalAdmission: "admitted";
+  canonicalAdmission: "admitted" | "partial";
   canonicalCaptureCount: number;
+  products: readonly CollectionProductOutcome[];
 }>;
+
+type YuantaTradeCollectedCounts = Omit<
+  YuantaTradeProviderWorkflowOutput,
+  "usedExistingSession" | "dateRange" | "canonicalAdmission" | "products"
+>;
 
 type GridColumn = {
   field: string;
@@ -1778,122 +1790,128 @@ export async function runYuantaTradeProviderWorkflow(
         category: "trade" as const,
       })),
     ];
-    await context.event("collection", "started", "collection-started", {
-      completed: 0,
-      total: requests.length,
-    });
-    await context.event("decoding", "started", "source-decoding-started");
-    const holdings: ReportPage[] = [];
-    const trades: ReportPage[] = [];
-    try {
-      for (const [index, request] of requests.entries()) {
+    const { context: productContext, classifyFailure } = failedStageClassifier(context);
+    let collected: YuantaTradeCollectedCounts | undefined;
+    const summary = await collectSelectedProducts({
+      productIds: ["securities"],
+      selectedIds: ["securities"],
+      signal: context.signal,
+      event: context.event,
+      productFailure: context.productFailure,
+      classifyFailure,
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+        await productContext.event("decoding", "started", "source-decoding-started");
+        const holdings: ReportPage[] = [];
+        const trades: ReportPage[] = [];
+        try {
+          for (const [index, request] of requests.entries()) {
+            context.signal.throwIfAborted();
+            const reportPage = await readReport(
+              page,
+              request.reportType,
+              request.params,
+              productContext,
+            );
+            (request.category === "holding" ? holdings : trades).push(reportPage);
+            await productContext.event("collection", "advanced", "report-collected", {
+              completed: index + 1,
+              total: requests.length,
+            });
+          }
+        } catch (error) {
+          await productContext.event("collection", "failed", "source-collection-failed", {
+            completed: holdings.length + trades.length,
+            total: requests.length,
+          });
+          if (error instanceof SourceTextIntegrityError)
+            await productContext.event("decoding", "failed", "source-decoding-failed");
+          throw error;
+        }
         context.signal.throwIfAborted();
-        const reportPage = await readReport(
-          page,
-          request.reportType,
-          request.params,
-          context,
+
+        const completeHoldings = isCompleteHoldingCapture(
+          holdings,
+          requestedHoldingTypes,
         );
-        (request.category === "holding" ? holdings : trades).push(reportPage);
-        await context.event("collection", "advanced", "report-collected", {
-          completed: index + 1,
+        const completeTrades = isCompleteTradeCapture(
+          trades,
+          requestedTradeTypes,
+          dateRange,
+        );
+        if (!completeHoldings || !completeTrades) {
+          await productContext.event("validation", "failed", "source-validation-rejected", {
+            completed: holdings.length + trades.length,
+            total: requests.length,
+          });
+          throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
+        }
+
+        await productContext.event("validation", "started", "source-validation-started", {
+          completed: requests.length,
           total: requests.length,
         });
-      }
-    } catch (error) {
-      await context.event("collection", "failed", "source-collection-failed", {
-        completed: holdings.length + trades.length,
-        total: requests.length,
-      });
-      if (error instanceof SourceTextIntegrityError)
-        await context.event("decoding", "failed", "source-decoding-failed");
-      throw error;
-    }
-    await context.event("decoding", "completed", "source-decoding-completed");
-    context.signal.throwIfAborted();
+        const tradeRows = normalizeTradeRows(trades, dateRange);
+        const holdingRows = normalizeHoldingRows(holdings, dateRange);
+        let captures: InvestmentValidatedCapture[];
+        try {
+          captures = buildYuantaTradeCanonicalCaptures(
+            input.credentials,
+            holdingRows,
+            tradeRows,
+            { dateRange, requestedTradeTypes },
+          );
+          if (captures.length === 0) {
+            throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
+          }
+        } catch (error) {
+          await productContext.event("validation", "failed", "source-validation-rejected");
+          throw error;
+        }
+        context.signal.throwIfAborted();
 
-    const completeHoldings = isCompleteHoldingCapture(
-      holdings,
-      requestedHoldingTypes,
-    );
-    const completeTrades = isCompleteTradeCapture(
-      trades,
-      requestedTradeTypes,
-      dateRange,
-    );
-    if (!completeHoldings || !completeTrades) {
-      await context.event("validation", "failed", "source-validation-rejected", {
-        completed: holdings.length + trades.length,
-        total: requests.length,
-      });
-      throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
-    }
-
-    await context.event("validation", "started", "source-validation-started", {
-      completed: requests.length,
-      total: requests.length,
-    });
-    const tradeRows = normalizeTradeRows(trades, dateRange);
-    const holdingRows = normalizeHoldingRows(holdings, dateRange);
-    let captures: InvestmentValidatedCapture[];
-    try {
-      captures = buildYuantaTradeCanonicalCaptures(
-        input.credentials,
-        holdingRows,
-        tradeRows,
-        { dateRange, requestedTradeTypes },
-      );
-      if (captures.length === 0) {
-        throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
-      }
-    } catch (error) {
-      await context.event("validation", "failed", "source-validation-rejected");
-      throw error;
-    }
-    await context.event("validation", "completed", "source-validation-completed", {
-      completed: captures.length,
-      total: captures.length,
-    });
-    context.signal.throwIfAborted();
-
-    const items: PGliteWorkflowRunItem[] = captures.map((capture) => ({
-      provider: "yuanta-trade",
-      product: "investment",
-      itemKey: capture.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-        request: { capture },
+        stagedItems.push(...captures.map((capture) => ({
+          provider: "yuanta-trade",
+          product: "investment",
+          itemKey: capture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+            request: { capture },
+          },
+          relationCommands: () => [{
+            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+            request: {
+              sourceConnectionKey: capture.identity.sourceConnectionKey,
+              observedAt: capture.observedAt,
+            },
+          }],
+        })));
+        collected = {
+          holdingPageCount: holdings.length,
+          holdingGridCount: gridCount(holdings),
+          holdingRowCount: holdingRows.length,
+          tradePageCount: trades.length,
+          tradeGridCount: gridCount(trades),
+          tradeRowCount: tradeRows.length,
+          canonicalCaptureCount: captures.length,
+        };
+        return {
+          sourceCaptureCount: requests.length,
+          rowCount: holdingRows.length + tradeRows.length,
+          itemCount: stagedItems.length,
+        };
       },
-      relationCommands: () => [{
-        kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-        request: {
-          sourceConnectionKey: capture.identity.sourceConnectionKey,
-          observedAt: capture.observedAt,
-        },
-      }],
-    }));
-    const result = await financialCommit.execute(items, {
-      provider: "yuanta-trade",
-      product: "investment",
-      signal: context.signal,
+      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
+        provider: "yuanta-trade",
+        product: "investment",
+        signal: context.signal,
+      }),
     });
-    if (result.status !== "completed") {
-      const codes = result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ");
-      throw new Error(`YuanTa Trade Canonical Financial Commit failed: ${codes || result.status}.`);
-    }
     return {
       usedExistingSession,
       dateRange,
-      holdingPageCount: holdings.length,
-      holdingGridCount: gridCount(holdings),
-      holdingRowCount: holdingRows.length,
-      tradePageCount: trades.length,
-      tradeGridCount: gridCount(trades),
-      tradeRowCount: tradeRows.length,
-      canonicalAdmission: "admitted",
-      canonicalCaptureCount: captures.length,
+      ...collected!,
+      canonicalAdmission: summary.status === "partial" ? "partial" : "admitted",
+      products: summary.products,
     };
   });
 }

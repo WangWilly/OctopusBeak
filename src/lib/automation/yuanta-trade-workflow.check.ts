@@ -8,6 +8,12 @@ import type { WorkflowContext } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import {
+  assertProductFailure,
+  assertStoppedRun,
+  STOPPED_COMMITS,
+  stoppedCommitPort,
+} from "./single-product-run.fixtures.ts";
+import {
   decodeYuantaTradeReportResponse,
   requestYuantaTradeAssistance,
   runYuantaTradeProviderWorkflow,
@@ -107,6 +113,8 @@ function createHarness(options: {
           status: "completed",
           items: materialized.map((item) => ({ ...(item as object), status: "committed" })),
           diagnostics: [],
+          committedCount: materialized.length,
+          failedCount: 0,
         } as never;
       },
     },
@@ -163,7 +171,10 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
     assert.equal("files" in (output as object), false);
     assert.deepEqual(await readdir(temp), []);
-    assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-completed"));
+    assert.deepEqual((output as { products?: unknown }).products, [
+      { typeId: "securities", status: "success", itemCount: 1, committedCount: 1 },
+    ]);
+    assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "securities-source-validation-completed"));
   } finally {
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });
@@ -178,11 +189,24 @@ test("Yuanta Trade typed provider rejects incomplete selected pages before first
       captureReport: async (_page, reportType) =>
         reportType === "Stock" ? report("Stock") : report("OtherTrade"),
     }),
-    /source is incomplete/i,
+    assertProductFailure("source-validation-failed", /source is incomplete/i),
   );
   assert.equal(harness.committed.length, 0);
   assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-rejected"));
 });
+
+for (const { stop, errorCode } of STOPPED_COMMITS) {
+  test(`Yuanta Trade names a ${stop} commit ${errorCode}`, async () => {
+    const harness = createHarness();
+    await assert.rejects(
+      runYuantaTradeProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, selectedInput, {
+        authenticate: async () => true,
+        captureReport: async (_page, reportType) => reportType === "Stock" ? report("Stock") : report("StockTrade"),
+      }),
+      assertStoppedRun("securities", 1, errorCode),
+    );
+  });
+}
 
 function response(bytes: Uint8Array, headers: Record<string, string> = { "content-type": "text/html; charset=utf-8" }): Response {
   return {

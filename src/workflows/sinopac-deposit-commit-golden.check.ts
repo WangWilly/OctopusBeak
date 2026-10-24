@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   runSinopacProviderWorkflow,
@@ -218,7 +219,12 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
         ),
         readCurrentDepositBalances: async () => [],
       }),
-      /Occurrence collision keys must be unique/u,
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError);
+        assert.equal(error.errorCode, "source-collection-failed");
+        assert.match(String((error as Error & { cause?: unknown }).cause), /Occurrence collision keys must be unique/u);
+        return true;
+      },
     );
   } finally {
     mock.timers.reset();

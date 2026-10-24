@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { PostCurrentDepositBalanceRow } from "./post-current-deposit-balances.ts";
@@ -115,6 +116,7 @@ async function run(
     signalEvent: recorder.signalEvent,
   };
   let error: string | null = null;
+  let errorCode: string | null = null;
   const output = await runPostProviderWorkflow(context, input, {
     collectSourceStatements: async () => statements,
     readCurrentDepositBalances: async () => {
@@ -122,10 +124,13 @@ async function run(
       return balances;
     },
   }).catch((caught: unknown) => {
-    error = caught instanceof Error ? caught.message : String(caught);
+    // The golden keeps the collector's own rejection, which the run carries as its cause.
+    const original = caught instanceof ProductCollectionInterruptedError ? caught.cause : caught;
+    if (caught instanceof ProductCollectionInterruptedError) errorCode = caught.errorCode;
+    error = original instanceof Error ? original.message : String(original);
     return null;
   });
-  return { output, error, balanceReads, recorded: recorder.recorded() };
+  return { output, error, errorCode, balanceReads, recorded: recorder.recorded() };
 }
 
 test("Post two accounts with inflow and outflow rows and matched current balances", async (t) => {
@@ -161,6 +166,7 @@ test("Post empty capture is rejected at source admission, not committed source-o
     statement(accountB, undefined),
   ], [currentBalance(accountA, "5678")]);
   assert.match(result.error ?? "", /source admission blocked/u);
+  assert.equal(result.errorCode, "source-collection-failed");
   await assertDepositCommitGolden("post-empty-capture-rejected", { error: result.error, ...result.recorded });
 });
 
@@ -176,5 +182,6 @@ test("Post unknown-direction row is rejected because row-direction-unknown never
   }));
   const result = await run(t, [known, unknown], [currentBalance(accountA, "5678")]);
   assert.match(result.error ?? "", /financial admission failed: .*row-direction-unknown/u);
+  assert.equal(result.errorCode, "source-collection-failed");
   await assertDepositCommitGolden("post-unknown-direction-rejected", { error: result.error, ...result.recorded });
 });

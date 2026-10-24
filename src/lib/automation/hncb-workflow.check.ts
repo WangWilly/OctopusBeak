@@ -15,6 +15,7 @@ import {
 } from "../../workflows/hncb-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -157,7 +158,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     });
 
     assert.equal(output.status, "financial-admitted");
-    assert.equal(output.count, 1);
+    assert.equal(output.accountCount, 1);
     assert.equal(statementResponse?.status, 200);
     assert.equal(statementResponse?.contentType, "application/vnd.ms-excel; charset=big5");
     assert.equal(postCount, 1);
@@ -292,7 +293,12 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
           throw new Error("unreachable");
         },
       }),
-      SourceTextIntegrityError,
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError);
+        assert.equal(error.errorCode, "source-integrity-failed");
+        assert.ok((error as Error & { cause?: unknown }).cause instanceof SourceTextIntegrityError);
+        return true;
+      },
     );
     assert.equal(commitItems.length, 0);
 
@@ -310,7 +316,12 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
           contentDigest: "sha256:empty-export",
         }),
       }),
-      /source admission blocked/u,
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError);
+        assert.equal(error.errorCode, "source-collection-failed");
+        assert.match(String((error as Error & { cause?: unknown }).cause), /source admission blocked/u);
+        return true;
+      },
     );
     assert.equal(commitItems.length, 0);
 
@@ -334,7 +345,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
       }),
     });
     assert.equal(result.status, "financial-admitted");
-    assert.equal(result.count, 1);
+    assert.equal(result.accountCount, 1);
     assert.equal(commitItems.length, 1);
     assert.ok(events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
     assert.deepEqual(await readdir(workingDirectory), []);
@@ -346,7 +357,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
         ...dependencies,
         signal: cancelled.signal,
       }),
-      /cancelled/u,
+      (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
     );
     assert.equal(commitItems.length, 1);
   } finally {

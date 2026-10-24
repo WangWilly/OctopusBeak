@@ -39,6 +39,7 @@ import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 
 const workflowSource = await readFile(
@@ -816,7 +817,7 @@ test("records how many reports were collected when one report source fails", asy
         return { reportType, url: `https://fixture/NexusWebTrade/AssetReport/${reportType}`, grids: [], summaryRows: [] } as unknown as YuantaTradeReportPage;
       },
     }),
-    /fixture: report source rejected/,
+    assertProductFailure("source-collection-failed", /fixture: report source rejected/),
   );
 
   assert.equal(requestedReportTypes.length, failingReport);

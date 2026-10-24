@@ -58,14 +58,19 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import type { CollectionProductOutcome, ProductCollectionRunSummary } from "../lib/automation/product-collection.ts";
+import {
+  collectSelectedProducts,
+  ProductCollectionFatalError,
+  type CollectionProductOutcome,
+  type ProductCollectionRunSummary,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
-  collectAttachedPreviewProducts,
+  attachedPreviewRun,
 } from "../lib/preview-sources/attached-products.ts";
 import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
-import { finishAttachedProductRun } from "../lib/preview-sources/attached-product-results.ts";
-import { fail } from "../lib/preview-sources/source-kit.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 
 const BANK_ENTRY_URL =
@@ -103,15 +108,11 @@ type WorkflowInput = Pick<
   "startDate" | "endDate" | "accountFilters"
 >;
 type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
-type WorkflowOutput = Readonly<{
-  dateRange: HncbDateRange;
-  usedExistingSession: boolean;
-  count: number;
-  sourceCaptureCount: number;
+/** HNCB's own account counts and admission status for one deposit collection. */
+type HncbDepositCollection = Readonly<{
+  accountCount: number;
   rowCount: number;
-  itemCount: number;
-  committedCount: number;
-  status: "financial-admitted" | "source-only";
+  financial: boolean;
 }>;
 export type HncbWorkflowOutput = Readonly<{
   usedExistingSession: boolean;
@@ -362,7 +363,12 @@ export type HncbStatementsRunDependencies = {
   text?: SourceTextPort;
   signal?: AbortSignal;
   event?: WorkflowContext["event"];
+  productFailure?: WorkflowContext["productFailure"];
   financialCommit: WorkflowFinancialCommitPort;
+  /** Throws a ProductCollectionFatalError once the signed-in session is gone. */
+  assertSession?: () => Promise<void>;
+  /** The selected Attached Preview Products, collected after the deposit. */
+  attached?: () => Promise<PreviewProductRun>;
   readAccountOptions?: (
     page: Page,
     filters: string[],
@@ -370,7 +376,7 @@ export type HncbStatementsRunDependencies = {
   queryAccount?: (
     page: Page,
     account: AccountOption,
-    dateRange: WorkflowOutput["dateRange"],
+    dateRange: HncbDateRange,
   ) => Promise<Frame | null>;
   downloadStatement?: (
     page: Page,
@@ -485,7 +491,7 @@ function todayParts(): DateParts {
   };
 }
 
-function resolveDateRange(input: WorkflowInput): WorkflowOutput["dateRange"] {
+function resolveDateRange(input: WorkflowInput): HncbDateRange {
   const end = input.endDate ? parseDateString(input.endDate) : todayParts();
   const start = input.startDate
     ? parseDateString(input.startDate)
@@ -949,7 +955,7 @@ async function selectDate(
 async function queryAccountStatements(
   page: Page,
   account: AccountOption,
-  dateRange: WorkflowOutput["dateRange"],
+  dateRange: HncbDateRange,
 ): Promise<Frame | null> {
   const mainFrame = await ensureHncbStatementForm(page);
   await prepareHncbStatementQueryForm(mainFrame);
@@ -1153,7 +1159,7 @@ function emptyDownloadDigest(): `sha256:${string}` {
 
 export function buildHncbCapture(
   account: AccountOption,
-  dateRange: WorkflowOutput["dateRange"],
+  dateRange: HncbDateRange,
   observedAt: string,
   statement?: HncbStatementDownload,
 ): HncbDomesticDepositCaptureEvidence {
@@ -1218,17 +1224,78 @@ function hncbCaptureId(observedAt: string): string {
 }
 
 /**
- * Execute one authenticated HNCB domestic-deposit collection.  Every
- * visible account reaches a terminal export or explicit provider no-data
- * result before the single source-only commit boundary is crossed.
+ * Run one authenticated HNCB collection: the deposit, when selected, then the
+ * selected Attached Preview Products. Every visible account reaches a terminal
+ * export or explicit provider no-data result before the deposit's single
+ * commit boundary is crossed.
  */
 export async function runHncbStatements(
   page: Page,
-  input: WorkflowInput,
+  input: WorkflowInput & Readonly<{ statementTypes?: HncbWorkflowInput["statementTypes"] }>,
   overrides: HncbStatementsRunDependencies,
-): Promise<WorkflowOutput> {
+): Promise<HncbWorkflowOutput> {
   if (!overrides.financialCommit)
     throw new Error("Canonical Financial Commit port is unavailable.");
+  const depositSelected = (input.statementTypes ?? ["deposit"]).includes("deposit");
+  let deposit: HncbDepositCollection | null = null;
+  const summary = await collectSelectedProducts({
+    productIds: ["deposit"],
+    selectedIds: depositSelected ? ["deposit"] : [],
+    signal: overrides.signal ?? new AbortController().signal,
+    ...(overrides.assertSession ? { assertSession: overrides.assertSession } : {}),
+    ...(overrides.event ? { event: overrides.event } : {}),
+    ...(overrides.productFailure ? { productFailure: overrides.productFailure } : {}),
+    collect: async (_typeId, stagedItems): Promise<ProductCollectionSummary> => {
+      const { sourceCaptureCount, itemCount, ...collected } = await collectHncbDeposit(page, input, overrides, stagedItems);
+      deposit = collected;
+      return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
+    },
+    commit: async (_typeId, stagedItems) => await overrides.financialCommit.execute(stagedItems, {
+      provider: "hncb",
+      product: "financial",
+      ...(overrides.signal ? { signal: overrides.signal } : {}),
+    }),
+    ...(overrides.attached ? { attached: overrides.attached } : {}),
+  });
+  return hncbRunOutput(
+    overrides.usedExistingSession ?? false,
+    depositSelected ? resolveDateRange(input) : null,
+    summary,
+    deposit,
+  );
+}
+
+/** Adapt the run's product results to HNCB's account count and admission status. */
+function hncbRunOutput(
+  usedExistingSession: boolean,
+  dateRange: HncbDateRange | null,
+  summary: ProductCollectionRunSummary,
+  deposit: HncbDepositCollection | null,
+): HncbWorkflowOutput {
+  const [verified, ...attached] = summary.products;
+  const succeeded = verified?.status === "success" ? deposit : null;
+  return {
+    usedExistingSession,
+    ...(dateRange ? { dateRange } : {}),
+    accountCount: (succeeded?.accountCount ?? 0) + attached.reduce((total, product) => total + product.itemCount, 0),
+    sourceCaptureCount: summary.sourceCaptureCount,
+    rowCount: succeeded?.rowCount ?? 0,
+    itemCount: summary.itemCount,
+    committedCount: summary.committedCount,
+    status: summary.status !== "completed"
+      ? "partial"
+      : succeeded ? (succeeded.financial ? "financial-admitted" : "source-only") : "completed",
+    products: summary.products,
+    productCollectionSummary: summary,
+  };
+}
+
+async function collectHncbDeposit(
+  page: Page,
+  input: WorkflowInput,
+  overrides: HncbStatementsRunDependencies,
+  stagedItems: PGliteWorkflowRunItem[],
+): Promise<HncbDepositCollection & ProductCollectionSummary> {
   const readAccounts =
     overrides.readAccountOptions ??
     (async (candidatePage: Page, filters: string[]) =>
@@ -1333,7 +1400,7 @@ export async function runHncbStatements(
     if (captures.length === 0)
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
-    let status: WorkflowOutput["status"] = "source-only";
+    let financial = false;
     const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
     for (const [index, capture] of captures.entries()) {
       const input = {
@@ -1362,7 +1429,7 @@ export async function runHncbStatements(
       });
       financialCaptures.push(admission.capture);
       if (admission.capture.records.length > 0)
-        status = "financial-admitted";
+        financial = true;
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -1429,25 +1496,13 @@ export async function runHncbStatements(
         },
       } as const)),
     ];
-    overrides.signal?.throwIfAborted();
-    const committed = await overrides.financialCommit.execute(items, {
-      provider: "hncb",
-      product: "financial",
-      ...(overrides.signal ? { signal: overrides.signal } : {}),
-    });
-    if (committed.status !== "completed")
-      throw new Error(
-        `HNCB Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
-      );
+    stagedItems.push(...items);
     return {
-      dateRange,
-      usedExistingSession: overrides.usedExistingSession ?? false,
-      count: captures.length,
+      accountCount: captures.length,
       sourceCaptureCount: captures.length,
       rowCount: captures.reduce((total, capture) => total + capture.downloads.reduce((sum, download) => sum + download.rows.length, 0), 0),
       itemCount: items.length,
-      committedCount: committed.committedCount,
-      status,
+      financial,
     };
   }
 }
@@ -1490,74 +1545,44 @@ export async function runHncbProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "completed", "authentication-completed");
 
-    let deposit: WorkflowOutput | null = null;
-    if (parsed.data.statementTypes.includes("deposit")) {
-      const firstResultFrame = await openFirstStatementDetail(page);
-      deposit = await runHncbStatements(
-        page,
-        parsed.data,
-        {
-          usedExistingSession,
-          text: context.text,
-          signal: context.signal,
-          event: context.event,
-          financialCommit,
-          readAccountOptions: async (_candidatePage, filters) =>
-            readAccountOptions(firstResultFrame, filters),
-          downloadStatement: async (candidatePage, account, resultFrame, text) =>
-            downloadCurrentStatementInMemory(
-              candidatePage,
-              account,
-              resultFrame,
-              text ?? context.text,
-              60_000,
-              context.signal,
-            ),
-          readCurrentDepositBalances: readHncbCurrentDepositBalances,
-          readCurrentDepositOverviewBalances:
-            readHncbCurrentDepositOverviewBalances,
-        },
-      );
-    }
-    const attached = await collectAttachedPreviewProducts({
-      context,
-      source: ATTACHED_PREVIEW_PRODUCTS.hncb,
-      selected: parsed.data.attachedPreviewProducts,
-      collectors: {
-        credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(page), { now: context.now() }),
+    const assertSession = async () => {
+      if (!(await isSignedIn(page))) throw new ProductCollectionFatalError("authentication-failed");
+    };
+    return await runHncbStatements(
+      page,
+      parsed.data,
+      {
+        usedExistingSession,
+        text: context.text,
+        signal: context.signal,
+        event: context.event,
+        productFailure: context.productFailure,
+        financialCommit,
+        assertSession,
+        readAccountOptions: async (_candidatePage, filters) =>
+          readAccountOptions(await openFirstStatementDetail(page), filters),
+        downloadStatement: async (candidatePage, account, resultFrame, text) =>
+          downloadCurrentStatementInMemory(
+            candidatePage,
+            account,
+            resultFrame,
+            text ?? context.text,
+            60_000,
+            context.signal,
+          ),
+        readCurrentDepositBalances: readHncbCurrentDepositBalances,
+        readCurrentDepositOverviewBalances:
+          readHncbCurrentDepositOverviewBalances,
+        attached: attachedPreviewRun({
+          context,
+          source: ATTACHED_PREVIEW_PRODUCTS.hncb,
+          selected: parsed.data.attachedPreviewProducts,
+          collectors: () => ({
+            credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(page), { now: context.now() }),
+          }),
+          assertSession,
+        }),
       },
-      assertSession: async () => {
-        if (!(await isSignedIn(page))) fail("session-conflict", "the HNCB session ended");
-      },
-    });
-    return hncbRunOutput(usedExistingSession, deposit, attached, context.signal);
+    );
   });
-}
-
-/** Adapt the shared whole-run result to HNCB's account count and admission status. */
-export function hncbRunOutput(
-  usedExistingSession: boolean,
-  deposit: WorkflowOutput | null,
-  attached: PreviewProductRun,
-  signal?: AbortSignal,
-): HncbWorkflowOutput {
-  const summary = finishAttachedProductRun({
-    products: [deposit
-      ? { typeId: "deposit", status: "success", itemCount: deposit.itemCount, committedCount: deposit.committedCount }
-      : { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" }],
-    sourceCaptureCount: deposit?.sourceCaptureCount ?? 0,
-    rowCount: deposit?.rowCount ?? 0,
-  }, attached, signal);
-  return {
-    usedExistingSession,
-    ...(deposit ? { dateRange: deposit.dateRange } : {}),
-    accountCount: (deposit?.count ?? 0) + attached.receipts.reduce((total, receipt) => total + receipt.accounts, 0),
-    sourceCaptureCount: summary.sourceCaptureCount,
-    rowCount: summary.rowCount,
-    itemCount: summary.itemCount,
-    committedCount: summary.committedCount,
-    status: summary.status === "completed" ? deposit?.status ?? "completed" : "partial",
-    products: summary.products,
-    productCollectionSummary: summary,
-  };
 }

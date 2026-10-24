@@ -2,6 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { failedStageClassifier } from "../lib/automation/failed-stage.ts";
+import {
+  collectSelectedProducts,
+  type CollectionProductOutcome,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -224,7 +230,8 @@ export type LineBankProviderWorkflowOutput = Readonly<{
   statementRowCount: number;
   sourceCaptureCount: number;
   financialItemCount: number;
-  status: "source-only" | "financial-admitted";
+  status: "source-only" | "financial-admitted" | "partial";
+  products: readonly CollectionProductOutcome[];
 }>;
 
 type LineBankCredentials = {
@@ -1417,252 +1424,257 @@ export async function runLineBankProviderWorkflow(
       text: context.text,
       signal: context.signal,
     });
-    await context.event("collection", "started", "collection-started");
-    await context.event("decoding", "started", "source-decoding-started");
-    await context.event("collection", "started", "current-balance-collection-started");
-    await context.event("decoding", "started", "current-balance-decoding-started");
-    let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
-    let accounts: LineBankAccount[];
-    let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
-    try {
-      accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
-      accounts = filterAccounts(
-        accountSnapshot.accounts,
-        parsed.data.accountFilters,
-        parsed.data.currencyFilters,
-      );
-      if (accounts.length === 0)
-        throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
-      const selectedAccountKeys = new Set(
-        accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
-      );
-      currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
-        selectedAccountKeys.has(linebankAccountKey(row.account)),
-      );
-    } catch (error) {
-      if (sourceDecodeError(error))
-        await context.event("decoding", "failed", "source-decoding-failed");
-      else
-        await context.event("collection", "failed", "current-balance-collection-failed");
-      throw error;
-    }
-    await context.event("decoding", "completed", "current-balance-decoding-completed");
-    await context.event("collection", "completed", "current-balance-collection-completed", {
-      completed: currentBalanceRows.length,
-      total: currentBalanceRows.length,
-    });
-
-    const selectedSources: Array<{
-      account: LineBankAccount;
-      dateRange: DateRange;
-      pages: LineBankTransactionPage[];
-    }> = [];
-    let statementRowCount = 0;
-    const expectedSourceCount = accounts.length * windows.length;
-    try {
-      for (const account of accounts) {
-        for (const window of windows) {
-          context.signal.throwIfAborted();
-          const pages = await client.fetchTransactionPages(account, window);
-          selectedSources.push({ account, dateRange: window, pages });
-          statementRowCount += linebankApiRowsToStatementRows(
-            pages.flatMap((page) => page.rows),
-          ).length;
+    const { context: productContext, classifyFailure } = failedStageClassifier(context);
+    let accountCount = 0;
+    let hasFinancialRecords = false;
+    const summary = await collectSelectedProducts({
+      productIds: ["deposit"],
+      selectedIds: ["deposit"],
+      signal: context.signal,
+      event: context.event,
+      productFailure: context.productFailure,
+      classifyFailure,
+      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[]): Promise<ProductCollectionSummary> => {
+        await productContext.event("decoding", "started", "source-decoding-started");
+        await productContext.event("collection", "started", "current-balance-collection-started");
+        await productContext.event("decoding", "started", "current-balance-decoding-started");
+        let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
+        let accounts: LineBankAccount[];
+        let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
+        try {
+          accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
+          accounts = filterAccounts(
+            accountSnapshot.accounts,
+            parsed.data.accountFilters,
+            parsed.data.currencyFilters,
+          );
+          if (accounts.length === 0)
+            throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
+          const selectedAccountKeys = new Set(
+            accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+          );
+          currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
+            selectedAccountKeys.has(linebankAccountKey(row.account)),
+          );
+        } catch (error) {
+          if (sourceDecodeError(error))
+            await productContext.event("decoding", "failed", "source-decoding-failed");
+          else
+            await productContext.event("collection", "failed", "current-balance-collection-failed");
+          throw error;
         }
-        await context.event("collection", "advanced", "account-collected", {
-          completed: selectedSources.length,
-          total: expectedSourceCount,
-        });
-      }
-    } catch (error) {
-      if (sourceDecodeError(error))
-        await context.event("decoding", "failed", "source-decoding-failed");
-      else if (sourceValidationError(error)) {
-        await context.event("validation", "failed", "source-validation-rejected", {
-          completed: selectedSources.length,
-          total: expectedSourceCount,
-        });
-      }
-      await context.event("collection", "failed", "collection-failed");
-      throw error;
-    }
-    context.signal.throwIfAborted();
-    await context.event("decoding", "completed", "source-decoding-completed");
-    await context.event("collection", "completed", "collection-completed", {
-      completed: selectedSources.length,
-      total: expectedSourceCount,
-    });
-    if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
-      await context.event("validation", "failed", "source-validation-rejected", {
-        completed: selectedSources.length,
-        total: expectedSourceCount,
-      });
-      throw new Error("LINE Bank source does not contain every selected account and date window.");
-    }
-
-    await context.event("validation", "started", "source-validation-started", {
-      completed: 0,
-      total: selectedSources.length,
-    });
-    const observedAt = context.now();
-    const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-    const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
-    const statementItems: PGliteWorkflowRunItem[] = [];
-    const captureOccurrenceId = randomUUID();
-    await context.event("validation", "started", "canonical-admission-started", {
-      completed: 0,
-      total: selectedSources.length,
-    });
-    try {
-      for (const [index, selected] of selectedSources.entries()) {
-        context.signal.throwIfAborted();
-        const captureId = `linebank-${randomUUID()}`;
-        if (linebankAccountCurrency(selected.account) === "TWD") {
-          const capture = await linebankHumanAttestedCapture({
-            account: selected.account,
-            dateRange: selected.dateRange,
-            pages: selected.pages,
-            captureId,
-            observedAt,
-          });
-          if (!capture)
-            throw new Error("LINE Bank selected domestic source authority is not supported.");
-          const admitted = normalizeLineBankFinancialCapture(capture);
-          domesticCaptures.push(capture);
-          financialCaptures.push(admitted);
-          statementItems.push({
-            provider: "linebank",
-            product: "domestic-deposit",
-            itemKey: captureId,
-            command: {
-              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-              request: { capture: admitted },
-            },
-          });
-        } else {
-          const capture = buildLinebankForeignCurrencyCaptureInput({
-            account: selected.account,
-            dateRange: selected.dateRange,
-            pages: selected.pages,
-            observedAt,
-            captureOccurrenceId: `${captureOccurrenceId}:${index}`,
-          });
-          const admitted = admitForeignCurrencyDepositCapture(capture);
-          statementItems.push({
-            provider: "linebank",
-            product: "foreign-currency",
-            itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
-            command: {
-              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-              request: { capture: admitted },
-            },
-          });
-          financialCaptures.push(admitted);
-        }
-        await context.event("validation", "advanced", "account-source-admitted", {
-          completed: index + 1,
-          total: selectedSources.length,
-        });
-      }
-    } catch (error) {
-      await context.event("validation", "failed", "source-validation-rejected", {
-        completed: statementItems.length,
-        total: selectedSources.length,
-      });
-      throw error;
-    }
-
-    await context.event("validation", "completed", "canonical-admission-completed", {
-      completed: statementItems.length,
-      total: selectedSources.length,
-    });
-    const balanceItems: PGliteWorkflowRunItem[] = [];
-    if (domesticCaptures.length > 0) {
-      const selectedTwdAccountKeys = new Set(
-        accounts
-          .filter((account) => linebankAccountCurrency(account) === "TWD")
-          .map((account) => linebankAccountKey(account)),
-      );
-      const admittedTwdAccountKeys = new Set(
-        domesticCaptures.map((capture) => capture.accountKey),
-      );
-      const selectedTwdSourceKeys = new Set(
-        currentBalanceRows.map((row) => row.sourceAccountKey),
-      );
-      if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
-        currentBalanceRows.length !== selectedTwdAccountKeys.size ||
-        selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
-        [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
-        await context.event("validation", "failed", "current-balance-validation-rejected", {
+        await productContext.event("decoding", "completed", "current-balance-decoding-completed");
+        await productContext.event("collection", "completed", "current-balance-collection-completed", {
           completed: currentBalanceRows.length,
-          total: selectedTwdAccountKeys.size,
-        });
-        throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
-      }
-      await context.event("validation", "started", "current-balance-validation-started", {
-        completed: 0,
-        total: currentBalanceRows.length,
-      });
-      try {
-        const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
-          currentBalanceRows,
-          domesticCaptures.map((capture) => ({
-            accountKey: capture.accountKey,
-            sourceConnection: capture.sourceConnection,
-            identityEpoch: capture.identityEpoch,
-            observedAt: capture.observedAt,
-          })),
-        );
-        for (const [index, capture] of currentBalanceCaptures.entries()) {
-          context.signal.throwIfAborted();
-          balanceItems.push({
-            provider: "linebank",
-            product: "current-balance",
-            itemKey: `current-balance:${index}`,
-            command: {
-              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-              request: currentDepositBalanceCommandRequest(
-                admitCurrentDepositBalanceCapture(capture),
-              ),
-            },
-          });
-        }
-      } catch {
-        await context.event("validation", "failed", "current-balance-validation-rejected", {
-          completed: 0,
           total: currentBalanceRows.length,
         });
-        throw new Error("LINE Bank current balance source admission was rejected.");
-      }
-      await context.event("validation", "completed", "current-balance-validation-completed", {
-        completed: balanceItems.length,
-        total: currentBalanceRows.length,
-      });
-    }
-    await context.event("validation", "completed", "source-validation-completed", {
-      completed: selectedSources.length,
-      total: expectedSourceCount,
-    });
-    context.signal.throwIfAborted();
 
-    const commitItems = [...statementItems, ...balanceItems];
-    const committed = await financialCommit.execute(commitItems, {
-      provider: "linebank",
-      product: "financial",
-      signal: context.signal,
+        const selectedSources: Array<{
+          account: LineBankAccount;
+          dateRange: DateRange;
+          pages: LineBankTransactionPage[];
+        }> = [];
+        let statementRowCount = 0;
+        const expectedSourceCount = accounts.length * windows.length;
+        try {
+          for (const account of accounts) {
+            for (const window of windows) {
+              context.signal.throwIfAborted();
+              const pages = await client.fetchTransactionPages(account, window);
+              selectedSources.push({ account, dateRange: window, pages });
+              statementRowCount += linebankApiRowsToStatementRows(
+                pages.flatMap((page) => page.rows),
+              ).length;
+            }
+            await productContext.event("collection", "advanced", "account-collected", {
+              completed: selectedSources.length,
+              total: expectedSourceCount,
+            });
+          }
+        } catch (error) {
+          if (sourceDecodeError(error))
+            await productContext.event("decoding", "failed", "source-decoding-failed");
+          else if (sourceValidationError(error)) {
+            await productContext.event("validation", "failed", "source-validation-rejected", {
+              completed: selectedSources.length,
+              total: expectedSourceCount,
+            });
+          }
+          throw error;
+        }
+        context.signal.throwIfAborted();
+        if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
+          await productContext.event("validation", "failed", "source-validation-rejected", {
+            completed: selectedSources.length,
+            total: expectedSourceCount,
+          });
+          throw new Error("LINE Bank source does not contain every selected account and date window.");
+        }
+
+        await productContext.event("validation", "started", "source-validation-started", {
+          completed: 0,
+          total: selectedSources.length,
+        });
+        const observedAt = context.now();
+        const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
+        const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
+        const statementItems: PGliteWorkflowRunItem[] = [];
+        const captureOccurrenceId = randomUUID();
+        await productContext.event("validation", "started", "canonical-admission-started", {
+          completed: 0,
+          total: selectedSources.length,
+        });
+        try {
+          for (const [index, selected] of selectedSources.entries()) {
+            context.signal.throwIfAborted();
+            const captureId = `linebank-${randomUUID()}`;
+            if (linebankAccountCurrency(selected.account) === "TWD") {
+              const capture = await linebankHumanAttestedCapture({
+                account: selected.account,
+                dateRange: selected.dateRange,
+                pages: selected.pages,
+                captureId,
+                observedAt,
+              });
+              if (!capture)
+                throw new Error("LINE Bank selected domestic source authority is not supported.");
+              const admitted = normalizeLineBankFinancialCapture(capture);
+              domesticCaptures.push(capture);
+              financialCaptures.push(admitted);
+              statementItems.push({
+                provider: "linebank",
+                product: "domestic-deposit",
+                itemKey: captureId,
+                command: {
+                  kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+                  request: { capture: admitted },
+                },
+              });
+            } else {
+              const capture = buildLinebankForeignCurrencyCaptureInput({
+                account: selected.account,
+                dateRange: selected.dateRange,
+                pages: selected.pages,
+                observedAt,
+                captureOccurrenceId: `${captureOccurrenceId}:${index}`,
+              });
+              const admitted = admitForeignCurrencyDepositCapture(capture);
+              statementItems.push({
+                provider: "linebank",
+                product: "foreign-currency",
+                itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
+                command: {
+                  kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+                  request: { capture: admitted },
+                },
+              });
+              financialCaptures.push(admitted);
+            }
+            await productContext.event("validation", "advanced", "account-source-admitted", {
+              completed: index + 1,
+              total: selectedSources.length,
+            });
+          }
+        } catch (error) {
+          await productContext.event("validation", "failed", "source-validation-rejected", {
+            completed: statementItems.length,
+            total: selectedSources.length,
+          });
+          throw error;
+        }
+
+        await productContext.event("validation", "completed", "canonical-admission-completed", {
+          completed: statementItems.length,
+          total: selectedSources.length,
+        });
+        const balanceItems: PGliteWorkflowRunItem[] = [];
+        if (domesticCaptures.length > 0) {
+          const selectedTwdAccountKeys = new Set(
+            accounts
+              .filter((account) => linebankAccountCurrency(account) === "TWD")
+              .map((account) => linebankAccountKey(account)),
+          );
+          const admittedTwdAccountKeys = new Set(
+            domesticCaptures.map((capture) => capture.accountKey),
+          );
+          const selectedTwdSourceKeys = new Set(
+            currentBalanceRows.map((row) => row.sourceAccountKey),
+          );
+          if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
+            currentBalanceRows.length !== selectedTwdAccountKeys.size ||
+            selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
+            [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
+            await productContext.event("validation", "failed", "current-balance-validation-rejected", {
+              completed: currentBalanceRows.length,
+              total: selectedTwdAccountKeys.size,
+            });
+            throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
+          }
+          await productContext.event("validation", "started", "current-balance-validation-started", {
+            completed: 0,
+            total: currentBalanceRows.length,
+          });
+          try {
+            const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+              currentBalanceRows,
+              domesticCaptures.map((capture) => ({
+                accountKey: capture.accountKey,
+                sourceConnection: capture.sourceConnection,
+                identityEpoch: capture.identityEpoch,
+                observedAt: capture.observedAt,
+              })),
+            );
+            for (const [index, capture] of currentBalanceCaptures.entries()) {
+              context.signal.throwIfAborted();
+              balanceItems.push({
+                provider: "linebank",
+                product: "current-balance",
+                itemKey: `current-balance:${index}`,
+                command: {
+                  kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+                  request: currentDepositBalanceCommandRequest(
+                    admitCurrentDepositBalanceCapture(capture),
+                  ),
+                },
+              });
+            }
+          } catch {
+            await productContext.event("validation", "failed", "current-balance-validation-rejected", {
+              completed: 0,
+              total: currentBalanceRows.length,
+            });
+            throw new Error("LINE Bank current balance source admission was rejected.");
+          }
+          await productContext.event("validation", "completed", "current-balance-validation-completed", {
+            completed: balanceItems.length,
+            total: currentBalanceRows.length,
+          });
+        }
+        stagedItems.push(...statementItems, ...balanceItems);
+        accountCount = accounts.length;
+        hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
+        return {
+          sourceCaptureCount: selectedSources.length,
+          rowCount: statementRowCount,
+          itemCount: stagedItems.length,
+        };
+      },
+      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
+        provider: "linebank",
+        product: "financial",
+        signal: context.signal,
+      }),
     });
-    if (committed.status !== "completed") {
-      const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
-      throw new Error(`LINE Bank Canonical Financial Commit failed: ${codes || committed.status}.`);
-    }
-    const hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
     return {
       dateRange,
-      accountCount: accounts.length,
-      statementRowCount,
-      sourceCaptureCount: selectedSources.length,
-      financialItemCount: commitItems.length,
-      status: hasFinancialRecords ? "financial-admitted" : "source-only",
+      accountCount,
+      statementRowCount: summary.rowCount,
+      sourceCaptureCount: summary.sourceCaptureCount,
+      financialItemCount: summary.itemCount,
+      status: summary.status === "partial"
+        ? "partial"
+        : hasFinancialRecords ? "financial-admitted" : "source-only",
+      products: summary.products,
     };
   });
 }

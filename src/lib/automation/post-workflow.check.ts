@@ -15,6 +15,12 @@ import {
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
+import {
+  assertProductFailure,
+  assertStoppedRun,
+  STOPPED_COMMITS,
+  stoppedCommitPort,
+} from "./single-product-run.fixtures.ts";
 
 const providerSource = readFileSync(
   new URL("../../workflows/post-statements.ts", import.meta.url),
@@ -322,6 +328,9 @@ test("Post typed workflow gets human assistance, admits complete source, and com
     assert.equal(result.status, "financial-admitted");
     assert.equal(result.accountCount, 1);
     assert.equal(result.rowCount, 1);
+    assert.deepEqual(result.products, [
+      { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+    ]);
     assert.equal(sourceCount, 1);
     assert.equal(harness.committed.length, 1);
     assert.ok(harness.committed[0]?.length);
@@ -348,7 +357,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
       })],
       readCurrentDepositBalances: async () => [],
     }),
-    SourceTextIntegrityError,
+    assertProductFailure("source-integrity-failed", SourceTextIntegrityError),
   );
   assert.equal(harness.committed.length, 0);
 
@@ -361,7 +370,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
       })],
       readCurrentDepositBalances: async () => [],
     }),
-    /incomplete/u,
+    assertProductFailure("source-collection-failed", /incomplete/u),
   );
   assert.equal(harness.committed.length, 0);
 
@@ -370,7 +379,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
       collectSourceStatements: async () => [{ ...statement, rows: [] }],
       readCurrentDepositBalances: async () => [],
     }),
-    /source admission blocked/u,
+    assertProductFailure("source-collection-failed", /source admission blocked/u),
   );
   assert.equal(harness.committed.length, 0);
 
@@ -393,10 +402,20 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
       })],
       readCurrentDepositBalances: async () => [],
     }),
-    /unsupported transaction direction/u,
+    assertProductFailure("source-collection-failed", /unsupported transaction direction/u),
   );
   assert.equal(harness.committed.length, 0);
 });
+
+for (const { stop, errorCode } of STOPPED_COMMITS) {
+  test(`Post names a ${stop} commit ${errorCode}`, async () => {
+    const harness = createContext({ page: createPage(true) });
+    await assert.rejects(runPostProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, workflowInput, {
+      collectSourceStatements: async () => [statement],
+      readCurrentDepositBalances: async () => [],
+    }), assertStoppedRun("deposit", 1, errorCode));
+  });
+}
 
 test("Post typed workflow cancellation during human assistance stops before collection and commit", async () => {
   const controller = new AbortController();
