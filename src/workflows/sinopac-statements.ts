@@ -9,7 +9,6 @@ import {
 import { withAbort } from "./abort.ts";
 import { signInAttempt } from "./sign-in-attempt.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
-import { requestCaptchaAssistance } from "./human-assistance.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
@@ -992,13 +991,7 @@ async function signInSinopacForApp(
 ): Promise<void> {
   context.signal.throwIfAborted();
   await fillLoginForm(page, credentials, context.signal);
-  await context.event("authentication", "advanced", "human-assistance-requested");
-  const status = await requestCaptchaAssistance("SinoPac", 
-    sinopacCaptchaAssistanceStage(page),
-    (contract, signal) => context.humanAssistance.request(contract, signal),
-    context.signal,
-  );
-  await context.event("authentication", "advanced", "human-assistance-completed");
+  await context.verification.complete(sinopacCaptchaAssistanceStage(page));
   context.signal.throwIfAborted();
   if (await isSignedIn(page, context.signal)) return;
 
@@ -1009,7 +1002,7 @@ async function signInSinopacForApp(
   );
   if (!currentValue.trim()) {
     throw new Error(
-      `SinoPac CAPTCHA assistance ended with ${status}, but no answer was entered.`,
+      "SinoPac CAPTCHA assistance completed, but no answer was entered.",
     );
   }
   await runSinopacLoginAttempt(page, {

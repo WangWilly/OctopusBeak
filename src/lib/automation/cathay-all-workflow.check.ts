@@ -243,7 +243,7 @@ function contextHarness(
       withPage: (run) => run({ on() {}, off() {} } as unknown as Page),
     },
     text: strictSourceText,
-    humanAssistance: { request: async () => "entered" },
+    verification: { complete: async () => undefined },
     financialCommit,
     event: async (stage, _outcome, code) => {
       events.push({ stage, code });

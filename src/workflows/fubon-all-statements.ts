@@ -1,4 +1,3 @@
-import { humanAssistanceEvent } from "./human-assistance.ts";
 import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
@@ -231,8 +230,7 @@ async function authenticateFubonForApp(
   await openFubonLoginForm(page);
   await completeFubonHumanLoginWithAssistance(page, values, {
     signal: context.signal,
-    request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: humanAssistanceEvent(context),
+    complete: (stage) => context.verification.complete(stage),
   });
 }
 

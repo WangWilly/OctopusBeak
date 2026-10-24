@@ -333,7 +333,13 @@ test("worker runs a definition through typed ports and the bounded host request 
       await context.browser.withPage(async () => { browserCalls += 1; });
       assert.equal(context.text.decode(Uint8Array.of(0x41), "utf-8"), "A");
       await context.event("collection", "started", "fixture-started", { completed: 1, total: 1 });
-      assert.equal(await context.humanAssistance.request(contract, context.signal), "verified");
+      await context.verification.complete({
+        ...contract,
+        targets: contract.targets.map((target) => ({
+          ...target,
+          locator: { boundingBox: async () => ({ x: 0, y: 0, width: 80, height: 24 }) },
+        })),
+      });
       const committed = await context.financialCommit!.execute([runItem()]);
       assert.equal(committed.status, "completed");
       return { status: "completed", counts: { count: 1 } };
@@ -379,7 +385,15 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.deepEqual(terminal.summary, { status: "completed", counts: { count: 1 } });
     }
     assert.equal(JSON.stringify(observed).includes("sensitive-fixture"), false);
-    assert.equal(observed.filter((frame) => frame.kind === "event").length, 5);
+    assert.deepEqual(observed.flatMap((frame) => frame.kind === "event" ? [frame.event.code] : []), [
+      "run-started",
+      "fixture-started",
+      "human-assistance-requested",
+      "human-assistance-completed",
+      "canonical-commit-started",
+      "canonical-commit-completed",
+      "run-completed",
+    ]);
     assert.deepEqual(
       observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt.phase] : []),
       ["started", "settled"],

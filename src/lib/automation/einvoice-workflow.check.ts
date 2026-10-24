@@ -103,7 +103,7 @@ function makeContext(overrides: Partial<WorkflowContextWith<"financialCommit">> 
     now: () => new Date().toISOString(),
     browser: { withPage: async (run) => await run({} as Page) },
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("Unexpected human assistance request"); } },
+    verification: { complete: async () => { throw new Error("Unexpected human assistance request"); } },
     financialCommit: makeCommit(commits),
     event: async (stage, _outcome, code) => {
       events.push({ stage, code });

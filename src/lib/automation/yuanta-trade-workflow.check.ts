@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import type { WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
+import { resolveVerificationStage } from "./verification-stage.ts";
 import {
   assertProductFailure,
   assertStoppedRun,
@@ -15,7 +16,6 @@ import {
 } from "./single-product-run.fixtures.ts";
 import {
   decodeYuantaTradeReportResponse,
-  requestYuantaTradeAssistance,
   runYuantaTradeProviderWorkflow,
   yuantaTradeCaptchaCheckboxAssistanceStage,
   yuantaTradeImageAssistanceStage,
@@ -71,13 +71,10 @@ function report(
 
 function createHarness(options: {
   pages?: YuantaTradeReportPage[];
-  assistanceStatus?: "entered" | "verified" | "failed";
   signal?: AbortSignal;
-  waitForAbort?: boolean;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
-  const requestedContracts: unknown[] = [];
   const page = {
     url: () => "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
     context: () => ({ grantPermissions: async () => undefined }),
@@ -93,17 +90,7 @@ function createHarness(options: {
     now: () => "2026-09-25T12:00:00.000Z",
     browser: { async withPage(run) { return run(page); } },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract, signal) {
-        requestedContracts.push(contract);
-        if (options.waitForAbort) {
-          return await new Promise<"entered" | "verified" | "failed">((resolve, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-          });
-        }
-        return options.assistanceStatus ?? "verified";
-      },
-    },
+    verification: { complete: async () => undefined },
     financialCommit: {
       async execute(items) {
         const materialized: unknown[] = [];
@@ -132,7 +119,7 @@ function createHarness(options: {
       events.push(signalRunEvent(signal, { runId: "run-yuanta-trade-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, events, committed, requestedContracts, page };
+  return { context, events, committed, page };
 }
 
 const selectedInput = {
@@ -241,39 +228,15 @@ test("Yuanta Trade human assistance keeps audio, checkbox and image stages routa
   const page = {
     locator: makeLocator,
   } as unknown as Page;
-  const audio = await requestYuantaTradeAssistance(
-    createHarness().context,
-    yuantaTradeAudioAssistanceStage(page),
-  );
-  const checkbox = await requestYuantaTradeAssistance(
-    createHarness().context,
-    yuantaTradeCaptchaCheckboxAssistanceStage(page),
-  );
-  const image = await requestYuantaTradeAssistance(
-    createHarness().context,
-    await yuantaTradeImageAssistanceStage(page),
-  );
-  assert.deepEqual([audio, checkbox, image], ["verified", "verified", "verified"]);
-});
-
-test("Yuanta Trade human assistance cancellation is surfaced and not treated as success", async () => {
-  const controller = new AbortController();
-  const harness = createHarness({ signal: controller.signal, waitForAbort: true });
-  const locator = {
-    first() { return this; },
-    locator() { return this; },
-    boundingBox: async () => ({ x: 1, y: 1, width: 20, height: 20 }),
-  };
-  const page = { locator: () => locator } as unknown as Page;
-  const pending = requestYuantaTradeAssistance(
-    harness.context,
-    yuantaTradeAudioAssistanceStage(page),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  controller.abort(new DOMException("Cancelled", "AbortError"));
-  await assert.rejects(
-    pending,
-    /cancelled|aborted/i,
-  );
-  assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "human-assistance-failed"));
+  const contracts = await Promise.all([
+    resolveVerificationStage(yuantaTradeAudioAssistanceStage(page)),
+    resolveVerificationStage(yuantaTradeCaptchaCheckboxAssistanceStage(page)),
+    resolveVerificationStage(await yuantaTradeImageAssistanceStage(page)),
+  ]);
+  assert.deepEqual(contracts.map((contract) => [contract.stageId, contract.challengeKind]), [
+    ["yuanta-trade-audio-verification", "audio-captcha"],
+    ["yuanta-trade-captcha-checkbox", "checkbox"],
+    ["yuanta-trade-challenge", "image-selection"],
+  ]);
+  assert.ok(contracts.every((contract) => contract.targets.every((target) => target.rect !== undefined)));
 });

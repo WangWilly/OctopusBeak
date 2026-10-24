@@ -79,11 +79,9 @@ function context(
       } as unknown as Page),
     },
     text,
-    humanAssistance: {
-      request: async (contract: { stageId?: string }, receivedSignal: AbortSignal) => {
-        assert.equal(receivedSignal, signal);
-        calls.push(`human:${contract.stageId}`);
-        return "verified" as const;
+    verification: {
+      complete: async (stage) => {
+        calls.push(`human:${stage.stageId}`);
       },
     },
     accountIdentity: { continuity: async () => ({ status: "unseen" }) },
@@ -136,10 +134,7 @@ try {
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
     const result = await runFubonAllStatementsWorkflow(workflowContext, input, {
       authenticate: async (_page, _credentials, receivedContext) => {
-        const status = await receivedContext.humanAssistance.request({
-          stageId: "fubon-login-captcha",
-        } as never, receivedContext.signal);
-        assert.equal(status, "verified");
+        await receivedContext.verification.complete({ stageId: "fubon-login-captcha" } as never);
         calls.push("authenticated");
       },
       assertSession: async () => undefined,

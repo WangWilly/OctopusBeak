@@ -180,10 +180,9 @@ function createContext(page: Page) {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request() {
+    verification: {
+      async complete() {
         assistanceCount += 1;
-        return "verified";
       },
     },
     previewWrite: {

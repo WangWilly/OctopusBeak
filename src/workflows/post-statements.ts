@@ -8,10 +8,6 @@ import {
   strictSourceText,
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
@@ -53,7 +49,6 @@ import {
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
-import { requestCaptchaAssistance } from "./human-assistance.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -431,10 +426,7 @@ async function isSignedIn(page: Page): Promise<boolean> {
 async function signInPostWithAssistance(
   page: Page,
   credentials: PostCredentials,
-  requestHumanAssistance: (
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ) => Promise<HumanAssistanceCompletionStatus>,
+  complete: (stage: VerificationStage) => Promise<void>,
   signal: AbortSignal,
   onDialog?: (type: string) => void | Promise<void>,
 ): Promise<void> {
@@ -465,11 +457,7 @@ async function signInPostWithAssistance(
     throw new Error("iPost CAPTCHA input is unavailable for assistance.");
 
   try {
-    await requestCaptchaAssistance("iPost", 
-      postCaptchaAssistanceStage(page),
-      requestHumanAssistance,
-      signal,
-    );
+    await complete(postCaptchaAssistanceStage(page));
     signal.throwIfAborted();
     if (await isSignedIn(page)) return;
     const currentCaptchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
@@ -1076,16 +1064,7 @@ export async function runPostProviderWorkflow(
       await signInPostWithAssistance(
         page,
         parsed.data.credentials,
-        async (contract, signal) => {
-          await context.event("authentication", "advanced", "human-assistance-requested");
-          const status = await context.humanAssistance.request(contract, signal);
-          if (status === "entered" || status === "verified") {
-            await context.event("authentication", "advanced", "human-assistance-completed");
-          } else {
-            await context.signalEvent("human-assistance-failed");
-          }
-          return status;
-        },
+        (stage) => context.verification.complete(stage),
         context.signal,
         () => {
           void context.signalEvent("login-dialog-interrupted");

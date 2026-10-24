@@ -1,11 +1,7 @@
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import type { Dialog, Frame, Locator, Page } from "playwright";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
-import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { withAbort } from "./abort.ts";
 
 const FUBON_ENTRY_URL =
@@ -1227,31 +1223,17 @@ async function currentOtpChallengeVisible(
 }
 
 
-/** Fubon authentication using the App-owned human-assistance port. */
+/** Fubon authentication that completes each Verification stage through the run's port. */
 export async function completeFubonHumanLoginWithAssistance(
   page: Page,
   values: FubonLoginCredentialValues,
   options: Readonly<{
     signal: AbortSignal;
-    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
-    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+    complete(stage: VerificationStage): Promise<void>;
   }>,
 ): Promise<void> {
-  const { signal, request } = options;
+  const { signal, complete } = options;
   const dialogs = captureFubonLoginDialogs(page);
-  const event = options.event ?? (() => Promise.resolve());
-  const assistance = async (stage: VerificationStage) => {
-    signal.throwIfAborted();
-    const contract = await withAbort(resolveVerificationStage(stage), signal);
-    await event("human-assistance-requested");
-    const status = await withAbort(request(contract, signal), signal);
-    signal.throwIfAborted();
-    if (status !== "entered" && status !== "verified") {
-      await event("human-assistance-failed");
-      throw new Error("Fubon login human assistance did not complete.");
-    }
-    await event("human-assistance-completed");
-  };
 
   try {
     let outcomeWindowStarted = false;
@@ -1278,7 +1260,7 @@ export async function completeFubonHumanLoginWithAssistance(
           DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
         );
         await frame.locator("#m1_userCaptcha").focus();
-        await assistance(fubonCaptchaAssistanceStage(frame));
+        await complete(fubonCaptchaAssistanceStage(frame));
       },
       submit: async () => {
         signal.throwIfAborted();
@@ -1309,7 +1291,7 @@ export async function completeFubonHumanLoginWithAssistance(
           Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
           DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
         );
-        await assistance({
+        await complete({
           stageId: "fubon-login-otp",
           title: "Enter the Fubon OTP",
           targets: [{

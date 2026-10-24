@@ -28,11 +28,6 @@ import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/hncb-human-attestation-contract.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
-import { requestCaptchaAssistance } from "./human-assistance.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
@@ -734,21 +729,13 @@ export function hncbCaptchaAssistanceStage(
 async function signInHncbPage(
   page: Page,
   credentials: HncbCredentials,
-  requestHumanAssistance: (
-    stage: VerificationStage,
-    signal: AbortSignal,
-  ) => Promise<HumanAssistanceCompletionStatus>,
+  complete: (stage: VerificationStage) => Promise<void>,
   signal: AbortSignal,
 ): Promise<void> {
   await fillLoginForm(page, credentials);
   signal.throwIfAborted();
-  const status = await requestHumanAssistance(
-    hncbCaptchaAssistanceStage(page),
-    signal,
-  );
+  await complete(hncbCaptchaAssistanceStage(page));
   signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified")
-    throw new Error(`HNCB human assistance ended with status ${status}.`);
 
   const accountField = page.locator("#NICKNAME");
   if (!(await accountField.inputValue()).trim())
@@ -1479,17 +1466,7 @@ export async function runHncbProviderWorkflow(
       await signInHncbPage(
         page,
         parsed.data.credentials,
-        async (stage, signal) => {
-          await context.event("authentication", "advanced", "human-assistance-requested");
-          const status = await requestCaptchaAssistance("HNCB", 
-            stage,
-            (contract, assistanceSignal) =>
-              context.humanAssistance.request(contract, assistanceSignal),
-            signal,
-          );
-          await context.event("authentication", "advanced", "human-assistance-completed");
-          return status;
-        },
+        (stage) => context.verification.complete(stage),
         context.signal,
       );
     }

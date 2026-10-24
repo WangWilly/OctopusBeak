@@ -176,12 +176,11 @@ function createContext(options: {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract) {
+    verification: {
+      async complete(stage) {
         assistanceCalls += 1;
-        assert.equal(contract.stageId, "ctbc-login-verification");
+        assert.equal(stage.stageId, "ctbc-login-verification");
         options.onAssistance?.();
-        return "verified";
       },
     },
     financialCommit: {

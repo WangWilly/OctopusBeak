@@ -1,10 +1,6 @@
 import type { Dialog, Frame, Locator, Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
-import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   assembleStableSourceLoginScope,
   deriveSourceConnectionIdentityKey,
@@ -472,35 +468,25 @@ async function waitForSignedInState(
 }
 
 
-/** Yuanta authentication through the App-owned browser and human-assistance ports. */
+/** Yuanta authentication through the App-owned browser and the run's Verification port. */
 export async function authenticateYuantaBankWithAssistance(
   page: Page,
   credentials: YuantaCredentials,
   replaceActiveSession: boolean,
   options: Readonly<{
     signal: AbortSignal;
-    request(
-      contract: HumanAssistanceContractInput,
-      signal: AbortSignal,
-    ): Promise<HumanAssistanceCompletionStatus>;
-    event?(
-      code:
-        | "human-assistance-requested"
-        | "human-assistance-completed"
-        | "human-assistance-failed",
-    ): Promise<void>;
+    complete(stage: VerificationStage): Promise<void>;
   }>,
 ): Promise<
   Readonly<{ usedExistingSession: boolean; replacedActiveSession: boolean }>
 > {
-  const { signal, request } = options;
+  const { signal, complete } = options;
   signal.throwIfAborted();
   if (await withAbort(isYuantaSignedIn(page), signal))
     return { usedExistingSession: true, replacedActiveSession: false };
 
   let lastBankDialogState: YuantaBankDialogState | null = null;
   let replacedActiveSession = false;
-  const event = options.event ?? (() => Promise.resolve());
   const acceptBankDialog = async (dialog: Dialog) => {
     lastBankDialogState = yuantaBankDialogState(dialog);
     await dialog.accept();
@@ -511,22 +497,7 @@ export async function authenticateYuantaBankWithAssistance(
     await withAbort(fillLoginForm(page, credentials), signal);
     let loginFrame = await withAbort(waitForMainFrame(page), signal);
     await withAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
-    const contract = await withAbort(
-      resolveVerificationStage(yuantaBankCaptchaAssistanceStage(loginFrame)),
-      signal,
-    );
-    signal.throwIfAborted();
-    await event("human-assistance-requested");
-    const assistanceStatus = await withAbort(
-      request(contract, signal),
-      signal,
-    );
-    signal.throwIfAborted();
-    if (assistanceStatus !== "entered" && assistanceStatus !== "verified") {
-      await event("human-assistance-failed");
-      throw new Error("Yuanta Bank CAPTCHA assistance did not complete.");
-    }
-    await event("human-assistance-completed");
+    await complete(yuantaBankCaptchaAssistanceStage(loginFrame));
 
     // Navigation may recreate the login frame while Assist is open. Rebind
     // before inspecting the answer or submitting.
