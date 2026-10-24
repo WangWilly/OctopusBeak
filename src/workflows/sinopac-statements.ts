@@ -12,7 +12,7 @@ import {
   requestCaptchaAssistance,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
@@ -1827,7 +1827,7 @@ async function collectSinopacStatements(
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
-  context: WorkflowContext,
+  context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   overrides: SinopacProviderWorkflowOverrides = {},
 ): Promise<SinopacWorkflowOutput> {
@@ -1838,8 +1838,6 @@ export async function runSinopacProviderWorkflow(
   const attachedProducts = parsed.data.attachedPreviewProducts;
   if (!collectsAccounts && attachedProducts.length === 0)
     throw new Error("SinoPac workflow has no statement type or attached product selected.");
-  if (collectsAccounts && !context.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
@@ -1922,7 +1920,7 @@ export async function runSinopacProviderWorkflow(
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
       },
-      commit: async (_typeId, stagedItems) => await context.financialCommit!.execute(stagedItems, {
+      commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
         provider: "sinopac",
         product: "financial",
         signal: context.signal,

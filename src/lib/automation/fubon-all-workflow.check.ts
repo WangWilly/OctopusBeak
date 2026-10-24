@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -61,7 +61,7 @@ function context(
   calls: string[],
   text = strictSourceText,
   commitBatches: PGliteWorkflowRunItem[][] = [],
-): WorkflowContext {
+): WorkflowContextWith<"financialCommit" | "accountIdentity"> {
   return {
     runId: "fubon-test-run",
     signal,
@@ -85,6 +85,7 @@ function context(
         return "verified" as const;
       },
     },
+    accountIdentity: { continuity: async () => ({ status: "unseen" }) },
     financialCommit: {
       execute: async (runItems: Iterable<PGliteWorkflowRunItem>) => {
         const collected = [...runItems];

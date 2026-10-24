@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { YuantaAllWorkflowDependencies } from "./yuanta-all-statements.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
@@ -93,7 +93,7 @@ function expandRelationCommands(
     : item) as PGliteWorkflowRunItem);
 }
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "yuanta-deposit-golden",
     signal: new AbortController().signal,

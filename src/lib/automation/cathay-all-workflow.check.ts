@@ -21,6 +21,7 @@ import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
+  WorkflowContextWith,
 } from "./workflow-executor.ts";
 import {
   decodeCathayApiSourceResponse,
@@ -234,7 +235,7 @@ function contextHarness(
       return makeResult(materialized) as never;
     },
   };
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "cathay-test-run",
     signal: controller.signal,
     now: () => "2026-09-25T01:00:00.000Z",
@@ -720,7 +721,7 @@ test("Cathay all workflow cancellation stops later products and retains prior re
 function attachedHarness() {
   const harness = contextHarness();
   const writes: PreviewWrite[] = [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     ...harness.context,
     previewWrite: {
       async write(input) {

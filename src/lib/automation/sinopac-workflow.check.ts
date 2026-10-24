@@ -21,7 +21,7 @@ import {
   type CommitAttempt,
   type CommitAttemptReport,
 } from "./commit-attempt.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
@@ -115,7 +115,7 @@ function makeContext(options: Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   assistance?: WorkflowContext["humanAssistance"]["request"];
   onEvent?: WorkflowContext["event"];
-}>): WorkflowContext {
+}>): WorkflowContextWith<"financialCommit"> {
   const signal = options.signal ?? new AbortController().signal;
   return {
     runId: "sinopac-test-run",

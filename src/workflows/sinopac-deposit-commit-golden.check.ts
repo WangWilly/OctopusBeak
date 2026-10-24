@@ -3,7 +3,7 @@ import { mock, test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   runSinopacProviderWorkflow,
   type SinopacAccount,
@@ -108,7 +108,7 @@ type Scenario = Readonly<{
   current?: readonly SinopacCurrentDepositBalanceRow[];
 }>;
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContext {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "sinopac-golden-run",
     signal: new AbortController().signal,

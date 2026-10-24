@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const YUANTA_SOURCE: VerifiedSource = {
   id: "yuanta",
@@ -91,7 +91,7 @@ export const YUANTA_SOURCE: VerifiedSource = {
     label: "Yuanta all statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://ebank.yuantabank.com.tw/nib/ibanc.jsp"),
     verification: { ownsSubmissionOutcome: true },
@@ -99,5 +99,5 @@ export const YUANTA_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/yuanta-all-statements.ts")).runYuantaAllStatementsWorkflow;
     },
-  },
+  }),
 };

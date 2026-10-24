@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
 export const HNCB_SOURCE: VerifiedSource = {
@@ -84,7 +84,7 @@ export const HNCB_SOURCE: VerifiedSource = {
     label: "HNCB statements",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.hncb,
     runtime: browser("https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private"),
@@ -93,5 +93,5 @@ export const HNCB_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/hncb-statements.ts")).runHncbProviderWorkflow;
     },
-  },
+  }),
 };

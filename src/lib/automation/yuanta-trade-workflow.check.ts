@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import {
@@ -87,7 +87,7 @@ function createHarness(options: {
       isVisible: async () => selector === "#btnLogout",
     }),
   } as unknown as Page;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-yuanta-trade-check",
     signal: options.signal ?? new AbortController().signal,
     now: () => "2026-09-25T12:00:00.000Z",

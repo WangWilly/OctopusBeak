@@ -1,4 +1,4 @@
-import { browser, field, link, localized, type VerifiedSource } from "./verified-source.ts";
+import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 export const EINVOICE_SOURCE: VerifiedSource = {
   id: "einvoice",
@@ -69,7 +69,7 @@ export const EINVOICE_SOURCE: VerifiedSource = {
     label: "E-Invoice personal invoices",
     kind: "crawler",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser(),
     verification: { ownsSubmissionOutcome: true },
@@ -77,5 +77,5 @@ export const EINVOICE_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../../../workflows/einvoice-personal-invoices.ts")).runEinvoiceProviderWorkflow;
     },
-  },
+  }),
 };

@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Frame, Page } from "playwright";
 import type { PreviewCreditCollection, PreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
-import type { WorkflowContext, WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "../lib/preview-sources/attached-products.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
@@ -359,7 +359,7 @@ test("the input accepts a card-only selection and refuses an empty one", async (
     financialCommit: { execute: async () => { throw new Error("no commit"); } },
     event: async () => undefined,
     browser: { withPage: async () => { throw new Error("page opened"); } },
-  } as unknown as WorkflowContext;
+  } as unknown as WorkflowContextWith<"financialCommit">;
   const credentials = { hncb_user_id: "synthetic-user", hncb_account: "synthetic-account", hncb_password: "synthetic-password" };
   await assert.rejects(runHncbProviderWorkflow(context, { credentials, statementTypes: [], attachedPreviewProducts: ["credit_card"] }), /page opened/u);
   await assert.rejects(runHncbProviderWorkflow(context, { credentials, statementTypes: [], attachedPreviewProducts: [] }), /input or sign-in details/u);

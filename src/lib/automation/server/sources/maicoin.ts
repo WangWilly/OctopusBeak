@@ -1,4 +1,4 @@
-import { field, link, localized, NONBROWSER, type VerifiedSource } from "./verified-source.ts";
+import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 function maicoinInput(environment: NodeJS.ProcessEnv) {
   return {
@@ -115,7 +115,7 @@ export const MAICOIN_SOURCE: VerifiedSource = {
     label: "MaiCoin sync",
     kind: "sync",
   },
-  workflow: {
+  workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     requiresMaicoinPersistence: true,
     runtime: NONBROWSER,
@@ -123,5 +123,5 @@ export const MAICOIN_SOURCE: VerifiedSource = {
     async load() {
       return (await import("../../maicoin-workflow.ts")).createMaicoinWorkflow().run;
     },
-  },
+  }),
 };

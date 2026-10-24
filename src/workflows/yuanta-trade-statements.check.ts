@@ -36,7 +36,7 @@ import {
 } from "./yuanta-trade-statements.ts";
 import { readFile } from "node:fs/promises";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
@@ -159,7 +159,7 @@ test("a missing YuanTa security component stops the run with its external prereq
   const context = {
     event: async (stage: string, _outcome: string, code: string) => { events.push(`${stage}:${code}`); },
     signalEvent: async (signal: RunEventSignal) => { events.push(`${RUN_EVENT_SIGNALS[signal].stage}:${signal}`); },
-  } as unknown as WorkflowContext;
+  } as unknown as WorkflowContextWith<"financialCommit">;
 
   await assert.rejects(
     assertYuantaTradeServiSignAvailable(page, context),
@@ -784,7 +784,7 @@ test("records how many reports were collected when one report source fails", asy
   const requestedReportTypes: string[] = [];
   const events: WorkflowRunEvent[] = [];
   const page = { on() {} } as unknown as Page;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "yuanta-trade-report-failure-fixture",
     signal: new AbortController().signal,
     now: () => "2026-10-06T00:16:19.000Z",

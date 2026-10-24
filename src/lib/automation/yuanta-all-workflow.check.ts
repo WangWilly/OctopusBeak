@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
-import type { WorkflowContext } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import type { runYuantaAllStatementsWorkflow as runYuantaAllStatementsWorkflowType } from "../../workflows/yuanta-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -39,7 +39,7 @@ function context(
   calls: string[],
   commitBatches: PGliteWorkflowRunItem[][] = [],
   text = strictSourceText,
-): WorkflowContext {
+): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "yuanta-test-run",
     signal,

@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { PostCurrentDepositBalanceRow } from "./post-current-deposit-balances.ts";
 import {
@@ -100,7 +100,7 @@ async function run(
   t.mock.method(Date, "now", () => Date.parse(fixedNow));
   const recorder = recordDepositCommit();
   let balanceReads = 0;
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-post-golden",
     signal: new AbortController().signal,
     now: () => fixedNow,

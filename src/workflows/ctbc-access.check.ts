@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
@@ -20,7 +20,7 @@ try {
   // Three unavailable-page attempts include two one-second retry waits.
   const timeout = setTimeout(() => controller.abort(), 12_000);
   const events: WorkflowRunEvent[] = [];
-  const context: WorkflowContext = {
+  const context: WorkflowContextWith<"financialCommit"> = {
     runId: "ctbc-busy-fixture",
     signal: controller.signal,
     now: () => "2026-09-26T00:00:00.000Z",
@@ -56,7 +56,7 @@ try {
   const acceptedController = new AbortController();
   const acceptedTimeout = setTimeout(() => acceptedController.abort(), 12_000);
   const acceptedEvents: WorkflowRunEvent[] = [];
-  const acceptedContext: WorkflowContext = {
+  const acceptedContext: WorkflowContextWith<"financialCommit"> = {
     ...context,
     runId: "ctbc-blank-202-fixture",
     signal: acceptedController.signal,
