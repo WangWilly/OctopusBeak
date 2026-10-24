@@ -36,6 +36,7 @@ test("a product run's status follows its verified receipts and reported absence"
     ["only preview writes", summary([skipped, attachedWrite], { verifiedCommittedCount: 0 }), {}, "completed"],
     ["verified and preview writes", summary([success, attachedWrite], { verifiedCommittedCount: 2 }), {}, "financial-admitted"],
     ["a preview source", summary([attachedWrite]), { preview: true }, "completed"],
+    ["no product attempted", summary([skipped]), {}, "completed"],
   ];
   for (const [name, run, options, status] of cases) {
     assert.equal(productRunResult(run, options).status, status, name);

@@ -516,7 +516,7 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
   assert.deepEqual(commits, []);
   assert.deepEqual(writes.map((write) => write.product), ["credit_card"]);
   assert.equal(output.status, "partial");
-  assert.equal(output.counts.rowCount, 0);
+  assert.equal(output.counts.rowCount, 5, "the run counts the attached card transactions it wrote");
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
