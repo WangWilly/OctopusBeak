@@ -513,14 +513,6 @@ export function createPGliteFinancialRegistry(
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
   const previewVisibilityListeners = new Set<() => void>();
-  const versioned = async <T>(read: () => Promise<T>): Promise<SpendingPageReadResult<T>> => {
-    try {
-      return await read();
-    } catch (error) {
-      if (!(error instanceof SpendingPageVersionError)) throw error;
-      return { stale: true, knowledgeAt: error.knowledgeAt };
-    }
-  };
   const readProductPage = (product: "assets" | "liabilities", expectedSources: PGliteFinancialExpectedSources) =>
     store.transaction(async (transaction) => {
       const result = await createPGliteCanonicalOverviewQuery(
@@ -566,12 +558,12 @@ export function createPGliteFinancialRegistry(
       return readProductPage("liabilities", expectedSources);
     },
     "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
-    "financial.spending.recordPage": ([request]) => versioned(() => spending.recordPage(request)),
-    "financial.spending.candidatePage": ([request]) => versioned(() => spending.candidatePage(request)),
-    "financial.spending.pendingOverview": ([request]) => versioned(() => spending.pendingOverview(request)),
-    "financial.spending.mergeLog": ([request]) => versioned(() => spending.mergeLog(request)),
-    "financial.spending.monthInsight": ([request]) => versioned(() => spending.monthInsight(request)),
-    "financial.spending.merchantStats": ([request]) => versioned(() => spending.merchantStats(request)),
+    "financial.spending.recordPage": ([request]) => spending.recordPage(request),
+    "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
+    "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),
+    "financial.spending.mergeLog": ([request]) => spending.mergeLog(request),
+    "financial.spending.monthInsight": ([request]) => spending.monthInsight(request),
+    "financial.spending.merchantStats": ([request]) => spending.merchantStats(request),
     async "financial.spending.version"() {
       const result = await store.query<{ value: number | string }>(
         "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
@@ -663,34 +655,6 @@ export function createPGliteFinancialRegistry(
 export type PGliteCanonicalCommitAdmission = (context: WorkflowFailureCorrelation) => boolean;
 
 /**
- * Pairing, its page actions, and the purchase list they change answer a click;
- * the other page refreshes do not. They run before queued reads, still one
- * operation at a time.
- */
-const INTERACTIVE_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
-  "financial.spending.version",
-  "financial.spending.prewarmPairing",
-  "financial.spending.pairing",
-  "financial.spending.confirmCandidate",
-  "financial.spending.denyCandidate",
-  "financial.spending.revokeLink",
-  "financial.spending.pageAction",
-  "financial.spending.recordPage",
-]);
-
-/**
- * Page reads whose caller only keeps the answer to its newest request. While
- * one is still queued, a newer request of the same operation replaces its
- * arguments, so stepping through months reads only the month reached; the
- * earlier callers receive that answer and discard it as superseded.
- */
-const LATEST_WINS_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set([
-  "financial.spending.monthInsight",
-  "financial.spending.pendingOverview",
-  "financial.spending.merchantStats",
-]);
-
-/**
  * Runs one PGlite operation at a time for a worker. Interactive work (a click
  * waiting on Pairing or its page action) starts before queued background work
  * such as page refreshes and live-view recomputes; a running operation is
@@ -730,13 +694,30 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
-/** Serve a worker-owned registry through the same port interface the RPC client offers. */
+async function staleWhenVersionMoved<T>(read: Promise<T>): Promise<SpendingPageReadResult<T>> {
+  try {
+    return await read;
+  } catch (error) {
+    if (!(error instanceof SpendingPageVersionError)) throw error;
+    return { stale: true, knowledgeAt: error.knowledgeAt };
+  }
+}
+
+/**
+ * Serve a worker-owned registry through the same port interface the RPC
+ * client offers. A page read's stale version is answered here, once.
+ */
 export function createPGliteFinancialLocalPort(registry: PGliteFinancialRegistry): PGliteFinancialPort {
   return Object.freeze({
-    request: (operation, args, options) => (registry[operation] as (
-      args: unknown,
-      options?: PGliteCanonicalCommitOptions,
-    ) => Promise<never>)(args, options),
+    request: (operation, args, options) => {
+      const result = (registry[operation] as (
+        args: unknown,
+        options?: PGliteCanonicalCommitOptions,
+      ) => Promise<never>)(args, options);
+      return PGLITE_FINANCIAL_CONTRACTS[operation].pageRead
+        ? staleWhenVersionMoved(result) as Promise<never>
+        : result;
+    },
   });
 }
 
@@ -778,7 +759,7 @@ export function createPGliteFinancialRpcServer(
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const latestWins = LATEST_WINS_OPERATIONS.has(operation);
+    const latestWins = contract.lane === "latest-wins";
     const queuedRead = latestWins ? queuedReads.get(operation) : undefined;
     let outcome: Promise<unknown>;
     if (queuedRead) {
@@ -786,7 +767,7 @@ export function createPGliteFinancialRpcServer(
       outcome = queuedRead.outcome;
     } else {
       const read = { args: value.args, outcome: Promise.resolve() as Promise<unknown> };
-      outcome = scheduler.schedule(INTERACTIVE_OPERATIONS.has(operation) ? "interactive" : "background", async () => {
+      outcome = scheduler.schedule(contract.lane === "interactive" ? "interactive" : "background", async () => {
         if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
         if (isCommitAdmissible && value.diagnosticContext && contract.canonicalCommit
