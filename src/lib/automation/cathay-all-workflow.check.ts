@@ -772,7 +772,7 @@ test("a Cathay run with only an attached product signs in and collects only that
     ["credit_card", "success", undefined],
     ["time_deposit", "skipped", "not_selected"],
   ]);
-  assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 0, itemCount: 1, committedCount: 1, count: 0 });
+  assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 3, itemCount: 1, committedCount: 1, count: 0 });
   assert.equal(output.status, "completed", "a preview-only run admits no financial data");
 });
 

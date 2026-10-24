@@ -1928,13 +1928,12 @@ export async function runSinopacProviderWorkflow(
         assertSession,
       }),
     });
-    // SinoPac's account and row counts describe the verified deposit only.
+    // SinoPac's account counts describe the verified deposit only.
     const [verified, ...attached] = summary.products;
     const succeeded = verified?.status === "success" ? deposit as SinopacDepositCollection | null : null;
     return productRunResult(summary, {
       counts: {
         accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
-        rowCount: succeeded?.rowCount ?? 0,
         skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
       },
       sourceOnly: succeeded !== null && !succeeded.financial,
