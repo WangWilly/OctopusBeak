@@ -14,7 +14,8 @@ import {
   StatementComponentAbsentError,
 } from "./product-collection.ts";
 import type { ProductCollectionRunSummary } from "./product-collection.ts";
-import { createTdccRunSummary, tdccWorkflowOutput } from "./tdcc-collection-summary.ts";
+import { aggregateTdccExclusionCounts, createTdccRunSummary } from "./tdcc-collection-summary.ts";
+import { productRunResult } from "./workflow-run-result.ts";
 import { defineWorkflow, type WorkflowDefinition } from "./workflow-executor.ts";
 
 export type TdccWorkflowInput = Readonly<{ statementTypes: readonly TdccProductId[] }>;
@@ -58,7 +59,6 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     let collectedSummary: ProductCollectionRunSummary;
     try {
       collectedSummary = await collectSelectedProducts({
-        failedRunInSummary: true,
         productIds: TDCC_PRODUCT_IDS,
         selectedIds,
         signal: context.signal,
@@ -104,6 +104,10 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
       throw error;
     }
 
-    return tdccWorkflowOutput(runSummary.summarize(collectedSummary));
+    const summary = runSummary.summarize(collectedSummary);
+    return productRunResult(summary, {
+      counts: aggregateTdccExclusionCounts(summary.products.flatMap((product) =>
+        product.collection ? [product.collection.exclusionCounts] : [])),
+    });
   });
 }

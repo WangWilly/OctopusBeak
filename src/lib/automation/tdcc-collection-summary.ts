@@ -228,19 +228,6 @@ export function createTdccRunSummary(selectedIds: readonly TdccProductId[]) {
   });
 }
 
-export function tdccWorkflowOutput(summary: ProductCollectionRunSummary) {
-  const exclusions = aggregateTdccExclusionCounts(summary.products.flatMap((product) =>
-    product.collection ? [product.collection.exclusionCounts] : []));
-  const hasIntentionalExclusions = summary.products.some((product) => product.collection?.status === "complete_with_exclusions");
-  return {
-    ...summary,
-    ...exclusions,
-    status: summary.status === "completed"
-      ? summary.committedCount > 0 ? "financial-admitted" as const : hasIntentionalExclusions ? "completed" as const : "no-data" as const
-      : summary.status,
-  };
-}
-
 type TdccSummaryCounts = Readonly<Partial<Record<TdccExclusionCountName | "committedCount" | "itemCount", number>>>;
 type TdccSummaryEvidence = Readonly<{
   counts: TdccSummaryCounts;

@@ -18,6 +18,7 @@ import {
 import { productRunStatus } from "../automation/product-run-status.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
+import { productRunResult, type ProductRunResult } from "../automation/workflow-run-result.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 
 /** Explicit provider evidence that the person holds no such product, or that it holds nothing. */
@@ -68,14 +69,6 @@ export type PreviewProductRun = Readonly<{
   interrupted: Readonly<{ errorCode: TypedWorkflowErrorCode; error: unknown }> | null;
   /** The first product failure, for a run in which nothing succeeded. */
   firstFailure: unknown;
-}>;
-
-export type PreviewRunOutput = Readonly<{
-  status: ProductCollectionRunSummary["status"];
-  accountCount: number;
-  itemCount: number;
-  committedCount: number;
-  products: readonly CollectionProductOutcome[];
 }>;
 
 const SESSION_REASONS: ReadonlySet<PreviewFailureReason> = new Set([
@@ -199,7 +192,7 @@ function previewRunSummary(run: PreviewProductRun): ProductCollectionRunSummary 
  * the sole product's own error, so a single-product source fails exactly as
  * before, or an interrupted error carrying every product's outcome.
  */
-export function previewRunOutput(run: PreviewProductRun): PreviewRunOutput {
+export function previewRunOutput(run: PreviewProductRun): ProductRunResult {
   const summary = previewRunSummary(run);
   if (run.interrupted) {
     throw withCause(new ProductCollectionInterruptedError(run.interrupted.errorCode, summary), run.interrupted.error);
@@ -211,13 +204,7 @@ export function previewRunOutput(run: PreviewProductRun): PreviewRunOutput {
     const first = attempted.find((product) => product.status === "failed")!;
     throw withCause(new ProductCollectionInterruptedError(first.errorCode ?? "source-collection-failed", summary), run.firstFailure);
   }
-  return {
-    status: summary.status,
-    accountCount: summary.committedCount,
-    itemCount: summary.itemCount,
-    committedCount: summary.committedCount,
-    products: summary.products,
-  };
+  return productRunResult(summary, { preview: true, counts: { accountCount: summary.committedCount } });
 }
 
 function withCause<E extends Error>(error: E, cause: unknown): E {

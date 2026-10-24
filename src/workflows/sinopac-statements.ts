@@ -13,12 +13,11 @@ import {
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
   StatementComponentAbsentError,
-  type CollectionProductOutcome,
-  type ProductCollectionRunSummary,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -74,7 +73,6 @@ import {
 } from "./sinopac-identity-evidence.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
-import type { PreviewRunOutput } from "../lib/preview-sources/product-collection.ts";
 import {
   collectSinopacCreditCards,
   sinopacCardPageTransport,
@@ -198,21 +196,6 @@ export type SinopacJsonSourceResponse = Readonly<{
 }>;
 
 export type SinopacWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
-export type SinopacWorkflowOutput = Readonly<{
-  usedExistingSession: boolean;
-  dateRange: DateRange;
-  accountCount: number;
-  rowCount: number;
-  skippedAccountCount: number;
-  sourceCaptureCount: number;
-  itemCount: number;
-  committedCount: number;
-  status: "source-only" | "financial-admitted" | PreviewRunOutput["status"];
-  /** Verified deposit first, followed by attached preview product outcomes. */
-  products: readonly CollectionProductOutcome[];
-  productCollectionSummary: ProductCollectionRunSummary;
-}>;
-
 export type SinopacProviderWorkflowOverrides = Readonly<{
   readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
   queryTransactions?: SinopacStatementsRunDependencies["queryTransactions"];
@@ -1830,7 +1813,7 @@ export async function runSinopacProviderWorkflow(
   context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   overrides: SinopacProviderWorkflowOverrides = {},
-): Promise<SinopacWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("SinoPac workflow credentials or input are missing or invalid.");
@@ -1844,8 +1827,7 @@ export async function runSinopacProviderWorkflow(
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
     await context.event("authentication", "started", "authentication-started");
-    const usedExistingSession = await isSignedIn(page, context.signal);
-    if (!usedExistingSession)
+    if (!(await isSignedIn(page, context.signal)))
       await signInSinopacForApp(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
     await dismissPasswordExpiryNotice(page, context.signal);
@@ -1946,32 +1928,16 @@ export async function runSinopacProviderWorkflow(
         assertSession,
       }),
     });
-    return sinopacRunOutput(usedExistingSession, dateRange, summary, deposit);
+    // SinoPac's account and row counts describe the verified deposit only.
+    const [verified, ...attached] = summary.products;
+    const succeeded = verified?.status === "success" ? deposit as SinopacDepositCollection | null : null;
+    return productRunResult(summary, {
+      counts: {
+        accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
+        rowCount: succeeded?.rowCount ?? 0,
+        skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
+      },
+      sourceOnly: succeeded !== null && !succeeded.financial,
+    });
   });
-}
-
-/** Adapt the run's product results while keeping SinoPac's verified-only account and row counts. */
-function sinopacRunOutput(
-  usedExistingSession: boolean,
-  dateRange: DateRange,
-  summary: ProductCollectionRunSummary,
-  deposit: SinopacDepositCollection | null,
-): SinopacWorkflowOutput {
-  const [verified, ...attached] = summary.products;
-  const succeeded = verified?.status === "success" ? deposit : null;
-  return {
-    usedExistingSession,
-    dateRange,
-    accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
-    rowCount: succeeded?.rowCount ?? 0,
-    skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
-    sourceCaptureCount: summary.sourceCaptureCount,
-    itemCount: summary.itemCount,
-    committedCount: summary.committedCount,
-    status: summary.status !== "completed"
-      ? summary.status
-      : succeeded ? (succeeded.financial ? "financial-admitted" : "source-only") : "completed",
-    products: summary.products,
-    productCollectionSummary: summary,
-  };
 }

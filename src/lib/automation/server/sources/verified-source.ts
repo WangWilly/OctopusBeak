@@ -8,7 +8,7 @@ import type {
 } from "../../types.ts";
 import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
-import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowRun } from "../../workflow-executor.ts";
+import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { AutomationPersistenceProvider } from "../store.ts";
 
@@ -97,7 +97,7 @@ export type VerifiedSource = SupportedSource & Readonly<{
  * flags, so a run that uses a port the flags do not require fails to compile.
  */
 export function verifiedWorkflow<const W extends Omit<VerifiedWorkflow, "load">>(
-  workflow: W & Readonly<{ load: () => Promise<WorkflowRun<RequiredCapabilities<W>, never, unknown, OptionalCapabilities<W>>> }>,
+  workflow: W & Readonly<{ load: () => Promise<WorkflowRun<RequiredCapabilities<W>, never, WorkflowOutput, OptionalCapabilities<W>>> }>,
 ): VerifiedWorkflow {
   return workflow as VerifiedWorkflow;
 }

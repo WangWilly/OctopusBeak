@@ -6,7 +6,6 @@ import {
   type CollectionProductTypeId,
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
-  type ProductCollectionRunSummary,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.js";
@@ -49,6 +48,7 @@ import {
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
   attachedPreviewRun,
@@ -96,23 +96,6 @@ const typedCathayInputSchema = z.object({
 export type CathayAllProviderWorkflowInput = z.infer<
   typeof typedCathayInputSchema
 >;
-export type CathayAllProviderWorkflowOutput = Readonly<{
-  statementTypes: readonly ("domestic" | "foreign")[];
-  count: number;
-  rowCount: number;
-  sourceCaptureCount: number;
-  itemCount: number;
-  committedCount: number;
-  products: ProductCollectionRunSummary["products"];
-  productCollectionSummary: ProductCollectionRunSummary;
-  status:
-    | "source-only"
-    | "financial-admitted"
-    | "no-data"
-    | "partial"
-    | "failed";
-}>;
-
 export type CathayAllProviderWorkflowDependencies = Readonly<{
   signIn?: typeof signInCathayForApp;
   createSession?: (
@@ -252,7 +235,7 @@ export async function runCathayAllProviderWorkflow(
   context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
   dependencies: CathayAllProviderWorkflowDependencies = {},
-): Promise<CathayAllProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedCathayInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error(
@@ -607,26 +590,8 @@ export async function runCathayAllProviderWorkflow(
       }
     }
 
-    const hasSuccessfulProduct = summary.products.some(
-      (product) => product.status === "success",
-    );
-    return {
-      statementTypes: selectedIds.map((typeId) =>
-        typeId === "foreign_currency" ? "foreign" : "domestic",
-      ),
-      count: statementCaptureCount,
-      rowCount: verifiedRowCount,
-      sourceCaptureCount: summary.sourceCaptureCount,
-      itemCount: summary.itemCount,
-      committedCount: summary.committedCount,
-      products: summary.products,
-      productCollectionSummary: summary,
-      status:
-        summary.status === "completed"
-          ? hasSuccessfulProduct
-            ? "financial-admitted"
-            : "no-data"
-          : summary.status,
-    };
+    return productRunResult(summary, {
+      counts: { count: statementCaptureCount, rowCount: verifiedRowCount },
+    });
   });
 }

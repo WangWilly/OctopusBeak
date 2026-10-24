@@ -130,6 +130,8 @@ export type ProductCollectionRunSummary = Readonly<{
   rowCount: number;
   itemCount: number;
   committedCount: number;
+  /** Receipts of verified products only, when Attached Preview Products also wrote; absent means every receipt is verified. */
+  verifiedCommittedCount?: number;
   status: "completed" | "partial" | "failed";
 }>;
 
@@ -181,33 +183,25 @@ export class ProductCollectionInterruptedError extends Error {
   }
 }
 
-/** Preserve a completed product snapshot if cancellation wins after run() resolves. */
+/** Preserve a completed product snapshot if cancellation wins after run() resolves with its run result. */
 export function interruptedProductCollectionFromOutput(
   output: unknown,
   errorCode: "cancelled" = "cancelled",
 ): ProductCollectionInterruptedError | undefined {
   if (!output || typeof output !== "object" || Array.isArray(output)) return undefined;
-  const result = output as Record<string, unknown>;
-  // Attached runs preserve the common snapshot separately from provider-owned
-  // account/row fields, whose units and scope can differ from whole-run counts.
-  const snapshot = result.productCollectionSummary;
-  const candidate = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
-    ? snapshot as Record<string, unknown>
-    : result;
-  const products = sanitizeCollectionProductOutcomes(candidate.products);
+  const result = output as Readonly<{ counts?: unknown; products?: unknown }>;
+  const products = sanitizeCollectionProductOutcomes(result.products);
   if (!products) return undefined;
-  const readCount = (name: string): number => isSafeCount(candidate[name] as number)
-    ? candidate[name] as number
-    : 0;
-  const sourceCaptureCount = readCount("sourceCaptureCount");
-  const rowCount = readCount("rowCount");
-  const itemCount = readCount("itemCount");
+  const counts = result.counts && typeof result.counts === "object" && !Array.isArray(result.counts)
+    ? result.counts as Readonly<Record<string, unknown>>
+    : {};
+  const readCount = (name: string): number => isSafeCount(counts[name] as number) ? counts[name] as number : 0;
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
   return new ProductCollectionInterruptedError(errorCode, Object.freeze({
     products,
-    sourceCaptureCount,
-    rowCount,
-    itemCount,
+    sourceCaptureCount: readCount("sourceCaptureCount"),
+    rowCount: readCount("rowCount"),
+    itemCount: readCount("itemCount"),
     committedCount,
     status: productRunStatus(products, committedCount),
   }));
@@ -254,12 +248,6 @@ export type CollectSelectedProductsOptions<
    * absent when none is selected.
    */
   attached?: () => Promise<PreviewProductRun>;
-  /**
-   * Return a run in which nothing produced durable data as a failed summary
-   * instead of throwing it. Fubon, Yuanta and TDCC still report failure in
-   * their output this way.
-   */
-  failedRunInSummary?: true;
 }>;
 
 function isSafeCount(value: number): boolean {
@@ -598,7 +586,6 @@ export async function collectSelectedProducts<
 
   const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
   if (signal.aborted) throw new ProductCollectionInterruptedError("cancelled", summary);
-  if (options.failedRunInSummary) return summary;
   return finishProductCollectionRun(summary, firstFailure, options.attached ? await options.attached() : null, signal);
 }
 
@@ -622,6 +609,7 @@ function finishProductCollectionRun(
     rowCount: verified.rowCount + (attached?.receipts.reduce((total, receipt) => total + receipt.transactions, 0) ?? 0),
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
+    ...(attached ? { verifiedCommittedCount: verified.committedCount } : {}),
     status: productRunStatus(products, committed),
   });
   // An uncertain commit remains a failure even when cancellation also wins.

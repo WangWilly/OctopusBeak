@@ -31,12 +31,11 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
-  type CollectionProductOutcome,
-  type ProductCollectionRunSummary,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
@@ -1134,28 +1133,7 @@ function cardKeyForRow(row: StatementRow): string {
   return row.cardNumber.replace(/\D/g, "").slice(-4);
 }
 
-type EsunCreditCardCollection = Readonly<{
-  count: number;
-  query: Readonly<{ startDate: string; endDate: string }>;
-  captureId: string;
-}>;
-
-/** `products` lists the verified credit card first, then each attached preview product (ADR 0051). */
-export type EsunProviderWorkflowOutput = Readonly<{
-  usedExistingSession: boolean;
-  count: number;
-  query: Readonly<{ startDate: string; endDate: string }> | null;
-  canonicalAdmission: "admitted" | "failed" | "not-selected";
-  canonicalCaptureCount: 0 | 1;
-  sourceCaptureCount: number;
-  rowCount: number;
-  itemCount: number;
-  captureId: string | null;
-  committedCount: number;
-  products: readonly CollectionProductOutcome[];
-  productCollectionSummary: ProductCollectionRunSummary;
-  status: ProductCollectionRunSummary["status"];
-}>;
+type EsunCreditCardCollection = Readonly<{ count: number }>;
 
 const typedInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
@@ -1402,18 +1380,14 @@ async function collectEsunCreditCard(
     });
   }
 
-  return {
-    count: rows.length,
-    query: { startDate, endDate },
-    captureId: canonicalCapture.captureId,
-  };
+  return { count: rows.length };
 }
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
 export async function runEsunCreditCardProviderWorkflow(
   context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
-): Promise<EsunProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E.SUN workflow credentials are missing or invalid.");
   const input = parsed.data;
@@ -1432,7 +1406,7 @@ export async function runEsunCreditCardProviderWorkflow(
       void dialog.accept().catch(() => undefined);
     });
     await context.event("authentication", "started", "authentication-started");
-    const usedExistingSession = await authenticateEsunPage(page, input.credentials, context);
+    await authenticateEsunPage(page, input.credentials, context);
     context.signal.throwIfAborted();
     await context.event("authentication", "completed", "authentication-completed");
 
@@ -1466,31 +1440,11 @@ export async function runEsunCreditCardProviderWorkflow(
         }),
       }),
     });
-    return esunRunOutput(usedExistingSession, summary, creditCard);
+    const admitted = summary.products[0]?.status === "success"
+      ? creditCard as EsunCreditCardCollection | null
+      : null;
+    return productRunResult(summary, {
+      counts: { count: admitted?.count ?? 0, canonicalCaptureCount: admitted ? 1 : 0 },
+    });
   });
-}
-
-/** Adapt the run's product results to E.SUN's canonical admission fields. */
-function esunRunOutput(
-  usedExistingSession: boolean,
-  summary: ProductCollectionRunSummary,
-  collected: EsunCreditCardCollection | null,
-): EsunProviderWorkflowOutput {
-  const card = summary.products[0];
-  const creditCard = card?.status === "success" ? collected : null;
-  return {
-    usedExistingSession,
-    count: creditCard?.count ?? 0,
-    query: creditCard?.query ?? null,
-    canonicalAdmission: creditCard ? "admitted" : card?.status === "failed" ? "failed" : "not-selected",
-    canonicalCaptureCount: creditCard ? 1 : 0,
-    sourceCaptureCount: summary.sourceCaptureCount,
-    rowCount: summary.rowCount,
-    itemCount: summary.itemCount,
-    captureId: creditCard?.captureId ?? null,
-    committedCount: summary.committedCount,
-    products: summary.products,
-    productCollectionSummary: summary,
-    status: summary.status,
-  };
 }

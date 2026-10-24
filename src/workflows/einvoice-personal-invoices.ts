@@ -26,6 +26,7 @@ import {
   type EinvoiceAppSource,
 } from "./einvoice-app-transport.ts";
 import type { EInvoiceAppSession } from "./einvoice-app-protocol.ts";
+import { workflowRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 
 export type EinvoiceCredentials = {
   einvoice_phone_number?: string;
@@ -48,26 +49,6 @@ const workflowInputSchema = z.object({
   credentials: z.object({
     einvoice_phone_number: z.string().trim().min(1),
     einvoice_password: z.string().trim().min(1),
-  }),
-});
-
-const outputSchema = z.object({
-  usedExistingSession: z.boolean(),
-  invoiceCount: z.number().int().nonnegative(),
-  itemCount: z.number().int().nonnegative(),
-  months: z.array(z.string()),
-  captureId: z.string(),
-  knowledgeAt: z.number().int().nonnegative(),
-  commit: z.object({
-    status: z.literal("committed"),
-    captureId: z.string(),
-    knowledgeAt: z.number().int().nonnegative(),
-    sourceRecordIds: z.array(z.string()),
-    invoiceCount: z.number().int().nonnegative(),
-    insertedInvoiceCount: z.number().int().nonnegative(),
-    insertedRevisionCount: z.number().int().nonnegative(),
-    observedDuplicateCount: z.number().int().nonnegative(),
-    itemCount: z.number().int().nonnegative(),
   }),
 });
 
@@ -354,7 +335,6 @@ function parseMonthLabel(value: string): YearMonth {
 }
 
 export type EinvoiceWorkflowInput = z.infer<typeof workflowInputSchema>;
-export type EinvoiceWorkflowOutput = z.infer<typeof outputSchema>;
 
 function randomAppDeviceId(): string {
   return randomBytes(8).toString("hex");
@@ -505,7 +485,7 @@ export async function runEinvoiceProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   source: EinvoiceAppSource = liveEinvoiceAppSource,
-): Promise<EinvoiceWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = workflowInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E-Invoice workflow credentials are missing or invalid.");
   const financialCommit = context.financialCommit;
@@ -541,14 +521,8 @@ export async function runEinvoiceProviderWorkflow(
 
       const commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
 
-      return outputSchema.parse({
-        usedExistingSession: false,
-        invoiceCount: admittedInvoiceCount,
-        itemCount: commit.itemCount,
-        months: result.months,
-        captureId: commit.captureId,
-        knowledgeAt: commit.knowledgeAt,
-        commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
+      return workflowRunResult({
+        counts: { invoiceCount: admittedInvoiceCount, itemCount: commit.itemCount },
       });
     } finally {
       await close();

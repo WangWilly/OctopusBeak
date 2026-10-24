@@ -1,3 +1,4 @@
+import type { WorkflowRunResult } from "./workflow-run-result.ts";
 import type { Page } from "playwright";
 import type {
   HumanAssistanceContractInput,
@@ -119,7 +120,10 @@ export type WorkflowContext = Readonly<{
   productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
-export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
+/** A workflow returns its run result, or nothing when it records no run counts. */
+export type WorkflowOutput = WorkflowRunResult | void;
+
+export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = WorkflowOutput> = Readonly<{
   id: string;
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
@@ -188,7 +192,7 @@ export type WorkflowContextWith<C extends WorkflowCapability, O extends Workflow
 export type WorkflowRun<
   C extends WorkflowCapability,
   Input = unknown,
-  Output = unknown,
+  Output extends WorkflowOutput = WorkflowOutput,
   O extends WorkflowCapability = never,
 > = (
   context: WorkflowContextWith<C, O>,
@@ -202,7 +206,7 @@ export type WorkflowRun<
 export function defineWorkflow<
   const Flags extends Omit<WorkflowDefinition, "run">,
   Input = unknown,
-  Output = unknown,
+  Output extends WorkflowOutput = WorkflowOutput,
 >(
   flags: Flags,
   run: WorkflowRun<RequiredCapabilities<Flags>, Input, Output, OptionalCapabilities<Flags>>,

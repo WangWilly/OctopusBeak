@@ -41,10 +41,9 @@ export const exampleWorkflow: WorkflowDefinition<ExampleInput> = {
   async run(context, input) {
     context.signal.throwIfAborted();
     await context.event("collection", "started", "collection-started");
-    return await context.browser.withPage(async (page) => {
+    await context.browser.withPage(async (page) => {
       await page.goto(input.startUrl);
       context.signal.throwIfAborted();
-      return await page.title();
     });
   },
 };
@@ -58,6 +57,7 @@ Provider code uses only the ports supplied by `WorkflowContext`:
 - `signalEvent(signal)` reports a Run event signal, such as `verification-solver-exhausted`. The signal fixes its own stage and outcome.
 - `humanAssistance.request(contract, signal)` declares a verification stage for the solver. Despite its name, no person completes it ([ADR 0039](../adr/0039-solver-only-verification.md)). The stage needs a registered solver route, or the run fails closed. The workflow must resume only after the provider's completion check succeeds.
 - Financial definitions set `requiresFinancialCommit: true` and call `context.financialCommit.execute(...)` only after source validation. Do not open a financial database or write an alternate output.
+- A run returns its run result from `src/lib/automation/workflow-run-result.ts`, or nothing. A product collection returns `productRunResult(summary, { counts })`; the worker refuses any other shape, so provider data cannot leave the run ([ADR 0060](../adr/0060-product-collection-run-owns-every-verified-product-outcome.md)).
 
 A Preview Source does not use `financialCommit`. Follow [Building on Preview Sources](preview-sources.md) instead.
 

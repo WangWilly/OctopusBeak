@@ -32,10 +32,10 @@ test("executor injects the financial port and records typed stage events", async
       assert.ok(context.financialCommit);
       assert.equal(context.text, injected.text);
       await context.event("collection", "completed", "source-complete", { completed: 2, total: 2 });
-      return input;
+      return { counts: { itemCount: input as number } };
     },
   }], injected);
-  assert.equal(await executor.run("financial-example", "run-1", 42, new AbortController().signal), 42);
+  assert.deepEqual(await executor.run("financial-example", "run-1", 42, new AbortController().signal), { counts: { itemCount: 42 } });
   assert.deepEqual(events.map((event) => event.code), [
     "run-started", "source-complete", "run-completed",
   ]);
@@ -93,7 +93,7 @@ test("an event write failure after work starts does not relabel the outcome", as
     requiresFinancialCommit: false,
     async run(context) {
       await context.event("collection", "advanced", "collection-finished");
-      return "committed";
+      return { counts: { committedCount: 1 } };
     },
   }], {
     ...base,
@@ -105,9 +105,9 @@ test("an event write failure after work starts does not relabel the outcome", as
     },
     onEventFailure: (code) => failures.push(code),
   });
-  assert.equal(
+  assert.deepEqual(
     await executor.run("event-failure-example", "run-3", null, new AbortController().signal),
-    "committed",
+    { counts: { committedCount: 1 } },
   );
   assert.deepEqual(failures, ["event-persistence-failed", "event-persistence-failed"]);
 });
@@ -121,16 +121,12 @@ test("abort after a product workflow returns retains its committed product summa
     async run() {
       controller.abort();
       return {
-        sourceCaptureCount: 1,
-        rowCount: 2,
-        itemCount: 1,
-        committedCount: 1,
-        skippedProductCount: 0,
+        status: "financial-admitted",
+        counts: { sourceCaptureCount: 1, rowCount: 2, itemCount: 1, committedCount: 1, skippedProductCount: 0 },
         products: [
           { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
           { typeId: "credit_card", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
         ],
-        status: "financial-admitted",
       };
     },
   }], ports(events));
@@ -158,13 +154,9 @@ test("abort during finalization still converts only a product result to interrup
     requiresFinancialCommit: true,
     async run() {
       return {
-        sourceCaptureCount: 0,
-        rowCount: 0,
-        itemCount: 0,
-        committedCount: 0,
-        skippedProductCount: 0,
-        products: [{ typeId: "deposit", status: "no_data", itemCount: 0, committedCount: 0 }],
         status: "no-data",
+        counts: { sourceCaptureCount: 0, rowCount: 0, itemCount: 0, committedCount: 0, skippedProductCount: 0 },
+        products: [{ typeId: "deposit", status: "no_data", itemCount: 0, committedCount: 0 }],
       };
     },
   }], {
@@ -197,7 +189,6 @@ test("the preview write port, not the workflow, reports a preview write's commit
     async run(context) {
       await context.previewWrite!.write({ sourceId: "fixture", institution: "esun", product: "credit_card", collection: {} } as never);
       await context.previewWrite!.write({ sourceId: "fixture", institution: "esun", product: "time_deposit", collection: {} } as never);
-      return null;
     },
   }], {
     ...ports(events),

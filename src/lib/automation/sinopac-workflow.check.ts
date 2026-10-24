@@ -252,8 +252,14 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
     });
 
     assert.equal(output.status, "financial-admitted");
-    assert.equal(output.rowCount, 1);
-    assert.equal(output.usedExistingSession, true);
+    assert.deepEqual(output.counts, {
+      sourceCaptureCount: 1,
+      rowCount: 1,
+      itemCount: 1,
+      committedCount: 1,
+      accountCount: 1,
+      skippedAccountCount: 0,
+    });
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.length, 1);
     assert.equal(events.some((event) => event.code === "source-validation-completed"), true);
@@ -368,7 +374,6 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
     readCurrentDepositBalances: async () => [],
   });
 
-  assert.equal(output.usedExistingSession, false);
   assert.equal(assistanceCalls, 1);
   assert.equal(stages.some((event) => event.code === "human-assistance-requested"), true);
   assert.equal(stages.some((event) => event.code === "human-assistance-completed"), true);

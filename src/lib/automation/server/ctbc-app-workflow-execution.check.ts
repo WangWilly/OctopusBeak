@@ -213,9 +213,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
     assert.equal(result.outcome.errorCode, null);
+    assert.equal(result.outcome.summary?.status, "source-only");
     assert.deepEqual(
       Object.keys(result.outcome.summary?.counts ?? {}).sort(),
-      ["count", "rowCount", "sourceCaptureCount"],
+      ["committedCount", "count", "itemCount", "rowCount", "sourceCaptureCount"],
     );
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(observedBrowserProfile, "ctbc-login");

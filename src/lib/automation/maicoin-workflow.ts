@@ -15,6 +15,7 @@ import {
   type MaxCredentials,
 } from "../../ledger/sync-maicoin.ts";
 import { defineWorkflow, type WorkflowDefinition } from "./workflow-executor.ts";
+import { workflowRunResult } from "./workflow-run-result.ts";
 import { CommitOutcomeUnknownError } from "./commit-attempt.ts";
 
 export type MaicoinWorkflowInput = Readonly<{
@@ -212,7 +213,14 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
         completed: source.snapshots.length + statementRows,
         total: source.snapshots.length + statementRows,
       });
-      return summary;
+      return workflowRunResult({
+        status: "completed",
+        counts: {
+          canonicalCaptureCount: commit.committedCount,
+          accountCount: source.snapshots.length,
+          statementRowCount: statementRows,
+        },
+      });
     } catch (error) {
       const cancelled = context.signal.aborted
         || (error instanceof Error && error.message === "Automation task cancelled.");

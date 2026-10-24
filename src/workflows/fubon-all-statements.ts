@@ -3,12 +3,12 @@ import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith, WorkflowAccountIdentityPort } from "../lib/automation/workflow-executor.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
-  type CollectionProductOutcome,
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.ts";
 import {
@@ -148,15 +148,6 @@ async function signOutFubon(page: Page): Promise<void> {
 }
 
 export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
-export type FubonAllWorkflowOutput = Readonly<{
-  sourceCaptureCount: number;
-  rowCount: number;
-  itemCount: number;
-  committedCount: number;
-  skippedProductCount: number;
-  products: readonly CollectionProductOutcome[];
-  status: "financial-admitted" | "source-only" | "no-data" | "partial" | "failed";
-}>;
 
 export type FubonWorkflowIdentity = Readonly<{
   sourceConnectionScope: string;
@@ -311,7 +302,7 @@ export async function runFubonAllStatementsWorkflow(
   context: WorkflowContextWith<"financialCommit" | "accountIdentity">,
   rawInput: unknown,
   overrides: FubonAllWorkflowDependencies = {},
-): Promise<FubonAllWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = appInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Fubon workflow credentials or input are missing or invalid.");
@@ -355,7 +346,6 @@ export async function runFubonAllStatementsWorkflow(
       await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
-        failedRunInSummary: true,
         productIds,
         selectedIds,
         signal: context.signal,
@@ -403,20 +393,10 @@ export async function runFubonAllStatementsWorkflow(
       });
       const sourceOnly = attemptedItems.length > 0
         && attemptedItems.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
-      const status = summary.status !== "completed"
-        ? summary.status
-        : summary.itemCount === 0
-          ? "no-data"
-          : sourceOnly ? "source-only" : "financial-admitted";
-      return {
-        sourceCaptureCount: summary.sourceCaptureCount,
-        rowCount: summary.rowCount,
-        itemCount: summary.itemCount,
-        committedCount: summary.committedCount,
-        skippedProductCount: summary.products.filter((product) => product.status === "skipped").length,
-        products: summary.products,
-        status,
-      };
+      return productRunResult(summary, {
+        counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
+        sourceOnly,
+      });
     } finally {
       stop();
       await signOut(page).catch(() => undefined);

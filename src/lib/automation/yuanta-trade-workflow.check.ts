@@ -168,12 +168,17 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     assert.equal(harness.committed.length, 1);
     assert.equal(harness.committed[0]?.length, 1);
     assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "yuanta-trade");
-    assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
-    assert.equal("files" in (output as object), false);
+    assert.deepEqual(output, {
+      status: "financial-admitted",
+      counts: {
+        sourceCaptureCount: 2, rowCount: 1, itemCount: 1, committedCount: 1,
+        holdingPageCount: 1, holdingGridCount: 1, holdingRowCount: 1,
+        tradePageCount: 1, tradeGridCount: 1, tradeRowCount: 0,
+        canonicalCaptureCount: 1,
+      },
+      products: [{ typeId: "securities", status: "success", itemCount: 1, committedCount: 1 }],
+    });
     assert.deepEqual(await readdir(temp), []);
-    assert.deepEqual((output as { products?: unknown }).products, [
-      { typeId: "securities", status: "success", itemCount: 1, committedCount: 1 },
-    ]);
     assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "securities-source-validation-completed"));
   } finally {
     process.chdir(originalCwd);

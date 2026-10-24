@@ -281,10 +281,7 @@ test("an attached card failure leaves the deposit outcome intact", async () => {
     failedCard.products[0],
   ]);
   assert.equal(output.status, "partial");
-  assert.equal(output.accountCount, 1);
-  assert.equal(output.committedCount, 1);
-  assert.equal(output.sourceCaptureCount, 1);
-  assert.deepEqual(output.dateRange, { startDate: "2026/08/01", endDate: "2026/08/31" });
+  assert.deepEqual(output.counts, { sourceCaptureCount: 1, rowCount: 1, itemCount: 1, committedCount: 1, accountCount: 1 });
 });
 
 test("a session loss in the card product ends the run and keeps the deposit outcome", async () => {
@@ -301,10 +298,9 @@ test("a session loss in the card product ends the run and keeps the deposit outc
 test("a card-only selection fails when the card fails and succeeds without a deposit", async () => {
   await assert.rejects(depositRun({ statementTypes: [], attached: async () => failedCard }), /card page changed/u);
   const output = await depositRun({ statementTypes: [], attached: async () => succeededCard });
-  assert.deepEqual(output.products[0], { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" });
+  assert.deepEqual(output.products?.[0], { typeId: "deposit", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" });
   assert.equal(output.status, "completed");
-  assert.equal(output.accountCount, 1);
-  assert.equal(output.dateRange, undefined);
+  assert.equal(output.counts.accountCount, 1);
 });
 
 test("a refused HNCB verified commit names the run collection-scope-changed and skips the attached cards", async () => {
@@ -346,7 +342,7 @@ test("a recoverable HNCB verified failure still collects the attached cards", as
   });
   assert.equal(commits, 0);
   assert.equal(output.status, "partial");
-  assert.equal(output.rowCount, 0);
+  assert.equal(output.counts.rowCount, 0);
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     succeededCard.products[0],

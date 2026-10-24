@@ -303,11 +303,11 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
       },
     });
 
-    assert.equal(result.status, "financial-admitted");
-    assert.equal(result.sourceCaptureCount, 1);
-    assert.deepEqual(result.products, [
-      { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
-    ]);
+    assert.deepEqual(result, {
+      status: "financial-admitted",
+      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2, count: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
+    });
     assert.equal(harness.committed.length, 1);
     assert.equal(harness.committed[0]?.length, 2);
     const item = harness.committed[0]?.[0] as { provider?: string; product?: string; command?: { kind?: string } };
@@ -316,7 +316,6 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
     assert.equal(item.product, "domestic-deposit");
     assert.equal(item.command?.kind, "financial.mixed.commit");
     assert.equal(balanceItem.product, "current-balance");
-    assert.equal("downloads" in result, false);
     assert.deepEqual(await readdir(directory), []);
     assert.deepEqual(
       harness.events.map(({ stage, code }) => [stage, code]),

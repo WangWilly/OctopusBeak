@@ -6,7 +6,7 @@ import { workflowNeedsPgliteRpc } from "./app-workflow-registry.ts";
 const definition = (flags: Partial<WorkflowDefinition>): WorkflowDefinition => ({
   id: "fixture",
   requiresFinancialCommit: false,
-  async run() { return null; },
+  async run() {},
   ...flags,
 });
 

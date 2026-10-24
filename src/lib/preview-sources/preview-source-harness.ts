@@ -1,3 +1,4 @@
+import type { ProductRunResult } from "../automation/workflow-run-result.ts";
 import { PNG } from "pngjs";
 import type {
   PreviewDepositCollection,
@@ -12,7 +13,6 @@ import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts"
 import type { PreviewHttp, PreviewHttpOpener, PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 import { classifyTransport } from "./browser-http.ts";
 import type { PreviewSource } from "./registry.ts";
-import type { PreviewRunOutput } from "./product-collection.ts";
 import { previewWorkflowDefinition, type PreviewResponseObservation } from "./workflow.ts";
 
 export type FakeRoute = (request: PreviewHttpRequest, call: number) => PreviewHttpResponse | Promise<PreviewHttpResponse>;
@@ -67,7 +67,7 @@ export function fakeHttpOpener(routes: Readonly<Record<string, FakeRoute>>): Pre
 export type PreviewRunResult = Readonly<{
   /** The receipts of every write, summed; `null` when the run failed. */
   receipt: PreviewWriteReceipt | null;
-  output: PreviewRunOutput | null;
+  output: ProductRunResult | null;
   writes: readonly PreviewWrite[];
   /** The deposit collections written, in order. */
   deposits: readonly PreviewDepositCollection[];
@@ -162,7 +162,7 @@ export async function runPreviewSource(
     const output = await executor.run(`preview-${source.id}`, "check-run", { startUrl: source.startUrl, credentials, products }, signal);
     return {
       receipt: sumReceipts(writes.map(previewReceipt)),
-      output: output as PreviewRunOutput,
+      output: output as ProductRunResult,
       writes,
       deposits: deposits(),
       observations,

@@ -1,5 +1,6 @@
 import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
 import assert from "node:assert/strict";
+import { productRunResult } from "../workflow-run-result.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -335,7 +336,7 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.equal(await context.humanAssistance.request(contract, context.signal), "verified");
       const committed = await context.financialCommit!.execute([runItem()]);
       assert.equal(committed.status, "completed");
-      return { status: "completed", count: 1, accountNumber: "must-not-cross-worker-boundary" };
+      return { status: "completed", counts: { count: 1 } };
     },
   };
 
@@ -376,7 +377,6 @@ test("worker runs a definition through typed ports and the bounded host request 
     assert.equal(terminal?.kind, "completed", observed.map((frame) => frame.kind === "failed" ? frame.errorCode : frame.kind).join(","));
     if (terminal?.kind === "completed") {
       assert.deepEqual(terminal.summary, { status: "completed", counts: { count: 1 } });
-      assert.equal(JSON.stringify(terminal).includes("must-not-cross-worker-boundary"), false);
     }
     assert.equal(JSON.stringify(observed).includes("sensitive-fixture"), false);
     assert.equal(observed.filter((frame) => frame.kind === "event").length, 5);
@@ -437,7 +437,7 @@ test("a browser workflow that needs only account identity reaches it through the
     requiresAccountIdentity: true,
     async run(context) {
       assert.deepEqual(await context.accountIdentity!.continuity(continuityRequest as never), continued);
-      return { status: "completed", count: 1 };
+      return { status: "completed", counts: { count: 1 } };
     },
   };
   try {
@@ -464,6 +464,42 @@ test("a browser workflow that needs only account identity reaches it through the
   }
 });
 
+test("a workflow output that is not exactly a run result fails the run without crossing the worker", async () => {
+  const channel = new MessageChannel();
+  const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
+    channel.port2.on("message", (value: unknown) => {
+      const frame = parseAppWorkflowWorkerOutboundFrame(value);
+      if (frame.kind === "event" || frame.kind === "commit-attempt") {
+        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
+        resolve(frame);
+      }
+    });
+  });
+  const definition = {
+    id: "fixture-protocol",
+    requiresFinancialCommit: false,
+    async run() {
+      return { status: "completed", counts: { count: 1 }, accountNumber: "must-not-cross-worker-boundary" };
+    },
+  } as unknown as WorkflowDefinition;
+  try {
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: start,
+      resolveDefinition: () => definition,
+      browser: { async withPage(run) { return await run({} as never); } },
+    });
+    const frame = await terminal;
+    assert.equal(frame.kind, "failed");
+    assert.equal(frame.kind === "failed" ? frame.errorCode : null, "protocol-invalid");
+    assert.equal(JSON.stringify(frame).includes("must-not-cross-worker-boundary"), false);
+  } finally {
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
 test("a product failure inside a partial run appends one correlated diagnostic record", async () => {
   const channel = new MessageChannel();
   let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
@@ -480,7 +516,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
     id: "fixture-protocol",
     requiresFinancialCommit: true,
     async run(context) {
-      return await collectSelectedProducts({
+      return productRunResult(await collectSelectedProducts({
         productIds: ["deposit", "credit_card"],
         selectedIds: ["deposit", "credit_card"],
         signal: context.signal,
@@ -492,7 +528,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
         commit: (_typeId, staged) => context.financialCommit!.execute(staged),
         event: context.event,
         productFailure: context.productFailure,
-      });
+      }));
     },
   };
   const directory = await mkdtemp(join(tmpdir(), "octopus-worker-product-diagnostics-"));
@@ -765,7 +801,6 @@ test("a settlement that finishes after cancellation still reaches the host", asy
       await context.browser.withPage(async () => undefined);
       await context.financialCommit!.execute([runItem()], { signal: context.signal });
       context.signal.throwIfAborted();
-      return null;
     },
   };
   const financialCommit: WorkflowFinancialCommitPort = {
