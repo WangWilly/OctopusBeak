@@ -264,16 +264,17 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
     const harness = createContext();
     const result = await runLineBankProviderWorkflow(harness.context, input);
 
-    assert.equal(result.status, "financial-admitted");
-    assert.equal(result.accountCount, 1);
-    assert.equal(result.sourceCaptureCount, 1);
+    assert.deepEqual(result, {
+      status: "financial-admitted",
+      counts: {
+        sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2,
+        accountCount: 1, statementRowCount: 1, financialItemCount: 2,
+      },
+      products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
+    });
     assert.equal(harness.commits.length, 1);
     assert.equal(harness.commits[0]?.length, 2);
-    assert.equal("downloads" in result, false);
     assert.deepEqual(await readdir(directory), []);
-    assert.deepEqual(result.products, [
-      { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
-    ]);
     assert.ok(harness.events.some((event) => event.code === "deposit-source-validation-completed"));
     const stages = new Set([
       "preparation", "authentication", "collection", "decoding",

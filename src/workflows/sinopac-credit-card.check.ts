@@ -332,7 +332,7 @@ test("the SinoPac workflow writes attached cards only through the preview port, 
   assert.equal(lateCancellation.summary.sourceCaptureCount, 1);
   assert.equal(lateCancellation.summary.itemCount, 4);
   assert.equal(lateCancellation.summary.committedCount, 4);
-  assert.deepEqual(lateCancellation.summary, output.productCollectionSummary);
+  assert.deepEqual(lateCancellation.summary.products, output.products);
 });
 
 test("a failing attached card product leaves the verified SinoPac result intact", async () => {
@@ -345,7 +345,7 @@ test("a failing attached card product leaves the verified SinoPac result intact"
     { ...verifiedOverrides, cardTransport: transport },
   );
   assert.equal(output.status, "partial");
-  assert.equal(output.rowCount, 1);
+  assert.equal(output.counts.rowCount, 1);
   assert.equal(commits.length, 1);
   assert.deepEqual(writes, []);
   assert.deepEqual(output.products, [
@@ -516,7 +516,7 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
   assert.deepEqual(commits, []);
   assert.deepEqual(writes.map((write) => write.product), ["credit_card"]);
   assert.equal(output.status, "partial");
-  assert.equal(output.rowCount, 0);
+  assert.equal(output.counts.rowCount, 0);
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },

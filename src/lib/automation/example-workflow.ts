@@ -9,10 +9,9 @@ export const exampleWorkflow: WorkflowDefinition<ExampleInput> = {
   async run(context, input) {
     context.signal.throwIfAborted();
     await context.event("collection", "started", "collection-started");
-    return await context.browser.withPage(async (page) => {
+    await context.browser.withPage(async (page) => {
       await page.goto(input.startUrl);
       context.signal.throwIfAborted();
-      return await page.title();
     });
   },
 };

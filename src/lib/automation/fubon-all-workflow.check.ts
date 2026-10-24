@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
 import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import type { ProductCollectionInterruptedError } from "./product-collection.ts";
 import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -181,11 +182,13 @@ try {
       },
     });
     assert.deepEqual(result, {
-      sourceCaptureCount: 3,
-      rowCount: 9,
-      itemCount: 3,
-      committedCount: 3,
-      skippedProductCount: 0,
+      counts: {
+        sourceCaptureCount: 3,
+        rowCount: 9,
+        itemCount: 3,
+        committedCount: 3,
+        skippedProductCount: 0,
+      },
       products: [
         { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
         { typeId: "credit_card", status: "success", itemCount: 1, committedCount: 1 },
@@ -249,11 +252,11 @@ try {
       });
     assert.ok(calls.indexOf("deposit-collected") < calls.indexOf("card-failed-after-deposit"));
     assert.equal(commitBatches.length, 1, "the complete deposit product remains committed");
-    assert.deepEqual(result.products.map((product) => [product.typeId, product.status]), [
+    assert.deepEqual(result.products!.map((product) => [product.typeId, product.status]), [
       ["deposit", "success"], ["credit_card", "failed"], ["loan", "no_data"],
     ]);
     assert.equal(result.status, "partial");
-    assert.equal(result.committedCount, 1);
+    assert.equal(result.counts.committedCount, 1);
   }
 
   {
@@ -261,7 +264,8 @@ try {
     const commitBatches: PGliteWorkflowRunItem[][] = [];
     const controller = new AbortController();
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
-    const result = await runFubonAllStatementsWorkflow(workflowContext, input, {
+    await assert.rejects(
+      runFubonAllStatementsWorkflow(workflowContext, input, {
         authenticate: async () => undefined,
         assertSession: async () => undefined,
         startSessionKeepAlive: () => () => undefined,
@@ -272,10 +276,19 @@ try {
         },
         collectCreditCard: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0, financialAdmissionCount: 0 }),
         collectLoan: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0 }),
-      });
+      }),
+      (error: unknown) => {
+        // The workflow is SSR-loaded, so its error class is not this module's.
+        const interrupted = error as ProductCollectionInterruptedError;
+        assert.equal(interrupted.name, "ProductCollectionInterruptedError");
+        assert.equal(interrupted.errorCode, "source-collection-failed");
+        assert.equal(interrupted.summary.status, "failed");
+        assert.equal(interrupted.summary.committedCount, 0);
+        assert.equal(interrupted.summary.products.find((product) => product.typeId === "deposit")?.status, "failed");
+        return true;
+      },
+    );
     assert.equal(calls.includes("commit"), false, "malformed product text must fail before its commit");
-    assert.equal(result.products.find((product) => product.typeId === "deposit")?.status, "failed");
-    assert.equal(result.status, "failed");
   }
 
   {
@@ -283,7 +296,8 @@ try {
     const commitBatches: PGliteWorkflowRunItem[][] = [];
     const controller = new AbortController();
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
-    const result = await runFubonAllStatementsWorkflow(workflowContext, input, {
+    await assert.rejects(
+      runFubonAllStatementsWorkflow(workflowContext, input, {
         authenticate: async () => undefined,
         assertSession: async () => undefined,
         startSessionKeepAlive: () => () => undefined,
@@ -294,9 +308,17 @@ try {
         },
         collectCreditCard: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0, financialAdmissionCount: 0 }),
         collectLoan: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0 }),
-      });
+      }),
+      (error: unknown) => {
+        const interrupted = error as ProductCollectionInterruptedError;
+        assert.equal(interrupted.name, "ProductCollectionInterruptedError");
+        assert.equal(interrupted.errorCode, "source-collection-failed");
+        assert.equal(interrupted.summary.committedCount, 0);
+        assert.equal(interrupted.summary.products.find((product) => product.typeId === "deposit")?.status, "failed");
+        return true;
+      },
+    );
     assert.equal(calls.includes("commit"), false, "incomplete selected sources must fail before commit");
-    assert.equal(result.products.find((product) => product.typeId === "deposit")?.status, "failed");
     assert.ok(calls.includes("event:validation:deposit-source-validation-rejected"));
   }
 
@@ -355,7 +377,7 @@ try {
       collectLoan: async () => { calls.push("loan-called"); throw new Error("unselected"); },
     });
     assert.deepEqual(calls.filter((call) => call.endsWith("-called")), ["card-called"]);
-    assert.deepEqual(result.products.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
+    assert.deepEqual(result.products!.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
       ["deposit", "skipped", "not_selected"],
       ["credit_card", "no_data", undefined],
       ["loan", "skipped", "not_selected"],

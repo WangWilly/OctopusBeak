@@ -18,6 +18,7 @@ import {
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
+import { productRunResult } from "./workflow-run-result.ts";
 
 function item(product: string, itemKey: string): PGliteWorkflowRunItem {
   return {
@@ -535,12 +536,13 @@ for (const attached of [failedPreview, previewRun({ products: [{ typeId: "credit
 
 {
   const summary = await depositRun(undefined);
-  const output = { ...summary, rowCount: 99, productCollectionSummary: summary };
-  assert.deepEqual(interruptedProductCollectionFromOutput(output)?.summary, summary);
+  const output = productRunResult(summary);
+  assert.deepEqual(interruptedProductCollectionFromOutput(output)?.summary, summary,
+    "late cancellation rebuilds the run's products and counts from its run result");
   assert.equal(interruptedProductCollectionFromOutput({
     ...output,
-    productCollectionSummary: { ...summary, products: [{ ...summary.products[0], accountNumber: "synthetic-private-value" }] },
-  }), undefined, "an invalid explicit snapshot cannot bypass the bounded product contract");
+    products: [{ ...summary.products[0], accountNumber: "synthetic-private-value" }],
+  }), undefined, "an invalid product outcome cannot bypass the bounded product contract");
 }
 
 for (const [stage, expected] of [["validation", "source-validation-failed"], ["decoding", "source-integrity-failed"], [null, "source-collection-failed"]] as const) {

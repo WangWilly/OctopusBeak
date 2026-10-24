@@ -39,9 +39,9 @@ import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./h
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
-  type CollectionProductOutcome,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { HumanAssistanceContractInput } from "../lib/automation/human-assistance.ts";
@@ -289,24 +289,15 @@ type HoldingType = z.infer<typeof holdingTypeSchema>;
 type TradeType = z.infer<typeof tradeTypeSchema>;
 type NormalizedRow = Record<string, string>;
 
-export type YuantaTradeProviderWorkflowOutput = Readonly<{
-  usedExistingSession: boolean;
-  dateRange: Readonly<{ startDate: string; endDate: string }>;
+type YuantaTradeCollectedCounts = Readonly<{
   holdingPageCount: number;
   holdingGridCount: number;
   holdingRowCount: number;
   tradePageCount: number;
   tradeGridCount: number;
   tradeRowCount: number;
-  canonicalAdmission: "admitted" | "partial";
   canonicalCaptureCount: number;
-  products: readonly CollectionProductOutcome[];
 }>;
-
-type YuantaTradeCollectedCounts = Omit<
-  YuantaTradeProviderWorkflowOutput,
-  "usedExistingSession" | "dateRange" | "canonicalAdmission" | "products"
->;
 
 type GridColumn = {
   field: string;
@@ -1730,7 +1721,7 @@ export async function runYuantaTradeProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   dependencies: YuantaTradeWorkflowDependencies = {},
-): Promise<YuantaTradeProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     throw new Error("YuanTa Trade workflow credentials or selection are invalid.");
@@ -1762,9 +1753,8 @@ export async function runYuantaTradeProviderWorkflow(
       void dialog.accept().catch(() => undefined);
     });
     await context.event("authentication", "started", "authentication-started");
-    let usedExistingSession: boolean;
     try {
-      usedExistingSession = await authenticate(page, input.credentials, context);
+      await authenticate(page, input.credentials, context);
     } catch (error) {
       await context.event("authentication", "failed", "authentication-failed");
       throw error;
@@ -1901,12 +1891,6 @@ export async function runYuantaTradeProviderWorkflow(
         signal: context.signal,
       }),
     });
-    return {
-      usedExistingSession,
-      dateRange,
-      ...collected!,
-      canonicalAdmission: summary.status === "partial" ? "partial" : "admitted",
-      products: summary.products,
-    };
+    return productRunResult(summary, { counts: collected });
   });
 }

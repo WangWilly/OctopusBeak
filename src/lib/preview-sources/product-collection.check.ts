@@ -73,7 +73,7 @@ test("a product's failure stays with that product, and the others still write", 
   assert.equal(result.interrupted, null);
   assert.ok(events.includes("deposit-source-validation-rejected"));
   const output = previewRunOutput(result);
-  assert.deepEqual([output.status, output.accountCount], ["partial", 1]);
+  assert.deepEqual([output.status, output.counts.accountCount], ["partial", 1]);
 });
 
 test("a session loss ends the run and leaves later products unattempted and unwritten", async () => {
@@ -191,7 +191,7 @@ test("the executor hands a verified definition with attached products the previe
     id: "verified-with-attached",
     requiresFinancialCommit: false,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.hncb,
-    async run(context) { seen.push(context.previewWrite !== undefined); return null; },
+    async run(context) { seen.push(context.previewWrite !== undefined); },
   };
   const ports = {
     browser: { withPage: async () => { throw new Error("no page"); } },

@@ -22,7 +22,9 @@ ADR 0056 rejected moving every workflow onto selected-product collection, becaus
 
 **The run collects Attached Preview Products.** A workflow passes its attached collection as the run's `attached` option, built only when the person selected an attached product. The run collects them after every verified product, unless a stop already ended the run, and merges both into one summary. A recoverable verified failure still runs the attached products. A verified selection may be empty when an attached product is selected.
 
-**A run in which nothing produced durable data throws.** It throws the summary with the first failed verified product's code, so the host records that code instead of guessing from events. An attached product that was the only one attempted keeps its original error. Fubon, Yuanta and TDCC still report such a run as a failed status in their output, declared by `failedRunInSummary`, until their outputs are revisited.
+**A run in which nothing produced durable data throws.** It throws the summary with the first failed verified product's code, so the host records that code instead of guessing from events. An attached product that was the only one attempted keeps its original error. This holds for every product collection, Fubon, Yuanta and TDCC included.
+
+**A workflow returns exactly its run result.** `src/lib/automation/workflow-run-result.ts` owns the result the host records: a status, aggregate counts from a closed set of names, and product outcomes. A product collection returns `productRunResult(summary, { counts, sourceOnly })`, which derives the status: `partial` and `failed` pass through; a completed run with verified receipts is `financial-admitted`, or `source-only` when the provider says every receipt was a source assertion; without verified receipts it is `no-data` when every attempted product reported absence, and `completed` otherwise, so preview writes alone never read as admission. Other workflows build theirs with `workflowRunResult`. The worker refuses any output that is not exactly a run result and fails the run as `protocol-invalid`, instead of matching field names and silently dropping the rest, so provider data cannot leave the run. Stored outcomes keep the same shape, and older ones are still normalized when read.
 
 **The run names an untyped failure from the stage it reported.** Each collector reports its own run events through a product-scoped reporter. When it reports a decoding or validation failure and then throws an untyped error, the run names the product `source-integrity-failed` or `source-validation-failed`, as the host did from run events. A typed error and a workflow's `classifyFailure` still win.
 
@@ -36,11 +38,13 @@ ADR 0056 rejected moving every workflow onto selected-product collection, becaus
 - **Leave attached collection to each workflow, as Cathay did.** Rejected. Every workflow would keep its own copy of the verified-then-attached order and the stopping rules ADR 0051 and ADR 0058 require.
 - **Stop the attached products after any verified failure.** Rejected. A single-product run would then stop where a multi-product run continues.
 - **Read the old Statement Selection ids as aliases.** Rejected. It moves the hand-kept mapping from the workflow to the parser.
+- **Keep each workflow's own output and match its field names on the host.** Rejected. A misspelt count was dropped without notice, each workflow kept its own status vocabulary, and one invalid product outcome discarded the whole summary.
 
 ## Consequences
 
 - ADR 0056's rejected option "Move every workflow onto selected-product collection" is superseded by this decision.
 - Event codes of the moved workflows follow the run's `<product>-collection-started` pattern. Readers use the outcome and signal ([ADR 0059](0059-run-event-outcome-and-signal.md)), so only the diagnostic text changes. Commit items are unchanged, and the deposit commit goldens pin them.
 - The four single-product sources now show product results on their task row.
+- Workflow outputs lose fields no production code read, such as `usedExistingSession`, `dateRange` and `productCollectionSummary`. Late cancellation rebuilds the product snapshot from the run result.
 - A single-product commit that lands some receipts and fails others is now a `partial` run with a `canonical-commit-failed` product, as it already was for a multi-product run.
 - The attached merge that `finishAttachedProductRun` held is internal to `src/lib/automation/product-collection.ts`, and `src/lib/automation/product-collection.check.ts` covers the attached policy.

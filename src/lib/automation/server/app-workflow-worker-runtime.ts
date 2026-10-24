@@ -10,6 +10,7 @@ import type {
 } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
+import { isWorkflowRunResult } from "../workflow-run-result.ts";
 import {
   createWorkflowExecutor,
   requiredCapabilityPorts,
@@ -22,7 +23,6 @@ import type { CommitAttemptRecorder, CommitAttemptReport } from "../commit-attem
 import {
   classifyTypedWorkflowFailure,
   summarizeInterruptedProductCollection,
-  summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,
@@ -470,11 +470,13 @@ export async function runAppWorkflowWorker(
     await progressQueue;
     terminal = true;
     try {
+      // A workflow returns exactly its run result; anything else could carry provider data.
+      if (output !== undefined && !isWorkflowRunResult(output)) throw new AppWorkflowWorkerProtocolError();
       send({
         protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
         kind: "completed",
         taskRunId: start.taskRunId,
-        summary: summarizeTypedWorkflowOutput(output),
+        summary: output ?? null,
       });
     } catch {
       try {

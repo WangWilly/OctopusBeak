@@ -16,7 +16,7 @@ import {
 import { hydrateAutomationRuntimeState } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationTaskStatus } from "./store.ts";
-import type { TypedWorkflowOutcomeSummary } from "./typed-workflow-outcome.ts";
+import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
@@ -53,10 +53,10 @@ async function open(options: {
   return { run, runtime, published, taskRunId };
 }
 
-const ok = (summary: TypedWorkflowOutcomeSummary | null = null): TaskRunReport => ({ summary, failure: null });
+const ok = (summary: WorkflowRunResult | null = null): TaskRunReport => ({ summary, failure: null });
 const fail = (
   code: TaskRunFailure["code"],
-  summary: TypedWorkflowOutcomeSummary | null = null,
+  summary: WorkflowRunResult | null = null,
   proven = true,
 ): TaskRunReport => ({ summary, failure: { code, proven } });
 const started = (attemptId: string): CommitAttemptReport =>
@@ -70,7 +70,7 @@ const partial = {
   counts: { committedCount: 1, itemCount: 1 },
   products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
 } as const;
-const incomplete: TypedWorkflowOutcomeSummary = {
+const incomplete: WorkflowRunResult = {
   status: "partial",
   counts: { committedCount: 1, itemCount: 1, excludedUnknownInstitutionCount: 1 },
   products: [{

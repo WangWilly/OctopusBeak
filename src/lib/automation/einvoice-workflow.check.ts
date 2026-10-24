@@ -120,8 +120,7 @@ function makeContext(overrides: Partial<WorkflowContextWith<"financialCommit">> 
 {
   const { context, commits, events } = makeContext({});
   const output = await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({}));
-  assert.equal(output.usedExistingSession, false);
-  assert.equal(output.invoiceCount, 0);
+  assert.deepEqual(output, { counts: { invoiceCount: 0, itemCount: 0 } });
   assert.ok(events.some((event) => event.code === "authentication-completed"));
   assert.ok(events.some((event) => event.code === "month-completed"));
   assert.equal(commits.length, 1);

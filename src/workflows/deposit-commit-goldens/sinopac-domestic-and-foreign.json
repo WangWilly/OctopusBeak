@@ -1,17 +1,14 @@
 {
   "output": {
-    "usedExistingSession": true,
-    "dateRange": {
-      "startDate": "20260901",
-      "endDate": "20260930"
-    },
-    "accountCount": 2,
-    "rowCount": 4,
-    "skippedAccountCount": 0,
-    "sourceCaptureCount": 2,
-    "itemCount": 4,
-    "committedCount": 4,
     "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 2,
+      "rowCount": 4,
+      "itemCount": 4,
+      "committedCount": 4,
+      "accountCount": 2,
+      "skippedAccountCount": 0
+    },
     "products": [
       {
         "typeId": "deposit",
@@ -19,22 +16,7 @@
         "itemCount": 4,
         "committedCount": 4
       }
-    ],
-    "productCollectionSummary": {
-      "products": [
-        {
-          "typeId": "deposit",
-          "status": "success",
-          "itemCount": 4,
-          "committedCount": 4
-        }
-      ],
-      "sourceCaptureCount": 2,
-      "rowCount": 4,
-      "itemCount": 4,
-      "committedCount": 4,
-      "status": "completed"
-    }
+    ]
   },
   "executions": [
     {

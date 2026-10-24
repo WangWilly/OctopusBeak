@@ -325,12 +325,11 @@ test("Post typed workflow gets human assistance, admits complete source, and com
       readCurrentDepositBalances: async () => [],
     });
 
-    assert.equal(result.status, "financial-admitted");
-    assert.equal(result.accountCount, 1);
-    assert.equal(result.rowCount, 1);
-    assert.deepEqual(result.products, [
-      { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
-    ]);
+    assert.deepEqual(result, {
+      status: "financial-admitted",
+      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 1, committedCount: 1, accountCount: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+    });
     assert.equal(sourceCount, 1);
     assert.equal(harness.committed.length, 1);
     assert.ok(harness.committed[0]?.length);

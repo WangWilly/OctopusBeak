@@ -41,9 +41,9 @@ import {
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
-  type CollectionProductOutcome,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
@@ -72,14 +72,6 @@ const typedInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).optional(),
 });
-
-export type CtbcProviderWorkflowOutput = Readonly<{
-  count: number;
-  rowCount: number;
-  sourceCaptureCount: number;
-  status: "source-only" | "financial-admitted" | "partial";
-  products: readonly CollectionProductOutcome[];
-}>;
 
 export type CtbcProviderWorkflowDependencies = Readonly<{
   collectStatements?: (
@@ -1143,7 +1135,7 @@ export async function runCtbcProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
   dependencies: CtbcProviderWorkflowDependencies = {},
-): Promise<CtbcProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("CTBC workflow credentials or input are missing or invalid.");
@@ -1334,14 +1326,6 @@ export async function runCtbcProviderWorkflow(
       }),
     });
 
-    return {
-      count,
-      rowCount: summary.rowCount,
-      sourceCaptureCount: summary.sourceCaptureCount,
-      status: summary.status === "partial"
-        ? "partial"
-        : financialAdmitted ? "financial-admitted" : "source-only",
-      products: summary.products,
-    };
+    return productRunResult(summary, { counts: { count }, sourceOnly: !financialAdmitted });
   });
 }

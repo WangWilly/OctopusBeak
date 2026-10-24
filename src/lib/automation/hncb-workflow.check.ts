@@ -158,7 +158,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     });
 
     assert.equal(output.status, "financial-admitted");
-    assert.equal(output.accountCount, 1);
+    assert.equal(output.counts.accountCount, 1);
     assert.equal(statementResponse?.status, 200);
     assert.equal(statementResponse?.contentType, "application/vnd.ms-excel; charset=big5");
     assert.equal(postCount, 1);
@@ -328,7 +328,6 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     const events: Array<{ stage: string; code: string }> = [];
     const result = await runHncbStatements(page, baseInput, {
       ...dependencies,
-      usedExistingSession: true,
       event: async (stage, _outcome, code) => { events.push({ stage, code }); },
       downloadStatement: async () => ({
         account,
@@ -345,7 +344,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
       }),
     });
     assert.equal(result.status, "financial-admitted");
-    assert.equal(result.accountCount, 1);
+    assert.equal(result.counts.accountCount, 1);
     assert.equal(commitItems.length, 1);
     assert.ok(events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
     assert.deepEqual(await readdir(workingDirectory), []);

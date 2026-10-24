@@ -150,9 +150,7 @@ test("a preview workflow writes only through its bound preview port", async () =
   const signal = new AbortController().signal;
   assert.deepEqual(await executor.run("preview-synthetic", "run-1", { startUrl: "", credentials: {}, products: ["deposit"] }, signal), {
     status: "completed",
-    accountCount: 1,
-    itemCount: 1,
-    committedCount: 1,
+    counts: { sourceCaptureCount: 0, rowCount: 0, itemCount: 1, committedCount: 1, accountCount: 1 },
     products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
   });
   assert.equal(seenContextKeys.includes("financialCommit"), false);

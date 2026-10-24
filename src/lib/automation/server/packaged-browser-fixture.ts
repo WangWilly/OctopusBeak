@@ -1,3 +1,4 @@
+import { workflowRunResult } from "../workflow-run-result.ts";
 import type { WorkflowContext, WorkflowDefinition } from "../workflow-executor.ts";
 
 export const PACKAGED_BROWSER_FIXTURE_ENABLED_ENV = "OCTOPUSBEAK_PACKAGED_WORKFLOW_FIXTURE";
@@ -99,7 +100,7 @@ export function packagedBrowserFixtureDefinition(
         await waitForCancellation(context);
       }
       await new Promise((resolve) => setTimeout(resolve, PACKAGED_BROWSER_FIXTURE_SUCCESS_SETTLE_MS));
-      return { status: "completed" };
+      return workflowRunResult({ status: "completed", counts: {} });
     },
   };
 }

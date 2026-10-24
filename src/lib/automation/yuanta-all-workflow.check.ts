@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
 import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import type { ProductCollectionInterruptedError } from "./product-collection.ts";
 import type { runYuantaAllStatementsWorkflow as runYuantaAllStatementsWorkflowType } from "../../workflows/yuanta-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -142,11 +143,13 @@ try {
       collectors(calls),
     );
     assert.deepEqual(result, {
-      sourceCaptureCount: 5,
-      rowCount: 10,
-      itemCount: 5,
-      committedCount: 5,
-      skippedProductCount: 0,
+      counts: {
+        sourceCaptureCount: 5,
+        rowCount: 10,
+        itemCount: 5,
+        committedCount: 5,
+        skippedProductCount: 0,
+      },
       products: productTypes.map((typeId) => ({ typeId, status: "success", itemCount: 1, committedCount: 1 })),
       status: "financial-admitted",
     });
@@ -184,7 +187,7 @@ try {
       );
     assert.ok(calls.indexOf("deposit-collected") < calls.indexOf("foreign-currency-failed-after-deposit"));
     assert.equal(batches.length, 4, "a product error does not block later complete products");
-    assert.deepEqual(result.products.map(({ typeId, status }) => [typeId, status]), [
+    assert.deepEqual(result.products!.map(({ typeId, status }) => [typeId, status]), [
       ["deposit", "success"], ["foreign_currency", "failed"], ["credit_card", "success"],
       ["loan", "success"], ["fund", "success"],
     ]);
@@ -209,7 +212,7 @@ try {
         },
       });
     assert.equal(batches.length, 4, "a malformed product staging group does not leak or block other products");
-    assert.equal(result.products.find((product) => product.typeId === "deposit")?.status, "failed");
+    assert.equal(result.products!.find((product) => product.typeId === "deposit")?.status, "failed");
     assert.equal(result.status, "partial");
   }
 
@@ -266,7 +269,7 @@ try {
       },
     );
     assert.deepEqual(calls.filter((call) => call.endsWith("-called")), ["fund-called"]);
-    assert.deepEqual(result.products.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
+    assert.deepEqual(result.products!.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
       ["deposit", "skipped", "not_selected"],
       ["foreign_currency", "skipped", "not_selected"],
       ["credit_card", "skipped", "not_selected"],
@@ -275,6 +278,33 @@ try {
     ]);
     assert.equal(batches.length, 1);
     assert.equal(batches[0]?.[0]?.product, "investment");
+  }
+
+  {
+    const calls: string[] = [];
+    const batches: PGliteWorkflowRunItem[][] = [];
+    const controller = new AbortController();
+    await assert.rejects(
+      runYuantaAllStatementsWorkflow(
+        context(controller.signal, calls, batches),
+        { ...input, statementTypes: ["fund"] },
+        {
+          ...collectors(calls),
+          collectFund: async () => { throw new Error("fund export is incomplete"); },
+        },
+      ),
+      (error: unknown) => {
+        // The workflow is SSR-loaded, so its error class is not this module's.
+        const interrupted = error as ProductCollectionInterruptedError;
+        assert.equal(interrupted.name, "ProductCollectionInterruptedError");
+        assert.equal(interrupted.errorCode, "source-collection-failed");
+        assert.equal(interrupted.summary.status, "failed");
+        assert.equal(interrupted.summary.committedCount, 0);
+        assert.equal(interrupted.summary.products.find((product) => product.typeId === "fund")?.status, "failed");
+        return true;
+      },
+    );
+    assert.equal(batches.length, 0, "a run with no durable product commits nothing");
   }
 
   assert.deepEqual(await readdir(temp), [], "typed Yuanta workflow must not write downloads or logs");

@@ -15,9 +15,9 @@ import type {
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
-  type CollectionProductOutcome,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
@@ -112,12 +112,6 @@ export type PostStatementResponseMetadata = Readonly<{
 }>;
 
 export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
-export type PostWorkflowOutput = Readonly<{
-  accountCount: number;
-  rowCount: number;
-  status: "financial-admitted" | "partial";
-  products: readonly CollectionProductOutcome[];
-}>;
 
 export type PostStatementsRunDependencies = {
   text?: SourceTextPort;
@@ -1066,7 +1060,7 @@ export async function runPostProviderWorkflow(
     PostStatementsRunDependencies,
     "collectSourceStatements" | "readCurrentDepositBalances"
   >> = {},
-): Promise<PostWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
@@ -1141,11 +1135,6 @@ export async function runPostProviderWorkflow(
         signal: context.signal,
       }),
     });
-    return {
-      accountCount,
-      rowCount: summary.rowCount,
-      status: summary.status === "partial" ? "partial" : "financial-admitted",
-      products: summary.products,
-    };
+    return productRunResult(summary, { counts: { accountCount } });
   });
 }

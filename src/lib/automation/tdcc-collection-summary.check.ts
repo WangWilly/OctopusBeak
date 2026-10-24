@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { TdccProductCollection } from "../../workflows/tdcc-epassbook-collection.ts";
 import type { CollectionProductOutcome, ProductCollectionRunSummary } from "./product-collection.ts";
+import { productRunResult } from "./workflow-run-result.ts";
 import {
+  aggregateTdccExclusionCounts,
   createTdccRunSummary,
   TDCC_MAX_SUMMARY_COUNT,
   TdccCollectionSummaryInvariantError,
-  tdccWorkflowOutput,
   type RecordValidatedTdccExclusions,
   type TdccValidatedExclusion,
 } from "./tdcc-collection-summary.ts";
+
+const tdccResult = (summary: ProductCollectionRunSummary) => productRunResult(summary, {
+  counts: aggregateTdccExclusionCounts(summary.products.flatMap((product) =>
+    product.collection ? [product.collection.exclusionCounts] : [])),
+});
 
 const empty: TdccProductCollection = { items: [], sourceCaptureCount: 1, rowCount: 0 };
 // The summary must treat commit items as opaque; only the product runner validates them.
@@ -51,8 +57,8 @@ test("normal collection returns items without retaining them and produces stable
     status: "complete_with_exclusions", exclusionCounts: { hiddenAccountCount: 2 },
   });
   assert.deepEqual(run.summarize(base([success])), first);
-  assert.equal(tdccWorkflowOutput(first).status, "financial-admitted");
-  assert.equal(tdccWorkflowOutput(first).hiddenAccountCount, 2);
+  assert.equal(tdccResult(first).status, "financial-admitted");
+  assert.equal(tdccResult(first).counts.hiddenAccountCount, 2);
   assert.ok(Object.isFrozen(first) && Object.isFrozen(first.products)
     && Object.isFrozen(first.products[0]) && Object.isFrozen(first.products[0]?.collection?.exclusionCounts));
   assert.doesNotMatch(JSON.stringify(first), /fixture-bank|fixture-suffix|"items"/u);
@@ -79,7 +85,7 @@ test("zero items distinguish proven absence, intentional exclusions, and incompl
       : failure;
     const summary = run.summarize(base([product]));
     assert.equal(summary.products[0]?.collection?.status, scenario.status);
-    assert.equal(tdccWorkflowOutput(summary).status, scenario.kind === "absent" ? "no-data"
+    assert.equal(tdccResult(summary).status, scenario.kind === "absent" ? "no-data"
       : scenario.kind === "complete-with-exclusions" ? "completed" : "failed");
   }
 });
@@ -102,7 +108,7 @@ test("failure and cancellation retain early observations, prior receipts, and un
       status: "incomplete", exclusionCounts: { hiddenAccountCount: 1 },
     });
     assert.equal(summary.products[2]?.collection, undefined);
-    assert.equal(tdccWorkflowOutput(summary).hiddenAccountCount, 1);
+    assert.equal(tdccResult(summary).counts.hiddenAccountCount, 1);
   }
 });
 
@@ -164,6 +170,6 @@ test("run-wide overflow rejects only the new observation and preserves earlier e
     { ...failure, typeId: "fund", errorCode: "workflow-failed" },
   ]));
   assert.equal(summary.status, "failed");
-  assert.equal(tdccWorkflowOutput(summary).excludedTimeDepositCount, TDCC_MAX_SUMMARY_COUNT);
+  assert.equal(tdccResult(summary).counts.excludedTimeDepositCount, TDCC_MAX_SUMMARY_COUNT);
   assert.deepEqual(summary.products[1]?.collection, { status: "incomplete", exclusionCounts: { hiddenAccountCount: 1 } });
 });

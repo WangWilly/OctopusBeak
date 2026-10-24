@@ -3,7 +3,8 @@ import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { HumanAssistanceCompletionStatus, HumanAssistanceContractInput } from "../human-assistance.ts";
 import type { CommitAttemptReport } from "../commit-attempt.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
-import type { TypedWorkflowOutcomeSummary, TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
+import type { TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
+import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
@@ -26,12 +27,12 @@ import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
 export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-start-failed" | "protocol-invalid";
 
 export type AppWorkflowWorkerOutcome =
-  | Readonly<{ status: "completed"; errorCode: null; summary: TypedWorkflowOutcomeSummary | null }>
-  | Readonly<{ status: "cancelled"; errorCode: "cancelled"; summary: TypedWorkflowOutcomeSummary | null }>
+  | Readonly<{ status: "completed"; errorCode: null; summary: WorkflowRunResult | null }>
+  | Readonly<{ status: "cancelled"; errorCode: "cancelled"; summary: WorkflowRunResult | null }>
   | Readonly<{
     status: "failed";
     errorCode: AppWorkflowWorkerFailureCode;
-    summary: TypedWorkflowOutcomeSummary | null;
+    summary: WorkflowRunResult | null;
     failureKind: "worker-start" | "worker-crash" | "workflow" | "unexpected-exit" | "protocol";
     diagnostic?: SafeWorkflowFailureError;
     previewResponses?: PreviewResponseShapes;
@@ -93,7 +94,7 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   terminalGraceMs?: number;
 }>;
 
-function cancelled(summary: TypedWorkflowOutcomeSummary | null = null): AppWorkflowWorkerOutcome {
+function cancelled(summary: WorkflowRunResult | null = null): AppWorkflowWorkerOutcome {
   return { status: "cancelled", errorCode: "cancelled", summary };
 }
 
@@ -118,7 +119,7 @@ function failed(
   errorCode: AppWorkflowWorkerFailureCode,
   failureKind: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>['failureKind'],
   diagnostic: SafeWorkflowFailureError | null = null,
-  summary: TypedWorkflowOutcomeSummary | null = null,
+  summary: WorkflowRunResult | null = null,
   previewResponses?: PreviewResponseShapes,
 ): AppWorkflowWorkerOutcome {
   return {

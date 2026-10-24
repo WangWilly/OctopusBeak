@@ -4,9 +4,9 @@ import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
-  type CollectionProductOutcome,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -222,16 +222,6 @@ type DateRange = {
 };
 
 export type LineBankProviderWorkflowInput = z.infer<typeof typedInputSchema>;
-
-export type LineBankProviderWorkflowOutput = Readonly<{
-  dateRange: DateRange;
-  accountCount: number;
-  statementRowCount: number;
-  sourceCaptureCount: number;
-  financialItemCount: number;
-  status: "source-only" | "financial-admitted" | "partial";
-  products: readonly CollectionProductOutcome[];
-}>;
 
 type LineBankCredentials = {
   linebank_user_id?: string;
@@ -1398,7 +1388,7 @@ function sourceValidationError(error: unknown): boolean {
 export async function runLineBankProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
-): Promise<LineBankProviderWorkflowOutput> {
+): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
@@ -1661,16 +1651,13 @@ export async function runLineBankProviderWorkflow(
         signal: context.signal,
       }),
     });
-    return {
-      dateRange,
-      accountCount,
-      statementRowCount: summary.rowCount,
-      sourceCaptureCount: summary.sourceCaptureCount,
-      financialItemCount: summary.itemCount,
-      status: summary.status === "partial"
-        ? "partial"
-        : hasFinancialRecords ? "financial-admitted" : "source-only",
-      products: summary.products,
-    };
+    return productRunResult(summary, {
+      counts: {
+        accountCount,
+        statementRowCount: summary.rowCount,
+        financialItemCount: summary.itemCount,
+      },
+      sourceOnly: !hasFinancialRecords,
+    });
   });
 }
