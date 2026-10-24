@@ -27,10 +27,8 @@ import {
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/hncb-human-attestation-contract.ts";
-import {
-  requestCaptchaAssistance,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
+import { requestCaptchaAssistance } from "./human-assistance.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
@@ -694,7 +692,7 @@ async function fillLoginForm(
 
 export function hncbCaptchaAssistanceStage(
   page: Page,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "hncb-login-captcha",
     title: "Enter the HNCB CAPTCHA",
@@ -737,7 +735,7 @@ async function signInHncbPage(
   page: Page,
   credentials: HncbCredentials,
   requestHumanAssistance: (
-    stage: WorkflowHumanAssistanceStage,
+    stage: VerificationStage,
     signal: AbortSignal,
   ) => Promise<HumanAssistanceCompletionStatus>,
   signal: AbortSignal,

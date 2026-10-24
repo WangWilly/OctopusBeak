@@ -35,7 +35,7 @@ import {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../lib/automation/yuanta-trade-captcha.ts";
-import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
@@ -90,7 +90,7 @@ export function deriveYuantaTradeAccountNumberEvidence(
 
 export function yuantaTradeAudioAssistanceStage(
   authPage: Page,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "yuanta-trade-audio-verification",
     title: "Enter the YuanTa Trade audio verification code",
@@ -129,7 +129,7 @@ export function yuantaTradeAudioAssistanceStage(
 
 export function yuantaTradeCaptchaCheckboxAssistanceStage(
   authPage: Page,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "yuanta-trade-captcha-checkbox",
     title: "Complete the YuanTa Trade CAPTCHA checkbox",
@@ -157,7 +157,7 @@ export function yuantaTradeCaptchaCheckboxAssistanceStage(
 
 export async function yuantaTradeImageAssistanceStage(
   authPage: Page,
-): Promise<WorkflowHumanAssistanceStage> {
+): Promise<VerificationStage> {
   const modal = yuantaTradeCaptchaModal(authPage);
   const images = yuantaTradeCaptchaImages(modal);
   const imageCount = Math.min(await images.count(), 12);
@@ -206,12 +206,12 @@ export async function yuantaTradeImageAssistanceStage(
 
 export async function requestYuantaTradeAssistance(
   context: WorkflowContext,
-  stage: WorkflowHumanAssistanceStage,
+  stage: VerificationStage,
 ): Promise<"entered" | "verified"> {
   context.signal.throwIfAborted();
   let contract: HumanAssistanceContractInput;
   try {
-    contract = await emitHumanAssistanceStage(stage);
+    contract = await resolveVerificationStage(stage);
   } catch (error) {
     await context.signalEvent("human-assistance-failed");
     throw error;
@@ -1594,7 +1594,7 @@ async function completeTypedCertificateIfPresent(
   );
   const passwordField = page.locator("#jpki_PfxFilePwd");
   if (!(await passwordField.isVisible().catch(() => false))) {
-    const stage: WorkflowHumanAssistanceStage = {
+    const stage: VerificationStage = {
       stageId: "yuanta-trade-certificate-selection",
       title: "Select the YuanTa Trade certificate",
       targets: [{

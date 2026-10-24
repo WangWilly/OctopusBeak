@@ -5,10 +5,7 @@ import type {
   HumanAssistanceContractInput,
 } from "../lib/automation/human-assistance.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
-import {
-  emitHumanAssistanceStage,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import { resolveVerificationStage, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import { withAbort } from "./abort.ts";
 
 const FUBON_ENTRY_URL =
@@ -1151,7 +1148,7 @@ export async function inspectFubonOtpFromCurrentFrame(
 
 export function fubonCaptchaAssistanceStage(
   frame: Frame,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "fubon-login-captcha",
     title: "Enter the Fubon CAPTCHA",
@@ -1243,9 +1240,9 @@ export async function completeFubonHumanLoginWithAssistance(
   const { signal, request } = options;
   const dialogs = captureFubonLoginDialogs(page);
   const event = options.event ?? (() => Promise.resolve());
-  const assistance = async (stage: WorkflowHumanAssistanceStage) => {
+  const assistance = async (stage: VerificationStage) => {
     signal.throwIfAborted();
-    const contract = await withAbort(emitHumanAssistanceStage(stage), signal);
+    const contract = await withAbort(resolveVerificationStage(stage), signal);
     await event("human-assistance-requested");
     const status = await withAbort(request(contract, signal), signal);
     signal.throwIfAborted();

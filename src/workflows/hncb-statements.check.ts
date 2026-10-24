@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { chromium, type Frame, type Page } from "playwright";
-import {
-  emitHumanAssistanceStage,
-} from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildHncbCapture,
   buildHncbCurrentDepositBalanceCapture,
@@ -393,7 +391,7 @@ try {
       alt="HNCB CAPTCHA"
     />
   `);
-  const captchaContract = await emitHumanAssistanceStage(hncbCaptchaAssistanceStage(captchaPage));
+  const captchaContract = await resolveVerificationStage(hncbCaptchaAssistanceStage(captchaPage));
   assert.equal(captchaContract.stageId, "hncb-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");

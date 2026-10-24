@@ -3,10 +3,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "./verification-stage.ts";
 
 test("a workflow assistance stage resolves to a contract that never carries the captured answer", async () => {
-  const contract = await emitHumanAssistanceStage({
+  const contract = await resolveVerificationStage({
       stageId: "yuanta-bank-captcha",
       title: "Complete the CAPTCHA",
       targets: [{
@@ -31,7 +31,7 @@ test("a workflow assistance stage resolves to a contract that never carries the 
 });
 
 test("assistance stages publish a declared challenge kind and solver image region", async () => {
-  const contract = await emitHumanAssistanceStage({
+  const contract = await resolveVerificationStage({
       stageId: "yuanta-bank-captcha",
       title: "Complete the CAPTCHA",
       targets: [{
@@ -67,7 +67,7 @@ test("assistance stages publish a declared challenge kind and solver image regio
 });
 
 test("assistance stages omit an unresolvable solver image region", async () => {
-  const contract = await emitHumanAssistanceStage({
+  const contract = await resolveVerificationStage({
     stageId: "yuanta-bank-captcha",
     title: "Complete the CAPTCHA",
     targets: [{
@@ -100,7 +100,7 @@ test("an explicit no-op publisher ignores legacy file and file-descriptor settin
   process.env.OCTOPUSBEAK_HUMAN_ASSISTANCE_PATH = outputPath;
   process.env.OCTOPUSBEAK_HUMAN_ASSISTANCE_FD = "987654";
   try {
-    const contract = await emitHumanAssistanceStage({
+    const contract = await resolveVerificationStage({
       stageId: "typed-captcha",
       title: "Complete the CAPTCHA",
       targets: [{

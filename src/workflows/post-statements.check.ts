@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { EventEmitter } from "node:events";
 import { chromium } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildPostDomesticDepositCapture,
   dismissPostNoticeIfPresent,
@@ -376,7 +376,7 @@ try {
       />
     </div>
   `);
-  const captchaContract = await emitHumanAssistanceStage(postCaptchaAssistanceStage(captchaPage));
+  const captchaContract = await resolveVerificationStage(postCaptchaAssistanceStage(captchaPage));
   assert.equal(captchaContract.stageId, "ipost-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");

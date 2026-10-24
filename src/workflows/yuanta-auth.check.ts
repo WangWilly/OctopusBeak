@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Page } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 
 const {
   isYuantaSignedIn,
@@ -187,7 +187,7 @@ test("the typed Yuanta App parent delegates authentication to shared assistance"
     authSource,
     /from\s+["']libretto["']|LibrettoWorkflowContext|librettoAuthenticate|\bpause\(|npx libretto|LIBRETTO_CLOUD_/u,
   );
-  assert.match(authSource, /emitHumanAssistanceStage/);
+  assert.match(authSource, /\bVerificationStage\b/);
   assert.match(authSource, /#gcode/);
   assert.doesNotMatch(
     authSource,
@@ -238,7 +238,7 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
       return locator;
     },
   } as unknown as Frame;
-  const contract = await emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame));
+  const contract = await resolveVerificationStage(yuantaBankCaptchaAssistanceStage(loginFrame));
 
   assert.deepEqual(selectors, ["#gcode", 'img[src*="GOTP"]:visible']);
   assert.equal(contract.challengeKind, "text-captcha");

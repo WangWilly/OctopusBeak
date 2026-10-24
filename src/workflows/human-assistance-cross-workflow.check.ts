@@ -106,7 +106,7 @@ test("provider workflows with verification publish a contract-backed stage", asy
         : source;
     assert.match(
       focusSource,
-      /emitHumanAssistanceStage|requestCaptchaAssistance/,
+      /\bVerificationStage\b/,
       `${file} must publish a human assistance stage`,
     );
     assert.doesNotMatch(
@@ -197,11 +197,11 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
   const cathay = excludedSources.find(({ provider }) => provider === "Cathay United Bank");
   assert.ok(cathay);
   assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
-  assert.doesNotMatch(cathay.content, /emitHumanAssistanceStage/);
+  assert.doesNotMatch(cathay.content, /\bVerificationStage\b/);
   const einvoice = excludedSources.find(({ provider }) => provider === "E-Invoice");
   assert.ok(einvoice);
   assert.doesNotMatch(einvoice.content, /challengeKind:\s*["']text-captcha["']/);
-  assert.doesNotMatch(einvoice.content, /emitHumanAssistanceStage/);
+  assert.doesNotMatch(einvoice.content, /\bVerificationStage\b/);
 });
 
 test("provider verification focus keeps the challenge readable", async () => {

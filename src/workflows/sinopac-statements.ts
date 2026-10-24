@@ -8,10 +8,8 @@ import {
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
 import { signInAttempt } from "./sign-in-attempt.ts";
-import {
-  requestCaptchaAssistance,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
+import { requestCaptchaAssistance } from "./human-assistance.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
@@ -943,7 +941,7 @@ async function fillLoginForm(
 
 export function sinopacCaptchaAssistanceStage(
   page: Page,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "sinopac-login-captcha",
     title: "Enter the SinoPac CAPTCHA",
