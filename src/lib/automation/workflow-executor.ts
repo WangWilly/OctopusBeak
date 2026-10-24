@@ -20,6 +20,12 @@ import {
   interruptedProductCollectionFromOutput,
 } from "./product-collection.ts";
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
+import {
+  signalRunEvent,
+  type RunEventOutcome,
+  type RunEventSignal,
+  type WorkflowRunEvent,
+} from "./run-event.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -55,18 +61,6 @@ export type WorkflowProductFailure = Readonly<{
   statementType: WorkflowProgressStatementType;
   errorCode: TypedWorkflowErrorCode;
   error: unknown;
-}>;
-
-export type WorkflowRunEvent = Readonly<{
-  runId: string;
-  stage: WorkflowStage;
-  code: string;
-  occurredAt: string;
-  completed?: number;
-  total?: number;
-  activity?: WorkflowProgressActivity;
-  statementType?: WorkflowProgressStatementType;
-  retrying?: boolean;
 }>;
 
 export interface WorkflowEventPort {
@@ -116,9 +110,12 @@ export type WorkflowContext = Readonly<{
   previewWrite?: WorkflowPreviewWritePort;
   event(
     stage: WorkflowContextStage,
+    outcome: RunEventOutcome,
     code: string,
     counts?: WorkflowEventCounts,
   ): Promise<void>;
+  /** A signal fixes its own stage and outcome (ADR 0059). */
+  signalEvent(signal: RunEventSignal): Promise<void>;
   productFailure?(failure: WorkflowProductFailure): Promise<void>;
 }>;
 
@@ -194,7 +191,12 @@ const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
 const PROGRESS_STATEMENT_TYPES = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
 
 /** The executor's own event writer, which unlike WorkflowContext.event may report the commit stage. */
-type StageEvent = (stage: WorkflowStage, code: string, counts?: WorkflowEventCounts) => Promise<void>;
+type StageEvent = (
+  stage: WorkflowStage,
+  outcome: RunEventOutcome,
+  code: string,
+  counts?: WorkflowEventCounts,
+) => Promise<void>;
 
 /** Preview rows are written outside canonical admission, but the writer still owns its commit stage. */
 function reportedPreviewWritePort(
@@ -205,7 +207,7 @@ function reportedPreviewWritePort(
     async write(input) {
       const receipt = await port.write(input);
       if (receipt.accounts > 0) {
-        await event("commit", `${input.product.replaceAll("_", "-")}-preview-write-completed`, {
+        await event("commit", "completed", `${input.product.replaceAll("_", "-")}-preview-write-completed`, {
           completed: receipt.accounts,
           total: receipt.accounts,
           statementType: input.product,
@@ -243,22 +245,26 @@ export function createWorkflowExecutor(
           throw new Error(`${WORKFLOW_CAPABILITIES[capability].label} port is unavailable.`);
         }
       }
-      const appendEvent: StageEvent = async (stage, code, counts) => {
-        if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
-        await ports.events.append({
-          runId,
-          stage,
-          code,
-          occurredAt: ports.now(),
-          ...(counts?.completed === undefined ? {} : { completed: counts.completed }),
-          ...(counts?.total === undefined ? {} : { total: counts.total }),
-          ...(counts?.activity === undefined ? {} : { activity: counts.activity }),
-          ...(counts?.statementType === undefined ? {} : { statementType: counts.statementType }),
-        });
+      const appendEvent = async (runEvent: WorkflowRunEvent): Promise<void> => {
+        if (!SAFE_CODE.test(runEvent.code)) throw new Error("Invalid workflow event code.");
+        await ports.events.append(runEvent);
       };
-      const event: StageEvent = async (stage, code, counts) => {
+      const stageEvent = (
+        ...[stage, outcome, code, counts]: Parameters<StageEvent>
+      ): WorkflowRunEvent => ({
+        runId,
+        stage,
+        outcome,
+        code,
+        occurredAt: ports.now(),
+        ...(counts?.completed === undefined ? {} : { completed: counts.completed }),
+        ...(counts?.total === undefined ? {} : { total: counts.total }),
+        ...(counts?.activity === undefined ? {} : { activity: counts.activity }),
+        ...(counts?.statementType === undefined ? {} : { statementType: counts.statementType }),
+      });
+      const report = async (runEvent: () => WorkflowRunEvent): Promise<void> => {
         try {
-          await appendEvent(stage, code, counts);
+          await appendEvent(runEvent());
         } catch {
           // Progress persistence must not turn a successful financial commit
           // into a failed run with an ambiguous retry outcome.
@@ -269,6 +275,8 @@ export function createWorkflowExecutor(
           }
         }
       };
+      const event: StageEvent = (...args) => report(() => stageEvent(...args));
+      const signalEvent = (signal: RunEventSignal) => report(() => signalRunEvent(signal, { runId, occurredAt: ports.now() }));
       const productFailure: WorkflowContext["productFailure"] = async (failure) => {
         try {
           await ports.productFailure?.(failure);
@@ -282,7 +290,7 @@ export function createWorkflowExecutor(
         financialCommit = recordedFinancialCommitPort({
           commit: capabilityPorts.financialCommit,
           attempts: ports.commitAttempts,
-          event: (code, counts, product) => event("commit", code, {
+          event: (outcome, code, counts, product) => event("commit", outcome, code, {
             ...counts,
             ...(product !== null && PROGRESS_STATEMENT_TYPES.has(product)
               ? { statementType: product as WorkflowProgressStatementType }
@@ -303,11 +311,12 @@ export function createWorkflowExecutor(
           ? { previewWrite: reportedPreviewWritePort(ports.previewWrite, event) }
           : {}),
         event,
+        signalEvent,
         productFailure,
       };
       signal.throwIfAborted();
       // Before any provider action, fail closed if the operational store is unavailable.
-      await appendEvent("preparation", "run-started");
+      await appendEvent(stageEvent("preparation", "started", "run-started"));
       try {
         const result = await definition.run(context, input);
         const throwIfAbortedWithProductResults = () => {
@@ -317,11 +326,11 @@ export function createWorkflowExecutor(
           signal.throwIfAborted();
         };
         throwIfAbortedWithProductResults();
-        await event("finalization", "run-completed");
+        await event("finalization", "completed", "run-completed");
         throwIfAbortedWithProductResults();
         return result;
       } catch (error) {
-        await event("finalization", signal.aborted ? "run-cancelled" : "run-failed");
+        await event("finalization", signal.aborted ? "advanced" : "failed", signal.aborted ? "run-cancelled" : "run-failed");
         throw error;
       }
     },

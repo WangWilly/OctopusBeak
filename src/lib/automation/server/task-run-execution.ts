@@ -14,8 +14,8 @@ import type { AutomationTaskProgress } from "../types.ts";
 import type {
   WorkflowBrowserPort,
   WorkflowProgressStatementType,
-  WorkflowRunEvent,
 } from "../workflow-executor.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import {
   projectWorkflowRunProgress,
   selectedWorkflowStatementTypes,
@@ -121,8 +121,7 @@ function createWorkflowProgressReporter(
 
   return {
     async appendEvent(event: WorkflowRunEvent): Promise<void> {
-      const authenticationSucceeded = event.stage === "authentication"
-        && /authentication-(?:completed|verified|success)$/u.test(event.code);
+      const authenticationSucceeded = event.stage === "authentication" && event.outcome === "completed";
       const retryIsCaughtUp = authenticationSucceeded || event.stage === "collection";
       const recordedEvent = retrying && !retryIsCaughtUp
         ? { ...event, retrying: true }

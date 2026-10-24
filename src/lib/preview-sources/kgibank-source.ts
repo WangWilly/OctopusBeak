@@ -286,7 +286,7 @@ export function createKgibankSource(options: Readonly<{
     },
     startUrl: LOGIN_URL,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const solve = options.solveCaptcha ?? calibratedCaptchaSolver(KGIBANK_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async ({ http, form }) => {
         let submitted = false;
@@ -307,11 +307,11 @@ export function createKgibankSource(options: Readonly<{
           if (!headers?.authorization || !headers["ocp-apim-subscription-key"])
             return fail("unexpected-response", "the signed-in page sent no gateway authorization headers");
           api = gateway(context, http, headers);
-          await context.event("authentication", "authentication-completed");
-          await context.event("collection", "collection-started");
+          await context.event("authentication", "completed", "authentication-completed");
+          await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
           const accounts = await collect(api, collectedAt);
-          await context.event("collection", "collection-completed");
+          await context.event("collection", "completed", "collection-completed");
           return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts }) });
         } finally {
           if (submitted) await api.logout().catch(() => undefined);

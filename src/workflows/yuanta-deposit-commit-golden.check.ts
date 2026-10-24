@@ -105,6 +105,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
       execute: (items, options) => recorder.financialCommit.execute(expandRelationCommands(items), options),
     },
     event: recorder.event,
+    signalEvent: recorder.signalEvent,
   };
 }
 

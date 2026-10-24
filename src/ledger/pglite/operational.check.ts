@@ -149,7 +149,7 @@ try {
   await operational.appendRunEvent({
     runId: created.taskRunId,
     stage: "validation",
-    code: "source-validation-rejected",
+    outcome: "failed", code: "source-validation-rejected",
     occurredAt: "2026-09-22T00:00:00.000Z",
   });
   assert.equal(await operational.pruneRunEvents("2026-09-23T00:00:00.000Z"), 1);

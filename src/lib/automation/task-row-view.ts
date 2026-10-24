@@ -1,7 +1,7 @@
 import type { Locale, Translation } from "../i18n/i18n.ts";
 import type { AutomationCredentialStatus } from "../desktop/api.ts";
 import type { AutomationTaskRow } from "./types.ts";
-import type { WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "./tdcc-collection-summary.ts";
 import { isTerminalAutomationStatus, isWorkflowStage } from "./task-row.ts";
@@ -63,18 +63,14 @@ export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewConte
 }
 
 /** A failure label for one run event, when the event names a known failure. */
-export function workflowEventFailureLabel(event: Pick<WorkflowRunEvent, "stage" | "code">, dictionary: Translation): string | null {
-  return isVerificationSolverExhaustedEvent(event) ? dictionary.automation.verificationSolverExhausted : null;
+export function workflowEventFailureLabel(event: Pick<WorkflowRunEvent, "signal">, dictionary: Translation): string | null {
+  return event.signal === "verification-solver-exhausted" ? dictionary.automation.verificationSolverExhausted : null;
 }
 
 export function verificationSolverExhausted(
-  events: readonly Pick<WorkflowRunEvent, "stage" | "code">[] | null | undefined,
+  events: readonly Pick<WorkflowRunEvent, "signal">[] | null | undefined,
 ): boolean {
-  return events?.some(isVerificationSolverExhaustedEvent) ?? false;
-}
-
-function isVerificationSolverExhaustedEvent(event: Pick<WorkflowRunEvent, "stage" | "code">): boolean {
-  return event.stage === "authentication" && event.code === "verification-solver-exhausted";
+  return events?.some((event) => event.signal === "verification-solver-exhausted") ?? false;
 }
 
 type OutcomeCounts = NonNullable<TypedWorkflowOutcome["summary"]>["counts"];

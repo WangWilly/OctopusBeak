@@ -265,6 +265,7 @@ export async function seedDesktopCdpFixture(
       await automation.appendRunEvent({
         runId: cathayRun.taskRunId,
         stage: "authentication",
+        outcome: "advanced",
         code: "device-registration-required",
         occurredAt: `${day}T10:01:00.000Z`,
       });

@@ -12,7 +12,7 @@ import {
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import { workflowFailureExplanation } from "../workflow-failures.ts";
-import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import type { RunEventOutcome, WorkflowRunEvent } from "../run-event.ts";
 import { ProductCollectionInterruptedError } from "../product-collection.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "../tdcc-collection-summary.ts";
 
@@ -352,7 +352,7 @@ test("typed failures use stable privacy-safe categories", () => {
     classifyTypedWorkflowFailure(new ProviderProtocolOutdatedError(), [{
       runId: "run-1",
       stage: "authentication",
-      code: "authentication-started",
+      outcome: "started", code: "authentication-started",
       occurredAt: "2026-10-10T00:00:00.000Z",
     }]),
     "provider-protocol-outdated",
@@ -360,14 +360,15 @@ test("typed failures use stable privacy-safe categories", () => {
   assert.equal(classifyTypedWorkflowFailure(new Error("contains private account 123"), [{
     runId: "run-1",
     stage: "validation",
-    code: "source-validation-rejected",
+    outcome: "failed", code: "source-validation-rejected",
     occurredAt: "2026-09-25T00:00:00.000Z",
   }]), "source-validation-failed");
   // ADR 0056: commit stage events report progress; only Commit attempts decide the commit outcome.
-  for (const code of ["canonical-commit-failed", "canonical-commit-started"]) {
+  for (const [outcome, code] of [["failed", "canonical-commit-failed"], ["started", "canonical-commit-started"]] as const) {
     assert.equal(classifyTypedWorkflowFailure(new Error("provider disconnected"), [{
       runId: "run-1",
       stage: "commit",
+      outcome,
       code,
       occurredAt: "2026-09-25T00:00:00.000Z",
     }]), "workflow-failed");
@@ -376,13 +377,13 @@ test("typed failures use stable privacy-safe categories", () => {
   assert.equal(classifyTypedWorkflowFailure(new Error("provider details"), [{
     runId: "run-1",
     stage: "authentication",
-    code: "verification-solver-exhausted",
+    outcome: "failed", signal: "verification-solver-exhausted", code: "verification-solver-exhausted",
     occurredAt: "2026-10-03T00:00:00.000Z",
   }]), "verification-failed");
   assert.equal(classifyTypedWorkflowFailure(new Error("private details"), [{
     runId: "run-1",
     stage: "authentication",
-    code: "solver-route-unavailable",
+    outcome: "failed", signal: "solver-route-unavailable", code: "solver-route-unavailable",
     occurredAt: "2026-09-25T00:00:00.000Z",
   }]), "verification-configuration-failed");
   assert.equal(classifyTypedWorkflowFailure(new Error("private response body"), []), "workflow-failed");
@@ -416,15 +417,15 @@ test("stage diagnostics survive storage sanitization without exception details",
 });
 
 test("fallback stage diagnostics preserve cancellation and ignore commit events", () => {
-  const event = (stage: WorkflowRunEvent["stage"], code: string): WorkflowRunEvent => ({
-    runId: "run-1", stage, code, occurredAt: "2026-09-29T12:00:00.000Z",
+  const event = (stage: WorkflowRunEvent["stage"], outcome: RunEventOutcome, code: string): WorkflowRunEvent => ({
+    runId: "run-1", stage, outcome, code, occurredAt: "2026-09-29T12:00:00.000Z",
   });
   const error = new Error("private exception text");
   error.name = "TimeoutError";
-  const auth = event("authentication", "authentication-started");
-  const finalized = event("finalization", "run-failed");
+  const auth = event("authentication", "started", "authentication-started");
+  const finalized = event("finalization", "failed", "run-failed");
   assert.equal(classifyTypedWorkflowFailure(error, [auth, finalized], true), "cancelled");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("commit", "canonical-commit-started"), auth, finalized]), "authentication-timeout");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("collection", "collection-started"), event("preparation", "run-started"), auth, finalized]), "authentication-timeout");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("authentication", "authentication-started"), event("preparation", "run-started"), finalized]), "workflow-failed");
+  assert.equal(classifyTypedWorkflowFailure(error, [event("commit", "started", "canonical-commit-started"), auth, finalized]), "authentication-timeout");
+  assert.equal(classifyTypedWorkflowFailure(error, [event("collection", "started", "collection-started"), event("preparation", "started", "run-started"), auth, finalized]), "authentication-timeout");
+  assert.equal(classifyTypedWorkflowFailure(error, [event("authentication", "started", "authentication-started"), event("preparation", "started", "run-started"), finalized]), "workflow-failed");
 });

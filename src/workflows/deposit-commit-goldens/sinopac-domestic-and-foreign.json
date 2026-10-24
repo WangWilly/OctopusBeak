@@ -836,22 +836,27 @@
   "events": [
     {
       "stage": "preparation",
+      "outcome": "completed",
       "code": "input-validated"
     },
     {
       "stage": "authentication",
+      "outcome": "started",
       "code": "authentication-started"
     },
     {
       "stage": "authentication",
+      "outcome": "completed",
       "code": "authentication-completed"
     },
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "account-list-collection-started"
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "account-list-collected",
       "counts": {
         "completed": 2,
@@ -860,6 +865,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "source-collection-started",
       "counts": {
         "completed": 0,
@@ -868,6 +874,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "started",
       "code": "source-decoding-started",
       "counts": {
         "completed": 0,
@@ -876,6 +883,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "advanced",
       "code": "source-decoding-completed",
       "counts": {
         "completed": 1,
@@ -884,6 +892,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "account-window-collected",
       "counts": {
         "completed": 1,
@@ -892,6 +901,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "started",
       "code": "source-validation-started",
       "counts": {
         "completed": 0,
@@ -900,6 +910,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 1,
@@ -908,6 +919,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "started",
       "code": "source-decoding-started",
       "counts": {
         "completed": 1,
@@ -916,6 +928,7 @@
     },
     {
       "stage": "decoding",
+      "outcome": "advanced",
       "code": "source-decoding-completed",
       "counts": {
         "completed": 2,
@@ -924,6 +937,7 @@
     },
     {
       "stage": "collection",
+      "outcome": "advanced",
       "code": "account-window-collected",
       "counts": {
         "completed": 2,
@@ -932,6 +946,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "started",
       "code": "source-validation-started",
       "counts": {
         "completed": 1,
@@ -940,6 +955,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,
@@ -948,10 +964,12 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "current-balance-collection-started"
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "current-balance-validation-completed",
       "counts": {
         "completed": 2,

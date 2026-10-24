@@ -554,14 +554,17 @@
   "events": [
     {
       "stage": "authentication",
+      "outcome": "started",
       "code": "authentication-started"
     },
     {
       "stage": "authentication",
+      "outcome": "completed",
       "code": "authentication-completed"
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "source-validation-completed",
       "counts": {
         "completed": 1,
@@ -570,6 +573,7 @@
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,
@@ -578,10 +582,12 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
       "code": "current-balance-collection-started"
     },
     {
       "stage": "validation",
+      "outcome": "completed",
       "code": "current-balance-validation-completed",
       "counts": {
         "completed": 2,

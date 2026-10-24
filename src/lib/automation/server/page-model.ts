@@ -1,7 +1,8 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import type { AutomationTaskStatus } from "../types.ts";
-import type { WorkflowRunEvent, WorkflowStage } from "../workflow-executor.ts";
+import type { WorkflowStage } from "../workflow-executor.ts";
+import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
 import type {
   AutomationPageModel,
   AutomationTaskPrerequisiteNotice,
@@ -36,6 +37,7 @@ function pageWorkflowEvents(
       || !isWorkflowStage(event.stage)
       || typeof event.code !== "string"
       || !SAFE_WORKFLOW_EVENT_CODE.test(event.code)
+      || !hasValidRunEventMeaning(event)
       || typeof event.occurredAt !== "string"
       || !Number.isFinite(Date.parse(event.occurredAt))
       || (event.completed !== undefined
@@ -46,11 +48,13 @@ function pageWorkflowEvents(
     return [{
       runId,
       stage: event.stage as WorkflowStage,
+      outcome: event.outcome as WorkflowRunEvent["outcome"],
       code: event.code,
+      ...(event.signal === undefined ? {} : { signal: event.signal }),
       occurredAt: event.occurredAt,
       ...(event.completed === undefined ? {} : { completed: event.completed as number }),
       ...(event.total === undefined ? {} : { total: event.total as number }),
-    }];
+    } as WorkflowRunEvent];
   }).slice(-MAX_WORKFLOW_EVENTS);
 }
 

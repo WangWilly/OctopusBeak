@@ -206,6 +206,7 @@ function validationContext(
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("NextBank audio validation has no verification route."); } },
     event: async () => {},
+    signalEvent: async () => {},
     preview: {
       collect: async () => { throw new Error("NextBank audio validation never collects preview data."); },
       observe: (response) => { observations.push(response); },

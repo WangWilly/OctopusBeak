@@ -38,7 +38,7 @@ class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorke
         event: {
           runId: start.taskRunId,
           stage: "preparation",
-          code: "run-started",
+          outcome: "started", code: "run-started",
           occurredAt: "2026-09-26T00:00:00.000Z",
         },
       });
@@ -54,7 +54,7 @@ class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorke
           event: {
             runId: this.start.taskRunId,
             stage: "finalization",
-            code: "run-completed",
+            outcome: "completed", code: "run-completed",
             occurredAt: "2026-09-26T00:00:01.000Z",
           },
         });
@@ -177,13 +177,13 @@ try {
   await provider.automation.appendRunEvent({
     runId: closing.taskRunId,
     stage: "collection",
-    code: "source-started",
+    outcome: "started", code: "source-started",
     occurredAt: "2026-09-22T00:00:00.000Z",
   });
   await provider.automation.appendRunEvent({
     runId: closing.taskRunId,
     stage: "validation",
-    code: "source-complete",
+    outcome: "completed", code: "source-complete",
     occurredAt: "2026-09-25T00:00:00.000Z",
     completed: 2,
     total: 2,

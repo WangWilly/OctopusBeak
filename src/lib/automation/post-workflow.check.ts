@@ -13,7 +13,8 @@ import {
   type PostStatementResponseMetadata,
 } from "../../workflows/post-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowContext } from "./workflow-executor.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 
 const providerSource = readFileSync(
   new URL("../../workflows/post-statements.ts", import.meta.url),
@@ -265,14 +266,18 @@ function createContext(input: {
         };
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, outcome, code, counts) {
       events.push({
         runId: "run-post-check",
         stage,
+        outcome,
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,
       });
+    },
+    async signalEvent(signal) {
+      events.push(signalRunEvent(signal, { runId: "run-post-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
   return { context, events, committed };
@@ -307,8 +312,8 @@ test("Post typed workflow gets human assistance, admits complete source, and com
         assert.equal(signal, harness.context.signal);
         assert.equal(harness.committed.length, 0, "commit waits for full source admission");
         sourceCount += 1;
-        await event?.("collection", "collection-started", { completed: 0, total: 1 });
-        await event?.("decoding", "source-decoding-completed", { completed: 1, total: 1 });
+        await event?.("collection", "started", "collection-started", { completed: 0, total: 1 });
+        await event?.("decoding", "completed", "source-decoding-completed", { completed: 1, total: 1 });
         return [statement];
       },
       readCurrentDepositBalances: async () => [],

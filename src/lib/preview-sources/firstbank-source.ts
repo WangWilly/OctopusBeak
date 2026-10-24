@@ -730,7 +730,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
     },
     startUrl: FIRSTBANK_LOGIN_URL,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const solve = options.solveCaptcha ?? calibratedCaptchaSolver(FIRSTBANK_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async (page) => {
         let submitted = false;
@@ -745,15 +745,15 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
             captcha,
           });
           if (outcome.kind !== "signed-in") return await signInFailure(context, outcome);
-          await context.event("authentication", "authentication-completed");
-          await context.event("collection", "collection-started");
+          await context.event("authentication", "completed", "authentication-completed");
+          await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
           // Deposits are declared first, so they are read before the card member system, which can end the iBank session.
           const output = await context.preview.collect({
             deposit: async () => ({ collectedAt, accounts: await collectDeposits(context, page, collectedAt) }),
             credit_card: async () => collectCards(context, await page.cardPages(), collectedAt),
           });
-          await context.event("collection", "collection-completed");
+          await context.event("collection", "completed", "collection-completed");
           return output;
         } finally {
           if (submitted) await page.signOut().catch(() => undefined);

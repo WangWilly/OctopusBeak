@@ -1,5 +1,5 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
-import type { WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowRunEvent } from "./run-event.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 export type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 

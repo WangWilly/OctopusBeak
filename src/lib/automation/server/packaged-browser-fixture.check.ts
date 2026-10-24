@@ -82,7 +82,7 @@ function fixtureContext(marker: string | null, signal = new AbortController().si
         } as never);
       },
     },
-    async event(_stage: string, code: string) { events.push(code); },
+    async event(_stage: string, _outcome: string, code: string) { events.push(code); },
   } as unknown as WorkflowContext;
   return { context, events };
 }

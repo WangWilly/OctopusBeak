@@ -417,12 +417,12 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
     },
     startUrl: WEB_PAGE,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const solve = options.solveCaptcha ?? calibratedCaptchaSolver(OBANK_CAPTCHA_FAMILY);
       return open(context, { pageUrl: input.startUrl }, async (http, decodeImage) => {
         const api = client(context, http);
         await signIn(context, api, decodeImage, solve, input.credentials);
-        await context.event("authentication", "authentication-completed");
+        await context.event("authentication", "completed", "authentication-completed");
         try {
           const collectedAt = context.now();
           return await context.preview.collect({

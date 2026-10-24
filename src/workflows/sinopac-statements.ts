@@ -1011,13 +1011,13 @@ async function signInSinopacForApp(
 ): Promise<void> {
   context.signal.throwIfAborted();
   await fillLoginForm(page, credentials, context.signal);
-  await context.event("authentication", "human-assistance-requested");
+  await context.event("authentication", "advanced", "human-assistance-requested");
   const status = await requestCaptchaAssistance("SinoPac", 
     sinopacCaptchaAssistanceStage(page),
     (contract, signal) => context.humanAssistance.request(contract, signal),
     context.signal,
   );
-  await context.event("authentication", "human-assistance-completed");
+  await context.event("authentication", "advanced", "human-assistance-completed");
   context.signal.throwIfAborted();
   if (await isSignedIn(page, context.signal)) return;
 
@@ -1033,16 +1033,17 @@ async function signInSinopacForApp(
   }
   await runSinopacLoginAttempt(page, {
     signal: context.signal,
-    onDuplicateLoginConfirmed: () => context.event("authentication", "duplicate-login-confirmed"),
+    onDuplicateLoginConfirmed: () => context.event("authentication", "advanced", "duplicate-login-confirmed"),
     onDialog: async (captchaRejected) => {
       await context.event(
         "authentication",
+        captchaRejected ? "failed" : "advanced",
         captchaRejected ? "captcha-rejected" : "unrecognized-login-dialog",
       );
     },
     submit: () => clickLoginButton(page, context.signal),
     waitForSuccess: (signal) => waitForSignedInState(page, signal,
-      () => context.event("authentication", "provider-service-unavailable")),
+      () => context.event("authentication", "failed", "provider-service-unavailable")),
   });
   await dismissPasswordExpiryNotice(page, context.signal);
   if (!(await isSignedIn(page, context.signal))) {
@@ -1112,6 +1113,7 @@ async function openTransactionPage(
   } catch (error) {
     await event?.(
       error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+      "failed",
       error instanceof SourceTextIntegrityError
         ? "account-source-decode-rejected"
         : "account-source-response-rejected",
@@ -1119,11 +1121,11 @@ async function openTransactionPage(
     throw error;
   }
   if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0])) {
-    await event?.("validation", "account-source-response-rejected");
+    await event?.("validation", "failed", "account-source-response-rejected");
     throw new Error("SinoPac account source response is incomplete.");
   }
   const accounts = accountListFromResponse(payload as SinopacAccountResponse[]);
-  await event?.("collection", "account-list-collected", {
+  await event?.("collection", "advanced", "account-list-collected", {
     completed: accounts.length,
     total: accounts.length,
   });
@@ -1609,7 +1611,7 @@ async function collectAndCommitSinopacStatements(
   }> = [];
   const sourceTotal = accounts.length * windows.length;
   let sourceCompleted = 0;
-  await overrides.event?.("collection", "source-collection-started", {
+  await overrides.event?.("collection", "started", "source-collection-started", {
     completed: 0,
     total: sourceTotal,
   });
@@ -1618,7 +1620,7 @@ async function collectAndCommitSinopacStatements(
     let explicitNoData = true;
     for (const window of windows) {
       signal?.throwIfAborted();
-      await overrides.event?.("decoding", "source-decoding-started", {
+      await overrides.event?.("decoding", "started", "source-decoding-started", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
@@ -1632,6 +1634,7 @@ async function collectAndCommitSinopacStatements(
       } catch (error) {
         await overrides.event?.(
           error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+          "failed",
           error instanceof SourceTextIntegrityError
             ? "source-decode-rejected"
             : "source-response-rejected",
@@ -1649,11 +1652,11 @@ async function collectAndCommitSinopacStatements(
         explicitNoData = false;
       rows.push(...windowRows);
       sourceCompleted += 1;
-      await overrides.event?.("decoding", "source-decoding-completed", {
+      await overrides.event?.("decoding", "advanced", "source-decoding-completed", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
-      await overrides.event?.("collection", "account-window-collected", {
+      await overrides.event?.("collection", "advanced", "account-window-collected", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
@@ -1663,7 +1666,7 @@ async function collectAndCommitSinopacStatements(
       queryPeriods: windows.map(queryPeriod),
       rows: sortRows(rows),
     };
-    await overrides.event?.("validation", "source-validation-started", {
+    await overrides.event?.("validation", "started", "source-validation-started", {
       completed: captureInputs.length,
       total: accounts.length,
     });
@@ -1677,7 +1680,7 @@ async function collectAndCommitSinopacStatements(
       ),
     );
     if (structural.status !== "admissible" || !structural.capture) {
-      await overrides.event?.("validation", "source-admission-rejected", {
+      await overrides.event?.("validation", "failed", "source-admission-rejected", {
         completed: captureInputs.length,
         total: accounts.length,
       });
@@ -1693,7 +1696,7 @@ async function collectAndCommitSinopacStatements(
         reason: "provider-explicit-no-data",
       });
     }
-    await overrides.event?.("validation", "source-validation-completed", {
+    await overrides.event?.("validation", "advanced", "source-validation-completed", {
       completed: captureInputs.length,
       total: accounts.length,
     });
@@ -1721,7 +1724,7 @@ async function collectAndCommitSinopacStatements(
           `${captureOccurrenceId}:foreign:${index}`,
         );
     if (financial && (financial.status !== "admitted" || !financial.capture)) {
-      await overrides.event?.("validation", "financial-admission-rejected", {
+      await overrides.event?.("validation", "failed", "financial-admission-rejected", {
         completed: index,
         total: captureInputs.length,
       });
@@ -1729,7 +1732,7 @@ async function collectAndCommitSinopacStatements(
     }
     const financialCapture = financial.capture;
     if (!financialCapture) {
-      await overrides.event?.("validation", "financial-admission-rejected", {
+      await overrides.event?.("validation", "failed", "financial-admission-rejected", {
         completed: index,
         total: captureInputs.length,
       });
@@ -1756,7 +1759,7 @@ async function collectAndCommitSinopacStatements(
 
   const balanceItems: PGliteWorkflowRunItem[] = [];
   if (financialCapturesForCurrent.length > 0) {
-    await overrides.event?.("collection", "current-balance-collection-started");
+    await overrides.event?.("collection", "started", "current-balance-collection-started");
     let currentRows: readonly SinopacCurrentDepositBalanceRow[];
     try {
       currentRows = await withAbort(
@@ -1764,7 +1767,7 @@ async function collectAndCommitSinopacStatements(
         signal,
       );
     } catch (error) {
-      await overrides.event?.("validation", "current-balance-source-rejected");
+      await overrides.event?.("validation", "failed", "current-balance-source-rejected");
       throw error;
     }
     signal?.throwIfAborted();
@@ -1793,11 +1796,11 @@ async function collectAndCommitSinopacStatements(
           },
         });
       } catch (error) {
-        await overrides.event?.("validation", "current-balance-admission-rejected");
+        await overrides.event?.("validation", "failed", "current-balance-admission-rejected");
         throw error;
       }
     }
-    await overrides.event?.("validation", "current-balance-validation-completed", {
+    await overrides.event?.("validation", "completed", "current-balance-validation-completed", {
       completed: balanceItems.length,
       total: currentRows.length,
     });
@@ -1873,17 +1876,17 @@ export async function runSinopacProviderWorkflow(
     throw new Error("Canonical Financial Commit port is unavailable.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
-  await context.event("preparation", "input-validated");
+  await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
-    await context.event("authentication", "authentication-started");
+    await context.event("authentication", "started", "authentication-started");
     const usedExistingSession = await isSignedIn(page, context.signal);
     if (!usedExistingSession)
       await signInSinopacForApp(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
     await dismissPasswordExpiryNotice(page, context.signal);
-    await context.event("authentication", "authentication-completed");
+    await context.event("authentication", "completed", "authentication-completed");
 
     const endDate = parsed.data.endDate ?? formatYYYYMMDD(new Date(context.now()));
     const startDate = parsed.data.startDate ?? formatYYYYMMDD(
@@ -1901,13 +1904,13 @@ export async function runSinopacProviderWorkflow(
     if (collectsAccounts && financialCommit) {
       let accounts: SinopacAccount[];
       if (overrides.readAccounts) {
-        await context.event("collection", "account-list-collection-started");
+        await context.event("collection", "started", "account-list-collection-started");
         accounts = await withAbort(
           overrides.readAccounts(dateRange),
           context.signal,
         );
         context.signal.throwIfAborted();
-        await context.event("collection", "account-list-collected", {
+        await context.event("collection", "advanced", "account-list-collected", {
           completed: accounts.length,
           total: accounts.length,
         });

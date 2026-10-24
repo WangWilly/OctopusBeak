@@ -13,7 +13,8 @@ import { createPgliteOperationalProvider } from "../../ledger/pglite/operational
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
+import type { WorkflowContext } from "./workflow-executor.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import {
   decodeCtbcSourceJson,
@@ -195,14 +196,18 @@ function createContext(options: {
         } as never;
       },
     },
-    async event(stage, code, counts) {
+    async event(stage, outcome, code, counts) {
       events.push({
         runId: "run-ctbc-check",
         stage,
+        outcome,
         code,
         occurredAt: "2026-09-25T12:00:00.000Z",
         ...counts,
       });
+    },
+    async signalEvent(signal) {
+      events.push(signalRunEvent(signal, { runId: "run-ctbc-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
   return {

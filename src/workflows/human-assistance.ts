@@ -16,6 +16,7 @@ import {
 } from "../lib/automation/human-assistance.ts";
 import type { Locator } from "playwright";
 import { withAbort } from "./abort.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 
 export type WorkflowHumanAssistanceTarget = Omit<HumanVerificationTarget, "rect"> & {
   locator: Pick<Locator, "boundingBox">;
@@ -121,4 +122,12 @@ export async function requestCaptchaAssistance(
   if (status !== "entered" && status !== "verified")
     throw new Error(`${sourceName} human assistance ended with status ${status}.`);
   return status;
+}
+
+/** A sign-in helper's assistance step for the run; a failed one is its Run event signal (ADR 0059). */
+export function humanAssistanceEvent(context: Pick<WorkflowContext, "event" | "signalEvent">) {
+  return (code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed") =>
+    code === "human-assistance-failed"
+      ? context.signalEvent(code)
+      : context.event("authentication", "advanced", code);
 }

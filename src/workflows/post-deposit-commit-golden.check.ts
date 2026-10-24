@@ -112,6 +112,7 @@ async function run(
     },
     financialCommit: recorder.financialCommit,
     event: recorder.event,
+    signalEvent: recorder.signalEvent,
   };
   let error: string | null = null;
   const output = await runPostProviderWorkflow(context, input, {

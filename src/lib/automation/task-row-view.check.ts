@@ -149,11 +149,11 @@ test("statement results come from the first product reported for each type", () 
 });
 
 test("a solver-exhausted authentication event is the one labelled verification failure", () => {
-  const exhausted = [{ stage: "authentication", code: "verification-solver-exhausted" }] as const;
+  const exhausted = [{ stage: "authentication", outcome: "failed", signal: "verification-solver-exhausted", code: "verification-solver-exhausted" }] as const;
   assert.equal(verificationSolverExhausted(exhausted), true);
   assert.equal(workflowEventFailureLabel(exhausted[0], translations.en), translations.en.automation.verificationSolverExhausted);
-  assert.equal(verificationSolverExhausted([{ stage: "authentication", code: "device-registration-required" }]), false);
-  assert.equal(verificationSolverExhausted([{ stage: "collection", code: "verification-solver-exhausted" }]), false);
+  assert.equal(verificationSolverExhausted([{ signal: undefined }]), false);
+  assert.equal(verificationSolverExhausted([{ signal: "solver-challenge-unsupported" }]), false);
   for (const dictionary of [translations.en.automation, translations["zh-TW"].automation]) {
     assert.ok(dictionary.verificationSolverExhausted);
     assert.doesNotMatch(dictionary.statusLabels.waiting_for_human, /human|人工/i);

@@ -1,3 +1,4 @@
+import { signalRunEvent } from "../run-event.ts";
 import { randomUUID } from "node:crypto";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import {
@@ -323,12 +324,10 @@ export async function runCaptchaRetryCampaign(
       }
       if (!isCaptchaRetryCampaignReady(campaign)) {
         if (campaign.status !== "exhausted") return failed(report);
-        await provider.automation.appendRunEvent({
+        await provider.automation.appendRunEvent(signalRunEvent("verification-solver-exhausted", {
           runId: run.taskRunId,
-          stage: "authentication",
-          code: "verification-solver-exhausted",
           occurredAt: new Date().toISOString(),
-        });
+        }));
         return { summary: report.summary, failure: { code: "verification-failed", proven: true } };
       }
       const nextRound = campaign.nextRound;

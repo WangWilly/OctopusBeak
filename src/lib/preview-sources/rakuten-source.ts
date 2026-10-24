@@ -314,7 +314,7 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
     },
     startUrl: LOGIN_URL,
     async run(context, input) {
-      await context.event("authentication", "authentication-started");
+      await context.event("authentication", "started", "authentication-started");
       const solve = options.solveCaptcha ?? calibratedCaptchaSolver(RAKUTEN_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async (page) => {
         const captcha = await solveChallengeRound(context, solve, async () =>
@@ -326,15 +326,15 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
           captcha,
         });
         if (outcome.kind !== "signed-in") return signInFailure(context, outcome);
-        await context.event("authentication", "authentication-completed");
+        await context.event("authentication", "completed", "authentication-completed");
         try {
-          await context.event("collection", "collection-started");
+          await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
           const months: Month[] = [];
           for (let back = 0; back < MONTHS; back += 1)
             months.push(monthFrom(context, await page.depositMonth(back), back === 0 ? CURRENT_MONTH_PATH : PAST_MONTH_PATH));
           const account = depositAccount(months, collectedAt);
-          await context.event("collection", "collection-completed");
+          await context.event("collection", "completed", "collection-completed");
           return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts: [account] }) });
         } finally {
           await page.signOut().catch(() => undefined);

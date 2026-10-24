@@ -78,7 +78,7 @@ test("worker events are ACKed only after operational event persistence settles",
     event: {
       runId: base.runId,
       stage: "collection",
-      code: "fixture-started",
+      outcome: "started", code: "fixture-started",
       occurredAt: "2026-09-26T00:00:00.000Z",
     },
   });

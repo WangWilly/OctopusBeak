@@ -117,6 +117,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     humanAssistance: { request: async () => "entered" },
     financialCommit: recorder.financialCommit,
     event: recorder.event,
+    signalEvent: recorder.signalEvent,
   };
 }
 

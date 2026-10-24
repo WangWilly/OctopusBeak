@@ -26,7 +26,7 @@ export function createExchangeRateWorkflow(
           scheduledAtUtc: options.scheduledAtUtc,
           emitProgress: (event) => {
             options.emitProgress(event);
-            eventQueue = eventQueue.then(() => context.event("collection", "progress-update"));
+            eventQueue = eventQueue.then(() => context.event("collection", "advanced", "progress-update"));
           },
         });
       } catch (error) {

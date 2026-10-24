@@ -32,6 +32,7 @@ type ProgressSnapshot = Readonly<{
 
 type WorkflowEventInput = Readonly<{
   stage: string;
+  outcome: string;
   code: string;
   statementType?: string;
   activity?: "query" | "download";
@@ -144,12 +145,12 @@ class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerH
 
 function makeSteps(retrying = false): readonly WorkerStep[] {
   return [
-    { eventId: "run-start", event: { stage: "preparation", code: "run-started" } },
+    { eventId: "run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } },
     {
       eventId: "domestic-query",
       event: {
         stage: "collection",
-        code: "statement-query-started",
+        outcome: "started", code: "statement-query-started",
         statementType: "domestic",
         activity: "query",
       },
@@ -158,7 +159,7 @@ function makeSteps(retrying = false): readonly WorkerStep[] {
       eventId: "domestic-download",
       event: {
         stage: "collection",
-        code: "statement-download-started",
+        outcome: "started", code: "statement-download-started",
         statementType: "domestic",
         activity: "download",
       },
@@ -167,7 +168,7 @@ function makeSteps(retrying = false): readonly WorkerStep[] {
       eventId: "domestic-commit",
       event: {
         stage: "commit",
-        code: "canonical-commit-completed",
+        outcome: "completed", code: "canonical-commit-completed",
         statementType: "domestic",
       },
     },
@@ -175,6 +176,7 @@ function makeSteps(retrying = false): readonly WorkerStep[] {
       eventId: retrying ? "foreign-query-retry" : "foreign-query",
       event: {
         stage: "collection",
+        outcome: "started",
         code: retrying ? "statement-query-retrying" : "statement-query-started",
         statementType: "foreign_currency",
         activity: "query",
@@ -185,12 +187,12 @@ function makeSteps(retrying = false): readonly WorkerStep[] {
       eventId: "foreign-download",
       event: {
         stage: "collection",
-        code: "statement-download-started",
+        outcome: "started", code: "statement-download-started",
         statementType: "foreign_currency",
         activity: "download",
       },
     },
-    { eventId: "run-completed", event: { stage: "finalization", code: "run-completed" } },
+    { eventId: "run-completed", event: { stage: "finalization", outcome: "completed", code: "run-completed" } },
   ];
 }
 
@@ -293,12 +295,12 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       run: retriedRun,
       attempt: 2,
       steps: [
-        { eventId: "retry-run-start", event: { stage: "preparation", code: "run-started" } },
+        { eventId: "retry-run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } },
         {
           eventId: "foreign-query-retry",
           event: {
             stage: "collection",
-            code: "statement-query-retrying",
+            outcome: "advanced", code: "statement-query-retrying",
             statementType: "foreign_currency",
             activity: "query",
             retrying: true,
@@ -308,12 +310,12 @@ test("runner progress spans selected product stages, survives a same-run retry, 
           eventId: "foreign-download-retry",
           event: {
             stage: "collection",
-            code: "statement-download-started",
+            outcome: "started", code: "statement-download-started",
             statementType: "foreign_currency",
             activity: "download",
           },
         },
-        { eventId: "run-completed", event: { stage: "finalization", code: "run-completed" } },
+        { eventId: "run-completed", event: { stage: "finalization", outcome: "completed", code: "run-completed" } },
       ],
       terminal: {
         kind: "failed",
@@ -410,7 +412,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       appWorkflowWorkerFactory: (_workerPath, options: WorkerOptions) =>
         new SequencedWorkflowWorker(
           options.workerData as AppWorkflowWorkerStart,
-          [{ eventId: "exchange-run-start", event: { stage: "preparation", code: "run-started" } }],
+          [{ eventId: "exchange-run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } }],
           { kind: "completed", summary: null },
           onEventAcknowledged,
           [{
