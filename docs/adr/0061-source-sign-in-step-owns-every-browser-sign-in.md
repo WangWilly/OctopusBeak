@@ -84,5 +84,6 @@ Each source keeps the behavior it had, now written down in one place.
   - an unclassified dialog on SinoPac;
   - a repeated takeover prompt on any source.
 - A sign-in deadline classifies as `authentication-timeout`. Neither this nor `authentication-dialog-interrupted` tells the person to check their sign-in details.
+- A plan's signed-in probe may end sign-in with a typed error. SinoPac's generic error page therefore classifies as `source-unavailable` instead of `authentication-failed`.
 - HNCB and LINE Bank still dismiss unknown dialogs. Moving them to `fail` needs live evidence.
 - The checks use fixture pages, so each migrated source needs a live sync before release.
