@@ -431,7 +431,7 @@ test("Cathay balance admission failure keeps product receipts and does not block
       status: "partially-completed",
       items: result.items.map((item, index) =>
         index === failedIndex
-          ? { ...item, status: "failed", failureKind: "item" }
+          ? { ...item, status: "failed", failureKind: "item", diagnostics: [] }
           : item,
       ),
       committedCount: result.items.length - 1,

@@ -132,6 +132,44 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
 
 {
   const controller = signal();
+  const productFailures: WorkflowProductFailure[] = [];
+  const summary = await collectSelectedProducts({
+    productIds: ["credit_card"],
+    selectedIds: ["credit_card"],
+    signal: controller.signal,
+    collect: async (typeId, staged) => {
+      staged.push(item(typeId, "transactions"), item(typeId, "current-balance"));
+      return { sourceCaptureCount: 0, rowCount: 141, itemCount: 2 };
+    },
+    commit: async (_typeId, [transactions, balance]) => {
+      const rejected = {
+        provider: transactions!.provider,
+        product: transactions!.product,
+        itemKey: transactions!.itemKey,
+        stage: "commit" as const,
+        errorCode: "conflict",
+        reason: "occurrence-conflict" as const,
+        message: "Financial workflow command failed.",
+      };
+      return result("partially-completed", [
+        { ...rejected, status: "failed", failureKind: "item", diagnostics: [rejected] },
+        committed(balance!),
+      ], [rejected]);
+    },
+    productFailure: async (failure) => { productFailures.push(failure); },
+  });
+  assert.deepEqual(
+    productFailures.map(({ stage, statementType, errorCode, reason }) => [stage, statementType, errorCode, reason]),
+    [["commit", "credit_card", "canonical-commit-failed", "occurrence-conflict"]],
+    "a rejected commit item reaches the diagnostics port with the admission rule that rejected it",
+  );
+  assert.deepEqual(summary.products.map(({ status, errorCode, itemCount, committedCount }) => [status, errorCode, itemCount, committedCount]), [
+    ["failed", "canonical-commit-failed", 2, 1],
+  ]);
+}
+
+{
+  const controller = signal();
   const dispositions: Array<"no_data" | "not_held" | undefined> = ["no_data", "not_held", undefined];
   const absentFailures: string[] = [];
   const summary = await failedRunSummary(collectSelectedProducts({

@@ -8,6 +8,10 @@ import {
   type WorkflowProgressStatementType,
 } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
+import {
+  pgliteWorkflowAdmissionReason,
+  type PGliteWorkflowAdmissionReason,
+} from "../../../ledger/pglite/workflow-client.ts";
 
 const SAFE_WORKFLOW_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_TASK_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
@@ -81,6 +85,7 @@ export type WorkflowFailureDiagnostic = Readonly<{
   stage?: WorkflowRunEvent["stage"];
   statementType?: WorkflowProgressStatementType;
   operation?: string;
+  reason?: PGliteWorkflowAdmissionReason;
   error: SafeWorkflowFailureError;
 }>;
 
@@ -92,6 +97,7 @@ export type WorkflowFailureDiagnosticInput = Readonly<{
   stage?: WorkflowRunEvent["stage"];
   statementType?: WorkflowProgressStatementType;
   operation?: string;
+  reason?: unknown;
   error?: unknown;
   safeError?: unknown;
 }>;
@@ -287,6 +293,7 @@ function buildRecord(input: WorkflowFailureDiagnosticInput, options: { repoRoot:
   const operation = input.operation && /^(?:financial|maicoin|exchangeRates|automation)(?:\.[A-Za-z]+)+$/u.test(input.operation)
     ? input.operation
     : undefined;
+  const reason = pgliteWorkflowAdmissionReason(input.reason);
   const safeError = input.safeError === undefined
     ? captureSafeWorkflowFailureError(input.error, options.repoRoot)
     : sanitizeSafeWorkflowFailureError(input.safeError, options.repoRoot);
@@ -301,6 +308,7 @@ function buildRecord(input: WorkflowFailureDiagnosticInput, options: { repoRoot:
     ...(input.stage ? { stage: input.stage } : {}),
     ...(input.statementType ? { statementType: input.statementType } : {}),
     ...(operation ? { operation } : {}),
+    ...(reason ? { reason } : {}),
     error: safeError,
   };
 }

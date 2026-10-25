@@ -9,6 +9,8 @@ import {
   createPGliteFinancialRpcServer,
   type PGliteFinancialRegistry,
 } from "./pglite-financial-registry.ts";
+import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
@@ -178,6 +180,40 @@ test("financial original failure survives the uncorrelated inner worker and corr
   }
 });
 
+test("an admission rejection keeps its fixed reason across both RPC hops and into the record", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "octopus-beak-reason-"));
+  const path = join(directory, "failures.jsonl");
+  const previousPath = process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
+  process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = path;
+  const innerPorts = memoryPair();
+  const innerServer = createPGliteFinancialRpcServer(innerPorts[1], createPGliteFinancialLocalPort({
+    "financial.spending.version": async () => {
+      throw new PGliteCanonicalSourceAdmissionError("occurrence-conflict", "member SECRET-ACCT is missing");
+    },
+  } as unknown as PGliteFinancialRegistry));
+  const innerClient = createPGliteFinancialRpcClient(innerPorts[0]);
+  const outerPorts = memoryPair();
+  const outerServer = createPGliteFinancialRpcServer(outerPorts[1], innerClient);
+  const outerClient = createPGliteFinancialRpcClient(outerPorts[0], undefined, {
+    workflowId: "esun-credit-card-statements", taskRunId: "reason-run",
+  });
+  const wire: unknown[] = [];
+  innerPorts[0].on("message", (value) => wire.push(value));
+  outerPorts[0].on("message", (value) => wire.push(value));
+  try {
+    await assert.rejects(outerClient.request("financial.spending.version", []), (error: unknown) =>
+      error instanceof PGliteFinancialError && error.category === "conflict" && error.reason === "occurrence-conflict");
+    const row = JSON.parse((await readFile(path, "utf8")).trim());
+    assert.equal(row.reason, "occurrence-conflict");
+    assert.doesNotMatch(JSON.stringify(wire), /SECRET-ACCT|is missing/u);
+  } finally {
+    outerClient.close(); innerClient.close();
+    await Promise.all([outerServer.close(), innerServer.close()]);
+    if (previousPath === undefined) delete process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
+    else process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = previousPath;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("financial diagnostics stay absent by default and ignore hostile optional fields", async () => {
   const previousPath = process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];

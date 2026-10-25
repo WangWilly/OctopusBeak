@@ -8,6 +8,7 @@ import type {
   PGliteWorkflowRunItem,
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowAdmissionReason } from "../../ledger/pglite/workflow-client.ts";
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
@@ -63,6 +64,8 @@ export type WorkflowProductFailure = Readonly<{
   statementType: WorkflowProgressStatementType;
   errorCode: TypedWorkflowErrorCode;
   error: unknown;
+  /** The admission rule that rejected a commit item. */
+  reason?: PGliteWorkflowAdmissionReason;
 }>;
 
 export interface WorkflowEventPort {
