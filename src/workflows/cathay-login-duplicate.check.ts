@@ -1,27 +1,33 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { fillLoginForm } from "./cathay-statements.ts";
+import { registerCathayTrustedDevice } from "./cathay-device-registration.ts";
 
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage();
-  page.setDefaultTimeout(500);
-  await page.route("https://www.cathaybk.com.tw/MyBank/", async (route) => {
+  page.setDefaultTimeout(2_000);
+  await page.route("https://www.cathaybk.com.tw/**", async (route) => {
+    const signedIn = new URL(route.request().url()).pathname === "/OnlineBanking/Home";
     await route.fulfill({
       status: 200,
       contentType: "text/html; charset=utf-8",
-      body: `
+      body: signedIn ? `<a href="#">登出</a>` : `
         <input id="CustID" required>
         <input id="UserIdKeyin" required>
         <input id="PasswordKeyin" type="password" required>
-        <button class="js-login" onclick="window.loginClicks++">登入</button>
+        <button class="js-login" onclick="signIn()">登入</button>
         <div class="modal" style="display:none;position:fixed;inset:0;background:white;z-index:5">
           貼心提醒：可能已在其他瀏覽器或裝置上重複登入，抑或前次未正常登出。
-          <button id="logout" onclick="window.logoutClicks++;document.querySelector('.modal').style.display='none';document.querySelector('.modal').classList.remove('show');document.querySelectorAll('input').forEach(i=>i.value='')">登出</button>
+          <button id="logout" onclick="count('logoutClicks');document.querySelector('.modal').style.display='none';document.querySelector('.modal').classList.remove('show');document.querySelectorAll('input').forEach(i=>i.value='')">登出</button>
         </div>
         <script>
-          window.loginClicks = 0;
-          window.logoutClicks = 0;
+          const count = (key) => sessionStorage.setItem(key, String(Number(sessionStorage.getItem(key) ?? 0) + 1));
+          function signIn() {
+            count('loginClicks');
+            const filled = ["CustID", "UserIdKeyin", "PasswordKeyin"].every((id) => Boolean(document.getElementById(id).value));
+            sessionStorage.setItem('fieldsPopulated', String(filled));
+            location.href = '/OnlineBanking/Home';
+          }
           let shown = false;
           document.querySelector('#PasswordKeyin').addEventListener('input', () => {
             if (shown) return;
@@ -36,19 +42,21 @@ try {
       `,
     });
   });
-  const events: string[] = [];
-  await fillLoginForm(page, {
-    cathay_user_id: "fixture-user",
-    cathay_account: "fixture-account",
-    cathay_password: "fixture-password",
-  }, async (code) => { events.push(code); });
+  const result = await registerCathayTrustedDevice(page, {
+    credentials: {
+      cathay_user_id: "fixture-user",
+      cathay_account: "fixture-account",
+      cathay_password: "fixture-password",
+    },
+    readCode: async () => assert.fail("a trusted device needs no code"),
+    signal: new AbortController().signal,
+  });
+  assert.deepEqual(result, { kind: "already-trusted" });
   assert.deepEqual(await page.evaluate(() => ({
-    logoutClicks: (window as unknown as { logoutClicks: number }).logoutClicks,
-    loginClicks: (window as unknown as { loginClicks: number }).loginClicks,
-    fieldsPopulated: ["CustID", "UserIdKeyin", "PasswordKeyin"]
-      .every((id) => Boolean((document.getElementById(id) as HTMLInputElement).value)),
-  })), { logoutClicks: 1, loginClicks: 1, fieldsPopulated: true });
-  assert.ok(events.includes("authentication-duplicate-session-cleared"));
+    logoutClicks: sessionStorage.getItem("logoutClicks"),
+    loginClicks: sessionStorage.getItem("loginClicks"),
+    fieldsPopulated: sessionStorage.getItem("fieldsPopulated"),
+  })), { logoutClicks: "1", loginClicks: "1", fieldsPopulated: "true" }, "registration logs the duplicate session out once, then signs in");
 } finally {
   await browser.close();
 }

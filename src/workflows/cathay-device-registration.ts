@@ -1,14 +1,16 @@
 import type { Locator, Page } from "playwright";
+import { withAbort } from "./abort.ts";
 import {
   answerCathayTrustDevicePrompt,
   CATHAY_OTP_CHALLENGE,
   cathayTrustDevicePrompt,
   clickFirstVisible,
-  fillLoginForm,
+  enterCathayCredentials,
   isCathaySignedIn,
+  submitCathayLogin,
   type CathayCredentials,
 } from "./cathay-statements.ts";
-import { CATHAY_BANK_ENTRY_URL, CATHAY_TRUSTED_DEVICE_COOKIE } from "./cathay-login.ts";
+import { CATHAY_BANK_ENTRY_URL, CATHAY_TRUSTED_DEVICE_COOKIE, navigateToCathayLoginForm } from "./cathay-login.ts";
 
 export type CathayOtpChannel = "email" | "sms";
 
@@ -90,6 +92,39 @@ async function sendCode(page: Page, signal: AbortSignal): Promise<CathayOtpChann
   return channel;
 }
 
+function duplicateSessionPrompt(page: Page): Locator {
+  return page.locator(".modal.show")
+    .filter({ hasText: /貼心提醒/u })
+    .filter({ hasText: /重複登入|前次未正常登出/u })
+    .first();
+}
+
+async function duplicateSessionShown(page: Page): Promise<boolean> {
+  const prompt = duplicateSessionPrompt(page);
+  await prompt.waitFor({ state: "visible", timeout: 1_500 }).catch(() => undefined);
+  return await prompt.isVisible().catch(() => false);
+}
+
+/**
+ * Registration signs in outside the Source sign-in step, so it logs a
+ * duplicate session out itself, at most once, and fills the cleared form again.
+ */
+async function submitSignIn(page: Page, credentials: CathayCredentials, signal: AbortSignal): Promise<void> {
+  await withAbort(navigateToCathayLoginForm(page), signal);
+  await enterCathayCredentials(page, credentials, signal);
+  if (await duplicateSessionShown(page)) {
+    const prompt = duplicateSessionPrompt(page);
+    await prompt.getByRole("button", { name: "登出", exact: true }).click();
+    await prompt.waitFor({ state: "hidden", timeout: 10_000 });
+    await page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 });
+    await enterCathayCredentials(page, credentials, signal);
+    if (await duplicateSessionShown(page)) {
+      throw new Error("Cathay duplicate-session prompt remained after one automatic logout.");
+    }
+  }
+  await submitCathayLogin(page, signal);
+}
+
 async function hasTrustedDeviceCookie(page: Page): Promise<boolean> {
   const cookies = await page.context().cookies(CATHAY_BANK_ENTRY_URL);
   return cookies.some((cookie) => cookie.name === CATHAY_TRUSTED_DEVICE_COOKIE);
@@ -112,7 +147,7 @@ async function advance(
   signal.throwIfAborted();
   switch (state.step) {
     case "sign-in": {
-      await fillLoginForm(page, credentials);
+      await submitSignIn(page, credentials, signal);
       const outcome = await firstOutcome(page, signal, 60_000, [
         ["signed-in", () => isCathaySignedIn(page)],
         ["challenge", () => visible(page.locator(CATHAY_OTP_CHALLENGE))],

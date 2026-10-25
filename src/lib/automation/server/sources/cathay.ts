@@ -37,6 +37,12 @@ export const CATHAY_SOURCE: VerifiedSource = {
       "When Cathay United Bank reports a duplicate sign-in or a previous session that was not signed out, every sync, including daily scheduled collection, chooses to sign that session out, which signs you out of Cathay United Bank online banking elsewhere.",
       "當國泰世華提示重複登入或前次未正常登出時，每次同步（包括每日排程收集）都會按下「登出」，讓你在其他地方的國泰世華網路銀行登出。",
     ),
+    prompt: {
+      phase: "before-submit",
+      within: '.modal.show:has-text("貼心提醒")',
+      text: { pattern: /重複登入|前次未正常登出/u },
+      control: { role: "button", name: "登出" },
+    },
   },
   setupGuide: {
     summary: localized(
