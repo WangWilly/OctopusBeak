@@ -181,20 +181,28 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
     }
   };
 
+  const start = () => {
+    if (running) return;
+    running = true;
+    try {
+      const selected = readSchedule();
+      const { latestOccurrenceUtc } = selected.schedule;
+      const expectedGeneration = generation;
+      consider(latestOccurrenceUtc, expectedGeneration);
+      armNext(selected);
+    } catch (error) {
+      report(error);
+    }
+  };
+  const stop = () => {
+    running = false;
+    generation += 1;
+    if (timer !== undefined) deps.clearTimer(timer);
+    timer = undefined;
+  };
+
   return {
-    start() {
-      if (running) return;
-      running = true;
-      try {
-        const selected = readSchedule();
-        const { latestOccurrenceUtc } = selected.schedule;
-        const expectedGeneration = generation;
-        consider(latestOccurrenceUtc, expectedGeneration);
-        armNext(selected);
-      } catch (error) {
-        report(error);
-      }
-    },
+    start,
     reschedule() {
       if (!running) return;
       try {
@@ -211,11 +219,26 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
         report(error);
       }
     },
-    stop() {
-      running = false;
-      generation += 1;
-      if (timer !== undefined) deps.clearTimer(timer);
-      timer = undefined;
+    stop,
+    /**
+     * Stop until the returned resume, which restarts only a scheduler that was
+     * running. An occurrence that came due while paused is skipped rather than
+     * caught up, so nothing collects by itself right after a Canonical Reset.
+     */
+    pause() {
+      const wasRunning = running;
+      stop();
+      return () => {
+        if (!wasRunning || running) return;
+        running = true;
+        try {
+          const selected = readSchedule();
+          lastConsideredOccurrenceUtc = selected.schedule.latestOccurrenceUtc;
+          armNext(selected);
+        } catch (error) {
+          report(error);
+        }
+      };
     },
   };
 }

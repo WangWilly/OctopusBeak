@@ -7,7 +7,19 @@ import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-c
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isYuantaCreditCardHumanAttestedAccountKey,
+  YUANTA_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./yuanta-credit-card-human-attestation-contract.ts";
+import { creditCardSpineEpochKey } from "./credit-card-identity-epochs.ts";
+import {
+  encodeCreditCardQueryBucket,
+  statementGridInventory,
+  statementGridProblem,
+  type CreditCardStatementGridBucket,
+  type CreditCardStatementGridCompleteness,
+  type CreditCardStatementGridOf,
+  type CreditCardStatementGridShape,
+  type CreditCardStatementGridTerminalEvidence,
+} from "./credit-card-query-inventory.ts";
 import {
   assignOccurrenceSlots,
   findOccurrenceGroupCaptureAmbiguity,
@@ -57,7 +69,7 @@ export type YuantaCreditCardTransactionInput = {
   description: string;
   billingStatus: "billed" | "unbilled";
   /** Source query grid that returned this row; provenance only, not identity. */
-  occurrenceGroupBucketKey?: string;
+  queryBucket: CreditCardStatementGridBucket;
   statementKey?: string;
   sourceKey?: string;
 };
@@ -98,28 +110,16 @@ export type YuantaCreditCardRelationInput = {
   };
 };
 
-export type YuantaCreditCardGrid = {
-  kind: "billed" | "unbilled";
-  period: string;
-  currentPage: number;
-  pageSize: number;
-  capturedRowCount: number;
-  terminal: true;
-  terminalEvidence: "no-pager-terminal";
-};
+/** Yuanta serves each billed month and the unbilled listing as one page with no pager. */
+export const YUANTA_STATEMENT_GRID = {
+  label: "Yuanta",
+  billedPeriodCount: 6,
+  terminalEvidence: ["no-pager-terminal"],
+} as const satisfies CreditCardStatementGridShape<CreditCardStatementGridTerminalEvidence>;
 
-export type YuantaCreditCardCompleteness = {
-  billedPeriods: readonly string[];
-  unbilledIncluded: boolean;
-  unfiltered: boolean;
-  terminalGrids: boolean;
-  rowCountsMatch: boolean;
-  periodRowCounts: readonly number[];
-  unbilledRowCount: number;
-  recordCount: number;
-  settledSummaryEvidencePresent: boolean;
-  grids: readonly YuantaCreditCardGrid[];
-};
+export type YuantaCreditCardGrid = CreditCardStatementGridOf<typeof YUANTA_STATEMENT_GRID>;
+
+export type YuantaCreditCardCompleteness = CreditCardStatementGridCompleteness<YuantaCreditCardGrid>;
 
 export type YuantaCreditCardCaptureInput = {
   captureId: string;
@@ -344,7 +344,7 @@ export function buildYuantaCreditCardAccountIdentityKey(
 
 export function buildYuantaCreditCardTransactionSourceKey(
   identity: YuantaCreditCardIdentityInput,
-  record: Omit<YuantaCreditCardTransactionInput, "sourceRecordKey">,
+  record: Omit<YuantaCreditCardTransactionInput, "sourceRecordKey" | "queryBucket">,
 ): `sha256:${string}` {
   const accountKey = buildYuantaCreditCardAccountIdentityKey(identity);
   const amount = exactAmount(record.bookedAmount, "Booked amount");
@@ -477,96 +477,6 @@ function buildYuantaCreditCardStatementRevisionKey(
   ]);
 }
 
-function validateGrid(grid: YuantaCreditCardGrid): void {
-  if (
-    grid.currentPage !== 1 ||
-    !Number.isSafeInteger(grid.pageSize) ||
-    grid.pageSize < grid.capturedRowCount ||
-    !Number.isSafeInteger(grid.capturedRowCount) ||
-    grid.capturedRowCount < 0 ||
-    grid.terminal !== true ||
-    grid.terminalEvidence !== "no-pager-terminal"
-  )
-    fail("Yuanta credit-card grid lacks terminal no-pager evidence.");
-}
-
-function validateCompleteness(
-  completeness: YuantaCreditCardCompleteness,
-  transactions: readonly YuantaCreditCardAdmittedTransaction[],
-): void {
-  if (
-    !Array.isArray(completeness.billedPeriods) ||
-    completeness.billedPeriods.length !== 6 ||
-    new Set(completeness.billedPeriods).size !== 6
-  )
-    fail("Yuanta credit-card capture requires six distinct billed months.");
-  if (
-    completeness.unbilledIncluded !== true ||
-    completeness.unfiltered !== true ||
-    completeness.terminalGrids !== true ||
-    completeness.rowCountsMatch !== true
-  )
-    fail("Yuanta credit-card capture is not complete.");
-  if (completeness.settledSummaryEvidencePresent !== true)
-    fail("Yuanta settled statement evidence flag is invalid.");
-  if (
-    !Array.isArray(completeness.periodRowCounts) ||
-    completeness.periodRowCounts.length !== 6 ||
-    completeness.periodRowCounts.some(
-      (count) => !Number.isSafeInteger(count) || count < 0,
-    ) ||
-    !Number.isSafeInteger(completeness.unbilledRowCount) ||
-    completeness.unbilledRowCount < 0 ||
-    !Number.isSafeInteger(completeness.recordCount) ||
-    completeness.recordCount !== transactions.length ||
-    !Array.isArray(completeness.grids) ||
-    completeness.grids.length !== 7
-  )
-    fail("Yuanta credit-card completeness counts are invalid.");
-  completeness.grids.forEach(validateGrid);
-  const billedCount = transactions.filter((row) => row.billingStatus === "billed").length;
-  const unbilledCount = transactions.filter((row) => row.billingStatus === "unbilled").length;
-  if (
-    completeness.periodRowCounts.reduce((sum, count) => sum + count, 0) !== billedCount ||
-    completeness.unbilledRowCount !== unbilledCount
-  )
-    fail("Yuanta credit-card completeness counts drifted from records.");
-  for (const transaction of transactions) {
-    const bucketKey = text(
-      transaction.occurrenceGroupBucketKey,
-      "Yuanta transaction query bucket key",
-    );
-    if (
-      (transaction.billingStatus === "unbilled" &&
-        bucketKey !== "unbilled") ||
-      (transaction.billingStatus === "billed" &&
-        (!bucketKey.startsWith("statement:") ||
-          !completeness.billedPeriods.includes(
-            bucketKey.slice("statement:".length),
-          )))
-    )
-      fail("Yuanta transaction query bucket is outside the complete grid inventory.");
-  }
-  for (const [index, period] of completeness.billedPeriods.entries()) {
-    const grid = completeness.grids[index];
-    if (
-      !grid ||
-      grid.kind !== "billed" ||
-      grid.period !== period ||
-      grid.capturedRowCount !== completeness.periodRowCounts[index]
-    )
-      fail("Yuanta billed grid periods or row counts are inconsistent.");
-  }
-  const unbilledGrid = completeness.grids[6];
-  if (
-    !unbilledGrid ||
-    unbilledGrid.kind !== "unbilled" ||
-    unbilledGrid.period !== "unbilled" ||
-    unbilledGrid.capturedRowCount !== completeness.unbilledRowCount
-  )
-    fail("Yuanta unbilled grid is inconsistent with completeness evidence.");
-}
-
 function validateInstrument(
   instrument: YuantaCreditCardInstrumentInput,
 ): YuantaCreditCardInstrumentInput {
@@ -621,15 +531,7 @@ function validateTransaction(
     fail("Billed Yuanta transaction statement keys must be non-empty when supplied.");
   if (record.billingStatus === "unbilled" && record.statementKey)
     fail("Unbilled Yuanta transactions cannot belong to a Statement.");
-  const occurrenceGroupBucketKey = text(
-    record.occurrenceGroupBucketKey,
-    "Queried source bucket",
-  );
-  if (
-    (record.billingStatus === "unbilled" && occurrenceGroupBucketKey !== "unbilled") ||
-    (record.billingStatus === "billed" && !occurrenceGroupBucketKey.startsWith("statement:"))
-  )
-    fail("Yuanta transaction query bucket conflicts with its billing status.");
+  if (!record.queryBucket) fail("Queried source bucket is required.");
   if (record.signedAmount !== undefined) {
     const sign = signedAmount(record.signedAmount);
     if (
@@ -653,7 +555,6 @@ function validateTransaction(
     fail("Foreign currency and foreign amount must be provided together.");
   const normalizedRecord = {
     ...record,
-    occurrenceGroupBucketKey,
     sourceRecordKey,
     instrumentKey,
     consumeDate,
@@ -879,7 +780,7 @@ export function admitYuantaCreditCardCapture(
       { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
     ),
     billingStatus: (transaction) => transaction.billingStatus,
-    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "Yuanta transaction query bucket key"),
+    bucketKey: (transaction) => encodeCreditCardQueryBucket(transaction.queryBucket),
   });
   if (ambiguity.billingStatusConflict)
     fail("Yuanta billed and unbilled rows contain an ambiguous identical economic transaction.");
@@ -894,7 +795,8 @@ export function admitYuantaCreditCardCapture(
     if (!transaction || transaction.instrumentKey !== instrument.instrumentKey)
       fail("Instrument role evidence must reference a transaction for the same card.");
   }
-  validateCompleteness(capture.scope.completeness, transactions);
+  const gridProblem = statementGridProblem(YUANTA_STATEMENT_GRID, capture.scope.completeness, transactions);
+  if (gridProblem) fail(gridProblem);
   const occurrenceScopeKey = opaqueYuantaSpineToken(
     "yuanta-credit-card-occurrence-scope-v1",
     buildYuantaCreditCardAccountIdentityKey(identity),
@@ -1148,7 +1050,7 @@ export function yuantaCanonicalSpineCapture(
     return {
       occurrenceKey: transaction.sourceKey,
       occurrenceGroup: transaction.occurrenceGroup,
-      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
+      occurrenceGroupBucketKey: encodeCreditCardQueryBucket(transaction.queryBucket),
       collisionKey: transaction.sourceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: transaction.sourceKey,
@@ -1228,10 +1130,7 @@ export function yuantaCanonicalSpineCapture(
       // credit-card account/epoch fields below, but never fork the shared
       // connection key at this persistence seam.
       sourceConnectionKey: capture.identity.sourceConnectionKey,
-      identityEpochKey: opaqueYuantaSpineToken(
-        "yuanta-credit-epoch-v2",
-        capture.identity.identityEpochKey,
-      ),
+      identityEpochKey: creditCardSpineEpochKey(YUANTA_CREDIT_CARD_IDENTITY_EPOCHS, capture.identity.identityEpochKey),
       stream: "credit-card",
       recordKind: "yuanta-credit-card-transaction",
       subjectDigest: capture.identity.accountNaturalKey,
@@ -1295,10 +1194,7 @@ export function yuantaCanonicalSpineCapture(
       startDate: capture.scope.startDate,
       endDate: capture.scope.endDate,
       contractVersion: capture.contractVersion,
-      bucketKeys: [
-        ...capture.scope.completeness.billedPeriods.map((period) => `statement:${period}`),
-        "unbilled",
-      ],
+      bucketKeys: statementGridInventory(capture.scope.completeness.billedPeriods).map(encodeCreditCardQueryBucket),
     }],
     nonTransactionRecords,
   });
@@ -1428,7 +1324,7 @@ function parseSignedDecimal(value: string, label: string): {
 function canonicalRowBase(
   row: YuantaCreditCardSourceRow,
   instrumentKey: string,
-): Omit<YuantaCreditCardTransactionInput, "sourceRecordKey" | "occurrenceIndex"> {
+): Omit<YuantaCreditCardTransactionInput, "sourceRecordKey" | "occurrenceIndex" | "queryBucket"> {
   const signed = parseSignedDecimal(row.twdAmount, "TWD amount");
   const foreignCurrency = row.foreignAmount.trim()
     ? parseCurrency(row.countryCurrency)
@@ -1479,10 +1375,11 @@ function postingDateInCycle(
 export function buildYuantaCanonicalCreditCardCapture(
   options: YuantaCreditCardCaptureBuilderOptions,
 ): YuantaCreditCardValidatedCapture {
-  if (options.billedPeriods.length !== 6 || new Set(options.billedPeriods).size !== 6)
+  const periodCount = YUANTA_STATEMENT_GRID.billedPeriodCount;
+  if (options.billedPeriods.length !== periodCount || new Set(options.billedPeriods).size !== periodCount)
     throw new Error("Yuanta canonical capture requires all six billed periods.");
   if (options.terminalPages &&
-      (options.terminalPages.length !== 7 || options.terminalPages.some((value) => value !== true)))
+      (options.terminalPages.length !== periodCount + 1 || options.terminalPages.some((value) => value !== true)))
     throw new Error("Yuanta canonical capture requires seven terminal no-pager results.");
   if (
     !options.statementSummaries ||
@@ -1544,9 +1441,9 @@ export function buildYuantaCanonicalCreditCardCapture(
   const descriptors = allRows.map((row, inputIndex) => {
     const instrumentKey = instrumentKeyForRow(row);
     const base = canonicalRowBase(row, instrumentKey);
-    const occurrenceGroupBucketKey = row.period
-      ? `statement:${row.period}`
-      : "unbilled";
+    const queryBucket: CreditCardStatementGridBucket = row.period
+      ? { kind: "statement", period: row.period }
+      : { kind: "unbilled" };
     const matchingSummaries = row.period && base.billingStatus === "billed"
       ? [...summaries.values()].filter((summary) =>
           postingDateInCycle(base.postingDate, summary),
@@ -1593,7 +1490,7 @@ export function buildYuantaCanonicalCreditCardCapture(
       instrumentKey,
       base: normalizedBase,
       baseIdentity,
-      occurrenceGroupBucketKey,
+      queryBucket,
     };
   });
   const ordered = descriptors.slice().sort((left, right) =>
@@ -1622,7 +1519,7 @@ export function buildYuantaCanonicalCreditCardCapture(
     ]),
     occurrenceIndex: group.ordinal - 1,
     ...descriptor.base,
-    occurrenceGroupBucketKey: descriptor.occurrenceGroupBucketKey,
+    queryBucket: descriptor.queryBucket,
     sourceKey: occurrenceKey,
   } satisfies YuantaCreditCardTransactionInput));
   const firstTransactionByInstrument = new Map<string, YuantaCreditCardTransactionInput>();

@@ -47,7 +47,7 @@ const attestation = module.deriveFubonCanonicalHumanAttestation(
   "synthetic-managed-secret",
 );
 assert.equal(attestation?.sourceConnectionKey, sourceConnectionKey);
-assert.equal(attestation?.identityEpochKey, "fubon-credit-card-human-attested-v2");
+assert.equal(attestation?.identityEpochKey, "fubon-credit-card-query-inventory-v1");
 assert.notEqual(
   attestation?.humanAttestedAccountKey,
   module.deriveFubonCanonicalHumanAttestation(

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts";
 
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   if (value === null || typeof value !== "object" || seen.has(value)) return value;
@@ -9,6 +10,13 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   }
   return Object.freeze(value);
 };
+
+/** The structured Query Bucket encoding started a new identity epoch (ADR 0062). */
+export const YUANTA_CREDIT_CARD_IDENTITY_EPOCHS = Object.freeze({
+  spineLabel: "yuanta-credit-epoch-v2",
+  current: "yuanta-credit-card-query-inventory-v1",
+  superseded: Object.freeze(["yuanta-credit-card-human-attested-v2"]),
+} as const) satisfies CreditCardIdentityEpochs;
 
 /**
  * This is a user-confirmed source authority, not a provider identity claim.

@@ -26,6 +26,7 @@ import {
   automationRuntimeFatalDetails,
 } from "../src/lib/automation/runtime-invariants.ts";
 import {
+  cancelAllDeviceRegistrations,
   cancelDeviceRegistration,
   deviceRegistrationStatus,
   startDeviceRegistration,
@@ -49,7 +50,18 @@ import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { currentPreviewVisibility, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { sameVisibility } from "../src/lib/preview-sources/visibility.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
-import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import {
+  AUTOMATION_CREDENTIALS_PATH,
+  getAutomationCredentialCodec,
+  writeAutomationSettings,
+} from "../src/lib/automation/server/config-files.ts";
+import { eraseSignInDetails } from "../src/lib/automation/server/sign-in-erasure.ts";
+import { scheduledCollectionTaskIds } from "../src/lib/automation/server/scheduled-collection.ts";
+import {
+  clearAllSignInData,
+  deleteAllFinancialData,
+  type CollectionControl,
+} from "../src/lib/settings/data-erasure.ts";
 import { takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
 import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
 import {
@@ -107,6 +119,7 @@ function registrationId(value: unknown): string {
 
 export function registerOctopusBeakIpc({
   automationRuntime,
+  pauseSchedules,
   onSystemSettingsChanged,
   onAutomationRuntimeFatal,
   onAutomationRuntimeReady,
@@ -115,6 +128,8 @@ export function registerOctopusBeakIpc({
   pgliteFinancial,
 }: {
   automationRuntime: AutomationRuntime;
+  /** Stops the daily schedulers and returns their resume. */
+  pauseSchedules: () => () => void;
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
@@ -198,6 +213,10 @@ export function registerOctopusBeakIpc({
     }
     return result;
   }
+  const collection: CollectionControl = {
+    pauseSchedules,
+    whileStopped: (work) => automationRuntime.whileStopped(work),
+  };
   const invokeHandlers: OctopusBeakInvokeHandlers = {
     ...financialForwardHandlers(pgliteFinancial),
     "settings:load": () =>
@@ -213,6 +232,29 @@ export function registerOctopusBeakIpc({
     },
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
+    "settings:deleteFinancialData": () => deleteAllFinancialData(
+      collection,
+      { reset: () => pgliteFinancial.request("financial.canonical.reset", []) },
+      dataVersionStore,
+    ),
+    "settings:clearSignInData": () => clearAllSignInData(
+      collection,
+      {
+        cancelRegistrations: cancelAllDeviceRegistrations,
+        erase: () => eraseSignInDetails({
+          credentialsPath: AUTOMATION_CREDENTIALS_PATH,
+          userDataDirectory: app.getPath("userData"),
+          codec: getAutomationCredentialCodec(),
+        }),
+        refresh: () => automationCredentials.refresh(),
+      },
+      dataVersionStore,
+    ),
+    "settings:collectAllSources": async () => {
+      await ensureAutomationRuntimeReady("collect-all-sources");
+      const model = await automationRuntime.desktopModel();
+      return automationRuntime.runMany(scheduledCollectionTaskIds(model.automation));
+    },
     "spending:candidate-page": async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
       if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
         throw new TypeError("Spending candidate page request id is invalid.");

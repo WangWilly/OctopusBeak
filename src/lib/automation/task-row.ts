@@ -1,5 +1,5 @@
 import type { AutomationRuntimeTaskSnapshot } from "../desktop/api.ts";
-import type { AutomationTaskRow, AutomationTaskStatus } from "./types.ts";
+import type { AutomationTaskRow, AutomationTaskStatus, TypedWorkflowOutcome } from "./types.ts";
 import type { AutomationActionToken } from "./runtime-controller.ts";
 import type { WorkflowStage } from "./workflow-executor.ts";
 
@@ -57,16 +57,32 @@ export function isTerminalAutomationStatus(status: string): status is TerminalAu
 }
 
 /**
- * A source that needs setup shows it over any finished run, so the person is
- * sent to Configure instead of a Run that would be refused.  A run still in
- * progress keeps the row, so it can be cancelled.
+ * Whether the latest run was refused for a pending Canonical Reset and the
+ * store still refuses this source (ADR 0062). After the reset the store
+ * admits it again, so the row returns to its run status.
+ */
+export function awaitsCanonicalReset(
+  canonicalResetRequired: boolean,
+  outcome: TypedWorkflowOutcome | null,
+): boolean {
+  return canonicalResetRequired && outcome?.errorCode === "canonical-reset-required";
+}
+
+/**
+ * A source that needs setup, or that waits for a Canonical Reset, shows it
+ * over any finished run, so the person is sent to the fix instead of a Run
+ * that would be refused.  A run still in progress keeps the row, so it can be
+ * cancelled.
  */
 export function automationRowStatus(
   lifecycleStatus: AutomationTaskStatus,
   isActive: boolean,
   setupRequired: boolean,
+  resetRequired: boolean,
 ): AutomationTaskStatus {
-  return setupRequired && !isActive ? "needs_setup" : lifecycleStatus;
+  if (isActive) return lifecycleStatus;
+  if (setupRequired) return "needs_setup";
+  return resetRequired ? "reset_required" : lifecycleStatus;
 }
 
 type RowActions = Pick<AutomationTaskRow, "primaryAction" | "canRun">;
@@ -81,14 +97,18 @@ export function automationTaskRowActions(
     ? "Cancel"
     : status === "needs_setup"
       ? "Configure"
-      : status === "locked"
+      : status === "reset_required"
+        ? "Delete financial data"
+        : status === "locked"
         ? "Locked"
         : status === "failed"
           ? "Run again"
           : "Run";
   // Active lifecycle always wins over credential readiness so a run can be
   // cancelled/terminated even if credentials are being refreshed.
-  const canRun = primaryAction === "Cancel" || (!isActive && primaryAction !== "Locked" && credentialsReady);
+  const canRun = primaryAction === "Cancel"
+    || primaryAction === "Delete financial data"
+    || (!isActive && primaryAction !== "Locked" && credentialsReady);
   return { primaryAction, canRun };
 }
 
@@ -104,7 +124,12 @@ export function applyAutomationRuntime(
   runtime: AutomationRuntimeTaskSnapshot,
 ): AutomationTaskRow {
   const isActive = isActiveAutomationRuntimeStatus(runtime.status);
-  const status = automationRowStatus(runtime.status, isActive, row.setupRequired);
+  const status = automationRowStatus(
+    runtime.status,
+    isActive,
+    row.setupRequired,
+    awaitsCanonicalReset(row.canonicalResetRequired, runtime.appWorkflowOutcome),
+  );
   const isSameRun = runtime.runId !== null && row.runId === runtime.runId;
   // Progress never moves backwards within one run.
   const observedPercent = isSameRun && row.progressPercent !== null
@@ -171,6 +196,7 @@ export function parallelRunnableAutomationTaskIds(rows: readonly AutomationTaskR
       && row.credentialsReady
       && row.primaryAction !== "Cancel"
       && row.primaryAction !== "Configure"
+      && row.primaryAction !== "Delete financial data"
       && row.primaryAction !== "Locked")
     .map((row) => row.id);
 }

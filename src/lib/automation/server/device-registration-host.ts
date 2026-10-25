@@ -8,9 +8,18 @@ const services: Readonly<Record<DeviceRegistrationSource, () => SourceDeviceRegi
   cathay: cathayRegistrationService,
 };
 
-export const deviceRegistrationStatus = (source: DeviceRegistrationSource) => services[source]().status();
-export const startDeviceRegistration = (source: DeviceRegistrationSource) => services[source]().start();
+const used = new Set<SourceDeviceRegistrationService>();
+function service(source: DeviceRegistrationSource) {
+  const registration = services[source]();
+  used.add(registration);
+  return registration;
+}
+
+export const deviceRegistrationStatus = (source: DeviceRegistrationSource) => service(source).status();
+export const startDeviceRegistration = (source: DeviceRegistrationSource) => service(source).start();
 export const submitDeviceRegistrationCode = (source: DeviceRegistrationSource, registrationId: string, code: string) =>
-  services[source]().submitCode(registrationId, code);
+  service(source).submitCode(registrationId, code);
 export const cancelDeviceRegistration = (source: DeviceRegistrationSource, registrationId: string) =>
-  services[source]().cancel(registrationId);
+  service(source).cancel(registrationId);
+export const cancelAllDeviceRegistrations = () =>
+  Promise.all([...used].map((registration) => registration.cancelActive()));

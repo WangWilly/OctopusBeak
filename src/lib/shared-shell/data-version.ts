@@ -1,4 +1,8 @@
-export type DataVersionReason = "automation-completed" | "preview-data-changed";
+export type DataVersionReason =
+  | "automation-completed"
+  | "preview-data-changed"
+  | "financial-data-deleted"
+  | "sign-in-data-cleared";
 
 export type DataVersionSnapshot = Readonly<{
   version: number;

@@ -29,6 +29,7 @@ const expectedUserActions: Record<TypedWorkflowErrorCode, UserAction | null> = {
   "external-prerequisite-unavailable": null,
   "source-collection-failed": null,
   "canonical-commit-failed": null,
+  "canonical-reset-required": "delete-financial-data",
   "commit-outcome-unknown": null,
   "collection-scope-changed": null,
   "workflow-failed": null,
@@ -64,6 +65,7 @@ test("a scheduled user-action failure names the source and the action", () => {
   const failed = run({ appWorkflowOutcome: { errorCode: "device-registration-required", summary: null } });
   assert.deepEqual(scheduledRunNotification(failed, "en"), {
     credentialGroupId: "tdcc",
+    action: "register-device",
     title: "TDCC e-Passbook",
     body: "This source no longer trusts this device. Register the device again in sign-in settings.",
   });
@@ -110,4 +112,35 @@ test("scheduled collection takes enabled, ready, idle sources from the Sync all 
     businessDate: "2026-07-15",
   });
   assert.deepEqual(scheduledCollectionTaskIds(model), ["fubon-all-statements", "sync-tdcc"]);
+});
+
+test("a source the store refuses until a Canonical Reset notifies once, then scheduled collection skips it until the reset", () => {
+  const credentials = Object.fromEntries(
+    AUTOMATION_TASKS.flatMap((task) => task.credentialKeys).map((key) => [key, true]),
+  );
+  const refused = run({
+    taskId: "fubon-all-statements",
+    status: "partial",
+    appWorkflowOutcome: { errorCode: "canonical-reset-required", summary: null },
+  });
+  const notice = scheduledRunNotification(refused, "en");
+  assert.equal(notice?.action, "delete-financial-data");
+  assert.equal(notice?.credentialGroupId, "fubon");
+
+  const model = (resetRequired: readonly string[]) => buildAutomationPageModel({
+    tasks: enabledAutomationTasks(Object.fromEntries(
+      AUTOMATION_CREDENTIAL_GROUPS.map((group) => [group.id, group.id === "fubon" || group.id === "tdcc"]),
+    )),
+    latestRuns: { "fubon-all-statements": refused },
+    credentials,
+    canonicalResetRequiredNamespaces: new Set(resetRequired),
+    active: false,
+    businessDate: "2026-07-15",
+  });
+  assert.deepEqual(scheduledCollectionTaskIds(model(["fubon"])), ["sync-tdcc"], "skipped while the store refuses");
+  assert.deepEqual(
+    scheduledCollectionTaskIds(model([])),
+    ["fubon-all-statements", "sync-tdcc"],
+    "collected again once a Canonical Reset removed the old data",
+  );
 });

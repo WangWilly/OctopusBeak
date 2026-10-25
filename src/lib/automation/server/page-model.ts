@@ -13,6 +13,7 @@ import {
   applyAutomationRuntime,
   automationRowPercent,
   automationRowStatus,
+  awaitsCanonicalReset,
   automationTaskRowActions,
   isActiveAutomationRuntimeStatus,
   isWorkflowStage,
@@ -77,6 +78,8 @@ export function buildAutomationPageModel(input: {
   todayRunTaskIds?: readonly string[];
   credentials: Record<string, boolean>;
   setupRequiredGroupIds?: ReadonlySet<string>;
+  /** Integration namespaces the store refuses until a Canonical Reset. */
+  canonicalResetRequiredNamespaces?: ReadonlySet<string>;
   externalPrerequisiteNotices?: readonly AutomationTaskPrerequisiteNotice[];
   active: boolean;
   businessDate: string;
@@ -86,13 +89,20 @@ export function buildAutomationPageModel(input: {
   const activeTaskIds = new Set(input.activeTaskIds ?? []);
   const todayRunTaskIds = new Set(input.todayRunTaskIds ?? []);
   const setupRequiredGroupIds = input.setupRequiredGroupIds ?? new Set<string>();
+  const resetRequiredNamespaces = input.canonicalResetRequiredNamespaces ?? new Set<string>();
   const tasks = input.tasks.map((task) => {
     const run = input.latestRuns[task.id];
     const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
     const isActive = activeTaskIds.has(task.id);
     const setupRequired = Boolean(task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId));
+    const canonicalResetRequired = task.integrationNamespaces.some((namespace) => resetRequiredNamespaces.has(namespace));
     const latestRunStatus = rowStatus(run, isActive);
-    const status = automationRowStatus(latestRunStatus, isActive, setupRequired);
+    const status = automationRowStatus(
+      latestRunStatus,
+      isActive,
+      setupRequired,
+      awaitsCanonicalReset(canonicalResetRequired, run?.appWorkflowOutcome ?? null),
+    );
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
@@ -127,6 +137,7 @@ export function buildAutomationPageModel(input: {
       ranToday: todayRunTaskIds.has(task.id),
       credentialsReady,
       setupRequired,
+      canonicalResetRequired,
       ...automationTaskRowActions(status, isActive, credentialsReady),
     } satisfies AutomationTaskRow;
     const row = runtime ? applyAutomationRuntime(persisted, runtime) : persisted;

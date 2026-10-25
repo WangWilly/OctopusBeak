@@ -18,8 +18,14 @@ import {
   buildFubonCreditCardStatementEvidenceKey,
   fubonCanonicalSpineCapture,
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
+  FUBON_STATEMENT_GRID,
   resolveFubonCreditCardIdentity,
 } from "../ledger/canonical/fubon-credit-card-admission.ts";
+import {
+  statementGridQueryShortfalls,
+  type CreditCardStatementGridBucket,
+  type CreditCardStatementGridShortfall,
+} from "../ledger/canonical/credit-card-query-inventory.ts";
 import type {
   FubonCreditCardCaptureInput,
   FubonCreditCardGrid,
@@ -1244,7 +1250,8 @@ function nextIsoDate(value: string): string {
 export function resolveFubonSettledStatementCycles(
   summaries: readonly IssuerStatementSummary[],
 ): StatementSummary[] {
-  if (summaries.length !== 6 || new Set(summaries.map((item) => item.period)).size !== 6)
+  const periodCount = FUBON_STATEMENT_GRID.billedPeriodCount;
+  if (summaries.length !== periodCount || new Set(summaries.map((item) => item.period)).size !== periodCount)
     throw new Error("Fubon portfolio admission requires six distinct issuer summaries.");
   for (let index = 1; index < summaries.length; index += 1) {
     if (summaries[index - 1]!.issueDate <= summaries[index]!.issueDate)
@@ -1735,9 +1742,9 @@ function canonicalTransactionForRow(
   const foreignEvidence = fubonForeignEvidenceForRow(row);
   const queriedPeriod = cleanText(row.statement_period);
   if (!queriedPeriod) throw new Error("Fubon credit-card row is missing its queried statement period.");
-  const occurrenceGroupBucketKey = queriedPeriod === "unbilled"
-    ? "unbilled"
-    : `statement:${queriedPeriod}`;
+  const queryBucket: CreditCardStatementGridBucket = queriedPeriod === "unbilled"
+    ? { kind: "unbilled" }
+    : { kind: "statement", period: queriedPeriod };
   const sourceRecordKey = fubonCanonicalDigest("fubon-credit-row-v2", [
     statementKey,
     sourceScopeKey ?? null,
@@ -1765,7 +1772,7 @@ function canonicalTransactionForRow(
     foreignAmount: foreignEvidence.foreignAmount?.amount ?? null,
     description: cleanText(row.description),
     billingStatus: row.statement_period === "unbilled" ? "unbilled" : "billed",
-    occurrenceGroupBucketKey,
+    queryBucket,
     ...(statementKey ? { statementKey } : {}),
     ...(sourceScopeKey ? { sourceScopeKey } : {}),
   };
@@ -1802,7 +1809,14 @@ function instrumentForRows(
   };
 }
 
-const FUBON_PREFLIGHT_GRID_DIAGNOSTIC_LIMIT = 7;
+const FUBON_PREFLIGHT_GRID_DIAGNOSTIC_LIMIT = FUBON_STATEMENT_GRID.billedPeriodCount + 1;
+const FUBON_PREFLIGHT_GRID_FAILURE: Readonly<Record<CreditCardStatementGridShortfall, string>> = {
+  "billed-period-count": "summary-count",
+  "billed-period-invalid": "summary-period-uniqueness",
+  "grid-count": "grid-count",
+  "grid-not-terminal": "grid-terminal-shape",
+};
+const FUBON_UNBILLED_GRID_INDEX = FUBON_STATEMENT_GRID.billedPeriodCount;
 const FUBON_PREFLIGHT_PERIOD_OFFSET_DIAGNOSTIC_LIMIT = 8;
 const FUBON_PREFLIGHT_COUNT_DIAGNOSTIC_LIMIT = 1_000_000_000;
 const FUBON_MAX_PAGE_SIZE = 2_147_483_647;
@@ -1963,6 +1977,10 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
   const summaryPeriods = new Set(
     options.summaries.map((summary) => summary.period),
   );
+  const gridShortfalls = statementGridQueryShortfalls(FUBON_STATEMENT_GRID, {
+    billedPeriods: options.summaries.map((summary) => summary.period),
+    terminalGrids: gridTerminalEvidence.map((evidence) => evidence !== undefined),
+  });
   const observedCardKeysHaveFourDigits =
     observedCardKeys.size > 0 &&
     [...observedCardKeys].every((cardKey) => /^\d{4}$/u.test(cardKey));
@@ -1975,10 +1993,7 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     ...(options.input.unbilledCardNumbers.length === 0
       ? []
       : ["unbilled-card-filter"]),
-    ...(options.gridStates.length === 7 ? [] : ["grid-count"]),
-    ...(gridTerminalFailures.length === 0 ? [] : ["grid-terminal-shape"]),
-    ...(options.summaries.length === 6 ? [] : ["summary-count"]),
-    ...(summaryPeriods.size === 6 ? [] : ["summary-period-uniqueness"]),
+    ...gridShortfalls.map((shortfall) => FUBON_PREFLIGHT_GRID_FAILURE[shortfall]),
     ...(observedCardKeys.size === 0 ? ["observed-card-key-presence"] : []),
     ...(observedCardKeysHaveFourDigits ? [] : ["observed-card-key-format"]),
   ];
@@ -2005,15 +2020,15 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
         FUBON_PREFLIGHT_GRID_DIAGNOSTIC_LIMIT,
       ),
       gridTerminalFailureCount: boundedPreflightCount(gridTerminalFailures.length),
-      gridCountIsExpected: options.gridStates.length === 7,
+      gridCountIsExpected: !gridShortfalls.includes("grid-count"),
       allGridsHaveTerminalShape: gridTerminalFailures.length === 0,
       grids: options.gridStates
         .slice(0, FUBON_PREFLIGHT_GRID_DIAGNOSTIC_LIMIT)
         .map(preflightGridDiagnostic),
       summaryCount: boundedPreflightCount(options.summaries.length),
       uniqueSummaryPeriodCount: boundedPreflightCount(summaryPeriods.size),
-      summaryCountIsExpected: options.summaries.length === 6,
-      summaryPeriodsAreUnique: summaryPeriods.size === 6,
+      summaryCountIsExpected: !gridShortfalls.includes("billed-period-count"),
+      summaryPeriodsAreUnique: !gridShortfalls.includes("billed-period-invalid"),
       observedCardKeyCount: boundedPreflightCount(observedCardKeys.size),
       observedCardKeysPresent: observedCardKeys.size > 0,
       observedCardKeysHaveFourDigits,
@@ -2054,8 +2069,8 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
         orderedBilledGridStates[index]!.sourceDeclaredRowCount !== undefined &&
         orderedBilledGridStates[index]!.sourceDeclaredRowCount !== rowCount,
     ) ||
-    (options.gridStates[6]!.sourceDeclaredRowCount !== undefined &&
-      options.gridStates[6]!.sourceDeclaredRowCount !== options.unbilledRows.length)
+    (options.gridStates[FUBON_UNBILLED_GRID_INDEX]!.sourceDeclaredRowCount !== undefined &&
+      options.gridStates[FUBON_UNBILLED_GRID_INDEX]!.sourceDeclaredRowCount !== options.unbilledRows.length)
   )
     throw new Error(
       "Fubon grid totals drifted from the complete all-account row partition.",
@@ -2246,7 +2261,7 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     buildFubonCanonicalGrid(
       "unbilled",
       "unbilled",
-      options.gridStates[6]!,
+      options.gridStates[FUBON_UNBILLED_GRID_INDEX]!,
       options.unbilledRows.length,
     ),
   ];

@@ -69,7 +69,8 @@ export type AutomationTaskStatus =
   | "interrupted"
   | "failed"
   | "locked"
-  | "needs_setup";
+  | "needs_setup"
+  | "reset_required";
 
 /**
  * Renderer-neutral progress emitted by an automation lifecycle.  Display
@@ -217,7 +218,9 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   credentialsReady: boolean;
   /** The source needs Statement Selection setup before it can run. */
   setupRequired: boolean;
-  primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
+  /** The store refuses this source's captures until a Canonical Reset (ADR 0062). */
+  canonicalResetRequired: boolean;
+  primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure" | "Delete financial data";
   canRun: boolean;
 };
 

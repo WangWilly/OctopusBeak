@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts";
 
 /**
  * E.SUN's credit-card page exposes a portfolio view and masked card keys, but
@@ -16,6 +17,13 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   }
   return Object.freeze(value);
 };
+
+/** The structured Query Bucket encoding started a new identity epoch (ADR 0062). */
+export const ESUN_CREDIT_CARD_IDENTITY_EPOCHS = Object.freeze({
+  spineLabel: "esun-credit-epoch-v1",
+  current: "esun-credit-card-query-inventory-v1",
+  superseded: Object.freeze(["esun/credit-card/human-attested-v3"]),
+} as const) satisfies CreditCardIdentityEpochs;
 
 export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE =
   "esun/credit-card/human-attested-v4" as const;

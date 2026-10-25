@@ -506,17 +506,23 @@ export async function collectSelectedProducts<
         ));
       }
       if (commitResult.status !== "completed") {
-        completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
-          errorCode: "canonical-commit-failed",
-        }));
         // Each rejected item names its admission rule; there is no error to rethrow.
-        for (const item of commitResult.items) {
-          if (item.status !== "failed") continue;
-          const reason = item.diagnostics.find((diagnostic) => diagnostic.reason)?.reason;
+        const rejections = commitResult.items.flatMap((item) => item.status === "failed"
+          ? [item.diagnostics.find((diagnostic) => diagnostic.reason)?.reason]
+          : []);
+        // A store waiting for a Canonical Reset refuses the product until the
+        // person deletes the old data; the other products still collect.
+        const errorCode = rejections.includes("canonical-reset-required")
+          ? "canonical-reset-required"
+          : "canonical-commit-failed";
+        completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
+          errorCode,
+        }));
+        for (const reason of rejections) {
           await options.productFailure?.({
             stage: "commit",
             statementType: typeId,
-            errorCode: "canonical-commit-failed",
+            errorCode,
             error: undefined,
             ...(reason ? { reason } : {}),
           });

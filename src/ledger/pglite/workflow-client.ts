@@ -126,6 +126,7 @@ const PGLITE_WORKFLOW_ADMISSION_REASONS = new Set([
   "identity-conflict",
   "revision-conflict",
   "missing-reference",
+  "canonical-reset-required",
   "required-data",
 ] as const satisfies readonly (
   | Exclude<PGliteCanonicalAdmissionFailureReason, "cancelled" | "infrastructure">

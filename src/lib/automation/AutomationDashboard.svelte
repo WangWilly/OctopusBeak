@@ -136,6 +136,7 @@ import type {
   export let onOnboardingStoryEvent: (event: OnboardingStoryEvent) => void = () => {};
   export let signInSettingsGroupId: string | null = null;
   export let onSignInSettingsOpened: () => void = () => {};
+  export let onOpenFinancialDataSettings: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
     credentialGroupId: string | null,
@@ -378,7 +379,7 @@ import type {
   function statusClass(status: string) {
     if (status === "completed") return "good";
     if (status === "failed" || status === "locked") return "bad";
-    if (status === "running" || status === "waiting_for_human" || status === "partial" || status === "needs_setup") return "warn";
+    if (status === "running" || status === "waiting_for_human" || status === "partial" || status === "needs_setup" || status === "reset_required") return "warn";
     return "";
   }
 
@@ -975,6 +976,10 @@ import type {
   }
 
   async function primaryTaskAction(task: AutomationTaskRow) {
+    if (task.primaryAction === "Delete financial data") {
+      onOpenFinancialDataSettings();
+      return;
+    }
     if (task.primaryAction === "Configure") {
       openCredentials();
       selectCredentialGroup(task.credentialGroupId ?? "");

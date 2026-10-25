@@ -97,7 +97,9 @@ export const FORCE_QUIT_AVAILABLE_AFTER_MS = 10_000;
  * The run's Commit attempts outrank its report: an unsettled attempt makes it
  * commit outcome unknown and a refused one collection scope changed (ADR 0058).
  * Unknown also outranks every stop so an uncertain financial write is never
- * hidden; a person's cancellation outranks shutdown.
+ * hidden; a person's cancellation outranks shutdown. A product the store
+ * refused until a Canonical Reset names the run's outcome even when other
+ * products committed, since only the person can clear it (ADR 0062).
  */
 function decide(
   attempts: readonly CommitAttempt[],
@@ -106,11 +108,14 @@ function decide(
 ): TaskRunOutcome {
   const { failure, summary } = report;
   const commit = commitAttemptsErrorCode(attempts);
+  const resetRequired = summary?.products?.some((product) => product.errorCode === "canonical-reset-required");
   const errorCode = commit === "commit-outcome-unknown" || commit === "collection-scope-changed"
     ? commit
-    : failure === null
-      ? null
-      : failure.proven ? failure.code : commit ?? failure.code;
+    : resetRequired
+      ? "canonical-reset-required"
+      : failure === null
+        ? null
+        : failure.proven ? failure.code : commit ?? failure.code;
   const outcome = (
     status: TerminalTaskRunStatus,
     code: TypedWorkflowErrorCode | null,
@@ -122,6 +127,9 @@ function decide(
   if (stop === "shutdown") return outcome("interrupted", "cancelled");
   if (errorCode === "cancelled") return outcome("cancelled", "cancelled");
   if (tdccIncompleteCollectionHasDurableReceipts(summary, errorCode)) return outcome("partial", errorCode);
+  if (errorCode === "canonical-reset-required") {
+    return outcome(summary?.status === "partial" ? "partial" : "failed", errorCode);
+  }
   if (errorCode !== null || summary?.status === "failed") return outcome("failed", errorCode);
   if (summary?.status === "partial") return outcome("partial", null);
   return outcome("completed", null);
