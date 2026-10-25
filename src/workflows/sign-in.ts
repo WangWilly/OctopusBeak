@@ -212,9 +212,8 @@ class Attempt {
     const captcha = plan.captcha;
     if (captcha) {
       const stage = await this.raced(Promise.resolve().then(() => captcha.stage(this.page)));
-      // Never abandon a pending stage: a dialog verdict waits until the port returns.
+      // Never abandon a pending stage: a dialog verdict waits until the port returns, then the next raced await throws it.
       await this.context.verification.complete(stage);
-      this.throwVerdict();
       if (!(await this.raced(plan.signedIn(this.page, this.signal)))) {
         const answer = await this.raced(captcha.answer(this.page).inputValue());
         if (answer.trim() === "") throw new SignInError("answer-missing");
@@ -266,7 +265,6 @@ class Attempt {
         if (plan.prompts && await this.raced(plan.prompts(this.page, this.signal))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();
-        this.throwVerdict();
         await this.raced(sleep(TICK_MS, this.signal));
       }
     } finally {
@@ -284,10 +282,6 @@ class Attempt {
     if (this.verdict) return;
     this.verdict = error;
     this.interrupt(error);
-  }
-
-  private throwVerdict(): void {
-    if (this.verdict) throw this.verdict;
   }
 
   private async handleDialog(dialog: Dialog): Promise<void> {
