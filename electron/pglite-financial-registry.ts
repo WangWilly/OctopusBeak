@@ -139,6 +139,7 @@ import {
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
+import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
 type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
@@ -200,6 +201,7 @@ function genericFailure(
   code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled",
   category?: PGliteFinancialFailureCategory,
   diagnosticError?: SafeWorkflowFailureError,
+  reason?: PGliteWorkflowAdmissionReason,
 ): PGliteFinancialResponse {
   return {
     kind: "pglite-financial-response",
@@ -215,8 +217,18 @@ function genericFailure(
           ? "PGlite financial operation was cancelled."
         : "PGlite financial operation failed.",
     ...(category ? { category } : {}),
+    ...(reason ? { reason } : {}),
     ...(diagnosticError ? { diagnosticError } : {}),
   };
+}
+
+/** The rejecting admission rule's fixed code, kept across a second RPC boundary like the category. */
+function failureReason(error: unknown): PGliteWorkflowAdmissionReason | undefined {
+  if (error instanceof PGliteFinancialError) return error.reason;
+  if (error instanceof PGliteCanonicalSourceAdmissionError) return pgliteWorkflowAdmissionReason(error.reason);
+  if (error instanceof PGliteCanonicalCreditCardAdmissionError || error instanceof PGliteCanonicalEInvoiceAdmissionError)
+    return pgliteWorkflowAdmissionReason(error.code);
+  return undefined;
 }
 
 /**
@@ -799,6 +811,7 @@ export function createPGliteFinancialRpcServer(
             errorCode: refused ? "collection-scope-changed" : "workflow-failed",
             stage: operation === "financial.source.admit" ? "validation" : "commit",
             operation,
+            reason: failureReason(error),
             safeError: diagnosticError,
             error,
           }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
@@ -810,6 +823,7 @@ export function createPGliteFinancialRpcServer(
             controller.signal.aborted ? "cancelled" : "operation-failed",
             controller.signal.aborted ? undefined : failureCategory(error),
             diagnosticError,
+            controller.signal.aborted ? undefined : failureReason(error),
           ),
         );
       },

@@ -222,6 +222,33 @@ test("diagnostic sink is opt-in, private, correlated, and never stores raw error
   }
 });
 
+test("a rejected commit item records its admission rule and nothing outside that vocabulary", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "octopus-workflow-failure-diagnostic-"));
+  const filePath = join(directory, "workflow-failures.jsonl");
+  try {
+    for (const reason of ["occurrence-conflict", "account=private-account"]) {
+      assert.equal(await appendWorkflowFailureDiagnostic(filePath, {
+        workflowId: "esun-credit-card-statements",
+        taskRunId: "test-run-commit",
+        source: "workflow-worker",
+        errorCode: "canonical-commit-failed",
+        stage: "commit",
+        statementType: "credit_card",
+        reason,
+      }, { repoRoot: repository }), true);
+    }
+    const text = await readFile(filePath, "utf8");
+    const records = text.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.deepEqual(records.map(({ errorCode, stage, statementType, reason }) => ({ errorCode, stage, statementType, reason })), [
+      { errorCode: "canonical-commit-failed", stage: "commit", statementType: "credit_card", reason: "occurrence-conflict" },
+      { errorCode: "canonical-commit-failed", stage: "commit", statementType: "credit_card", reason: undefined },
+    ]);
+    assert.doesNotMatch(text, /private-account/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("invalid sink locations are ignored and report failure without throwing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "octopus-workflow-failure-diagnostic-"));
   try {

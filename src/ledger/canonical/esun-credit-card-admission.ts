@@ -1056,8 +1056,21 @@ function esunGridBucketKeys(
   endDate: string,
 ): string[] {
   if (grid.kind === "past-year-timeline")
-    return grid.months.map((month) => `month:${month}`);
+    return grid.months.map((month) => esunTimelineMonthBucketKey(month, endDate));
   return [`history-range:${startDate}:${endDate}`];
+}
+
+/**
+ * The past-year timeline returns the month one year before the query month
+ * only from about the query date's anniversary (ADR 0031), so that month
+ * loses purchases day by day while it is still listed. Its bucket names the
+ * query date: a later day's capture has not queried it again, while a
+ * same-day capture must still contain every member (ADR 0040).
+ */
+function esunTimelineMonthBucketKey(month: string, endDate: string): string {
+  const queryDate = sourceDate(endDate, "Capture end date");
+  const anniversaryMonth = `${Number(queryDate.slice(0, 4)) - 1}/${queryDate.slice(5, 7)}`;
+  return month === anniversaryMonth ? `partial-month:${month}:queried-on:${queryDate}` : `month:${month}`;
 }
 
 function buildSettledStatements(
@@ -1200,7 +1213,7 @@ export function buildEsunCanonicalCreditCardCapture(
       cardKey,
       instrumentKey,
       occurrenceGroupBucketKey: options.grid.kind === "past-year-timeline"
-        ? `month:${normalizeSourceRowDate(row.consumeDate).slice(0, 7).replace("-", "/")}`
+        ? esunTimelineMonthBucketKey(normalizeSourceRowDate(row.consumeDate).slice(0, 7).replace("-", "/"), options.endDate)
         : `history-range:${sourceDate(options.startDate, "Capture start date")}:${sourceDate(options.endDate, "Capture end date")}`,
       baseIdentity: sourceRowBaseIdentity(options.identity, row, instrumentKey),
     };

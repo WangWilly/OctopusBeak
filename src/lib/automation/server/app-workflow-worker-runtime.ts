@@ -456,6 +456,7 @@ export async function runAppWorkflowWorker(
           errorCode: failure.errorCode,
           stage: failure.stage,
           statementType: failure.statementType,
+          reason: failure.reason,
           error: failure.error,
         }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
       },

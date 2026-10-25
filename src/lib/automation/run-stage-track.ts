@@ -20,16 +20,23 @@ const ACTIVE_STATUSES: readonly AutomationTaskStatus[] = [
   "cancelling",
 ];
 
-export type CollectionFailures = Readonly<{
+export type ProductFailures = Readonly<{
   typeIds: readonly string[];
   /** Products the run tried; skipped ones were never collected. */
   attempted: number;
 }>;
 
-/** Which products failed collection, out of those the run tried. */
-export function collectionFailures(outcome: TypedWorkflowOutcome | null): CollectionFailures | null {
+/** A product that collected and validated but whose commit was rejected or left unknown. */
+const COMMIT_FAILURE_CODES: ReadonlySet<string> = new Set(["canonical-commit-failed", "commit-outcome-unknown"]);
+
+/** Which products failed in this stage, out of those the run tried. Only collection and commit fail a product. */
+export function productFailures(outcome: TypedWorkflowOutcome | null, stage: WorkflowStage): ProductFailures | null {
+  if (stage !== "collection" && stage !== "commit") return null;
   const products = outcome?.summary?.products ?? [];
-  const typeIds = products.filter((product) => product.status === "failed").map((product) => product.typeId);
+  const typeIds = products
+    .filter((product) => product.status === "failed"
+      && COMMIT_FAILURE_CODES.has(product.errorCode ?? "") === (stage === "commit"))
+    .map((product) => product.typeId);
   if (!typeIds.length) return null;
   return { typeIds, attempted: products.filter((product) => product.status !== "skipped").length };
 }
@@ -56,7 +63,8 @@ export function runStageTrack(
   const running = ACTIVE_STATUSES.includes(status);
   const stopped = status === "failed" || status === "interrupted" || status === "cancelled";
   const incomplete = stopped || status === "partial";
-  const productFailed = collectionFailures(outcome) !== null;
+  const failedIn = (stage: WorkflowStage) => productFailures(outcome, stage) !== null;
+  const productFailed = failedIn("collection") || failedIn("commit");
   return WORKFLOW_STAGES.map((stage, index) => {
     const stageEvents = events.filter((event) => event.stage === stage);
     const lastEvent = stageEvents.at(-1) ?? null;
@@ -72,8 +80,8 @@ export function runStageTrack(
         return "done";
       }
       if (stageEvents.some((event) => event.outcome === "failed")) return "failed";
-      if (stage === "collection" && productFailed) return "failed";
-      // A failed product already explains the failure on the collection node.
+      if (failedIn(stage)) return "failed";
+      // A failed product already explains the failure on its own node.
       if (stopped && stoppedStage === stage && !productFailed) return "failed";
       if (stage === "commit" && incomplete) return "warning";
       return "done";
