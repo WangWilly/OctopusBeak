@@ -13,6 +13,7 @@ import {
   listPGliteExpectedOccurrences,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalOccurrenceSupersessionInput,
+  type PGliteCanonicalOccurrenceWithdrawalInput,
 } from "./canonical-source-store.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
@@ -106,6 +107,8 @@ export type PGliteCanonicalCreditCardCommitResult = Readonly<{
   instrumentCount: number;
   statementCount: number;
   balanceRevisionCreated: boolean;
+  /** Unbilled transactions whose source support this capture withdrew because they vanished. */
+  withdrawnTransactionCount: number;
 }>;
 
 export class PGliteCanonicalCreditCardAdmissionError extends Error {
@@ -411,26 +414,39 @@ async function assertFubonBillingProgression(
   }
 }
 
-type VanishedUnbilledMember = Readonly<{ transactionId: string; direction: string }>;
+type VanishedUnbilledMember = Readonly<{ transactionId: string; direction: string; instrumentKey: string }>;
 type AppearedBilledMember = Readonly<{ occurrenceKey: string; direction: string }>;
 
+type VanishedUnbilledResolution = Readonly<{
+  supersessions: readonly PGliteCanonicalOccurrenceSupersessionInput[];
+  withdrawals: readonly PGliteCanonicalOccurrenceWithdrawalInput[];
+}>;
+
 /**
- * Pair each unbilled transaction that vanished from a complete capture with
- * the billed transaction that replaced it. The issuer may rewrite merchant
- * text or finalize an amount at posting, which changes the occurrence key,
- * so the pairing rests on instrument, consume date, statement membership and
- * direction. Only an exactly one-to-one pairing is evidence; any other
- * multiplicity stays unpaired and the continuity guard rejects the loss.
+ * Resolve each unbilled transaction that vanished from a complete capture.
+ *
+ * The issuer may rewrite merchant text or finalize an amount at posting,
+ * which changes the occurrence key. A vanished member is paired with the
+ * billed transaction that replaced it on instrument, consume date, statement
+ * membership and direction; only an exactly one-to-one pairing is evidence
+ * (ADR 0040).
+ *
+ * An unpaired member may instead have been cancelled before billing. Its
+ * absence withdraws its source support only while its card is still listed
+ * and no billed transaction new to this capture shares its consume date;
+ * any such row could be its continuation, so the guard keeps rejecting the
+ * loss rather than guessing.
  */
-async function resolveUnbilledToBilledSupersessions(
+async function resolveVanishedUnbilledMembers(
   transaction: PGliteTransaction,
   request: PGliteCanonicalCreditCardCaptureRequest,
-): Promise<readonly PGliteCanonicalOccurrenceSupersessionInput[]> {
+): Promise<VanishedUnbilledResolution> {
+  const none = { supersessions: [], withdrawals: [] };
   const { capture } = request;
-  if (request.transactions.length === 0) return [];
-  if (capture.scope.kind !== "bounded-range" || capture.scope.completeness !== "complete-range") return [];
+  if (request.transactions.length === 0) return none;
+  if (capture.scope.kind !== "bounded-range" || capture.scope.completeness !== "complete-range") return none;
   const sourceSubjectId = await findPGliteSourceSubjectId(transaction, capture);
-  if (!sourceSubjectId) return [];
+  if (!sourceSubjectId) return none;
   const currentKeys = new Set(capture.records.map((record) => record.occurrenceKey));
   const vanished: Array<{ scopeKey: string; transactionId: string; partitionDate: string }> = [];
   for (const entry of capture.occurrenceGroupCoverage ?? []) {
@@ -440,7 +456,7 @@ async function resolveUnbilledToBilledSupersessions(
       vanished.push({ scopeKey: entry.scopeKey, transactionId: occurrence.transactionId, partitionDate: occurrence.partitionDate });
     }
   }
-  if (vanished.length === 0) return [];
+  if (vanished.length === 0) return none;
 
   const priorRows = await query<{ transaction_id: unknown; billing_status: string; instrument_key: string; direction: string }>(transaction, `
     SELECT DISTINCT ON (lifecycle.transaction_id)
@@ -456,14 +472,17 @@ async function resolveUnbilledToBilledSupersessions(
   const priorByTransaction = new Map(priorRows.map((row) => [idText(row.transaction_id), row]));
   const pairKey = (scopeKey: string, instrumentKey: string, partitionDate: string): string =>
     JSON.stringify([scopeKey, instrumentKey, partitionDate]);
-  const vanishedUnbilled = new Map<string, VanishedUnbilledMember[]>();
+  const dateKey = (scopeKey: string, partitionDate: string): string => JSON.stringify([scopeKey, partitionDate]);
+  const vanishedUnbilled = new Map<string, Readonly<{ scopeKey: string; partitionDate: string; members: VanishedUnbilledMember[] }>>();
   for (const member of vanished) {
     const prior = priorByTransaction.get(member.transactionId);
     if (!prior || prior.billing_status !== "unbilled") continue;
     const key = pairKey(member.scopeKey, prior.instrument_key, member.partitionDate);
-    vanishedUnbilled.set(key, [...(vanishedUnbilled.get(key) ?? []), { transactionId: member.transactionId, direction: prior.direction }]);
+    const entry = vanishedUnbilled.get(key) ?? { scopeKey: member.scopeKey, partitionDate: member.partitionDate, members: [] };
+    entry.members.push({ transactionId: member.transactionId, direction: prior.direction, instrumentKey: prior.instrument_key });
+    vanishedUnbilled.set(key, entry);
   }
-  if (vanishedUnbilled.size === 0) return [];
+  if (vanishedUnbilled.size === 0) return none;
 
   const seenBefore = new Set((await query<{ occurrence_key: string }>(transaction, `
     SELECT occurrence_key FROM source_records
@@ -472,19 +491,54 @@ async function resolveUnbilledToBilledSupersessions(
   const statementMembers = new Set(request.statements.flatMap((statement) => statement.transactionSourceOccurrenceKeys));
   const recordsByOccurrence = new Map(capture.records.map((record) => [record.occurrenceKey, record]));
   const appearedBilled = new Map<string, AppearedBilledMember[]>();
+  const newBilledDates = new Set<string>();
   for (const fact of request.transactions) {
     const group = recordsByOccurrence.get(fact.sourceOccurrenceKey)?.occurrenceGroup;
-    if (!group || fact.billingStatus !== "billed" || seenBefore.has(fact.sourceOccurrenceKey) || !statementMembers.has(fact.sourceOccurrenceKey)) continue;
+    if (!group || fact.billingStatus !== "billed" || seenBefore.has(fact.sourceOccurrenceKey)) continue;
+    newBilledDates.add(dateKey(group.scopeKey, group.partitionDate));
+    if (!statementMembers.has(fact.sourceOccurrenceKey)) continue;
     const key = pairKey(group.scopeKey, fact.instrumentKey, group.partitionDate);
     appearedBilled.set(key, [...(appearedBilled.get(key) ?? []), { occurrenceKey: fact.sourceOccurrenceKey, direction: fact.direction }]);
   }
+  const listedInstruments = new Set(request.instruments.map((instrument) => instrument.instrumentKey));
   const supersessions: PGliteCanonicalOccurrenceSupersessionInput[] = [];
-  for (const [key, withdrawn] of vanishedUnbilled) {
+  const withdrawals: PGliteCanonicalOccurrenceWithdrawalInput[] = [];
+  for (const [key, { scopeKey, partitionDate, members }] of vanishedUnbilled) {
     const successors = appearedBilled.get(key) ?? [];
-    if (withdrawn.length !== 1 || successors.length !== 1 || withdrawn[0]!.direction !== successors[0]!.direction) continue;
-    supersessions.push({ withdrawnTransactionId: withdrawn[0]!.transactionId, successorOccurrenceKey: successors[0]!.occurrenceKey });
+    if (members.length === 1 && successors.length === 1 && members[0]!.direction === successors[0]!.direction) {
+      supersessions.push({ withdrawnTransactionId: members[0]!.transactionId, successorOccurrenceKey: successors[0]!.occurrenceKey });
+      continue;
+    }
+    if (newBilledDates.has(dateKey(scopeKey, partitionDate))) continue;
+    for (const member of members)
+      if (listedInstruments.has(member.instrumentKey)) withdrawals.push({ withdrawnTransactionId: member.transactionId });
   }
-  return supersessions;
+  return { supersessions, withdrawals };
+}
+
+/**
+ * A transaction withdrawn because its billed successor replaced it (ADR 0040)
+ * cannot be listed again: the successor already carries that purchase.
+ */
+async function assertSupersededMembersStayReplaced(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalCreditCardCaptureRequest,
+): Promise<void> {
+  const keys = request.capture.records.map((record) => record.occurrenceKey);
+  if (keys.length === 0) return;
+  const sourceSubjectId = await findPGliteSourceSubjectId(transaction, request.capture);
+  if (!sourceSubjectId) return;
+  const replaced = await first<{ transaction_id: unknown }>(transaction, `
+    SELECT assertion.transaction_id
+    FROM source_records source_record
+    JOIN assertion_provenance provenance ON provenance.source_record_id = source_record.source_record_id
+    JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+    JOIN canonical_credit_card_relations relation
+      ON relation.from_transaction_id = assertion.transaction_id AND relation.relation_kind = 'unbilled_to_billed'
+    WHERE source_record.source_subject_id = ? AND source_record.occurrence_key IN (${keys.map(() => "?").join(",")})
+      AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
+    LIMIT 1`, [sourceSubjectId, ...keys]);
+  if (replaced) fail("revision-conflict", "A credit-card transaction replaced by its billed successor was listed again.");
 }
 
 async function query<T>(transaction: PGliteTransaction, sql: string, params: readonly unknown[] = []): Promise<readonly T[]> {
@@ -711,7 +765,8 @@ export async function commitPGliteCanonicalCreditCardCapture(
   return store.transaction(async (transaction) => {
     const snapshot = input;
     await assertFubonBillingProgression(transaction, snapshot);
-    const supersessions = await resolveUnbilledToBilledSupersessions(transaction, snapshot);
+    await assertSupersededMembersStayReplaced(transaction, snapshot);
+    const { supersessions, withdrawals } = await resolveVanishedUnbilledMembers(transaction, snapshot);
     const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: snapshot.capture,
       account: snapshot.account,
@@ -720,6 +775,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
       requireExistingAccount: snapshot.requireExistingAccount ?? false,
       withdrawalPolicy: "never-infer",
       occurrenceSupersessions: supersessions,
+      occurrenceWithdrawals: withdrawals,
     }, options);
     const generic = admitted.result;
     const sourceRecordByOccurrence = admitted.capture.sourceRecordIdsByOccurrence;
@@ -747,6 +803,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
       instrumentCount: extension.instrumentCount,
       statementCount: extension.statementCount,
       balanceRevisionCreated: extension.balanceRevisionCreated,
+      withdrawnTransactionCount: withdrawals.length,
     };
   });
 }
