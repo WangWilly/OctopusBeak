@@ -301,9 +301,11 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
         allowedHosts: ["www.nextbank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "Next Bank may allow one sign-in at a time. A sync may sign you out of the Next Bank App. This is not yet confirmed.",
-      "zh-TW": "將來銀行可能同一時間只允許一處登入，同步可能讓你的將來銀行 App 登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "Next Bank may allow one sign-in at a time. A sync may sign you out of the Next Bank App. This is not yet confirmed.",
+        "zh-TW": "將來銀行可能同一時間只允許一處登入，同步可能讓你的將來銀行 App 登出。此行為尚未確認。",
+      },
     },
     startUrl: WEB,
     async run(context, input) {

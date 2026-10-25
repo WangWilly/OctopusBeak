@@ -21,10 +21,12 @@ export const TDCC_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
-  sessionTakeoverNotice: localized(
-    "TDCC trusts one device at a time, so every sync, including daily scheduled collection, signs the TDCC e-Passbook phone App out. If you sign in to the phone App again, register this device again before the next sync.",
-    "集保一次只信任一台裝置，每次同步（包括每日排程收集）都會讓集保e手掌握手機 App 登出。如果之後又登入手機 App，下次同步前請在這裡重新註冊裝置。",
-  ),
+  sessionTakeover: {
+    notice: localized(
+      "TDCC trusts one device at a time, so every sync, including daily scheduled collection, signs the TDCC e-Passbook phone App out. If you sign in to the phone App again, register this device again before the next sync.",
+      "集保一次只信任一台裝置，每次同步（包括每日排程收集）都會讓集保e手掌握手機 App 登出。如果之後又登入手機 App，下次同步前請在這裡重新註冊裝置。",
+    ),
+  },
   setupGuide: {
     summary: localized(
       "Use the ID number and password you use in the TDCC e-Passbook phone App.",

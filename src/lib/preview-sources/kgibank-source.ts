@@ -280,9 +280,11 @@ export function createKgibankSource(options: Readonly<{
         allowedHosts: ["ib.kgibank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "KGI Bank allows one sign-in per ID. A sync signs you out of the KGI App and any other KGI online-banking session, then signs itself out when it ends.",
-      "zh-TW": "凱基銀行同一身分證只允許一處登入。同步會讓你登出凱基 App 與其他凱基網路銀行的登入，並在結束時自行登出。",
+    sessionTakeover: {
+      notice: {
+        en: "KGI Bank allows one sign-in per ID. A sync signs you out of the KGI App and any other KGI online-banking session, then signs itself out when it ends.",
+        "zh-TW": "凱基銀行同一身分證只允許一處登入。同步會讓你登出凱基 App 與其他凱基網路銀行的登入，並在結束時自行登出。",
+      },
     },
     startUrl: LOGIN_URL,
     async run(context, input) {

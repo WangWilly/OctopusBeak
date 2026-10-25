@@ -46,7 +46,7 @@ export function previewCredentialGroup(source: PreviewSource): AutomationCredent
     credentialKeys: source.credentialFields.map((field) => field.key),
     credentialFields: source.credentialFields,
     setupGuide: source.setupGuide,
-    ...(source.sessionTakeoverNotice ? { sessionTakeoverNotice: source.sessionTakeoverNotice } : {}),
+    ...(source.sessionTakeover ? { sessionTakeover: { notice: source.sessionTakeover.notice } } : {}),
     preview: true,
     statementSelectionKey: previewStatementSelectionKey(source),
     statementTypes: source.products.map((id) => ({ id })),

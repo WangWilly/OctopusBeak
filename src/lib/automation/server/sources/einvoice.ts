@@ -19,10 +19,12 @@ export const EINVOICE_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
-  sessionTakeoverNotice: localized(
-    "OctopusBeak signs in the way the E-Invoice phone App does, so every sync, including daily scheduled collection, signs the phone App out. Signing in on the phone again needs no code.",
-    "OctopusBeak 以電子發票手機 App 的方式登入，每次同步（包括每日排程收集）都會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
-  ),
+  sessionTakeover: {
+    notice: localized(
+      "OctopusBeak signs in the way the E-Invoice phone App does, so every sync, including daily scheduled collection, signs the phone App out. Signing in on the phone again needs no code.",
+      "OctopusBeak 以電子發票手機 App 的方式登入，每次同步（包括每日排程收集）都會讓手機 App 登出；之後在手機重新登入即可，不需要驗證碼。",
+    ),
+  },
   setupGuide: {
     summary: localized(
       "Use the mobile phone number and password registered with the Ministry of Finance E-Invoice Platform.",
@@ -72,7 +74,7 @@ export const EINVOICE_SOURCE: VerifiedSource = {
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser(),
-    verification: { ownsSubmissionOutcome: true },
+    verification: { rejection: "workflow" },
     input: { credentials: true },
     async load() {
       return (await import("../../../../workflows/einvoice-personal-invoices.ts")).runEinvoiceProviderWorkflow;

@@ -470,9 +470,11 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
         allowedHosts: ["www.skbank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "Shin Kong Bank may allow one mobile banking sign-in at a time. A sync may sign you out of the Shin Kong Bank App. This is not yet confirmed.",
-      "zh-TW": "新光銀行行動銀行可能同一時間只允許一處登入，同步可能讓你的新光銀行 App 登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "Shin Kong Bank may allow one mobile banking sign-in at a time. A sync may sign you out of the Shin Kong Bank App. This is not yet confirmed.",
+        "zh-TW": "新光銀行行動銀行可能同一時間只允許一處登入，同步可能讓你的新光銀行 App 登出。此行為尚未確認。",
+      },
     },
     startUrl: `${API}/`,
     async run(context, input) {

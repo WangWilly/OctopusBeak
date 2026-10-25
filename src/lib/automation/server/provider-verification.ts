@@ -7,8 +7,9 @@ import {
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
-  isSinopacCaptchaRejectionDialog,
 } from "../sinopac-captcha.ts";
+import { matchesRejectionDialog } from "../sign-in-prompt.ts";
+import { SINOPAC_SOURCE } from "./sources/sinopac.ts";
 import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
 import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../post-captcha.ts";
 import {
@@ -211,7 +212,8 @@ function classifySinopacPostSubmitDialog(
   dialog: ViewerDialogAccess,
 ): ProviderVerificationPostSubmitOutcome {
   try {
-    return isSinopacCaptchaRejectionDialog(dialog.type(), dialog.message())
+    const snapshot = { type: dialog.type(), message: dialog.message() };
+    return matchesRejectionDialog(SINOPAC_SOURCE.workflow.verification?.rejection, snapshot)
       ? "provider-rejected"
       : "unrecognized-dialog";
   } catch {

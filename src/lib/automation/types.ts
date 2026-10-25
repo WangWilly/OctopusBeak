@@ -1,6 +1,7 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
 import type { WorkflowRunEvent } from "./run-event.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
+import type { TakeoverPrompt } from "./sign-in-prompt.ts";
 export type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 
 /**
@@ -128,6 +129,15 @@ export type AutomationTaskSummary = {
   externalPrerequisites?: readonly AutomationExternalPrerequisite[];
 };
 
+/**
+ * A sync that signs the person out of the provider elsewhere discloses it. The
+ * prompt the Source sign-in step confirms exists only beside that disclosure.
+ */
+export type SessionTakeover = Readonly<{
+  notice: AutomationLocalizedText;
+  prompt?: TakeoverPrompt;
+}>;
+
 /** What every Supported source, verified or preview, declares about its sign-in. */
 export type SupportedSource = Readonly<{
   id: string;
@@ -135,7 +145,7 @@ export type SupportedSource = Readonly<{
   searchAliases: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
-  sessionTakeoverNotice?: AutomationLocalizedText;
+  sessionTakeover?: SessionTakeover;
 }>;
 
 export type AutomationCredentialGroup = {
@@ -147,7 +157,8 @@ export type AutomationCredentialGroup = {
   credentialKeys: readonly string[];
   credentialFields: readonly AutomationCredentialField[];
   setupGuide: AutomationSetupGuide;
-  sessionTakeoverNotice?: AutomationLocalizedText;
+  /** The disclosure alone: the prompt may hold a predicate and never crosses IPC. */
+  sessionTakeover?: Pick<SessionTakeover, "notice">;
   preview?: true;
   statementSelectionKey?: string;
   statementTypes?: readonly StatementTypeCapability[];

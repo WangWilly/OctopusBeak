@@ -308,9 +308,11 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
         allowedHosts: ["www.rakuten-bank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "Rakuten may allow one sign-in at a time. A sync may fail while you are signed in to the Rakuten App or another browser, and may sign the App out. This is not yet confirmed.",
-      "zh-TW": "樂天國際銀行可能同一時間只允許一處登入。你在樂天 App 或其他瀏覽器登入時同步可能失敗，同步也可能讓 App 登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "Rakuten may allow one sign-in at a time. A sync may fail while you are signed in to the Rakuten App or another browser, and may sign the App out. This is not yet confirmed.",
+        "zh-TW": "樂天國際銀行可能同一時間只允許一處登入。你在樂天 App 或其他瀏覽器登入時同步可能失敗，同步也可能讓 App 登出。此行為尚未確認。",
+      },
     },
     startUrl: LOGIN_URL,
     async run(context, input) {
