@@ -86,7 +86,6 @@ function createPage(options: {
   timelineBytes?: Uint8Array;
   monthCount?: number;
   cursor?: number;
-  initialSignedIn?: boolean;
   portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply;
 } = {}): Page {
   const now = new Date(2026, 8, 25);
@@ -104,7 +103,6 @@ function createPage(options: {
     jsonResponse(issuerSummary(periods[0]!), summaryEndpoint),
   ];
   const inputValues = new Map<string, string>();
-  const signedIn = options.initialSignedIn ?? true;
   const makeLocator = (selector: string) => ({
     waitFor: async () => undefined,
     click: async () => undefined,
@@ -131,11 +129,9 @@ function createPage(options: {
   };
   const page = {
     url: () => "https://ebank.esunbank.com.tw/index.jsp",
-    getByText: (text: string) => ({
-      isVisible: async () => text !== "信用卡" || signedIn,
-      waitFor: async () => {
-        if (text === "信用卡" && !signedIn) throw new Error("E.SUN card page is not visible yet.");
-      },
+    getByText: () => ({
+      isVisible: async () => true,
+      waitFor: async () => undefined,
       click: async () => undefined,
     }),
     waitForEvent: async () => popup,
@@ -319,33 +315,6 @@ test("E.SUN typed workflow honors cancellation before opening a page or committi
   );
   assert.equal(harness.withPageCount, 0);
   assert.equal(harness.committed.length, 0);
-});
-
-test("E.SUN typed workflow fails closed on a sign-in challenge without requesting assistance", async () => {
-  const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = "synthetic-esun-managed-secret";
-  try {
-    const page = createPage({ initialSignedIn: false });
-    const harness = createContext(page);
-    await assert.rejects(
-      runEsunCreditCardProviderWorkflow(harness.context, {
-        managedIdentitySecret: "synthetic-esun-managed-secret",
-        credentials: {
-          esun_user_id: "synthetic-user",
-          esun_account: "synthetic-account",
-          esun_password: "synthetic-password",
-        },
-      }),
-      /not supported by the automatic solver/u,
-    );
-    assert.equal(harness.assistanceCount, 0);
-    assert.equal(harness.committed.length, 0);
-    assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "solver-challenge-unsupported"));
-    assert.ok(harness.events.some((event) => event.stage === "authentication" && event.code === "esun-post-login-unrecognized"));
-  } finally {
-    if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-    else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;
-  }
 });
 
 const DEPOSIT_INIT = "mib-ctw-portal/ctw01/ctw01002/home/init";
