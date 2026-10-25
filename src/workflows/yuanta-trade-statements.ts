@@ -37,6 +37,9 @@ import {
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
+import { withAbort } from "./abort.ts";
+import { signIn, type ShellPlan } from "./sign-in.ts";
 import {
   collectSelectedProducts,
   type ProductCollectionSummary,
@@ -710,12 +713,12 @@ export function parseReportPage(
   };
 }
 
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("domcontentloaded", { timeout: 30_000 });
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
+async function settleAfterNavigation(page: Page, signal?: AbortSignal): Promise<void> {
+  await page.waitForLoadState("domcontentloaded", { timeout: 30_000, signal });
+  await page.waitForLoadState("networkidle", { timeout: 10_000, signal }).catch(() => {
     // YuanTa pages keep analytics and local signing requests alive.
   });
-  await page.waitForTimeout(750);
+  await withAbort(page.waitForTimeout(750), signal);
 }
 
 const YUANTA_SECURITY_COMPONENT_MESSAGE = "系統找不到安控元件";
@@ -732,6 +735,7 @@ export async function isYuantaSecurityComponentMissing(
 
 export async function dismissPasswordChangeReminderIfPresent(
   page: Page,
+  signal?: AbortSignal,
 ): Promise<void> {
   const postpone = page.getByRole("button", {
     name: "暫不變更",
@@ -751,7 +755,7 @@ export async function dismissPasswordChangeReminderIfPresent(
   if (!visible) return;
 
   await postpone.click();
-  await settleAfterNavigation(page);
+  await settleAfterNavigation(page, signal);
 }
 
 async function grantYuantaBrowserPermissions(page: Page): Promise<void> {
@@ -768,7 +772,7 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function acceptDisclaimerIfPresent(page: Page): Promise<void> {
+async function acceptDisclaimerIfPresent(page: Page, signal?: AbortSignal): Promise<void> {
   const checkbox = page.locator("#checkDisclaimer");
   if (!(await checkbox.isVisible().catch(() => false))) {
     return;
@@ -776,10 +780,10 @@ async function acceptDisclaimerIfPresent(page: Page): Promise<void> {
 
   await checkbox.check({ force: true });
   await page.locator("#btnConfirm").click();
-  await settleAfterNavigation(page);
+  await settleAfterNavigation(page, signal);
 }
 
-async function dismissPersonalMessageIfPresent(page: Page): Promise<void> {
+async function dismissPersonalMessageIfPresent(page: Page, signal?: AbortSignal): Promise<void> {
   if (!page.url().includes("/NexusWebTrade/RA/PersonalMessage")) return;
 
   const closeButton = page.locator("button.close").first();
@@ -788,20 +792,21 @@ async function dismissPersonalMessageIfPresent(page: Page): Promise<void> {
   }
 
   await closeButton.click();
-  await settleAfterNavigation(page);
+  await settleAfterNavigation(page, signal);
 }
 
 export async function fillTradeLoginForm(
   page: Page,
   credentials: YuantaTradeCredentials,
+  signal?: AbortSignal,
 ): Promise<void> {
   const userId = requireCredential(credentials, "yuanta_trade_user_id");
   const password = requireCredential(credentials, "yuanta_trade_password");
 
-  await page.goto(YUANTA_TRADE_LOGIN_URL, { waitUntil: "domcontentloaded" });
-  await page.locator("#loginid").fill(userId);
-  await page.locator("#loginPWD").fill(password);
-  await page.locator("#loginPWD").blur();
+  await page.goto(YUANTA_TRADE_LOGIN_URL, { waitUntil: "domcontentloaded", signal });
+  await page.locator("#loginid").fill(userId, { signal });
+  await page.locator("#loginPWD").fill(password, { signal });
+  await page.locator("#loginPWD").blur({ signal });
 }
 
 function responseCharset(headers: Record<string, string>, bytes: Uint8Array): string {
@@ -1541,17 +1546,18 @@ async function completeTypedCertificateIfPresent(
   page: Page,
   credentials: YuantaTradeCredentials,
   context: WorkflowContext,
+  signal: AbortSignal,
 ): Promise<void> {
   const selectFileButton = page.locator("#btnPfxFile");
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    context.signal.throwIfAborted();
+    signal.throwIfAborted();
     if (await page.locator("#btnLogout, #checkDisclaimer").first().isVisible().catch(() => false)) {
       return;
     }
     await assertYuantaTradeServiSignAvailable(page, context);
     if (await selectFileButton.isVisible().catch(() => false)) break;
-    await page.waitForTimeout(500);
+    await withAbort(page.waitForTimeout(500), signal);
   }
 
   if (!(await selectFileButton.isVisible().catch(() => false))) {
@@ -1586,16 +1592,16 @@ async function completeTypedCertificateIfPresent(
       },
     };
     await context.verification.complete(stage);
-    await passwordField.waitFor({ state: "visible", timeout: 60_000 });
+    await passwordField.waitFor({ state: "visible", timeout: 60_000, signal });
   }
   await passwordField.fill(
     requireCredential(credentials, "yuanta_trade_ca_password"),
   );
   await page.locator("#btnGo").click();
-  await settleAfterNavigation(page);
+  await settleAfterNavigation(page, signal);
 }
 
-async function submitTypedLoginIfReady(page: Page): Promise<void> {
+async function submitTypedLoginIfReady(page: Page, signal: AbortSignal): Promise<void> {
   const loginButton = page.locator("#loginBtn");
   if (!(await loginButton.isVisible().catch(() => false))) return;
 
@@ -1610,18 +1616,16 @@ async function submitTypedLoginIfReady(page: Page): Promise<void> {
     throw new Error("YuanTa Trade image challenge was not completed.");
   }
   await loginButton.click();
-  await settleAfterNavigation(page);
+  await settleAfterNavigation(page, signal);
 }
 
-async function authenticateYuantaTradePage(
+async function signInYuantaTrade(
   page: Page,
   credentials: YuantaTradeCredentials,
   context: WorkflowContext,
-): Promise<boolean> {
-  await grantYuantaBrowserPermissions(page);
-  if (await isSignedIn(page)) return true;
-
-  await fillTradeLoginForm(page, credentials);
+  signal: AbortSignal,
+): Promise<void> {
+  await fillTradeLoginForm(page, credentials, signal);
   const canSwitchCaptcha = await page.evaluate(() =>
     typeof (window as unknown as { switchCaptchaType?: unknown }).switchCaptchaType === "function",
   ).catch(() => false);
@@ -1654,13 +1658,36 @@ async function authenticateYuantaTradePage(
   }
 
   await assertYuantaTradeServiSignAvailable(page, context);
-  await submitTypedLoginIfReady(page);
-  await completeTypedCertificateIfPresent(page, credentials, context);
-  await dismissPasswordChangeReminderIfPresent(page);
-  await dismissPersonalMessageIfPresent(page);
-  await acceptDisclaimerIfPresent(page);
-  await page.locator("#btnLogout").waitFor({ timeout: 120_000 });
-  return false;
+  await submitTypedLoginIfReady(page, signal);
+  await completeTypedCertificateIfPresent(page, credentials, context, signal);
+  await dismissPasswordChangeReminderIfPresent(page, signal);
+  await dismissPersonalMessageIfPresent(page, signal);
+  await acceptDisclaimerIfPresent(page, signal);
+  await page.locator("#btnLogout").waitFor({ timeout: 120_000, signal });
+}
+
+export function yuantaTradeSignInPlan(credentials: YuantaTradeCredentials, context: WorkflowContext): ShellPlan {
+  return {
+    own: (page, signal) => signInYuantaTrade(page, credentials, context, signal),
+    signedIn: isSignedIn,
+    dialogs: "accept-for-page",
+    session: { none: "needs live verification" },
+  };
+}
+
+async function authenticateYuantaTradePage(
+  page: Page,
+  credentials: YuantaTradeCredentials,
+  context: WorkflowContext,
+): Promise<boolean> {
+  await grantYuantaBrowserPermissions(page);
+  const { usedExistingSession } = await signIn(
+    context,
+    page,
+    YUANTA_TRADE_SOURCE,
+    yuantaTradeSignInPlan(credentials, context),
+  );
+  return usedExistingSession;
 }
 
 export type YuantaTradeWorkflowDependencies = Readonly<{
@@ -1710,18 +1737,8 @@ export async function runYuantaTradeProviderWorkflow(
 
   return context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
-    page.on("dialog", (dialog) => {
-      void dialog.accept().catch(() => undefined);
-    });
-    await context.event("authentication", "started", "authentication-started");
-    try {
-      await authenticate(page, input.credentials, context);
-    } catch (error) {
-      await context.event("authentication", "failed", "authentication-failed");
-      throw error;
-    }
+    await authenticate(page, input.credentials, context);
     context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
 
     const requestedHoldingTypes = input.holdingTypes as HoldingType[];
     const requestedTradeTypes = input.tradeTypes as TradeType[];
