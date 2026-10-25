@@ -122,6 +122,14 @@ test("E.SUN confirms 確定登入 once, in place of the signed-in page, and repo
     assert.equal(await read(page, "takeovers"), 1);
   }));
 
+test("after 確定登入, a slow E.SUN page gets the 60 s takeover window instead of the 15 s verification wall", () =>
+  withEsun("window.afterTakeover = () => setTimeout(show, 17_000); takeover()", async (page) => {
+    const run = recordedRun(page, noStage);
+    await signInEsun(run, page);
+    assert.deepEqual(run.codes, [STARTED, TAKEN, DONE]);
+    assert.equal(await read(page, "takeovers"), 1);
+  }));
+
 test("a second E.SUN 確定登入 is not confirmed and ends the sign-in as an interruption", () =>
   withEsun("window.afterTakeover = () => setTimeout(takeover, 300); takeover()", async (page) => {
     const run = recordedRun(page, noStage);

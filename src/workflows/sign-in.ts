@@ -53,6 +53,8 @@ export type FormPlan = Readonly<{
   session: SessionProbe;
   /** From submit to a settled sign-in. Default 120 s; a confirmed takeover restarts it once. */
   timeoutMs?: number;
+  /** The restarted deadline after a confirmed takeover; defaults to `timeoutMs`. */
+  takeoverTimeoutMs?: number;
 }>;
 
 /** A source whose sign-in flow stays its own; the step owns only the bracket, the dialogs and cancellation. */
@@ -96,8 +98,11 @@ export class SignInError extends Error {
 
 /** The sign-in did not settle within the plan's `timeoutMs`. */
 export class SignInDeadlineError extends errors.TimeoutError {
-  constructor(timeoutMs: number) {
+  readonly afterTakeover: boolean;
+
+  constructor(timeoutMs: number, afterTakeover: boolean) {
     super(`Sign-in did not settle within ${timeoutMs} ms.`);
+    this.afterTakeover = afterTakeover;
   }
 }
 
@@ -255,9 +260,10 @@ class Attempt {
   }
 
   private async waitUntilSettled(plan: FormPlan): Promise<void> {
-    const timeoutMs = plan.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let timeoutMs = plan.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     let deadline = Date.now() + timeoutMs;
     this.restartDeadline = () => {
+      timeoutMs = plan.takeoverTimeoutMs ?? timeoutMs;
       deadline = Date.now() + timeoutMs;
     };
     let heldSince: number | undefined;
@@ -270,7 +276,10 @@ class Attempt {
         } else {
           heldSince = undefined;
         }
-        if (Date.now() >= deadline) throw new SignInDeadlineError(timeoutMs);
+        // A marker already held runs its settle window to the end.
+        if (heldSince === undefined && Date.now() >= deadline) {
+          throw new SignInDeadlineError(timeoutMs, this.takeovers > 0);
+        }
         if (plan.prompts && await this.raced(plan.prompts(this.page, this.signal))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();
