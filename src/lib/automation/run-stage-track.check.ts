@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectionFailures, runStageTrack } from "./run-stage-track.ts";
+import { productFailures, runStageTrack } from "./run-stage-track.ts";
 import type { WorkflowStage } from "./workflow-executor.ts";
 import type { RunEventOutcome, WorkflowRunEvent } from "./run-event.ts";
 
@@ -63,22 +63,46 @@ test("a run that stopped mid-way fails the stage it stopped in", () => {
   assert.deepEqual(states(silent).slice(0, 3), ["done", "failed", "pending"]);
 });
 
-test("collection failures count failed products out of the ones the run tried", () => {
-  const product = (typeId: string, status: "success" | "failed" | "skipped" | "not_held") =>
-    ({ typeId, status, itemCount: 0, committedCount: 0 }) as const;
-  const outcome = (products: ReturnType<typeof product>[]) =>
-    ({ errorCode: null, summary: { counts: {}, products } }) as Parameters<typeof collectionFailures>[0];
-  assert.deepEqual(
-    collectionFailures(outcome([
-      product("deposit", "success"),
-      product("credit_card", "failed"),
-      product("foreign_currency", "skipped"),
-      product("fund", "not_held"),
-    ])),
-    { typeIds: ["credit_card"], attempted: 3 },
+test("a product whose commit was rejected fails the commit stage, not collection", () => {
+  const track = runStageTrack(
+    [
+      event("preparation", "started", "run-started"),
+      event("authentication", "completed", "authentication-completed"),
+      event("collection", "completed", "esun-credit-card-collection-completed"),
+      event("decoding", "completed", "source-decoding-completed"),
+      event("validation", "completed", "source-validation-completed"),
+      event("commit", "completed", "canonical-commit-completed"),
+      event("finalization", "advanced", "run-partial"),
+    ],
+    "partial",
+    {
+      errorCode: null,
+      summary: {
+        counts: {},
+        products: [{ typeId: "credit_card", status: "failed", itemCount: 2, committedCount: 1, errorCode: "canonical-commit-failed" }],
+      },
+    },
   );
-  assert.equal(collectionFailures(outcome([product("deposit", "success")])), null);
-  assert.equal(collectionFailures(null), null);
+  assert.deepEqual(states(track), ["done", "done", "done", "done", "done", "failed", "warning"]);
+});
+
+test("product failures count failed products of one stage out of the ones the run tried", () => {
+  const product = (typeId: string, status: "success" | "failed" | "skipped" | "not_held", errorCode?: "canonical-commit-failed") =>
+    ({ typeId, status, itemCount: 0, committedCount: 0, ...(errorCode ? { errorCode } : {}) }) as const;
+  const outcome = (products: ReturnType<typeof product>[]) =>
+    ({ errorCode: null, summary: { counts: {}, products } }) as Parameters<typeof productFailures>[0];
+  const run = outcome([
+    product("deposit", "success"),
+    product("credit_card", "failed"),
+    product("loan", "failed", "canonical-commit-failed"),
+    product("foreign_currency", "skipped"),
+    product("fund", "not_held"),
+  ]);
+  assert.deepEqual(productFailures(run, "collection"), { typeIds: ["credit_card"], attempted: 4 });
+  assert.deepEqual(productFailures(run, "commit"), { typeIds: ["loan"], attempted: 4 });
+  assert.equal(productFailures(run, "validation"), null);
+  assert.equal(productFailures(outcome([product("deposit", "success")]), "collection"), null);
+  assert.equal(productFailures(null, "commit"), null);
 });
 
 test("a retried run judges each stage by its latest attempt", () => {

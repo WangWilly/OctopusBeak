@@ -23,6 +23,7 @@ import {
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "./workflow-commands.ts";
 import type {
+  PGliteCanonicalCreditCardAdmissionError,
   PGliteCanonicalCreditCardBalanceCaptureRequest,
   PGliteCanonicalCreditCardCaptureRequest,
   PGliteCanonicalCreditCardCommitResult,
@@ -32,8 +33,10 @@ import type {
   PGliteCanonicalDepositCommitResult,
 } from "./deposit.ts";
 import type {
+  PGliteCanonicalEInvoiceAdmissionError,
   PGliteCanonicalEInvoiceCommitResult,
 } from "./einvoice.ts";
+import type { PGliteCanonicalAdmissionFailureReason } from "./source-admission-validation.ts";
 import type {
   PGliteCanonicalInvestmentCommitRequest,
   PGliteCanonicalInvestmentCommitResult,
@@ -110,6 +113,35 @@ export type PGliteWorkflowFailureCategory =
   | "stale"
   | "ineligible"
   | "conflict";
+
+const PGLITE_WORKFLOW_ADMISSION_REASONS = new Set([
+  "invalid-evidence",
+  "capture-overwrite",
+  "occurrence-conflict",
+  "authority-route-unregistered",
+  "authority-route-drift",
+  "invalid-origin",
+  "invalid-financial-fact",
+  "invalid-contract",
+  "identity-conflict",
+  "revision-conflict",
+  "missing-reference",
+  "required-data",
+] as const satisfies readonly (
+  | Exclude<PGliteCanonicalAdmissionFailureReason, "cancelled" | "infrastructure">
+  | PGliteCanonicalCreditCardAdmissionError["code"]
+  | PGliteCanonicalEInvoiceAdmissionError["code"]
+)[]);
+
+/** The admission rule that rejected an item: a fixed code, never a message, so it may cross a process seam. */
+export type PGliteWorkflowAdmissionReason =
+  typeof PGLITE_WORKFLOW_ADMISSION_REASONS extends Set<infer Reason> ? Reason : never;
+
+export function pgliteWorkflowAdmissionReason(value: unknown): PGliteWorkflowAdmissionReason | undefined {
+  return PGLITE_WORKFLOW_ADMISSION_REASONS.has(value as PGliteWorkflowAdmissionReason)
+    ? value as PGliteWorkflowAdmissionReason
+    : undefined;
+}
 
 /** A relation warning remains item-local and never turns a committed item fatal. */
 export type PGliteWorkflowRelationWarning = Readonly<{

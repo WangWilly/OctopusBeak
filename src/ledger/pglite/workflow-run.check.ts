@@ -49,6 +49,23 @@ test("PGlite run preserves item failures, admission summaries, and post-commit w
   assert.doesNotMatch(JSON.stringify(result), /private|account|evidence/u);
 });
 
+test("PGlite run keeps the admission rule that rejected an item, and only a known one", async () => {
+  const result = await executePGliteWorkflowRun({
+    client: client(async (command) => {
+      const reason = (command.request as { reason?: string }).reason;
+      throw Object.assign(new Error("private account evidence"), { code: "operation-failed", category: "conflict", reason });
+    }),
+    items: ["occurrence-conflict", "account=private"].map((reason) => ({
+      ...item(reason),
+      command: { kind: "financial.source.commit", request: { reason } } as unknown as PGliteWorkflowCommand,
+    })),
+  });
+  assert.deepEqual(
+    result.items.map((entry) => entry.status === "failed" && entry.diagnostics.map(({ errorCode, reason }) => [errorCode, reason])),
+    [[["conflict", "occurrence-conflict"]], [["conflict", undefined]]],
+  );
+});
+
 test("PGlite run treats unknown worker failure as fatal and stops later items", async () => {
   let calls = 0;
   const result = await executePGliteWorkflowRun({

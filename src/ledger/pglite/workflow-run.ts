@@ -1,7 +1,9 @@
-import type {
-  PGliteWorkflowClient,
-  PGliteWorkflowCommand,
-  PGliteWorkflowFailureCategory,
+import {
+  pgliteWorkflowAdmissionReason,
+  type PGliteWorkflowAdmissionReason,
+  type PGliteWorkflowClient,
+  type PGliteWorkflowCommand,
+  type PGliteWorkflowFailureCategory,
 } from "./workflow-client.ts";
 
 export type PGliteWorkflowDiagnostic = Readonly<{
@@ -10,6 +12,8 @@ export type PGliteWorkflowDiagnostic = Readonly<{
   itemKey: string;
   stage: "admission" | "commit" | "relation-resolution" | "cancellation" | "run";
   errorCode: string;
+  /** The admission rule that rejected the item, when the store named one. */
+  reason?: PGliteWorkflowAdmissionReason;
   message: string;
 }>;
 
@@ -69,6 +73,7 @@ type ClassifiedFailure = Readonly<{
   kind: "item" | "fatal" | "refused" | "cancelled";
   category?: PGliteWorkflowFailureCategory;
   code: string;
+  reason?: PGliteWorkflowAdmissionReason;
 }>;
 
 function safeIdentity(value: unknown, fallback: string): string {
@@ -80,13 +85,14 @@ function safeIdentity(value: unknown, fallback: string): string {
 function classify(error: unknown, signal?: AbortSignal): ClassifiedFailure {
   if (signal?.aborted) return { kind: "cancelled", code: "cancelled" };
   if (error && typeof error === "object") {
-    const value = error as { code?: unknown; category?: unknown };
+    const value = error as { code?: unknown; category?: unknown; reason?: unknown };
     if (value.code === "cancelled") return { kind: "cancelled", code: "cancelled" };
     if (value.code === "operation-failed" && value.category === "refused") return { kind: "refused", code: "refused" };
     if (value.code === "operation-failed"
       && (value.category === "admission" || value.category === "stale"
         || value.category === "ineligible" || value.category === "conflict")) {
-      return { kind: "item", category: value.category, code: value.category };
+      const reason = pgliteWorkflowAdmissionReason(value.reason);
+      return { kind: "item", category: value.category, code: value.category, ...(reason ? { reason } : {}) };
     }
   }
   return { kind: "fatal", code: "worker-failure" };
@@ -96,6 +102,7 @@ function diagnostic(
   identity: DiagnosticIdentity,
   stage: PGliteWorkflowDiagnostic["stage"],
   code: string,
+  reason?: PGliteWorkflowAdmissionReason,
 ): PGliteWorkflowDiagnostic {
   return Object.freeze({
     provider: safeIdentity(identity.provider, "provider"),
@@ -103,6 +110,7 @@ function diagnostic(
     itemKey: safeIdentity(identity.itemKey, "item"),
     stage,
     errorCode: code,
+    ...(reason ? { reason } : {}),
     // Worker and transport exceptions can contain SQL or provider evidence.
     // The diagnostic uses only the fixed classification vocabulary.
     message: stage === "relation-resolution"
@@ -186,7 +194,7 @@ export async function executePGliteWorkflowRun(
           diagnostics.push(diagnostic(item, "cancellation", failure.code));
           break;
         }
-        const problem = diagnostic(item, failure.kind === "fatal" ? "run" : "commit", failure.code);
+        const problem = diagnostic(item, failure.kind === "fatal" ? "run" : "commit", failure.code, failure.reason);
         diagnostics.push(problem);
         results.push(Object.freeze({
           itemKey: item.itemKey,
