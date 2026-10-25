@@ -96,17 +96,20 @@ function classifyYuantaBankDialogMessage(
 }
 
 const YUANTA_BANK_DIALOG_FAILURES: Readonly<
-  Record<Exclude<YuantaBankDialogCategory, "unknown">, string>
+  Record<Exclude<YuantaBankDialogCategory, "unknown" | "active-session">, string>
 > = {
   "captcha-rejected": "YuanTa login failed: the provider rejected the CAPTCHA.",
   "credentials-rejected": "YuanTa login failed: the credentials were rejected.",
   "account-locked": "YuanTa login failed: account access was blocked.",
-  "active-session": "YuanTa login failed: another active session was detected.",
 };
 
-/** A dialog that is neither the declared takeover nor a proven CAPTCHA rejection ends the sign-in. */
+/**
+ * A dialog that is neither the declared takeover nor a proven CAPTCHA rejection ends the sign-in,
+ * except the active-session notice, which the bank follows with the relogin prompt the step confirms.
+ */
 function yuantaBankDialogDecision(dialog: DialogSnapshot): DialogDecision {
   const category = classifyYuantaBankDialogMessage(dialog.message);
+  if (category === "active-session") return "accept";
   return category === "unknown" ? "fail" : new Error(YUANTA_BANK_DIALOG_FAILURES[category]);
 }
 

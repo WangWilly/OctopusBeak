@@ -193,7 +193,6 @@ test("each recognized Yuanta Bank alert ends the sign-in with its own error and 
   const classes = [
     ["帳號或密碼錯誤，請重新輸入", "YuanTa login failed: the credentials were rejected."],
     ["您的帳戶已鎖定，請洽客服", "YuanTa login failed: account access was blocked."],
-    ["您已在其他裝置登入", "YuanTa login failed: another active session was detected."],
   ] as const;
   for (const [message, expected] of classes) {
     await withYuanta(`alert(${js(message)})`, async (page) => {
@@ -208,6 +207,14 @@ test("each recognized Yuanta Bank alert ends the sign-in with its own error and 
     });
   }
 });
+
+test("an active-session alert is accepted, and the 立即登入 prompt that follows is confirmed as the takeover", () =>
+  withYuanta(`alert("您已在其他裝置登入"); askRelogin()`, async (page) => {
+    const run = recordedRun(page, solve);
+    await signInYuanta(run, page);
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal((await counters(page)).relogins, 1);
+  }, { afterRelogin: "signedIn()" }));
 
 test("an unknown Yuanta Bank alert is dismissed and ends the sign-in as a dialog interruption", () =>
   withYuanta(`alert("系統維護中"); document.body.dataset.after = "yes"`, async (page) => {
