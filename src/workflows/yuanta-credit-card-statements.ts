@@ -306,7 +306,6 @@ export const yuantaCreditCardStatementsInputSchema = z.object({
   includeUnbilled: z.boolean().default(true),
   includePaymentDetails: z.boolean().default(true),
   includeSummary: z.boolean().default(true),
-  replaceActiveSession: z.boolean().default(true),
   canonicalHumanAttestation: z
     .object({
       sourceConnectionKey: z.string().min(3).max(128),

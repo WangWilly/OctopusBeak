@@ -254,7 +254,6 @@ await assert.rejects(
       {
         dateRange: "one_month",
         accountFilters: [],
-        replaceActiveSession: true,
       },
       {
         sourceConnectionScope: stableConnectionScope,
@@ -649,7 +648,7 @@ try {
   let preparedDateRange: string | null = null;
   const typedResult = await runYuantaStatements(
     {} as never,
-    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+    { dateRange: "one_month", accountFilters: [] },
     {
       preparePage: async (_page, dateRange) => {
         preparedDateRange = dateRange;
@@ -690,7 +689,7 @@ try {
   const downloadedAccounts: string[] = [];
   const noDataResult = await runYuantaStatements(
     {} as never,
-    { dateRange: "three_months", accountFilters: [], replaceActiveSession: true },
+    { dateRange: "three_months", accountFilters: [] },
     {
       preparePage: async () => undefined,
       observedAt: stableConnectionIdentity.observedAt,
@@ -737,7 +736,7 @@ try {
   await assert.rejects(
     runYuantaStatements(
       {} as never,
-      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+      { dateRange: "one_month", accountFilters: [] },
       {
         preparePage: async () => undefined,
         observedAt: stableConnectionIdentity.observedAt,
@@ -764,7 +763,7 @@ try {
   await assert.rejects(
     runYuantaStatements(
       {} as never,
-      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+      { dateRange: "one_month", accountFilters: [] },
       {
         preparePage: async () => { throw new Error("canceled collection navigated the browser"); },
         sourceConnectionScope: stableConnectionScope,
@@ -808,6 +807,7 @@ let fixtureBodyMode: FixtureBodyMode = "success";
 let crossOriginRequestCount = 0;
 let streamedFixtureBytes = 0;
 let streamWasCanceledEarly = false;
+let slowExportStarted = () => {};
 const browserFixtureServer = createServer((request, response) => {
   if (request.url?.startsWith("/start")) {
     response.writeHead(200, {
@@ -905,6 +905,7 @@ const browserFixtureServer = createServer((request, response) => {
       return;
     }
     if (fixtureBodyMode === "slow") {
+      slowExportStarted();
       response.writeHead(200, { "content-length": "100" });
       response.flushHeaders();
       const timer = setTimeout(() => response.end("x".repeat(100)), 5_000);
@@ -1006,7 +1007,7 @@ try {
         page.on("download", () => { observedBrowserDownload = true; });
         return await runYuantaStatements(
           page,
-          { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+          { dateRange: "one_month", accountFilters: [] },
           {
             preparePage: async () => undefined,
             readDepositAccountOptions: async () => [workflowAccount],
@@ -1143,8 +1144,11 @@ try {
     fixtureBodyMode = "slow";
     const cancellation = new AbortController();
     const canceledItems: PGliteWorkflowRunItem[] = [];
+    const exportStarted = new Promise<void>((resolve) => {
+      slowExportStarted = resolve;
+    });
     const pending = collectFixture(cancellation, canceledItems);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await exportStarted;
     cancellation.abort(new Error("fixture run canceled"));
     await assert.rejects(pending, /fixture run canceled/u);
     assert.deepEqual(canceledItems, [], "canceled retrieval must return no Canonical Financial Commit items");

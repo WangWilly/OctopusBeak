@@ -65,7 +65,6 @@ const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
 export const yuantaStatementsInputSchema = z.object({
   dateRange: dateRangeSchema.default("three_months"),
   accountFilters: z.array(z.string()).default([]),
-  replaceActiveSession: z.boolean().default(true),
 });
 
 /**
