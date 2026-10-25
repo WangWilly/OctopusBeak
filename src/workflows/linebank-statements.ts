@@ -36,7 +36,9 @@ import {
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
+import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import { withAbort } from "./abort.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -992,10 +994,10 @@ async function firstVisibleMatch(locator: Locator): Promise<Locator | null> {
  */
 export async function linebankAutoDismissApprovedAlert(
   page: Page,
-): Promise<void> {
+): Promise<boolean> {
   const dialogs = page.getByRole("alertdialog");
   const visibleDialogs = await visibleMatches(dialogs);
-  if (visibleDialogs.length === 0) return;
+  if (visibleDialogs.length === 0) return false;
   if (visibleDialogs.length !== 1) {
     throw new Error(
       "LINE Bank requires exactly one visible alert dialog before navigation.",
@@ -1023,6 +1025,7 @@ export async function linebankAutoDismissApprovedAlert(
   if ((await visibleMatches(dialogs)).length !== 0) {
     throw new Error("LINE Bank alert dialog remained visible after dismissal.");
   }
+  return true;
 }
 
 export async function linebankIsSignedIn(page: Page): Promise<boolean> {
@@ -1328,49 +1331,36 @@ export async function linebankHumanAttestedCapture(input: {
   return validation.capture;
 }
 
-async function waitForLineBankSignIn(
-  page: Page,
-  context: WorkflowContext,
-): Promise<void> {
-  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    context.signal.throwIfAborted();
-    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
-    if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
-    await withAbort(page.waitForTimeout(250), context.signal);
-  }
-  throw new Error("Timed out waiting for LINE Bank signed-in state.");
-}
-
-async function linebankSignInForApp(
-  page: Page,
-  credentials: LineBankCredentials,
-  context: WorkflowContext,
-): Promise<void> {
-  if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
-  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
-  const userId = requireLineBankCredential(credentials, "linebank_account");
-  const password = requireLineBankCredential(credentials, "linebank_password");
-  if (new URL(page.url()).pathname !== "/login")
-    await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
-
-  await withAbort(page.locator("#nationalId").fill(nationalId), context.signal);
-  await withAbort(page.locator("#userId").fill(userId), context.signal);
-  await withAbort(page.locator("#pw").fill(password), context.signal);
-  const loginButtons = page.getByRole("button", {
-    name: "登入友善網路銀行",
-    exact: true,
-  });
-  if (await withAbort(loginButtons.count(), context.signal) !== 1)
-    throw new Error("LINE Bank login requires exactly one submit button.");
-  const loginButton = loginButtons.first();
-  if (!(await withAbort(loginButton.isVisible().catch(() => false), context.signal)))
-    throw new Error("LINE Bank login submit button is not visible.");
-  await withAbort(loginButton.click(), context.signal);
-  // Login/navigation and its bank confirmation can take longer than three
-  // seconds under Sync All. Observe the authenticated marker within the normal
-  // deadline; an unfinished login is not a declared human challenge.
-  await waitForLineBankSignIn(page, context);
+export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
+  return {
+    signedIn: linebankIsSignedIn,
+    fill: async (page, signal) => {
+      const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
+      const userId = requireLineBankCredential(credentials, "linebank_account");
+      const password = requireLineBankCredential(credentials, "linebank_password");
+      if (new URL(page.url()).pathname !== "/login")
+        await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+      await withAbort(page.locator("#nationalId").fill(nationalId), signal);
+      await withAbort(page.locator("#userId").fill(userId), signal);
+      await withAbort(page.locator("#pw").fill(password), signal);
+    },
+    submit: async (page, signal) => {
+      const loginButtons = page.getByRole("button", {
+        name: "登入友善網路銀行",
+        exact: true,
+      });
+      if (await withAbort(loginButtons.count(), signal) !== 1)
+        throw new Error("LINE Bank login requires exactly one submit button.");
+      const loginButton = loginButtons.first();
+      if (!(await withAbort(loginButton.isVisible().catch(() => false), signal)))
+        throw new Error("LINE Bank login submit button is not visible.");
+      await withAbort(loginButton.click(), signal);
+    },
+    prompts: (page, signal) => withAbort(linebankAutoDismissApprovedAlert(page), signal),
+    dialogs: "dismiss",
+    session: { none: "needs live verification" },
+    timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS,
+  };
 }
 
 function sourceDecodeError(error: unknown): boolean {
@@ -1399,13 +1389,9 @@ export async function runLineBankProviderWorkflow(
   await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
-    context.signal.throwIfAborted();
-    await context.event("authentication", "started", "authentication-started");
-    await linebankSignInForApp(page, parsed.data.credentials, context);
-    context.signal.throwIfAborted();
+    await signIn(context, page, LINEBANK_SOURCE, linebankSignInPlan(parsed.data.credentials));
     await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
     await withAbort(linebankEnsureTransactionPage(page), context.signal);
-    await context.event("authentication", "completed", "authentication-completed");
 
     const client = new LineBankApiClient(page, {
       text: context.text,
