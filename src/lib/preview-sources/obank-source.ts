@@ -411,9 +411,11 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
         allowedHosts: ["www.o-bank.com"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "O-Bank may allow one sign-in at a time. When you are signed in elsewhere, the sync stops instead of signing you out. This is not yet confirmed.",
-      "zh-TW": "王道銀行可能同一時間只允許一處登入。若你已在其他地方登入，同步會停止，不會讓你登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "O-Bank may allow one sign-in at a time. When you are signed in elsewhere, the sync stops instead of signing you out. This is not yet confirmed.",
+        "zh-TW": "王道銀行可能同一時間只允許一處登入。若你已在其他地方登入，同步會停止，不會讓你登出。此行為尚未確認。",
+      },
     },
     startUrl: WEB_PAGE,
     async run(context, input) {

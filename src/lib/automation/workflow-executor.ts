@@ -21,6 +21,7 @@ import {
   interruptedProductCollectionFromOutput,
 } from "./product-collection.ts";
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
+import { reportedVerificationPort, type WorkflowVerificationPort } from "./verification-stage.ts";
 import {
   signalRunEvent,
   type RunEventOutcome,
@@ -103,7 +104,7 @@ export type WorkflowContext = Readonly<{
   now(): string;
   browser: WorkflowBrowserPort;
   text: SourceTextPort;
-  humanAssistance: WorkflowHumanAssistancePort;
+  verification: WorkflowVerificationPort;
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
@@ -354,7 +355,7 @@ export function createWorkflowExecutor(
         now: ports.now,
         browser: ports.browser,
         text: ports.text,
-        humanAssistance: ports.humanAssistance,
+        verification: reportedVerificationPort({ humanAssistance: ports.humanAssistance, signal, event, signalEvent }),
         ...capabilityPorts,
         ...(financialCommit ? { financialCommit } : {}),
         ...(workflowUsesPreviewWrite(definition) && ports.previewWrite

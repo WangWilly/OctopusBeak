@@ -724,9 +724,11 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
         allowedHosts: ["ibank.firstbank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "First Bank allows one iBank sign-in at a time. A sync fails while you are signed in to iBank elsewhere, and after a sync you may need to wait before signing in again.",
-      "zh-TW": "第一銀行個人網路銀行同一時間只允許一處登入。你在其他地方登入時同步會失敗，同步後也可能需要稍候才能再次登入。",
+    sessionTakeover: {
+      notice: {
+        en: "First Bank allows one iBank sign-in at a time. A sync fails while you are signed in to iBank elsewhere, and after a sync you may need to wait before signing in again.",
+        "zh-TW": "第一銀行個人網路銀行同一時間只允許一處登入。你在其他地方登入時同步會失敗，同步後也可能需要稍候才能再次登入。",
+      },
     },
     startUrl: FIRSTBANK_LOGIN_URL,
     async run(context, input) {

@@ -656,9 +656,11 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
         allowedHosts: ["www.ctbcbank.com"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "This source signs in separately from the verified CTBC deposit source. The two sign-ins, or this one and your CTBC App, may end each other's session; this is not yet confirmed. When CTBC reports another signed-in session, the sync stops instead of signing it out.",
-      "zh-TW": "這個來源與已驗證的中國信託存款來源分開登入。兩者，或這個來源與你的中國信託 App，可能會讓對方的登入結束；此行為尚未確認。若中國信託回報已有其他登入，同步會停止，不會讓對方登出。",
+    sessionTakeover: {
+      notice: {
+        en: "This source signs in separately from the verified CTBC deposit source. The two sign-ins, or this one and your CTBC App, may end each other's session; this is not yet confirmed. When CTBC reports another signed-in session, the sync stops instead of signing it out.",
+        "zh-TW": "這個來源與已驗證的中國信託存款來源分開登入。兩者，或這個來源與你的中國信託 App，可能會讓對方的登入結束；此行為尚未確認。若中國信託回報已有其他登入，同步會停止，不會讓對方登出。",
+      },
     },
     startUrl: `${IMP}/`,
     async run(context, input) {

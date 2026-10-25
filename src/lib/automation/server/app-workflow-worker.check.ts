@@ -1,4 +1,4 @@
-import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
+import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import assert from "node:assert/strict";
 import { productRunResult } from "../workflow-run-result.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -333,7 +333,13 @@ test("worker runs a definition through typed ports and the bounded host request 
       await context.browser.withPage(async () => { browserCalls += 1; });
       assert.equal(context.text.decode(Uint8Array.of(0x41), "utf-8"), "A");
       await context.event("collection", "started", "fixture-started", { completed: 1, total: 1 });
-      assert.equal(await context.humanAssistance.request(contract, context.signal), "verified");
+      await context.verification.complete({
+        ...contract,
+        targets: contract.targets.map((target) => ({
+          ...target,
+          locator: { boundingBox: async () => ({ x: 0, y: 0, width: 80, height: 24 }) },
+        })),
+      });
       const committed = await context.financialCommit!.execute([runItem()]);
       assert.equal(committed.status, "completed");
       return { status: "completed", counts: { count: 1 } };
@@ -379,7 +385,15 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.deepEqual(terminal.summary, { status: "completed", counts: { count: 1 } });
     }
     assert.equal(JSON.stringify(observed).includes("sensitive-fixture"), false);
-    assert.equal(observed.filter((frame) => frame.kind === "event").length, 5);
+    assert.deepEqual(observed.flatMap((frame) => frame.kind === "event" ? [frame.event.code] : []), [
+      "run-started",
+      "fixture-started",
+      "human-assistance-requested",
+      "human-assistance-completed",
+      "canonical-commit-started",
+      "canonical-commit-completed",
+      "run-completed",
+    ]);
     assert.deepEqual(
       observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt.phase] : []),
       ["started", "settled"],
@@ -662,11 +676,21 @@ test("a Cathay run that needs device registration keeps that code across the wor
 
 test("worker keeps the observed failure stage across the validated IPC boundary", async () => {
   const cases = [
-    { stage: "authentication", outcome: "started", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
-    { stage: "authentication", outcome: "failed", signal: "login-dialog-interrupted", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
-    { stage: "authentication", outcome: "failed", signal: "human-assistance-failed", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
-    { stage: "authentication", outcome: "advanced", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
-    { stage: "collection", outcome: "failed", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
+    { events: [{ stage: "authentication", outcome: "started", code: "authentication-started" }], name: "TimeoutError", expected: "authentication-timeout" },
+    { events: [{ signal: "login-dialog-interrupted" }], name: "Error", expected: "authentication-dialog-interrupted" },
+    { events: [{ signal: "human-assistance-failed" }], name: "Error", expected: "verification-failed" },
+    {
+      events: [{ signal: "human-assistance-failed" }, { stage: "authentication", outcome: "advanced", code: "login-dialog-dismissed" }],
+      name: "Error",
+      expected: "verification-failed",
+    },
+    {
+      events: [{ signal: "solver-route-unavailable" }, { signal: "human-assistance-failed" }],
+      name: "Error",
+      expected: "verification-configuration-failed",
+    },
+    { events: [{ stage: "authentication", outcome: "advanced", code: "human-assistance-completed" }], name: "Error", expected: "authentication-failed" },
+    { events: [{ stage: "collection", outcome: "failed", code: "current-balance-collection-failed" }], name: "Error", expected: "source-collection-failed" },
   ] as const;
   for (const scenario of cases) {
     const channel = new MessageChannel();
@@ -686,8 +710,10 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       id: "fixture-protocol",
       requiresFinancialCommit: false,
       async run(context) {
-        if ("signal" in scenario) await context.signalEvent(scenario.signal);
-        else await context.event(scenario.stage, scenario.outcome, scenario.code);
+        for (const step of scenario.events) {
+          if ("signal" in step) await context.signalEvent(step.signal);
+          else await context.event(step.stage, step.outcome, step.code);
+        }
         const error = new Error("private-authentication-material must not cross the boundary");
         error.name = scenario.name;
         throw error;
@@ -701,7 +727,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
         browser: { async withPage() { throw new Error("unused"); } },
       });
       const terminal = await terminalReceived;
-      assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected);
+      assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected, JSON.stringify(scenario.events));
       assert.doesNotMatch(JSON.stringify(frames), /private-authentication-material/u);
     } finally {
       channel.port1.close();
@@ -726,7 +752,7 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
     id: "fixture-protocol",
     requiresFinancialCommit: false,
     async run() {
-      throw new SinopacCaptchaRejectedError();
+      throw new CaptchaProviderRejectedError();
     },
   };
   try {

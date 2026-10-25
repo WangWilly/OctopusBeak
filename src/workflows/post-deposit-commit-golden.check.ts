@@ -106,8 +106,8 @@ async function run(
     now: () => fixedNow,
     browser: { withPage: async (body) => body(signedInPage()) },
     text: strictSourceText,
-    humanAssistance: {
-      async request() {
+    verification: {
+      async complete() {
         throw new Error("A signed-in synthetic session needs no assistance.");
       },
     },

@@ -2,14 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Page } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 
 const {
   isYuantaSignedIn,
   yuantaBankCaptchaAssistanceStage,
-  classifyYuantaBankDialogMessage,
-  yuantaBankDialogFailureMessage,
-  yuantaBankDialogState,
   yuantaSourceConnectionScope,
   deriveYuantaSourceConnectionKey,
 } = await import("./yuanta-auth.ts");
@@ -170,59 +167,6 @@ test("shared Yuanta signed-in probe checks every visible login field", async () 
   assert.equal(await isYuantaSignedIn(page), false);
 });
 
-test("the typed Yuanta App parent delegates authentication to shared assistance", async () => {
-  const authSource = await readFile(
-    new URL("./yuanta-auth.ts", import.meta.url),
-    "utf8",
-  );
-  const parentSource = await readFile(
-    new URL("./yuanta-all-statements.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    authSource,
-    /export async function authenticateYuantaBankWithAssistance/,
-  );
-  assert.doesNotMatch(
-    authSource,
-    /from\s+["']libretto["']|LibrettoWorkflowContext|librettoAuthenticate|\bpause\(|npx libretto|LIBRETTO_CLOUD_/u,
-  );
-  assert.match(authSource, /emitHumanAssistanceStage/);
-  assert.match(authSource, /#gcode/);
-  assert.doesNotMatch(
-    authSource,
-    /console\.(log|warn|error)\([^\n]*(?:password|captcha)/i,
-  );
-  assert.match(parentSource, /authenticateYuantaBankWithAssistance/);
-  assert.match(parentSource, /context\.humanAssistance\.request/);
-  assert.match(
-    parentSource,
-    /overrides\.authenticate \?\? authenticateYuantaForApp/u,
-  );
-});
-
-test("Yuanta local dialog handling keeps provider text out of state and errors", async () => {
-  const rawMessage = "驗證碼不正確，請重新輸入";
-  const state = yuantaBankDialogState({
-    type: () => "alert",
-    message: () => rawMessage,
-  });
-  assert.deepEqual(state, { type: "alert", category: "captcha-rejected" });
-  assert.equal(classifyYuantaBankDialogMessage(rawMessage), "captcha-rejected");
-  const safeError = yuantaBankDialogFailureMessage(state.category);
-  assert.equal(safeError.includes(rawMessage), false);
-  assert.equal(safeError.includes("請重新輸入"), false);
-
-  const authSource = await readFile(
-    new URL("./yuanta-auth.ts", import.meta.url),
-    "utf8",
-  );
-  assert.doesNotMatch(
-    authSource,
-    /console\.warn\([\s\S]*?bank-dialog[\s\S]*?message\s*:/,
-  );
-});
-
 test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observed GOTP image", async () => {
   const selectors: string[] = [];
   const loginFrame = {
@@ -238,7 +182,7 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
       return locator;
     },
   } as unknown as Frame;
-  const contract = await emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame));
+  const contract = await resolveVerificationStage(yuantaBankCaptchaAssistanceStage(loginFrame));
 
   assert.deepEqual(selectors, ["#gcode", 'img[src*="GOTP"]:visible']);
   assert.equal(contract.challengeKind, "text-captcha");

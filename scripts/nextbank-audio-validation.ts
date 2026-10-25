@@ -204,7 +204,7 @@ function validationContext(
     now: () => new Date().toISOString(),
     browser,
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("NextBank audio validation has no verification route."); } },
+    verification: { complete: async () => { throw new Error("NextBank audio validation has no verification route."); } },
     event: async () => {},
     signalEvent: async () => {},
     preview: {

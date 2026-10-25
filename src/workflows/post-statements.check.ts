@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { EventEmitter } from "node:events";
 import { chromium } from "playwright";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildPostDomesticDepositCapture,
   dismissPostNoticeIfPresent,
@@ -14,8 +12,6 @@ import {
   postProviderDate,
   postProviderDateShape,
   postRowsToStatementRows,
-  runPostLoginAttempt,
-  submitPostLoginAndWait,
 } from "./post-statements.ts";
 import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
 import {
@@ -155,76 +151,6 @@ assert.equal(
   false,
 );
 
-class FakeDialogPage extends EventEmitter {}
-
-const fakeDialogPage = new FakeDialogPage();
-let fakeProbeStarted = false;
-let fakeProbeSettled = false;
-let fakeDialogDismissed = false;
-const fakeDialogRun = runPostLoginAttempt(fakeDialogPage as never, {
-  submit: async () => {
-    fakeDialogPage.emit("dialog", {
-      type: () => "alert",
-      dismiss: async () => {
-        fakeDialogDismissed = true;
-      },
-    });
-  },
-  waitForSuccess: (signal) => {
-    fakeProbeStarted = true;
-    return new Promise<void>((_resolve, reject) => {
-      signal.addEventListener(
-        "abort",
-        () => {
-          fakeProbeSettled = true;
-          reject(new Error("success probe aborted"));
-        },
-        { once: true },
-      );
-    });
-  },
-});
-await assert.rejects(
-  fakeDialogRun,
-  /iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry\./,
-);
-assert.equal(fakeProbeStarted, true);
-assert.equal(fakeProbeSettled, true);
-assert.equal(fakeDialogDismissed, true);
-assert.equal(fakeDialogPage.listenerCount("dialog"), 0);
-
-for (const message of ["圖形驗證錯誤", " 帳號或密碼錯誤 ", "圖形驗證錯誤，帳號已鎖定"]) {
-  const page = new FakeDialogPage();
-  await assert.rejects(runPostLoginAttempt(page as never, {
-    submit: async () => {
-      page.emit("dialog", { type: () => "alert", message: () => message, dismiss: async () => undefined });
-    },
-    waitForSuccess: () => new Promise<void>(() => undefined),
-  }), (error: unknown) => {
-    assert.equal(error instanceof CaptchaProviderRejectedError, message === "圖形驗證錯誤");
-    return true;
-  });
-  assert.equal(page.listenerCount("dialog"), 0);
-}
-
-const fakeSuccessPage = new FakeDialogPage();
-let fakeSuccessSubmitted = false;
-let fakeSuccessProbeSawLiveSignal = false;
-let fakeSuccessSignal: AbortSignal | undefined;
-await runPostLoginAttempt(fakeSuccessPage as never, {
-  submit: async () => {
-    fakeSuccessSubmitted = true;
-  },
-  waitForSuccess: async (signal) => {
-    fakeSuccessSignal = signal;
-    fakeSuccessProbeSawLiveSignal = !signal.aborted;
-  },
-});
-assert.equal(fakeSuccessSubmitted, true);
-assert.equal(fakeSuccessProbeSawLiveSignal, true);
-assert.equal(fakeSuccessSignal?.aborted, true);
-assert.equal(fakeSuccessPage.listenerCount("dialog"), 0);
-
 const browser = await chromium.launch();
 try {
   const racingNoticePage = await browser.newPage();
@@ -334,37 +260,6 @@ try {
   );
   await blockedNoticePage.close();
 
-  const successfulLoginPage = await browser.newPage();
-  await successfulLoginPage.setContent(`
-    <div id="tab1">
-      <div class="loginbtn">
-        <a href="#" onclick="document.body.dataset.clicked = 'yes'; return false;">登入</a>
-      </div>
-    </div>
-    <a class="btn_td_orange_dtl" href="#">帳戶明細</a>
-  `);
-  await submitPostLoginAndWait(successfulLoginPage);
-  assert.equal(await successfulLoginPage.locator("body").getAttribute("data-clicked"), "yes");
-  await successfulLoginPage.close();
-
-  const dialogLoginPage = await browser.newPage();
-  await dialogLoginPage.setContent(`
-    <div id="tab1">
-      <div class="loginbtn">
-        <a href="#" onclick="document.body.dataset.clicked = 'yes'; alert('iPost login check'); document.body.dataset.after = 'yes'; return false;">登入</a>
-      </div>
-    </div>
-  `);
-  const dialogStartedAt = Date.now();
-  await assert.rejects(
-    submitPostLoginAndWait(dialogLoginPage),
-    /iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry\./,
-  );
-  assert.ok(Date.now() - dialogStartedAt < 2_000);
-  assert.equal(await dialogLoginPage.locator("body").getAttribute("data-clicked"), "yes");
-  assert.equal(await dialogLoginPage.locator("body").getAttribute("data-after"), "yes");
-  await dialogLoginPage.close();
-
   const captchaPage = await browser.newPage();
   await captchaPage.setContent(`
     <input name="captcha" style="width: 92px; height: 32px" />
@@ -376,7 +271,7 @@ try {
       />
     </div>
   `);
-  const captchaContract = await emitHumanAssistanceStage(postCaptchaAssistanceStage(captchaPage));
+  const captchaContract = await resolveVerificationStage(postCaptchaAssistanceStage(captchaPage));
   assert.equal(captchaContract.stageId, "ipost-login-captcha");
   assert.equal(captchaContract.challengeKind, "text-captcha");
   assert.equal(captchaContract.charset, "digits");

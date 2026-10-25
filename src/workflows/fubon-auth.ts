@@ -1,15 +1,11 @@
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import type { Dialog, Frame, Locator, Page } from "playwright";
-import type {
-  HumanAssistanceCompletionStatus,
-  HumanAssistanceContractInput,
-} from "../lib/automation/human-assistance.ts";
+import type { Frame, Locator, Page } from "playwright";
+import { errorCodeFromDialog, sanitizedDialogAlert } from "../lib/automation/fubon-dialog.ts";
+import type { DialogSnapshot } from "../lib/automation/sign-in-prompt.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
-import {
-  emitHumanAssistanceStage,
-  type WorkflowHumanAssistanceStage,
-} from "./human-assistance.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { withAbort } from "./abort.ts";
+import type { DialogDecision } from "./sign-in.ts";
 
 const FUBON_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -67,12 +63,10 @@ export type FubonLoginSnapshot = Readonly<{
   loginFormVisible: boolean;
 }>;
 
+/** The sanitized alerts the dialog observer saw since the outcome window began, read by the outcome poll. */
 export type FubonLoginDialogChannel = Readonly<{
   messages: readonly string[];
-  duplicateTakeoverAccepted: boolean;
-  terminalReason: "duplicate-takeover-repeated" | "unknown-confirm" | undefined;
   beginOutcomeWindow: () => void;
-  dispose: () => void;
 }>;
 
 export type FubonLoginProbeContext = Readonly<{
@@ -90,6 +84,7 @@ export type FubonLoginFillOptions = Readonly<{
   frameName?: string;
   timeoutMs?: number;
   retryIntervalMs?: number;
+  signal?: AbortSignal;
 }>;
 
 export type FubonLoginDocumentOptions = Readonly<{
@@ -97,6 +92,7 @@ export type FubonLoginDocumentOptions = Readonly<{
   timeoutMs?: number;
   pollIntervalMs?: number;
   confirmationMs?: number;
+  signal?: AbortSignal;
 }>;
 
 /** Non-sensitive evidence captured before the App requests CAPTCHA assistance. */
@@ -176,6 +172,7 @@ export type FubonPostLoginOutcomeOptions = Readonly<{
   pollIntervalMs?: number;
   frameName?: string;
   silent?: boolean;
+  signal?: AbortSignal;
   dialogChannel?: FubonLoginDialogChannel;
   probe?: (
     page: Page,
@@ -262,15 +259,17 @@ async function waitForLoginFrame(
   frameName: string,
   deadline: number,
   retryIntervalMs: number,
+  signal?: AbortSignal,
 ): Promise<Frame> {
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (hasFubonDuplicateLoginTerminal(page)) {
       throw new FubonDuplicateLoginTerminalError();
     }
     const frame = page.frame({ name: frameName });
     if (frame) return frame;
     const remainingMs = deadline - Date.now();
-    await page.waitForTimeout(Math.min(retryIntervalMs, remainingMs));
+    await withAbort(page.waitForTimeout(Math.min(retryIntervalMs, remainingMs)), signal);
   }
   throw new Error(`Timed out waiting for Fubon login frame "${frameName}".`);
 }
@@ -282,8 +281,8 @@ async function waitForLoginFrame(
  * has observed the authenticated state. In particular, do not activate a
  * deposit/card/loan menu or resolve a protected href while unauthenticated.
  */
-export async function openFubonLoginForm(page: Page): Promise<void> {
-  await page.goto(FUBON_ENTRY_URL, { waitUntil: "domcontentloaded" });
+async function openFubonLoginForm(page: Page, signal: AbortSignal): Promise<void> {
+  await page.goto(FUBON_ENTRY_URL, { waitUntil: "domcontentloaded", signal });
   if (hasFubonDuplicateLoginTerminal(page)) {
     throw new FubonDuplicateLoginTerminalError();
   }
@@ -294,6 +293,7 @@ export async function openFubonLoginForm(page: Page): Promise<void> {
     FUBON_AUTH_FRAME_NAME,
     deadline,
     DEFAULT_LOGIN_DOCUMENT_POLL_INTERVAL_MS,
+    signal,
   );
   const loginLink = headerFrame
     .locator("a")
@@ -302,6 +302,7 @@ export async function openFubonLoginForm(page: Page): Promise<void> {
   await loginLink.waitFor({
     state: "attached",
     timeout: Math.max(1, deadline - Date.now()),
+    signal,
   });
   await activateControlWithoutPointer(loginLink);
 
@@ -310,6 +311,7 @@ export async function openFubonLoginForm(page: Page): Promise<void> {
     FUBON_LOGIN_FRAME_NAME,
     deadline,
     DEFAULT_LOGIN_DOCUMENT_POLL_INTERVAL_MS,
+    signal,
   );
   if (hasFubonDuplicateLoginTerminal(page)) {
     throw new FubonDuplicateLoginTerminalError();
@@ -483,6 +485,7 @@ export async function waitForFubonLoginDocument(
   let candidate: FubonLoginAssistanceSnapshot | undefined;
   let since = 0;
   while (Date.now() < deadline) {
+    options.signal?.throwIfAborted();
     if (hasFubonDuplicateLoginTerminal(page)) {
       throw new FubonDuplicateLoginTerminalError();
     }
@@ -536,7 +539,7 @@ export async function waitForFubonLoginDocument(
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs > 0)
-      await page.waitForTimeout(Math.min(pollIntervalMs, remainingMs));
+      await withAbort(page.waitForTimeout(Math.min(pollIntervalMs, remainingMs)), options.signal);
   }
   throw new Error(
     "Timed out waiting for the Fubon login document to become ready.",
@@ -639,6 +642,7 @@ export async function fillFubonLoginCredentials(
       frameName,
       deadline,
       retryIntervalMs,
+      options.signal,
     );
     if (currentFrame && currentFrame !== frame) {
       const readinessRemainingMs = deadline - Date.now();
@@ -647,6 +651,7 @@ export async function fillFubonLoginCredentials(
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
+        signal: options.signal,
       });
     }
     if (currentFrame !== frame) {
@@ -672,6 +677,7 @@ export async function fillFubonLoginCredentials(
           frameName,
           timeoutMs: readinessRemainingMs,
           pollIntervalMs: retryIntervalMs,
+          signal: options.signal,
         });
         currentFrame = current;
         fieldIndex = 0;
@@ -688,6 +694,7 @@ export async function fillFubonLoginCredentials(
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
+        signal: options.signal,
       });
       currentFrame = undefined;
       fieldIndex = 0;
@@ -712,6 +719,7 @@ export async function fillFubonLoginCredentials(
           frameName,
           timeoutMs: readinessRemainingMs,
           pollIntervalMs: retryIntervalMs,
+          signal: options.signal,
         });
         currentFrame = current;
         fieldIndex = 0;
@@ -724,7 +732,7 @@ export async function fillFubonLoginCredentials(
       }
       const retryRemainingMs = deadline - Date.now();
       if (retryRemainingMs > 0) {
-        await page.waitForTimeout(Math.min(retryIntervalMs, retryRemainingMs));
+        await withAbort(page.waitForTimeout(Math.min(retryIntervalMs, retryRemainingMs)), options.signal);
       }
       continue;
     }
@@ -737,6 +745,7 @@ export async function fillFubonLoginCredentials(
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
+        signal: options.signal,
       });
       currentFrame = current;
       fieldIndex = 0;
@@ -1151,7 +1160,7 @@ export async function inspectFubonOtpFromCurrentFrame(
 
 export function fubonCaptchaAssistanceStage(
   frame: Frame,
-): WorkflowHumanAssistanceStage {
+): VerificationStage {
   return {
     stageId: "fubon-login-captcha",
     title: "Enter the Fubon CAPTCHA",
@@ -1230,111 +1239,126 @@ async function currentOtpChallengeVisible(
 }
 
 
-/** Fubon authentication using the App-owned human-assistance port. */
-export async function completeFubonHumanLoginWithAssistance(
+type FubonLogin = Readonly<{
+  run: (page: Page, signal: AbortSignal) => Promise<void>;
+  observe: (dialog: DialogSnapshot) => DialogDecision;
+}>;
+
+/**
+ * Fubon's `own` sign-in and the step's dialog observer for it. They share one
+ * channel built per sign-in, so an alert the observer accepted during the
+ * outcome window still ends the login as `dialog-alert`.
+ */
+export function fubonLogin(
+  values: FubonLoginCredentialValues,
+  complete: (stage: VerificationStage) => Promise<void>,
+): FubonLogin {
+  const messages: string[] = [];
+  const dialogs: FubonLoginDialogChannel = {
+    messages,
+    beginOutcomeWindow: () => {
+      messages.length = 0;
+    },
+  };
+  return {
+    run: (page, signal) => runFubonLogin(page, values, { signal, complete, dialogs }),
+    observe: (dialog) => {
+      if (dialog.type !== "alert") {
+        emitOutcome("rejected", "unknown-confirm");
+        return new FubonLoginRejectedError("unknown-confirm", undefined);
+      }
+      messages.push(sanitizedDialogAlert(dialog.message));
+      return "accept";
+    },
+  };
+}
+
+async function runFubonLogin(
   page: Page,
   values: FubonLoginCredentialValues,
   options: Readonly<{
     signal: AbortSignal;
-    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
-    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+    complete(stage: VerificationStage): Promise<void>;
+    dialogs: FubonLoginDialogChannel;
   }>,
 ): Promise<void> {
-  const { signal, request } = options;
-  const dialogs = captureFubonLoginDialogs(page);
-  const event = options.event ?? (() => Promise.resolve());
-  const assistance = async (stage: WorkflowHumanAssistanceStage) => {
-    signal.throwIfAborted();
-    const contract = await withAbort(emitHumanAssistanceStage(stage), signal);
-    await event("human-assistance-requested");
-    const status = await withAbort(request(contract, signal), signal);
-    signal.throwIfAborted();
-    if (status !== "entered" && status !== "verified") {
-      await event("human-assistance-failed");
-      throw new Error("Fubon login human assistance did not complete.");
-    }
-    await event("human-assistance-completed");
-  };
+  const { signal, complete, dialogs } = options;
+  await openFubonLoginForm(page, signal);
 
-  try {
-    let outcomeWindowStarted = false;
-    let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
-    const submit = await withAbort(runFubonCaptchaAcquisition({
-      prepare: async () => {
-        signal.throwIfAborted();
-        await prepareFubonLoginDocument(page);
-        await fillFubonLoginCredentials(page, values);
-        assistanceBefore = await readFubonLoginGeneration(page);
-        if (!assistanceBefore)
-          throw new Error("Fubon login frame disappeared while preparing assistance.");
-        return assistanceBefore;
-      },
-      assistAndPause: async () => {
-        if (!outcomeWindowStarted) {
-          dialogs.beginOutcomeWindow();
-          outcomeWindowStarted = true;
-        }
-        const frame = await waitForLoginFrame(
-          page,
-          FUBON_LOGIN_FRAME_NAME,
-          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
-          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-        );
-        await frame.locator("#m1_userCaptcha").focus();
-        await assistance(fubonCaptchaAssistanceStage(frame));
-      },
-      submit: async () => {
-        signal.throwIfAborted();
-        if (dialogs.messages.length > 0 || dialogs.terminalReason !== undefined) {
-          await withAbort(waitForFubonPostLoginOutcome(page, {
-            dialogChannel: dialogs,
-            silent: true,
-          }), signal);
-        }
-        return await submitFubonCaptchaFromCurrentFrame(page, values, {
-          before: assistanceBefore,
-        });
-      },
-    }), signal);
-
-    if (submit.status === "submit-outcome-uncertain")
-      throw new FubonSubmitOutcomeUncertainError(submit.reason);
-    if (submit.status !== "submitted")
-      throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
-
-    if (await withAbort(currentOtpChallengeVisible(page), signal)) {
-      for (;;) {
-        signal.throwIfAborted();
-        const otpBefore = await readFubonLoginGeneration(page);
-        const frame = await waitForLoginFrame(
-          page,
-          FUBON_LOGIN_FRAME_NAME,
-          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
-          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-        );
-        await assistance({
-          stageId: "fubon-login-otp",
-          title: "Enter the Fubon OTP",
-          targets: [{
-            id: "otp-input",
-            label: "OTP input",
-            semanticId: "fubon.login.otp-input",
-            modes: ["click", "type"],
-            locator: frame.locator("#m1_inputOTP"),
-          }],
-          contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
-          completion: { mode: "inline", targetIds: ["otp-input"] },
-          focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
-        });
-        const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
-        if (otp.status === "ready" || otp.status === "no-challenge") break;
+  let outcomeWindowStarted = false;
+  let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
+  const submit = await withAbort(runFubonCaptchaAcquisition({
+    prepare: async () => {
+      signal.throwIfAborted();
+      await prepareFubonLoginDocument(page, { signal });
+      await fillFubonLoginCredentials(page, values, { signal });
+      assistanceBefore = await readFubonLoginGeneration(page);
+      if (!assistanceBefore)
+        throw new Error("Fubon login frame disappeared while preparing assistance.");
+      return assistanceBefore;
+    },
+    assistAndPause: async () => {
+      if (!outcomeWindowStarted) {
+        dialogs.beginOutcomeWindow();
+        outcomeWindowStarted = true;
       }
-    }
+      const frame = await waitForLoginFrame(
+        page,
+        FUBON_LOGIN_FRAME_NAME,
+        Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+        DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+        signal,
+      );
+      await frame.locator("#m1_userCaptcha").focus();
+      await complete(fubonCaptchaAssistanceStage(frame));
+    },
+    submit: async () => {
+      signal.throwIfAborted();
+      if (dialogs.messages.length > 0) {
+        await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true, signal });
+      }
+      return await submitFubonCaptchaFromCurrentFrame(page, values, {
+        before: assistanceBefore,
+      });
+    },
+  }), signal);
 
-    await withAbort(waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true }), signal);
-  } finally {
-    dialogs.dispose();
+  if (submit.status === "submit-outcome-uncertain")
+    throw new FubonSubmitOutcomeUncertainError(submit.reason);
+  if (submit.status !== "submitted")
+    throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
+
+  if (await withAbort(currentOtpChallengeVisible(page), signal)) {
+    for (;;) {
+      signal.throwIfAborted();
+      const otpBefore = await readFubonLoginGeneration(page);
+      const frame = await waitForLoginFrame(
+        page,
+        FUBON_LOGIN_FRAME_NAME,
+        Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+        DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+        signal,
+      );
+      await complete({
+        stageId: "fubon-login-otp",
+        title: "Enter the Fubon OTP",
+        targets: [{
+          id: "otp-input",
+          label: "OTP input",
+          semanticId: "fubon.login.otp-input",
+          modes: ["click", "type"],
+          locator: frame.locator("#m1_inputOTP"),
+        }],
+        contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
+        completion: { mode: "inline", targetIds: ["otp-input"] },
+        focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
+      });
+      const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
+      if (otp.status === "ready" || otp.status === "no-challenge") break;
+    }
   }
+
+  await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true, signal });
 }
 
 function emitOutcome(
@@ -1344,188 +1368,11 @@ function emitOutcome(
   console.log("fubon-login-outcome", { status, reason });
 }
 
-function normalizeErrorCode(value: unknown): string | undefined {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
-    return String(value).padStart(4, "0");
-  }
-  if (typeof value !== "string") return undefined;
-  const code = value.trim();
-  return /^\d{3,8}$/.test(code) ? code : undefined;
-}
-
-function errorCodeFromDialog(message: string): string | undefined {
-  const labeled = message.match(
-    /(?:errorCode|error code|錯誤代碼|錯誤碼)\s*[:=]?\s*(\d{3,8})/i,
-  );
-  return normalizeErrorCode(labeled?.[1]);
-}
-
 function latestDialogMessage(
   dialogChannel: FubonLoginDialogChannel | undefined,
 ): string | undefined {
   if (!dialogChannel || dialogChannel.messages.length === 0) return undefined;
   return dialogChannel.messages[dialogChannel.messages.length - 1];
-}
-
-type FubonDialogType = "alert" | "confirm" | "prompt" | "beforeunload";
-
-function normalizeDialogText(message: string): string {
-  return message
-    .normalize("NFKC")
-    .toLocaleLowerCase("zh-TW")
-    .replace(/\s+/g, "");
-}
-
-/**
- * Fubon 0212 is the only confirm we are allowed to accept automatically. The
- * classifier intentionally requires duplicate-login semantics; a generic
- * confirmation must never be accepted on behalf of the account holder.
- */
-function isFubonDuplicateLoginConfirm(message: string): boolean {
-  const normalized = normalizeDialogText(message);
-  const exact0212 =
-    /(?:^|[^0-9a-z])0*212(?:$|[^0-9a-z])/.test(normalized) ||
-    /(?:errorcode|錯誤代碼|錯誤碼)[:=]?0*212(?:$|[^0-9a-z])/.test(normalized);
-  if (exact0212) return true;
-
-  const hasExplicitAction =
-    /是否|確定|確認|繼續|仍要|(?:^|[^a-z])(?:continue|proceed|confirm|yes)(?:$|[^a-z])/.test(
-      normalized,
-    );
-  if (!hasExplicitAction) return false;
-
-  const historicalOrEnded =
-    /曾|曾經|歷史|過去|之前|先前|已登出|登出|previous|formerly|history|loggedout|signedout/.test(
-      normalized,
-    );
-  if (historicalOrEnded) return false;
-
-  const duplicateLoginSemantics = /重複登入|重覆登入|重複登錄|重覆登錄/.test(
-    normalized,
-  );
-  if (duplicateLoginSemantics) return true;
-
-  const otherDeviceLoginSemantics =
-    /(?:其他|另一|別的)(?:裝置|設備|瀏覽器|地方|處).*(?:登入|登錄)/.test(
-      normalized,
-    ) ||
-    /(?:登入|登錄).*(?:其他|另一|別的)(?:裝置|設備|瀏覽器|地方|處)/.test(
-      normalized,
-    ) ||
-    /(?:another|other)(?:device|browser|session).*(?:login|loggedin)/.test(
-      normalized,
-    ) ||
-    /(?:login|loggedin).*(?:another|other)(?:device|browser|session)/.test(
-      normalized,
-    ) ||
-    /alreadyloggedin/.test(normalized);
-  return otherDeviceLoginSemantics;
-}
-
-function sanitizedDialogAlert(message: string): string {
-  const errorCode = errorCodeFromDialog(message);
-  if (/操作逾時|頁面閒置過久/.test(normalizeDialogText(message))) {
-    return "errorCode0240";
-  }
-  return errorCode ? `errorCode${errorCode}` : "dialog-alert";
-}
-
-function throwDialogTerminal(
-  reason: "duplicate-takeover-repeated" | "unknown-confirm",
-): never {
-  emitOutcome("rejected", reason);
-  throw new FubonLoginRejectedError(reason, undefined);
-}
-
-/**
- * Capture bank dialogs through login. Alerts are accepted to unblock the bank
- * and retained only as sanitized categories/codes. The one evidence-backed
- * Fubon 0212 duplicate-login confirm is accepted at most once; repeated or
- * unknown confirms are dismissed and become terminal. Raw dialog text never
- * leaves this handler.
- */
-export function captureFubonLoginDialogs(page: Page): FubonLoginDialogChannel {
-  const messages: string[] = [];
-  let duplicateTakeoverAccepted = false;
-  let terminalReason:
-    "duplicate-takeover-repeated" | "unknown-confirm" | undefined;
-  let disposed = false;
-  const onDialog = async (dialog: Dialog): Promise<void> => {
-    if (disposed) return;
-    let message = "";
-    let type: FubonDialogType | "unknown" = "unknown";
-    try {
-      message = dialog.message();
-    } catch {
-      // Keep the state machine fail-closed if the dialog disappears while it
-      // is being inspected.
-    }
-    try {
-      type = dialog.type() as FubonDialogType;
-    } catch {
-      type = "unknown";
-    }
-
-    if (type === "confirm") {
-      if (isFubonDuplicateLoginConfirm(message) && !duplicateTakeoverAccepted) {
-        // Mark before awaiting accept: a second event cannot cause a second
-        // takeover attempt while the first browser dialog is being resolved.
-        duplicateTakeoverAccepted = true;
-        try {
-          await dialog.accept();
-        } catch {
-          // The bank may close the dialog while the accept is in flight. The
-          // at-most-once fence remains in force; outcome polling decides it.
-        }
-        return;
-      }
-      terminalReason = isFubonDuplicateLoginConfirm(message)
-        ? "duplicate-takeover-repeated"
-        : "unknown-confirm";
-      try {
-        await dialog.dismiss();
-      } catch {
-        // A concurrent navigation may have already dismissed it.
-      }
-      return;
-    }
-
-    if (type !== "alert") {
-      terminalReason = "unknown-confirm";
-      try {
-        await dialog.dismiss();
-      } catch {
-        // A concurrent navigation may have already dismissed it.
-      }
-      return;
-    }
-
-    messages.push(sanitizedDialogAlert(message));
-    try {
-      await dialog.accept();
-    } catch {
-      // A concurrent navigation may have already dismissed it.
-    }
-  };
-
-  page.on("dialog", onDialog);
-  return {
-    messages,
-    get duplicateTakeoverAccepted() {
-      return duplicateTakeoverAccepted;
-    },
-    get terminalReason() {
-      return terminalReason;
-    },
-    beginOutcomeWindow: () => {
-      messages.length = 0;
-    },
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      page.off("dialog", onDialog);
-    },
-  };
 }
 
 type BankAuthGlobals = {
@@ -1703,8 +1550,22 @@ function throwDialogRejection(
   throw new FubonLoginRejectedError("dialog-alert", errorCode);
 }
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 /** Fubon renders login responses inline in the login frame, not as dialogs. */
@@ -1742,10 +1603,7 @@ export async function waitForFubonPostLoginOutcome(
       probeFubonLoginPage(actualPage, context, options.frameName));
 
   while (Date.now() < deadline) {
-    const terminalDialogReason = options.dialogChannel?.terminalReason;
-    if (terminalDialogReason) {
-      throwDialogTerminal(terminalDialogReason);
-    }
+    options.signal?.throwIfAborted();
     const dialogBeforeProbe = latestDialogMessage(options.dialogChannel);
     if (dialogBeforeProbe !== undefined) {
       throwDialogRejection(dialogBeforeProbe, undefined);
@@ -1771,11 +1629,6 @@ export async function waitForFubonPostLoginOutcome(
     }
 
     const dialogMessage = latestDialogMessage(options.dialogChannel);
-    const terminalDialogReasonAfterProbe =
-      options.dialogChannel?.terminalReason;
-    if (terminalDialogReasonAfterProbe) {
-      throwDialogTerminal(terminalDialogReasonAfterProbe);
-    }
     if (dialogMessage !== undefined) {
       throwDialogRejection(dialogMessage, snapshot);
     }
@@ -1812,13 +1665,9 @@ export async function waitForFubonPostLoginOutcome(
 
     const remainingAfterProbe = deadline - Date.now();
     if (remainingAfterProbe <= 0) break;
-    await sleep(Math.min(pollIntervalMs, remainingAfterProbe));
+    await sleep(Math.min(pollIntervalMs, remainingAfterProbe), options.signal);
   }
 
-  const terminalDialogReason = options.dialogChannel?.terminalReason;
-  if (terminalDialogReason) {
-    throwDialogTerminal(terminalDialogReason);
-  }
   const dialogMessage = latestDialogMessage(options.dialogChannel);
   if (dialogMessage !== undefined) {
     throwDialogRejection(dialogMessage, undefined);

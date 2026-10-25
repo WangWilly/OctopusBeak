@@ -89,7 +89,6 @@ export const yuantaFundStatementsInputSchema = z.object({
   includeInvestmentDetails: z.boolean().default(false),
   includeHistoricalTransactions: z.boolean().default(true),
   includeOffHourOrders: z.boolean().default(false),
-  replaceActiveSession: z.boolean().default(true),
 });
 const inputSchema = yuantaFundStatementsInputSchema;
 

@@ -1,7 +1,10 @@
 /** Settle with the operation, or reject with the signal's reason as soon as the run is cancelled. */
 export function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
-  if (signal.aborted) return Promise.reject(signal.reason);
+  if (signal.aborted) {
+    operation.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });

@@ -204,3 +204,49 @@ test("the preview write port, not the workflow, reports a preview write's commit
     [["credit-card-preview-write-completed", 2, "credit_card"]],
   );
 });
+
+test("a workflow's Verification stage reaches the host port and its port reports the run's events", async () => {
+  const events: WorkflowRunEvent[] = [];
+  const controller = new AbortController();
+  const requests: Array<{ stageId: string; rect: unknown }> = [];
+  const signals: AbortSignal[] = [];
+  const executor = createWorkflowExecutor([{
+    id: "verification-example",
+    requiresFinancialCommit: false,
+    async run(context) {
+      await context.verification.complete({
+        stageId: "example-captcha",
+        title: "Enter the CAPTCHA",
+        targets: [{
+          id: "answer",
+          label: "Answer",
+          semanticId: "example.answer",
+          modes: ["type"],
+          locator: { boundingBox: async () => ({ x: 1, y: 2, width: 30, height: 12 }) },
+        }],
+        contextRegions: [],
+        completion: { mode: "inline", targetIds: ["answer"] },
+        focus: { targetId: "answer", contextRegionIds: [] },
+      });
+    },
+  }], {
+    ...ports(events),
+    humanAssistance: {
+      request: async (contract, signal) => {
+        requests.push({ stageId: contract.stageId, rect: contract.targets[0]?.rect });
+        signals.push(signal);
+        return "verified";
+      },
+    },
+  });
+  await executor.run("verification-example", "run-verification", null, controller.signal);
+  assert.deepEqual(requests, [{ stageId: "example-captcha", rect: { x: 1, y: 2, width: 30, height: 12 } }]);
+  assert.equal(signals[0], controller.signal);
+  assert.deepEqual(
+    events.filter((event) => event.stage === "authentication").map(({ runId, outcome, code }) => [runId, outcome, code]),
+    [
+      ["run-verification", "advanced", "human-assistance-requested"],
+      ["run-verification", "advanced", "human-assistance-completed"],
+    ],
+  );
+});

@@ -115,7 +115,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     now: () => "2026-10-01T12:00:00.000+08:00",
     browser: { withPage: async (run) => await run(signedInPage()) },
     text: strictSourceText,
-    humanAssistance: { request: async () => "entered" },
+    verification: { complete: async () => undefined },
     financialCommit: recorder.financialCommit,
     event: recorder.event,
     signalEvent: recorder.signalEvent,

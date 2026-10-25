@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { requestCaptchaAssistance } from "../../workflows/human-assistance.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +8,6 @@ import { test } from "node:test";
 import { chromium, type Frame, type Page } from "playwright";
 import {
   downloadCurrentStatementInMemory,
-  hncbCaptchaAssistanceStage,
   parseStatementExport,
   runHncbStatements,
 } from "../../workflows/hncb-statements.ts";
@@ -364,43 +362,6 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     await rm(workingDirectory, { recursive: true, force: true });
   }
 });
-
-test("HNCB CAPTCHA assistance receives the injected cancellation signal", async () => {
-  const browser = await chromium.launch();
-  try {
-    const page = await browser.newPage();
-    await page.setContent(`
-      <input id="TrxCaptchaKey" style="width: 92px; height: 32px" />
-      <img id="code_Cap" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" width="80" height="30" />
-    `);
-    const signal = new AbortController().signal;
-    let receivedSignal: AbortSignal | undefined;
-    const status = await requestCaptchaAssistance("HNCB", 
-      hncbCaptchaAssistanceStage(page),
-      async (_contract, assistanceSignal) => {
-        receivedSignal = assistanceSignal;
-        return "verified";
-      },
-      signal,
-    );
-    assert.equal(status, "verified");
-    assert.equal(receivedSignal, signal);
-
-    const cancelled = new AbortController();
-    cancelled.abort(new Error("cancelled"));
-    await assert.rejects(
-      requestCaptchaAssistance("HNCB", 
-        hncbCaptchaAssistanceStage(page),
-        async () => { throw new Error("request must not run"); },
-        cancelled.signal,
-      ),
-      /cancelled/u,
-    );
-  } finally {
-    await browser.close();
-  }
-});
-
 
 test("HNCB export deadline also bounds a blocked submit evaluation", async () => {
   let releaseSubmit!: () => void;

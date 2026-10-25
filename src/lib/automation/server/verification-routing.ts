@@ -188,7 +188,7 @@ export function appWorkflowRoutesVerification(taskId: string) {
  * completed execution instead of racing a second owner of browser dialogs.
  */
 export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set(
-  VERIFIED_SOURCES.filter((source) => source.workflow.verification?.ownsSubmissionOutcome).map((source) => source.task.id),
+  VERIFIED_SOURCES.filter((source) => source.workflow.verification?.rejection !== undefined).map((source) => source.task.id),
 );
 
 export function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {

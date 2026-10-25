@@ -88,7 +88,7 @@ export const HNCB_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.hncb,
     runtime: browser("https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private"),
-    verification: { ownsSubmissionOutcome: false },
+    verification: {},
     input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/hncb-statements.ts")).runHncbProviderWorkflow;

@@ -70,14 +70,19 @@ function createPage(options: {
   ];
   const credentialValues = new Map<string, string>();
   let signedIn = options.signedIn ?? false;
-  let loginPolls = 0;
+  let loginProbes = 0;
+  const probeSignedIn = () => {
+    loginProbes += 1;
+    if (loginProbes >= 3) signedIn = true;
+    return signedIn;
+  };
   const locator = (selector: string, index = 0) => ({
     first() { return locator(selector, 0); },
     last() { return locator(selector, 0); },
     nth(value: number) { return locator(selector, value); },
     filter() { return this; },
     isVisible: async () => selector === "form input[type=text]"
-      || (selector === "#btnHeaderLogout" && signedIn),
+      || (selector === "#btnHeaderLogout" && probeSignedIn()),
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? 1 : 0,
     textContent: async () => selector === "a.nav-link" ? "2026/08" : "帳戶餘額 0000314540554100",
@@ -95,8 +100,6 @@ function createPage(options: {
       waitForURL: async () => undefined,
       waitForTimeout: async () => {
         await options.onPoll?.();
-        loginPolls += 1;
-        if (loginPolls >= 20) signedIn = true;
       },
       waitForResponse: async (predicate: (candidate: Response) => boolean) => {
         const index = responses.findIndex(predicate);

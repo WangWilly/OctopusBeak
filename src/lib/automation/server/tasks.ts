@@ -39,7 +39,7 @@ function verifiedCredentialGroup(source: VerifiedSource): AutomationCredentialGr
     credentialKeys: source.credentialFields.map((field) => field.key),
     credentialFields: source.credentialFields,
     setupGuide: source.setupGuide,
-    ...(source.sessionTakeoverNotice ? { sessionTakeoverNotice: source.sessionTakeoverNotice } : {}),
+    ...(source.sessionTakeover ? { sessionTakeover: { notice: source.sessionTakeover.notice } } : {}),
   };
 }
 

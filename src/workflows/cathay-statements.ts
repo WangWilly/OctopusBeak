@@ -6,7 +6,9 @@ import {
   StatementComponentAbsentError,
 } from "../lib/automation/product-collection.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
+import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
@@ -16,6 +18,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
+import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -590,11 +593,13 @@ async function dismissAnnouncementModal(page: Page): Promise<boolean> {
 async function dismissStartupAnnouncements(
   page: Page,
   timeoutMs = 15_000,
+  signal?: AbortSignal,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastActionAt = Date.now();
 
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const clicked = await dismissAnnouncementModal(page) || await clickFirstVisible(
       page.locator("button").filter({
         hasText: /^\s*(下一則|我知道了|OK)\s*$/,
@@ -629,63 +634,45 @@ export async function isCathaySignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function clickLoginPastLateAnnouncements(page: Page): Promise<void> {
+async function clickLoginPastLateAnnouncements(page: Page, signal?: AbortSignal): Promise<void> {
   const login = page.locator("button.js-login");
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       await login.click({ timeout: 4_000 });
       return;
     } catch (error) {
       if (attempt === 2 || !(await hasStartupAnnouncement(page))) throw error;
-      await dismissStartupAnnouncements(page, 10_000);
+      await dismissStartupAnnouncements(page, 10_000, signal);
     }
   }
 }
 
-export async function fillLoginForm(
+type Progress = (code: string) => Promise<void>;
+
+export async function enterCathayCredentials(
   page: Page,
   credentials: CathayCredentials,
-  event?: (code: string) => Promise<void>,
+  signal?: AbortSignal,
+  progress?: Progress,
 ): Promise<void> {
   const userId = requireCredential(credentials, "cathay_user_id");
   const account = requireCredential(credentials, "cathay_account");
   const password = requireCredential(credentials, "cathay_password");
 
-  await navigateToCathayLoginForm(page);
-  await event?.("authentication-login-form-ready");
-  const duplicateSessionPrompt = page.locator(".modal.show")
-    .filter({ hasText: /貼心提醒/u })
-    .filter({ hasText: /重複登入|前次未正常登出/u })
-    .first();
+  await withAbort(dismissStartupAnnouncements(page, 15_000, signal), signal);
+  await progress?.("authentication-login-announcements-dismissed");
+  await withAbort(page.locator("#CustID").fill(userId), signal);
+  await withAbort(page.locator("#UserIdKeyin").fill(account), signal);
+  await withAbort(page.locator("#PasswordKeyin").fill(password), signal);
+  await progress?.("authentication-login-fields-entered");
+  await withAbort(dismissStartupAnnouncements(page, 5_000, signal), signal);
+}
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await dismissStartupAnnouncements(page);
-    await event?.("authentication-login-announcements-dismissed");
-
-    await page.locator("#CustID").fill(userId);
-    await page.locator("#UserIdKeyin").fill(account);
-    await page.locator("#PasswordKeyin").fill(password);
-    await event?.("authentication-login-fields-entered");
-    await dismissStartupAnnouncements(page, 5_000);
-    await duplicateSessionPrompt.waitFor({ state: "visible", timeout: 1_500 }).catch(() => undefined);
-    if (await duplicateSessionPrompt.isVisible().catch(() => false)) {
-      if (attempt > 0) {
-        await event?.("authentication-duplicate-session-repeated");
-        throw new Error("Cathay duplicate-session prompt remained after one automatic logout.");
-      }
-      await event?.("authentication-duplicate-session-detected");
-      await duplicateSessionPrompt.getByRole("button", { name: "登出", exact: true }).click();
-      await duplicateSessionPrompt.waitFor({ state: "hidden", timeout: 10_000 });
-      await event?.("authentication-duplicate-session-cleared");
-      await page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 });
-      continue;
-    }
-
-    await event?.("authentication-login-submit-started");
-    await clickLoginPastLateAnnouncements(page);
-    await event?.("authentication-login-submitted");
-    return;
-  }
+export async function submitCathayLogin(page: Page, signal?: AbortSignal, progress?: Progress): Promise<void> {
+  await progress?.("authentication-login-submit-started");
+  await withAbort(clickLoginPastLateAnnouncements(page, signal), signal);
+  await progress?.("authentication-login-submitted");
 }
 
 export function cathayTrustDevicePrompt(page: Page): Locator {
@@ -722,77 +709,67 @@ export async function answerCathayTrustDevicePrompt(
     .catch(() => undefined);
 }
 
-async function dismissPostLoginPrompts(page: Page): Promise<void> {
-  const deadline = Date.now() + 15_000;
-  const stableLoggedInAt = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    if (await cathayTrustDevicePrompt(page).isVisible().catch(() => false)) {
-      await answerCathayTrustDevicePrompt(page, "skip");
-      return;
-    }
-    if (
-      Date.now() >= stableLoggedInAt &&
-      (await page
-        .getByText(/^登出$/)
-        .first()
-        .isVisible()
-        .catch(() => false))
-    ) {
-      return;
-    }
-    await page.waitForTimeout(250);
-  }
+async function skipCathayTrustDevicePrompt(page: Page, signal: AbortSignal): Promise<boolean> {
+  if (!(await withAbort(cathayTrustDevicePrompt(page).isVisible().catch(() => false), signal))) return false;
+  await withAbort(answerCathayTrustDevicePrompt(page, "skip"), signal);
+  return true;
 }
-
-export type CathayAppLoginDependencies = Readonly<{
-  signal: AbortSignal;
-  event?(code: string): Promise<void>;
-}>;
 
 export const CATHAY_OTP_CHALLENGE = "#OtpMailPassword, #js-otp-send, #js-otp-email-send, .js-otp-view";
 
-export async function waitForCathayTrustedDeviceSignIn(
-  page: Page,
-  dependencies: CathayAppLoginDependencies,
-  timeoutMs = 120_000,
-): Promise<void> {
+/** Signed in, or the one-time-code wall that only device registration passes. */
+async function cathaySignedIn(page: Page, signal: AbortSignal, progress: Progress): Promise<boolean> {
+  if (await withAbort(isCathaySignedIn(page), signal)) return true;
   const challenge = page
     .locator(CATHAY_OTP_CHALLENGE)
     .or(page.locator("a").filter({ hasText: "Email驗證" }))
     .first();
-  const deadline = Date.now() + timeoutMs;
-  do {
-    dependencies.signal.throwIfAborted();
-    if (await isCathaySignedIn(page)) return;
-    if (await challenge.isVisible().catch(() => false)) {
-      await dependencies.event?.("device-registration-required");
-      dependencies.signal.throwIfAborted();
-      throw new ProductCollectionFatalError("device-registration-required");
-    }
-    await withAbort(page.waitForTimeout(500), dependencies.signal);
-  } while (Date.now() < deadline);
-  await dependencies.event?.("authentication-sign-in-unconfirmed");
-  dependencies.signal.throwIfAborted();
-  throw new ProductCollectionFatalError("verification-failed");
+  if (!(await withAbort(challenge.isVisible().catch(() => false), signal))) return false;
+  await progress("device-registration-required");
+  throw new ProductCollectionFatalError("device-registration-required");
 }
 
-export async function signInCathayForApp(
-  page: Page,
-  credentials: CathayCredentials,
-  dependencies: CathayAppLoginDependencies,
-): Promise<{ usedExistingSession: boolean }> {
-  dependencies.signal.throwIfAborted();
-  if (await isCathaySignedIn(page)) return { usedExistingSession: true };
-  await withAbort(
-    fillLoginForm(page, credentials, dependencies.event),
-    dependencies.signal,
-  );
-  await waitForCathayTrustedDeviceSignIn(page, dependencies);
-  await withAbort(
-    dismissPostLoginPrompts(page),
-    dependencies.signal,
-  );
-  return { usedExistingSession: false };
+/** Reports each form step as an authentication advance; nothing is reported once the attempt ends. */
+export function cathaySignInPlan(credentials: CathayCredentials, event: WorkflowContext["event"]): FormPlan {
+  const progress = (signal: AbortSignal): Progress => async (code) => {
+    signal.throwIfAborted();
+    await event("authentication", "advanced", code);
+  };
+  // The refill after the duplicate-session logout types into the form the logout cleared, without reloading it.
+  let formOpen = false;
+  return {
+    signedIn: (page, signal) => cathaySignedIn(page, signal, progress(signal)),
+    fill: async (page, signal) => {
+      if (formOpen) {
+        await withAbort(page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 }), signal);
+      } else {
+        await withAbort(navigateToCathayLoginForm(page), signal);
+        formOpen = true;
+        await progress(signal)("authentication-login-form-ready");
+      }
+      await enterCathayCredentials(page, credentials, signal, progress(signal));
+    },
+    submit: (page, signal) => submitCathayLogin(page, signal, progress(signal)),
+    prompts: skipCathayTrustDevicePrompt,
+    dialogs: "accept-for-page",
+    session: { none: "GetJWT customer check runs in collection" },
+    timeoutMs: 120_000,
+  };
+}
+
+/**
+ * A submitted sign-in that reaches neither the signed-in page nor the
+ * one-time-code wall by the deadline ends as verification-failed, as it did
+ * before the step.
+ */
+export async function signInCathayForApp(context: WorkflowContext, page: Page, plan: FormPlan): Promise<void> {
+  try {
+    await signIn(context, page, CATHAY_SOURCE, plan);
+  } catch (error) {
+    if (!(error instanceof SignInDeadlineError)) throw error;
+    await context.event("authentication", "advanced", "authentication-sign-in-unconfirmed");
+    throw new ProductCollectionFatalError("verification-failed");
+  }
 }
 
 async function openDomesticStatementsPage(page: Page): Promise<void> {

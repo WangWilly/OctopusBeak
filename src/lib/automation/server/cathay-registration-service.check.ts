@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { BrowserContext, Page } from "playwright";
-import { signInCathayForApp } from "../../../workflows/cathay-statements.ts";
+import { cathaySignInPlan, signInCathayForApp } from "../../../workflows/cathay-statements.ts";
+import { recordedRun } from "../../../workflows/sign-in-check-harness.ts";
 import { ProductCollectionFatalError } from "../product-collection.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import {
@@ -181,11 +182,13 @@ async function withFixture(
   }
 }
 
-function signInAsRun(page: Page, events: string[]) {
-  return signInCathayForApp(page, SIGN_IN, {
-    signal: new AbortController().signal,
-    event: async (code) => { events.push(code); },
-  });
+async function signInAsRun(page: Page, events: string[]) {
+  const run = recordedRun(page, async () => assert.fail("Cathay has no Verification stage"));
+  try {
+    await signInCathayForApp(run.context, page, cathaySignInPlan(SIGN_IN, run.context.event));
+  } finally {
+    events.push(...run.codes);
+  }
 }
 
 test("registering sends one code, adds the trusted device, and a later run signs in without a code", async () => {
@@ -210,7 +213,8 @@ test("registering sends one code, adds the trusted device, and a later run signs
     await openRunPage((page) => signInAsRun(page, events));
     assert.equal(log.trustedLogins, 1, "the run presented the restored device cookie");
     assert.deepEqual(log.sends, ["sms"], "the run never asked Cathay for a code");
-    assert.equal(events.includes("device-registration-required"), false);
+    assert.equal(events.includes("advanced device-registration-required"), false);
+    assert.equal(events.at(-1), "completed authentication-completed");
   });
 });
 
@@ -224,7 +228,7 @@ test("a run that meets Cathay's OTP stops asking for device registration and sen
     );
     assert.deepEqual(log.sends, []);
     assert.deepEqual(log.submits, []);
-    assert.equal(events.at(-1), "device-registration-required");
+    assert.deepEqual(events.slice(-2), ["advanced device-registration-required", "failed authentication-failed"]);
   });
 });
 

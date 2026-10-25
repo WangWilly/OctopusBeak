@@ -288,8 +288,6 @@ test("Post App task dispatches the typed provider with human assistance, complet
     assert.equal(run?.status, "completed");
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-completed"));
     assert.ok(run?.events.some((event) => event.code === "source-decoding-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source, output, or log files");
@@ -365,6 +363,35 @@ test("Post App dispatch cancellation during human assistance does not collect or
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(run?.status, "cancelled");
     assert.deepEqual(await readdir(root), []);
+  } finally {
+    process.chdir(previousDirectory);
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Post App dispatch without a verification route fails with a configuration outcome", async () => {
+  const task = taskById("post-statements");
+  assert.ok(task);
+  const root = await mkdtemp(join(tmpdir(), "post-app-no-route-"));
+  const previousDirectory = process.cwd();
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    process.chdir(root);
+    const provider = createPgliteOperationalProvider(store);
+    const taskRunId = await createRun(provider);
+    const page = fakePostPage();
+    await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
+      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      workerPorts: {
+        financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2),
+      },
+      workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
+    });
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
+    assert.ok(run?.events.some((event) => event.signal === "solver-route-unavailable"));
   } finally {
     process.chdir(previousDirectory);
     await store.close();

@@ -724,9 +724,11 @@ export function createTaishinSource(options: Readonly<{
         allowedHosts: ["my.taishinbank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "Taishin online banking may allow one session at a time. A sync may fail while you are signed in elsewhere, or may end your Taishin or Richart App session. This is not yet confirmed.",
-      "zh-TW": "台新網路銀行可能同一時間只允許一處登入。你在其他地方登入時同步可能失敗，也可能讓台新或 Richart App 登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "Taishin online banking may allow one session at a time. A sync may fail while you are signed in elsewhere, or may end your Taishin or Richart App session. This is not yet confirmed.",
+        "zh-TW": "台新網路銀行可能同一時間只允許一處登入。你在其他地方登入時同步可能失敗，也可能讓台新或 Richart App 登出。此行為尚未確認。",
+      },
     },
     startUrl: RWD_URL,
     async run(context, input) {

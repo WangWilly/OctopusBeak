@@ -4,6 +4,7 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
+import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
 
 const browser = await chromium.launch();
@@ -26,7 +27,7 @@ try {
     now: () => "2026-09-26T00:00:00.000Z",
     browser: { withPage: (run) => run(page) },
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    verification: { complete: async () => { throw new Error("unexpected assistance"); } },
     financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
     event: async (stage, outcome, code) => {
       events.push({ runId: "ctbc-busy-fixture", stage, outcome, code, occurredAt: "2026-09-26T00:00:00.000Z" });
@@ -45,8 +46,8 @@ try {
   } finally {
     clearTimeout(timeout);
   }
-  assert.ok(failure);
-  assert.ok(events.some((event) => event.code === "source-unavailable"));
+  assert.ok(failure instanceof SourceUnavailableError);
+  assert.deepEqual(events.map((event) => event.code), ["input-validated", "authentication-started", "authentication-failed"]);
   assert.equal(classifyTypedWorkflowFailure(failure, events), "source-unavailable");
 
   const acceptedPage = await browser.newPage();
@@ -78,8 +79,8 @@ try {
   } finally {
     clearTimeout(acceptedTimeout);
   }
-  assert.ok(acceptedFailure);
-  assert.ok(acceptedEvents.some((event) => event.code === "source-unavailable"));
+  assert.ok(acceptedFailure instanceof SourceUnavailableError);
+  assert.deepEqual(acceptedEvents.map((event) => event.code), ["input-validated", "authentication-started", "authentication-failed"]);
   assert.equal(classifyTypedWorkflowFailure(acceptedFailure, acceptedEvents), "source-unavailable");
 } finally {
   await browser.close();

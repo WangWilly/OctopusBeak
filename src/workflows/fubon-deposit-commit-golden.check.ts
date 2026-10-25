@@ -142,7 +142,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
         run({ context: () => ({ clearCookies: async () => undefined }) } as unknown as Page),
     },
     text: strictSourceText,
-    humanAssistance: { request: async () => "verified" as const },
+    verification: { complete: async () => undefined },
     accountIdentity: { continuity: async () => ({ status: "unseen" }) },
     financialCommit: {
       execute: (items, options) => recorder.financialCommit.execute(expandRelationCommands(items), options),
@@ -178,8 +178,7 @@ async function runGolden(name: string, stubs: DepositStubs, dateRanges: readonly
     },
     statements: { dateRanges, downloadFormat: "EXCEL" },
   }, {
-    authenticate: async () => undefined,
-    assertSession: async () => undefined,
+    authenticate: async () => ({ usedExistingSession: false }),
     signOut: async () => undefined,
     startSessionKeepAlive: () => () => undefined,
     collectDeposit,

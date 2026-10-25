@@ -112,7 +112,7 @@ assert.match(runtimeStaticImports, /credit-card-current-balance-admission\.ts/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );
-assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin|workflow\(/u);
+assert.doesNotMatch(source, /openFubonLoginForm|fubonLogin\(|workflow\(/u);
 assert.match(source, /findStatementDetailsScope/);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);

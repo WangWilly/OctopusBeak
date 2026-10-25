@@ -1,5 +1,7 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+const RELOGIN = '#reloginBT, a:has-text("立即登入")';
+
 export const YUANTA_SOURCE: VerifiedSource = {
   id: "yuanta",
   label: "Yuanta",
@@ -28,6 +30,18 @@ export const YUANTA_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
+  sessionTakeover: {
+    notice: localized(
+      "When Yuanta Bank reports another active sign-in, every sync, including daily scheduled collection, chooses to sign in now, which signs you out of Yuanta Bank online banking elsewhere.",
+      "當元大銀行回報已有其他登入時，每次同步（包括每日排程收集）都會選擇「立即登入」，讓你在其他地方的元大網路銀行登出。",
+    ),
+    prompt: {
+      phase: "while-settling",
+      frame: "main",
+      selector: RELOGIN,
+      control: { selector: RELOGIN, force: true },
+    },
+  },
   setupGuide: {
     summary: localized(
       "Use the ID number, user code, and password registered for Yuanta Bank online banking.",
@@ -94,7 +108,7 @@ export const YUANTA_SOURCE: VerifiedSource = {
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://ebank.yuantabank.com.tw/nib/ibanc.jsp"),
-    verification: { ownsSubmissionOutcome: true },
+    verification: { rejection: { dialog: { exact: "驗證碼不正確，請重新輸入" } } },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/yuanta-all-statements.ts")).runYuantaAllStatementsWorkflow;
