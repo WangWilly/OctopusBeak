@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS } from "./server/verification-routing.ts";
 import { VERIFIED_SOURCES } from "./server/sources/index.ts";
@@ -58,5 +59,12 @@ test("the eight sources that sign the person out elsewhere disclose it, and a pr
   assert.deepEqual(disclosed.sort(), ["cathay", "ctbc", "einvoice", "esun", "fubon", "sinopac", "tdcc", "yuanta"]);
   for (const source of VERIFIED_SOURCES) {
     if (source.sessionTakeover?.prompt) assert.ok(source.sessionTakeover.notice.en.length > 0);
+  }
+});
+
+test("the definition's sign-in data imports nothing, so the main process loads it without Playwright", () => {
+  for (const file of ["./sign-in-prompt.ts", "./fubon-dialog.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(|\brequire\s*\(/mu, file);
   }
 });
