@@ -58,16 +58,26 @@ const settled = (period: string, cycleStart: string, cycleEnd: string, dueDate: 
 });
 
 const anniversaryPurchase = billedRow("2025/10/24", "Synthetic Anniversary Store", "300", "2025-10");
+const novemberPurchase = billedRow("2025/11/04", "Synthetic Bakery", "90", "2025-11");
 const julyPurchase = billedRow("2026/07/15", "Synthetic Coffee", "120", "2026-07");
 const settledPeriods = [
   settled("2025-10", "2025-10-01", "2025-10-31", "2025-11-20", "300"),
+  settled("2025-11", "2025-11-01", "2025-11-30", "2025-12-20", "90"),
   settled("2026-07", "2026-07-01", "2026-07-31", "2026-08-20", "120"),
 ];
 
-/** A thirteen-month timeline queried on `endDate` (`YYYY/MM/DD`), as the workflow records it. */
-function command(captureId: string, endDate: string, rows: readonly StatementRow[]): PGliteCanonicalCreditCardCaptureRequest {
+/**
+ * A timeline queried on `endDate` (`YYYY/MM/DD`), as the workflow records it:
+ * thirteen months reach the anniversary month, twelve stop at the month after.
+ */
+function command(
+  captureId: string,
+  endDate: string,
+  rows: readonly StatementRow[],
+  monthCount: 12 | 13 = 13,
+): PGliteCanonicalCreditCardCaptureRequest {
   const [year, month] = endDate.split("/").map(Number) as [number, number];
-  const months = Array.from({ length: 13 }, (_, index) =>
+  const months = Array.from({ length: monthCount }, (_, index) =>
     new Date(Date.UTC(year, month - 1 - index, 1)).toISOString().slice(0, 7).replace("-", "/"));
   const capture: CaptureMetadata = {
     snapshotMode: "full",
@@ -77,7 +87,7 @@ function command(captureId: string, endDate: string, rows: readonly StatementRow
     completenessEvidence: { bank: "esun", range: "default_one_year" },
   };
   const validated = buildEsunCanonicalCreditCardCapture({
-    startDate: `${months[12]}/01`,
+    startDate: `${months.at(-1)}/01`,
     endDate,
     identity: identity!,
     statementRows: rows,
@@ -85,17 +95,17 @@ function command(captureId: string, endDate: string, rows: readonly StatementRow
     grid: {
       kind: "past-year-timeline",
       firstMonth: months[0]!,
-      lastMonth: months[12]!,
+      lastMonth: months.at(-1)!,
       months,
       pageCount: 3,
-      monthCount: 13,
+      monthCount,
       capturedRowCount: rows.length,
       terminal: true,
       terminalCursor: 4,
     },
     capture,
     instrumentFingerprintSecret: managedSecret,
-    settledPeriods,
+    settledPeriods: settledPeriods.filter((period) => rows.some((entry) => entry.issuerStatementPeriod === period.period)),
   });
   assert(validated, "E.SUN capture builder accepted the fixture");
   return creditCardCommandRequestFromCanonicalCapture(
@@ -111,6 +121,15 @@ async function withStore(run: (store: PGliteStore) => Promise<void>): Promise<vo
   } finally {
     await store.close();
   }
+}
+
+/** Revision count per issuer statement cycle start. */
+async function statementRevisions(store: PGliteStore): Promise<Record<string, number>> {
+  const rows = await store.query<{ cycle_start: string; revisions: number }>(`
+    SELECT cycle_start, COUNT(*)::int AS revisions
+    FROM canonical_credit_card_statement_revisions
+    GROUP BY cycle_start ORDER BY 1`);
+  return Object.fromEntries(rows.rows.map((row) => [row.cycle_start, Number(row.revisions)]));
 }
 
 async function currentDescriptions(store: PGliteStore): Promise<readonly string[]> {
@@ -132,6 +151,9 @@ test("a purchase that ages out of the oldest timeline month on a later day is no
     await commitPGliteCanonicalCreditCardCapture(store, command("esun-oldest-1025", "2026/10/25", [julyPurchase]));
     // Aging out is not withdrawal: the admitted purchase stays in the ledger.
     assert.deepEqual(await currentDescriptions(store), ["Synthetic Anniversary Store", "Synthetic Coffee"]);
+    // The cycle that starts by the anniversary loses members as they age out,
+    // so it never becomes a statement; a complete cycle keeps one revision.
+    assert.deepEqual(await statementRevisions(store), { "2026-07-01": 1 });
   });
 });
 
@@ -150,6 +172,16 @@ test("a purchase missing from a complete month on a later day is still a lost me
     await commitPGliteCanonicalCreditCardCapture(store, command("esun-complete-1023", "2026/10/23", [anniversaryPurchase, julyPurchase]));
     await assert.rejects(
       commitPGliteCanonicalCreditCardCapture(store, command("esun-complete-1024", "2026/10/24", [])),
+      rejectsAsLostMember,
+    );
+  });
+});
+
+test("a twelve-month timeline's oldest month is complete, so a later day's loss there is still rejected", async () => {
+  await withStore(async (store) => {
+    await commitPGliteCanonicalCreditCardCapture(store, command("esun-twelve-1030", "2026/10/30", [novemberPurchase, julyPurchase], 12));
+    await assert.rejects(
+      commitPGliteCanonicalCreditCardCapture(store, command("esun-twelve-1031", "2026/10/31", [julyPurchase], 12)),
       rejectsAsLostMember,
     );
   });
