@@ -1,10 +1,3 @@
-/**
- * The text a Verified source definition names for the Source sign-in step:
- * the Session takeover prompt it confirms and the evidence that proves a
- * CAPTCHA rejection. Plain data, so the main process reads it without
- * Playwright.
- */
-
 /** Text located on a page: Playwright's exact text match, or a pattern. */
 export type TextPattern =
   | Readonly<{ exact: string }>
@@ -16,14 +9,25 @@ export type TextPattern =
  */
 export type TextMatch = TextPattern | ((message: string) => boolean);
 
-/** The control the step clicks to confirm a page prompt. */
-export type Control =
+/**
+ * The control the step clicks to confirm a page prompt. `force` skips
+ * Playwright's actionability checks, for a provider page that covers or
+ * animates its own control; the click still lands on whatever is on top.
+ */
+export type Control = (
   | Readonly<{ role: "button"; name: string | RegExp }>
   | Readonly<{ text: string }>
-  | Readonly<{ selector: string }>;
+  | Readonly<{ selector: string }>
+) & Readonly<{ force?: true }>;
 
-/** Text visible on the page, in the named frame and inside `within` when given. */
-export type PageMatch = Readonly<{ frame?: string; within?: string; text: TextPattern }>;
+/**
+ * Something visible on the page, found by its text or by a selector, in the
+ * named frame and inside `within` when given.
+ */
+export type PageMatch = Readonly<{ frame?: string; within?: string }> & (
+  | Readonly<{ text: TextPattern; selector?: never }>
+  | Readonly<{ selector: string; text?: never }>
+);
 
 /**
  * `before-submit`: the prompt follows the filled form, so the step waits for
@@ -31,14 +35,15 @@ export type PageMatch = Readonly<{ frame?: string; within?: string; text: TextPa
  */
 export type TakeoverPhase = "before-submit" | "while-settling";
 
-/** A confirm() dialog, or page text with the control that confirms it. */
+/** A confirm() dialog, or a page match with the control that confirms it. */
 export type TakeoverPrompt =
   | Readonly<{ phase: TakeoverPhase; dialog: TextMatch }>
   | (PageMatch & Readonly<{ phase: TakeoverPhase; control: Control }>);
 
 /**
  * How a workflow proves the provider rejected a CAPTCHA: an alert() dialog,
- * page text, or `"workflow"` for a non-browser workflow that proves it itself.
+ * a page match, or `"workflow"` for a non-browser workflow that proves it
+ * itself.
  */
 export type RejectionEvidence = Readonly<{ dialog: TextMatch }> | PageMatch | "workflow";
 

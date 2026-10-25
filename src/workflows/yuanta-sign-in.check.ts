@@ -41,29 +41,30 @@ after(async () => {
 
 const js = JSON.stringify;
 
-/**
- * Yuanta Bank at its real URLs: ibanc.jsp holds the `main` frame with the
- * login form, whose 登入 link records the hidden ID and runs `script`. The
- * notice opens on load and once more after maskID(). `signedIn()` loads the
- * fmenu/fmain shell into `main`; `askRelogin()` replaces the form with the
- * 立即登入 prompt, whose link runs `afterRelogin`. Counters live on
- * ibanc.jsp, which outlives the frame's documents.
- */
 async function withYuanta(
   script: string,
-  body: (page: Page) => Promise<void>,
-  options: Readonly<{ afterRelogin?: string; signedIn?: boolean }> = {},
+  body: (page: Page, served: { relogins: number }) => Promise<void>,
+  options: Readonly<{ afterRelogin?: string; signedIn?: boolean; reloginControl?: "text" | "image" }> = {},
 ): Promise<void> {
   const page = await browser.newPage();
+  const served = { relogins: 0 };
+  let signedIn = options.signedIn ?? false;
+  const reloginControl = options.reloginControl === "image"
+    ? `<img src="/nib/relogin.gif" width="80" height="24" alt="立即登入" />`
+    : "立即登入";
   try {
     await page.route(`${ORIGIN}/**`, (route) => {
       const { pathname } = new URL(route.request().url());
-      if (pathname === "/nib/GOTP") {
+      if (pathname === "/nib/GOTP" || pathname === "/nib/relogin.gif") {
         void route.fulfill({ contentType: "image/gif", body: GIF });
         return;
       }
+      if (pathname === "/nib/relogin.do") {
+        served.relogins += 1;
+        signedIn = true;
+      }
       const html = pathname === "/nib/ibanc.jsp"
-        ? `<iframe name="main" src="${options.signedIn ? SHELL_URL : LOGIN_URL}" width="800" height="600"></iframe>
+        ? `<iframe name="main" src="${signedIn ? SHELL_URL : LOGIN_URL}" width="800" height="600"></iframe>
           <script>window.noticeCloses = 0; window.submits = []; window.relogins = 0;</script>`
         : pathname === "/nib/login.jsp"
           ? `<div id="commonPopup"><a id="commonPopupLeftBtnImg" href="#" onclick="closeNotice(); return false;">我知道了</a></div>
@@ -73,7 +74,7 @@ async function withYuanta(
               <input id="gcode" /><img src="/nib/GOTP" width="107" height="50" alt="CAPTCHA" />
               <a href="javascript:doPreLogin();">登入</a>
             </div>
-            <div id="relogin" hidden><p>您的帳號目前已在其他地方登入</p><a id="reloginBT" href="javascript:relogin();">立即登入</a></div>
+            <div id="relogin" hidden><p>您的帳號目前已在其他地方登入</p><a id="reloginBT" href="javascript:relogin();">${reloginControl}</a></div>
             <script>
               function closeNotice() { parent.noticeCloses += 1; document.getElementById("commonPopup").hidden = true; }
               function maskID() {
@@ -86,18 +87,21 @@ async function withYuanta(
                 document.getElementById("form").hidden = true;
                 document.getElementById("relogin").hidden = false;
               }
-              function relogin() { parent.relogins += 1; document.getElementById("relogin").hidden = true; ${options.afterRelogin ?? ""} }
+              function hideRelogin() { document.getElementById("relogin").hidden = true; }
+              function relogin() { parent.relogins += 1; ${options.afterRelogin ?? ""} }
               function doPreLogin() { parent.submits.push(document.getElementById("custid").value); ${script} }
             </script>`
           : pathname === "/nib/shell.jsp"
             ? `<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/home"></iframe>`
             : pathname === "/nib/menu.jsp"
               ? `<a id="btnLogout" href="/nib/tx/logout">登出</a>`
-              : "<p>首頁</p>";
+              : pathname === "/nib/relogin.do"
+                ? `<script>location.replace(${js(YUANTA_ENTRY_URL)})</script>`
+                : "<p>首頁</p>";
       void route.fulfill({ contentType: "text/html; charset=utf-8", body: html });
     });
     await page.goto(YUANTA_ENTRY_URL, { waitUntil: "load" });
-    await body(page);
+    await body(page, served);
   } finally {
     await page.close();
   }
@@ -154,7 +158,25 @@ test("a second Yuanta Bank 立即登入 prompt ends the sign-in as a repeated ta
     assert.equal((await counters(page)).relogins, 1);
     assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, INTERRUPTED]);
     assert.equal(run.classify(error), "authentication-dialog-interrupted");
-  }, { afterRelogin: "setTimeout(askRelogin, 200)" }));
+  }, { afterRelogin: "hideRelogin(); setTimeout(askRelogin, 200)" }));
+
+test("Yuanta Bank confirms a #reloginBT that shows an image instead of 立即登入", () =>
+  withYuanta("askRelogin()", async (page) => {
+    const run = recordedRun(page, solve);
+    await signInYuanta(run, page);
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal((await counters(page)).relogins, 1);
+  }, { afterRelogin: "signedIn()", reloginControl: "image" }));
+
+test("a Yuanta Bank 立即登入 that reloads the whole page signs in once the reloaded page opens the shell", () =>
+  withYuanta("askRelogin()", async (page, served) => {
+    const run = recordedRun(page, solve);
+    const signedIn = await signInYuanta(run, page);
+    assert.equal(signedIn.usedExistingSession, false);
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal(served.relogins, 1);
+    assert.equal(page.url(), YUANTA_ENTRY_URL);
+  }, { afterRelogin: `top.location.href = "/nib/relogin.do"` }));
 
 test("the exact Yuanta Bank CAPTCHA alert proves the rejection", () =>
   withYuanta(`alert(${js(CAPTCHA_REJECTED)})`, async (page) => {
@@ -255,7 +277,7 @@ test("Yuanta Bank's declared rejection matches only the exact alert, and its tak
   assert.deepEqual(YUANTA_SOURCE.sessionTakeover?.prompt, {
     phase: "while-settling",
     frame: "main",
-    text: { exact: "立即登入" },
-    control: { selector: '#reloginBT, a:has-text("立即登入")' },
+    selector: '#reloginBT, a:has-text("立即登入")',
+    control: { selector: '#reloginBT, a:has-text("立即登入")', force: true },
   });
 });

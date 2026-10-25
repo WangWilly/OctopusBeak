@@ -88,6 +88,59 @@ async function withPage(
   }
 }
 
+const BANK = "https://bank.test";
+const GIF = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+
+async function withFramedPrompt(
+  options: Readonly<{ control: "text" | "image"; masked?: boolean; onConfirm: string }>,
+  body: (page: Page, served: { homes: number }) => Promise<void>,
+): Promise<void> {
+  const page = await browser.newPage();
+  const served = { homes: 0 };
+  const control = options.control === "text" ? "立即登入" : `<img src="${GIF}" width="80" height="24" alt="">`;
+  try {
+    await page.route(`${BANK}/**`, (route) => {
+      const { pathname } = new URL(route.request().url());
+      if (pathname === "/home") served.homes += 1;
+      const html = pathname === "/entry"
+        ? `<form id="form">
+            <input id="user" /><input id="answer" />
+            <button id="login" type="button" onclick="frames.main.ask()">登入</button>
+          </form>
+          <div id="ok" hidden>signed in</div>
+          <iframe name="main" src="/prompt" width="400" height="200"></iframe>
+          <script>
+            window.confirms = 0;
+            function show() { document.getElementById("ok").hidden = false; }
+          </script>`
+        : pathname === "/prompt"
+          ? `<div id="prompt" hidden style="position:relative" onclick="event.preventDefault(); confirmTakeover()">
+              <p>您的帳號目前已在其他地方登入</p>
+              <a class="confirm" href="#">${control}</a>
+              ${options.masked ? `<div class="mask" style="position:absolute;inset:0"></div>` : ""}
+            </div>
+            <script>
+              function ask() { document.getElementById("prompt").hidden = false; }
+              function hidePrompt() { document.getElementById("prompt").hidden = true; }
+              function confirmTakeover() { parent.confirms += 1; ${options.onConfirm} }
+            </script>`
+          : `<div id="ok">signed in</div>`;
+      void route.fulfill({ contentType: "text/html; charset=utf-8", body: html });
+    });
+    await page.goto(`${BANK}/entry`, { waitUntil: "load" });
+    await body(page, served);
+  } finally {
+    await page.close();
+  }
+}
+
+const promptFrame = (page: Page) => {
+  const frame = page.frame({ name: "main" });
+  assert.ok(frame, "the prompt frame is present");
+  return frame;
+};
+const confirms = (page: Page) => page.evaluate(() => (window as unknown as { confirms: number }).confirms);
+
 const solve = typesAnswer("#answer", "123456");
 const fakeRun = (page: Page, assist: Assist = solve) => recordedRun(page, assist);
 
@@ -281,6 +334,15 @@ test("rejection text visible inside the declared container proves the rejection;
   });
 });
 
+test("rejection evidence found by a selector proves the rejection", () =>
+  withPage("reject()", async (page) => {
+    const run = fakeRun(page);
+    const rejection: RejectionEvidence = { within: "#messages", selector: "#rejected" };
+    const error = await failure(signIn(run.context, page, source({ rejection }), form(calls())));
+    assert.ok(error instanceof CaptchaProviderRejectedError);
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, REJECTION]);
+  }));
+
 test("an observer receives a snapshot and may accept, dismiss, fail, or end the sign-in with its own error", async () => {
   const seen: Array<{ type: string; message: string }> = [];
   const observer = (decision: ReturnType<Extract<DialogPolicy, (...args: never[]) => unknown>>): DialogPolicy =>
@@ -426,6 +488,62 @@ test("only a before-submit prompt causes the pre-submit wait; a while-settling m
     assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
     assert.equal(count.fill, 1);
     assert.equal(await takeovers(page), 1);
+  }));
+
+test("a page prompt found by a selector is confirmed although its control has no text", () =>
+  withFramedPrompt({ control: "image", onConfirm: "hidePrompt(); parent.show()" }, async (page) => {
+    const run = fakeRun(page);
+    const prompt: TakeoverPrompt = {
+      phase: "while-settling",
+      frame: "main",
+      within: "#prompt",
+      selector: ".confirm",
+      control: { selector: ".confirm" },
+    };
+    await signIn(run.context, page, source({ takeover: prompt }), form(calls()));
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal(await confirms(page), 1);
+  }));
+
+test("a forced confirm click is dispatched through a mask that holds a plain click back", () =>
+  withFramedPrompt({ control: "text", masked: true, onConfirm: "hidePrompt(); parent.show()" }, async (page) => {
+    const frame = promptFrame(page);
+    await frame.evaluate(() => (window as unknown as { ask(): void }).ask());
+    const plain = await failure(frame.locator(".confirm").click({ trial: true, timeout: 300 }));
+    assert.ok(plain instanceof errors.TimeoutError, "the mask intercepts a plain click");
+    await frame.evaluate(() => (window as unknown as { hidePrompt(): void }).hidePrompt());
+
+    const run = fakeRun(page);
+    const prompt: TakeoverPrompt = {
+      phase: "while-settling",
+      frame: "main",
+      text: { exact: "立即登入" },
+      control: { selector: ".confirm", force: true },
+    };
+    await signIn(run.context, page, source({ takeover: prompt }), form(calls()));
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal(await confirms(page), 1);
+  }));
+
+test("a confirm click that reloads the top page detaches the prompt's frame, and the signed-in page decides", () =>
+  withFramedPrompt({ control: "text", onConfirm: `top.location.href = "/home"` }, async (page, served) => {
+    const run = fakeRun(page);
+    const prompt: TakeoverPrompt = { phase: "while-settling", frame: "main", text: { exact: "立即登入" }, control: { selector: ".confirm" } };
+    await signIn(run.context, page, source({ takeover: prompt }), form(calls()));
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+    assert.equal(page.url(), `${BANK}/home`);
+    assert.equal(served.homes, 1);
+  }));
+
+test("a confirm click that leaves the prompt on screen still ends the sign-in", () =>
+  withFramedPrompt({ control: "text", onConfirm: "" }, async (page) => {
+    const run = fakeRun(page);
+    const prompt: TakeoverPrompt = { phase: "while-settling", frame: "main", text: { exact: "立即登入" }, control: { selector: ".confirm" } };
+    const error = await failure(signIn(run.context, page, source({ takeover: prompt }), form(calls(), { timeoutMs: 60_000 })));
+    assert.ok(error instanceof errors.TimeoutError);
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, FAILED]);
+    assert.equal(await confirms(page), 1);
+    assert.equal(promptFrame(page).isDetached(), false);
   }));
 
 test("a while-settling takeover restarts the deadline once", async () => {

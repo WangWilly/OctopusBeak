@@ -1,5 +1,7 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+const RELOGIN = '#reloginBT, a:has-text("立即登入")';
+
 export const YUANTA_SOURCE: VerifiedSource = {
   id: "yuanta",
   label: "Yuanta",
@@ -36,8 +38,8 @@ export const YUANTA_SOURCE: VerifiedSource = {
     prompt: {
       phase: "while-settling",
       frame: "main",
-      text: { exact: "立即登入" },
-      control: { selector: '#reloginBT, a:has-text("立即登入")' },
+      selector: RELOGIN,
+      control: { selector: RELOGIN, force: true },
     },
   },
   setupGuide: {
