@@ -210,7 +210,7 @@ async function resolveAffectedTransactionIds(
     `SELECT DISTINCT transition.transaction_id
        FROM assertion_transitions transition
       WHERE transition.commit_id = ?
-        AND transition.event_kind IN ('observed', 'superseded', 'withdrawn')`,
+        AND transition.event_kind IN ('observed', 'superseded', 'withdrawn', 'restored')`,
     [context.commitId],
   );
   for (const row of lifecycle) add(row.transaction_id, "Projection lifecycle transaction");

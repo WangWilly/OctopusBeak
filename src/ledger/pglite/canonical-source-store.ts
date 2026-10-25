@@ -63,12 +63,25 @@ export type PGliteCanonicalFinancialCommitRequest = Readonly<{
    * the store treats the withdrawn member as corrected, not lost.
    */
   occurrenceSupersessions?: readonly PGliteCanonicalOccurrenceSupersessionInput[];
+  /**
+   * Prior transactions whose source support this capture withdraws because
+   * they are absent from it and the caller found no successor that could
+   * continue them. Withdrawal is loss of source support, never cancellation;
+   * a later capture that lists the occurrence again restores it.
+   */
+  occurrenceWithdrawals?: readonly PGliteCanonicalOccurrenceWithdrawalInput[];
 }>;
 
 export type PGliteCanonicalOccurrenceSupersessionInput = Readonly<{
   withdrawnTransactionId: string;
   successorOccurrenceKey: string;
 }>;
+
+export type PGliteCanonicalOccurrenceWithdrawalInput = Readonly<{
+  withdrawnTransactionId: string;
+}>;
+
+type WithdrawnMember = Readonly<{ withdrawnTransactionId: string }>;
 
 /** One prior occurrence whose latest known query bucket the current capture queried again. */
 export type PGliteExpectedOccurrence = Readonly<{
@@ -638,7 +651,7 @@ async function assertOccurrenceGroupContinuity(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
   sourceSubjectId: Uint8Array,
-  supersessions: readonly PGliteCanonicalOccurrenceSupersessionInput[] | undefined,
+  withdrawnMembers: readonly WithdrawnMember[] | undefined,
 ): Promise<void> {
   const coverage = evidence.occurrenceGroupCoverage;
   // A point-in-time holding/balance snapshot does not claim transaction
@@ -676,8 +689,8 @@ async function assertOccurrenceGroupContinuity(
     currentCounts.set(key, (currentCounts.get(key) ?? 0) + 1);
   }
 
-  const superseded = new Set(
-    (supersessions ?? []).map((entry) => entry.withdrawnTransactionId),
+  const withdrawn = new Set(
+    (withdrawnMembers ?? []).map((entry) => entry.withdrawnTransactionId),
   );
   for (const entry of coverage) {
     const priorGroups = new Map<string, number>();
@@ -722,7 +735,7 @@ async function assertOccurrenceGroupContinuity(
         entry,
       );
       for (const occurrence of expected) {
-        if (occurrence.transactionId !== null && superseded.has(occurrence.transactionId)) continue;
+        if (occurrence.transactionId !== null && withdrawn.has(occurrence.transactionId)) continue;
         const key = occurrenceGroupCountKey(entry.scopeKey, occurrence.partitionDate, occurrence.fingerprint);
         priorGroups.set(key, (priorGroups.get(key) ?? 0) + 1);
       }
@@ -950,7 +963,7 @@ async function persistSourceCapture(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
   options: PGliteCanonicalCommitOptions,
-  supersessions?: readonly PGliteCanonicalOccurrenceSupersessionInput[],
+  withdrawnMembers?: readonly WithdrawnMember[],
 ): Promise<SourceCaptureWrite> {
   throwIfCancelled(options.signal);
   const overwritten = await first<Row>(
@@ -976,7 +989,7 @@ async function persistSourceCapture(
   const identity = await ensureSourceIdentity(transaction, evidence, commitId);
   await assertSourceRouteBinding(transaction, evidence, identity.sourceConnectionId);
   await assertOccurrenceContinuity(transaction, evidence, identity.sourceSubjectId);
-  await assertOccurrenceGroupContinuity(transaction, evidence, identity.sourceSubjectId, supersessions);
+  await assertOccurrenceGroupContinuity(transaction, evidence, identity.sourceSubjectId, withdrawnMembers);
   await txQuery(
     transaction,
     `INSERT INTO source_authority_routes(
@@ -1481,64 +1494,77 @@ async function withdrawSupersededSourceAssertions(
         "invalid-financial-fact",
         `Supersession successor was not admitted: ${supersession.successorOccurrenceKey}.`,
       );
-    const withdrawnTransactionId = bytesValue(
+    if (successor.transactionId === idString(bytesValue(
       supersession.withdrawnTransactionId.replaceAll("-", ""),
       "Superseded transaction identity",
-    );
-    if (successor.transactionId === idString(withdrawnTransactionId))
+    )))
       throw new PGliteCanonicalSourceAdmissionError(
         "invalid-financial-fact",
         "A transaction cannot supersede itself.",
       );
-    const assertion = await first<{ assertion_id: unknown; latest_event: string | null }>(
-      transaction,
-      `SELECT assertion.assertion_id,
-              (
-                SELECT transition.event_kind
-                  FROM assertion_transitions transition
-                  JOIN canonical_commits transition_commit
-                    ON transition_commit.commit_id = transition.commit_id
-                 WHERE transition.assertion_id = assertion.assertion_id
-                 ORDER BY transition_commit.commit_sequence DESC,
-                          encode(transition.event_id, 'hex') DESC
-                 LIMIT 1
-              ) AS latest_event
-         FROM assertions assertion
-         JOIN transaction_revisions revision
-           ON revision.revision_id = assertion.revision_id
-         JOIN financial_transactions financial
-           ON financial.transaction_id = assertion.transaction_id
-        WHERE assertion.transaction_id = ?
-          AND financial.account_id = ?
-          AND assertion.origin = 'source'
-          AND assertion.field_name = 'transaction_revision'
-        ORDER BY revision.revision_number DESC
-        LIMIT 1`,
-      [withdrawnTransactionId, accountId],
-    );
-    if (!assertion)
-      throw new PGliteCanonicalSourceAdmissionError(
-        "invalid-financial-fact",
-        "Superseded transaction has no source assertion on this account.",
-      );
-    if (assertion.latest_event === "withdrawn") continue;
-    await txQuery(
-      transaction,
-      `INSERT INTO assertion_transitions(
-         event_id, assertion_id, transaction_id, field_name, capture_id,
-         scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
-         commit_id, event_kind
-       ) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, NULL, ?, 'withdrawn')`,
-      [
-        uuidBytes(),
-        assertion.assertion_id,
-        withdrawnTransactionId,
-        capture.captureId,
-        capture.scopeId,
-        capture.commitId,
-      ],
-    );
+    await withdrawSourceAssertion(transaction, supersession.withdrawnTransactionId, capture, accountId);
   }
+}
+
+/** Withdraw a prior transaction's latest source assertion once, with this capture as provenance. */
+async function withdrawSourceAssertion(
+  transaction: PGliteTransaction,
+  transactionIdText: string,
+  capture: SourceCaptureWrite,
+  accountId: Uint8Array,
+): Promise<void> {
+  const withdrawnTransactionId = bytesValue(
+    transactionIdText.replaceAll("-", ""),
+    "Withdrawn transaction identity",
+  );
+  const assertion = await first<{ assertion_id: unknown; latest_event: string | null }>(
+    transaction,
+    `SELECT assertion.assertion_id,
+            (
+              SELECT transition.event_kind
+                FROM assertion_transitions transition
+                JOIN canonical_commits transition_commit
+                  ON transition_commit.commit_id = transition.commit_id
+               WHERE transition.assertion_id = assertion.assertion_id
+               ORDER BY transition_commit.commit_sequence DESC,
+                        encode(transition.event_id, 'hex') DESC
+               LIMIT 1
+            ) AS latest_event
+       FROM assertions assertion
+       JOIN transaction_revisions revision
+         ON revision.revision_id = assertion.revision_id
+       JOIN financial_transactions financial
+         ON financial.transaction_id = assertion.transaction_id
+      WHERE assertion.transaction_id = ?
+        AND financial.account_id = ?
+        AND assertion.origin = 'source'
+        AND assertion.field_name = 'transaction_revision'
+      ORDER BY revision.revision_number DESC
+      LIMIT 1`,
+    [withdrawnTransactionId, accountId],
+  );
+  if (!assertion)
+    throw new PGliteCanonicalSourceAdmissionError(
+      "invalid-financial-fact",
+      "Withdrawn transaction has no source assertion on this account.",
+    );
+  if (assertion.latest_event === "withdrawn") return;
+  await txQuery(
+    transaction,
+    `INSERT INTO assertion_transitions(
+       event_id, assertion_id, transaction_id, field_name, capture_id,
+       scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
+       commit_id, event_kind
+     ) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, NULL, ?, 'withdrawn')`,
+    [
+      uuidBytes(),
+      assertion.assertion_id,
+      withdrawnTransactionId,
+      capture.captureId,
+      capture.scopeId,
+      capture.commitId,
+    ],
+  );
 }
 
 async function persistSourceSyncState(
@@ -1815,6 +1841,28 @@ async function commitFinancialFacts(
       if (!priorAssertion)
         throw new Error("Canonical source assertion is missing for an unchanged revision.");
       assertionId = bytesValue(priorAssertion.assertion_id, "Financial assertion identity");
+      // Reassertion of a withdrawn stable key restores its source support (ADR 0008).
+      const latest = await first<{ event_kind: string }>(
+        transaction,
+        `SELECT transition.event_kind
+           FROM assertion_transitions transition
+           JOIN canonical_commits transition_commit
+             ON transition_commit.commit_id = transition.commit_id
+          WHERE transition.assertion_id = ?
+          ORDER BY transition_commit.commit_sequence DESC,
+                   encode(transition.event_id, 'hex') DESC
+          LIMIT 1`,
+        [assertionId],
+      );
+      if (latest?.event_kind === "withdrawn")
+        await txQuery(
+          transaction,
+          `INSERT INTO assertion_transitions(
+             event_id, assertion_id, transaction_id, field_name, capture_id,
+             scope_id, run_id, coordinate_id, user_id, commit_id, event_kind
+           ) VALUES (?, ?, ?, 'transaction_revision', ?, ?, NULL, NULL, NULL, ?, 'restored')`,
+          [uuidBytes(), assertionId, transactionId, capture.captureId, capture.scopeId, capture.commitId],
+        );
     }
     await txQuery(
       transaction,
@@ -1990,6 +2038,15 @@ function validateFinancialRequest(
         "Supersession successor must be a financial fact of this capture.",
       );
   }
+  for (const withdrawal of request.occurrenceWithdrawals ?? []) {
+    if (typeof withdrawal.withdrawnTransactionId !== "string" ||
+      withdrawnTransactionIds.has(withdrawal.withdrawnTransactionId))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "invalid-financial-fact",
+        "Each withdrawn transaction must be named once.",
+      );
+    withdrawnTransactionIds.add(withdrawal.withdrawnTransactionId);
+  }
   // A transaction's booked denomination is source evidence; the account
   // currency is a reporting/default value and cannot override it (ADR 0006).
   for (const fact of request.transactions)
@@ -2034,13 +2091,15 @@ async function admitFinancialRequestInTransaction(
     transaction,
     request.capture,
     transactionOptions,
-    request.occurrenceSupersessions,
+    [...(request.occurrenceSupersessions ?? []), ...(request.occurrenceWithdrawals ?? [])],
   );
   const accountId = await ensureFinancialAccount(transaction, request, capture);
   await attachFinancialAccountToScope(transaction, capture, accountId);
   await persistAccountIdentifier(transaction, request, capture, accountId);
   const transactions = await commitFinancialFacts(transaction, request, capture, accountId, transactionOptions);
   await withdrawSupersededSourceAssertions(transaction, request, capture, accountId, transactions);
+  for (const withdrawal of request.occurrenceWithdrawals ?? [])
+    await withdrawSourceAssertion(transaction, withdrawal.withdrawnTransactionId, capture, accountId);
   await persistBalanceObservations(transaction, request, capture, accountId, transactionOptions);
   await withdrawOmittedSourceAssertions(
     transaction,
