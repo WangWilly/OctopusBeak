@@ -130,6 +130,8 @@ export type AutomationPersistenceProvider = Readonly<{
   automation: AutomationPersistencePort;
   /** Present on the App's provider; typed workflows fail closed without it. */
   pgliteWorkflow?: PGliteWorkflowRpc;
+  /** Present on the App's provider: which sources the store refuses until a Canonical Reset. */
+  canonicalReset?: Readonly<{ requiredNamespaces(): Promise<readonly string[]> }>;
 }>;
 
 export function createAutomationPersistenceProvider(

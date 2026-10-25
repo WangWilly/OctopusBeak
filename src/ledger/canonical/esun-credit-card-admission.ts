@@ -5,7 +5,9 @@ import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
   isEsunCreditCardHumanAttestedAccountKey,
+  ESUN_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./esun-credit-card-human-attestation-contract.ts";
+import { creditCardSpineEpochKey } from "./credit-card-identity-epochs.ts";
 import {
   assignOccurrenceSlots,
   canonicalOccurrenceGroupKey,
@@ -1470,10 +1472,7 @@ export function esunCanonicalSpineCapture(
         "esun-credit-connection-v1",
         capture.identity.sourceConnectionKey,
       ),
-      identityEpochKey: opaqueEsunSpineToken(
-        "esun-credit-epoch-v1",
-        capture.identity.identityEpochKey,
-      ),
+      identityEpochKey: creditCardSpineEpochKey(ESUN_CREDIT_CARD_IDENTITY_EPOCHS, capture.identity.identityEpochKey),
       stream: "credit-card",
       recordKind: "esun-credit-card-transaction",
       subjectDigest: capture.identity.accountNaturalKey,

@@ -163,10 +163,11 @@ export async function loadAutomationCoreSnapshot(
   const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
   const { snapshot: runtime, activeTaskIds } = live;
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
-  const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
+  const [latestRuns, todayRunTaskIds, notices, resetRequiredNamespaces] = await Promise.all([
     provider.automation.latestTaskRuns(),
     provider.automation.todayTaskRunIds({ startUtc: range.startUtc, endUtc: range.endUtc }),
     provider.automation.activeTaskPrerequisiteNotices(),
+    provider.canonicalReset?.requiredNamespaces() ?? [],
   ]);
   const credentialGroups = offeredGroups.map((group) => {
     const enabled = enabledGroups[group.id] !== false;
@@ -196,6 +197,7 @@ export async function loadAutomationCoreSnapshot(
             .filter((group) => group.statementSetupRequired)
             .map((group) => group.id),
         ),
+        canonicalResetRequiredNamespaces: new Set(resetRequiredNamespaces),
         externalPrerequisiteNotices: pagePrerequisiteNoticesFromRows(notices),
         active: activeTaskIds.length > 0,
         businessDate: range.businessDate,

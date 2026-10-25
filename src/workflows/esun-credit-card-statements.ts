@@ -21,6 +21,7 @@ import {
   type EsunCreditCardSourceRow,
   type EsunCreditCardValidatedCapture,
 } from "../ledger/canonical/esun-credit-card-admission.ts";
+import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import type { CreditCardMonthTimeline } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
@@ -244,9 +245,7 @@ export function isEsunCompleteGrid({
   );
 }
 
-export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
-  // The portfolio identity did not change when timeline coverage became variable.
-  "esun/credit-card/human-attested-v3" as const;
+export const ESUN_CREDIT_CARD_IDENTITY_EPOCH = ESUN_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
 function normalizedEsunLoginPart(value: string | undefined): string {
   return (value ?? "")

@@ -13,12 +13,19 @@ import {
 import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { PGliteStore } from "./transaction.ts";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
+import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inventory.ts";
+import { creditCardSpineEpochKey, supersededCreditCardSpineEpochKeys } from "../canonical/credit-card-identity-epochs.ts";
+import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../canonical/esun-credit-card-human-attestation-contract.ts";
+import { canonicalResetRequiredNamespaces, resetPGliteCanonicalStore } from "./canonical-reset.ts";
 
 const route = "esun/credit-card/human-attested-v4";
 const connection = "sha256:pglite-credit-card-check-connection";
 const epoch = "sha256:pglite-credit-card-check-epoch";
 const subject = "sha256:pglite-credit-card-check-subject";
 const accountKey = "credit-portfolio-1";
+const statementBucket = (period: string) => encodeCreditCardQueryBucket({ kind: "statement", period });
+const monthBucket = (month: string) => encodeCreditCardQueryBucket({ kind: "month", month });
+const unbilledBucket = encodeCreditCardQueryBucket({ kind: "unbilled" });
 const token = (value: string): string => `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 
 function capture(captureId: string, identityKey = token("opaque-card-account"), balanceAt = "2026-09-22T00:00:00.000Z"): PGliteCanonicalCreditCardCaptureRequest {
@@ -30,7 +37,7 @@ function capture(captureId: string, identityKey = token("opaque-card-account"), 
   const occurrenceFingerprint = token("credit-card-economic-fingerprint");
   const records = [
     { occurrenceKey: instrument, providerKey: token("instrument-provider"), contentHash: token("instrument-content"), compact: { kind: "instrument", instrumentKey: "opaque-primary" } },
-    { occurrenceKey: transaction, occurrenceGroup: { scopeKey: occurrenceScopeKey, fingerprint: occurrenceFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: "month:2026/09", providerKey: token("transaction-provider"), contentHash: token("transaction-content"), compact: { kind: "transaction", sourceSequence: "transaction-1", amount: "1000" }, description: "Card purchase" },
+    { occurrenceKey: transaction, occurrenceGroup: { scopeKey: occurrenceScopeKey, fingerprint: occurrenceFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: monthBucket("2026/09"), providerKey: token("transaction-provider"), contentHash: token("transaction-content"), compact: { kind: "transaction", sourceSequence: "transaction-1", amount: "1000" }, description: "Card purchase" },
     { occurrenceKey: statement, providerKey: token("statement-provider"), contentHash: token("statement-content"), compact: { kind: "statement", statementKey: "statement-1" }, description: "Statement" },
     { occurrenceKey: balance, providerKey: token(`balance-provider:${balanceAt}`), contentHash: token(`balance-content:${balanceAt}`), compact: { kind: "balance", balanceAt }, description: "Used credit" },
   ];
@@ -64,7 +71,7 @@ function capture(captureId: string, identityKey = token("opaque-card-account"), 
         startDate: "2026-09-22",
         endDate: "2026-09-22",
         contractVersion: route,
-        bucketKeys: ["month:2026/09"],
+        bucketKeys: [monthBucket("2026/09")],
       }],
     },
     account: { sourceAccountKey: accountKey, accountType: "credit", currency: "TWD" },
@@ -196,8 +203,8 @@ function statementGridCapture(
 ): PGliteCanonicalCreditCardCaptureRequest {
   const namespace = options.namespace ?? "fubon";
   const gridRoute = `${namespace}/credit-card/human-attested-v2`;
-  const bucketKeys = options.bucketKeys ?? ["statement:2026/09", "unbilled"];
-  const billedBucketKey = options.billedBucketKey ?? "statement:2026/09";
+  const bucketKeys = options.bucketKeys ?? [statementBucket("2026/09"), unbilledBucket];
+  const billedBucketKey = options.billedBucketKey ?? statementBucket("2026/09");
   const scopeStartDate = options.scopeStartDate ?? date;
   const scopeEndDate = options.scopeEndDate ?? date;
   const fingerprint = options.fingerprint ?? fubonFingerprint;
@@ -233,7 +240,7 @@ function statementGridCapture(
       collisionKey: occurrenceKeys[index]!,
       occurrenceGroup: group,
       occurrenceGroupBucketKey: billingStatuses[index] === "unbilled"
-        ? "unbilled"
+        ? unbilledBucket
         : billedBucketKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: occurrenceKeys[index]!,
@@ -439,6 +446,46 @@ test("PGlite credit-card extension conflict rolls back source capture and typed 
   }
 });
 
+const withEpoch = (
+  request: PGliteCanonicalCreditCardCaptureRequest,
+  identityEpoch: string,
+): PGliteCanonicalCreditCardCaptureRequest => ({ ...request, capture: { ...request.capture, identityEpoch } });
+
+async function admittedRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const table of ["canonical_commits", "source_connections", "identity_epochs", "financial_accounts", "source_captures", "source_records"])
+    counts[table] = Number((await store.query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM ${table}`)).rows[0]?.count);
+  return counts;
+}
+
+test("a connection that keeps a superseded-epoch card account refuses new-epoch captures until a Canonical Reset", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    const [supersededEpoch] = supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS);
+    const currentEpoch = creditCardSpineEpochKey(ESUN_CREDIT_CARD_IDENTITY_EPOCHS, ESUN_CREDIT_CARD_IDENTITY_EPOCHS.current);
+    await commitPGliteCanonicalCreditCardCapture(store, withEpoch(capture("superseded-epoch"), supersededEpoch!));
+    assert.deepEqual(await canonicalResetRequiredNamespaces(store), ["esun"]);
+
+    const before = await admittedRowCounts(store);
+    const current = withEpoch(capture("current-epoch"), currentEpoch);
+    await assert.rejects(
+      commitPGliteCanonicalCreditCardCapture(store, current),
+      (error) => error instanceof PGliteCanonicalCreditCardAdmissionError && error.code === "canonical-reset-required",
+    );
+    assert.deepEqual(await admittedRowCounts(store), before, "a refused capture writes nothing");
+
+    const otherSource = statementGridCapture("other-source-while-esun-waits", ["billed"]);
+    assert.equal((await commitPGliteCanonicalCreditCardCapture(store, otherSource)).status, "committed", "only the source holding the old account is refused");
+
+    await resetPGliteCanonicalStore(store);
+    assert.deepEqual(await canonicalResetRequiredNamespaces(store), []);
+    assert.equal((await commitPGliteCanonicalCreditCardCapture(store, current)).status, "committed");
+  } finally {
+    await store.close();
+  }
+});
+
 test("card routes reject date-only or incomplete group proof before writing", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
@@ -523,7 +570,7 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
       commitPGliteCanonicalCreditCardCapture(
         store,
         statementGridCapture("fubon-rolled-window-loses-billed-members", [], "2026-09-23", {
-          bucketKeys: ["statement:2026/09", "statement:2026/10", "unbilled"],
+          bucketKeys: [statementBucket("2026/09"), statementBucket("2026/10"), unbilledBucket],
           scopeStartDate: "2026-09-20",
           scopeEndDate: "2026-09-30",
         }),
@@ -570,8 +617,8 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed", "billed"],
         "2026-09-22",
         {
-          bucketKeys: ["statement:2026/08", "unbilled"],
-          billedBucketKey: "statement:2026/08",
+          bucketKeys: [statementBucket("2026/08"), unbilledBucket],
+          billedBucketKey: statementBucket("2026/08"),
           fingerprint: emptyGroupFingerprint,
         },
       ),
@@ -583,7 +630,7 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         [],
         "2026-09-23",
         {
-          bucketKeys: ["statement:2026/10", "unbilled"],
+          bucketKeys: [statementBucket("2026/10"), unbilledBucket],
           scopeStartDate: "2026-09-20",
           scopeEndDate: "2026-09-30",
           fingerprint: emptyGroupFingerprint,
@@ -599,8 +646,8 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed", "billed"],
         "2026-09-22",
         {
-          bucketKeys: ["statement:2026/07", "unbilled"],
-          billedBucketKey: "statement:2026/07",
+          bucketKeys: [statementBucket("2026/07"), unbilledBucket],
+          billedBucketKey: statementBucket("2026/07"),
           fingerprint: token("aged-out-partial-group"),
         },
       ),
@@ -612,8 +659,8 @@ test("Fubon duplicate group slots preserve billing lifecycle and reject billed/u
         ["billed"],
         "2026-09-23",
         {
-          bucketKeys: ["statement:2026/10", "unbilled"],
-          billedBucketKey: "statement:2026/10",
+          bucketKeys: [statementBucket("2026/10"), unbilledBucket],
+          billedBucketKey: statementBucket("2026/10"),
           scopeStartDate: "2026-09-20",
           scopeEndDate: "2026-09-30",
           fingerprint: token("aged-out-partial-group"),
@@ -654,14 +701,14 @@ test("an unbilled member beside a billed member whose statement bucket was not q
     await commitPGliteCanonicalCreditCardCapture(
       store,
       statementGridCapture("fubon-billed-in-aged-period", ["billed"], "2026-09-22", {
-        bucketKeys: ["statement:2026/08", "unbilled"],
-        billedBucketKey: "statement:2026/08",
+        bucketKeys: [statementBucket("2026/08"), unbilledBucket],
+        billedBucketKey: statementBucket("2026/08"),
       }),
     );
     const later = await commitPGliteCanonicalCreditCardCapture(
       store,
       statementGridCapture("fubon-identical-unbilled-after-period-aged-out", ["unbilled"], "2026-09-22", {
-        bucketKeys: ["statement:2026/10", "unbilled"],
+        bucketKeys: [statementBucket("2026/10"), unbilledBucket],
       }),
     );
     assert.equal(later.status, "committed");

@@ -16,6 +16,7 @@ import {
   type PGliteCanonicalOccurrenceWithdrawalInput,
 } from "./canonical-source-store.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { canonicalResetRequiredFor } from "./canonical-reset.ts";
 import {
   decodeCreditCardQueryBucket,
   promisesBilledMonotonicity,
@@ -120,7 +121,8 @@ export class PGliteCanonicalCreditCardAdmissionError extends Error {
     | "invalid-contract"
     | "identity-conflict"
     | "revision-conflict"
-    | "missing-reference";
+    | "missing-reference"
+    | "canonical-reset-required";
 
   constructor(
     code: PGliteCanonicalCreditCardAdmissionError["code"],
@@ -699,6 +701,8 @@ export async function commitPGliteCanonicalCreditCardCapture(
   validateRequest(input);
   return store.transaction(async (transaction) => {
     const snapshot = input;
+    if (await canonicalResetRequiredFor(transaction, snapshot.capture))
+      fail("canonical-reset-required", "Credit-card accounts of a superseded identity epoch remain; a Canonical Reset must remove them first.");
     const expectedBilled = await listExpectedBilledMembers(transaction, snapshot);
     await assertSupersededMembersStayReplaced(transaction, snapshot);
     const { supersessions, withdrawals } = await resolveVanishedUnbilledMembers(transaction, snapshot);

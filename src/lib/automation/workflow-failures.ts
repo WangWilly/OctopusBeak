@@ -17,6 +17,7 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
   "external-prerequisite-unavailable",
   "source-collection-failed",
   "canonical-commit-failed",
+  "canonical-reset-required",
   "commit-outcome-unknown",
   "collection-scope-changed",
   "workflow-failed",
@@ -28,7 +29,8 @@ export type UserAction =
   | "register-device"
   | "check-sign-in-details"
   | "check-verification-settings"
-  | "update-app";
+  | "update-app"
+  | "delete-financial-data";
 
 export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "captcha-provider-rejected": null,
@@ -48,6 +50,7 @@ export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "external-prerequisite-unavailable": null,
   "source-collection-failed": null,
   "canonical-commit-failed": null,
+  "canonical-reset-required": "delete-financial-data",
   "commit-outcome-unknown": null,
   "collection-scope-changed": null,
   "workflow-failed": null,
@@ -74,6 +77,10 @@ const userActionMessages: Record<UserAction, Readonly<{ zh: string; en: string }
   "update-app": {
     zh: "來源服務的介面已變更。請更新 OctopusBeak 後再同步。",
     en: "The source service changed its interface. Update OctopusBeak, then sync again.",
+  },
+  "delete-financial-data": {
+    zh: "資料格式已更新，這個來源要等刪除所有財務資料後才能再同步。請到設定執行「刪除所有財務資料」。",
+    en: "The data format was updated, so this source cannot sync until all financial data is deleted. Go to Settings and choose Delete all financial data.",
   },
 };
 
@@ -122,6 +129,10 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
   "source-validation-failed": {
     zh: "來源回傳的資料格式與預期不符，這部分沒有匯入。需要更新 OctopusBeak 才能讀取。",
     en: "The source returned data in a shape OctopusBeak does not expect, so this part was not imported. OctopusBeak needs an update to read it.",
+  },
+  "canonical-reset-required": {
+    zh: "信用卡資料的格式已更新，舊格式的資料還在，所以這個來源的新資料沒有寫入。刪除所有財務資料後才能再同步。",
+    en: "The credit-card data format was updated and data in the old format remains, so this source's new data was not saved. It can sync again after all financial data is deleted.",
   },
   "collection-scope-changed": {
     zh: "同步進行中，這個來源的勾選項目、啟用狀態或登入身分已變更，之後的資料沒有寫入。變更前已完成的部分仍保留。請重新執行同步。",

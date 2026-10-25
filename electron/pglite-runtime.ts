@@ -18,6 +18,7 @@ export type PGliteOperationalProvider = PGliteOperationalDomains & {
   financial: PGliteFinancialPort;
   /** Child workflows must use the authenticated parent endpoint. */
   pgliteWorkflow: PGliteWorkflowRpc;
+  canonicalReset: Readonly<{ requiredNamespaces(): Promise<readonly string[]> }>;
 };
 
 export type PGliteOperationalRuntime = Readonly<{
@@ -61,6 +62,9 @@ export function createPGliteOperationalRuntime(
     ...worker.operationalProvider,
     financial: worker.financial,
     pgliteWorkflow: Object.freeze({ endpoint: childRpc.endpoint, token: childRpc.token }),
+    canonicalReset: Object.freeze({
+      requiredNamespaces: () => worker.financial.request("financial.canonical.resetRequired", []),
+    }),
   });
   return Object.freeze({
     dataDir: options.dataDir,

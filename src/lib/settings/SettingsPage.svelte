@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     Check,
     ChevronsUpDown,
@@ -49,6 +49,9 @@
   export let onRestartOnboarding: () => void = () => {};
   export let onboardingRestartPending = false;
   export let onboardingRestartError: string | null = null;
+  /** Opened from a source waiting for a Canonical Reset: show the delete action. */
+  export let focusFinancialDataDeletion = false;
+  export let onFinancialDataDeletionFocused: () => void = () => {};
 
   const SECTIONS = [
     { id: "settings-schedule", icon: Clock },
@@ -176,6 +179,15 @@
     activeSection = id;
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  async function focusDeleteFinancialData() {
+    await tick();
+    showSection("settings-data");
+    document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
+    onFinancialDataDeletionFocused();
+  }
+
+  $: if (focusFinancialDataDeletion) void focusDeleteFinancialData();
 
   function chooseLocale(value: Locale) {
     setLocale(value);

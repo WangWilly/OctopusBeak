@@ -55,3 +55,9 @@ Fubon, Yuanta, and E.SUN credit-card captures each declared their Query Inventor
 
 - After upgrading, each affected credit-card source fails until the person runs a Canonical Reset. That reset clears every source, not only the three card sources. Post-reset recollection then repopulates the store.
 - A continuation that only the old Fubon rule would have caught, such as a billed member reverting to unbilled while the group size stays the same, is still caught: the billed count decreases.
+
+## Implementation notes
+
+- Route keys and contract versions do not change. A store opens only when its installed contract catalog equals the registry ([ADR 0035](0035-source-contract-catalog-and-rule-admission.md)), so a new route would stop every existing store from opening, and the person could not reach the reset. Only the identity epochs change.
+- Each card source's human-attestation contract module declares its current and superseded identity epochs. Each credit-card route registration lists the persisted keys of the superseded epochs, and the store refuses a capture with `canonical-reset-required` while the capture's Source Connection holds a Financial Account under one of them.
+- The run keeps its own status (`partial` when another product committed, otherwise `failed`) with error code `canonical-reset-required`. The task row shows the reset requirement only while the store still refuses the source, so after a reset the row, Sync all, and scheduled collection treat the source as usual again.

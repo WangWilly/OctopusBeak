@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts";
 
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   if (value === null || typeof value !== "object") return value;
@@ -10,6 +11,13 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   }
   return Object.freeze(value);
 };
+
+/** The structured Query Bucket encoding started a new identity epoch (ADR 0062). */
+export const FUBON_CREDIT_CARD_IDENTITY_EPOCHS = Object.freeze({
+  spineLabel: "fubon-credit-epoch-v2",
+  current: "fubon-credit-card-query-inventory-v1",
+  superseded: Object.freeze(["fubon-credit-card-human-attested-v2"]),
+} as const) satisfies CreditCardIdentityEpochs;
 
 /** Current portfolio attestation contract.  Its authority route, attestation
  * identity, and evidence version advance together with the portfolio/

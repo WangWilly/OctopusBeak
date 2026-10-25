@@ -79,6 +79,14 @@ const incomplete: WorkflowRunResult = {
   }],
 };
 
+const refusedCard = { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 0, errorCode: "canonical-reset-required" } as const;
+const resetRequiredPartial: WorkflowRunResult = {
+  status: "partial",
+  counts: { committedCount: 1, itemCount: 2 },
+  products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }, refusedCard],
+};
+const resetRequiredOnly: WorkflowRunResult = { status: "failed", counts: { committedCount: 0, itemCount: 1 }, products: [refusedCard] };
+
 type Scenario = Readonly<{
   name: string;
   attempts?: readonly CommitAttemptReport[];
@@ -193,6 +201,30 @@ const scenarios: Scenario[] = [
     attempts: [started("a"), settled("a", "failed")],
     report: ok(complete),
     expected: { status: "completed", errorCode: null },
+  },
+  {
+    name: "a product refused until a Canonical Reset names a run whose other products committed",
+    attempts: [started("a"), settled("a", "completed", 1), started("b"), settled("b", "failed")],
+    report: ok(resetRequiredPartial),
+    expected: { status: "partial", errorCode: "canonical-reset-required" },
+  },
+  {
+    name: "a run whose only product was refused until a Canonical Reset fails with that code",
+    attempts: [started("a"), settled("a", "failed")],
+    report: fail("canonical-reset-required", resetRequiredOnly),
+    expected: { status: "failed", errorCode: "canonical-reset-required" },
+  },
+  {
+    name: "a Canonical Reset requirement outranks a later product's failure",
+    attempts: [started("a"), settled("a", "failed")],
+    report: fail("source-unavailable", resetRequiredOnly),
+    expected: { status: "failed", errorCode: "canonical-reset-required" },
+  },
+  {
+    name: "a refused attempt outranks a Canonical Reset requirement",
+    attempts: [started("a"), settled("a", "failed"), started("b"), settled("b", "refused")],
+    report: ok(resetRequiredPartial),
+    expected: { status: "failed", errorCode: "collection-scope-changed" },
   },
   {
     name: "a classified failure with no attempt keeps its code",

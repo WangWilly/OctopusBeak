@@ -170,6 +170,42 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
 
 {
   const controller = signal();
+  const committedProducts: string[] = [];
+  const summary = await collectSelectedProducts({
+    productIds: ["deposit", "credit_card", "loan"],
+    selectedIds: ["deposit", "credit_card", "loan"],
+    signal: controller.signal,
+    collect: async (typeId, staged) => {
+      staged.push(item(typeId, `${typeId}-1`));
+      return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+    },
+    commit: async (typeId, staged) => {
+      if (typeId !== "credit_card") {
+        committedProducts.push(typeId);
+        return result("completed", staged.map(committed));
+      }
+      const refused = {
+        provider: staged[0]!.provider,
+        product: staged[0]!.product,
+        itemKey: staged[0]!.itemKey,
+        stage: "commit" as const,
+        errorCode: "admission",
+        reason: "canonical-reset-required" as const,
+        message: "Financial workflow command failed.",
+      };
+      return result("failed", [{ ...refused, status: "failed", failureKind: "item", diagnostics: [refused] }], [refused]);
+    },
+  });
+  assert.deepEqual(committedProducts, ["deposit", "loan"], "products the store still admits keep collecting");
+  assert.deepEqual(summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
+    ["deposit", "success", undefined],
+    ["credit_card", "failed", "canonical-reset-required"],
+    ["loan", "success", undefined],
+  ], "a product the store refuses until a Canonical Reset names that, not a commit failure");
+}
+
+{
+  const controller = signal();
   const dispositions: Array<"no_data" | "not_held" | undefined> = ["no_data", "not_held", undefined];
   const absentFailures: string[] = [];
   const summary = await failedRunSummary(collectSelectedProducts({

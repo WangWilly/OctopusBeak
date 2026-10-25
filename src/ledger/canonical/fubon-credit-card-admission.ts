@@ -6,7 +6,9 @@ import {
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isFubonCreditCardHumanAttestedAccountKey,
+  FUBON_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./fubon-credit-card-human-attestation-contract.ts";
+import { creditCardSpineEpochKey } from "./credit-card-identity-epochs.ts";
 import {
   fubonCreditCardPanFingerprint,
   type FubonCreditCardPanFingerprintKey,
@@ -1089,10 +1091,7 @@ export function fubonCanonicalSpineCapture(
       // credit-card account/epoch fields below, but never fork the shared
       // connection key at this persistence seam.
       sourceConnectionKey: capture.identity.sourceConnectionKey,
-      identityEpochKey: opaqueFubonSpineToken(
-        "fubon-credit-epoch-v2",
-        capture.identity.identityEpochKey,
-      ),
+      identityEpochKey: creditCardSpineEpochKey(FUBON_CREDIT_CARD_IDENTITY_EPOCHS, capture.identity.identityEpochKey),
       stream: "credit-card",
       recordKind: "fubon-credit-card-transaction",
       subjectDigest: capture.identity.accountNaturalKey as `sha256:${string}`,

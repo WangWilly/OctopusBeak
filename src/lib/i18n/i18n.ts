@@ -986,6 +986,9 @@ const en = {
     selectOneStatementType: (bank: string) =>
       `Select at least one ${bank} statement type.`,
     needsSetup: "Needs setup",
+    resetRequired: "Delete all financial data to sync",
+    resetRequiredDetail:
+      "A data format update changed how credit-card data is stored. This source syncs again after you delete all financial data in Settings. Sign-in details, enabled sources, schedules, what each source collects, exchange rates, and settings are kept.",
     selectedStatementCount: (selected: number, total: number) =>
       `${selected} / ${total} selected`,
     partialSyncWarning:
@@ -1055,6 +1058,7 @@ const en = {
       interrupted: "interrupted",
       locked: "locked",
       needs_setup: "needs setup",
+      reset_required: "needs data reset",
     },
     actionLabels: {
       Run: "Run",
@@ -1062,6 +1066,7 @@ const en = {
       Locked: "Locked",
       Cancel: "Cancel",
       Configure: "Configure",
+      "Delete financial data": "Delete financial data",
     },
     progressRunning: (attempt: number, maxAttempts: number) =>
       `Running attempt ${attempt}/${maxAttempts}`,
@@ -1070,6 +1075,7 @@ const en = {
     progressPartial: "Partially completed",
     progressFailed: "Failed",
     progressNeedsSetup: "Needs setup",
+    progressResetRequired: "Needs data reset",
     progressQueued: "Queued",
     credentialWords: {
       user: "user",
@@ -2276,6 +2282,9 @@ const zh: typeof en = {
     selectAllStatements: "全選",
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
+    resetRequired: "需刪除財務資料才能同步",
+    resetRequiredDetail:
+      "資料格式更新後，信用卡資料改用新的儲存方式。到設定刪除所有財務資料後，這個來源才能再同步。登入資料、已啟用的來源、排程、各來源要收集的項目、匯率與設定都會保留。",
     selectedStatementCount: (selected, total) => `已選 ${selected} / ${total}`,
     partialSyncWarning: "部分帳戶資料抓取失敗；已成功取得的資料已寫入。",
     prerequisiteNoticesTitle: "執行前需要處理",
@@ -2342,6 +2351,7 @@ const zh: typeof en = {
       interrupted: "已中斷",
       locked: "已鎖定",
       needs_setup: "需要設定",
+      reset_required: "需刪除資料",
     },
     actionLabels: {
       Run: "執行",
@@ -2349,6 +2359,7 @@ const zh: typeof en = {
       Locked: "已鎖定",
       Cancel: "取消",
       Configure: "設定",
+      "Delete financial data": "刪除財務資料",
     },
     progressRunning: (attempt, maxAttempts) =>
       `執行第 ${attempt}/${maxAttempts} 次`,
@@ -2357,6 +2368,7 @@ const zh: typeof en = {
     progressPartial: "部分完成",
     progressFailed: "失敗",
     progressNeedsSetup: "需要設定",
+    progressResetRequired: "需刪除財務資料",
     progressQueued: "已排隊",
     credentialWords: {
       user: "使用者",

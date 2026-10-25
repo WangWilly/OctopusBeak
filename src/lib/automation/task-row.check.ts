@@ -35,6 +35,7 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     ranToday: false,
     credentialsReady: true,
     setupRequired: false,
+    canonicalResetRequired: false,
     primaryAction: "Run",
     canRun: true,
     latestRunStatus: overrides.status ?? "completed",
@@ -122,5 +123,34 @@ test("a source that needs setup shows it over a finished run, but not over a run
   }
   const running = applyAutomationRuntime(source, runtime({ status: "running" }));
   assert.equal(running.status, "running");
+  assert.equal(running.primaryAction, "Cancel");
+});
+
+test("a source the store refuses until a Canonical Reset sends the person to delete financial data, and leaves Sync all", () => {
+  const refused = { errorCode: "canonical-reset-required", summary: null } as const;
+  const waiting = applyAutomationRuntime(
+    row({ canonicalResetRequired: true }),
+    runtime({ status: "partial", appWorkflowOutcome: refused }),
+  );
+  assert.equal(waiting.status, "reset_required");
+  assert.equal(waiting.latestRunStatus, "partial");
+  assert.equal(waiting.primaryAction, "Delete financial data");
+  assert.equal(waiting.canRun, true, "the action opens Settings even without credentials");
+  assert.deepEqual(parallelRunnableAutomationTaskIds([waiting, row({ id: "ready" })]), ["ready"]);
+
+  const afterReset = applyAutomationRuntime(
+    row({ canonicalResetRequired: false }),
+    runtime({ status: "partial", appWorkflowOutcome: refused }),
+  );
+  assert.equal(afterReset.status, "partial", "once the store admits the source again its row runs as usual");
+  assert.equal(afterReset.primaryAction, "Run");
+
+  const otherFailure = applyAutomationRuntime(
+    row({ canonicalResetRequired: true }),
+    runtime({ status: "failed", appWorkflowOutcome: { errorCode: "source-unavailable", summary: null } }),
+  );
+  assert.equal(otherFailure.status, "failed", "a later run that failed for another reason shows that failure");
+
+  const running = applyAutomationRuntime(row({ canonicalResetRequired: true }), runtime({ status: "running", appWorkflowOutcome: refused }));
   assert.equal(running.primaryAction, "Cancel");
 });
