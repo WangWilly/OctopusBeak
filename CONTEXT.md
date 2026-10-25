@@ -71,6 +71,10 @@ The act of enabling a credential source, entering its credentials, and choosing 
 The user-facing name for the identifiers, passwords, and related values a person supplies so a supported source can authenticate. They remain on the person's device; the Traditional Chinese UI calls them 「登入資料」, while certificate files remain certificates rather than sign-in details.
 _Avoid_: Credentials, 憑證
 
+**Sign-in erasure**:
+A person's deliberate removal of every source's Sign-in Details together with the source-side session state derived from them, such as signed-in browser sessions, email authorization, and trusted-device registrations. It leaves financial data, enabled sources, and schedules untouched, so every enabled source needs setup again before it can collect.
+_Avoid_: Sign out, credential reset, partial sign-in clearing
+
 **Sign-in identifier**:
 A provider-specific, non-password value used to identify a person during authentication. Its user-facing name is defined by the supported source; current Taiwan bank and securities sources may identify it as a Taiwan ID number or online banking code, while future sources must not inherit that meaning automatically.
 _Avoid_: Generic user ID, credential, authentication secret
@@ -287,12 +291,12 @@ _Avoid_: Current projection snapshot, import-time history, backdated knowledge
 The exclusive read boundary through which product consumers request a Current Financial Projection, a cutoff-qualified Historical Financial Projection, or Lineage Inspection. Consumers never select Assertion precedence, Source Authority Routing, latest Observations, lifecycle effects, or integration-specific Source Record payloads independently, and missing canonical data never falls back to legacy or product-specific financial rows.
 _Avoid_: Direct write-model query, consumer-specific precedence, source-payload calculation, product fallback
 
-**Canonical reset cutover**:
-A deliberate, resumable replacement of existing financial state with an empty validated canonical store, preserving only Preserved Operational Configuration and rebuilding financial knowledge through new contract-compliant collection. With no existing product users, legacy financial stores and downloads are discarded without migration or quarantine; ordinary restarts retain the initialized canonical store and never fall back to legacy data.
-_Avoid_: Legacy migration, compatibility backfill, dual read, legacy fallback, partial history carry-forward
+**Canonical reset**:
+A deliberate, resumable replacement of all existing financial state, Preview Financial Data included, with an empty validated canonical store, preserving only Preserved Operational Configuration and rebuilding financial knowledge through new contract-compliant collection. It happens once at a legacy cutover or whenever a person triggers it from Settings (「刪除所有財務資料」); legacy stores and downloads are discarded without migration or quarantine, and ordinary restarts never fall back to prior data.
+_Avoid_: Canonical reset cutover, financial data erasure, 刪除所有帳戶資料, legacy migration, compatibility backfill, dual read, partial history carry-forward
 
 **Preserved operational configuration**:
-The non-financial local state carried across a Canonical Reset Cutover: Sign-in Details, enabled-integration configuration, Statement Selections, and user-interface preferences that neither assert a financial fact nor identify a canonical Financial Account. Preserving it authorizes future collection but never preserves Source Connection identity, Source Sync State, Captures, provenance, user financial classifications, or other financial history.
+The non-financial local state carried across a Canonical Reset: Sign-in Details, enabled-integration configuration and schedules, Statement Selections, exchange-rate reference data, onboarding completion, and user-interface preferences that neither assert a financial fact nor identify a canonical Financial Account. Preserving it authorizes future collection but never preserves Source Connection identity, Source Sync State, Captures, provenance, user financial classifications, or other financial history.
 _Avoid_: Migrated financial state, preserved canonical identity, retained sync cursor
 
 **Canonical recollection readiness gate**:
@@ -300,7 +304,7 @@ The acceptance gate that every preserved enabled integration and every advertise
 _Avoid_: Post-reset disabled surprise, partial integration rollout, legacy migration readiness, best-effort contract
 
 **Post-reset recollection**:
-The normal per-integration synchronization that repopulates an empty canonical store after a Canonical Reset Cutover. It begins only after the local cutover commits, follows the existing authorization, scheduling, OTP, retry, and error-notification behavior of each enabled integration, and never participates in cutover success or replays legacy downloads. Until valid new Captures arrive, affected financial views show an explicit empty or awaiting-collection state rather than legacy values.
+The normal per-integration synchronization that repopulates an empty canonical store after a Canonical Reset. It begins only after the local cutover commits, follows the existing authorization, scheduling, OTP, retry, and error-notification behavior of each enabled integration, and never participates in cutover success or replays legacy downloads. Until valid new Captures arrive, affected financial views show an explicit empty or awaiting-collection state rather than legacy values.
 _Avoid_: Cutover-time remote dependency, legacy replay, placeholder financial value, all-integrations transaction
 
 **Source assertion**:
@@ -538,6 +542,18 @@ _Avoid_: Duplicate import, one transaction, cross-source group
 **Group slot**:
 A distinct occurrence position within an Indistinguishable Occurrence Group that preserves its transaction count without asserting individual historical continuity. It is separate from the position of a row in a page or query result.
 _Avoid_: Provider transaction ID, global row sequence, proven individual identity
+
+**Query bucket**:
+One source-side interval that a Source Capture queried, such as a billing statement period, the unbilled listing, or a timeline month, including a month the provider returned only in part. An admitted occurrence lives in the Query Bucket of its most recent inventoried capture, and its absence is evidence only when a later complete capture queried that same bucket.
+_Avoid_: Page, grid tab, statement file
+
+**Query inventory**:
+The complete set of Query Buckets one Source Capture queried, empty buckets included, in one of two shapes: a statement grid (fixed billed periods plus the unbilled listing) or a month timeline. It decides which prior occurrences a capture is expected to contain and never participates in occurrence identity.
+_Avoid_: Bucket list, completeness flags, coverage summary
+
+**Billed monotonicity**:
+The promise of a statement or month Query Bucket that, each time it is queried again, an occurrence group's billed members never decrease. An unbilled member appearing beside them is not a violation; a billed member that disappears or reverts to unbilled is.
+_Avoid_: Billing progression, Fubon billed guard, no-unbilled rule
 
 **Cross-source transaction separation**:
 Financial Transactions from different integrations or source connections always retain separate identities, even when they appear to describe the same real-world event. Source authority routing prevents double use in projections; the first version performs no cross-source reconciliation, fuzzy deduplication, or user merge.
