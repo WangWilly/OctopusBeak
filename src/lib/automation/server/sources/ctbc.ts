@@ -33,6 +33,7 @@ export const CTBC_SOURCE: VerifiedSource = {
       "Every sync, including daily scheduled collection, confirms CTBC's prompt that other locations will be signed out automatically, which signs you out of CTBC online banking elsewhere.",
       "每次同步（包括每日排程收集）都會在中國信託提示「其他位置將會自動登出」時按下「確認登入」，讓你在其他地方的中國信託網路銀行登出。",
     ),
+    prompt: { phase: "while-settling", text: { pattern: /其他位置將會自動登出/u }, control: { text: "確認登入" } },
   },
   setupGuide: {
     summary: localized(

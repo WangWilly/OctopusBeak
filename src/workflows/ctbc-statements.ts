@@ -44,9 +44,11 @@ import {
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
+import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -305,29 +307,6 @@ function rowWithinDateRange(
   return true;
 }
 
-async function finishCtbcSignIn(page: Page, signal?: AbortSignal): Promise<void> {
-  const deadline = Date.now() + 180_000;
-  while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    if (await handleCtbcConcurrentLoginPrompt(page, signal)) continue;
-    if (await handleCtbcPasswordReminder(page, signal)) continue;
-
-    if (await withAbort(
-      page
-        .locator("#btnHeaderLogout")
-        .isVisible()
-        .catch(() => false),
-      signal,
-    )) {
-      return;
-    }
-
-    await withAbort(page.waitForTimeout(500), signal);
-  }
-
-  throw new Error("Timed out waiting for CTBC sign-in to finish.");
-}
-
 async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
   return await withAbort(page
     .locator("#btnHeaderLogout")
@@ -370,7 +349,7 @@ async function waitForLoginForm(
   await withAbort(page.waitForTimeout(1_000), signal);
 }
 
-export async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
+async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     signal?.throwIfAborted();
     const response = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
@@ -384,7 +363,7 @@ export async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promi
   }
 }
 
-export async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Promise<boolean> {
+async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Promise<boolean> {
   const reminder = page.getByText("密碼變更提醒", { exact: true });
   if (!await withAbort(reminder.isVisible().catch(() => false), signal)) return false;
   await withAbort(page.getByText("下次再提醒", { exact: true }).click(), signal);
@@ -392,39 +371,27 @@ export async function handleCtbcPasswordReminder(page: Page, signal?: AbortSigna
   return true;
 }
 
-export async function handleCtbcConcurrentLoginPrompt(page: Page, signal?: AbortSignal): Promise<boolean> {
-  const prompt = page.getByText("其他位置將會自動登出");
-  if (!await withAbort(prompt.isVisible().catch(() => false), signal)) return false;
-  await withAbort(page.getByText("確認登入", { exact: true }).click(), signal);
-  await withAbort(page.waitForTimeout(1_000), signal);
-  return true;
-}
-
-async function signInCtbcForApp(
-  page: Page,
-  credentials: CtbcCredentials,
-  context: WorkflowContext,
-): Promise<void> {
-  if (await isSignedIn(page, context.signal)) return;
+async function fillCtbcLoginForm(page: Page, credentials: CtbcCredentials, signal: AbortSignal): Promise<void> {
   const userId = requireCredential(credentials, "ctbc_user_id");
   const account = requireCredential(credentials, "ctbc_account");
   const password = requireCredential(credentials, "ctbc_password");
-
-  try {
-    await openCtbcLoginForm(page, context.signal);
-  } catch (error) {
-    if (error instanceof SourceUnavailableError)
-      await context.event("authentication", "failed", "source-unavailable");
-    throw error;
-  }
-  await withAbort(page.locator("form input[type=text]").first().fill(userId), context.signal);
+  await openCtbcLoginForm(page, signal);
+  await withAbort(page.locator("form input[type=text]").first().fill(userId), signal);
   const passwordFields = page.locator("form input[type=password]");
-  await withAbort(passwordFields.nth(0).fill(account), context.signal);
-  await withAbort(passwordFields.nth(1).fill(password), context.signal);
-  await withAbort(page.getByRole("button", { name: "登入" }).click(), context.signal);
-  // A slow normal login is not a declared verification challenge. Continue
-  // observing the authenticated marker and the already approved bank prompts.
-  await finishCtbcSignIn(page, context.signal);
+  await withAbort(passwordFields.nth(0).fill(account), signal);
+  await withAbort(passwordFields.nth(1).fill(password), signal);
+}
+
+export function ctbcSignInPlan(credentials: CtbcCredentials): FormPlan {
+  return {
+    signedIn: isSignedIn,
+    fill: (page, signal) => fillCtbcLoginForm(page, credentials, signal),
+    submit: (page, signal) => withAbort(page.getByRole("button", { name: "登入" }).click(), signal),
+    prompts: handleCtbcPasswordReminder,
+    dialogs: "accept-for-page",
+    session: { none: "needs live verification" },
+    timeoutMs: 180_000,
+  };
 }
 
 function requireCtbcOk<T>(
@@ -1144,15 +1111,7 @@ export async function runCtbcProviderWorkflow(
   await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
-    context.signal.throwIfAborted();
-    page.on("dialog", (dialog) => {
-      void dialog.accept().catch(() => undefined);
-    });
-
-    await context.event("authentication", "started", "authentication-started");
-    await signInCtbcForApp(page, parsed.data.credentials, context);
-    context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
+    await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
 
     let count = 0;
     let financialAdmitted = false;
