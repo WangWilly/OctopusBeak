@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { errors, type Page, type Response } from "playwright";
+import type { Page, Response } from "playwright";
 import { z } from "zod";
 import {
   creditCardBalanceCommandRequest,
@@ -44,7 +44,7 @@ import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
 import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
 import { withAbort } from "./abort.ts";
-import { signIn, type FormPlan } from "./sign-in.ts";
+import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -1191,19 +1191,11 @@ export async function authenticateEsunPage(
   credentials: EsunCredentials,
   context: WorkflowContext,
 ): Promise<void> {
-  const plan = esunSignInPlan(credentials);
-  let submitted = false;
   try {
-    await signIn(context, page, ESUN_SOURCE, {
-      ...plan,
-      submit: async (target, signal) => {
-        await plan.submit(target, signal);
-        submitted = true;
-      },
-    });
+    await signIn(context, page, ESUN_SOURCE, esunSignInPlan(credentials));
     return;
   } catch (error) {
-    if (!submitted || !(error instanceof errors.TimeoutError)) throw error;
+    if (!(error instanceof SignInDeadlineError)) throw error;
   }
 
   const pageText = await withAbort(

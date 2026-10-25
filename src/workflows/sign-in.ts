@@ -94,6 +94,13 @@ export class SignInError extends Error {
   }
 }
 
+/** The sign-in did not settle within the plan's `timeoutMs`. */
+export class SignInDeadlineError extends errors.TimeoutError {
+  constructor(timeoutMs: number) {
+    super(`Sign-in did not settle within ${timeoutMs} ms.`);
+  }
+}
+
 const TICK_MS = 250;
 const SETTLE_MS = 2_000;
 const CLOSE_TIMEOUT_MS = 500;
@@ -263,7 +270,7 @@ class Attempt {
         } else {
           heldSince = undefined;
         }
-        if (Date.now() >= deadline) throw new errors.TimeoutError(`Sign-in did not settle within ${timeoutMs} ms.`);
+        if (Date.now() >= deadline) throw new SignInDeadlineError(timeoutMs);
         if (plan.prompts && await this.raced(plan.prompts(this.page, this.signal))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();

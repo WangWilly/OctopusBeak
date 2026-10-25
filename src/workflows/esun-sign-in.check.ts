@@ -145,6 +145,16 @@ test("a page that is still not signed in after 15 s is classified as an unsuppor
     assert.equal(dialogListeners(page), 0);
   }));
 
+test("a 確定登入 that stays on screen after its click is a sign-in timeout, not a verification wall", () =>
+  withEsun("window.confirmTakeover = () => { takeovers += 1; }; takeover()", async (page) => {
+    const run = recordedRun(page, noStage);
+    const error = await failure(signInEsun(run, page));
+    assert.ok(error instanceof errors.TimeoutError, String(error));
+    assert.deepEqual(run.codes, [STARTED, FAILED]);
+    assert.equal(run.classify(error), "authentication-timeout");
+    assert.equal(await read(page, "takeovers"), 1);
+  }));
+
 test("an E.SUN page that never loads is a sign-in timeout, not a verification wall", () =>
   withEsun("", async (page) => {
     await page.route(ENTRY_URL, () => undefined);
