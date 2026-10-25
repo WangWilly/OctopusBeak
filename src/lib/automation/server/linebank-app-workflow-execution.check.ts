@@ -123,20 +123,25 @@ function createPage(options: {
     async textContent() { return "2026/09"; },
     async boundingBox() { return { x: 1, y: 1, width: 640, height: 480 }; },
   });
+  // The sign-in step checks for the approved alertdialog once per poll.
+  const poll = () => {
+    polls += 1;
+    void options.onPoll?.();
+    if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
+      signedIn = true;
+      currentUrl = TRANSACTION_URL;
+    }
+  };
   const page = {
     url: () => currentUrl,
     locator,
-    getByRole: (_role: string, roleOptions?: { name?: string }) =>
-      locator(`role:${roleOptions?.name ?? ""}`),
-    async goto(url: string) { currentUrl = url; },
-    async waitForTimeout() {
-      polls += 1;
-      await options.onPoll?.();
-      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
-        signedIn = true;
-        currentUrl = TRANSACTION_URL;
-      }
+    getByRole: (role: string, roleOptions?: { name?: string }) => {
+      if (role === "alertdialog") poll();
+      return locator(`role:${roleOptions?.name ?? ""}`);
     },
+    on: () => undefined,
+    off: () => undefined,
+    async goto(url: string) { currentUrl = url; },
     async waitForURL() { return undefined; },
     async evaluate(
       _expression: unknown,
@@ -236,7 +241,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   let sourceReadBeforeCommit = true;
   const page = createPage({
     signedIn: false,
-    signInAfterPolls: 20,
+    signInAfterPolls: 4,
     onSourceRead() { sourceReadBeforeCommit &&= committed.length === 0; },
   });
   const financialCommit = commitPort(committed);
