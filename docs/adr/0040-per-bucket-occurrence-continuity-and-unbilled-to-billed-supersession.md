@@ -49,3 +49,33 @@ The withdrawn transaction leaves the current projection through the existing tra
 - The rule holds for every provider on the shared credit-card store path. Fubon and Yuanta captures already carry statement membership, instrument keys, and an `unbilled` bucket; E.SUN carries month buckets and settled statement membership.
 - No user action, description similarity, or amount equality establishes the pairing. Direction change, instrument change, a successor outside every statement, and any many-to-one or one-to-many candidate set fail closed.
 - Existing fixtures that dropped a group while still querying its bucket were adjusted to query only the buckets they claim aged out; under this rule such a capture is a loss.
+
+## 2026-10-25 amendment: an unbilled purchase that vanishes without a successor
+
+### Problem
+
+An issuer can cancel an unbilled authorization before billing, for example a released hotel deposit or a voided order. The authorization then leaves the complete unbilled listing, and no billed row continues it. Fubon and Yuanta keep unbilled rows in one `unbilled` bucket that every capture queries. Under the rule above, every later capture therefore expected the authorization and was rejected. The source stayed blocked until a user purged it. E.SUN was blocked the same way until the month aged out of its timeline.
+
+### Decision: absence withdraws source support when nothing could continue the purchase
+
+Under [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md), absence from a comparable, declared-complete scope may withdraw a Source Assertion. A vanished member that the pairing above does not resolve is withdrawn only when all of the following hold:
+
+- the capture is complete, and it queried the bucket where the member was last observed;
+- the member's latest lifecycle billing status is `unbilled` (a billed member belongs to an immutable statement, and its absence is still a loss);
+- the member's Card Instrument is listed in this capture (if a whole card is absent, nothing is inferred);
+- this capture contains no billed transaction that is new to the source subject and shares the member's scope and consume date, on any card and in either direction.
+
+That last condition is wider than the pairing on purpose. Any such row could be the member's continuation, so the guard keeps rejecting rather than guessing. As a result, every negative case listed above still rejects.
+
+When the conditions hold, the store, in the same transaction as the capture:
+
+1. admits the capture with the member excluded from the expected count;
+2. appends a `withdrawn` transition to the member's latest source assertion, with this capture, scope, and commit as provenance.
+
+It records no relation, and it never records cancellation, refund, or reversal ([ADR 0007](./0007-canonical-transaction-status-and-relation-semantics.md)). The commit result reports `withdrawnTransactionCount`. The request carries the evidence as `occurrenceWithdrawals: { withdrawnTransactionId }[]`.
+
+### Decision: reassertion restores, except after supersession
+
+When a capture lists a withdrawn occurrence again with an unchanged revision, the store appends a `restored` transition, and the transaction returns to the current projection. Before this amendment, an unchanged revision gained provenance only, so a withdrawn transaction stayed withdrawn even when the source listed it again.
+
+A member withdrawn by supersession has an `unbilled_to_billed` relation, and its billed successor already carries the purchase. If such a member is listed again, the credit-card commit is rejected with `revision-conflict` instead of being restored.
