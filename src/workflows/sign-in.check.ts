@@ -572,6 +572,29 @@ test("a while-settling takeover restarts the deadline once", async () => {
   });
 });
 
+test("a signed-in marker held for the settle window is not cut off by the deadline", () =>
+  withPage("setTimeout(show, 700)", async (page) => {
+    const run = fakeRun(page);
+    await signIn(run.context, page, source(), form(calls(), { timeoutMs: 1_500, prompts: async () => false }));
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, DONE]);
+  }));
+
+test("a confirmed takeover restarts the deadline with the plan's takeover window", async () => {
+  const takeoverThen = (after: string) => `setTimeout(() => { if (ask(${js(TAKEOVER)})) ${after}; }, 300)`;
+  await withPage(takeoverThen("setTimeout(show, 1800)"), async (page) => {
+    const run = fakeRun(page);
+    await signIn(run.context, page, source({ takeover: dialogTakeover }), form(calls(), { timeoutMs: 1_000, takeoverTimeoutMs: 3_000 }));
+    assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, TAKEN, DONE]);
+  });
+  await withPage(takeoverThen("void 0"), async (page) => {
+    const run = fakeRun(page);
+    const error = await failure(signIn(run.context, page, source({ takeover: dialogTakeover }), form(calls(), { timeoutMs: 1_000, takeoverTimeoutMs: 1_200 })));
+    assert.ok(error instanceof SignInDeadlineError);
+    assert.equal(error.afterTakeover, true);
+    assert.equal(error.message, "Sign-in did not settle within 1200 ms.");
+  });
+});
+
 test("an existing session skips fill, stage, submit and the dialog listener", () =>
   withPage("", async (page) => {
     const run = fakeRun(page);
@@ -758,6 +781,7 @@ test("a sign-in that never settles throws the step's deadline error, a Playwrigh
     const run = fakeRun(page);
     const error = await failure(signIn(run.context, page, source(), form(calls(), { timeoutMs: 400 })));
     assert.ok(error instanceof SignInDeadlineError);
+    assert.equal(error.afterTakeover, false);
     assert.ok(error instanceof errors.TimeoutError);
     assert.equal(error.name, "TimeoutError");
     assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, FAILED]);

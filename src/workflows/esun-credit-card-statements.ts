@@ -640,6 +640,7 @@ function esunSignInPlan(credentials: EsunCredentials): FormPlan {
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
     timeoutMs: 15_000,
+    takeoverTimeoutMs: 60_000,
   };
 }
 
@@ -1182,7 +1183,7 @@ export function classifyEsunPostLoginPage(text: string): EsunPostLoginState[] {
 }
 
 /**
- * A submitted sign-in that does not settle within the plan's 15 s is a
+ * A submitted sign-in that does not settle within the plan's 15 s, before any takeover, is a
  * verification wall E.SUN's solver cannot pass: the page is classified
  * without keeping its text.
  */
@@ -1195,7 +1196,7 @@ export async function authenticateEsunPage(
     await signIn(context, page, ESUN_SOURCE, esunSignInPlan(credentials));
     return;
   } catch (error) {
-    if (!(error instanceof SignInDeadlineError)) throw error;
+    if (!(error instanceof SignInDeadlineError) || error.afterTakeover) throw error;
   }
 
   const pageText = await withAbort(
