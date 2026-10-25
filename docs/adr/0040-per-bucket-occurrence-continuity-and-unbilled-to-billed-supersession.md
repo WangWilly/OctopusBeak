@@ -67,6 +67,10 @@ Under [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md)
 
 That last condition is wider than the pairing on purpose. Any such row could be the member's continuation, so the guard keeps rejecting rather than guessing. As a result, every negative case listed above still rejects.
 
+This rejection does not clear by itself. A rejected capture never admits the candidate, so the candidate stays new on every later capture. E.SUN stays rejected until the date leaves its timeline. Fubon and Yuanta query a constant `unbilled` bucket, so they stay rejected until a purge.
+
+The reverse trade-off: a continuation that the pairing misses is withdrawn rather than rejected. Examples are a successor booked on a later consume date, or one whose statement bucket this capture did not query. If its billed row is in this capture, that row is admitted as a new transaction. Otherwise it arrives in a later capture. Either way, totals end up correct, but lineage and annotations from the unbilled transaction do not carry over, and no relation is recorded.
+
 When the conditions hold, the store, in the same transaction as the capture:
 
 1. admits the capture with the member excluded from the expected count;
