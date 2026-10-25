@@ -268,42 +268,52 @@ await assert.rejects(
 const { StatementComponentAbsentError } =
   await import("../lib/automation/product-collection.ts");
 
-class DelayedVisibilityLocator {
-  private readonly visibleAt: number;
-  private hidden = false;
+class LateNotice {
   clicked = false;
+  private visible = false;
+  private readonly changes: Array<() => void> = [];
 
-  constructor(delayMs: number) {
-    this.visibleAt = Date.now() + delayMs;
+  show(): void {
+    this.set(true);
   }
 
   async isVisible(): Promise<boolean> {
-    return !this.hidden && Date.now() >= this.visibleAt;
+    return this.visible;
   }
 
-  async waitFor(options: {
-    state: "visible" | "hidden";
-    timeout?: number;
-  }): Promise<void> {
-    const deadline = Date.now() + (options.timeout ?? 1_000);
-    while (Date.now() < deadline) {
-      const visible = await this.isVisible();
-      if (visible === (options.state === "visible")) return;
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-    throw new Error(`Timed out waiting for ${options.state}.`);
+  async waitFor({ state, timeout = 1_000 }: { state: "visible" | "hidden"; timeout?: number }): Promise<void> {
+    if (this.visible === (state === "visible")) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${state}.`)), timeout);
+      this.changes.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
-  locator(selector: string): DelayedVisibilityLocator {
+  locator(selector: string): LateNotice {
     assert.equal(selector, "#commonPopupLeftBtnImg");
     return this;
   }
 
   async click(): Promise<void> {
     this.clicked = true;
-    this.hidden = true;
+    this.set(false);
+  }
+
+  private set(visible: boolean): void {
+    this.visible = visible;
+    for (const change of this.changes.splice(0)) change();
   }
 }
+
+const noticeFrame = (notice: LateNotice) => ({
+  locator(selector: string) {
+    assert.equal(selector, "#commonPopup");
+    return notice;
+  },
+}) as never;
 
 const source = readFileSync(
   new URL("./yuanta-statements.ts", import.meta.url),
@@ -318,31 +328,15 @@ assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector 
 assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
 assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
-const popup = new DelayedVisibilityLocator(20);
-const dismissed = await dismissYuantaBankNotice(
-  {
-    locator(selector: string) {
-      assert.equal(selector, "#commonPopup");
-      return popup;
-    },
-  } as never,
-  100,
-);
-assert.equal(dismissed, true);
-assert.equal(popup.clicked, true);
+const lateNotice = new LateNotice();
+const dismissingLateNotice = dismissYuantaBankNotice(noticeFrame(lateNotice), 100);
+lateNotice.show();
+assert.equal(await dismissingLateNotice, true);
+assert.equal(lateNotice.clicked, true);
 
-const absentPopup = new DelayedVisibilityLocator(1_000);
-const dismissedAbsentPopup = await dismissYuantaBankNotice(
-  {
-    locator(selector: string) {
-      assert.equal(selector, "#commonPopup");
-      return absentPopup;
-    },
-  } as never,
-  10,
-);
-assert.equal(dismissedAbsentPopup, false);
-assert.equal(absentPopup.clicked, false);
+const absentNotice = new LateNotice();
+assert.equal(await dismissYuantaBankNotice(noticeFrame(absentNotice), 10), false);
+assert.equal(absentNotice.clicked, false);
 
 function accountOptionsPage(
   options: Array<{ value: string; label: string }>,

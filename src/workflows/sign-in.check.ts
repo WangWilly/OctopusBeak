@@ -642,35 +642,73 @@ test("a stage callback that throws fails the sign-in with that error", () =>
   }));
 
 test("abort at each wait rejects with the run's reason and emits nothing after", async () => {
-  const hang = (page: Page, signal: AbortSignal) => untilAborted<never>(signal);
+  const hangOnArrival = (arrive: () => void) => (_page: Page, signal: AbortSignal) => {
+    arrive();
+    return untilAborted<never>(signal);
+  };
   const waits: Array<{
     name: string;
     script: string;
-    assist?: Assist;
-    plan: Partial<FormPlan>;
+    callbacks(arrive: () => void): Readonly<{ assist?: Assist; plan: Partial<FormPlan> }>;
     before: readonly string[];
   }> = [
-    { name: "signedIn", script: "", plan: { signedIn: hang }, before: [STARTED] },
-    { name: "fill", script: "", plan: { fill: hang }, before: [STARTED] },
-    { name: "stage", script: "", assist: (_page, signal) => untilAborted(signal), plan: {}, before: [STARTED, REQUESTED] },
-    { name: "submit", script: "", plan: { submit: hang }, before: [STARTED, REQUESTED, ASSISTED] },
-    { name: "poll", script: "", plan: {}, before: [STARTED, REQUESTED, ASSISTED] },
-    { name: "settle", script: "show()", plan: { prompts: async () => false }, before: [STARTED, REQUESTED, ASSISTED] },
+    { name: "signedIn", script: "", callbacks: (arrive) => ({ plan: { signedIn: hangOnArrival(arrive) } }), before: [STARTED] },
+    { name: "fill", script: "", callbacks: (arrive) => ({ plan: { fill: hangOnArrival(arrive) } }), before: [STARTED] },
+    { name: "stage", script: "", callbacks: (arrive) => ({ assist: hangOnArrival(arrive), plan: {} }), before: [STARTED, REQUESTED] },
+    { name: "submit", script: "", callbacks: (arrive) => ({ plan: { submit: hangOnArrival(arrive) } }), before: [STARTED, REQUESTED, ASSISTED] },
+    {
+      name: "poll",
+      script: "",
+      callbacks: (arrive) => {
+        let submitted = false;
+        return {
+          plan: {
+            submit: async (p) => {
+              await p.click("#login");
+              submitted = true;
+            },
+            signedIn: async () => {
+              if (submitted) arrive();
+              return false;
+            },
+          },
+        };
+      },
+      before: [STARTED, REQUESTED, ASSISTED],
+    },
+    {
+      name: "settle",
+      script: "show()",
+      callbacks: (arrive) => ({
+        plan: {
+          prompts: async () => {
+            arrive();
+            return false;
+          },
+        },
+      }),
+      before: [STARTED, REQUESTED, ASSISTED],
+    },
   ];
   for (const wait of waits) {
     await withPage(wait.script, async (page) => {
-      const run = fakeRun(page, wait.assist ?? solve);
+      let arrive!: () => void;
+      const arrived = new Promise<void>((resolve) => {
+        arrive = resolve;
+      });
+      const callbacks = wait.callbacks(arrive);
+      const run = fakeRun(page, callbacks.assist ?? solve);
       const reason = new Error(`cancelled during ${wait.name}`);
       let planSignal: AbortSignal | undefined;
       const plan = form(calls(), {
-        ...wait.plan,
+        ...callbacks.plan,
         fill: async (p, signal) => {
           planSignal = signal;
-          await (wait.plan.fill ?? form(calls()).fill)(p, signal);
+          await (callbacks.plan.fill ?? form(calls()).fill)(p, signal);
         },
       });
       const running = failure(signIn(run.context, page, source(), plan));
-      await delay(400);
+      await arrived;
       run.controller.abort(reason);
       assert.equal(await running, reason, wait.name);
       assert.deepEqual(run.codes, wait.before, wait.name);
