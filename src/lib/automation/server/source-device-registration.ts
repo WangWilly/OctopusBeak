@@ -45,6 +45,7 @@ type Registration = {
   code: ReturnType<typeof deferred<string>> | null;
   timer: ReturnType<typeof setTimeout> | null;
   closedReason: "expired" | "cancelled" | null;
+  settled: Promise<void>;
 };
 
 export function createSourceDeviceRegistrationService(options: SourceDeviceRegistrationOptions) {
@@ -75,8 +76,8 @@ export function createSourceDeviceRegistrationService(options: SourceDeviceRegis
     return options.failure?.(error) ?? "unavailable";
   };
 
-  function launch(registration: Registration) {
-    options.register({
+  function launch(registration: Registration): Promise<void> {
+    return options.register({
       signal: registration.controller.signal,
       readCode: (channel) => {
         const code = deferred<string>();
@@ -111,9 +112,10 @@ export function createSourceDeviceRegistrationService(options: SourceDeviceRegis
         code: null,
         timer: null,
         closedReason: null,
+        settled: Promise.resolve(),
       };
       active = registration;
-      launch(registration);
+      registration.settled = launch(registration);
       return await registration.next.promise;
     },
 
@@ -133,6 +135,14 @@ export function createSourceDeviceRegistrationService(options: SourceDeviceRegis
 
     cancel(registrationId: string) {
       if (active?.id === registrationId) close(active, "cancelled");
+    },
+
+    /** Cancels the registration in progress and resolves once it can no longer write. */
+    async cancelActive(): Promise<void> {
+      const registration = active;
+      if (!registration) return;
+      close(registration, "cancelled");
+      await registration.settled;
     },
   };
 }

@@ -94,6 +94,7 @@ export function createAutomationRuntime(
     startWithoutAdmission: (taskId: string) => runner.start(taskId, provider),
     cancel: (taskId: string, expectedRunId?: string) => runner.cancel(taskId, expectedRunId),
     forceTerminate: (taskId: string, expectedRunId?: string) => runner.forceTerminate(taskId, expectedRunId),
+    whileStopped: <T>(work: () => Promise<T>) => runner.whileStopped(work),
     /** Stop every run without waiting, for a fatal exit. */
     abortAll: () => runner.abortAll(),
     shutdown: () => runner.shutdown(provider),

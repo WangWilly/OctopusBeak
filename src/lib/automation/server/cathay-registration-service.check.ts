@@ -274,6 +274,16 @@ test("a registration ends when the code wait expires or the person cancels, and 
     assert.deepEqual(await service.submitCode(registrationId, CODE), { status: "failed", reason: "cancelled" });
     assert.deepEqual(log.submits, []);
   });
+
+  await withFixture({}, async ({ service, log, lock, credentialsText }) => {
+    const sms = await service.start();
+    const registrationId = sms.status === "code-required" ? sms.registrationId : "";
+    await service.cancelActive();
+    assert.equal(lock.holder(), null, "cancelling every registration releases the device");
+    assert.deepEqual(await service.submitCode(registrationId, CODE), { status: "failed", reason: "cancelled" });
+    assert.deepEqual(log.submits, []);
+    assert.equal((await credentialsText()).includes("CATHAY_TRUSTED_DEVICE_USER_ID"), false);
+  });
 });
 
 test("registration is refused while a Cathay sync runs and needs saved sign-in details", async () => {

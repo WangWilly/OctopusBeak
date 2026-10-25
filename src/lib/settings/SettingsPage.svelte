@@ -8,6 +8,7 @@
     CircleStop,
     Clock,
     Compass,
+    DatabaseZap,
     FlaskConical,
     Globe,
     Languages,
@@ -53,6 +54,7 @@
     { id: "settings-schedule", icon: Clock },
     { id: "settings-display", icon: Languages },
     { id: "settings-preview", icon: FlaskConical },
+    { id: "settings-data", icon: DatabaseZap },
     { id: "settings-onboarding", icon: Compass },
   ] as const;
   const SCALE_TICKS = [75, 100, 125, 150];
@@ -77,6 +79,11 @@
   let previewEnabled = $previewFeaturesEnabled;
   let previewDeleteConfirming = false;
   let previewDeleteStatus: "idle" | "pending" | "deleted" | "error" = "idle";
+  type DataActionStatus = "idle" | "confirming" | "pending" | "done" | "error";
+  let financialDeleteStatus: DataActionStatus = "idle";
+  let signInClearStatus: DataActionStatus = "idle";
+  let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
+  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -86,6 +93,7 @@
     "settings-schedule": $t.settings.scheduleSettings,
     "settings-display": $t.settings.languageDisplaySettings,
     "settings-preview": $t.settings.previewFeatures,
+    "settings-data": $t.settings.dataSection,
     "settings-onboarding": $t.settings.onboardingSection,
   };
   $: timezoneName = zoneName(selectedTimezone, $locale);
@@ -231,6 +239,37 @@
       previewDeleteStatus = "deleted";
     } catch {
       previewDeleteStatus = "error";
+    }
+  }
+
+  async function deleteFinancialData() {
+    financialDeleteStatus = "pending";
+    collectStatus = "idle";
+    try {
+      await window.octopusBeak.settings.deleteFinancialData();
+      financialDeleteStatus = "done";
+    } catch {
+      financialDeleteStatus = "error";
+    }
+  }
+
+  async function collectAllSources() {
+    collectStatus = "pending";
+    try {
+      const result = await window.octopusBeak.settings.collectAllSources();
+      collectStatus = result.started.length > 0 ? "started" : "error";
+    } catch {
+      collectStatus = "error";
+    }
+  }
+
+  async function clearSignInData() {
+    signInClearStatus = "pending";
+    try {
+      await window.octopusBeak.settings.clearSignInData();
+      signInClearStatus = "done";
+    } catch {
+      signInClearStatus = "error";
     }
   }
 
@@ -525,6 +564,112 @@
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
               <span>{$t.settings.deletePreviewDataFailed}</span>
+            </div>
+          {/if}
+        </div>
+      </section>
+
+      <section id="settings-data" class="settings-section" aria-labelledby="settings-data-title">
+        <header>
+          <h2 id="settings-data-title">{$t.settings.dataSection}</h2>
+          <p>{$t.settings.dataDescription}</p>
+        </header>
+        <div class="card settings-card">
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.deleteFinancialData}</span>
+              <small class="setting-hint">{$t.settings.deleteFinancialDataHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if financialDeleteStatus === "done"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.financialDataDeleted}
+                </span>
+                {#if collectStatus === "started"}
+                  <span class="chip status-chip good" role="status">
+                    <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                    {$t.settings.collectAllSourcesStarted}
+                  </span>
+                {:else}
+                  <button
+                    id="collect-all-sources"
+                    class="button primary"
+                    type="button"
+                    disabled={collectStatus === "pending"}
+                    aria-busy={collectStatus === "pending"}
+                    onclick={collectAllSources}
+                  >{$t.settings.collectAllSources}</button>
+                {/if}
+              {:else if financialDeleteStatus !== "confirming"}
+                <button
+                  id="delete-financial-data"
+                  class="button danger"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={financialDeleteStatus === "pending"}
+                  onclick={() => (financialDeleteStatus = "confirming")}
+                >{financialDeleteStatus === "pending" ? $t.settings.deletingFinancialData : $t.settings.deleteFinancialData}</button>
+              {/if}
+            </div>
+          </div>
+          {#if financialDeleteStatus === "confirming"}
+            <div class="restart-confirm" role="group" aria-labelledby="financial-delete-confirm">
+              <p id="financial-delete-confirm">{$t.settings.deleteFinancialDataConfirm}</p>
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (financialDeleteStatus = "idle")}>{$t.common.cancel}</button>
+                <button id="confirm-delete-financial-data" class="button danger" type="button" disabled={dataActionPending} onclick={deleteFinancialData}>{$t.settings.deleteFinancialDataAction}</button>
+              </div>
+            </div>
+          {/if}
+          {#if financialDeleteStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.deleteFinancialDataFailed}</span>
+            </div>
+          {/if}
+          {#if collectStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.collectAllSourcesFailed}</span>
+            </div>
+          {/if}
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.clearSignInData}</span>
+              <small class="setting-hint">{$t.settings.clearSignInDataHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if signInClearStatus === "done"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.signInDataCleared}
+                </span>
+              {:else if signInClearStatus !== "confirming"}
+                <button
+                  id="clear-sign-in-data"
+                  class="button danger"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={signInClearStatus === "pending"}
+                  onclick={() => (signInClearStatus = "confirming")}
+                >{signInClearStatus === "pending" ? $t.settings.clearingSignInData : $t.settings.clearSignInData}</button>
+              {/if}
+            </div>
+          </div>
+          {#if signInClearStatus === "confirming"}
+            <div class="restart-confirm" role="group" aria-labelledby="sign-in-clear-confirm">
+              <p id="sign-in-clear-confirm">{$t.settings.clearSignInDataConfirm}</p>
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (signInClearStatus = "idle")}>{$t.common.cancel}</button>
+                <button id="confirm-clear-sign-in-data" class="button danger" type="button" disabled={dataActionPending} onclick={clearSignInData}>{$t.settings.clearSignInDataAction}</button>
+              </div>
+            </div>
+          {/if}
+          {#if signInClearStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.clearSignInDataFailed}</span>
             </div>
           {/if}
         </div>

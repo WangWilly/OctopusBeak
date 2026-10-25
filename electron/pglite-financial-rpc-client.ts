@@ -363,6 +363,11 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 1 && accountIdentityContinuityRequestShape(args[0]),
     { lane: "background" },
   ),
+  /** Canonical Reset (ADR 0062): replaces all financial state with an empty store. */
+  "financial.canonical.reset": operation<[], void>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
+  ),
   "financial.exchangeRates.upsert": operation<[rows: readonly ExchangeRateRecord[]], void>(
     (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row)),
     { lane: "background" },

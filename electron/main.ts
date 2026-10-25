@@ -408,6 +408,12 @@ async function start() {
   }
   ipcRegistration = registerOctopusBeakIpc({
     automationRuntime: runtime,
+    pauseSchedules: () => {
+      const resumes = [scheduler?.pause(), collectionScheduler?.pause()];
+      return () => {
+        for (const resume of resumes) resume?.();
+      };
+    },
     onSystemSettingsChanged: () => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
