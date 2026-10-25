@@ -530,7 +530,10 @@ test("a paused scheduled collection starts nothing until resumed, and resume lea
   assert.equal(h.starts.length, 1, "the occurrence that came due while paused did not start");
   resume();
   await settle();
-  assert.deepEqual(h.starts.slice(1), ["2026-07-14T23:00:00.000Z"], "resume follows the normal schedule");
+  assert.equal(h.starts.length, 1, "resume skips the occurrence that came due while paused");
+  h.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(h.starts.slice(1), ["2026-07-15T23:00:00.000Z"], "resume follows the normal schedule");
 
   const stopped = collectionHarness({ enabled: true, now: "2026-07-14T23:30:00Z" });
   stopped.scheduler.pause()();

@@ -220,12 +220,24 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
       }
     },
     stop,
-    /** Stop until the returned resume, which restarts only a scheduler that was running. */
+    /**
+     * Stop until the returned resume, which restarts only a scheduler that was
+     * running. An occurrence that came due while paused is skipped rather than
+     * caught up, so nothing collects by itself right after a Canonical Reset.
+     */
     pause() {
       const wasRunning = running;
       stop();
       return () => {
-        if (wasRunning) start();
+        if (!wasRunning || running) return;
+        running = true;
+        try {
+          const selected = readSchedule();
+          lastConsideredOccurrenceUtc = selected.schedule.latestOccurrenceUtc;
+          armNext(selected);
+        } catch (error) {
+          report(error);
+        }
       };
     },
   };
