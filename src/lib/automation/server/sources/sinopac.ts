@@ -29,10 +29,12 @@ export const SINOPAC_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
-  sessionTakeoverNotice: localized(
-    "SinoPac allows one online banking sign-in at a time. Every sync, including daily scheduled collection, confirms SinoPac's duplicate sign-in prompt, which signs you out of SinoPac online banking or its phone App elsewhere.",
-    "永豐同一時間只允許一處網路銀行登入。每次同步（包括每日排程收集）都會確認永豐的重複登入提示，讓你在其他地方的永豐網路銀行或手機 App 登出。",
-  ),
+  sessionTakeover: {
+    notice: localized(
+      "SinoPac allows one online banking sign-in at a time. Every sync, including daily scheduled collection, confirms SinoPac's duplicate sign-in prompt, which signs you out of SinoPac online banking or its phone App elsewhere.",
+      "永豐同一時間只允許一處網路銀行登入。每次同步（包括每日排程收集）都會確認永豐的重複登入提示，讓你在其他地方的永豐網路銀行或手機 App 登出。",
+    ),
+  },
   setupGuide: {
     summary: localized(
       "Use the ID number, user code, and password registered for Bank SinoPac MMA online banking.",
@@ -92,7 +94,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.sinopac,
     runtime: browser("https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx"),
-    verification: { ownsSubmissionOutcome: true },
+    verification: { rejection: { dialog: { exact: "驗證碼失效或輸入錯誤，請重新輸入" } } },
     input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/sinopac-statements.ts")).runSinopacProviderWorkflow;

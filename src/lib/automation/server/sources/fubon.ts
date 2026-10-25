@@ -31,6 +31,12 @@ export const FUBON_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
+  sessionTakeover: {
+    notice: localized(
+      "Every sync, including daily scheduled collection, confirms Taipei Fubon Bank's duplicate sign-in prompt (code 0212), which signs you out of Taipei Fubon online banking elsewhere.",
+      "每次同步（包括每日排程收集）都會確認台北富邦的重複登入提示（代碼 0212），讓你在其他地方的台北富邦網路銀行登出。",
+    ),
+  },
   setupGuide: {
     summary: localized(
       "Use the same ID number, user code, and password you use for Taipei Fubon online banking.",
@@ -95,7 +101,7 @@ export const FUBON_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     requiresAccountIdentity: true,
     runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
-    verification: { ownsSubmissionOutcome: true },
+    verification: { rejection: { frame: "txnFrame", text: { pattern: /^0290\s*驗證碼輸入錯誤$/u } } },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/fubon-all-statements.ts")).runFubonAllStatementsWorkflow;

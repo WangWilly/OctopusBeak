@@ -29,6 +29,12 @@ export const ESUN_SOURCE: VerifiedSource = {
       "password",
     ),
   ],
+  sessionTakeover: {
+    notice: localized(
+      "When E.SUN shows its sign-in confirmation instead of the signed-in page, every sync, including daily scheduled collection, confirms it, which signs you out of E.SUN online banking elsewhere.",
+      "當玉山銀行顯示「確定登入」確認而不是登入後頁面時，每次同步（包括每日排程收集）都會按下確認，讓你在其他地方的玉山網路銀行登出。",
+    ),
+  },
   setupGuide: {
     summary: localized(
       "Use the sign-in details registered for E.SUN online banking.",
