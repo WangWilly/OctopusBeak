@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import type { Page, Response } from "playwright";
+import { errors, type Page, type Response } from "playwright";
 import { z } from "zod";
 import {
   creditCardBalanceCommandRequest,
@@ -42,7 +42,9 @@ import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
+import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
 import { withAbort } from "./abort.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -571,11 +573,11 @@ export function esunCurrentUsedCreditFromSummaryResponse(
   };
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  return await page
+async function isSignedIn(page: Page, signal: AbortSignal): Promise<boolean> {
+  return await withAbort(page
     .getByText("信用卡", { exact: true })
     .isVisible()
-    .catch(() => false);
+    .catch(() => false), signal);
 }
 
 
@@ -598,15 +600,13 @@ function waitForOptionalResponse(
   });
 }
 
-async function waitForSignedInState(page: Page): Promise<void> {
-  await page.getByText("信用卡", { exact: true }).waitFor({ timeout: 60_000 });
-}
-
 async function enterLoginCredentials(
   page: Page,
   credentials: EsunCredentials,
+  signal: AbortSignal,
 ): Promise<void> {
-  await page.locator('input[name="id"]').waitFor({ timeout: 60_000 });
+  await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
+  await withAbort(page.locator('input[name="id"]').waitFor({ timeout: 60_000 }), signal);
 
   const userId = requireCredential(credentials, "esun_user_id");
   const account = requireCredential(credentials, "esun_account");
@@ -621,16 +621,26 @@ async function enterLoginCredentials(
     },
   ];
 
-  for (const field of fields) await field.locator.fill(field.value);
+  for (const field of fields) await withAbort(field.locator.fill(field.value), signal);
   for (const field of fields) {
-    if ((await field.locator.inputValue()) !== field.value) {
-      await field.locator.fill(field.value);
+    if ((await withAbort(field.locator.inputValue(), signal)) !== field.value) {
+      await withAbort(field.locator.fill(field.value), signal);
     }
-    if ((await field.locator.inputValue()) !== field.value) {
+    if ((await withAbort(field.locator.inputValue(), signal)) !== field.value) {
       throw new Error(`ESun login ${field.label} field did not retain value`);
     }
   }
-  await page.getByRole("button", { name: "登入", exact: true }).click();
+}
+
+function esunSignInPlan(credentials: EsunCredentials): FormPlan {
+  return {
+    signedIn: isSignedIn,
+    fill: (page, signal) => enterLoginCredentials(page, credentials, signal),
+    submit: (page, signal) => withAbort(page.getByRole("button", { name: "登入", exact: true }).click(), signal),
+    dialogs: "accept-for-page",
+    session: { none: "needs live verification" },
+    timeoutMs: 15_000,
+  };
 }
 
 const timelineResponseSchema = z.object({
@@ -1171,38 +1181,39 @@ export function classifyEsunPostLoginPage(text: string): EsunPostLoginState[] {
   return states.length > 0 ? states : ["unrecognized"];
 }
 
+/**
+ * A submitted sign-in that does not settle within the plan's 15 s is a
+ * verification wall E.SUN's solver cannot pass: the page is classified
+ * without keeping its text.
+ */
 export async function authenticateEsunPage(
   page: Page,
   credentials: EsunCredentials,
   context: WorkflowContext,
-): Promise<boolean> {
-  if (await isSignedIn(page)) return true;
-  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-  context.signal.throwIfAborted();
-  await enterLoginCredentials(page, credentials);
-  context.signal.throwIfAborted();
-
+): Promise<void> {
+  const plan = esunSignInPlan(credentials);
+  let submitted = false;
   try {
-    await withAbort(
-      page.getByText("信用卡", { exact: true }).waitFor({ timeout: 15_000 }),
-      context.signal,
-    );
-    return false;
+    await signIn(context, page, ESUN_SOURCE, {
+      ...plan,
+      submit: async (target, signal) => {
+        await plan.submit(target, signal);
+        submitted = true;
+      },
+    });
+    return;
   } catch (error) {
-    if (context.signal.aborted) throw error;
-    const duplicateLogin = page.getByRole("button", { name: "確定登入" });
-    if (await duplicateLogin.isVisible().catch(() => false)) {
-      await withAbort(duplicateLogin.click(), context.signal);
-      await withAbort(waitForSignedInState(page), context.signal);
-      return false;
-    }
+    if (!submitted || !(error instanceof errors.TimeoutError)) throw error;
   }
 
-  const pageText = await Promise.resolve()
-    .then(() => Promise.all(
-      page.frames().map((frame) => frame.locator("body").innerText({ timeout: 2_000 }).catch(() => "")),
-    ))
-    .catch(() => []);
+  const pageText = await withAbort(
+    Promise.resolve()
+      .then(() => Promise.all(
+        page.frames().map((frame) => frame.locator("body").innerText({ timeout: 2_000 }).catch(() => "")),
+      ))
+      .catch(() => []),
+    context.signal,
+  );
   for (const state of classifyEsunPostLoginPage(pageText.join("\n"))) {
     await context.event("authentication", "advanced", `esun-post-login-${state}`);
   }
@@ -1401,14 +1412,7 @@ export async function runEsunCreditCardProviderWorkflow(
   context.signal.throwIfAborted();
 
   return context.browser.withPage(async (page) => {
-    context.signal.throwIfAborted();
-    page.on("dialog", (dialog) => {
-      void dialog.accept().catch(() => undefined);
-    });
-    await context.event("authentication", "started", "authentication-started");
     await authenticateEsunPage(page, input.credentials, context);
-    context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
 
     let creditCard: EsunCreditCardCollection | null = null;
     const summary = await collectSelectedProducts({
