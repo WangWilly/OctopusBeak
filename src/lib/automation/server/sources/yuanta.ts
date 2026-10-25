@@ -33,6 +33,12 @@ export const YUANTA_SOURCE: VerifiedSource = {
       "When Yuanta Bank reports another active sign-in, every sync, including daily scheduled collection, chooses to sign in now, which signs you out of Yuanta Bank online banking elsewhere.",
       "當元大銀行回報已有其他登入時，每次同步（包括每日排程收集）都會選擇「立即登入」，讓你在其他地方的元大網路銀行登出。",
     ),
+    prompt: {
+      phase: "while-settling",
+      frame: "main",
+      text: { exact: "立即登入" },
+      control: { selector: '#reloginBT, a:has-text("立即登入")' },
+    },
   },
   setupGuide: {
     summary: localized(

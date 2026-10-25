@@ -197,7 +197,6 @@ test("Yuanta loan typed collection admits complete source without writing or com
       dateRange: "one_year",
       customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
       loanAccountFilters: [],
-      replaceActiveSession: true,
     },
     {
       sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
@@ -238,7 +237,7 @@ test("Yuanta loan typed collection rejects an incomplete source before yielding 
   await assert.rejects(
     runYuantaLoanStatements(
       {} as never,
-      { dateRange: "one_year", loanAccountFilters: [], replaceActiveSession: true },
+      { dateRange: "one_year", loanAccountFilters: [] },
       {
         sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
         sourceConnectionKey: deriveSourceConnectionIdentityKey(

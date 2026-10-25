@@ -93,12 +93,27 @@ function expandRelationCommands(
     : item) as PGliteWorkflowRunItem);
 }
 
+/** A page already signed in to Yuanta Bank, as the shared signed-in probe reads it. */
+function signedInPage(): Page {
+  const frame = (name: string) => ({
+    name: () => name,
+    url: () => "https://ebank.yuantabank.com.tw/nib/tx/home",
+    locator: () => ({ count: async () => 1 }),
+  });
+  const frames = [frame("fmenu"), frame("fmain")];
+  return {
+    url: () => "https://ebank.yuantabank.com.tw/nib/tx/home",
+    frames: () => frames,
+    frame: ({ name }: { name: string }) => frames.find((candidate) => candidate.name() === name) ?? null,
+  } as unknown as Page;
+}
+
 function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "yuanta-deposit-golden",
     signal: new AbortController().signal,
     now: () => NOW,
-    browser: { withPage: async <T>(run: (page: Page) => Promise<T>) => run({} as Page) },
+    browser: { withPage: async <T>(run: (page: Page) => Promise<T>) => run(signedInPage()) },
     text: strictSourceText,
     verification: { complete: async () => undefined },
     financialCommit: {
@@ -133,8 +148,6 @@ async function runGolden(name: string, stubs: DepositStubs): Promise<void> {
       yuanta_password: "synthetic-password",
     },
   }, {
-    authenticate: async () => undefined,
-    assertSession: async () => undefined,
     signOut: async () => undefined,
     collectDeposit,
   });

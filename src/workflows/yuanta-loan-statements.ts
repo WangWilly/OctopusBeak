@@ -82,7 +82,6 @@ const inputSchema = z.object({
   dateRange: quickDateRangeSchema.default("one_year"),
   customDateRange: customDateRangeSchema.optional(),
   loanAccountFilters: z.array(z.string()).default([]),
-  replaceActiveSession: z.boolean().default(true),
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;

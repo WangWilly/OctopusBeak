@@ -106,7 +106,6 @@ export const yuantaForeignCurrencyStatementsInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
   channelType: channelTypeSchema.default("all"),
-  replaceActiveSession: z.boolean().default(true),
 });
 const inputSchema = yuantaForeignCurrencyStatementsInputSchema;
 
