@@ -139,6 +139,8 @@ export async function signIn(
 
 type Scope = Page | Frame | Locator;
 
+type Found = Readonly<{ frame: Frame | undefined; scope: Scope; match: Locator }>;
+
 class Attempt {
   private readonly context: WorkflowContext;
   private readonly page: Page;
@@ -345,52 +347,52 @@ class Attempt {
       }
       return true;
     }
-    const text = this.pageText(prompt);
-    if (!text) return false;
-    const appeared = await this.raced(text.first().waitFor({ state: "visible", timeout: ms }).then(() => true, () => false));
+    const found = this.find(prompt);
+    if (!found) return false;
+    const appeared = await this.raced(found.match.first().waitFor({ state: "visible", timeout: ms }).then(() => true, () => false));
     if (!appeared) return false;
-    await this.confirmPageTakeover(prompt, text);
+    await this.confirmPageTakeover(prompt.control, found);
     return true;
   }
 
   private async checkPageTakeover(): Promise<void> {
     const prompt = this.source.sessionTakeover?.prompt;
     if (!prompt || "dialog" in prompt) return;
-    const text = this.pageText(prompt);
-    if (!text || !(await this.raced(text.first().isVisible().catch(() => false)))) return;
-    await this.confirmPageTakeover(prompt, text);
+    const found = this.find(prompt);
+    if (!found || !(await this.raced(found.match.first().isVisible().catch(() => false)))) return;
+    await this.confirmPageTakeover(prompt.control, found);
   }
 
-  private async confirmPageTakeover(prompt: Extract<TakeoverPrompt, PageMatch>, text: Locator): Promise<void> {
+  private async confirmPageTakeover(control: Control, found: Found): Promise<void> {
     if (this.takeovers > 0) throw new SignInError("takeover-repeated");
     this.takeovers += 1;
-    const scope = this.scope(prompt);
-    if (!scope) throw new SignInError("takeover-repeated");
-    await this.raced(controlOf(scope, prompt.control).first().click());
-    await this.raced(text.first().waitFor({ state: "hidden", timeout: PROMPT_HIDDEN_MS }));
+    const rethrowUnlessFrameDetached = (error: unknown): void => {
+      if (!found.frame?.isDetached()) throw error;
+    };
+    await this.raced(controlOf(found.scope, control).first().click({ force: control.force }).catch(rethrowUnlessFrameDetached));
+    await this.raced(found.match.first().waitFor({ state: "hidden", timeout: PROMPT_HIDDEN_MS }).catch(rethrowUnlessFrameDetached));
     await this.reportTakeover();
   }
 
   private async pageRejectionVisible(): Promise<boolean> {
     const evidence = this.source.workflow.verification?.rejection;
-    if (typeof evidence !== "object" || !("text" in evidence)) return false;
-    const text = this.pageText(evidence);
-    return text !== undefined && await this.raced(text.first().isVisible().catch(() => false));
+    if (typeof evidence !== "object" || "dialog" in evidence) return false;
+    const found = this.find(evidence);
+    return found !== undefined && await this.raced(found.match.first().isVisible().catch(() => false));
   }
 
-  private pageText(match: PageMatch): Locator | undefined {
-    const scope = this.scope(match);
-    if (!scope) return undefined;
-    return "exact" in match.text
-      ? scope.getByText(match.text.exact, { exact: true })
-      : scope.getByText(match.text.pattern);
+  private find(match: PageMatch): Found | undefined {
+    const frame = match.frame === undefined ? undefined : this.page.frame({ name: match.frame });
+    if (frame === null) return undefined;
+    const root = frame ?? this.page;
+    const scope = match.within === undefined ? root : root.locator(match.within);
+    return { frame, scope, match: matchOf(scope, match) };
   }
+}
 
-  private scope(match: Pick<PageMatch, "frame" | "within">): Scope | undefined {
-    const root = match.frame === undefined ? this.page : this.page.frame({ name: match.frame });
-    if (!root) return undefined;
-    return match.within === undefined ? root : root.locator(match.within);
-  }
+function matchOf(scope: Scope, match: PageMatch): Locator {
+  if (match.selector !== undefined) return scope.locator(match.selector);
+  return "exact" in match.text ? scope.getByText(match.text.exact, { exact: true }) : scope.getByText(match.text.pattern);
 }
 
 function controlOf(scope: Scope, control: Control): Locator {
