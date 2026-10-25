@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
 import {
   sinopacApiRowsToStatementRows,
   sinopacCaptchaAssistanceStage,
@@ -11,7 +10,6 @@ import {
   sinopacSignedInPageUrl,
   sinopacStatementRowsToCsv,
   runSinopacIdentityValidation,
-  runSinopacLoginAttempt,
   sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
   buildSinopacCurrentDepositBalanceCapture,
@@ -240,34 +238,6 @@ assert.deepEqual(
   ).map((account) => account.DataValue),
   ["001", "002"],
 );
-class FakeSinopacLoginPage extends EventEmitter {}
-
-const dialogLoginPage = new FakeSinopacLoginPage();
-let dialogDismissed = false;
-const dialogLoginAttempt = runSinopacLoginAttempt(dialogLoginPage as never, {
-  submit: async () => {
-    dialogLoginPage.emit("dialog", {
-      type: () => "alert",
-      dismiss: async () => {
-        dialogDismissed = true;
-      },
-    });
-  },
-  waitForSuccess: () => new Promise<void>(() => undefined),
-});
-await assert.rejects(
-  Promise.race([
-    dialogLoginAttempt,
-    new Promise<never>((_resolve, reject) => {
-      setTimeout(() => reject(new Error("SinoPac login attempt timed out.")), 50);
-    }),
-  ]),
-  /SinoPac login was interrupted by a browser dialog/,
-);
-assert.equal(dialogDismissed, true);
-assert.equal(dialogLoginPage.listenerCount("dialog"), 0);
-
-
 const rows = sinopacApiRowsToStatementRows([
   {
     DataText1: "2025/09/29<br />06:01",

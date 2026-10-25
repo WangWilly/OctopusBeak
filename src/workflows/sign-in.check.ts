@@ -1,33 +1,35 @@
 import assert from "node:assert/strict";
-import type { EventEmitter } from "node:events";
 import { after, before, test } from "node:test";
 import { chromium, errors, type Browser, type Dialog, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
-import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
-import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import type { RejectionEvidence, TakeoverPrompt } from "../lib/automation/sign-in-prompt.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
+import { VerificationStageIncompleteError, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import {
-  reportedVerificationPort,
-  VerificationStageIncompleteError,
-  type VerificationStage,
-} from "../lib/automation/verification-stage.ts";
-import type { WorkflowContext, WorkflowHumanAssistancePort } from "../lib/automation/workflow-executor.ts";
+  ASSISTED,
+  assertUsable,
+  delay,
+  dialogListeners as listeners,
+  DONE,
+  FAILED,
+  failure,
+  givesUp,
+  INTERRUPTED,
+  leavesEmpty,
+  recordedRun,
+  REJECTION,
+  REQUESTED,
+  STARTED,
+  TAKEN,
+  typesAnswer,
+  untilAborted,
+  type Assist,
+} from "./sign-in-check-harness.ts";
 import { signIn, SignInError, type DialogPolicy, type FormPlan, type ShellPlan, type SignInSource } from "./sign-in.ts";
 
 const TAKEOVER = "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態";
 const REJECTED = "驗證碼失效或輸入錯誤，請重新輸入";
 const UNRELATED = "系統維護中";
-
-const STARTED = "started authentication-started";
-const REQUESTED = "advanced human-assistance-requested";
-const ASSISTED = "advanced human-assistance-completed";
-const TAKEN = "advanced session-takeover-confirmed";
-const DONE = "completed authentication-completed";
-const FAILED = "failed authentication-failed";
-const REJECTION = "failed captcha-rejected";
-const INTERRUPTED = "signal:login-dialog-interrupted";
 
 let browser: Browser;
 before(async () => {
@@ -37,7 +39,6 @@ after(async () => {
   await browser.close();
 });
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const js = JSON.stringify;
 
 /**
@@ -87,50 +88,8 @@ async function withPage(
   }
 }
 
-type Assist = (page: Page, signal: AbortSignal) => Promise<"entered" | "verified" | "failed">;
-const types = (answer: string): Assist => async (page) => {
-  await page.fill("#answer", answer);
-  return "entered";
-};
-const leavesEmpty: Assist = async () => "entered";
-const givesUp: Assist = async () => "failed";
-const untilAborted = <T>(signal: AbortSignal) => new Promise<T>((_resolve, reject) => {
-  if (signal.aborted) reject(signal.reason);
-  signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-});
-
-function fakeRun(page: Page, assist: Assist = types("123456")) {
-  const controller = new AbortController();
-  const events: WorkflowRunEvent[] = [];
-  const codes: string[] = [];
-  const record = (event: WorkflowRunEvent) => {
-    events.push(event);
-    codes.push(event.signal ? `signal:${event.signal}` : `${event.outcome} ${event.code}`);
-  };
-  const event: WorkflowContext["event"] = async (stage, outcome, code) => {
-    record({ runId: "sign-in-check", occurredAt: "now", stage, outcome, code });
-  };
-  const signalEvent: WorkflowContext["signalEvent"] = async (signal) => {
-    record(signalRunEvent(signal, { runId: "sign-in-check", occurredAt: "now" }));
-  };
-  const humanAssistance: WorkflowHumanAssistancePort = { request: (_contract, signal) => assist(page, signal) };
-  const context: WorkflowContext = {
-    runId: "sign-in-check",
-    signal: controller.signal,
-    now: () => "now",
-    browser: { withPage: (run) => run(page) },
-    text: strictSourceText,
-    verification: reportedVerificationPort({ humanAssistance, signal: controller.signal, event, signalEvent }),
-    event,
-    signalEvent,
-  };
-  return {
-    context,
-    controller,
-    codes,
-    classify: (error: unknown) => classifyTypedWorkflowFailure(error, events, controller.signal.aborted),
-  };
-}
+const solve = typesAnswer("#answer", "123456");
+const fakeRun = (page: Page, assist: Assist = solve) => recordedRun(page, assist);
 
 function stage(page: Page): VerificationStage {
   return {
@@ -181,29 +140,13 @@ function source(options: Readonly<{ takeover?: TakeoverPrompt; rejection?: Rejec
   };
 }
 
-async function failure(promise: Promise<unknown>): Promise<unknown> {
-  try {
-    await promise;
-  } catch (error) {
-    return error;
-  }
-  assert.fail("expected the sign-in to reject");
-}
-
 function assertSignInError(error: unknown, reason: SignInError["reason"]): void {
   assert.ok(error instanceof SignInError, `expected a SignInError, got ${String(error)}`);
   assert.equal(error.reason, reason);
 }
 
-const listeners = (page: Page) => (page as unknown as EventEmitter).listenerCount("dialog");
 const answers = (page: Page) => page.evaluate(() => (window as unknown as { answers: boolean[] }).answers);
 const takeovers = (page: Page) => page.evaluate(() => (window as unknown as { takeovers: number }).takeovers);
-
-/** A page with an open dialog never answers evaluate(). */
-async function assertUsable(page: Page): Promise<void> {
-  const answer = await Promise.race([page.evaluate(() => "usable"), delay(1_500).then(() => "blocked by an open dialog")]);
-  assert.equal(answer, "usable");
-}
 
 /** Keeps the real page and its real dialogs, but closing one takes `ms`. */
 function slowToClose(page: Page, ms: number): void {
@@ -588,7 +531,7 @@ test("abort at each wait rejects with the run's reason and emits nothing after",
   ];
   for (const wait of waits) {
     await withPage(wait.script, async (page) => {
-      const run = fakeRun(page, wait.assist ?? types("123456"));
+      const run = fakeRun(page, wait.assist ?? solve);
       const reason = new Error(`cancelled during ${wait.name}`);
       let planSignal: AbortSignal | undefined;
       const plan = form(calls(), {

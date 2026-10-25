@@ -7,13 +7,14 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
-import { signInAttempt } from "./sign-in-attempt.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
+import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   collectSelectedProducts,
-  ProductCollectionFatalError,
   StatementComponentAbsentError,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
@@ -55,10 +56,6 @@ import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
-  SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
-  SinopacCaptchaRejectedError,
-  isSinopacCaptchaRejectionDialog,
-  isSinopacDuplicateLoginDialog,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
   SINOPAC_IDENTITY_FIELD_NAMES,
@@ -747,8 +744,21 @@ export function sinopacSignedInPageUrl(href: string): boolean {
   return href.startsWith("https://mma.sinopac.com/mma/");
 }
 
+function isServiceErrorUrl(href: string): boolean {
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:"
+      && url.hostname === "mma.sinopac.com"
+      && url.pathname === "/Errors/GenericErrorPage.aspx";
+  } catch {
+    return false;
+  }
+}
+
+/** SinoPac's generic error page would otherwise sit under the five-minute sign-in deadline. */
 async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
   const url = page.url();
+  if (isServiceErrorUrl(url)) throw new SourceUnavailableError();
   if (!sinopacSignedInPageUrl(url)) return false;
   return await withAbort(
     page
@@ -757,115 +767,6 @@ async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
       .catch(() => false),
     signal,
   );
-}
-
-
-export async function waitForSignedInState(
-  page: Page,
-  signal?: AbortSignal,
-  onServiceUnavailable?: () => Promise<void>,
-): Promise<void> {
-  const isServiceError = (url: URL) => url.protocol === "https:"
-    && url.hostname === "mma.sinopac.com"
-    && url.pathname === "/Errors/GenericErrorPage.aspx";
-  await page.waitForURL((url) => sinopacSignedInPageUrl(url.href) || isServiceError(url), {
-    timeout: 300_000,
-    waitUntil: "domcontentloaded",
-    signal,
-  });
-  if (isServiceError(new URL(page.url()))) {
-    try {
-      await onServiceUnavailable?.();
-    } catch {
-      // Operational events must not hide the observed provider failure.
-    }
-    throw new Error("SinoPac service is temporarily unavailable.");
-  }
-  await withAbort(
-    page.waitForLoadState("domcontentloaded", { timeout: 60_000 }),
-    signal,
-  );
-  await withAbort(
-    page
-      .locator('a#user-logout, a[href*="MMALogout"]')
-      .first()
-      .waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
-}
-
-export type SinopacLoginAttemptDependencies = {
-  submit: () => Promise<void>;
-  waitForSuccess: (signal: AbortSignal) => Promise<void>;
-  signal?: AbortSignal;
-  onDialog?: (captchaRejected: boolean) => void | Promise<void>;
-  onDuplicateLoginConfirmed?: () => void | Promise<void>;
-};
-
-export async function runSinopacLoginAttempt(
-  page: Page,
-  dependencies: SinopacLoginAttemptDependencies,
-): Promise<void> {
-  let dialogHandled = false;
-  let duplicateLoginConfirmed = false;
-  await signInAttempt(page, {
-    submit: dependencies.submit,
-    waitForSuccess: dependencies.waitForSuccess,
-    signal: dependencies.signal,
-    handleDialog: async (dialog) => {
-      if (dialogHandled) return null;
-      dialogHandled = true;
-      let type = "unknown";
-      let message = "";
-      let captchaRejected = false;
-      try {
-        type = dialog.type();
-        message = dialog.message();
-        // Only the exact provider warning admits a typed CAPTCHA rejection.
-        captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
-      } catch {
-        // Keep the fail-fast path usable if the browser closes the dialog while
-        // it is being inspected.
-      }
-      if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
-        duplicateLoginConfirmed = true;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const accepted = await Promise.race([
-          Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
-          new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-          }),
-        ]);
-        if (timer) clearTimeout(timer);
-        if (!accepted) return new Error("SinoPac duplicate login confirmation failed.");
-        dialogHandled = false;
-        try {
-          await dependencies.onDuplicateLoginConfirmed?.();
-        } catch {
-          // Operational events must not change the authentication outcome.
-        }
-        return null;
-      }
-      try {
-        await dependencies.onDialog?.(captchaRejected);
-      } catch {
-        // Operational event persistence must not change the authentication outcome.
-      }
-      const dismissal = Promise.resolve().then(() => dialog.dismiss());
-      void dismissal.catch(() => undefined);
-      let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
-      const dismissed = await Promise.race([
-        dismissal.then(() => true, () => false),
-        new Promise<boolean>((resolve) => {
-          dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
-        }),
-      ]);
-      if (dismissalTimer) clearTimeout(dismissalTimer);
-      return captchaRejected && dismissed
-        ? new SinopacCaptchaRejectedError()
-        : new Error("SinoPac login was interrupted by a browser dialog.");
-    },
-  });
 }
 
 export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {
@@ -887,7 +788,7 @@ async function clickLoginButton(page: Page, signal?: AbortSignal): Promise<void>
   await withAbort(page.locator('input[alt="登入"]').click({ force: true }), signal);
 }
 
-async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Promise<void> {
+async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
   for (const selector of sinopacPasswordExpiryNoticeDismissTargets()) {
     const dismiss = page.locator(selector).first();
@@ -901,9 +802,10 @@ async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Pr
         page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {}),
         signal,
       );
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 async function fillLoginForm(
@@ -984,45 +886,30 @@ export function sinopacCaptchaAssistanceStage(
   };
 }
 
-async function signInSinopacForApp(
-  page: Page,
-  credentials: SinopacCredentials,
-  context: WorkflowContext,
-): Promise<void> {
-  context.signal.throwIfAborted();
-  await fillLoginForm(page, credentials, context.signal);
-  await context.verification.complete(sinopacCaptchaAssistanceStage(page));
-  context.signal.throwIfAborted();
-  if (await isSignedIn(page, context.signal)) return;
-
-  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  const currentValue = await withAbort(
-    captcha.inputValue(),
-    context.signal,
+// The logout link can render after a dismissed notice, so give it time before calling the session lost.
+async function sinopacSessionProbe(page: Page, signal: AbortSignal): Promise<boolean> {
+  return sinopacSignedInPageUrl(page.url()) && await withAbort(
+    page.locator('a#user-logout, a[href*="MMALogout"]').first()
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true, () => false),
+    signal,
   );
-  if (!currentValue.trim()) {
-    throw new Error(
-      "SinoPac CAPTCHA assistance completed, but no answer was entered.",
-    );
-  }
-  await runSinopacLoginAttempt(page, {
-    signal: context.signal,
-    onDuplicateLoginConfirmed: () => context.event("authentication", "advanced", "duplicate-login-confirmed"),
-    onDialog: async (captchaRejected) => {
-      await context.event(
-        "authentication",
-        captchaRejected ? "failed" : "advanced",
-        captchaRejected ? "captcha-rejected" : "unrecognized-login-dialog",
-      );
+}
+
+export function sinopacSignInPlan(credentials: SinopacCredentials): FormPlan {
+  return {
+    signedIn: isSignedIn,
+    fill: (page, signal) => fillLoginForm(page, credentials, signal),
+    captcha: {
+      stage: sinopacCaptchaAssistanceStage,
+      answer: (page) => page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
     },
-    submit: () => clickLoginButton(page, context.signal),
-    waitForSuccess: (signal) => waitForSignedInState(page, signal,
-      () => context.event("authentication", "failed", "provider-service-unavailable")),
-  });
-  await dismissPasswordExpiryNotice(page, context.signal);
-  if (!(await isSignedIn(page, context.signal))) {
-    throw new Error("SinoPac sign-in did not reach a confirmed authenticated page.");
-  }
+    submit: clickLoginButton,
+    prompts: dismissPasswordExpiryNotice,
+    dialogs: "fail",
+    session: sinopacSessionProbe,
+    timeoutMs: 300_000,
+  };
 }
 
 function isSinopacEndpointResponse(response: Response, pathname: string): boolean {
@@ -1816,13 +1703,7 @@ export async function runSinopacProviderWorkflow(
   await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
-    context.signal.throwIfAborted();
-    await context.event("authentication", "started", "authentication-started");
-    if (!(await isSignedIn(page, context.signal)))
-      await signInSinopacForApp(page, parsed.data.credentials, context);
-    context.signal.throwIfAborted();
-    await dismissPasswordExpiryNotice(page, context.signal);
-    await context.event("authentication", "completed", "authentication-completed");
+    const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(parsed.data.credentials));
 
     const endDate = parsed.data.endDate ?? formatYYYYMMDD(new Date(context.now()));
     const startDate = parsed.data.startDate ?? formatYYYYMMDD(
@@ -1836,16 +1717,6 @@ export async function runSinopacProviderWorkflow(
     const dateRange = resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
-    // The logout link can render after a dismissed notice, so give it time before calling the session lost.
-    const assertSession = async () => {
-      const signedIn = sinopacSignedInPageUrl(page.url()) && await withAbort(
-        page.locator('a#user-logout, a[href*="MMALogout"]').first()
-          .waitFor({ state: "visible", timeout: 10_000 })
-          .then(() => true, () => false),
-        context.signal,
-      );
-      if (!signedIn) throw new ProductCollectionFatalError("authentication-failed");
-    };
     let deposit: SinopacDepositCollection | null = null;
     const summary = await collectSelectedProducts({
       productIds: ["deposit"],
