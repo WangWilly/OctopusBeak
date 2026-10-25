@@ -33,6 +33,7 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     ranToday: false,
     credentialsReady: true,
     setupRequired: false,
+    canonicalResetRequired: false,
     primaryAction: "Run",
     canRun: true,
     latestRunStatus: overrides.status ?? "queued",

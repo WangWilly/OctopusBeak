@@ -27,27 +27,48 @@ export function promisesBilledMonotonicity(bucket: CreditCardQueryBucket): boole
   return BILLED_MONOTONICITY[bucket.kind];
 }
 
+/** Each kind's fields in stored order, after `kind`. */
+const BUCKET_FIELDS: Readonly<Record<CreditCardQueryBucket["kind"], readonly string[]>> = {
+  statement: ["period"],
+  unbilled: [],
+  month: ["month"],
+  "partial-month": ["month", "queriedOn"],
+  "history-range": ["start", "end"],
+};
+
+/**
+ * The stored bucket key: compact JSON with `kind` first and each kind's fields
+ * in a fixed order, so one bucket always has exactly one key.
+ */
 export function encodeCreditCardQueryBucket(bucket: CreditCardQueryBucket): string {
-  switch (bucket.kind) {
-    case "statement": return `statement:${bucket.period}`;
-    case "unbilled": return "unbilled";
-    case "month": return `month:${bucket.month}`;
-    case "partial-month": return `partial-month:${bucket.month}:queried-on:${bucket.queriedOn}`;
-    case "history-range": return `history-range:${bucket.start}:${bucket.end}`;
-  }
+  const fields = bucket as Readonly<Record<string, string>>;
+  return JSON.stringify(Object.fromEntries([
+    ["kind", bucket.kind],
+    ...BUCKET_FIELDS[bucket.kind].map((field) => [field, fields[field]]),
+  ]));
 }
 
 export function decodeCreditCardQueryBucket(key: string): CreditCardQueryBucket {
-  if (key === "unbilled") return { kind: "unbilled" };
-  const statement = /^statement:(.+)$/u.exec(key);
-  if (statement) return { kind: "statement", period: statement[1]! };
-  const partialMonth = /^partial-month:(.+):queried-on:([^:]+)$/u.exec(key);
-  if (partialMonth) return { kind: "partial-month", month: partialMonth[1]!, queriedOn: partialMonth[2]! };
-  const month = /^month:(.+)$/u.exec(key);
-  if (month) return { kind: "month", month: month[1]! };
-  const historyRange = /^history-range:([^:]+):([^:]+)$/u.exec(key);
-  if (historyRange) return { kind: "history-range", start: historyRange[1]!, end: historyRange[2]! };
-  throw new Error("Credit-card query bucket key is not recognized.");
+  let value: unknown;
+  try {
+    value = JSON.parse(key);
+  } catch {
+    value = undefined;
+  }
+  const fields = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const kind = fields.kind;
+  const names = typeof kind === "string" && Object.hasOwn(BUCKET_FIELDS, kind)
+    ? BUCKET_FIELDS[kind as CreditCardQueryBucket["kind"]]
+    : undefined;
+  if (
+    names === undefined ||
+    names.some((name) => typeof fields[name] !== "string" || fields[name] === "") ||
+    encodeCreditCardQueryBucket(fields as CreditCardQueryBucket) !== key
+  )
+    throw new Error("Credit-card query bucket key is not recognized.");
+  return fields as CreditCardQueryBucket;
 }
 
 export function isBucketInInventory(

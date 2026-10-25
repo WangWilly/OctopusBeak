@@ -135,6 +135,7 @@
     ): Promise<void>;
   } | undefined;
   let signInSettingsGroupId: string | null = null;
+  let focusFinancialDataDeletion = false;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
   let overviewReloading = false;
@@ -1116,6 +1117,10 @@
       onOnboardingWorkflowStartFailed={workflowStartFailed}
       {signInSettingsGroupId}
       onSignInSettingsOpened={() => (signInSettingsGroupId = null)}
+      onOpenFinancialDataSettings={() => {
+        focusFinancialDataDeletion = true;
+        navigateToRoute("settings");
+      }}
     />
     <RouteLoadNotice state={automation} retry={() => void loadRoute("automation", { force: true })} />
   {:else}
@@ -1125,6 +1130,8 @@
   {/if}
 {:else}
   <SettingsPage
+    {focusFinancialDataDeletion}
+    onFinancialDataDeletionFocused={() => (focusFinancialDataDeletion = false)}
     onboardingStatus={onboardingState?.status ?? null}
     onboardingEndedAt={onboardingState?.endedAt ?? null}
     onboardingLinkedSources={settingsAutomation?.linkedSources ?? 0}

@@ -305,6 +305,9 @@ export async function runCaptchaRetryCampaign(
     // commit with a cancelled outcome or admit another execution of the run.
     const assessed = run.assess(report);
     if (assessed.errorCode === "commit-outcome-unknown") return report;
+    // Another round would sign in again only to be refused until the person
+    // runs a Canonical Reset (ADR 0062).
+    if (assessed.errorCode === "canonical-reset-required") return report;
     if (routing?.kind === "failed") return failed(report);
     if (run.signal.aborted || assessed.status === "cancelled") {
       campaign = markCaptchaCampaignCancelled(campaign);

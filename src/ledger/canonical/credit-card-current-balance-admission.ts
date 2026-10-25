@@ -3,6 +3,10 @@ import {
   stableCanonicalSourceJson,
   type CanonicalSourcePage,
 } from "./canonical-source-evidence.ts";
+import { creditCardSpineEpochKey, type CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts";
+import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "./esun-credit-card-human-attestation-contract.ts";
+import { FUBON_CREDIT_CARD_IDENTITY_EPOCHS } from "./fubon-credit-card-human-attestation-contract.ts";
+import { YUANTA_CREDIT_CARD_IDENTITY_EPOCHS } from "./yuanta-credit-card-human-attestation-contract.ts";
 
 export type CreditCardEstimateKind = "estimate";
 export type CreditCardEstimateBasis =
@@ -185,6 +189,15 @@ export const CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS: Readonly<
   },
 });
 
+const CREDIT_CARD_IDENTITY_EPOCHS: Readonly<Record<
+  CreditCardCurrentBalanceIdentity["integrationNamespace"],
+  CreditCardIdentityEpochs
+>> = {
+  yuanta: YUANTA_CREDIT_CARD_IDENTITY_EPOCHS,
+  esun: ESUN_CREDIT_CARD_IDENTITY_EPOCHS,
+  fubon: FUBON_CREDIT_CARD_IDENTITY_EPOCHS,
+};
+
 /**
  * Map a workflow identity to the canonical account epoch used by the
  * existing credit-card financial spine.  This is domain separation only; no
@@ -204,12 +217,10 @@ export function canonicalCreditCardCurrentBalanceIdentity(input: Readonly<{
       input.integrationNamespace === "esun"
         ? digest("esun-credit-connection-v1", input.sourceConnectionKey)
         : input.sourceConnectionKey,
-    identityEpochKey:
-      input.integrationNamespace === "yuanta"
-        ? digest("yuanta-credit-epoch-v2", input.identityEpochKey)
-        : input.integrationNamespace === "esun"
-          ? digest("esun-credit-epoch-v1", input.identityEpochKey)
-          : digest("fubon-credit-epoch-v2", input.identityEpochKey),
+    identityEpochKey: creditCardSpineEpochKey(
+      CREDIT_CARD_IDENTITY_EPOCHS[input.integrationNamespace],
+      input.identityEpochKey,
+    ),
     stream: "credit-card",
     sourceAccountKey: input.sourceAccountKey,
   };

@@ -1,3 +1,4 @@
+import { supersededCreditCardSpineEpochKeys } from "./credit-card-identity-epochs.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
   ctbcHumanAttestationFingerprint,
@@ -5,6 +6,7 @@ import {
 import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   esunCreditCardHumanAttestedManifestFingerprint,
+  ESUN_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./esun-credit-card-human-attestation-contract.ts";
 import {
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
@@ -13,6 +15,7 @@ import {
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   fubonCreditCardHumanAttestedManifestFingerprint,
+  FUBON_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./fubon-credit-card-human-attestation-contract.ts";
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
@@ -47,6 +50,7 @@ import {
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   yuantaCreditCardHumanAttestedV2ManifestFingerprint,
+  YUANTA_CREDIT_CARD_IDENTITY_EPOCHS,
 } from "./yuanta-credit-card-human-attestation-contract.ts";
 
 /**
@@ -84,6 +88,13 @@ export type CanonicalSourceRouteRegistration = Readonly<{
    * admitted occurrence and revises its transaction (ADR 0055).
    */
   revisablePayloadFields?: readonly string[];
+  /**
+   * Persisted identity epoch keys this route's captures replace (ADR 0062).
+   * While the capture's Source Connection still holds a Financial Account of
+   * this stream under one of them, the store refuses the capture until a
+   * Canonical Reset.
+   */
+  supersededIdentityEpochs?: readonly string[];
 }>;
 
 export type CanonicalSourceRuleCombination = Readonly<{
@@ -282,6 +293,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     humanAttestation: attestationFromContract(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, fubonCreditCardHumanAttestedManifestFingerprint(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST), "restored"),
     occurrenceGroups: "required",
     occurrenceGroupCoverage: "queried-buckets",
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(FUBON_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "esun/credit-card/human-attested-v4",
@@ -292,6 +304,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     humanAttestation: attestationFromContract(ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, esunCreditCardHumanAttestedManifestFingerprint(ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST), "restored"),
     occurrenceGroups: "required",
     occurrenceGroupCoverage: "queried-buckets",
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "yuanta/credit-card/human-attested-v2",
@@ -302,6 +315,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     humanAttestation: attestationFromContract(YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, yuantaCreditCardHumanAttestedV2ManifestFingerprint(YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST), "restored"),
     occurrenceGroups: "required",
     occurrenceGroupCoverage: "queried-buckets",
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(YUANTA_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "yuanta/credit-card/current-used-credit-v1",
@@ -309,6 +323,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     stream: "credit-card",
     contractVersions: ["yuanta/credit-card/current-used-credit-v1"],
     ruleCombinations: [effectiveTimeOnly("yuanta/credit-card/current-used-credit-v1", "yuanta/credit-card/current-used-credit-v1")],
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(YUANTA_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "esun/credit-card/current-used-credit-v1",
@@ -316,6 +331,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     stream: "credit-card",
     contractVersions: ["esun/credit-card/current-used-credit-v1"],
     ruleCombinations: [effectiveTimeOnly("esun/credit-card/current-used-credit-v1", "esun/credit-card/current-used-credit-v1")],
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "esun/credit-card/current-used-credit-v2",
@@ -323,6 +339,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     stream: "credit-card",
     contractVersions: ["esun/credit-card/current-used-credit-v2"],
     ruleCombinations: [effectiveTimeOnly("esun/credit-card/current-used-credit-v2", "esun/credit-card/current-used-credit-v2")],
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "fubon/credit-card/current-used-credit-v1",
@@ -330,6 +347,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     stream: "credit-card",
     contractVersions: ["fubon/credit-card/current-used-credit-v1"],
     ruleCombinations: [effectiveTimeOnly("fubon/credit-card/current-used-credit-v1", "fubon/credit-card/current-used-credit-v1")],
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(FUBON_CREDIT_CARD_IDENTITY_EPOCHS),
   },
   {
     routeKey: "cathay/domestic-deposit/v1",

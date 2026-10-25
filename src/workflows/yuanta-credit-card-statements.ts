@@ -25,6 +25,7 @@ import {
   type YuantaCreditCardStatementSummary,
   type YuantaCreditCardValidatedCapture,
 } from "../ledger/canonical/yuanta-credit-card-admission.ts";
+import { YUANTA_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts";
 import { statementGridQueryShortfalls } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
@@ -321,13 +322,12 @@ const inputSchema = yuantaCreditCardStatementsInputSchema;
 type WorkflowInput = z.infer<typeof inputSchema>;
 
 /**
- * The workflow's Yuanta identity epoch is deliberately tied to the
- * human-attested credit-card contract. The stable login identity derives the
- * shared Source Connection key; the managed secret is used only for the
- * separate portfolio attestation. Neither is returned as raw input.
+ * The workflow's Yuanta identity epoch is declared by the human-attested
+ * credit-card contract. The stable login identity derives the shared Source
+ * Connection key; the managed secret is used only for the separate portfolio
+ * attestation. Neither is returned as raw input.
  */
-export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH =
-  "yuanta-credit-card-human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH = YUANTA_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
 export type YuantaCanonicalHumanAttestation = {
   sourceConnectionKey: string;

@@ -1067,7 +1067,7 @@ const automaticFingerprintKey = { secret: "synthetic-managed-fingerprint-key" };
 const automaticInput = fubonCreditCardStatementsInputSchema.parse({
   canonicalHumanAttestation: {
     sourceConnectionKey: fubonAutomaticSourceConnectionKey,
-    identityEpochKey: "fubon-credit-card-human-attested-v2",
+    identityEpochKey: "fubon-credit-card-query-inventory-v1",
     humanAttestedAccountKey: "portfolio_automatic_a",
   },
 });
@@ -1389,7 +1389,7 @@ const rotatedAutomaticCaptures = buildFubonCanonicalCreditCardCaptures({
   input: fubonCreditCardStatementsInputSchema.parse({
     canonicalHumanAttestation: {
       sourceConnectionKey: fubonOtherSourceConnectionKey,
-      identityEpochKey: "fubon-credit-card-human-attested-v2",
+      identityEpochKey: "fubon-credit-card-query-inventory-v1",
       humanAttestedAccountKey: "portfolio-other-a",
     },
   }),

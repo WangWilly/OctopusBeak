@@ -18,20 +18,49 @@ import {
 } from "./credit-card-query-inventory.ts";
 
 const buckets: readonly (readonly [CreditCardQueryBucket, string, boolean])[] = [
-  [{ kind: "statement", period: "2026/09" }, "statement:2026/09", true],
-  [{ kind: "unbilled" }, "unbilled", false],
-  [{ kind: "month", month: "2026/09" }, "month:2026/09", true],
-  [{ kind: "partial-month", month: "2025/10", queriedOn: "2026-10-25" }, "partial-month:2025/10:queried-on:2026-10-25", true],
-  [{ kind: "history-range", start: "2025-10-25", end: "2026-10-25" }, "history-range:2025-10-25:2026-10-25", false],
+  [{ kind: "statement", period: "2026/09" }, '{"kind":"statement","period":"2026/09"}', true],
+  [{ kind: "unbilled" }, '{"kind":"unbilled"}', false],
+  [{ kind: "month", month: "2026/09" }, '{"kind":"month","month":"2026/09"}', true],
+  [
+    { kind: "partial-month", month: "2025/10", queriedOn: "2026-10-25" },
+    '{"kind":"partial-month","month":"2025/10","queriedOn":"2026-10-25"}',
+    true,
+  ],
+  [
+    { kind: "history-range", start: "2025-10-25", end: "2026-10-25" },
+    '{"kind":"history-range","start":"2025-10-25","end":"2026-10-25"}',
+    false,
+  ],
 ];
 
-test("each query bucket kind keeps its stored key and decodes back to itself", () => {
+test("each query bucket kind has one stored key and decodes back to itself", () => {
   for (const [bucket, key] of buckets) {
     assert.equal(encodeCreditCardQueryBucket(bucket), key);
     assert.deepEqual(decodeCreditCardQueryBucket(key), bucket);
   }
-  assert.throws(() => decodeCreditCardQueryBucket("statement:"), /not recognized/u);
-  assert.throws(() => decodeCreditCardQueryBucket("quarter:2026/Q3"), /not recognized/u);
+});
+
+test("the decoder accepts only the canonical structured key", () => {
+  for (const legacy of [
+    "statement:2026/09",
+    "unbilled",
+    "month:2026/09",
+    "partial-month:2025/10:queried-on:2026-10-25",
+    "history-range:2025-10-25:2026-10-25",
+  ])
+    assert.throws(() => decodeCreditCardQueryBucket(legacy), /not recognized/u, legacy);
+  for (const malformed of [
+    '{"period":"2026/09","kind":"statement"}',
+    '{"kind":"statement", "period":"2026/09"}',
+    '{"kind":"statement","period":""}',
+    '{"kind":"statement","period":202609}',
+    '{"kind":"statement"}',
+    '{"kind":"unbilled","period":"2026/09"}',
+    '{"kind":"quarter","quarter":"2026/Q3"}',
+    '["statement","2026/09"]',
+    "null",
+  ])
+    assert.throws(() => decodeCreditCardQueryBucket(malformed), /not recognized/u, malformed);
 });
 
 test("statement and month buckets promise billed monotonicity; unbilled and history ranges do not", () => {

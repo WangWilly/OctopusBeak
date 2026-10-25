@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { PGliteStore } from "./transaction.ts";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  canonicalSourceRouteRegistration,
+  type CanonicalSourceRouteRegistration,
+} from "../canonical/canonical-source-route-registry.ts";
+import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 /**
  * Every table a Canonical Reset keeps; every other table in the store holds
@@ -67,4 +72,53 @@ export async function resetPGliteCanonicalStore(store: PGliteStore): Promise<voi
     );
   });
   await store.exec("CHECKPOINT");
+}
+
+type SupersededEpoch = Readonly<{ namespace: string; stream: string; epoch_key: string }>;
+
+function supersededEpochs(registrations: readonly CanonicalSourceRouteRegistration[]): readonly SupersededEpoch[] {
+  return registrations.flatMap((registration) =>
+    (registration.supersededIdentityEpochs ?? []).map((epochKey) => ({
+      namespace: registration.integrationNamespace,
+      stream: registration.stream,
+      epoch_key: epochKey,
+    })));
+}
+
+const ALL_SUPERSEDED_EPOCHS = JSON.stringify(supersededEpochs(CANONICAL_SOURCE_ROUTE_REGISTRY));
+
+/** Source Connections holding a Financial Account under any of the epochs in `$1`. */
+const SUPERSEDED_ACCOUNTS_SQL = `
+  SELECT DISTINCT connection.integration_namespace, connection.source_connection_key
+    FROM financial_accounts account
+    JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+    JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
+   WHERE (connection.integration_namespace, account.stream, epoch.epoch_key) IN (
+     SELECT * FROM jsonb_to_recordset($1::jsonb) AS superseded(namespace TEXT, stream TEXT, epoch_key TEXT)
+   )`;
+
+/**
+ * Whether the capture's Source Connection still holds a Financial Account
+ * under an identity epoch its route declares superseded (ADR 0062). Such a
+ * capture would admit a second account beside the old one, so it waits for a
+ * Canonical Reset.
+ */
+export async function canonicalResetRequiredFor(
+  transaction: Pick<PGliteTransaction, "query">,
+  capture: Readonly<{ routeKey: string; integrationNamespace: string; sourceConnectionKey: string }>,
+): Promise<boolean> {
+  const route = canonicalSourceRouteRegistration(capture.routeKey);
+  const rows = await transaction.query(
+    `${SUPERSEDED_ACCOUNTS_SQL} AND connection.integration_namespace = $2 AND connection.source_connection_key = $3`,
+    [JSON.stringify(supersededEpochs(route ? [route] : [])), capture.integrationNamespace, capture.sourceConnectionKey],
+  );
+  return rows.rows.length > 0;
+}
+
+/** Integration namespaces whose captures the store refuses until a Canonical Reset. */
+export async function canonicalResetRequiredNamespaces(
+  store: Pick<PGliteStore, "query">,
+): Promise<readonly string[]> {
+  const rows = await store.query<{ integration_namespace: string }>(SUPERSEDED_ACCOUNTS_SQL, [ALL_SUPERSEDED_EPOCHS]);
+  return [...new Set(rows.rows.map((row) => row.integration_namespace))].sort();
 }

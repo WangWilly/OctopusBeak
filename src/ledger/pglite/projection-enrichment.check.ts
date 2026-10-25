@@ -17,6 +17,7 @@ import {
   createForeignCurrencyDepositCapture,
 } from "../canonical/foreign-currency-deposit-admission.ts";
 import { YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../canonical/foreign-currency-deposit.fixtures.ts";
+import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inventory.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
   FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2,
@@ -175,7 +176,7 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
   const route = "fubon/credit-card/human-attested-v2";
   const groupScope = token(`${captureId}:occurrence-scope`);
   const groupFingerprint = token(`${captureId}:transaction-group`);
-  const statementBucket = "statement:2026/09";
+  const statementBucket = encodeCreditCardQueryBucket({ kind: "statement", period: "2026/09" });
   const records = [
     { occurrenceKey: instrumentOccurrence, providerKey: token(`${captureId}:instrument-provider`), contentHash: token(`${captureId}:instrument-content`), compact: { instrumentKey: "projection-card-instrument" }, description: "Card instrument" },
     { occurrenceKey: transactionOccurrence, occurrenceGroup: { scopeKey: groupScope, fingerprint: groupFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: statementBucket, providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { sourceSequence: "card-1", direction }, description: "Card purchase" },
