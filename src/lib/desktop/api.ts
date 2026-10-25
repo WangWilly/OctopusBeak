@@ -231,6 +231,12 @@ export type OctopusBeakApi = {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
     deletePreviewData(): Promise<void>;
+    /** Canonical Reset: every source's financial data. */
+    deleteFinancialData(): Promise<void>;
+    /** Sign-in Erasure: every source's sign-in details and sessions. */
+    clearSignInData(): Promise<void>;
+    /** Starts every enabled source, as scheduled collection would. */
+    collectAllSources(): Promise<AutomationRunManyResult>;
   };
   spending: {
     loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;

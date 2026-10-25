@@ -93,6 +93,12 @@ test("Settings offers onboarding start when none exists and restart only for com
     const { version } = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version: string };
     assert.match(text(renderSettings("completed")), new RegExp(`OctopusBeak ${version.replaceAll(".", "\\.")}`));
 
+    for (const label of ["Delete all financial data", "Clear all sign-in data"]) {
+      const button = findButton(renderSettings("completed"), label);
+      assert.ok(button, `Settings offers ${label}`);
+      assert.match(button, /class="button danger\b/, `${label} looks destructive`);
+    }
+
     for (const status of ["completed", "exited"] as const) {
       const pendingButton = findButton(renderSettings(status, true), "Restarting...");
       assert.ok(pendingButton);

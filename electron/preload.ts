@@ -68,6 +68,9 @@ const INVOKE_CHANNELS = {
     load: "settings:load",
     save: "settings:save",
     deletePreviewData: "settings:deletePreviewData",
+    deleteFinancialData: "settings:deleteFinancialData",
+    clearSignInData: "settings:clearSignInData",
+    collectAllSources: "settings:collectAllSources",
   },
   // A channel named after a financial operation forwards to it unchanged
   // (ipc-channels.ts); the others have their own main-process handler.

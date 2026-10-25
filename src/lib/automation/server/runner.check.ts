@@ -367,6 +367,29 @@ test("cancellation reaches the typed execution through the run's signal and ends
   assert.equal(runner.hasActive(), false);
 });
 
+test("work held for a data deletion runs only after every active run is cancelled and terminal", async () => {
+  const runner = freshRunner();
+  const { runs, automation } = memoryAutomation();
+  const provider = providerStub(automation);
+  const started = deferred();
+  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+    started.resolve();
+    await aborted(run.signal);
+    return { summary: null, failure: { code: "cancelled", proven: true } };
+  };
+  const { runId } = await runner.start("exchange-rates", provider, { runExecution });
+  await started.promise;
+
+  const statusWhenWorkRan = await runner.whileStopped(async () => {
+    await assert.rejects(runner.start("exchange-rates", provider, { runExecution }), /paused while local data is being deleted/u);
+    return { status: runs.get(runId)?.status, active: runner.hasActive() };
+  });
+  assert.deepEqual(statusWhenWorkRan, { status: "cancelled", active: false });
+
+  const next = await runner.start("exchange-rates", provider, { runExecution: async () => ({ summary: null, failure: null }) });
+  assert.notEqual(next.runId, runId, "runs start again once the work settles");
+});
+
 test("force-quit aborts the run's force signal and settles only after the execution does", async () => {
   const runner = freshRunner();
   const provider = providerStub();

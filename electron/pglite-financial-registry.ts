@@ -116,6 +116,7 @@ import {
   resolvePGliteAccountIdentityContinuity,
   type AccountIdentityContinuityRequest,
 } from "../src/ledger/pglite/account-identity-continuity.ts";
+import { resetPGliteCanonicalStore } from "../src/ledger/pglite/canonical-reset.ts";
 import {
   resolvePGliteCanonicalLoanRepaymentRelations,
   resolvePGliteCanonicalInvestmentFundingRelations,
@@ -657,6 +658,7 @@ export function createPGliteFinancialRegistry(
     "financial.exchangeRates.upsert": ([rows]) => exchangeRates.upsertExchangeRates(rows),
     "financial.tdccFundAccounts.list": ([connection]) => listPGliteTdccFundAccounts(store, connection),
     "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
+    "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
   });
 }
 
