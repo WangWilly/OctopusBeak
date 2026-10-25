@@ -2044,12 +2044,12 @@ import type {
               </div>
             {/if}
 
-            {#if group.sessionTakeoverNotice}
+            {#if group.sessionTakeover}
               <div class="source-notice" role="note">
                 <Smartphone size={16} aria-hidden="true" />
                 <p>
                   <strong>{$t.automation.sessionTakeoverTitle}</strong>
-                  <span>{localizedText(group.sessionTakeoverNotice)}</span>
+                  <span>{localizedText(group.sessionTakeover.notice)}</span>
                 </p>
               </div>
             {/if}

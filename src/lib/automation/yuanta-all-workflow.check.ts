@@ -35,6 +35,21 @@ function item(product: string, value = "complete"): PGliteWorkflowRunItem {
   };
 }
 
+/** A page already signed in to Yuanta Bank, as the shared signed-in probe reads it. */
+function signedInPage(): Page {
+  const frame = (name: string) => ({
+    name: () => name,
+    url: () => "https://ebank.yuantabank.com.tw/nib/tx/home",
+    locator: () => ({ count: async () => 1 }),
+  });
+  const frames = [frame("fmenu"), frame("fmain")];
+  return {
+    url: () => "https://ebank.yuantabank.com.tw/nib/tx/home",
+    frames: () => frames,
+    frame: ({ name }: { name: string }) => frames.find((candidate) => candidate.name() === name) ?? null,
+  } as unknown as Page;
+}
+
 function context(
   signal: AbortSignal,
   calls: string[],
@@ -46,14 +61,12 @@ function context(
     signal,
     now: () => "2026-09-25T00:00:00.000Z",
     browser: {
-      withPage: async <T>(run: (page: Page) => Promise<T>) => run({} as Page),
+      withPage: async <T>(run: (page: Page) => Promise<T>) => run(signedInPage()),
     },
     text,
-    humanAssistance: {
-      request: async (contract: { stageId?: string }, receivedSignal: AbortSignal) => {
-        assert.equal(receivedSignal, signal);
-        calls.push(`human:${contract.stageId}`);
-        return "verified" as const;
+    verification: {
+      complete: async (stage) => {
+        calls.push(`human:${stage.stageId}`);
       },
     },
     financialCommit: {
@@ -110,21 +123,12 @@ const productTypes = ["deposit", "foreign_currency", "credit_card", "loan", "fun
 
 function collectors(calls: string[]) {
   return {
-    authenticate: async (_page: Page, _credentials: unknown, workflowContext: WorkflowContext) => {
-      const status = await workflowContext.humanAssistance.request(
-        { stageId: "yuanta-bank-login-captcha" } as never,
-        workflowContext.signal,
-      );
-      assert.equal(status, "verified");
-      calls.push("authenticated");
-    },
     collectDeposit: collector(products[0]!, calls),
     collectForeignCurrency: collector(products[1]!, calls),
     collectCreditCard: collector(products[2]!, calls),
     collectLoan: collector(products[3]!, calls),
     collectFund: collector(products[4]!, calls),
     prepareForComponent: async (_page: Page, product: string) => { calls.push(`prepared:${product}`); },
-    assertSession: async () => undefined,
     signOut: async () => { calls.push("signed-out"); },
   };
 }
@@ -159,8 +163,10 @@ try {
       products.map((product) => [[product, `${product}-capture-1`]]),
       "each commit contains only its product's completed evidence",
     );
-    assert.ok(calls.includes("human:yuanta-bank-login-captcha"));
-    assert.ok(calls.includes("event:authentication:authentication-completed"));
+    assert.deepEqual(
+      calls.filter((call) => call.startsWith("event:authentication:")),
+      ["event:authentication:authentication-started", "event:authentication:authentication-completed"],
+    );
     assert.ok(calls.includes("event:validation:source-validation-completed"));
     assert.ok(calls.indexOf("investment-collected") < calls.lastIndexOf("commit"));
   }

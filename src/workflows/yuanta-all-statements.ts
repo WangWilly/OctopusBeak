@@ -1,4 +1,3 @@
-import { humanAssistanceEvent } from "./human-assistance.ts";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -10,10 +9,11 @@ import {
   ProductCollectionFatalError,
   type ProductCollectionActivityReporter,
 } from "../lib/automation/product-collection.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import { signIn } from "./sign-in.ts";
 import {
-  authenticateYuantaBankWithAssistance,
   deriveYuantaSourceConnectionKey,
-  isYuantaSignedIn,
+  yuantaBankSignInPlan,
   yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
@@ -55,7 +55,6 @@ const yuantaLoanStatementsInputSchema = z.object({
     endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
   }).optional(),
   loanAccountFilters: z.array(z.string()).default([]),
-  replaceActiveSession: z.boolean().default(true),
 });
 
 function componentInputSchema(schema: z.ZodTypeAny) {
@@ -118,7 +117,6 @@ type YuantaWorkflowIdentity = Readonly<{
 }>;
 
 export type YuantaAllWorkflowDependencies = Readonly<{
-  authenticate?: (page: Page, credentials: YuantaCredentials, context: WorkflowContext) => Promise<void>;
   collectDeposit?: (
     page: Page,
     input: unknown,
@@ -160,26 +158,8 @@ export type YuantaAllWorkflowDependencies = Readonly<{
     reportActivity: ProductCollectionActivityReporter,
   ) => Promise<YuantaWorkflowCollectionSummary>;
   prepareForComponent?: (page: Page, product: string) => Promise<void>;
-  assertSession?: (page: Page) => Promise<void>;
   signOut?: (page: Page) => Promise<void>;
 }>;
-
-async function assertYuantaSession(page: Page): Promise<void> {
-  if (page.isClosed() || !(await isYuantaSignedIn(page)))
-    throw new ProductCollectionFatalError("authentication-failed");
-}
-
-async function authenticateYuantaForApp(
-  page: Page,
-  credentials: YuantaCredentials,
-  context: WorkflowContext,
-): Promise<void> {
-  await authenticateYuantaBankWithAssistance(page, credentials, true, {
-    signal: context.signal,
-    request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: humanAssistanceEvent(context),
-  });
-}
 
 async function collectYuantaDepositForApp(
   page: Page,
@@ -310,14 +290,12 @@ export async function runYuantaAllStatementsWorkflow(
     managedSecret: secret,
     canonicalHumanAttestation,
   };
-  const authenticate = overrides.authenticate ?? authenticateYuantaForApp;
   const collectDeposit = overrides.collectDeposit ?? collectYuantaDepositForApp;
   const collectForeign = overrides.collectForeignCurrency ?? collectYuantaForeignForApp;
   const collectCreditCard = overrides.collectCreditCard ?? collectYuantaCreditCardForApp;
   const collectLoan = overrides.collectLoan ?? collectYuantaLoanForApp;
   const collectFund = overrides.collectFund ?? collectYuantaFundForApp;
   const prepare = overrides.prepareForComponent ?? prepareYuantaPageForApp;
-  const assertSession = overrides.assertSession ?? assertYuantaSession;
   const signOut = overrides.signOut ?? logoutYuantaForApp;
 
   const productIds = ["deposit", "foreign_currency", "credit_card", "loan", "fund"] as const;
@@ -352,11 +330,7 @@ export async function runYuantaAllStatementsWorkflow(
   await context.event("preparation", "completed", "input-validated");
   return await context.browser.withPage(async (page) => {
     try {
-      context.signal.throwIfAborted();
-      await context.event("authentication", "started", "authentication-started");
-      await authenticate(page, credentials, context);
-      context.signal.throwIfAborted();
-      await context.event("authentication", "completed", "authentication-completed");
+      const { assertSession } = await signIn(context, page, YUANTA_SOURCE, yuantaBankSignInPlan(credentials));
       await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
@@ -366,7 +340,7 @@ export async function runYuantaAllStatementsWorkflow(
         prepare: async (typeId) => {
           if (typeId !== "deposit") await prepare(page, typeId);
         },
-        assertSession: () => assertSession(page),
+        assertSession,
         collect: async (typeId, stagedItems, reportActivity) => {
           const result = await collectors[typeId]!(
             page,

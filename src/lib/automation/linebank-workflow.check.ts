@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
-import type { HumanAssistanceContractInput } from "./human-assistance.ts";
 import { workflowDefinitionForTask } from "./server/app-workflow-registry.ts";
 import { strictSourceText } from "./source-text.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -12,6 +11,7 @@ import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-p
 import type {
   WorkflowContext,
   WorkflowContextWith,
+  WorkflowHumanAssistancePort,
 } from "./workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
@@ -90,9 +90,11 @@ function createPage(options: {
   onSourceRead?: () => void;
   signInAfterPolls?: number;
   onPoll?: () => void;
-} = {}): Page & { setSignedIn(value: boolean): void } {
+  notice?: boolean;
+} = {}): Page & { setSignedIn(value: boolean): void; noticeOpen(): boolean } {
   let signedIn = options.signedIn ?? true;
   let polls = 0;
+  let noticeOpen = options.notice ?? false;
   let currentUrl = signedIn
     ? "https://accessibility.linebank.com.tw/transaction"
     : "https://accessibility.linebank.com.tw/login";
@@ -129,21 +131,40 @@ function createPage(options: {
     async textContent() { return "2026/09"; },
     async boundingBox() { return { x: 1, y: 1, width: 640, height: 480 }; },
   });
+  const noticeButton = {
+    async count() { return 1; },
+    nth() { return noticeButton; },
+    async isVisible() { return true; },
+    async click() { noticeOpen = false; },
+  };
+  const notice = {
+    async count() { return noticeOpen ? 1 : 0; },
+    nth() { return notice; },
+    async isVisible() { return noticeOpen; },
+    getByRole: () => noticeButton,
+    async waitFor() { return undefined; },
+  };
+  // The sign-in step checks for the approved alertdialog once per poll.
+  const poll = () => {
+    polls += 1;
+    options.onPoll?.();
+    if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
+      signedIn = true;
+      currentUrl = "https://accessibility.linebank.com.tw/transaction";
+    }
+  };
   const page = {
     url: () => currentUrl,
     locator: fakeLocator,
-    getByRole: (_role: string, options?: { name?: string }) =>
-      fakeLocator(`role:${options?.name ?? ""}`),
+    getByRole: (role: string, options?: { name?: string }) => {
+      if (role !== "alertdialog") return fakeLocator(`role:${options?.name ?? ""}`);
+      poll();
+      return notice;
+    },
+    on: () => undefined,
+    off: () => undefined,
     async goto(url: string) {
       currentUrl = url;
-    },
-    async waitForTimeout() {
-      polls += 1;
-      options.onPoll?.();
-      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
-        signedIn = true;
-        currentUrl = "https://accessibility.linebank.com.tw/transaction";
-      }
     },
     async waitForURL() { return undefined; },
     async evaluate(
@@ -177,18 +198,29 @@ function createPage(options: {
         ? "https://accessibility.linebank.com.tw/transaction"
         : "https://accessibility.linebank.com.tw/login";
     },
+    noticeOpen: () => noticeOpen,
   };
-  return page as unknown as Page & { setSignedIn(value: boolean): void };
+  return page as unknown as Page & { setSignedIn(value: boolean): void; noticeOpen(): boolean };
 }
 
 function createContext(options: {
   page?: Page & { setSignedIn?(value: boolean): void };
   signal?: AbortSignal;
-  onAssistance?: (contract: HumanAssistanceContractInput) => void;
+  onAssistance?: () => void;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const commits: unknown[][] = [];
   const assistance: string[] = [];
+  const assist = (stageId: string) => {
+    assistance.push(stageId);
+    options.onAssistance?.();
+  };
+  const humanAssistance: WorkflowHumanAssistancePort = {
+    async request(contract) {
+      assist(contract.stageId);
+      return "verified";
+    },
+  };
   let commitStarted = false;
   const selectedPage = options.page ?? createPage({
     onSourceRead() {
@@ -205,11 +237,9 @@ function createContext(options: {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract) {
-        assistance.push(contract.stageId);
-        options.onAssistance?.(contract);
-        return "verified";
+    verification: {
+      async complete(stage) {
+        assist(stage.stageId);
       },
     },
     financialCommit: {
@@ -241,7 +271,7 @@ function createContext(options: {
       events.push(signalRunEvent(signal, { runId: "linebank-typed-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, events, commits, assistance, page: selectedPage };
+  return { context, humanAssistance, events, commits, assistance, page: selectedPage };
 }
 
 const input = {
@@ -287,6 +317,14 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
   }
 });
 
+test("LINE Bank closes an approved alertdialog on an already signed-in page before it collects", async () => {
+  const page = createPage({ notice: true });
+  const harness = createContext({ page });
+  const result = await runLineBankProviderWorkflow(harness.context, input);
+  assert.equal(result.status, "financial-admitted");
+  assert.equal(page.noticeOpen(), false);
+});
+
 test("LINE Bank rejects malformed and incomplete sources before any commit", async () => {
   const malformed = createContext({ page: createPage({ malformedTransactions: true }) });
   await assert.rejects(runLineBankProviderWorkflow(malformed.context, input), (error: unknown) =>
@@ -312,7 +350,7 @@ for (const { stop, errorCode } of STOPPED_COMMITS) {
 }
 
 test("LINE Bank waits for delayed automatic sign-in without human fallback and honors cancellation", async () => {
-  const page = createPage({ signedIn: false, signInAfterPolls: 16 });
+  const page = createPage({ signedIn: false, signInAfterPolls: 4 });
   const automatic = createContext({
     page,
     onAssistance: () => page.setSignedIn?.(true),
@@ -333,7 +371,7 @@ test("LINE Bank waits for delayed automatic sign-in without human fallback and h
   const executor = createWorkflowExecutor([linebankStatementsWorkflow], {
     browser: cancelled.context.browser,
     text: cancelled.context.text,
-    humanAssistance: cancelled.context.humanAssistance,
+    humanAssistance: cancelled.humanAssistance,
     financialCommit: cancelled.context.financialCommit,
     commitAttempts: { record: async () => undefined },
     events: { async append(event) { cancelledEvents.push(event); } },
@@ -355,7 +393,7 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
   });
   await assert.rejects(
     runLineBankProviderWorkflow(pending.context, input),
-    /Timed out waiting for LINE Bank signed-in state/u,
+    /Sign-in did not settle within 120000 ms/u,
   );
   assert.equal(elapsed, 120_000);
   assert.deepEqual(pending.assistance, []);

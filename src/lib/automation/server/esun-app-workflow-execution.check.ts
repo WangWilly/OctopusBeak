@@ -132,13 +132,13 @@ function fakePage(now: Date, options: { signInWithCredentials?: boolean } = {}) 
     url: () => BANK_ENTRY_URL,
     goto: async () => undefined,
     on: () => undefined,
-    getByText: (text: string) => ({
-      isVisible: async () => text !== "信用卡" || signedIn,
-      waitFor: async () => {
-        if (text === "信用卡" && !signedIn) throw new Error("E.SUN sign-in is incomplete.");
-      },
-      click: async () => undefined,
-    }),
+    off: () => undefined,
+    getByText: (text: string | RegExp) => {
+      // Only the 信用卡 menu waits for sign-in; the pattern-matched takeover prompt never shows.
+      const visible = async () => (text === "信用卡" ? signedIn : typeof text === "string");
+      const textLocator = { first: () => textLocator, isVisible: visible, click: async () => undefined };
+      return textLocator;
+    },
     waitForEvent: async () => {
       popupRequestCount += 1;
       return popup(popupRequestCount === 2);

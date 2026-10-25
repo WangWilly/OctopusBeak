@@ -628,9 +628,11 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
         allowedHosts: ["www.megabank.com.tw"],
       }],
     },
-    sessionTakeoverNotice: {
-      en: "Mega Bank may treat a sync as a second sign-in and end the session in the Mega Bank App. This is not yet confirmed.",
-      "zh-TW": "兆豐銀行可能把同步視為重複登入，讓你的兆豐銀行 App 登出。此行為尚未確認。",
+    sessionTakeover: {
+      notice: {
+        en: "Mega Bank may treat a sync as a second sign-in and end the session in the Mega Bank App. This is not yet confirmed.",
+        "zh-TW": "兆豐銀行可能把同步視為重複登入，讓你的兆豐銀行 App 登出。此行為尚未確認。",
+      },
     },
     startUrl: START_URL,
     async run(context, input) {

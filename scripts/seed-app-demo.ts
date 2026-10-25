@@ -283,7 +283,6 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     accountFilters: [],
     currencyFilters: [],
     channelType: "all",
-    replaceActiveSession: true,
   }, { yuanta_user_id: "DEMO-YUANTA-USER" } as never, {
     collectOnly: true,
     deferredCommitItems: items,

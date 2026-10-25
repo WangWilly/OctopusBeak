@@ -25,12 +25,7 @@ import type {
 } from "./workflow-executor.ts";
 import {
   decodeCathayApiSourceResponse,
-  waitForCathayTrustedDeviceSignIn,
   type CathayDomesticFinancialCollection,
-} from "../../workflows/cathay-statements.ts";
-import type {
-  CathayAppLoginDependencies,
-  CathayCredentials,
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -133,77 +128,6 @@ test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response
   );
 });
 
-function signInPage(state: { signedIn?: boolean; challenge?: boolean }) {
-  const visible = (shown: boolean | undefined) => ({ isVisible: async () => shown === true });
-  return {
-    url: () => state.signedIn
-      ? "https://www.cathaybk.com.tw/OnlineBanking/Home"
-      : "https://www.cathaybk.com.tw/MyBank/",
-    waitForTimeout: async () => undefined,
-    getByText: () => ({ first: () => visible(state.signedIn) }),
-    locator: () => ({
-      filter: () => ({}),
-      or: () => ({ first: () => visible(state.challenge) }),
-    }),
-  } as unknown as Page;
-}
-
-function recordEvents() {
-  const events: string[] = [];
-  return { events, event: async (code: string) => { events.push(code); } };
-}
-
-test("a Cathay run that meets an OTP challenge stops asking for device registration", async () => {
-  const { events, event } = recordEvents();
-  await assert.rejects(
-    waitForCathayTrustedDeviceSignIn(signInPage({ challenge: true }), {
-      signal: new AbortController().signal,
-      event,
-    }),
-    (error: unknown) =>
-      error instanceof ProductCollectionFatalError &&
-      error.errorCode === "device-registration-required",
-  );
-  assert.deepEqual(events, ["device-registration-required"]);
-});
-
-test("a trusted Cathay device signs in without a code", async () => {
-  const { events, event } = recordEvents();
-  await waitForCathayTrustedDeviceSignIn(signInPage({ signedIn: true, challenge: true }), {
-    signal: new AbortController().signal,
-    event,
-  });
-  assert.deepEqual(events, []);
-});
-
-test("a Cathay sign-in that never settles fails verification", async () => {
-  const { events, event } = recordEvents();
-  await assert.rejects(
-    waitForCathayTrustedDeviceSignIn(signInPage({}), {
-      signal: new AbortController().signal,
-      event,
-    }, 0),
-    (error: unknown) =>
-      error instanceof ProductCollectionFatalError &&
-      error.errorCode === "verification-failed",
-  );
-  assert.deepEqual(events, ["authentication-sign-in-unconfirmed"]);
-});
-
-test("cancellation wins over the Cathay device-registration outcome", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  const { events, event } = recordEvents();
-  await assert.rejects(
-    waitForCathayTrustedDeviceSignIn(signInPage({ challenge: true }), {
-      signal: controller.signal,
-      event,
-    }),
-    (error: unknown) => error instanceof Error && error.name === "AbortError",
-  );
-  assert.deepEqual(events, []);
-});
-
 function resultFor(items: readonly unknown[]) {
   return {
     status: "completed",
@@ -221,6 +145,14 @@ function resultFor(items: readonly unknown[]) {
     failedCount: 0,
   };
 }
+
+/** A page already on Cathay's signed-in home, so the run's sign-in takes the existing session. */
+const signedInPage = {
+  url: () => "https://www.cathaybk.com.tw/OnlineBanking/Home",
+  getByText: () => ({ first: () => ({ isVisible: async () => true }) }),
+  on() {},
+  off() {},
+} as unknown as Page;
 
 function contextHarness(
   makeResult: (items: readonly unknown[]) => unknown = resultFor,
@@ -240,10 +172,10 @@ function contextHarness(
     signal: controller.signal,
     now: () => "2026-09-25T01:00:00.000Z",
     browser: {
-      withPage: (run) => run({ on() {}, off() {} } as unknown as Page),
+      withPage: (run) => run(signedInPage),
     },
     text: strictSourceText,
-    humanAssistance: { request: async () => "entered" },
+    verification: { complete: async () => undefined },
     financialCommit,
     event: async (stage, _outcome, code) => {
       events.push({ stage, code });
@@ -257,11 +189,6 @@ function contextHarness(
 
 function collectionDependencies(
   override: Partial<{
-    signIn: (
-      page: Page,
-      credentials: CathayCredentials,
-      dependencies: CathayAppLoginDependencies,
-    ) => Promise<{ usedExistingSession: boolean }>;
     domestic: CathayDomesticFinancialCollection;
     foreign: CathayForeignFinancialCollection;
     collectCurrentBalanceItems: (
@@ -273,9 +200,6 @@ function collectionDependencies(
   }> = {},
 ) {
   return {
-    signIn:
-      override.signIn ??
-      (async () => ({ usedExistingSession: true })),
     createSession: async () => ({
       jwtToken: "fixture-token",
       customerId: "fixture",
@@ -744,18 +668,20 @@ const outcomes = (products: readonly { typeId: string; status: string; skipReaso
 test("a Cathay run with only an attached product signs in and collects only that product", async () => {
   const harness = attachedHarness();
   const fake = fakeCathayAttachedPreviewPort();
-  let signIns = 0;
   const output = await runCathayAllProviderWorkflow(
     harness.context,
     { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["credit_card"] },
     {
-      ...collectionDependencies({ signIn: async () => { signIns += 1; return { usedExistingSession: true }; } }),
+      ...collectionDependencies(),
       collectDomestic: async () => { throw new Error("domestic must not run"); },
       collectForeign: async () => { throw new Error("foreign must not run"); },
       attachedPreviewPort: () => fake.port,
     },
   );
-  assert.equal(signIns, 1);
+  assert.deepEqual(
+    harness.events.filter((event) => event.stage === "authentication").map((event) => event.code),
+    ["authentication-started", "authentication-completed"],
+  );
   assert.equal(harness.committed.length, 0);
   assert.deepEqual(harness.writes.map((write) => [write.sourceId, write.product]), [["cathay", "credit_card"]]);
   const cards = harness.writes[0]!.collection as PreviewCreditCollection;

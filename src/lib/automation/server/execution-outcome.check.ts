@@ -12,6 +12,13 @@ const event = (stage: WorkflowRunEvent["stage"], outcome: RunEventOutcome): Work
   ...at, stage, outcome, code: `${stage}-${outcome}`,
 });
 const authenticationFailed = [event("authentication", "started"), event("authentication", "failed")];
+const assistanceFailed = (
+  ...signals: ReadonlyArray<"solver-route-unavailable" | "solver-challenge-unsupported">
+): WorkflowRunEvent[] => [
+  event("authentication", "started"),
+  ...signals.map((signal) => signalRunEvent(signal, at)),
+  signalRunEvent("human-assistance-failed", at),
+];
 
 const failedProduct: WorkflowRunResult = {
   status: "failed",
@@ -73,6 +80,30 @@ test("a worker's ending becomes a report whose failure is proven only by explici
       name: "a worker cancellation is classified, not proven",
       ending: { kind: "worker", outcome: { status: "cancelled", errorCode: "cancelled", summary: null } },
       events: authenticationFailed,
+      failure: { code: "cancelled", proven: false },
+    },
+    {
+      name: "the host's missing solver route outranks the worker's verification code",
+      ending: workerFailed("verification-failed"),
+      events: assistanceFailed("solver-route-unavailable"),
+      failure: { code: "verification-configuration-failed", proven: true },
+    },
+    {
+      name: "the host's unsupported challenge outranks the worker's verification code",
+      ending: workerFailed("verification-failed"),
+      events: assistanceFailed("solver-challenge-unsupported"),
+      failure: { code: "verification-configuration-failed", proven: true },
+    },
+    {
+      name: "without a route signal the worker's verification code stands",
+      ending: workerFailed("verification-failed"),
+      events: assistanceFailed(),
+      failure: { code: "verification-failed", proven: true },
+    },
+    {
+      name: "a worker cancellation keeps its classification over a route signal",
+      ending: { kind: "worker", outcome: { status: "cancelled", errorCode: "cancelled", summary: null } },
+      events: assistanceFailed("solver-route-unavailable"),
       failure: { code: "cancelled", proven: false },
     },
     {

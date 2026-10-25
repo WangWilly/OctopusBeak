@@ -78,8 +78,7 @@ function createPage(options: {
   expectedRanges?: number;
   detailResponse?: Response;
   signedIn?: boolean;
-  signInAfterPolls?: number;
-  onPoll?: () => void;
+  signInAfterProbes?: number;
   precedingEmptyRange?: boolean;
 } = {}): Page {
   const ranges = Array.from({ length: options.expectedRanges ?? 1 }, (_, index) => ({
@@ -116,13 +115,18 @@ function createPage(options: {
     }),
   ];
   let signedIn = options.signedIn ?? true;
-  let polls = 0;
+  let probes = 0;
+  const probeSignedIn = () => {
+    probes += 1;
+    if (options.signInAfterProbes !== undefined && probes >= options.signInAfterProbes) signedIn = true;
+    return signedIn;
+  };
   const locator = (selector: string) => ({
     first() { return this; },
     last() { return this; },
     nth() { return this; },
     filter() { return this; },
-    isVisible: async () => selector.startsWith("form input") || (selector === "#btnHeaderLogout" && signedIn),
+    isVisible: async () => selector.startsWith("form input") || (selector === "#btnHeaderLogout" && probeSignedIn()),
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? (options.precedingEmptyRange ? 2 : 1) : 0,
     textContent: async () => "2026/08",
@@ -137,11 +141,7 @@ function createPage(options: {
     keyboard: { press: async () => undefined },
     goto: async () => undefined,
     waitForURL: async () => undefined,
-    waitForTimeout: async () => {
-      polls += 1;
-      options.onPoll?.();
-      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) signedIn = true;
-    },
+    waitForTimeout: async () => undefined,
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
       const index = responses.findIndex(predicate);
       if (index < 0) throw new Error("No synthetic CTBC response matched.");
@@ -176,12 +176,11 @@ function createContext(options: {
       },
     },
     text: strictSourceText,
-    humanAssistance: {
-      async request(contract) {
+    verification: {
+      async complete(stage) {
         assistanceCalls += 1;
-        assert.equal(contract.stageId, "ctbc-login-verification");
+        assert.equal(stage.stageId, "ctbc-login-verification");
         options.onAssistance?.();
-        return "verified";
       },
     },
     financialCommit: {
@@ -381,7 +380,7 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
 
 test("CTBC delayed automatic login does not request human assistance and honors cancellation", async () => {
   let signedIn = false;
-  const page = createPage({ signedIn, signInAfterPolls: 20 }) as Page & { setSignedIn(value: boolean): void };
+  const page = createPage({ signedIn, signInAfterProbes: 3 }) as Page & { setSignedIn(value: boolean): void };
   const context = createContext({
     page,
     onAssistance: () => { signedIn = true; page.setSignedIn(true); },

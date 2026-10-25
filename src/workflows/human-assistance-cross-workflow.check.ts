@@ -57,6 +57,8 @@ const explicitlyExcludedCaptchaWorkflows = [
 ] as const;
 
 function rechecksInlineVerificationInput(source: string): boolean {
+  // A sign-in plan that names its answer field hands the empty-answer check to signIn.
+  if (/\bcaptcha:\s*\{[\s\S]{0,400}?\banswer:/u.test(source)) return true;
   if (source.includes("inputValue()).trim()")) return true;
 
   const assignedInputValue =
@@ -106,7 +108,7 @@ test("provider workflows with verification publish a contract-backed stage", asy
         : source;
     assert.match(
       focusSource,
-      /emitHumanAssistanceStage|requestCaptchaAssistance/,
+      /\bVerificationStage\b/,
       `${file} must publish a human assistance stage`,
     );
     assert.doesNotMatch(
@@ -197,11 +199,11 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
   const cathay = excludedSources.find(({ provider }) => provider === "Cathay United Bank");
   assert.ok(cathay);
   assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
-  assert.doesNotMatch(cathay.content, /emitHumanAssistanceStage/);
+  assert.doesNotMatch(cathay.content, /\bVerificationStage\b/);
   const einvoice = excludedSources.find(({ provider }) => provider === "E-Invoice");
   assert.ok(einvoice);
   assert.doesNotMatch(einvoice.content, /challengeKind:\s*["']text-captcha["']/);
-  assert.doesNotMatch(einvoice.content, /emitHumanAssistanceStage/);
+  assert.doesNotMatch(einvoice.content, /\bVerificationStage\b/);
 });
 
 test("provider verification focus keeps the challenge readable", async () => {
@@ -265,7 +267,7 @@ test("inline verification stages re-check the declared field before continuing",
   );
 });
 
-test("inline verification check recognizes a deadline-wrapped value probe", () => {
+test("inline verification check recognizes a deadline-wrapped value probe or a sign-in plan's answer field", () => {
   assert.equal(
     rechecksInlineVerificationInput(`
       const currentValue = await withDeadline(
@@ -276,6 +278,16 @@ test("inline verification check recognizes a deadline-wrapped value probe", () =
     `),
     true,
   );
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      captcha: {
+        stage: sinopacCaptchaAssistanceStage,
+        answer: (page) => page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
+      },
+    `),
+    true,
+  );
+  assert.equal(rechecksInlineVerificationInput(`captcha: { stage: assistanceStage },`), false);
   assert.equal(
     rechecksInlineVerificationInput(`
       const currentValue = await withDeadline(

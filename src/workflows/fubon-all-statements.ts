@@ -1,4 +1,3 @@
-import { humanAssistanceEvent } from "./human-assistance.ts";
 import { createHmac } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
@@ -30,7 +29,10 @@ import {
   runFubonStatements,
   type FubonDepositWorkflowCollection,
 } from "./fubon-statements.ts";
-import { completeFubonHumanLoginWithAssistance, hasFubonDuplicateLoginTerminal, openFubonLoginForm } from "./fubon-auth.ts";
+import { fubonLogin, hasFubonDuplicateLoginTerminal } from "./fubon-auth.ts";
+import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
+import type { VerificationStage } from "../lib/automation/verification-stage.ts";
+import { signIn, type ShellPlan, type SignedIn } from "./sign-in.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -165,7 +167,7 @@ export type FubonWorkflowCollectionSummary = Readonly<{
 }>;
 
 export type FubonAllWorkflowDependencies = Readonly<{
-  authenticate?: (page: Page, credentials: FubonCredentials, context: WorkflowContext) => Promise<void>;
+  authenticate?: (page: Page, credentials: FubonCredentials, context: WorkflowContext) => Promise<SignedIn>;
   collectDeposit?: (
     page: Page,
     input: z.infer<typeof fubonStatementsInputSchema>,
@@ -192,14 +194,12 @@ export type FubonAllWorkflowDependencies = Readonly<{
   ) => Promise<FubonLoanWorkflowCollection>;
   signOut?: (page: Page) => Promise<void>;
   startSessionKeepAlive?: (page: Page) => () => void;
-  assertSession?: (page: Page) => Promise<void>;
 }>;
 
-async function assertFubonSession(page: Page): Promise<void> {
-  if (page.isClosed() || hasFubonDuplicateLoginTerminal(page))
-    throw new ProductCollectionFatalError("authentication-failed");
+async function fubonSessionProbe(page: Page): Promise<boolean> {
+  if (page.isClosed() || hasFubonDuplicateLoginTerminal(page)) return false;
   const headerFrame = page.frame({ name: "frame1" });
-  if (!headerFrame) throw new ProductCollectionFatalError("authentication-failed");
+  if (!headerFrame) return false;
   const loggedIn = await headerFrame.evaluate(() => {
     const bankWindow = globalThis as typeof globalThis & { loggedIn?: unknown };
     return bankWindow.loggedIn === true;
@@ -209,8 +209,16 @@ async function assertFubonSession(page: Page): Promise<void> {
     .first()
     .isVisible()
     .catch(() => false);
-  if (!loggedIn && !logoutVisible)
-    throw new ProductCollectionFatalError("authentication-failed");
+  return loggedIn || logoutVisible;
+}
+
+/** Fubon clears its cookies before signing in, so the plan names no existing-session probe. */
+export function fubonSignInPlan(
+  credentials: FubonCredentials,
+  complete: (stage: VerificationStage) => Promise<void>,
+): ShellPlan {
+  const login = fubonLogin(fubonCredentialValues(credentials), complete);
+  return { own: login.run, dialogs: login.observe, session: fubonSessionProbe };
 }
 
 function fubonCredentialValues(credentials: FubonCredentials) {
@@ -226,14 +234,13 @@ async function authenticateFubonForApp(
   page: Page,
   credentials: FubonCredentials,
   context: WorkflowContext,
-): Promise<void> {
-  const values = fubonCredentialValues(credentials);
-  await openFubonLoginForm(page);
-  await completeFubonHumanLoginWithAssistance(page, values, {
-    signal: context.signal,
-    request: (contract, signal) => context.humanAssistance.request(contract, signal),
-    event: humanAssistanceEvent(context),
-  });
+): Promise<SignedIn> {
+  return await signIn(
+    context,
+    page,
+    FUBON_SOURCE,
+    fubonSignInPlan(credentials, (stage) => context.verification.complete(stage)),
+  );
 }
 
 async function collectFubonDepositForApp(
@@ -328,7 +335,6 @@ export async function runFubonAllStatementsWorkflow(
   const collectLoan = overrides.collectLoan ?? collectFubonLoanForApp;
   const stopKeepAlive = overrides.startSessionKeepAlive ?? startFubonSessionKeepAlive;
   const signOut = overrides.signOut ?? signOutFubon;
-  const assertSession = overrides.assertSession ?? assertFubonSession;
 
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
@@ -337,10 +343,8 @@ export async function runFubonAllStatementsWorkflow(
     // A retained Fubon session cookie can route the next run straight to
     // NotAuth.jsp?type=dupLogin before credentials are entered.
     await page.context().clearCookies({ domain: /(?:^|\.)taipeifubon\.com\.tw$/u });
-    await context.event("authentication", "started", "authentication-started");
-    await authenticate(page, parsed.data.credentials, context);
+    const { assertSession } = await authenticate(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
     const stop = stopKeepAlive(page);
     try {
       await context.event("decoding", "started", "source-decoding-started");
@@ -349,7 +353,7 @@ export async function runFubonAllStatementsWorkflow(
         productIds,
         selectedIds,
         signal: context.signal,
-        assertSession: () => assertSession(page),
+        assertSession,
         collect: async (typeId, stagedItems, reportActivity) => {
           const collectDepositWithExclusionEvents = async () => {
             const deposit = await collectDeposit(page, parsed.data.statements, context, identity, stagedItems, reportActivity);

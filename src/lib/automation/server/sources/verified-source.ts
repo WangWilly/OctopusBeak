@@ -11,6 +11,7 @@ import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
 import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { AutomationPersistenceProvider } from "../store.ts";
+import type { RejectionEvidence } from "../../sign-in-prompt.ts";
 
 /**
  * How the App hosts a workflow. A browser workflow gets a run-scoped page; a
@@ -50,8 +51,11 @@ export type VerifiedWorkflow = Readonly<
     runtime: AppWorkflowRuntime;
     /** Present when the workflow's verification stages reach the solver route. */
     verification?: Readonly<{
-      /** The workflow classifies submission results itself; the coordinator joins its execution. */
-      ownsSubmissionOutcome: boolean;
+      /**
+       * How the workflow proves a CAPTCHA rejection; the coordinator then joins
+       * its execution instead of probing the page after submit.
+       */
+      rejection?: RejectionEvidence;
     }>;
     input: Readonly<{
       /** Each sign-in field `LIBRETTO_CLOUD_<NAME>` becomes the input credential `<name>`. */

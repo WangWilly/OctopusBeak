@@ -15,6 +15,7 @@ import {
   CathayApiClient,
   cathayResponseMetadata,
   decodeCathayApiSourceResponse,
+  cathaySignInPlan,
   signInCathayForApp,
   collectCathayDomesticFinancialRequests,
   type CathayDomesticFinancialCollection,
@@ -97,7 +98,6 @@ export type CathayAllProviderWorkflowInput = z.infer<
   typeof typedCathayInputSchema
 >;
 export type CathayAllProviderWorkflowDependencies = Readonly<{
-  signIn?: typeof signInCathayForApp;
   createSession?: (
     page: Page,
     source: CathayStrictSourceOptions,
@@ -252,22 +252,11 @@ export async function runCathayAllProviderWorkflow(
   ] as const satisfies readonly CollectionProductTypeId[];
 
   return await context.browser.withPage(async (page) => {
-    context.signal.throwIfAborted();
-    page.on("dialog", (dialog) => {
-      void dialog.accept().catch(() => undefined);
-    });
     const source: CathayStrictSourceOptions = {
       text: context.text,
       signal: context.signal,
     };
-    await context.event("authentication", "started", "authentication-started");
-    const authenticate = dependencies.signIn ?? signInCathayForApp;
-    await authenticate(page, input.credentials, {
-      signal: context.signal,
-      event: async (code) => context.event("authentication", "advanced", code),
-    });
-    context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
+    await signInCathayForApp(context, page, cathaySignInPlan(input.credentials, context.event));
 
     const createSession =
       dependencies.createSession ??

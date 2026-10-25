@@ -75,7 +75,7 @@ function calibrationContext(browser: WorkflowBrowserPort, signal: AbortSignal): 
     now: () => new Date().toISOString(),
     browser,
     text: strictSourceText,
-    humanAssistance: { request: async () => { throw new Error("CAPTCHA calibration has no verification route."); } },
+    verification: { complete: async () => { throw new Error("CAPTCHA calibration has no verification route."); } },
     event: async () => {},
     signalEvent: async () => {},
     preview: {

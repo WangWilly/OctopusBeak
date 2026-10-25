@@ -41,7 +41,7 @@ const source = await readFile(
   new URL("./fubon-statements.ts", import.meta.url),
   "utf8",
 );
-assert.doesNotMatch(source, /completeFubonHumanLogin|LibrettoWorkflowContext|workflow\(/u);
+assert.doesNotMatch(source, /fubonLogin\(|LibrettoWorkflowContext|workflow\(/u);
 assert.doesNotMatch(source, /#btnLogin2/);
 assert.doesNotMatch(source, /stageId: "fubon-login-captcha"/);
 assert.doesNotMatch(source, /async function waitForSignedInState/);

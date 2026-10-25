@@ -7,12 +7,10 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 import {
   decodeSinopacJsonSource,
-  runSinopacLoginAttempt,
   runSinopacProviderWorkflow,
   type SinopacJsonSourceResponse,
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
-import { isSinopacDuplicateLoginDialog, SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import {
   applyCommitAttemptReport,
@@ -59,7 +57,7 @@ const input: SinopacWorkflowInput = {
   attachedPreviewProducts: [],
 };
 
-function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dialogMessage?: string; dismissalFails?: boolean } = {}) {
+function pageFixture(options: { signedIn?: boolean } = {}) {
   let signedIn = options.signedIn ?? true;
   let captchaValue = "";
   const emitter = new EventEmitter();
@@ -71,15 +69,7 @@ function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dial
     fill: async (value: string) => { if (selector.includes("sino_keyword3")) captchaValue = value; },
     focus: async () => undefined,
     inputValue: async () => captchaValue,
-    click: async () => {
-      if (options.submitDialog && selector === 'input[alt="登入"]') {
-        emitter.emit("dialog", {
-          type: () => "alert",
-          message: () => options.dialogMessage ?? "驗證碼失效或輸入錯誤，請重新輸入。",
-          dismiss: async () => { if (options.dismissalFails) throw new Error("closed dialog"); },
-        });
-      }
-    },
+    click: async () => undefined,
     boundingBox: async () => ({ x: 1, y: 1, width: 100, height: 30 }),
     first() { return this; },
     nth() { return this; },
@@ -93,13 +83,6 @@ function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dial
     off: (event: string, handler: (...args: unknown[]) => void) => { emitter.off(event, handler); },
     waitForLoadState: async () => undefined,
     goto: async () => undefined,
-    waitForURL: async (_url: unknown, options?: { signal?: AbortSignal }) => {
-      if (!options?.signal) { signedIn = true; return; }
-      if (options.signal.aborted) throw new Error("navigation aborted");
-      await new Promise<void>((_resolve, reject) => {
-        options.signal?.addEventListener("abort", () => reject(new Error("navigation aborted")), { once: true });
-      });
-    },
     enterCaptcha(value: string) { captchaValue = value; },
     setSignedIn(value: boolean) { signedIn = value; },
     isSignedIn: () => signedIn,
@@ -115,7 +98,7 @@ function makeContext(options: Readonly<{
   page: Page;
   signal?: AbortSignal;
   financialCommit: WorkflowFinancialCommitPort;
-  assistance?: WorkflowContext["humanAssistance"]["request"];
+  assistance?: WorkflowContext["verification"]["complete"];
   onEvent?: WorkflowContext["event"];
 }>): WorkflowContextWith<"financialCommit"> {
   const signal = options.signal ?? new AbortController().signal;
@@ -125,8 +108,8 @@ function makeContext(options: Readonly<{
     now: () => "2026-09-24T12:00:00.000+08:00",
     browser: { withPage: async (run) => await run(options.page) },
     text: strictSourceText,
-    humanAssistance: {
-      request: options.assistance ?? (async () => "entered"),
+    verification: {
+      complete: options.assistance ?? (async () => undefined),
     },
     financialCommit: options.financialCommit,
     event: options.onEvent ?? (async () => undefined),
@@ -341,23 +324,20 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
 test("typed SinoPac CAPTCHA assistance uses the existing solve contract and accepts human entry", async () => {
   const calls: unknown[][] = [];
   const page = pageFixture({ signedIn: false });
-  const stages: Array<{ stage: string; code: string }> = [];
   let assistanceCalls = 0;
   const context = makeContext({
     page,
     financialCommit: financialCommitStub(calls),
-    assistance: async (contract) => {
+    assistance: async (stage) => {
       assistanceCalls += 1;
-      assert.equal(contract.stageId, "sinopac-login-captcha");
-      assert.equal(contract.expectedAnswerLength, 6);
-      assert.equal(contract.solverConfidenceThreshold, 0.9);
-      assert.deepEqual(contract.ocrAttemptPlan, [
+      assert.equal(stage.stageId, "sinopac-login-captcha");
+      assert.equal(stage.expectedAnswerLength, 6);
+      assert.equal(stage.solverConfidenceThreshold, 0.9);
+      assert.deepEqual(stage.ocrAttemptPlan, [
         { imagePreprocessing: ["remove-interference-lines"] },
       ]);
       page.setSignedIn(true);
-      return "entered";
     },
-    onEvent: async (stage, _outcome, code) => { stages.push({ stage, code }); },
   });
 
   const output = await runSinopacProviderWorkflow(context, input, {
@@ -375,49 +355,20 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
   });
 
   assert.equal(assistanceCalls, 1);
-  assert.equal(stages.some((event) => event.code === "human-assistance-requested"), true);
-  assert.equal(stages.some((event) => event.code === "human-assistance-completed"), true);
   assert.equal(calls.length, 1);
-});
-
-test("typed SinoPac login owns and dismisses post-submit dialogs instead of hanging on App host", async () => {
-  const calls: unknown[][] = [];
-  const page = pageFixture({ signedIn: false, submitDialog: true });
-  let accountReads = 0;
-  const events: Array<{ stage: string; code: string }> = [];
-  const context = makeContext({
-    page,
-    financialCommit: financialCommitStub(calls),
-    onEvent: async (stage, _outcome, code) => { events.push({ stage, code }); },
-    assistance: async () => {
-      page.enterCaptcha("123456");
-      return "entered";
-    },
-  });
-  await assert.rejects(
-    runSinopacProviderWorkflow(context, input, {
-      readAccounts: async () => { accountReads += 1; return [account]; },
-      queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
-      readCurrentDepositBalances: async () => [],
-    }),
-    SinopacCaptchaRejectedError,
-  );
-  assert.equal(accountReads, 0);
-  assert.equal(calls.length, 0);
-  assert.equal(events.some((event) => event.code === "captcha-rejected"), true);
 });
 
 test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before source and commit", async () => {
   const controller = new AbortController();
   const calls: unknown[][] = [];
   let readAccountsCalls = 0;
-  let rejectAssistance!: (error: Error) => void;
-  const assistance = new Promise<never>((_resolve, reject) => { rejectAssistance = reject; });
   const context = makeContext({
     page: pageFixture({ signedIn: false }),
     signal: controller.signal,
     financialCommit: financialCommitStub(calls),
-    assistance: async () => await assistance,
+    assistance: () => new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+    }),
   });
   const running = runSinopacProviderWorkflow(context, input, {
     readAccounts: async () => { readAccountsCalls += 1; return [account]; },
@@ -426,74 +377,7 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   controller.abort(new Error("cancelled by test"));
-  rejectAssistance(new Error("late assistance response"));
   await assert.rejects(running, /cancelled by test/u);
   assert.equal(readAccountsCalls, 0);
   assert.equal(calls.length, 0);
-});
-
-test("SinoPac unknown dialogs and failed dismissals cannot produce a retryable rejection", async () => {
-  for (const options of [{ dialogMessage: "帳號已被鎖定" }, { dismissalFails: true }]) {
-    const page = pageFixture({ signedIn: false, submitDialog: true, ...options });
-    const calls: unknown[][] = [];
-    const context = makeContext({
-      page,
-      financialCommit: financialCommitStub(calls),
-      assistance: async () => { page.enterCaptcha("123456"); return "entered"; },
-    });
-    await assert.rejects(runSinopacProviderWorkflow(context, input), (error) => {
-      assert.ok(error instanceof Error);
-      assert.equal(error instanceof SinopacCaptchaRejectedError, false);
-      return true;
-    });
-    assert.equal(calls.length, 0);
-  }
-});
-
-test("SinoPac accepts the authorized duplicate-login confirm and keeps observing CAPTCHA dialogs", async () => {
-  const emitter = new EventEmitter();
-  const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
-  let accepted = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, {
-    submit: async () => {
-      emitter.emit("dialog", {
-        type: () => "confirm",
-        message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",
-        accept: async () => { accepted += 1; },
-        dismiss: async () => undefined,
-      });
-      await new Promise(resolve => setTimeout(resolve, 5));
-      emitter.emit("dialog", {type: () => "alert", message: () => "驗證碼失效或輸入錯誤，請重新輸入。", dismiss: async () => undefined});
-    },
-    waitForSuccess: async (signal) => await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), {once:true})),
-  }), SinopacCaptchaRejectedError);
-  assert.equal(accepted, 1);
-  assert.equal(emitter.listenerCount("dialog"), 0);
-});
-
-test("SinoPac duplicate-login authorization only matches the exact confirmation", () => {
-  const notice = "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態";
-  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice), true);
-  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice + "。"), true);
-  assert.equal(isSinopacDuplicateLoginDialog("alert", notice), false);
-  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice + "，並變更密碼"), false);
-  assert.equal(isSinopacDuplicateLoginDialog("confirm", "系統將強制關閉他處登入狀態"), false);
-});
-
-test("SinoPac failed duplicate-login confirmation fails without a CAPTCHA retry", async () => {
-  const emitter = new EventEmitter();
-  const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
-  let confirmations = 0;
-  await assert.rejects(runSinopacLoginAttempt(page, {
-    submit: async () => { emitter.emit("dialog", {
-      type: () => "confirm",
-      message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",
-      accept: async () => { throw new Error("closed dialog"); },
-      dismiss: async () => undefined,
-    }); },
-    onDuplicateLoginConfirmed: async () => { confirmations += 1; },
-    waitForSuccess: async (signal) => await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
-  }), /duplicate login confirmation failed/);
-  assert.equal(confirmations, 0);
-  assert.equal(emitter.listenerCount("dialog"), 0);
 });

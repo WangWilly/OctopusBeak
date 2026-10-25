@@ -684,16 +684,6 @@
       "code": "input-validated"
     },
     {
-      "stage": "authentication",
-      "outcome": "started",
-      "code": "authentication-started"
-    },
-    {
-      "stage": "authentication",
-      "outcome": "completed",
-      "code": "authentication-completed"
-    },
-    {
       "stage": "decoding",
       "outcome": "started",
       "code": "source-decoding-started"

@@ -36,11 +36,8 @@ const probeDefinition: WorkflowDefinition<EsunCredentials, ProbeReport> = {
   requiresFinancialCommit: false,
   async run(context, credentials) {
     return await context.browser.withPage(async (page) => {
-      page.on("dialog", (dialog) => { void dialog.accept().catch(() => undefined); });
       const observedRequests = observePortalRequests(page);
-      await context.event("authentication", "started", "authentication-started");
       await authenticateEsunPage(page, credentials, context);
-      await context.event("authentication", "completed", "authentication-completed");
       await waitForPortalSession(page);
       context.signal.throwIfAborted();
       await context.event("collection", "started", "collection-started");
