@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../lib/automation/post-captcha.ts";
-import type { Locator, Page, Response } from "playwright";
+import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
+import type { ElementHandle, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   SourceTextIntegrityError,
@@ -33,7 +33,7 @@ import {
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { withAbort } from "./abort.ts";
-import { signInAttempt } from "./sign-in-attempt.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
@@ -257,83 +257,6 @@ function postIdLoginButton(page: Page): Locator {
   return page.locator("#tab1 .loginbtn a").filter({ hasText: "登入" });
 }
 
-const POST_LOGIN_WAIT_TIMEOUT_MS = 300_000;
-
-type PostLoginAttemptDependencies = {
-  submit: () => Promise<void>;
-  waitForSuccess: (signal: AbortSignal) => Promise<void>;
-  signal?: AbortSignal;
-  onDialog?: (type: string) => void | Promise<void>;
-};
-
-const postLoginDialogError = () =>
-  new Error(
-    "iPost login was interrupted by a browser dialog; verify the login fields and CAPTCHA, then retry.",
-  );
-
-/**
- * Submit the iPost login form and wait for the signed-in landing page.
- *
- * iPost may optionally open a browser dialog immediately after the click. A
- * Playwright dialog blocks the page until it is handled, so keep the handler
- * scoped to this login attempt and race it against the normal success probe.
- * Only the observed exact CAPTCHA rejection enters the finite campaign;
- * all other dialogs remain terminal without persisting provider messages.
- */
-export async function runPostLoginAttempt(
-  page: Page,
-  { submit, waitForSuccess, signal, onDialog }: PostLoginAttemptDependencies,
-): Promise<void> {
-  await signInAttempt(page, {
-    submit,
-    waitForSuccess,
-    signal,
-    handleDialog: async (dialog) => {
-      let type = "unknown";
-      try {
-        type = dialog.type();
-      } catch {
-        // Keep dialog cleanup fail-closed if the browser closes it concurrently.
-      }
-      let rejection: Error = postLoginDialogError();
-      try {
-        if (type === "alert" && dialog.message().trim() === "圖形驗證錯誤") {
-          rejection = new CaptchaProviderRejectedError();
-        }
-      } catch {
-        // An unreadable or unfamiliar dialog never authorizes a retry.
-      }
-      if (onDialog) {
-        void Promise.resolve(onDialog(type)).catch(() => undefined);
-      }
-      await dialog.dismiss().catch(() => undefined);
-      return rejection;
-    },
-  });
-}
-
-export async function submitPostLoginAndWait(
-  page: Page,
-  signal?: AbortSignal,
-  onDialog?: (type: string) => void | Promise<void>,
-): Promise<void> {
-  await runPostLoginAttempt(page, {
-    ...(signal ? { signal } : {}),
-    ...(onDialog ? { onDialog } : {}),
-    submit: async () => {
-      await postIdLoginButton(page).click();
-    },
-    waitForSuccess: (signal) =>
-      visibleDetailLinks(page)
-        .first()
-        .waitFor({
-          state: "visible",
-          timeout: POST_LOGIN_WAIT_TIMEOUT_MS,
-          signal,
-        }),
-  });
-}
-
 export function postCaptchaAssistanceStage(
   page: Page,
 ): VerificationStage {
@@ -423,68 +346,55 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function signInPostWithAssistance(
-  page: Page,
-  credentials: PostCredentials,
-  complete: (stage: VerificationStage) => Promise<void>,
-  signal: AbortSignal,
-  onDialog?: (type: string) => void | Promise<void>,
-): Promise<void> {
-  const { cifId, userCode, password } = postLoginFieldValues(credentials);
-  signal.throwIfAborted();
-  if (!postLoginEntryUrl(page.url()))
-    await withAbort(
-      page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
-      signal,
-    );
-  await withAbort(
-    page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
-  await dismissPostNoticeIfPresent(page, signal);
-  await withAbort(page.locator("#cifID").fill(cifId), signal);
-  await withAbort(page.locator("#userID_1_Input").fill(userCode), signal);
-  await withAbort(page.locator("#userPWD_1_Input").fill(password), signal);
-  await dismissPostNoticeIfPresent(page, signal);
-  const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
-  await withAbort(captchaInput.focus(), signal);
-  const assistanceUrl = page.url();
-  const assistedCaptchaElement = await withAbort(
-    captchaInput.elementHandle(),
-    signal,
-  );
-  if (!assistedCaptchaElement)
-    throw new Error("iPost CAPTCHA input is unavailable for assistance.");
+function captchaInput(page: Page): Locator {
+  return page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
+}
 
-  try {
-    await complete(postCaptchaAssistanceStage(page));
-    signal.throwIfAborted();
-    if (await isSignedIn(page)) return;
-    const currentCaptchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
-    const sameCaptchaElement = await withAbort(
-      currentCaptchaInput
-        .evaluate(
-          (current, assisted) => current === assisted,
-          assistedCaptchaElement,
-        )
-        .catch(() => false),
-      signal,
-    );
-    if (!postCaptchaGenerationUnchanged(assistanceUrl, page.url(), sameCaptchaElement))
-      throw new Error(
-        "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
+export function postSignInPlan(credentials: PostCredentials): FormPlan {
+  const { cifId, userCode, password } = postLoginFieldValues(credentials);
+  // The CAPTCHA the stage solved must be the one submitted: the stage and submit share this snapshot.
+  let assisted: Readonly<{ url: string; element: ElementHandle }> | undefined;
+  return {
+    signedIn: isSignedIn,
+    fill: async (page, signal) => {
+      if (!postLoginEntryUrl(page.url()))
+        await withAbort(page.goto(HOME_URL, { waitUntil: "domcontentloaded" }), signal);
+      await withAbort(page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }), signal);
+      await dismissPostNoticeIfPresent(page, signal);
+      await withAbort(page.locator("#cifID").fill(cifId), signal);
+      await withAbort(page.locator("#userID_1_Input").fill(userCode), signal);
+      await withAbort(page.locator("#userPWD_1_Input").fill(password), signal);
+      await dismissPostNoticeIfPresent(page, signal);
+      await withAbort(captchaInput(page).focus(), signal);
+    },
+    captcha: {
+      stage: async (page) => {
+        const element = await captchaInput(page).elementHandle();
+        if (!element) throw new Error("iPost CAPTCHA input is unavailable for assistance.");
+        assisted = { url: page.url(), element };
+        return postCaptchaAssistanceStage(page);
+      },
+      answer: captchaInput,
+    },
+    submit: async (page, signal) => {
+      if (!assisted) throw new Error("iPost CAPTCHA assistance did not run before submit.");
+      const sameElement = await withAbort(
+        captchaInput(page)
+          .evaluate((current, element) => current === element, assisted.element)
+          .catch(() => false),
+        signal,
       );
-    const currentCaptchaValue = await withAbort(
-      currentCaptchaInput.inputValue(),
-      signal,
-    );
-    if (!currentCaptchaValue.trim())
-      throw new Error("iPost CAPTCHA is empty. Enter it in the browser before resuming.");
-    await submitPostLoginAndWait(page, signal, onDialog);
-    signal.throwIfAborted();
-  } finally {
-    await assistedCaptchaElement.dispose().catch(() => undefined);
-  }
+      await assisted.element.dispose().catch(() => undefined);
+      if (!postCaptchaGenerationUnchanged(assisted.url, page.url(), sameElement))
+        throw new Error(
+          "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
+        );
+      await withAbort(postIdLoginButton(page).click(), signal);
+    },
+    dialogs: "fail",
+    session: { none: "needs live verification" },
+    timeoutMs: 300_000,
+  };
 }
 
 export function postLoginEntryUrl(href: string): boolean {
@@ -1052,27 +962,9 @@ export async function runPostProviderWorkflow(
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
-  await context.event("authentication", "started", "authentication-started");
 
   return await context.browser.withPage(async (page) => {
-    await withAbort(
-      page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
-      context.signal,
-    );
-    const usedExistingSession = await isSignedIn(page);
-    if (!usedExistingSession) {
-      await signInPostWithAssistance(
-        page,
-        parsed.data.credentials,
-        (stage) => context.verification.complete(stage),
-        context.signal,
-        () => {
-          void context.signalEvent("login-dialog-interrupted");
-        },
-      );
-    }
-    context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
+    await signIn(context, page, POST_SOURCE, postSignInPlan(parsed.data.credentials));
 
     let accountCount = 0;
     const summary = await collectSelectedProducts({
