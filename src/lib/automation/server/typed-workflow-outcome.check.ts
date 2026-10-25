@@ -1,4 +1,4 @@
-import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
+import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SourceTextIntegrityError } from "../source-text.ts";
@@ -400,9 +400,9 @@ test("typed failures use stable privacy-safe categories", () => {
   assert.equal(classifyTypedWorkflowFailure(new Error("private response body"), []), "workflow-failed");
 });
 
-test("SinoPac rejection is typed without relying on operational events", () => {
-  assert.equal(classifyTypedWorkflowFailure(new SinopacCaptchaRejectedError(), []), "captcha-provider-rejected");
-  assert.equal(classifyTypedWorkflowFailure(new SinopacCaptchaRejectedError(), [], true), "cancelled");
+test("a provider's CAPTCHA rejection is typed without relying on operational events", () => {
+  assert.equal(classifyTypedWorkflowFailure(new CaptchaProviderRejectedError(), []), "captcha-provider-rejected");
+  assert.equal(classifyTypedWorkflowFailure(new CaptchaProviderRejectedError(), [], true), "cancelled");
   assert.equal(classifyTypedWorkflowFailure(new Error("CAPTCHA rejected"), []), "workflow-failed");
 });
 

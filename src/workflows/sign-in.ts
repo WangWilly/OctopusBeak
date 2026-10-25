@@ -152,6 +152,7 @@ class Attempt {
   private readonly interrupted: Promise<never>;
   private takeovers = 0;
   private restartDeadline: (() => void) | undefined;
+  private listening = false;
   /** Dialogs are handled in arrival order, so the first one decides the outcome. */
   private dialogs: Promise<void> = Promise.resolve();
   private readonly onDialog = (dialog: Dialog): void => {
@@ -174,6 +175,7 @@ class Attempt {
     const existing = this.plan.signedIn;
     if (existing && await this.raced(existing(this.page, this.signal))) return this.finish(true);
     this.page.on("dialog", this.onDialog);
+    this.listening = true;
     if ("own" in this.plan) await this.runShell(this.plan);
     else await this.runForm(this.plan);
     return this.finish(false);
@@ -181,11 +183,17 @@ class Attempt {
 
   end(): void {
     this.ended.abort();
+    this.stopListening();
+  }
+
+  private stopListening(): void {
+    if (!this.listening) return;
+    this.listening = false;
     this.page.off("dialog", this.onDialog);
   }
 
   private finish(usedExistingSession: boolean): SignedIn {
-    this.page.off("dialog", this.onDialog);
+    this.stopListening();
     if (this.plan.dialogs === "accept-for-page") this.page.on("dialog", acceptForPage);
     const session = this.plan.session;
     if ("none" in session) return { usedExistingSession };

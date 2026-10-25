@@ -1,4 +1,4 @@
-import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
+import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import assert from "node:assert/strict";
 import { productRunResult } from "../workflow-run-result.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -752,7 +752,7 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
     id: "fixture-protocol",
     requiresFinancialCommit: false,
     async run() {
-      throw new SinopacCaptchaRejectedError();
+      throw new CaptchaProviderRejectedError();
     },
   };
   try {
