@@ -721,6 +721,27 @@ test("abort at each wait rejects with the run's reason and emits nothing after",
   }
 });
 
+test("abort ends the sign-in even while a plan callback ignores its signal", () =>
+  withPage("", async (page) => {
+    let arrive!: () => void;
+    const arrived = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    const run = fakeRun(page);
+    const reason = new Error("cancelled while fill ignores its signal");
+    const running = failure(signIn(run.context, page, source(), form(calls(), {
+      fill: () => {
+        arrive();
+        return new Promise<never>(() => {});
+      },
+    })));
+    await arrived;
+    run.controller.abort(reason);
+    assert.equal(await Promise.race([running, delay(2_000).then(() => "still waiting on fill")]), reason);
+    assert.deepEqual(run.codes, [STARTED]);
+    assert.equal(listeners(page), 0);
+  }));
+
 test("a pre-aborted run rejects before any event", () =>
   withPage("show()", async (page) => {
     const run = fakeRun(page);
