@@ -5,7 +5,6 @@ import { registerCathayTrustedDevice } from "./cathay-device-registration.ts";
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage();
-  page.setDefaultTimeout(2_000);
   await page.route("https://www.cathaybk.com.tw/**", async (route) => {
     const signedIn = new URL(route.request().url()).pathname === "/OnlineBanking/Home";
     await route.fulfill({
