@@ -870,8 +870,12 @@ An Automation Task Run outcome that only the person can resolve, such as an untr
 _Avoid_: Transient failure, retryable failure, human assistance
 
 **Session takeover**:
-A provider sign-in that ends the person's other session with that provider, such as its phone App, either because the provider allows one session or because the workflow confirms the provider's duplicate-login prompt. Manual and scheduled runs may cause it; sign-in settings disclose it for each source that does.
+A provider sign-in that ends the person's other session with that provider, such as its phone App, either because the provider allows one session or because the workflow confirms the provider's duplicate-login prompt. Manual and scheduled runs may cause it; sign-in settings disclose it for each source that does. A source can confirm only a takeover prompt it declares beside that disclosure, and only once per sign-in.
 _Avoid_: Silent sign-out, account lock, device registration
+
+**Source sign-in**:
+The part of a browser-driven Verified Source's run that signs in: it fills the Sign-in Details, completes any Verification Stage, submits, and waits for the signed-in page while classifying every provider dialog and prompt. It alone confirms a Session Takeover prompt, and it turns proven CAPTCHA rejection into a CAPTCHA Retry Trigger (ADR 0061).
+_Avoid_: Login attempt, per-source login helper
 
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
