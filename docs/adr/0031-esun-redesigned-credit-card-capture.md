@@ -104,6 +104,16 @@ has no partial bucket. Bucket keys are not part of occurrence identity, so
 existing transactions keep their identity and the v4 route and manifest are
 unchanged.
 
+For the same reason, an issuer statement cycle that starts on or before the
+query date's anniversary has members the timeline may no longer return. The
+capture builds no statement for such a cycle, so a cycle aging out keeps its
+last revision instead of gaining a smaller one each day.
+
+The trade-off: after the first day, the anniversary month is no longer
+checked for losses. A purchase there that vanishes for another reason is
+admitted rather than rejected. The bank's exact cutoff is not exposed, so a
+tighter, per-day expectation would rest on a guess.
+
 ## Source-contract catalog decision
 
 The historical route-retention statements above describe the E.SUN integration

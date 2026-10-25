@@ -1061,16 +1061,25 @@ function esunGridBucketKeys(
 }
 
 /**
- * The past-year timeline returns the month one year before the query month
- * only from about the query date's anniversary (ADR 0031), so that month
- * loses purchases day by day while it is still listed. Its bucket names the
- * query date: a later day's capture has not queried it again, while a
- * same-day capture must still contain every member (ADR 0040).
+ * The past-year timeline returns purchases only from about the query date's
+ * anniversary one year earlier (ADR 0031); anything on or before it may
+ * already have left the timeline.
+ */
+function esunTimelineAnniversary(endDate: string): string {
+  const queryDate = sourceDate(endDate, "Capture end date");
+  return `${String(Number(queryDate.slice(0, 4)) - 1).padStart(4, "0")}${queryDate.slice(4)}`;
+}
+
+/**
+ * The anniversary month loses purchases day by day while it is still listed.
+ * Its bucket names the query date: a later day's capture has not queried it
+ * again, while a same-day capture must still contain every member (ADR 0040).
  */
 function esunTimelineMonthBucketKey(month: string, endDate: string): string {
-  const queryDate = sourceDate(endDate, "Capture end date");
-  const anniversaryMonth = `${Number(queryDate.slice(0, 4)) - 1}/${queryDate.slice(5, 7)}`;
-  return month === anniversaryMonth ? `partial-month:${month}:queried-on:${queryDate}` : `month:${month}`;
+  const anniversaryMonth = esunTimelineAnniversary(endDate).slice(0, 7).replace("-", "/");
+  return month === anniversaryMonth
+    ? `partial-month:${month}:queried-on:${sourceDate(endDate, "Capture end date")}`
+    : `month:${month}`;
 }
 
 function buildSettledStatements(
@@ -1294,9 +1303,14 @@ export function buildEsunCanonicalCreditCardCapture(
       ).length,
     ]),
   );
+  // A cycle that starts by the anniversary has members the timeline may no
+  // longer return, so its membership is incomplete; the last revision stands.
+  const settledPeriods = (options.settledPeriods ?? []).filter((period) =>
+    options.grid.kind !== "past-year-timeline" ||
+      validDate(period.cycleStart, "Statement cycle start") > esunTimelineAnniversary(options.endDate));
   const statements = buildSettledStatements(
     options.identity,
-    options.settledPeriods ?? [],
+    settledPeriods,
     transactions,
   );
   return admitEsunCreditCardCapture({
