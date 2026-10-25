@@ -37,7 +37,7 @@ const source = await readFile(
   "utf8",
 );
 assert.doesNotMatch(source, /from ["']libretto["']|export default workflow\(/u);
-assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin\(/u);
+assert.doesNotMatch(source, /openFubonLoginForm|fubonLogin\(/u);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
 assert.doesNotMatch(source, /pageCount:\s*1/);

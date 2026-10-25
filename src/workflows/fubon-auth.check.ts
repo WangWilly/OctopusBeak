@@ -4,10 +4,11 @@ import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import {
-  captureFubonLoginDialogs,
   FubonDuplicateLoginTerminalError,
   FubonLoginRefusedError,
+  FubonLoginRejectedError,
   fillFubonLoginCredentials,
+  fubonLogin,
   fubonCaptchaAssistanceStage,
   hasFubonDuplicateLoginTerminal,
   inspectFubonOtpFromCurrentFrame,
@@ -67,7 +68,7 @@ test("duplicate-login terminal remains fail-closed without automatic recovery", 
     "utf8",
   );
   const completeLogin = source.slice(
-    source.indexOf("export async function completeFubonHumanLoginWithAssistance"),
+    source.indexOf("export function fubonLogin("),
   );
   assert.doesNotMatch(
     completeLogin,
@@ -316,50 +317,7 @@ function snapshot(
 }
 
 function channelWithMessages(messages: string[]): FubonLoginDialogChannel {
-  return {
-    messages,
-    duplicateTakeoverAccepted: false,
-    terminalReason: undefined,
-    beginOutcomeWindow() {},
-    dispose() {},
-  };
-}
-
-async function classifyConfirmMessage(message: string): Promise<{
-  accepted: number;
-  dismissed: number;
-  duplicateTakeoverAccepted: boolean;
-  terminalReason: FubonLoginDialogChannel["terminalReason"];
-}> {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  let accepted = 0;
-  let dismissed = 0;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "confirm",
-    message: () => message,
-    accept: async () => {
-      accepted += 1;
-    },
-    dismiss: async () => {
-      dismissed += 1;
-    },
-  });
-  const result = {
-    accepted,
-    dismissed,
-    duplicateTakeoverAccepted: channel.duplicateTakeoverAccepted,
-    terminalReason: channel.terminalReason,
-  };
-  channel.dispose();
-  return result;
+  return { messages, beginOutcomeWindow() {} };
 }
 
 async function withTelemetry<T>(run: () => Promise<T>): Promise<{
@@ -708,7 +666,7 @@ for (const fileName of [
       new URL(`./${fileName}`, import.meta.url),
       "utf8",
     );
-    assert.doesNotMatch(source, /completeFubonHumanLogin|openFubonLoginForm/);
+    assert.doesNotMatch(source, /fubonLogin|openFubonLoginForm/);
     assert.doesNotMatch(source, /stageId: "fubon-login-captcha"/);
     assert.doesNotMatch(source, /#btnLogin2/);
     assert.doesNotMatch(source, /visiblePasswordFields/);
@@ -720,7 +678,7 @@ test("the App provider owns shared Fubon login and assistance", async () => {
     new URL("./fubon-all-statements.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /completeFubonHumanLoginWithAssistance/);
+  assert.match(source, /fubonLogin\(/);
   assert.match(source, /context\.verification\.complete/);
 });
 
@@ -769,6 +727,21 @@ test("login source contains no credential or CAPTCHA values", async () => {
     /never-log-this-secret|account-secret|password-secret/,
   );
   assert.doesNotMatch(source, /console\.(log|error)\([^)]*captchaValue/);
+});
+
+test("the dialog observer accepts an alert and rejects every other dialog without its text", async () => {
+  const login = fubonLogin({ userId: "id", account: "account", password: "password" }, async () => undefined);
+  const observed = await withTelemetry(async () => {
+    assert.equal(login.observe({ type: "alert", message: "頁面閒置過久 private-secret" }), "accept");
+    for (const type of ["confirm", "prompt", "beforeunload", "unknown"]) {
+      const decision = login.observe({ type, message: "請確認是否刪除這筆資料 private-secret" });
+      assert.ok(decision instanceof FubonLoginRejectedError, type);
+      assert.equal(decision.reason, "unknown-confirm");
+      assert.doesNotMatch(String(decision), /private-secret/u);
+    }
+  });
+  assert.equal(observed.error, undefined);
+  assert.deepEqual(observed.events, Array(4).fill({ status: "rejected", reason: "unknown-confirm" }));
 });
 
 test("accepts an authenticated marker", async () => {
@@ -969,237 +942,6 @@ test("post-click 0240 is terminal after the single submit", async () => {
   );
   assert.match(String(outcome.error), /Fubon login rejected \(error 0240\)/);
   assert.equal(dom.clickInvocations, 1);
-});
-
-test("captures and disposes racing dialogs", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  let accepted = false;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => {
-      handler = undefined;
-    },
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "alert",
-    message: () => "頁面閒置過久 private-secret",
-    accept: async () => {
-      accepted = true;
-    },
-  });
-  assert.equal(accepted, true);
-  assert.deepEqual(channel.messages, ["errorCode0240"]);
-  assert.equal(channel.duplicateTakeoverAccepted, false);
-  assert.equal(channel.terminalReason, undefined);
-  assert.doesNotMatch(JSON.stringify(channel), /private-secret/);
-  channel.dispose();
-});
-
-test("accepts the evidence-backed duplicate-login confirm once", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  let accepted = 0;
-  let dismissed = 0;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "confirm",
-    message: () => "錯誤代碼0212：已有其他裝置登入，是否繼續？",
-    accept: async () => {
-      accepted += 1;
-    },
-    dismiss: async () => {
-      dismissed += 1;
-    },
-  });
-  assert.equal(accepted, 1);
-  assert.equal(dismissed, 0);
-  assert.equal(channel.duplicateTakeoverAccepted, true);
-  assert.equal(channel.terminalReason, undefined);
-  assert.deepEqual(channel.messages, []);
-  channel.dispose();
-});
-
-test("accepts only exact 0212 codes or current duplicate-login actions", async () => {
-  for (const message of [
-    "0212",
-    "00212",
-    "錯誤代碼:0212",
-    "errorCode=00212",
-    "偵測到重複登入，是否繼續登入？",
-    "偵測到重覆登入，確定仍要登入？",
-    "您已在其他裝置登入，是否要繼續？",
-    "You are already logged in on another device. Continue?",
-  ]) {
-    const result = await classifyConfirmMessage(message);
-    assert.deepEqual(
-      result,
-      {
-        accepted: 1,
-        dismissed: 0,
-        duplicateTakeoverAccepted: true,
-        terminalReason: undefined,
-      },
-      message,
-    );
-  }
-
-  for (const message of [
-    "02120",
-    "1212",
-    "0213",
-    "錯誤代碼:02120",
-    "錯誤代碼:1212",
-    "errorCode0212something",
-    "重複登入",
-    "曾經重複登入，是否繼續登入？",
-    "其他裝置曾登入，是否繼續？",
-    "帳號已登出，其他裝置登入，是否繼續？",
-    "previously logged in on another device, continue?",
-    "為安全起見，是否繼續？",
-    "other device login",
-  ]) {
-    const result = await classifyConfirmMessage(message);
-    assert.deepEqual(
-      result,
-      {
-        accepted: 0,
-        dismissed: 1,
-        duplicateTakeoverAccepted: false,
-        terminalReason: "unknown-confirm",
-      },
-      message,
-    );
-  }
-});
-
-test("dismisses an unknown confirm without accepting takeover", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  let accepted = 0;
-  let dismissed = 0;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "confirm",
-    message: () => "請確認是否刪除這筆資料 private-secret",
-    accept: async () => {
-      accepted += 1;
-    },
-    dismiss: async () => {
-      dismissed += 1;
-    },
-  });
-  assert.equal(accepted, 0);
-  assert.equal(dismissed, 1);
-  assert.equal(channel.duplicateTakeoverAccepted, false);
-  assert.equal(channel.terminalReason, "unknown-confirm");
-  assert.deepEqual(channel.messages, []);
-  assert.doesNotMatch(JSON.stringify(channel), /private-secret/);
-  channel.dispose();
-});
-
-test("repeated duplicate-login confirm is dismissed after one acceptance", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  let accepted = 0;
-  let dismissed = 0;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  const duplicate = {
-    type: () => "confirm",
-    message: () => "0212 其他裝置登入",
-    accept: async () => {
-      accepted += 1;
-    },
-    dismiss: async () => {
-      dismissed += 1;
-    },
-  };
-  await handler(duplicate);
-  await handler(duplicate);
-  assert.equal(accepted, 1);
-  assert.equal(dismissed, 1);
-  assert.equal(channel.duplicateTakeoverAccepted, true);
-  assert.equal(channel.terminalReason, "duplicate-takeover-repeated");
-  channel.dispose();
-});
-
-test("accepted duplicate takeover continues to authenticated outcome", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "confirm",
-    message: () => "0212：其他裝置登入",
-    accept: async () => undefined,
-    dismiss: async () => undefined,
-  });
-  const outcome = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
-      timeoutMs: 20,
-      pollIntervalMs: 1,
-      dialogChannel: channel,
-      probe: async () =>
-        snapshot({ loggedIn: true, authenticatedMarker: true }),
-    }),
-  );
-  assert.equal(outcome.error, undefined);
-  assert.deepEqual(outcome.events, [{ status: "success", reason: "marker" }]);
-  channel.dispose();
-});
-
-test("accepted duplicate takeover followed by NotAuth remains a failure", async () => {
-  let handler: ((dialog: unknown) => Promise<void>) | undefined;
-  const page = {
-    on: (_event: string, callback: (dialog: unknown) => Promise<void>) => {
-      handler = callback;
-    },
-    off: () => undefined,
-  } as unknown as Page;
-  const channel = captureFubonLoginDialogs(page);
-  assert.ok(handler);
-  await handler({
-    type: () => "confirm",
-    message: () => "0212：其他裝置登入",
-    accept: async () => undefined,
-    dismiss: async () => undefined,
-  });
-  const outcome = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
-      timeoutMs: 20,
-      pollIntervalMs: 1,
-      dialogChannel: channel,
-      probe: async () => snapshot({ result: false, errorCode: "0212" }),
-    }),
-  );
-  assert.match(String(outcome.error), /Fubon login rejected \(error 0212\)/);
-  channel.dispose();
 });
 
 test("prepared login exposes only an opaque, non-sensitive snapshot", async () => {

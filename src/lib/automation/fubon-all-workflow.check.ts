@@ -136,8 +136,8 @@ try {
       authenticate: async (_page, _credentials, receivedContext) => {
         await receivedContext.verification.complete({ stageId: "fubon-login-captcha" } as never);
         calls.push("authenticated");
+        return { usedExistingSession: false };
       },
-      assertSession: async () => undefined,
       startSessionKeepAlive: () => () => { calls.push("keepalive-stopped"); },
       signOut: async () => { calls.push("signed-out"); },
       collectDeposit: async (_page, _input, _context, _identity, items) => {
@@ -204,8 +204,6 @@ try {
     assert.ok(calls.indexOf("cookies-cleared") >= 0);
     assert.ok(calls.indexOf("cookies-cleared") < calls.indexOf("authenticated"));
     assert.ok(calls.includes("human:fubon-login-captcha"));
-    assert.ok(calls.includes("event:authentication:authentication-started"));
-    assert.ok(calls.includes("event:authentication:authentication-completed"));
     assert.ok(
       calls.indexOf("event:collection:deposit-current-balance-excluded-account-number-evidence-missing")
         > calls.indexOf("deposit-collected"),
@@ -230,8 +228,7 @@ try {
     const controller = new AbortController();
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
     const result = await runFubonAllStatementsWorkflow(workflowContext, input, {
-        authenticate: async () => undefined,
-        assertSession: async () => undefined,
+        authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
         collectDeposit: async (_page, _input, _context, _identity, items) => {
@@ -261,8 +258,7 @@ try {
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
     await assert.rejects(
       runFubonAllStatementsWorkflow(workflowContext, input, {
-        authenticate: async () => undefined,
-        assertSession: async () => undefined,
+        authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
         collectDeposit: async (_page, _input, _context, _identity, items) => {
@@ -293,8 +289,7 @@ try {
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
     await assert.rejects(
       runFubonAllStatementsWorkflow(workflowContext, input, {
-        authenticate: async () => undefined,
-        assertSession: async () => undefined,
+        authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
         collectDeposit: async (_page, _input, _context, _identity, items) => {
@@ -324,8 +319,7 @@ try {
     const workflowContext = context(controller.signal, calls, strictSourceText, commitBatches);
     await assert.rejects(
       runFubonAllStatementsWorkflow(workflowContext, input, {
-        authenticate: async () => undefined,
-        assertSession: async () => undefined,
+        authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
         collectDeposit: async (_page, _input, _context, _identity, items) => {
@@ -360,8 +354,7 @@ try {
       ...input,
       statementTypes: ["credit_card"],
     }, {
-      authenticate: async () => undefined,
-      assertSession: async () => undefined,
+      authenticate: async () => ({ usedExistingSession: false }),
       startSessionKeepAlive: () => () => undefined,
       signOut: async () => undefined,
       collectDeposit: async () => { calls.push("deposit-called"); throw new Error("unselected"); },

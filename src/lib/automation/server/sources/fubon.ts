@@ -1,4 +1,5 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
+import { isFubonDuplicateLoginConfirm } from "../../fubon-dialog.ts";
 
 export const FUBON_SOURCE: VerifiedSource = {
   id: "fubon",
@@ -36,6 +37,7 @@ export const FUBON_SOURCE: VerifiedSource = {
       "Every sync, including daily scheduled collection, confirms Taipei Fubon Bank's duplicate sign-in prompt (code 0212), which signs you out of Taipei Fubon online banking elsewhere.",
       "每次同步（包括每日排程收集）都會確認台北富邦的重複登入提示（代碼 0212），讓你在其他地方的台北富邦網路銀行登出。",
     ),
+    prompt: { phase: "while-settling", dialog: isFubonDuplicateLoginConfirm },
   },
   setupGuide: {
     summary: localized(
