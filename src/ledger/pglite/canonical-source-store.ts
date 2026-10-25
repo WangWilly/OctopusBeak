@@ -86,6 +86,8 @@ type WithdrawnMember = Readonly<{ withdrawnTransactionId: string }>;
 /** One prior occurrence whose latest known query bucket the current capture queried again. */
 export type PGliteExpectedOccurrence = Readonly<{
   occurrenceKey: string;
+  /** The source record of the capture that last located this occurrence. */
+  sourceRecordId: string;
   transactionId: string | null;
   partitionDate: string;
   fingerprint: string;
@@ -770,17 +772,19 @@ export async function listPGliteExpectedOccurrences(
   if (bucketKeys.length === 0) return [];
   const rows = await txQuery<{
     occurrence_key: string;
+    source_record_id: unknown;
     transaction_id: unknown;
     partition_date: string;
     fingerprint: string;
     bucket_key: string;
   }>(
     transaction,
-    `SELECT latest.occurrence_key, latest.transaction_id, latest.partition_date,
-            latest.fingerprint, latest.bucket_key
+    `SELECT latest.occurrence_key, latest.source_record_id, latest.transaction_id,
+            latest.partition_date, latest.fingerprint, latest.bucket_key
        FROM (
          SELECT DISTINCT ON (source_record.occurrence_key)
                 source_record.occurrence_key,
+                source_record.source_record_id,
                 assertion.transaction_id,
                 source_record.occurrence_group_partition_date::text AS partition_date,
                 source_record.occurrence_group_fingerprint AS fingerprint,
@@ -828,6 +832,7 @@ export async function listPGliteExpectedOccurrences(
   );
   return rows.rows.map((row) => ({
     occurrenceKey: row.occurrence_key,
+    sourceRecordId: idString(row.source_record_id, "Occurrence source record identity"),
     transactionId: row.transaction_id == null ? null : idString(row.transaction_id, "Occurrence transaction identity"),
     partitionDate: row.partition_date,
     fingerprint: row.fingerprint,

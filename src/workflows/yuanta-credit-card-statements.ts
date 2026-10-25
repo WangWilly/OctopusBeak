@@ -18,12 +18,15 @@ import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
   yuantaCanonicalSpineCapture,
   yuantaNeutralCreditCardCapture,
+  YUANTA_STATEMENT_GRID,
   type YuantaCreditCardCaptureBuilderOptions,
   type YuantaCreditCardIdentityInput,
   type YuantaCreditCardSourceRow,
   type YuantaCreditCardStatementSummary,
   type YuantaCreditCardValidatedCapture,
 } from "../ledger/canonical/yuanta-credit-card-admission.ts";
+import { YUANTA_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts";
+import { statementGridQueryShortfalls } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
@@ -319,13 +322,12 @@ const inputSchema = yuantaCreditCardStatementsInputSchema;
 type WorkflowInput = z.infer<typeof inputSchema>;
 
 /**
- * The workflow's Yuanta identity epoch is deliberately tied to the
- * human-attested credit-card contract. The stable login identity derives the
- * shared Source Connection key; the managed secret is used only for the
- * separate portfolio attestation. Neither is returned as raw input.
+ * The workflow's Yuanta identity epoch is declared by the human-attested
+ * credit-card contract. The stable login identity derives the shared Source
+ * Connection key; the managed secret is used only for the separate portfolio
+ * attestation. Neither is returned as raw input.
  */
-export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH =
-  "yuanta-credit-card-human-attested-v2" as const;
+export const YUANTA_CREDIT_CARD_IDENTITY_EPOCH = YUANTA_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
 export type YuantaCanonicalHumanAttestation = {
   sourceConnectionKey: string;
@@ -4646,6 +4648,7 @@ export function yuantaCreditCardCaptureBuilderOptions(
   const evidenceHasNoPager =
     completenessEvidence.pagination === undefined ||
     completenessEvidence.pagination === "none";
+  const billedPeriods = options.allMonthOptions.map((option) => option.label);
   const completeScope =
     capture.snapshotMode === "full" &&
     options.includeUnbilled &&
@@ -4653,21 +4656,15 @@ export function yuantaCreditCardCaptureBuilderOptions(
     options.statementSummaries !== undefined &&
     options.statementSummaries.length >= options.allMonthOptions.length - 1 &&
     options.statementSummaries.length <= options.allMonthOptions.length &&
-    options.allMonthOptions.length === 6 &&
     sameMonthOptionSet(options.allMonthOptions, options.selectedMonthOptions) &&
     evidenceMatchesMonths &&
     evidenceIncludesUnbilled &&
     evidenceHasNoPager &&
-    options.terminalPages.length === 7 &&
-    options.terminalPages.every((terminal) => terminal === true);
+    statementGridQueryShortfalls(YUANTA_STATEMENT_GRID, {
+      billedPeriods,
+      terminalGrids: options.terminalPages,
+    }).length === 0;
   if (!completeScope) return undefined;
-
-  const billedPeriods = options.allMonthOptions.map((option) => option.label);
-  if (
-    billedPeriods.some((period) => period.length === 0) ||
-    new Set(billedPeriods).size !== billedPeriods.length
-  )
-    return undefined;
 
   const billedRows = options.billedRows.map((row) =>
     toYuantaCanonicalCreditCardSourceRow(
@@ -5104,10 +5101,11 @@ async function collectYuantaCreditCardStatements(
   const isFullCapture =
     !input.monthIndexes &&
     input.includeUnbilled &&
-    allMonthOptions.length === 6 &&
     monthOptions.length === allMonthOptions.length &&
-    terminalPages.length === 7 &&
-    terminalPages.every((terminal) => terminal === true) &&
+    statementGridQueryShortfalls(YUANTA_STATEMENT_GRID, {
+      billedPeriods: allMonthOptions.map((month) => month.label),
+      terminalGrids: terminalPages,
+    }).length === 0 &&
     [...billedRows, ...unbilledRows].every(
       (row) => cardKeyForRow(row).length === 4,
     );

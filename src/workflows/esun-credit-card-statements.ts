@@ -19,9 +19,10 @@ import {
   type EsunCreditCardIdentityInput,
   type EsunCreditCardSettledPeriod,
   type EsunCreditCardSourceRow,
-  type EsunCreditCardTimeline,
   type EsunCreditCardValidatedCapture,
 } from "../ledger/canonical/esun-credit-card-admission.ts";
+import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
+import type { CreditCardMonthTimeline } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
@@ -244,9 +245,7 @@ export function isEsunCompleteGrid({
   );
 }
 
-export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
-  // The portfolio identity did not change when timeline coverage became variable.
-  "esun/credit-card/human-attested-v3" as const;
+export const ESUN_CREDIT_CARD_IDENTITY_EPOCH = ESUN_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
 function normalizedEsunLoginPart(value: string | undefined): string {
   return (value ?? "")
@@ -433,7 +432,7 @@ export type EsunCanonicalCaptureBuildInput = {
   identity: EsunCreditCardIdentityInput;
   statementRows: readonly StatementRow[];
   unbilledRows?: readonly StatementRow[];
-  grid: GridState | EsunCreditCardTimeline;
+  grid: GridState | CreditCardMonthTimeline;
   capture: CaptureMetadata;
   instrumentFingerprintSecret: string;
   /** Explicit issuer cycle-summary evidence; query dates are not statements. */
@@ -763,7 +762,7 @@ async function queryStatements(
     readJson?: (response: Response) => Promise<unknown>;
     signal?: AbortSignal;
   }> = {},
-): Promise<{ rows: StatementRow[]; timeline: EsunCreditCardTimeline; startDate: string; endDate: string }> {
+): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
   const endDate = input.endDate ?? formatDate(new Date());
   const startDate = input.startDate ?? defaultStartDate(endDate);
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
@@ -1248,7 +1247,7 @@ async function collectEsunCreditCard(
   const endDate = formatDate(new Date(context.now()));
   let startDate = defaultStartDate(endDate);
   let rows: StatementRow[];
-  let timeline: EsunCreditCardTimeline;
+  let timeline: CreditCardMonthTimeline;
   try {
     ({ rows, timeline, startDate } = await queryStatements(page, { startDate, endDate }, {
       readJson: (response) => readEsunResponseJson(response, context),

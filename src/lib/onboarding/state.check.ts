@@ -233,6 +233,7 @@ test("task disclosure follows explicit workflow nodes and stays scoped to the se
     ranToday: true,
     credentialsReady: true,
     setupRequired: false,
+    canonicalResetRequired: false,
     primaryAction: "Run again" as const,
     canRun: true,
   } satisfies AutomationTaskRow;

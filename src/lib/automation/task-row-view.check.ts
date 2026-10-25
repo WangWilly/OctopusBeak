@@ -38,6 +38,7 @@ function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     ranToday: false,
     credentialsReady: true,
     setupRequired: false,
+    canonicalResetRequired: false,
     primaryAction: "Cancel",
     canRun: true,
     latestRunStatus: overrides.status ?? "running",
@@ -127,6 +128,27 @@ test("the last sync line keeps a finished run's result after its source starts n
   assert.equal(view.runStatus.tone, "bad");
   assert.equal(view.runStatus.label, translations.en.automation.credentialSyncStatuses.failed);
   assert.equal(view.syncStatus.label, translations.en.automation.needsSetup);
+});
+
+test("a source waiting for a Canonical Reset says so in both languages and explains what is kept", () => {
+  const waiting = row({
+    status: "reset_required",
+    latestRunStatus: "partial",
+    isActive: false,
+    canonicalResetRequired: true,
+    primaryAction: "Delete financial data",
+    appWorkflowOutcome: { errorCode: "canonical-reset-required", summary: null },
+  });
+  for (const locale of ["en", "zh-TW"] as const) {
+    const view = presentTaskRow(waiting, context(locale));
+    const copy = translations[locale].automation;
+    assert.deepEqual(view.syncStatus, { tone: "warn", label: copy.resetRequired, time: "" });
+    assert.equal(view.runStatus.label, copy.credentialSyncStatuses.partial, "the run line keeps the run's own result");
+    assert.equal(view.lastSyncSummary, copy.resetRequiredDetail);
+    assert.ok(copy.actionLabels["Delete financial data"]);
+  }
+  assert.match(translations.en.automation.resetRequiredDetail, /Sign-in details.*kept/u);
+  assert.match(translations["zh-TW"].automation.resetRequiredDetail, /登入資料.*保留/u);
 });
 
 test("statement results come from the first product reported for each type", () => {

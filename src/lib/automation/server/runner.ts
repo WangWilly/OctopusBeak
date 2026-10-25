@@ -107,6 +107,7 @@ export function createAutomationRunner(options: Readonly<{
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;
+  let holds = 0;
 
   async function execute(
     task: AutomationTask,
@@ -233,6 +234,7 @@ export function createAutomationRunner(options: Readonly<{
       runOptions: StartAutomationTaskOptions = {},
     ): Promise<StartedAutomationTask> {
       if (shuttingDown) throw new Error("App workflow runtime is shutting down.");
+      if (holds > 0) throw new Error("Automation is paused while local data is being deleted.");
       const task = appExecutorTask(taskId);
       validateScheduledAtUtc(runOptions.scheduledAtUtc);
       assertStatementSelection(task);
@@ -306,6 +308,29 @@ export function createAutomationRunner(options: Readonly<{
       await run.requestStop("forced");
       await entry.lifecycle;
       return { cancelled: taskId };
+    },
+
+    /**
+     * Cancel every run as a person would, wait until each is terminal, then
+     * run `work`. No run starts until `work` settles.
+     */
+    async whileStopped<T>(work: () => Promise<T>): Promise<T> {
+      holds += 1;
+      try {
+        while (claimed.size > 0) {
+          const entries = [...claimed.values()];
+          await Promise.all(entries.map((entry) => entry.opening.then(
+            async (run) => {
+              await run.requestStop("cancelled");
+              await entry.lifecycle;
+            },
+            () => undefined,
+          )));
+        }
+        return await work();
+      } finally {
+        holds -= 1;
+      }
     },
 
     /** Stop every run without waiting, for a fatal exit. */

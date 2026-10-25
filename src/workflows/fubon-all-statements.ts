@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith, WorkflowAccountIdentityPort } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { FUBON_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/fubon-credit-card-human-attestation-contract.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   collectSelectedProducts,
@@ -53,8 +54,7 @@ const appInputSchema = z.object({
   loans: fubonLoanStatementsInputSchema.default(() => fubonLoanStatementsInputSchema.parse({})),
 });
 
-const FUBON_CREDIT_CARD_IDENTITY_EPOCH =
-  "fubon-credit-card-human-attested-v2" as const;
+const FUBON_CREDIT_CARD_IDENTITY_EPOCH = FUBON_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
 function hmacFubonIdentity(secret: string, value: unknown): string {
   return createHmac("sha256", secret)

@@ -518,3 +518,25 @@ test("turning scheduled collection on or moving its time does not run a time tha
   await settle();
   assert.deepEqual(h.starts, ["2026-07-16T01:00:00.000Z"], "the next 09:00 runs");
 });
+
+test("a paused scheduled collection starts nothing until resumed, and resume leaves a stopped scheduler stopped", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T22:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-13T23:00:00.000Z"], "launch catches up the previous 07:00");
+  const resume = h.scheduler.pause();
+  h.advanceToNextTimer();
+  await settle();
+  assert.equal(h.starts.length, 1, "the occurrence that came due while paused did not start");
+  resume();
+  await settle();
+  assert.equal(h.starts.length, 1, "resume skips the occurrence that came due while paused");
+  h.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(h.starts.slice(1), ["2026-07-15T23:00:00.000Z"], "resume follows the normal schedule");
+
+  const stopped = collectionHarness({ enabled: true, now: "2026-07-14T23:30:00Z" });
+  stopped.scheduler.pause()();
+  await settle();
+  assert.deepEqual(stopped.starts, [], "a scheduler that never started stays stopped");
+});

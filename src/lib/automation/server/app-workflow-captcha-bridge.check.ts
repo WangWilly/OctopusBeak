@@ -459,3 +459,61 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
     await store.close();
   }
 });
+
+test("a run the store refused until a Canonical Reset is never retried by the CAPTCHA campaign", async () => {
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  const controller = new AbortController();
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
+    const attempts: number[] = [];
+    const result = await runCaptchaRetryCampaign({
+      taskId: "fubon-all-statements",
+      appWorkflow: true,
+      provider,
+      launchVerificationSettings: {},
+      run,
+      initialExecutionOptions: {},
+      captchaRetryCooldownMs: () => undefined,
+      routeWaitingRunVerification: async (input) => {
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable", reason: "solver-exhausted" };
+      },
+      async execute(options) {
+        attempts.push(options.attempt ?? 1);
+        const assistance = createAppWorkflowHumanAssistancePort({ run });
+        try {
+          await assistance.request(sinopacContract, controller.signal);
+        } catch {
+          // The App route rejects the active worker stage to restart it.
+        }
+        return {
+          failure: null,
+          summary: {
+            status: "partial",
+            counts: { itemCount: 2, committedCount: 1 },
+            products: [
+              { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+              { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 0, errorCode: "canonical-reset-required" },
+            ],
+          },
+        };
+      },
+    });
+    assert.deepEqual(attempts, [1]);
+    const finished = await run.finish(result);
+    assert.equal(finished.appWorkflowOutcome?.errorCode, "canonical-reset-required");
+    assert.equal(finished.status, "partial", "the deposit product that committed keeps the run partial, not failed");
+  } finally {
+    controller.abort();
+    await store.close();
+  }
+});

@@ -11,6 +11,7 @@ import {
 } from "./pglite-financial-registry.ts";
 import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
+import { PGliteCanonicalCreditCardAdmissionError } from "../src/ledger/pglite/credit-card.ts";
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
@@ -212,6 +213,23 @@ test("an admission rejection keeps its fixed reason across both RPC hops and int
     if (previousPath === undefined) delete process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
     else process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = previousPath;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a store waiting for a Canonical Reset reaches the workflow as its own admission reason", async () => {
+  const ports = memoryPair();
+  const server = createPGliteFinancialRpcServer(ports[1], createPGliteFinancialLocalPort({
+    "financial.spending.version": async () => {
+      throw new PGliteCanonicalCreditCardAdmissionError("canonical-reset-required", "old epoch account SECRET-ACCT remains");
+    },
+  } as unknown as PGliteFinancialRegistry));
+  const client = createPGliteFinancialRpcClient(ports[0]);
+  try {
+    await assert.rejects(client.request("financial.spending.version", []), (error: unknown) =>
+      error instanceof PGliteFinancialError && error.category === "admission" && error.reason === "canonical-reset-required");
+  } finally {
+    client.close();
+    await server.close();
   }
 });
 

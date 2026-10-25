@@ -135,11 +135,13 @@ function syncStatus(row: AutomationTaskRow, runStatus: TaskRowStatusLine, contex
     return { tone: "warn", label: labels.missingCredentials, time: "" };
   }
   if (row.status === "needs_setup") return { tone: "warn", label: dictionary.automation.needsSetup, time: "" };
+  if (row.status === "reset_required") return { tone: "warn", label: dictionary.automation.resetRequired, time: "" };
   return runStatus;
 }
 
 function lastSyncSummary(row: AutomationTaskRow, context: TaskRowViewContext) {
   const { dictionary } = context;
+  if (row.status === "reset_required") return dictionary.automation.resetRequiredDetail;
   const outcome = row.appWorkflowOutcome;
   const products = (outcome?.summary?.products ?? []).filter((product) => product.status !== "skipped");
   if (products.length) {
@@ -234,6 +236,7 @@ function progressLabel(row: AutomationTaskRow, dictionary: Translation, statusLa
       ? statusLabel
       : copy.progressTerminalWithPercent(statusLabel, row.progressPercent);
   }
+  if (row.status === "reset_required") return copy.progressResetRequired;
   const stage = workflowProgressStageLabel(row, dictionary);
   if (stage) {
     const stageWithProgress = row.progressPercent === null

@@ -135,7 +135,8 @@ function notifyScheduledRun(run: AutomationTaskRun) {
   if (!notice || !Notification.isSupported()) return;
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
-    requestSignInSettings(notice.credentialGroupId);
+    // Deleting financial data happens in Settings, which the source's row opens.
+    if (notice.action !== "delete-financial-data") requestSignInSettings(notice.credentialGroupId);
     if (!currentRendererUrl || !currentPreloadPath) return;
     void createWindow(currentRendererUrl, currentPreloadPath)
       .then((window) => {
@@ -408,6 +409,12 @@ async function start() {
   }
   ipcRegistration = registerOctopusBeakIpc({
     automationRuntime: runtime,
+    pauseSchedules: () => {
+      const resumes = [scheduler?.pause(), collectionScheduler?.pause()];
+      return () => {
+        for (const resume of resumes) resume?.();
+      };
+    },
     onSystemSettingsChanged: () => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
