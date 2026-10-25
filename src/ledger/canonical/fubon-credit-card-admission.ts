@@ -13,6 +13,16 @@ import {
   type FubonCreditCardPanIdentityMetadata,
 } from "./fubon-credit-card-pan.ts";
 import {
+  encodeCreditCardQueryBucket,
+  statementGridInventory,
+  statementGridProblem,
+  type CreditCardStatementGridBucket,
+  type CreditCardStatementGridCompleteness,
+  type CreditCardStatementGridOf,
+  type CreditCardStatementGridShape,
+  type CreditCardStatementGridTerminalEvidence,
+} from "./credit-card-query-inventory.ts";
+import {
   assignOccurrenceSlots,
   canonicalOccurrenceGroupKey,
   findOccurrenceGroupCaptureAmbiguity,
@@ -65,7 +75,7 @@ export type FubonCreditCardTransactionInput = {
   /** Opaque source scope used when billed evidence lacks a settled Statement. */
   sourceScopeKey?: string;
   /** Source grid that returned this row; provenance only, not transaction identity. */
-  occurrenceGroupBucketKey?: string;
+  queryBucket: CreditCardStatementGridBucket;
   statementKey?: string;
   paymentStatus?: string;
   correctionKey?: string;
@@ -77,63 +87,20 @@ export type FubonCreditCardTransactionInput = {
   sourceKey?: string;
 };
 
-type FubonCreditCardGridBase = {
-  kind: "billed" | "unbilled";
-  period: string;
-  capturedRowCount: number;
-  terminal: boolean;
-  dueDateEvidence?: "explicit-date" | "provider-text-status";
-};
-
-type FubonCreditCardPagedGridBase = FubonCreditCardGridBase & {
-  currentPage: number;
-  pageSize: number;
-  maximumPageSize: number;
-};
-
 /**
- * A terminal grid is backed by a provider-declared total, by a short first
- * page whose returned row count is strictly below the requested maximum, or,
- * for the unbilled grid only, by the bank's explicit no-record page served
- * in place of the table. The short-page variant deliberately carries no
- * source-declared count: observed rows are not promoted into provider
- * evidence. The no-record variant carries no paging fields at all, because
- * the bank served none, and admits only an empty grid.
+ * Fubon pages each grid at a requested maximum size; the unbilled grid may
+ * instead be the bank's explicit no-record page, which carries no paging
+ * fields because the bank served none.
  */
-export type FubonCreditCardGrid =
-  | (FubonCreditCardPagedGridBase & {
-      terminalEvidence: "source-declared-total";
-      sourceDeclaredRowCount: number;
-      sourceDeclaredScopeRowCount: number;
-    })
-  | (FubonCreditCardPagedGridBase & {
-      terminalEvidence: "short-page";
-      sourceDeclaredRowCount?: never;
-      sourceDeclaredScopeRowCount?: never;
-    })
-  | (FubonCreditCardGridBase & {
-      kind: "unbilled";
-      capturedRowCount: 0;
-      terminalEvidence: "provider-no-record";
-      currentPage?: never;
-      pageSize?: never;
-      maximumPageSize?: never;
-      sourceDeclaredRowCount?: never;
-      sourceDeclaredScopeRowCount?: never;
-    });
+export const FUBON_STATEMENT_GRID = {
+  label: "Fubon",
+  billedPeriodCount: 6,
+  terminalEvidence: ["source-declared-total", "short-page", "provider-no-record"],
+} as const satisfies CreditCardStatementGridShape<CreditCardStatementGridTerminalEvidence>;
 
-export type FubonCreditCardCompleteness = {
-  billedPeriods: readonly string[];
-  unbilledIncluded: boolean;
-  unfiltered: boolean;
-  terminalGrids: boolean;
-  rowCountsMatch: boolean;
-  periodRowCounts: readonly number[];
-  unbilledRowCount: number;
-  recordCount: number;
-  settledSummaryEvidencePresent: boolean;
-  grids: readonly FubonCreditCardGrid[];
-};
+export type FubonCreditCardGrid = CreditCardStatementGridOf<typeof FUBON_STATEMENT_GRID>;
+
+export type FubonCreditCardCompleteness = CreditCardStatementGridCompleteness<FubonCreditCardGrid>;
 
 export type FubonCreditCardStatementEvidence = {
   kind: "issuer-settled-cycle-summary";
@@ -558,134 +525,6 @@ export function buildFubonCreditCardStatementEvidenceKey(
   return `sha256:${createHash("sha256").update(JSON.stringify(tuple)).digest("base64url")}`;
 }
 
-function hasValidFubonGridTerminalEvidence(grid: FubonCreditCardGrid): boolean {
-  if (grid.terminalEvidence === "provider-no-record")
-    return (
-      grid.kind === "unbilled" &&
-      grid.terminal === true &&
-      grid.capturedRowCount === 0 &&
-      !Object.hasOwn(grid, "currentPage") &&
-      !Object.hasOwn(grid, "pageSize") &&
-      !Object.hasOwn(grid, "maximumPageSize") &&
-      !Object.hasOwn(grid, "sourceDeclaredRowCount") &&
-      !Object.hasOwn(grid, "sourceDeclaredScopeRowCount")
-    );
-  if (
-    !Number.isSafeInteger(grid.currentPage) ||
-    grid.currentPage !== 1 ||
-    !Number.isSafeInteger(grid.pageSize) ||
-    !Number.isSafeInteger(grid.maximumPageSize) ||
-    grid.maximumPageSize <= 0 ||
-    grid.pageSize !== grid.maximumPageSize ||
-    !grid.terminal ||
-    !Number.isSafeInteger(grid.capturedRowCount) ||
-    grid.capturedRowCount < 0 ||
-    grid.capturedRowCount > grid.pageSize
-  )
-    return false;
-
-  if (grid.terminalEvidence === "source-declared-total")
-    return (
-      Object.hasOwn(grid, "sourceDeclaredRowCount") &&
-      Object.hasOwn(grid, "sourceDeclaredScopeRowCount") &&
-      Number.isSafeInteger(grid.sourceDeclaredRowCount) &&
-      grid.sourceDeclaredRowCount >= 0 &&
-      grid.capturedRowCount === grid.sourceDeclaredRowCount &&
-      Number.isSafeInteger(grid.sourceDeclaredScopeRowCount) &&
-      grid.sourceDeclaredScopeRowCount >= grid.sourceDeclaredRowCount
-    );
-
-  if (grid.terminalEvidence === "short-page")
-    return (
-      !Object.hasOwn(grid, "sourceDeclaredRowCount") &&
-      !Object.hasOwn(grid, "sourceDeclaredScopeRowCount") &&
-      grid.capturedRowCount < grid.pageSize
-    );
-
-  return false;
-}
-
-function validateCompleteness(
-  capture: FubonCreditCardCaptureInput,
-  transactions: readonly FubonCreditCardAdmittedTransaction[],
-): void {
-  const completeness = capture.scope.completeness;
-  if (!Array.isArray(completeness.billedPeriods) || completeness.billedPeriods.length !== 6)
-    fail("Fubon credit-card capture requires six billed periods.");
-  if (new Set(completeness.billedPeriods).size !== 6)
-    fail("Fubon billed periods must be distinct.");
-  if (!completeness.unbilledIncluded)
-    fail("Fubon credit-card capture must include the unbilled grid.");
-  if (!completeness.unfiltered)
-    fail("Fubon credit-card completeness requires an unfiltered grid.");
-  if (!completeness.terminalGrids)
-    fail("Fubon credit-card capture requires terminal grids.");
-  if (!completeness.rowCountsMatch)
-    fail("Fubon credit-card grid row counts do not match captured records.");
-  if (
-    completeness.periodRowCounts.length !== 6 ||
-    completeness.periodRowCounts.some(
-      (count) => !Number.isSafeInteger(count) || count < 0,
-    ) ||
-    !Number.isSafeInteger(completeness.unbilledRowCount) ||
-    completeness.unbilledRowCount < 0 ||
-    !Number.isSafeInteger(completeness.recordCount) ||
-    completeness.recordCount < 0
-  )
-    fail("Fubon credit-card completeness counts are invalid.");
-  if (
-    !Array.isArray(completeness.grids) ||
-    completeness.grids.length !== 7 ||
-    completeness.grids.filter((grid) => grid.kind === "billed").length !== 6 ||
-    completeness.grids.filter((grid) => grid.kind === "unbilled").length !== 1 ||
-    completeness.grids.some((grid) => !hasValidFubonGridTerminalEvidence(grid))
-  )
-    fail("Fubon credit-card grids lack terminal maximum-page matching-count evidence.");
-  const billedGrids = completeness.grids.filter(
-    (grid) => grid.kind === "billed",
-  );
-  const unbilledGrid = completeness.grids.find(
-    (grid) => grid.kind === "unbilled",
-  );
-  if (
-    billedGrids.some(
-      (grid, index) =>
-        grid.period !== completeness.billedPeriods[index] ||
-        grid.capturedRowCount !== completeness.periodRowCounts[index] ||
-        (grid.terminalEvidence === "source-declared-total" &&
-          grid.sourceDeclaredRowCount !== completeness.periodRowCounts[index]),
-    ) ||
-    !unbilledGrid ||
-    unbilledGrid.period !== "unbilled" ||
-    unbilledGrid.capturedRowCount !== completeness.unbilledRowCount ||
-    (unbilledGrid.terminalEvidence === "source-declared-total" &&
-      unbilledGrid.sourceDeclaredRowCount !== completeness.unbilledRowCount)
-  )
-    fail("Fubon credit-card grid periods or row counts do not match completeness evidence.");
-  const billedCount = transactions.filter((row) => row.billingStatus === "billed").length;
-  const unbilledCount = transactions.filter((row) => row.billingStatus === "unbilled").length;
-  if (
-    completeness.recordCount !== transactions.length ||
-    completeness.unbilledRowCount !== unbilledCount ||
-    completeness.periodRowCounts.reduce((sum, count) => sum + count, 0) !== billedCount
-  )
-    fail("Fubon credit-card completeness count drifted from records.");
-  if (!completeness.settledSummaryEvidencePresent)
-    fail("Fubon credit-card capture is missing settled statement summary evidence.");
-  for (const transaction of transactions) {
-    const bucketKey = text(
-      transaction.occurrenceGroupBucketKey,
-      "Fubon transaction query bucket key",
-    );
-    if (
-      transaction.billingStatus === "billed" &&
-      (!bucketKey.startsWith("statement:") ||
-        !completeness.billedPeriods.includes(bucketKey.slice("statement:".length)))
-    )
-      fail("Fubon transaction query bucket is outside the complete billed-period inventory.");
-  }
-}
-
 function validateInstrument(instrument: FubonCreditCardInstrumentInput): FubonCreditCardInstrumentInput {
   const instrumentKey = text(instrument.instrumentKey, "Card instrument key");
   if (/\d[\d\s-]{11,}\d/u.test(instrumentKey))
@@ -745,15 +584,7 @@ function validateTransaction(
   const description = text(record.description, "Transaction description");
   const statementKey = record.statementKey?.trim() || undefined;
   const sourceScopeKey = record.sourceScopeKey?.trim() || undefined;
-  const occurrenceGroupBucketKey = text(
-    record.occurrenceGroupBucketKey,
-    "Queried source bucket",
-  );
-  if (
-    (record.billingStatus === "unbilled" && occurrenceGroupBucketKey !== "unbilled") ||
-    (record.billingStatus === "billed" && !occurrenceGroupBucketKey.startsWith("statement:"))
-  )
-    fail("Fubon transaction query bucket conflicts with its billing status.");
+  if (!record.queryBucket) fail("Queried source bucket is required.");
   if (sourceScopeKey && sourceScopeKey.length > 256)
     fail("Transaction source scope key is too long.");
   if (record.billingStatus === "billed" && !statementKey)
@@ -800,7 +631,6 @@ function validateTransaction(
     fail("Provided transaction source key does not match the contract tuple.");
   return {
     ...normalizedRecord,
-    occurrenceGroupBucketKey,
     sourceRecordKey,
     instrumentKey,
     consumeDate,
@@ -1031,7 +861,7 @@ export function admitFubonCreditCardCapture(
       options,
     ),
     billingStatus: (transaction) => transaction.billingStatus,
-    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "Fubon transaction query bucket key"),
+    bucketKey: (transaction) => encodeCreditCardQueryBucket(transaction.queryBucket),
   });
   if (ambiguity.billingStatusConflict)
     fail("Fubon billed and unbilled grids contain an ambiguous identical economic transaction.");
@@ -1048,7 +878,8 @@ export function admitFubonCreditCardCapture(
         "Card instrument role evidence must reference a transaction source record for the same capture and instrument.",
       );
   }
-  validateCompleteness(capture, transactions);
+  const gridProblem = statementGridProblem(FUBON_STATEMENT_GRID, capture.scope.completeness, transactions);
+  if (gridProblem) fail(gridProblem);
   const occurrenceScopeKey = opaqueFubonSpineToken(
     "fubon-credit-card-occurrence-scope-v1",
     accountNaturalKey,
@@ -1179,7 +1010,7 @@ export function fubonCanonicalSpineCapture(
     return {
       occurrenceKey,
       occurrenceGroup: transaction.occurrenceGroup,
-      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
+      occurrenceGroupBucketKey: encodeCreditCardQueryBucket(transaction.queryBucket),
       collisionKey: occurrenceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: occurrenceKey,
@@ -1324,10 +1155,7 @@ export function fubonCanonicalSpineCapture(
       startDate: capture.scope.startDate,
       endDate: capture.scope.endDate,
       contractVersion: capture.contractVersion,
-      bucketKeys: [
-        ...capture.scope.completeness.billedPeriods.map((period) => `statement:${period}`),
-        "unbilled",
-      ],
+      bucketKeys: statementGridInventory(capture.scope.completeness.billedPeriods).map(encodeCreditCardQueryBucket),
     }],
     nonTransactionRecords,
   });

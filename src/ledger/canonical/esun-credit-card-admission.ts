@@ -12,6 +12,16 @@ import {
   findOccurrenceGroupCaptureAmbiguity,
   type CanonicalOccurrenceGroup,
 } from "./occurrence-groups.ts";
+import {
+  encodeCreditCardQueryBucket,
+  isBucketInInventory,
+  isCompleteMonthTimeline,
+  monthTimelineAnniversary,
+  monthTimelineInventory,
+  monthTimelineRowBucket,
+  type CreditCardMonthTimeline,
+  type CreditCardTimelineBucket,
+} from "./credit-card-query-inventory.ts";
 
 export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
 
@@ -83,21 +93,9 @@ export type EsunCreditCardTransactionInput = {
   /** Optional issuer-settled billed-period key; it is never a query date. */
   statementPeriod?: string | null;
   /** Complete queried source grid bucket; provenance only, not identity. */
-  occurrenceGroupBucketKey?: string;
+  queryBucket: CreditCardTimelineBucket;
   statementKey?: string;
   sourceKey?: string;
-};
-
-export type EsunCreditCardTimeline = {
-  kind: "past-year-timeline";
-  firstMonth: string;
-  lastMonth: string;
-  months: readonly string[];
-  pageCount: number;
-  monthCount: number;
-  capturedRowCount: number;
-  terminal: true;
-  terminalCursor: 4;
 };
 
 export type EsunCreditCardGrid = {
@@ -107,7 +105,7 @@ export type EsunCreditCardGrid = {
   maximumPageSize: number;
   capturedRowCount: number;
   terminal: boolean;
-} | EsunCreditCardTimeline;
+} | CreditCardMonthTimeline;
 
 export type EsunCreditCardCompleteness = {
   snapshotMode: "full";
@@ -577,10 +575,7 @@ function validateTransaction(
   const billingStatus = record.billingStatus;
   if (billingStatus !== "billed" && billingStatus !== "unbilled")
     fail("E.SUN billing status is unsupported.");
-  const occurrenceGroupBucketKey = text(
-    record.occurrenceGroupBucketKey,
-    "Queried source bucket",
-  );
+  if (!record.queryBucket) fail("Queried source bucket is required.");
   const normalizedRecord = {
     ...record,
     sourceRecordKey,
@@ -597,7 +592,6 @@ function validateTransaction(
     foreignCurrency,
     foreignAmount,
     billingStatus,
-    occurrenceGroupBucketKey,
     ...(record.statementKey?.trim()
       ? { statementKey: record.statementKey.trim() }
       : {}),
@@ -627,9 +621,10 @@ function validateCompleteness(
       grid.capturedRowCount !== transactions.length
     )
       fail("E.SUN capture requires a terminal page-one maximum-size grid with matching row count.");
-  } else if (!validTimelineEvidence(grid, capture.scope.startDate, capture.scope.endDate, transactions.length)) {
+  } else if (!isCompleteMonthTimeline(grid, capture.scope.startDate, capture.scope.endDate, transactions.length)) {
     fail("E.SUN capture requires complete past-year timeline coverage with matching row count.");
   }
+  const inventory = esunQueryInventory(grid, capture.scope.startDate, capture.scope.endDate);
   const billedCount = transactions.filter((row) => row.billingStatus === "billed").length;
   const unbilledCount = transactions.filter((row) => row.billingStatus === "unbilled").length;
   if (
@@ -646,12 +641,7 @@ function validateCompleteness(
   for (const instrument of capture.instruments)
     cardCounts.set(instrument.instrumentKey, 0);
   for (const transaction of transactions) {
-    const bucketKey = text(
-      transaction.occurrenceGroupBucketKey,
-      "E.SUN transaction query bucket key",
-    );
-    if (!esunGridBucketKeys(capture.scope.completeness.grid, capture.scope.startDate, capture.scope.endDate)
-      .includes(bucketKey))
+    if (!isBucketInInventory(inventory, transaction.queryBucket))
       fail("E.SUN transaction query bucket is outside the complete queried grid inventory.");
     const instrument = capture.instruments.find(
       (candidate) => candidate.instrumentKey === transaction.instrumentKey,
@@ -683,37 +673,6 @@ function validateCompleteness(
     )
   )
     fail("E.SUN billed period evidence does not cover all billed rows.");
-}
-
-function validTimelineEvidence(
-  evidence: EsunCreditCardTimeline,
-  startDate: string,
-  endDate: string,
-  rowCount: number,
-): boolean {
-  const firstMonth = endDate.slice(0, 7).replace("-", "/");
-  const lastMonth = startDate.slice(0, 7).replace("-", "/");
-  const [firstYear, firstNumber] = firstMonth.split("/").map(Number);
-  const [lastYear, lastNumber] = lastMonth.split("/").map(Number);
-  const span = (firstYear - lastYear) * 12 + firstNumber - lastNumber;
-  return evidence.kind === "past-year-timeline" &&
-    evidence.terminal === true &&
-    evidence.terminalCursor === 4 &&
-    evidence.firstMonth === firstMonth &&
-    evidence.lastMonth === lastMonth &&
-    (span === 11 || span === 12) &&
-    evidence.monthCount === span + 1 &&
-    Array.isArray(evidence.months) &&
-    evidence.months.length === evidence.monthCount &&
-    evidence.months.every((month, index) => {
-      if (!/^\d{4}\/(?:0[1-9]|1[0-2])$/u.test(month)) return false;
-      const [year, number] = month.split("/").map(Number);
-      return year * 12 + number === firstYear * 12 + firstNumber - index;
-    }) &&
-    Number.isSafeInteger(evidence.pageCount) &&
-    evidence.pageCount > 0 &&
-    evidence.pageCount <= evidence.monthCount &&
-    evidence.capturedRowCount === rowCount;
 }
 
 function validateStatement(
@@ -836,7 +795,7 @@ export function admitEsunCreditCardCapture(
       { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
     ),
     billingStatus: (transaction) => transaction.billingStatus,
-    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "E.SUN transaction query bucket key"),
+    bucketKey: (transaction) => encodeCreditCardQueryBucket(transaction.queryBucket),
   });
   if (ambiguity.billingStatusConflict)
     fail("E.SUN billed and unbilled rows contain an ambiguous identical economic transaction.");
@@ -1006,7 +965,7 @@ function createSourceRowTransaction(
   row: EsunCreditCardSourceRow,
   instrumentKey: string,
   occurrenceIndex: number,
-  occurrenceGroupBucketKey: string,
+  queryBucket: CreditCardTimelineBucket,
 ): EsunCreditCardTransactionInput {
   const signed = sourceRowSignedAmount(row);
   const foreign = sourceRowForeignEvidence(row);
@@ -1043,43 +1002,23 @@ function createSourceRowTransaction(
     foreignAmount: foreign.amount,
     description: text(row.description, "Transaction description"),
     billingStatus,
-    occurrenceGroupBucketKey,
+    queryBucket,
     ...(row.paymentStatus === "已入帳" && row.issuerStatementPeriod?.trim()
       ? { statementPeriod: row.issuerStatementPeriod.trim() }
       : {}),
   };
 }
 
-function esunGridBucketKeys(
+function esunQueryInventory(
   grid: EsunCreditCardGrid,
   startDate: string,
   endDate: string,
-): string[] {
-  if (grid.kind === "past-year-timeline")
-    return grid.months.map((month) => esunTimelineMonthBucketKey(month, endDate));
-  return [`history-range:${startDate}:${endDate}`];
-}
-
-/**
- * The past-year timeline returns purchases only from about the query date's
- * anniversary one year earlier (ADR 0031); anything on or before it may
- * already have left the timeline.
- */
-function esunTimelineAnniversary(endDate: string): string {
-  const queryDate = sourceDate(endDate, "Capture end date");
-  return `${String(Number(queryDate.slice(0, 4)) - 1).padStart(4, "0")}${queryDate.slice(4)}`;
-}
-
-/**
- * The anniversary month loses purchases day by day while it is still listed.
- * Its bucket names the query date: a later day's capture has not queried it
- * again, while a same-day capture must still contain every member (ADR 0040).
- */
-function esunTimelineMonthBucketKey(month: string, endDate: string): string {
-  const anniversaryMonth = esunTimelineAnniversary(endDate).slice(0, 7).replace("-", "/");
-  return month === anniversaryMonth
-    ? `partial-month:${month}:queried-on:${sourceDate(endDate, "Capture end date")}`
-    : `month:${month}`;
+): CreditCardTimelineBucket[] {
+  return monthTimelineInventory(
+    grid,
+    sourceDate(startDate, "Capture start date"),
+    sourceDate(endDate, "Capture end date"),
+  );
 }
 
 function buildSettledStatements(
@@ -1193,7 +1132,7 @@ export function buildEsunCanonicalCreditCardCapture(
       !options.grid.terminal
     )
       fail("E.SUN canonical capture requires a complete terminal maximum-size grid.");
-  } else if (!validTimelineEvidence(options.grid, options.startDate, options.endDate,
+  } else if (!isCompleteMonthTimeline(options.grid, options.startDate, options.endDate,
     options.statementRows.length + (options.unbilledRows?.length ?? 0))) {
     fail("E.SUN canonical capture requires complete past-year timeline coverage.");
   }
@@ -1213,6 +1152,8 @@ export function buildEsunCanonicalCreditCardCapture(
       fail("E.SUN projected instrument identity conflicts with its display mask.");
     instrumentsByKey.set(instrumentKey, cardKey);
   }
+  const startDate = sourceDate(options.startDate, "Capture start date");
+  const endDate = sourceDate(options.endDate, "Capture end date");
   const descriptors = allRows.map((row, inputIndex) => {
     const cardKey = sourceRowCardKey(row);
     const instrumentKey = text(row.instrumentKey, "Card instrument key");
@@ -1221,9 +1162,7 @@ export function buildEsunCanonicalCreditCardCapture(
       inputIndex,
       cardKey,
       instrumentKey,
-      occurrenceGroupBucketKey: options.grid.kind === "past-year-timeline"
-        ? esunTimelineMonthBucketKey(normalizeSourceRowDate(row.consumeDate).slice(0, 7).replace("-", "/"), options.endDate)
-        : `history-range:${sourceDate(options.startDate, "Capture start date")}:${sourceDate(options.endDate, "Capture end date")}`,
+      queryBucket: monthTimelineRowBucket(options.grid, normalizeSourceRowDate(row.consumeDate), startDate, endDate),
       baseIdentity: sourceRowBaseIdentity(options.identity, row, instrumentKey),
     };
   });
@@ -1251,7 +1190,7 @@ export function buildEsunCanonicalCreditCardCapture(
       descriptor.row,
       descriptor.instrumentKey,
       ordinal - 1,
-      descriptor.occurrenceGroupBucketKey,
+      descriptor.queryBucket,
     ).sourceKey!,
   });
   for (const { row: descriptor, group } of assigned) {
@@ -1262,7 +1201,7 @@ export function buildEsunCanonicalCreditCardCapture(
         descriptor.row,
         descriptor.instrumentKey,
         group.ordinal - 1,
-        descriptor.occurrenceGroupBucketKey,
+        descriptor.queryBucket,
       ),
     );
   }
@@ -1307,7 +1246,7 @@ export function buildEsunCanonicalCreditCardCapture(
   // longer return, so its membership is incomplete; the last revision stands.
   const settledPeriods = (options.settledPeriods ?? []).filter((period) =>
     options.grid.kind !== "past-year-timeline" ||
-      validDate(period.cycleStart, "Statement cycle start") > esunTimelineAnniversary(options.endDate));
+      validDate(period.cycleStart, "Statement cycle start") > monthTimelineAnniversary(endDate));
   const statements = buildSettledStatements(
     options.identity,
     settledPeriods,
@@ -1322,8 +1261,8 @@ export function buildEsunCanonicalCreditCardCapture(
     },
     observedAt: text(options.observedAt, "Observed at"),
     scope: {
-      startDate: sourceDate(options.startDate, "Capture start date"),
-      endDate: sourceDate(options.endDate, "Capture end date"),
+      startDate,
+      endDate,
       completeness: {
         snapshotMode: "full",
         grid: { ...options.grid },
@@ -1455,7 +1394,7 @@ export function esunCanonicalSpineCapture(
     return {
       occurrenceKey,
       occurrenceGroup: transaction.occurrenceGroup,
-      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
+      occurrenceGroupBucketKey: encodeCreditCardQueryBucket(transaction.queryBucket),
       collisionKey: occurrenceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: occurrenceKey,
@@ -1598,11 +1537,11 @@ export function esunCanonicalSpineCapture(
       startDate: capture.scope.startDate,
       endDate: capture.scope.endDate,
       contractVersion: capture.contractVersion,
-      bucketKeys: esunGridBucketKeys(
+      bucketKeys: esunQueryInventory(
         capture.scope.completeness.grid,
         capture.scope.startDate,
         capture.scope.endDate,
-      ),
+      ).map(encodeCreditCardQueryBucket),
     }],
     nonTransactionRecords,
   });

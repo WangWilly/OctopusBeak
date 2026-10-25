@@ -16,6 +16,10 @@ import {
   type PGliteCanonicalOccurrenceWithdrawalInput,
 } from "./canonical-source-store.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import {
+  decodeCreditCardQueryBucket,
+  promisesBilledMonotonicity,
+} from "../canonical/credit-card-query-inventory.ts";
 
 export type PGliteCanonicalCreditCardAmount = Readonly<{
   coefficient: string;
@@ -279,139 +283,70 @@ function validateBalance(observation: PGliteCanonicalBalanceObservationInput, es
   if (estimate.available) exact(estimate.available, "Credit-card estimate available");
 }
 
-type FubonBillingProgressRow = Readonly<{
-  transaction_id: unknown;
-  billing_status: "billed" | "unbilled";
-  group_scope_key: string | null;
-  group_fingerprint: string | null;
-  group_partition_date: string | null;
-  group_ordinal: number | string | null;
-  group_bucket_key: string | null;
-  bucket_inventory_json: string | null;
-}>;
+function occurrenceGroupKey(scopeKey: string, partitionDate: string, fingerprint: string): string {
+  return JSON.stringify([scopeKey, partitionDate, fingerprint]);
+}
 
-async function assertFubonBillingProgression(
+/**
+ * Per occurrence group, the billed members a prior capture of this contract
+ * located in a bucket that promises Billed Monotonicity and that this capture
+ * queried again (ADR 0062). Read before admission, which relocates them.
+ */
+async function listExpectedBilledMembers(
   transaction: PGliteTransaction,
   request: PGliteCanonicalCreditCardCaptureRequest,
-): Promise<void> {
-  if (request.capture.integrationNamespace !== "fubon") return;
-  // Current used-credit observations contain no billing-history inventory.
-  // Empty transaction-history captures still require their complete buckets.
-  if (request.capture.routeKey === "fubon/credit-card/current-used-credit-v1"
-    && request.capture.recordKind === "credit-card-current-used-credit"
-    && request.transactions.length === 0) return;
-
-  const account = await first<{ account_id: unknown }>(transaction, `
-    SELECT account.account_id FROM financial_accounts account
-    JOIN source_connections connection_scope
-      ON connection_scope.source_connection_id = account.source_connection_id
-    JOIN identity_epochs epoch ON epoch.identity_epoch_id = account.identity_epoch_id
-    WHERE connection_scope.integration_namespace = 'fubon'
-      AND connection_scope.source_connection_key = ?
-      AND epoch.epoch_key = ? AND account.stream = 'credit-card'
-      AND account.source_account_key = ? LIMIT 1`,
-  [request.capture.sourceConnectionKey, request.capture.identityEpoch,
-    request.account.sourceAccountKey]);
-  if (!account?.account_id) return;
-
-  const currentBucketsByScope = new Map<string, ReadonlySet<string>>();
-  const coverageEntries = request.capture.occurrenceGroupCoverage;
-  if (!Array.isArray(coverageEntries) || coverageEntries.length === 0)
-    fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
-  for (const coverage of coverageEntries) {
-    if (!Array.isArray(coverage.bucketKeys))
-      fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
-    currentBucketsByScope.set(coverage.scopeKey, new Set(coverage.bucketKeys));
+): Promise<ReadonlyMap<string, number>> {
+  const { capture } = request;
+  // Current used-credit observations carry no billing-history inventory.
+  if (capture.recordKind === "credit-card-current-used-credit" && request.transactions.length === 0) return new Map();
+  const coverage = capture.occurrenceGroupCoverage;
+  if (!Array.isArray(coverage) || coverage.length === 0
+    || coverage.some((entry) => !Array.isArray(entry.bucketKeys) || entry.bucketKeys.length === 0))
+    fail("invalid-contract", "Credit-card capture requires complete queried-bucket inventory.");
+  const sourceSubjectId = await findPGliteSourceSubjectId(transaction, capture);
+  if (!sourceSubjectId) return new Map();
+  const expected: Array<{ groupKey: string; sourceRecordId: string }> = [];
+  for (const entry of coverage) {
+    for (const occurrence of await listPGliteExpectedOccurrences(transaction, sourceSubjectId, capture.recordKind, entry))
+      if (promisesBilledMonotonicity(decodeCreditCardQueryBucket(occurrence.bucketKey)))
+        expected.push({
+          groupKey: occurrenceGroupKey(entry.scopeKey, occurrence.partitionDate, occurrence.fingerprint),
+          sourceRecordId: occurrence.sourceRecordId,
+        });
   }
+  if (expected.length === 0) return new Map();
+  const billedRecords = new Set((await query<{ source_record_id: unknown }>(transaction, `
+    SELECT source_record_id FROM canonical_credit_card_transaction_lifecycle
+    WHERE billing_status = 'billed' AND source_record_id IN (${expected.map(() => "?").join(",")})`,
+  expected.map((occurrence) => bytes(occurrence.sourceRecordId)))).map((row) => idText(row.source_record_id)));
+  const billedByGroup = new Map<string, number>();
+  for (const occurrence of expected)
+    if (billedRecords.has(occurrence.sourceRecordId))
+      billedByGroup.set(occurrence.groupKey, (billedByGroup.get(occurrence.groupKey) ?? 0) + 1);
+  return billedByGroup;
+}
 
-  const priorRows = await query<FubonBillingProgressRow>(transaction, `
-    SELECT lifecycle.transaction_id, lifecycle.billing_status,
-      source_record.occurrence_group_scope_key AS group_scope_key,
-      source_record.occurrence_group_fingerprint AS group_fingerprint,
-      source_record.occurrence_group_partition_date::text AS group_partition_date,
-      source_record.occurrence_group_ordinal AS group_ordinal,
-      source_record.occurrence_group_bucket_key AS group_bucket_key,
-      group_coverage.bucket_inventory_json
-    FROM canonical_credit_card_transaction_lifecycle lifecycle
-    JOIN source_records source_record
-      ON source_record.source_record_id = lifecycle.source_record_id
-    JOIN source_captures source_capture
-      ON source_capture.capture_id = lifecycle.capture_id
-    LEFT JOIN source_occurrence_group_coverages group_coverage
-      ON group_coverage.capture_id = lifecycle.capture_id
-      AND group_coverage.scope_key = source_record.occurrence_group_scope_key
-    JOIN canonical_commits commit_row
-      ON commit_row.commit_id = source_capture.commit_id
-    WHERE lifecycle.account_id = ?
-    ORDER BY commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
-  [account.account_id]);
-
-  const latestByTransaction = new Map<string, FubonBillingProgressRow>();
-  for (const row of priorRows) {
-    const transactionId = idText(row.transaction_id);
-    if (!latestByTransaction.has(transactionId))
-      latestByTransaction.set(transactionId, row);
-  }
-
-  const priorBilledCounts = new Map<string, number>();
-  const priorBilledCountsInQueriedBuckets = new Map<string, number>();
-  for (const row of latestByTransaction.values()) {
-    if (
-      row.group_scope_key === null ||
-      row.group_fingerprint === null ||
-      row.group_partition_date === null
-    ) continue;
-    if (row.bucket_inventory_json === null)
-      fail("revision-conflict", "Fubon prior occurrence group is missing complete queried-bucket proof.");
-    const key = JSON.stringify([
-      row.group_scope_key,
-      row.group_partition_date,
-      row.group_fingerprint,
-    ]);
-    if (row.billing_status === "billed") {
-      priorBilledCounts.set(key, (priorBilledCounts.get(key) ?? 0) + 1);
-      // A billed member is expected again only when the bucket that last
-      // held it was queried by this capture (ADR 0040).
-      if (row.group_bucket_key !== null && currentBucketsByScope.get(row.group_scope_key)?.has(row.group_bucket_key))
-        priorBilledCountsInQueriedBuckets.set(key, (priorBilledCountsInQueriedBuckets.get(key) ?? 0) + 1);
-    }
-  }
-
-  const recordsByOccurrence = new Map(
-    request.capture.records.map((record) => [record.occurrenceKey, record]),
-  );
-  const currentBilledCounts = new Map<string, number>();
-  const currentUnbilledCounts = new Map<string, number>();
+/**
+ * Billed Monotonicity: an expected billed member may not revert to unbilled.
+ * An unbilled member appearing beside billed ones is not a violation, and a
+ * member that vanished is the generic continuity guard's loss, which admission
+ * reports before this runs.
+ */
+function assertBilledMonotonicity(
+  expectedBilled: ReadonlyMap<string, number>,
+  request: PGliteCanonicalCreditCardCaptureRequest,
+): void {
+  const groupsByOccurrence = new Map(request.capture.records.map((record) => [record.occurrenceKey, record.occurrenceGroup]));
+  const currentBilled = new Map<string, number>();
   for (const fact of request.transactions) {
-    const record = recordsByOccurrence.get(fact.sourceOccurrenceKey);
-    const group = record?.occurrenceGroup;
-    if (!group) continue;
-    const key = JSON.stringify([
-      group.scopeKey,
-      group.partitionDate,
-      group.fingerprint,
-    ]);
-    if (fact.billingStatus === "billed")
-      currentBilledCounts.set(key, (currentBilledCounts.get(key) ?? 0) + 1);
-    else
-      currentUnbilledCounts.set(key, (currentUnbilledCounts.get(key) ?? 0) + 1);
+    const group = groupsByOccurrence.get(fact.sourceOccurrenceKey);
+    if (!group || fact.billingStatus !== "billed") continue;
+    const key = occurrenceGroupKey(group.scopeKey, group.partitionDate, group.fingerprint);
+    currentBilled.set(key, (currentBilled.get(key) ?? 0) + 1);
   }
-
-  for (const key of priorBilledCounts.keys()) {
-    const [scopeKey] = JSON.parse(key) as [string, string, string];
-    if (!currentBucketsByScope.has(scopeKey))
-      fail("invalid-contract", "Fubon capture is missing an occurrence-group query inventory.");
-    if ((currentUnbilledCounts.get(key) ?? 0) > 0)
-      fail(
-        "revision-conflict",
-        "Fubon complete occurrence groups cannot reduce their billed member count.",
-      );
-    if ((currentBilledCounts.get(key) ?? 0) < (priorBilledCountsInQueriedBuckets.get(key) ?? 0))
-      fail(
-        "revision-conflict",
-        "Fubon complete occurrence groups cannot reduce their billed member count.",
-      );
-  }
+  for (const [key, count] of expectedBilled)
+    if ((currentBilled.get(key) ?? 0) < count)
+      fail("revision-conflict", "Complete credit-card occurrence groups cannot reduce their billed member count.");
 }
 
 type VanishedUnbilledMember = Readonly<{ transactionId: string; direction: string; instrumentKey: string }>;
@@ -764,7 +699,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
   validateRequest(input);
   return store.transaction(async (transaction) => {
     const snapshot = input;
-    await assertFubonBillingProgression(transaction, snapshot);
+    const expectedBilled = await listExpectedBilledMembers(transaction, snapshot);
     await assertSupersededMembersStayReplaced(transaction, snapshot);
     const { supersessions, withdrawals } = await resolveVanishedUnbilledMembers(transaction, snapshot);
     const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
@@ -777,6 +712,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
       occurrenceSupersessions: supersessions,
       occurrenceWithdrawals: withdrawals,
     }, options);
+    assertBilledMonotonicity(expectedBilled, snapshot);
     const generic = admitted.result;
     const sourceRecordByOccurrence = admitted.capture.sourceRecordIdsByOccurrence;
     const extension = await persistExtensions(transaction, snapshot, snapshot.capture.integrationNamespace, admitted.accountId, admitted.capture.captureId, generic.transactions, sourceRecordByOccurrence);
