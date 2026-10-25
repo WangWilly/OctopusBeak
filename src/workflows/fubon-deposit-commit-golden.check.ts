@@ -178,8 +178,7 @@ async function runGolden(name: string, stubs: DepositStubs, dateRanges: readonly
     },
     statements: { dateRanges, downloadFormat: "EXCEL" },
   }, {
-    authenticate: async () => undefined,
-    assertSession: async () => undefined,
+    authenticate: async () => ({ usedExistingSession: false }),
     signOut: async () => undefined,
     startSessionKeepAlive: () => () => undefined,
     collectDeposit,
