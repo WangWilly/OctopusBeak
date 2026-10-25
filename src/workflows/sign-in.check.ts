@@ -25,7 +25,15 @@ import {
   untilAborted,
   type Assist,
 } from "./sign-in-check-harness.ts";
-import { signIn, SignInError, type DialogPolicy, type FormPlan, type ShellPlan, type SignInSource } from "./sign-in.ts";
+import {
+  signIn,
+  SignInDeadlineError,
+  SignInError,
+  type DialogPolicy,
+  type FormPlan,
+  type ShellPlan,
+  type SignInSource,
+} from "./sign-in.ts";
 
 const TAKEOVER = "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態";
 const REJECTED = "驗證碼失效或輸入錯誤，請重新輸入";
@@ -541,7 +549,9 @@ test("a confirm click that leaves the prompt on screen still ends the sign-in", 
     const prompt: TakeoverPrompt = { phase: "while-settling", frame: "main", text: { exact: "立即登入" }, control: { selector: ".confirm" } };
     const error = await failure(signIn(run.context, page, source({ takeover: prompt }), form(calls(), { timeoutMs: 60_000 })));
     assert.ok(error instanceof errors.TimeoutError);
+    assert.equal(error instanceof SignInDeadlineError, false, "the wait for the prompt to close is not the sign-in deadline");
     assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, FAILED]);
+    assert.equal(run.classify(error), "authentication-timeout");
     assert.equal(await confirms(page), 1);
     assert.equal(promptFrame(page).isDetached(), false);
   }));
@@ -684,12 +694,13 @@ test("a pre-aborted run rejects before any event", () =>
     assert.equal(count.fill, 0);
   }));
 
-test("a sign-in that never settles throws Playwright's TimeoutError, which classifies as a timeout", () =>
+test("a sign-in that never settles throws the step's deadline error, a Playwright TimeoutError that classifies as a timeout", () =>
   withPage("", async (page) => {
     const run = fakeRun(page);
     const error = await failure(signIn(run.context, page, source(), form(calls(), { timeoutMs: 400 })));
+    assert.ok(error instanceof SignInDeadlineError);
     assert.ok(error instanceof errors.TimeoutError);
-    assert.equal((error as Error).name, "TimeoutError");
+    assert.equal(error.name, "TimeoutError");
     assert.deepEqual(run.codes, [STARTED, REQUESTED, ASSISTED, FAILED]);
     assert.equal(run.classify(error), "authentication-timeout");
     assert.equal(listeners(page), 0);

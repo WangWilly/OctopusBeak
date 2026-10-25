@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { errors, type Locator, type Page, type Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   ProductCollectionFatalError,
@@ -18,7 +18,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
-import { signIn, type FormPlan } from "./sign-in.ts";
+import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -763,17 +763,10 @@ export function cathaySignInPlan(credentials: CathayCredentials, event: Workflow
  * before the step.
  */
 export async function signInCathayForApp(context: WorkflowContext, page: Page, plan: FormPlan): Promise<void> {
-  let submitted = false;
   try {
-    await signIn(context, page, CATHAY_SOURCE, {
-      ...plan,
-      submit: async (target, signal) => {
-        await plan.submit(target, signal);
-        submitted = true;
-      },
-    });
+    await signIn(context, page, CATHAY_SOURCE, plan);
   } catch (error) {
-    if (!submitted || !(error instanceof errors.TimeoutError)) throw error;
+    if (!(error instanceof SignInDeadlineError)) throw error;
     await context.event("authentication", "advanced", "authentication-sign-in-unconfirmed");
     throw new ProductCollectionFatalError("verification-failed");
   }
