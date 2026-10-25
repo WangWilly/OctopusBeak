@@ -107,7 +107,7 @@ import type {
   import { mergeAutomationRuntime } from "./runtime-sync.ts";
   import { workflowFailureExplanation } from "./workflow-failures.ts";
   import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
-  import { collectionFailures, runStageTrack } from "./run-stage-track.ts";
+  import { productFailures, runStageTrack } from "./run-stage-track.ts";
   import type { Readable } from "svelte/store";
   import type { ViewState } from "$lib/data-views/client/view-stores.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -1535,7 +1535,7 @@ import type {
                           <ol class="run-stages">
                             {#each runStageTrack(task.events, task.status, task.appWorkflowOutcome) as stage (stage.stage)}
                               {@const failureLabel = stage.lastEvent ? workflowEventFailureLabel(stage.lastEvent, $t) : null}
-                              {@const productFailures = stage.stage === "collection" ? collectionFailures(task.appWorkflowOutcome) : null}
+                              {@const stageFailures = productFailures(task.appWorkflowOutcome, stage.stage)}
                               <li class="run-stage" data-state={stage.state}>
                                 <span class="run-stage-node-row">
                                   <span class="run-stage-node" title={$t.automation.runStageStates[stage.state]}>
@@ -1555,11 +1555,11 @@ import type {
                                   <time class="run-stage-time" datetime={stage.lastEvent.occurredAt}>{formatClock(stage.lastEvent.occurredAt)}</time>
                                   {#if failureLabel}
                                     <span class="run-stage-note">{failureLabel}</span>
-                                  {:else if productFailures}
-                                    <span class="run-stage-note">{$t.automation.collectionFailures(
-                                      productFailures.typeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join($locale === "zh-TW" ? "、" : ", "),
-                                      productFailures.typeIds.length,
-                                      productFailures.attempted,
+                                  {:else if stageFailures}
+                                    <span class="run-stage-note">{$t.automation.productFailures(
+                                      stageFailures.typeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join($locale === "zh-TW" ? "、" : ", "),
+                                      stageFailures.typeIds.length,
+                                      stageFailures.attempted,
                                     )}</span>
                                   {:else if stage.lastEvent.completed !== undefined || stage.lastEvent.total !== undefined}
                                     <span class="run-stage-note">{$t.automation.workflowEventCounts(stage.lastEvent.completed, stage.lastEvent.total)}</span>

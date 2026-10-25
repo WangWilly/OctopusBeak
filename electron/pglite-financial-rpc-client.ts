@@ -76,6 +76,7 @@ import type {
 } from "../src/ledger/pglite/relations.ts";
 import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
 import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 
 /**
@@ -415,6 +416,7 @@ export type PGliteFinancialResponse =
     code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled";
     /** Safe domain classification; raw worker/database errors never cross IPC. */
     category?: PGliteFinancialFailureCategory;
+    reason?: PGliteWorkflowAdmissionReason;
     diagnosticError?: SafeWorkflowFailureError;
     message: string;
   }>;
@@ -481,14 +483,17 @@ type Pending = {
 export class PGliteFinancialError extends Error {
   readonly code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled";
   readonly category?: PGliteFinancialFailureCategory;
+  readonly reason?: PGliteWorkflowAdmissionReason;
   constructor(
     code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled",
     category?: PGliteFinancialFailureCategory,
+    reason?: PGliteWorkflowAdmissionReason,
   ) {
     super(code === "invalid-request" ? "Invalid PGlite financial request." : code === "worker-closed" ? "PGlite financial worker is closed." : code === "cancelled" ? "PGlite financial operation was cancelled." : "PGlite financial operation failed.");
     this.name = "PGliteFinancialError";
     this.code = code;
     this.category = category;
+    if (reason) this.reason = reason;
   }
 }
 
@@ -519,7 +524,11 @@ export function createPGliteFinancialRpcClient(
       const code = value.code === "invalid-request" || value.code === "worker-closed" || value.code === "cancelled"
         ? value.code
         : "operation-failed";
-      const error = new PGliteFinancialError(code, isFailureCategory(value.category) ? value.category : undefined);
+      const error = new PGliteFinancialError(
+        code,
+        isFailureCategory(value.category) ? value.category : undefined,
+        code === "operation-failed" ? pgliteWorkflowAdmissionReason(value.reason) : undefined,
+      );
       if (code === "operation-failed") retainSafeWorkflowFailureError(error, value.diagnosticError);
       request.reject(error);
     }

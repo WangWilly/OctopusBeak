@@ -509,6 +509,18 @@ export async function collectSelectedProducts<
         completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, receiptsForProduct, {
           errorCode: "canonical-commit-failed",
         }));
+        // Each rejected item names its admission rule; there is no error to rethrow.
+        for (const item of commitResult.items) {
+          if (item.status !== "failed") continue;
+          const reason = item.diagnostics.find((diagnostic) => diagnostic.reason)?.reason;
+          await options.productFailure?.({
+            stage: "commit",
+            statementType: typeId,
+            errorCode: "canonical-commit-failed",
+            error: undefined,
+            ...(reason ? { reason } : {}),
+          });
+        }
         continue;
       }
 

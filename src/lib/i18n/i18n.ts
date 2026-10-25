@@ -767,7 +767,7 @@ const en = {
     productColumns: { product: "Product", result: "Result", note: "Note", errorCode: "Error code" },
     workflowEventsDisclosure: (count: number) => `Workflow events (${count})`,
     latestEvent: "Latest",
-    collectionFailures: (products: string, failed: number, attempted: number) =>
+    productFailures: (products: string, failed: number, attempted: number) =>
       `${products} failed (${failed} / ${attempted})`,
     verificationSolverExhausted:
       "Automatic verification could not finish this challenge, so the run stopped. Retry when the challenge can be completed automatically.",
@@ -2050,7 +2050,7 @@ const zh: typeof en = {
     productColumns: { product: "產品", result: "結果", note: "備註", errorCode: "錯誤碼" },
     workflowEventsDisclosure: (count) => `工作流程事件（${count}）`,
     latestEvent: "最新",
-    collectionFailures: (products, failed, attempted) => `${products} ${failed} / ${attempted} 失敗`,
+    productFailures: (products, failed, attempted) => `${products} ${failed} / ${attempted} 失敗`,
     verificationSolverExhausted:
       "自動驗證無法完成這次驗證，流程已停止。請在驗證可由系統自動完成時再重試。",
     workflowEventCounts: (completed, total) =>

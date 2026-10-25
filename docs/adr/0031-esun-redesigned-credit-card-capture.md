@@ -80,6 +80,30 @@ The statement revision key now includes the capture contract version, issuer
 summary values, and member evidence. A changed financial revision can therefore
 create a new immutable statement revision while preserving the prior revision.
 
+## 2026-10-25 oldest-month bucket revision
+
+From 2026-10-24 every E.SUN credit-card commit was rejected with
+`occurrence-conflict`, so each run ended partial. The admitted 2026-10-23
+capture held 142 rows and 13 month buckets, 2026/10 through 2025/10. The
+only 2025/10 row was a purchase dated 2025-10-24. From 2026-10-24 the
+timeline returned 141 rows. The bank returns the month one year before the
+query month only from about the query date's anniversary, so that purchase
+left the timeline on its anniversary while the 2025/10 bucket was still
+listed. Under [ADR 0040](./0040-per-bucket-occurrence-continuity-and-unbilled-to-billed-supersession.md)
+a member of a queried bucket that is absent is a loss, so the capture was
+rejected.
+
+That month is only partly queried, and its coverage changes every day. Its
+bucket key now names the query date: `partial-month:<YYYY/MM>:queried-on:<YYYY-MM-DD>`.
+A later day's capture has not queried that bucket again, so a purchase that
+aged out is not expected; it stays admitted and is not withdrawn. A capture
+on the same query date must still contain every member. Every other month
+keeps its `month:<YYYY/MM>` key, so a loss there still rejects the capture.
+A twelve-month timeline starts at the month after the anniversary month and
+has no partial bucket. Bucket keys are not part of occurrence identity, so
+existing transactions keep their identity and the v4 route and manifest are
+unchanged.
+
 ## Source-contract catalog decision
 
 The historical route-retention statements above describe the E.SUN integration
