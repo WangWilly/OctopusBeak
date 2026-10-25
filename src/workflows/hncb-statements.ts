@@ -27,6 +27,7 @@ import {
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/hncb-human-attestation-contract.ts";
+import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -51,7 +52,6 @@ import {
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import {
   collectSelectedProducts,
-  ProductCollectionFatalError,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -60,7 +60,9 @@ import {
   attachedPreviewRun,
 } from "../lib/preview-sources/attached-products.ts";
 import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
+import { withAbort } from "./abort.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
+import { signIn, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -663,26 +665,26 @@ export function isHncbLoginEntryUrl(url: string): boolean {
   }
 }
 
-export async function ensureHncbLoginEntry(page: Page): Promise<void> {
-  if (!isHncbLoginEntryUrl(page.url()))
-    await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-}
-
 async function fillLoginForm(
   page: Page,
   credentials: HncbCredentials,
+  signal: AbortSignal,
 ): Promise<void> {
-  await ensureHncbLoginEntry(page);
-  await page
-    .locator("#USERIDTEXT")
-    .fill(requireCredential(credentials, "hncb_user_id"));
-  await page
-    .locator("#NICKNAME")
-    .fill(requireCredential(credentials, "hncb_account"));
-  await page
-    .locator("#password")
-    .fill(requireCredential(credentials, "hncb_password"));
-  await page.locator("#TrxCaptchaKey").focus();
+  if (!isHncbLoginEntryUrl(page.url()))
+    await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
+  await withAbort(
+    page.locator("#USERIDTEXT").fill(requireCredential(credentials, "hncb_user_id")),
+    signal,
+  );
+  await withAbort(
+    page.locator("#NICKNAME").fill(requireCredential(credentials, "hncb_account")),
+    signal,
+  );
+  await withAbort(
+    page.locator("#password").fill(requireCredential(credentials, "hncb_password")),
+    signal,
+  );
+  await withAbort(page.locator("#TrxCaptchaKey").focus(), signal);
 }
 
 export function hncbCaptchaAssistanceStage(
@@ -726,36 +728,23 @@ export function hncbCaptchaAssistanceStage(
   };
 }
 
-async function signInHncbPage(
-  page: Page,
-  credentials: HncbCredentials,
-  complete: (stage: VerificationStage) => Promise<void>,
-  signal: AbortSignal,
-): Promise<void> {
-  await fillLoginForm(page, credentials);
-  signal.throwIfAborted();
-  await complete(hncbCaptchaAssistanceStage(page));
-  signal.throwIfAborted();
-
-  const accountField = page.locator("#NICKNAME");
-  if (!(await accountField.inputValue()).trim())
-    await accountField.fill(requireCredential(credentials, "hncb_account"));
-  if (!(await page.locator("#TrxCaptchaKey").inputValue()).trim()) {
-    throw new Error(
-      "HNCB CAPTCHA is empty. Enter it in the browser before resuming.",
-    );
-  }
-  await page.locator("li#WannaLogin a").click();
-  await waitForSignedInState(page);
-}
-
-async function waitForSignedInState(page: Page): Promise<void> {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return;
-    await page.waitForTimeout(500);
-  }
-  throw new Error("Timed out waiting for HNCB signed-in state.");
+export function hncbSignInPlan(credentials: HncbCredentials): FormPlan {
+  return {
+    signedIn: isSignedIn,
+    fill: (page, signal) => fillLoginForm(page, credentials, signal),
+    captcha: {
+      stage: hncbCaptchaAssistanceStage,
+      answer: (page) => page.locator("#TrxCaptchaKey"),
+    },
+    submit: async (page, signal) => {
+      const accountField = page.locator("#NICKNAME");
+      if (!(await withAbort(accountField.inputValue(), signal)).trim())
+        await withAbort(accountField.fill(requireCredential(credentials, "hncb_account")), signal);
+      await withAbort(page.locator("li#WannaLogin a").click(), signal);
+    },
+    dialogs: "dismiss",
+    session: isSignedIn,
+  };
 }
 
 async function openAccountOverview(page: Page): Promise<Frame> {
@@ -1459,23 +1448,8 @@ export async function runHncbProviderWorkflow(
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
 
-  await context.event("authentication", "started", "authentication-started");
   return await context.browser.withPage(async (page) => {
-    await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
-    if (!(await isSignedIn(page))) {
-      await signInHncbPage(
-        page,
-        parsed.data.credentials,
-        (stage) => context.verification.complete(stage),
-        context.signal,
-      );
-    }
-    context.signal.throwIfAborted();
-    await context.event("authentication", "completed", "authentication-completed");
-
-    const assertSession = async () => {
-      if (!(await isSignedIn(page))) throw new ProductCollectionFatalError("authentication-failed");
-    };
+    const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(parsed.data.credentials));
     return await runHncbStatements(
       page,
       parsed.data,
