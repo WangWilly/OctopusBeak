@@ -6,7 +6,11 @@ import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
 import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
-import type { ProductCollectionInterruptedError } from "./product-collection.ts";
+import type {
+  ProductCollectionHandle,
+  ProductCollectionInterruptedError,
+  ProductStageRequest,
+} from "./product-collection.ts";
 import type { runYuantaAllStatementsWorkflow as runYuantaAllStatementsWorkflowType } from "../../workflows/yuanta-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -23,15 +27,14 @@ const loaded = await server
   .finally(() => server.close());
 const runYuantaAllStatementsWorkflow = loaded.runYuantaAllStatementsWorkflow as typeof runYuantaAllStatementsWorkflowType;
 
-function item(product: string, value = "complete"): PGliteWorkflowRunItem {
+function item(product: string, value = "complete"): ProductStageRequest {
   return {
-    provider: "yuanta",
     product,
     itemKey: `${product}-capture-1`,
     command: {
       kind: "financial.deposit.commit",
       request: { value },
-    } as unknown as PGliteWorkflowRunItem["command"],
+    } as unknown as ProductStageRequest["command"],
   };
 }
 
@@ -54,7 +57,6 @@ function context(
   signal: AbortSignal,
   calls: string[],
   commitBatches: PGliteWorkflowRunItem[][] = [],
-  text = strictSourceText,
 ): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "yuanta-test-run",
@@ -63,7 +65,7 @@ function context(
     browser: {
       withPage: async <T>(run: (page: Page) => Promise<T>) => run(signedInPage()),
     },
-    text,
+    text: strictSourceText,
     verification: {
       complete: async (stage) => {
         calls.push(`human:${stage.stageId}`);
@@ -106,15 +108,11 @@ const input = {
   },
 };
 
-function collector(
-  product: string,
-  calls: string[],
-  items?: PGliteWorkflowRunItem[],
-) {
-  return async (_page: Page, _input: unknown, _context: WorkflowContext, _identity: unknown, target: PGliteWorkflowRunItem[]) => {
-    calls.push(`${product}-collected`);
-    target.push(items?.find((entry) => entry.product === product) ?? item(product));
-    return { sourceCount: 1, rowCount: 2, itemCount: 1 };
+function collector(label: string, calls: string[]) {
+  return async (_page: Page, _input: unknown, _context: WorkflowContext, product: ProductCollectionHandle) => {
+    calls.push(`${label}-collected`);
+    product.stage(item(label));
+    return { sourceCaptureCount: 1, rowCount: 2 };
   };
 }
 
@@ -163,12 +161,58 @@ try {
       products.map((product) => [[product, `${product}-capture-1`]]),
       "each commit contains only its product's completed evidence",
     );
+    assert.ok(
+      batches.flat().every((entry) => entry.provider === "yuanta"),
+      "every product, fund included, commits under the yuanta provider",
+    );
     assert.deepEqual(
       calls.filter((call) => call.startsWith("event:authentication:")),
       ["event:authentication:authentication-started", "event:authentication:authentication-completed"],
     );
     assert.ok(calls.includes("event:validation:source-validation-completed"));
     assert.ok(calls.indexOf("investment-collected") < calls.lastIndexOf("commit"));
+  }
+
+  {
+    const calls: string[] = [];
+    const inputs: Record<string, Record<string, unknown>> = {};
+    const capture = (label: string) =>
+      async (_page: Page, productInput: unknown, _context: WorkflowContext, product: ProductCollectionHandle) => {
+        inputs[label] = productInput as Record<string, unknown>;
+        product.stage(item(label));
+        return { sourceCaptureCount: 1, rowCount: 1 };
+      };
+    await runYuantaAllStatementsWorkflow(context(new AbortController().signal, calls), input, {
+      ...collectors(calls),
+      collectDeposit: capture("deposit"),
+      collectForeignCurrency: capture("foreign-currency-deposit"),
+      collectCreditCard: capture("credit-card"),
+      collectLoan: capture("loan"),
+      collectFund: capture("investment"),
+    });
+    const deposit = inputs.deposit!;
+    assert.equal(deposit.dateRange, "three_months", "an omitted component input still gets its schema defaults");
+    assert.equal(typeof deposit.sourceConnectionKey, "string");
+    assert.deepEqual(
+      [inputs.loan!.sourceConnectionScope, inputs.loan!.sourceConnectionKey],
+      [deposit.sourceConnectionScope, deposit.sourceConnectionKey],
+      "deposit and loan share one Source Connection identity",
+    );
+    const card = inputs["credit-card"]!;
+    assert.equal(card.instrumentFingerprintSecret, input.managedIdentitySecret);
+    assert.equal(
+      (card.canonicalHumanAttestation as { sourceConnectionKey: string }).sourceConnectionKey,
+      deposit.sourceConnectionKey,
+    );
+    assert.equal(inputs["foreign-currency-deposit"]!.yuantaUserId, input.credentials.yuanta_user_id);
+    assert.deepEqual(
+      [inputs.investment!.yuantaUserId, inputs.investment!.yuantaAccount],
+      [input.credentials.yuanta_user_id, input.credentials.yuanta_account],
+    );
+    assert.ok(
+      Object.values(inputs).every((productInput) => !("credentials" in productInput)),
+      "no product receives the login password",
+    );
   }
 
   {
@@ -180,10 +224,10 @@ try {
         input,
         {
           ...collectors(calls),
-          collectDeposit: async (_page, _input, _context, _identity, items) => {
+          collectDeposit: async (_page, _input, _context, product) => {
             calls.push("deposit-collected");
-            items.push(item("deposit"));
-            return { sourceCount: 1, rowCount: 1, itemCount: 1 };
+            product.stage(item("deposit"));
+            return { sourceCaptureCount: 1, rowCount: 1 };
           },
           collectForeignCurrency: async () => {
             calls.push("foreign-currency-failed-after-deposit");
@@ -204,21 +248,16 @@ try {
     const calls: string[] = [];
     const batches: PGliteWorkflowRunItem[][] = [];
     const controller = new AbortController();
-    const workflowContext = context(controller.signal, calls, batches, {
-      ...strictSourceText,
-      assertIntact(value) {
-        if (value.includes("\uFFFD")) throw new Error("Malformed Big5 source text.");
-      },
-    });
-    const result = await runYuantaAllStatementsWorkflow(workflowContext, input, {
+    const result = await runYuantaAllStatementsWorkflow(context(controller.signal, calls, batches), input, {
         ...collectors(calls),
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
-          items.push(item("deposit", "bad\uFFFDsource"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 1 };
+        collectDeposit: async (_page, _input, _context, product) => {
+          product.stage(item("deposit", "bad\uFFFDsource"));
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
       });
     assert.equal(batches.length, 4, "a malformed product staging group does not leak or block other products");
-    assert.equal(result.products!.find((product) => product.typeId === "deposit")?.status, "failed");
+    const deposit = result.products!.find((product) => product.typeId === "deposit");
+    assert.deepEqual([deposit?.status, deposit?.errorCode], ["failed", "source-integrity-failed"]);
     assert.equal(result.status, "partial");
   }
 
@@ -230,13 +269,13 @@ try {
     await assert.rejects(
       runYuantaAllStatementsWorkflow(workflowContext, input, {
         ...collectors(calls),
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
-          items.push(item("deposit"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 1 };
+        collectDeposit: async (_page, _input, _context, product) => {
+          product.stage(item("deposit"));
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
         collectForeignCurrency: async () => {
           controller.abort(new Error("cancelled"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 0 };
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
       }),
       (error: unknown) => {
@@ -267,10 +306,10 @@ try {
         collectForeignCurrency: async () => { calls.push("foreign-called"); throw new Error("unselected"); },
         collectCreditCard: async () => { calls.push("card-called"); throw new Error("unselected"); },
         collectLoan: async () => { calls.push("loan-called"); throw new Error("unselected"); },
-        collectFund: async (_page, _input, _context, _identity, items) => {
+        collectFund: async (_page, _input, _context, product) => {
           calls.push("fund-called");
-          items.push(item("investment"));
-          return { sourceCount: 1, rowCount: 2, itemCount: 1 };
+          product.stage(item("investment"));
+          return { sourceCaptureCount: 1, rowCount: 2 };
         },
       },
     );

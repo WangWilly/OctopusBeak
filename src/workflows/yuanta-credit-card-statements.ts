@@ -5,7 +5,6 @@ import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
@@ -36,7 +35,13 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   deriveYuantaSourceConnectionKey,
   yuantaSourceConnectionScope,
@@ -309,13 +314,6 @@ export const yuantaCreditCardStatementsInputSchema = z.object({
   includeUnbilled: z.boolean().default(true),
   includePaymentDetails: z.boolean().default(true),
   includeSummary: z.boolean().default(true),
-  canonicalHumanAttestation: z
-    .object({
-      sourceConnectionKey: z.string().min(3).max(128),
-      identityEpochKey: z.string().min(3).max(128),
-      humanAttestedAccountKey: z.string().min(3).max(128),
-    })
-    .optional(),
 });
 const inputSchema = yuantaCreditCardStatementsInputSchema;
 
@@ -334,6 +332,12 @@ export type YuantaCanonicalHumanAttestation = {
   identityEpochKey: typeof YUANTA_CREDIT_CARD_IDENTITY_EPOCH;
   humanAttestedAccountKey: string;
 };
+
+export type YuantaCreditCardCollectionInput = WorkflowInput & Readonly<{
+  canonicalHumanAttestation: YuantaCanonicalHumanAttestation;
+  /** Device-owned managed secret; consumed only while deriving opaque instruments. */
+  instrumentFingerprintSecret: string;
+}>;
 
 export type YuantaCreditCardCanonicalCaptureInput = {
   capture: YuantaCreditCardCaptureMetadata;
@@ -4832,90 +4836,24 @@ async function submitCreditCardUnbilled(page: Page): Promise<string> {
   return await (await responsePromise).text();
 }
 
-type YuantaCreditCardAppCollection = {
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
-  /** Run-local items stay private until every selected source passes admission. */
-  items: PGliteWorkflowRunItem[];
-  now(): string;
-  canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
-  instrumentFingerprintSecret?: string;
-};
-
-export type YuantaCreditCardWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-}>;
-
-export type YuantaCreditCardWorkflowDependencies = Readonly<{
-  collectOnly: true;
-  deferredCommitItems: PGliteWorkflowRunItem[];
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
-  now(): string;
-  canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
-  instrumentFingerprintSecret?: string;
-}>;
-
 export async function runYuantaCreditCardStatements(
   page: Page,
-  rawInput: unknown,
-  dependencies: YuantaCreditCardWorkflowDependencies,
-): Promise<YuantaCreditCardWorkflowCollection> {
-  if (
-    dependencies.collectOnly !== true ||
-    !dependencies.deferredCommitItems ||
-    !dependencies.sourceText ||
-    !dependencies.signal ||
-    typeof dependencies.now !== "function"
-  ) {
-    throw new Error("Yuanta credit-card App collection ports are unavailable.");
-  }
-  dependencies.signal.throwIfAborted();
-  const input = inputSchema.parse(rawInput);
-  const appCollection: YuantaCreditCardAppCollection = {
-    sourceText: dependencies.sourceText,
-    signal: dependencies.signal,
-    reportActivity: dependencies.reportActivity,
-    items: [],
-    now: dependencies.now,
-    ...(dependencies.canonicalHumanAttestation
-      ? { canonicalHumanAttestation: dependencies.canonicalHumanAttestation }
-      : {}),
-    ...(dependencies.instrumentFingerprintSecret
-      ? { instrumentFingerprintSecret: dependencies.instrumentFingerprintSecret }
-      : {}),
-  };
-  const collection = await collectYuantaCreditCardStatements(
-    page,
-    input,
-    appCollection,
-  );
-  dependencies.signal.throwIfAborted();
-  dependencies.deferredCommitItems.push(...appCollection.items);
-  return collection;
-}
-
-async function collectYuantaCreditCardStatements(
-  page: Page,
-  input: WorkflowInput,
-  appCollection: YuantaCreditCardAppCollection,
-): Promise<YuantaCreditCardWorkflowCollection> {
+  input: YuantaCreditCardCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  context.signal.throwIfAborted();
   const log = (..._args: unknown[]): void => undefined;
-  const instrumentFingerprintSecret = appCollection.instrumentFingerprintSecret;
-  const canonicalHumanAttestation = appCollection.canonicalHumanAttestation;
+  const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
 
   const pageReadyStartedAt = Date.now();
   log("yuanta-credit-card-page-ready-start", {
     startedAt: new Date(pageReadyStartedAt).toISOString(),
   });
-  await appCollection.reportActivity?.("query");
+  await product.reportActivity("query");
   const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
-  appCollection.sourceText.assertIntact(currentMonthHtml);
-  appCollection.signal.throwIfAborted();
+  context.text.assertIntact(currentMonthHtml);
+  context.signal.throwIfAborted();
   if (isCreditCardProductAbsentText(currentMonthHtml)) {
     throw new StatementComponentAbsentError(
       "No YuanTa credit-card product is available for this login.",
@@ -4948,7 +4886,7 @@ async function collectYuantaCreditCardStatements(
     monthOptions,
     async (month, monthPosition) => {
       monthStartedAt = Date.now();
-      appCollection.signal.throwIfAborted();
+      context.signal.throwIfAborted();
       log("yuanta-credit-card-month-start", {
         index: monthPosition + 1,
         total: monthOptions.length,
@@ -4956,12 +4894,12 @@ async function collectYuantaCreditCardStatements(
         period: month.label,
         startedAt: new Date(monthStartedAt).toISOString(),
       });
-      await appCollection.reportActivity?.("query");
+      await product.reportActivity("query");
       return submitCreditCardMonth(page, month);
     },
     async (month, monthHtml, monthPosition) => {
-      appCollection.signal.throwIfAborted();
-      appCollection.sourceText.assertIntact(monthHtml);
+      context.signal.throwIfAborted();
+      context.text.assertIntact(monthHtml);
       terminalPages.push(true);
       log(
         "yuanta-credit-card-history-diagnostic",
@@ -4995,10 +4933,10 @@ async function collectYuantaCreditCardStatements(
     log("yuanta-credit-card-unbilled-start", {
       startedAt: new Date(unbilledStartedAt).toISOString(),
     });
-    await appCollection.reportActivity?.("query");
+    await product.reportActivity("query");
     const unbilledHtml = await submitCreditCardUnbilled(page);
-    appCollection.sourceText.assertIntact(unbilledHtml);
-    appCollection.signal.throwIfAborted();
+    context.text.assertIntact(unbilledHtml);
+    context.signal.throwIfAborted();
     if (hasUntraversedPager(unbilledHtml)) {
       throw new Error(
         "YuanTa credit-card response has untraversed pagination.",
@@ -5034,13 +4972,13 @@ async function collectYuantaCreditCardStatements(
     });
     let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
     try {
-      await appCollection.reportActivity?.("query");
+      await product.reportActivity("query");
       summaryTraversal = await submitCreditCardSummary(page, {
-        sourceText: appCollection.sourceText,
-        signal: appCollection.signal,
+        sourceText: context.text,
+        signal: context.signal,
         silent: true,
       });
-      appCollection.sourceText.assertIntact(JSON.stringify(summaryTraversal));
+      context.text.assertIntact(JSON.stringify(summaryTraversal));
       currentUsedCredit = summaryTraversal.currentUsedCredit;
       log(
         "yuanta-credit-card-summary-diagnostic",
@@ -5056,7 +4994,7 @@ async function collectYuantaCreditCardStatements(
     } catch (error) {
       if (
         error instanceof SourceTextIntegrityError ||
-        appCollection.signal.aborted
+        context.signal.aborted
       ) {
         throw error;
       }
@@ -5113,7 +5051,7 @@ async function collectYuantaCreditCardStatements(
     ? {
         snapshotMode: "full",
         captureId: randomUUID(),
-        capturedAt: appCollection.now(),
+        capturedAt: context.now(),
         captureKinds: ["billed", "unbilled"],
         completenessEvidence: {
           bank: "yuanta",
@@ -5144,11 +5082,7 @@ async function collectYuantaCreditCardStatements(
         },
       };
 
-  if (
-    canonicalHumanAttestation &&
-    instrumentFingerprintSecret &&
-    isFullCapture
-  ) {
+  if (isFullCapture) {
     const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures({
       capture,
       identity: canonicalHumanAttestation,
@@ -5169,8 +5103,7 @@ async function collectYuantaCreditCardStatements(
           yuantaNeutralCreditCardCapture(capture),
         ),
       );
-      const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
-        provider: "yuanta",
+      const items: ProductStageRequest[] = requests.map((request) => ({
         product: "credit-card",
         itemKey: request.capture.captureId,
         command: {
@@ -5184,7 +5117,6 @@ async function collectYuantaCreditCardStatements(
           currentUsedCredit,
         );
         items.push({
-          provider: "yuanta",
           product: "current-balance",
           itemKey: balanceCapture.captureId,
           command: {
@@ -5196,20 +5128,17 @@ async function collectYuantaCreditCardStatements(
           },
         });
       }
-      appCollection.signal.throwIfAborted();
-      for (const item of items)
-        appCollection.sourceText.assertIntact(JSON.stringify(item.command));
-      appCollection.items.push(...items);
+      context.signal.throwIfAborted();
+      product.stage(...items);
     }
   }
 
-  appCollection.signal.throwIfAborted();
+  context.signal.throwIfAborted();
   return {
-    sourceCount:
+    sourceCaptureCount:
       monthOptions.length +
       (input.includeUnbilled ? 1 : 0) +
       (input.includeSummary ? 1 : 0),
     rowCount: billedRows.length + unbilledRows.length,
-    itemCount: appCollection.items.length,
   };
 }

@@ -9,7 +9,8 @@ import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { InvestmentCaptureInput } from "../ledger/canonical/investment-financial-admission.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
+import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import type { YuantaFundWorkflowDependencies } from "./yuanta-fund-statements.ts";
 import {
   yuantaFundAccountHistoryKey,
   yuantaFundAccountHistoryQueries,
@@ -28,7 +29,7 @@ registerHooks({
 
 const { runYuantaFundStatements, yuantaFundStatementsInputSchema } = await import("./yuanta-fund-statements.ts");
 
-type SourceTables = Awaited<ReturnType<NonNullable<Parameters<typeof runYuantaFundStatements>[3]["collectSourceTables"]>>>;
+type SourceTables = Awaited<ReturnType<NonNullable<YuantaFundWorkflowDependencies["collectSourceTables"]>>>;
 
 const position = { txnType: "S", paperNo: "FS00000001", trustNo: "YT01", label: "SANITIZED FUND" };
 
@@ -103,15 +104,17 @@ async function collect(source: SourceTables, endDate: string, now: string): Prom
   const items: PGliteWorkflowRunItem[] = [];
   await runYuantaFundStatements(
     {} as never,
-    yuantaFundStatementsInputSchema.parse({
-      includePortfolioSummary: false, includeInvestmentDetails: true, includeHistoricalTransactions: true,
-      customDateRange: { startDate: "2026/08/01", endDate: endDate.replaceAll("-", "/") },
-    }),
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
     {
-      collectOnly: true, deferredCommitItems: items, sourceText: strictSourceText,
-      signal: new AbortController().signal, now: () => now, collectSourceTables: async () => source,
+      ...yuantaFundStatementsInputSchema.parse({
+        includePortfolioSummary: false, includeInvestmentDetails: true, includeHistoricalTransactions: true,
+        customDateRange: { startDate: "2026/08/01", endDate: endDate.replaceAll("-", "/") },
+      }),
+      yuantaUserId: "synthetic-login",
+      yuantaAccount: "synthetic-account",
     },
+    yuantaCollectionContext({ now }),
+    yuantaStagingHandle(items),
+    { collectSourceTables: async () => source },
   );
   assert.equal(items.length, 1);
   const command = items[0]!.command;

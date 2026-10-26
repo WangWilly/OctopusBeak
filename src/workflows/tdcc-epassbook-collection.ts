@@ -19,7 +19,7 @@ import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 import {
   TdccCollectionSummaryInvariantError,
@@ -137,7 +137,7 @@ export function tdccProductFailureCode(error: unknown): TypedWorkflowErrorCode |
 }
 
 export type TdccProductCollection = Readonly<{
-  items: readonly PGliteWorkflowRunItem[];
+  items: readonly ProductStageRequest[];
   sourceCaptureCount: number;
   rowCount: number;
   /** Only a fully validated source response with no accounts or exclusions proves absence. */
@@ -153,8 +153,7 @@ export type TdccCollectionContext = Readonly<{
   admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
 }>;
 
-const investmentItem = (product: TdccProductId, itemKey: string, capture: ReturnType<typeof tdccSecuritiesHoldingCapture>): PGliteWorkflowRunItem => ({
-  provider: "tdcc",
+const investmentItem = (product: TdccProductId, itemKey: string, capture: ReturnType<typeof tdccSecuritiesHoldingCapture>): ProductStageRequest => ({
   product,
   itemKey,
   command: { kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND, request: { capture } },
@@ -165,7 +164,7 @@ async function collectSecurities(context: TdccCollectionContext): Promise<TdccPr
   const { session, runId, observedAt } = context;
   const positions = readTdccPositions(await session.call((client) => client.positions()));
   context.recordValidatedExclusions(positions.exclusions);
-  const items: PGliteWorkflowRunItem[] = [];
+  const items: ProductStageRequest[] = [];
   let rowCount = 0;
   for (const [index, account] of positions.accounts.entries()) {
     const capture = { observedAt, connection: session.connection };
@@ -211,20 +210,18 @@ async function collectSettlement(context: TdccCollectionContext): Promise<TdccPr
   const { session, runId, observedAt } = context;
   const snapshot = readTdccSettlementSnapshot(await session.call((client) => client.bankBalances()));
   context.recordValidatedExclusions(snapshot.exclusions);
-  const items: PGliteWorkflowRunItem[] = [];
+  const items: ProductStageRequest[] = [];
   let rowCount = 0;
   for (const [index, account] of snapshot.accounts.entries()) {
     const capture = { observedAt, connection: session.connection, account };
     const pages = await session.call((client) => client.bankTransactions(account));
     const transactions = tdccSettlementTransactionCapture({ ...capture, captureId: `${runId}:tsp007:${account.sourceAccountKey}`, pages });
     items.push({
-      provider: "tdcc",
       product: "settlement",
       itemKey: `transactions:${index}`,
       command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture: transactions } },
     });
     items.push({
-      provider: "tdcc",
       product: "settlement",
       itemKey: `balance:${index}`,
       command: {

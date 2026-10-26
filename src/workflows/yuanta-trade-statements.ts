@@ -45,7 +45,6 @@ import {
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
 
 export {
@@ -1756,13 +1755,14 @@ export async function runYuantaTradeProviderWorkflow(
     ];
     let collected: YuantaTradeCollectedCounts | undefined;
     const summary = await collectSelectedProducts({
+      provider: "yuanta-trade",
       productIds: ["securities"],
       selectedIds: ["securities"],
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
-        const productContext: WorkflowContext = { ...context, event };
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         const holdings: ReportPage[] = [];
         const trades: ReportPage[] = [];
@@ -1832,8 +1832,7 @@ export async function runYuantaTradeProviderWorkflow(
         }
         context.signal.throwIfAborted();
 
-        stagedItems.push(...captures.map((capture) => ({
-          provider: "yuanta-trade",
+        product.stage(...captures.map((capture) => ({
           product: "investment",
           itemKey: capture.captureId,
           command: {
@@ -1860,7 +1859,6 @@ export async function runYuantaTradeProviderWorkflow(
         return {
           sourceCaptureCount: requests.length,
           rowCount: holdingRows.length + tradeRows.length,
-          itemCount: stagedItems.length,
         };
       },
       commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {

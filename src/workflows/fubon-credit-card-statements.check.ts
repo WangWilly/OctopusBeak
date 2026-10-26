@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
@@ -42,20 +43,40 @@ const { deriveFubonSourceConnectionKey } = await import(
   "./fubon-source-connection.ts"
 );
 
+function cardCollection(observedAt: string) {
+  const staged: ProductStageRequest[] = [];
+  const context: WorkflowContext = {
+    runId: "fubon-card-check",
+    signal: new AbortController().signal,
+    now: () => observedAt,
+    browser: { withPage: async () => { throw new Error("the card check has no browser"); } },
+    text: strictSourceText,
+    verification: { complete: async () => undefined },
+    event: async () => undefined,
+    signalEvent: async () => undefined,
+  };
+  const product: ProductCollectionHandle = {
+    stage: (...requests) => { staged.push(...requests); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  };
+  return { staged, context, product };
+}
+
+const cardFingerprintKey = { secret: "synthetic-fubon-card-check-key" };
+
 test("typed Fubon card collection emits items without writing files", async () => {
   const temp = await mkdtemp(join(tmpdir(), "fubon-card-typed-no-files-"));
   const originalCwd = process.cwd();
   process.chdir(temp);
   try {
-    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    const { staged: deferredCommitItems, context, product } = cardCollection("2026-09-25T00:00:00.000Z");
     const result = await runFubonCreditCardStatements(
       {} as Page,
-      fubonCreditCardStatementsInputSchema.parse({}),
+      { ...fubonCreditCardStatementsInputSchema.parse({}), panFingerprintKey: cardFingerprintKey },
+      context,
+      product,
       {
-        deferredCommitItems,
-        signal: new AbortController().signal,
-        observedAt: () => "2026-09-25T00:00:00.000Z",
-        sourceText: strictSourceText,
         readSourceSnapshot: async () => ({
           statementRows: [],
           statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
@@ -71,10 +92,8 @@ test("typed Fubon card collection emits items without writing files", async () =
     );
 
     assert.deepEqual(result, {
-      sourceCount: 7,
+      sourceCaptureCount: 7,
       rowCount: 0,
-      itemCount: 0,
-      financialAdmissionCount: 0,
     });
     assert.deepEqual(deferredCommitItems, []);
     assert.deepEqual(await readdir(temp), [], "typed card execution must not reach CSV/JSON writes");
@@ -119,7 +138,6 @@ assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);
 assert.match(source, /isFubonCreditCardStatementUnavailableText/);
 assert.match(runSource, /iterateFubonStatementPeriodProbes/);
 assert.match(runSource, /capture\.snapshotMode === "full"/);
-assert.match(runSource, /deferredCommitItems\.push\(\.\.\.items\)/u);
 assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 
 const summaryRows = [
@@ -1670,15 +1688,13 @@ assert.throws(
   "statement period grids keep their paging evidence rules",
 );
 test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
-  const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+  const { staged: deferredCommitItems, context, product } = cardCollection("2026-08-25T00:00:00.000Z");
   const result = await runFubonCreditCardStatements(
     {} as Page,
-    canonicalInput,
+    { ...canonicalInput, panFingerprintKey: cardFingerprintKey },
+    context,
+    product,
     {
-      deferredCommitItems,
-      signal: new AbortController().signal,
-      observedAt: () => "2026-08-25T00:00:00.000Z",
-      sourceText: strictSourceText,
       readSourceSnapshot: async () => ({
         statementRows: canonicalStatementRows,
         statementPeriods: summaries.map((summary) => summary.period),
@@ -1690,11 +1706,10 @@ test("an unbilled grid served as the bank's no-record page collects and commits"
     },
   );
   assert.deepEqual(result, {
-    sourceCount: 7,
+    sourceCaptureCount: 7,
     rowCount: 2,
-    itemCount: 1,
-    financialAdmissionCount: 1,
   });
+  assert.equal(deferredCommitItems.length, 1);
   const item = deferredCommitItems[0]!;
   assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
   const unbilledPage = item.command.request.capture.pages[6]!;
@@ -1871,16 +1886,13 @@ test("losing PAN visibility between captures does not re-admit billed transactio
     unbilledRows: typeof panLabeledUnbilledRows;
     observedAt: string;
   }) => {
-    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    const { staged: deferredCommitItems, context, product } = cardCollection(snapshot.observedAt);
     await runFubonCreditCardStatements(
       {} as Page,
-      canonicalInput,
+      { ...canonicalInput, panFingerprintKey: panVisibilityFingerprintKey },
+      context,
+      product,
       {
-        deferredCommitItems,
-        signal: new AbortController().signal,
-        observedAt: () => snapshot.observedAt,
-        sourceText: strictSourceText,
-        panFingerprintKey: panVisibilityFingerprintKey,
         readSourceSnapshot: async () => ({
           statementRows: canonicalStatementRows,
           statementPeriods: summaries.map((summary) => summary.period),
@@ -1930,16 +1942,13 @@ async function expectUnbilledHandOff(
     gridStates: typeof providerNoRecordGridStates;
     observedAt: string;
   }) => {
-    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    const { staged: deferredCommitItems, context, product } = cardCollection(snapshot.observedAt);
     await runFubonCreditCardStatements(
       {} as Page,
-      canonicalInput,
+      { ...canonicalInput, panFingerprintKey: panVisibilityFingerprintKey },
+      context,
+      product,
       {
-        deferredCommitItems,
-        signal: new AbortController().signal,
-        observedAt: () => snapshot.observedAt,
-        sourceText: strictSourceText,
-        panFingerprintKey: panVisibilityFingerprintKey,
         readSourceSnapshot: async () => ({
           statementRows: snapshot.statementRows,
           statementPeriods: snapshot.summaries.map((summary) => summary.period),

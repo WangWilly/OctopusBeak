@@ -15,7 +15,6 @@ import {
 } from "../../ledger/pglite/cathay-domestic-admission.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../../ledger/canonical/foreign-currency-deposit.fixtures.ts";
-import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
@@ -28,7 +27,11 @@ import {
   type CathayDomesticFinancialCollection,
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
-import { ProductCollectionFatalError, ProductCollectionInterruptedError } from "./product-collection.ts";
+import {
+  ProductCollectionFatalError,
+  ProductCollectionInterruptedError,
+  type ProductStageRequest,
+} from "./product-collection.ts";
 import { parsePreviewWrite, type PreviewCreditCollection, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
 import {
@@ -196,7 +199,7 @@ function collectionDependencies(
       domestic: CathayDomesticFinancialCollection | undefined,
       foreign: CathayForeignFinancialCollection | undefined,
       context: WorkflowContext,
-    ) => Promise<readonly PGliteWorkflowRunItem[]>;
+    ) => Promise<readonly ProductStageRequest[]>;
   }> = {},
 ) {
   return {
@@ -439,14 +442,13 @@ test("Cathay balance admission failure keeps product receipts and does not block
     };
   });
   const balanceItem = {
-    provider: "cathay",
     product: "domestic-current-balance",
     itemKey: "cathay-test-run:domestic:balance:0",
     command: {
       kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
       request: {},
     },
-  } as unknown as PGliteWorkflowRunItem;
+  } as unknown as ProductStageRequest;
   const output = await runCathayAllProviderWorkflow(
     harness.context,
     bothProductsInput,

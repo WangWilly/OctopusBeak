@@ -12,9 +12,9 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import {
   collectSelectedProducts,
   type ProductCollectionSummary,
+  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -830,7 +830,7 @@ function postCaptureId(observedAt: string, index: number): string {
 type StagedPostStatements = Readonly<{
   accountCount: number;
   rowCount: number;
-  items: readonly PGliteWorkflowRunItem[];
+  items: readonly ProductStageRequest[];
 }>;
 
 async function stagePostStatements(
@@ -927,14 +927,14 @@ async function stagePostStatements(
   overrides.signal?.throwIfAborted();
   const items = [
       ...financialInputs.map((entry) => ({
-        provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
+        product: "domestic-deposit", itemKey: entry.captureId,
         command: {
           kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
           request: { capture: entry.financialCapture },
         },
       } as const)),
       ...currentBalanceCaptures.map((capture) => ({
-        provider: "post", product: "current-balance",
+        product: "current-balance",
         itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
         command: {
           kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -968,16 +968,17 @@ export async function runPostProviderWorkflow(
 
     let accountCount = 0;
     const summary = await collectSelectedProducts({
+      provider: "post",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
         const staged = await stagePostStatements(page, {
           text: context.text,
           signal: context.signal,
-          event,
+          event: product.event,
           observedAt: postObservedAt(new Date(context.now())),
           ...(overrides.collectSourceStatements
             ? { collectSourceStatements: overrides.collectSourceStatements }
@@ -990,12 +991,11 @@ export async function runPostProviderWorkflow(
               input,
             )),
         });
-        stagedItems.push(...staged.items);
+        product.stage(...staged.items);
         accountCount = staged.accountCount;
         return {
           sourceCaptureCount: staged.accountCount,
           rowCount: staged.rowCount,
-          itemCount: stagedItems.length,
         };
       },
       commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {

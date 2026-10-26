@@ -16,10 +16,11 @@ import { productRunResult, type WorkflowRunResult } from "../lib/automation/work
 import {
   collectSelectedProducts,
   StatementComponentAbsentError,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
+  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
@@ -1439,7 +1440,7 @@ async function collectSinopacStatements(
   input: SinopacWorkflowInput,
   initialAccounts: SinopacAccount[],
   overrides: SinopacStatementsRunDependencies,
-  stagedItems: PGliteWorkflowRunItem[],
+  stage: ProductCollectionHandle["stage"],
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
   const signal = overrides.signal;
   const text = overrides.text;
@@ -1571,7 +1572,7 @@ async function collectSinopacStatements(
       total: accounts.length,
     });
   }
-  const items: PGliteWorkflowRunItem[] = [];
+  const items: ProductStageRequest[] = [];
   for (const [index, { capture }] of captureInputs.entries()) {
     const sourceEvidence = capture.product === "domestic-deposit"
       ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
@@ -1579,7 +1580,7 @@ async function collectSinopacStatements(
     const empty = capture.downloads.every((download) => download.rows.length === 0);
     if (empty) {
       items.push({
-        provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
+        product: capture.product, itemKey: `${capture.product}:${index}`,
         command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
       });
       continue;
@@ -1609,7 +1610,7 @@ async function collectSinopacStatements(
       throw new Error("SinoPac financial capture is missing.");
     }
     items.push({
-      provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
+      product: capture.product, itemKey: `${capture.product}:${index}`,
       command: {
         kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
         request: { steps: [
@@ -1627,7 +1628,7 @@ async function collectSinopacStatements(
     });
   }
 
-  const balanceItems: PGliteWorkflowRunItem[] = [];
+  const balanceItems: ProductStageRequest[] = [];
   if (financialCapturesForCurrent.length > 0) {
     await overrides.event?.("collection", "started", "current-balance-collection-started");
     let currentRows: readonly SinopacCurrentDepositBalanceRow[];
@@ -1656,7 +1657,7 @@ async function collectSinopacStatements(
       try {
         const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
         balanceItems.push({
-          provider: "sinopac", product: "current-balance",
+          product: "current-balance",
           itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
           command: {
             kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -1675,13 +1676,12 @@ async function collectSinopacStatements(
       total: currentRows.length,
     });
   }
-  stagedItems.push(...items, ...balanceItems);
+  stage(...items, ...balanceItems);
   return {
     accountCount: captureInputs.length,
     rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
     skippedAccountCount: skippedAccounts.length,
     sourceCaptureCount: captureInputs.length,
-    itemCount: stagedItems.length,
     financial: financialCapturesForCurrent.length > 0,
   };
 }
@@ -1719,13 +1719,15 @@ export async function runSinopacProviderWorkflow(
 
     let deposit: SinopacDepositCollection | null = null;
     const summary = await collectSelectedProducts({
+      provider: "sinopac",
       productIds: ["deposit"],
       selectedIds: collectsAccounts ? ["deposit"] : [],
       signal: context.signal,
       assertSession,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+        const { event } = product;
         let accounts: SinopacAccount[];
         if (overrides.readAccounts) {
           await event("collection", "started", "account-list-collection-started");
@@ -1746,7 +1748,7 @@ export async function runSinopacProviderWorkflow(
             event,
           );
         }
-        const { sourceCaptureCount, itemCount, ...collected } = await collectSinopacStatements(
+        const { sourceCaptureCount, ...collected } = await collectSinopacStatements(
           page,
           workflowInput,
           accounts,
@@ -1766,10 +1768,10 @@ export async function runSinopacProviderWorkflow(
                 balanceInput,
               )),
           },
-          stagedItems,
+          product.stage,
         );
         deposit = collected;
-        return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
+        return { sourceCaptureCount, rowCount: collected.rowCount };
       },
       commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
         provider: "sinopac",

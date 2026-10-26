@@ -7,7 +7,8 @@ import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
-  type ProductCollectionActivityReporter,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { signIn } from "./sign-in.ts";
@@ -15,55 +16,40 @@ import {
   deriveYuantaSourceConnectionKey,
   yuantaBankSignInPlan,
   yuantaSourceConnectionScope,
-  type YuantaCredentials,
 } from "./yuanta-auth.ts";
 import {
   runYuantaStatements,
-  yuantaObservedAt,
   yuantaStatementsInputSchema,
-  type YuantaDepositWorkflowCollection,
+  type YuantaStatementsCollectionInput,
 } from "./yuanta-statements.ts";
 import {
   runYuantaForeignCurrencyStatements,
   yuantaForeignCurrencyStatementsInputSchema,
-  type YuantaForeignCurrencyWorkflowCollection,
+  type YuantaForeignCurrencyCollectionInput,
 } from "./yuanta-foreign-currency-statements.ts";
 import {
   runYuantaLoanStatements,
-  type YuantaLoanWorkflowCollection,
+  yuantaLoanStatementsInputSchema,
+  type YuantaLoanCollectionInput,
 } from "./yuanta-loan-statements.ts";
 import {
   runYuantaCreditCardStatements,
   deriveYuantaCanonicalHumanAttestation,
   yuantaCreditCardStatementsInputSchema,
-  type YuantaCreditCardWorkflowCollection,
+  type YuantaCreditCardCollectionInput,
 } from "./yuanta-credit-card-statements.ts";
 import {
   runYuantaFundStatements,
   yuantaFundStatementsInputSchema,
-  type YuantaFundWorkflowCollection,
+  type YuantaFundCollectionInput,
 } from "./yuanta-fund-statements.ts";
 
 export { deriveYuantaCanonicalHumanAttestation } from "./yuanta-credit-card-statements.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 
-const yuantaLoanStatementsInputSchema = z.object({
-  dateRange: z.enum(["three_months", "six_months", "one_year"]).default("one_year"),
-  customDateRange: z.object({
-    startDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-    endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-  }).optional(),
-  loanAccountFilters: z.array(z.string()).default([]),
-});
-
 function componentInputSchema(schema: z.ZodTypeAny) {
   return schema.optional().default({});
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
 }
 
 async function readCurrentCid(page: Page): Promise<string | null> {
@@ -102,168 +88,22 @@ const appInputSchema = z.object({
 
 export type YuantaAllWorkflowInput = z.infer<typeof appInputSchema>;
 
-type YuantaWorkflowCollectionSummary = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-  noDataEvidence?: boolean;
-}>;
-
-type YuantaWorkflowIdentity = Readonly<{
-  sourceConnectionScope: string;
-  sourceConnectionKey: string;
-  canonicalHumanAttestation: NonNullable<ReturnType<typeof deriveYuantaCanonicalHumanAttestation>>;
-  managedSecret: string;
-}>;
+type YuantaProductRunner<TInput> = (
+  page: Page,
+  input: TInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+) => Promise<ProductCollectionSummary>;
 
 export type YuantaAllWorkflowDependencies = Readonly<{
-  collectDeposit?: (
-    page: Page,
-    input: unknown,
-    context: WorkflowContext,
-    identity: YuantaWorkflowIdentity,
-    items: PGliteWorkflowRunItem[],
-    reportActivity: ProductCollectionActivityReporter,
-  ) => Promise<YuantaWorkflowCollectionSummary>;
-  collectForeignCurrency?: (
-    page: Page,
-    input: unknown,
-    context: WorkflowContext,
-    identity: YuantaWorkflowIdentity,
-    items: PGliteWorkflowRunItem[],
-    reportActivity: ProductCollectionActivityReporter,
-  ) => Promise<YuantaWorkflowCollectionSummary>;
-  collectCreditCard?: (
-    page: Page,
-    input: unknown,
-    context: WorkflowContext,
-    identity: YuantaWorkflowIdentity,
-    items: PGliteWorkflowRunItem[],
-    reportActivity: ProductCollectionActivityReporter,
-  ) => Promise<YuantaWorkflowCollectionSummary>;
-  collectLoan?: (
-    page: Page,
-    input: unknown,
-    context: WorkflowContext,
-    identity: YuantaWorkflowIdentity,
-    items: PGliteWorkflowRunItem[],
-    reportActivity: ProductCollectionActivityReporter,
-  ) => Promise<YuantaWorkflowCollectionSummary>;
-  collectFund?: (
-    page: Page,
-    input: unknown,
-    context: WorkflowContext,
-    identity: YuantaWorkflowIdentity,
-    items: PGliteWorkflowRunItem[],
-    reportActivity: ProductCollectionActivityReporter,
-  ) => Promise<YuantaWorkflowCollectionSummary>;
+  collectDeposit?: YuantaProductRunner<YuantaStatementsCollectionInput>;
+  collectForeignCurrency?: YuantaProductRunner<YuantaForeignCurrencyCollectionInput>;
+  collectCreditCard?: YuantaProductRunner<YuantaCreditCardCollectionInput>;
+  collectLoan?: YuantaProductRunner<YuantaLoanCollectionInput>;
+  collectFund?: YuantaProductRunner<YuantaFundCollectionInput>;
   prepareForComponent?: (page: Page, product: string) => Promise<void>;
   signOut?: (page: Page) => Promise<void>;
 }>;
-
-async function collectYuantaDepositForApp(
-  page: Page,
-  rawInput: unknown,
-  context: WorkflowContext,
-  identity: YuantaWorkflowIdentity,
-  items: PGliteWorkflowRunItem[],
-  reportActivity: ProductCollectionActivityReporter,
-): Promise<YuantaDepositWorkflowCollection> {
-  const parsedInput = yuantaStatementsInputSchema.parse(rawInput);
-  return await runYuantaStatements(page, parsedInput, {
-    sourceConnectionScope: identity.sourceConnectionScope,
-    sourceConnectionKey: identity.sourceConnectionKey,
-    observedAt: () => yuantaObservedAt(new Date(context.now())),
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    reportActivity,
-  });
-}
-
-async function collectYuantaForeignForApp(
-  page: Page,
-  rawInput: unknown,
-  context: WorkflowContext,
-  _identity: YuantaWorkflowIdentity,
-  items: PGliteWorkflowRunItem[],
-  reportActivity: ProductCollectionActivityReporter,
-): Promise<YuantaForeignCurrencyWorkflowCollection> {
-  const parsedInput = yuantaForeignCurrencyStatementsInputSchema.parse(rawInput);
-  return await runYuantaForeignCurrencyStatements(page, parsedInput, {
-    yuanta_user_id: (rawInput as { credentials?: YuantaCredentials }).credentials?.yuanta_user_id,
-  }, {
-    collectOnly: true,
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    now: context.now,
-    reportActivity,
-  });
-}
-
-async function collectYuantaCreditCardForApp(
-  page: Page,
-  rawInput: unknown,
-  context: WorkflowContext,
-  identity: YuantaWorkflowIdentity,
-  items: PGliteWorkflowRunItem[],
-  reportActivity: ProductCollectionActivityReporter,
-): Promise<YuantaCreditCardWorkflowCollection> {
-  const parsedInput = yuantaCreditCardStatementsInputSchema.parse(rawInput);
-  const credentials = (rawInput as { credentials?: YuantaCredentials }).credentials ?? {};
-  return await runYuantaCreditCardStatements(page, { ...parsedInput, credentials }, {
-    canonicalHumanAttestation: identity.canonicalHumanAttestation,
-    instrumentFingerprintSecret: identity.managedSecret,
-    collectOnly: true,
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    now: context.now,
-    reportActivity,
-  });
-}
-
-async function collectYuantaLoanForApp(
-  page: Page,
-  rawInput: unknown,
-  context: WorkflowContext,
-  identity: YuantaWorkflowIdentity,
-  items: PGliteWorkflowRunItem[],
-  reportActivity: ProductCollectionActivityReporter,
-): Promise<YuantaLoanWorkflowCollection> {
-  const parsedInput = yuantaLoanStatementsInputSchema.parse(rawInput);
-  return await runYuantaLoanStatements(page, parsedInput, {
-    sourceConnectionScope: identity.sourceConnectionScope,
-    sourceConnectionKey: identity.sourceConnectionKey,
-    observedAt: context.now,
-    collectOnly: true,
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    reportActivity,
-  });
-}
-
-async function collectYuantaFundForApp(
-  page: Page,
-  rawInput: unknown,
-  context: WorkflowContext,
-  _identity: YuantaWorkflowIdentity,
-  items: PGliteWorkflowRunItem[],
-  reportActivity: ProductCollectionActivityReporter,
-): Promise<YuantaFundWorkflowCollection> {
-  const parsedInput = yuantaFundStatementsInputSchema.parse(rawInput);
-  const credentials = (rawInput as { credentials?: YuantaCredentials }).credentials ?? {};
-  return await runYuantaFundStatements(page, parsedInput, credentials, {
-    collectOnly: true,
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    now: context.now,
-    reportActivity,
-  });
-}
 
 /** Collect selected Yuanta products independently and commit each complete product. */
 export async function runYuantaAllStatementsWorkflow(
@@ -284,46 +124,47 @@ export async function runYuantaAllStatementsWorkflow(
   const canonicalHumanAttestation = deriveYuantaCanonicalHumanAttestation(credentials, secret);
   if (!canonicalHumanAttestation)
     throw new Error("Yuanta canonical identity could not be established.");
-  const identity: YuantaWorkflowIdentity = {
-    sourceConnectionScope,
-    sourceConnectionKey,
-    managedSecret: secret,
-    canonicalHumanAttestation,
-  };
-  const collectDeposit = overrides.collectDeposit ?? collectYuantaDepositForApp;
-  const collectForeign = overrides.collectForeignCurrency ?? collectYuantaForeignForApp;
-  const collectCreditCard = overrides.collectCreditCard ?? collectYuantaCreditCardForApp;
-  const collectLoan = overrides.collectLoan ?? collectYuantaLoanForApp;
-  const collectFund = overrides.collectFund ?? collectYuantaFundForApp;
+  const collectDeposit = overrides.collectDeposit ?? runYuantaStatements;
+  const collectForeign = overrides.collectForeignCurrency ?? runYuantaForeignCurrencyStatements;
+  const collectCreditCard = overrides.collectCreditCard ?? runYuantaCreditCardStatements;
+  const collectLoan = overrides.collectLoan ?? runYuantaLoanStatements;
+  const collectFund = overrides.collectFund ?? runYuantaFundStatements;
   const prepare = overrides.prepareForComponent ?? prepareYuantaPageForApp;
   const signOut = overrides.signOut ?? logoutYuantaForApp;
 
   const productIds = ["deposit", "foreign_currency", "credit_card", "loan", "fund"] as const;
   const selected = parsed.data.statementTypes as readonly (typeof productIds)[number][];
 
-  const inputByProduct: Record<string, unknown> = {
-    deposit: { ...asRecord(parsed.data.statements), credentials },
-    foreign_currency: { ...asRecord(parsed.data.foreignCurrency), credentials },
-    credit_card: { ...asRecord(parsed.data.creditCard), credentials, canonicalHumanAttestation: identity.canonicalHumanAttestation },
-    loan: { ...asRecord(parsed.data.loan), credentials },
-    fund: { ...asRecord(parsed.data.fund), credentials },
-  };
-  const collectors: Record<
-    string,
-    (
-      page: Page,
-      input: unknown,
-      ctx: WorkflowContext,
-      identity: YuantaWorkflowIdentity,
-      items: PGliteWorkflowRunItem[],
-      reportActivity: ProductCollectionActivityReporter,
-    ) => Promise<YuantaWorkflowCollectionSummary>
-  > = {
-    deposit: collectDeposit,
-    foreign_currency: collectForeign,
-    credit_card: collectCreditCard,
-    loan: collectLoan,
-    fund: collectFund,
+  // The outer default({}) skips each component schema's own defaults, so each
+  // product parses its component input again.
+  const collectors: Readonly<Record<
+    (typeof productIds)[number],
+    (page: Page, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>
+  >> = {
+    deposit: (page, product) => collectDeposit(page, {
+      ...yuantaStatementsInputSchema.parse(parsed.data.statements),
+      sourceConnectionScope,
+      sourceConnectionKey,
+    }, context, product),
+    foreign_currency: (page, product) => collectForeign(page, {
+      ...yuantaForeignCurrencyStatementsInputSchema.parse(parsed.data.foreignCurrency),
+      yuantaUserId: credentials.yuanta_user_id,
+    }, context, product),
+    credit_card: (page, product) => collectCreditCard(page, {
+      ...yuantaCreditCardStatementsInputSchema.parse(parsed.data.creditCard),
+      canonicalHumanAttestation,
+      instrumentFingerprintSecret: secret,
+    }, context, product),
+    loan: (page, product) => collectLoan(page, {
+      ...yuantaLoanStatementsInputSchema.parse(parsed.data.loan),
+      sourceConnectionScope,
+      sourceConnectionKey,
+    }, context, product),
+    fund: (page, product) => collectFund(page, {
+      ...yuantaFundStatementsInputSchema.parse(parsed.data.fund),
+      yuantaUserId: credentials.yuanta_user_id,
+      yuantaAccount: credentials.yuanta_account,
+    }, context, product),
   };
 
   context.signal.throwIfAborted();
@@ -334,6 +175,7 @@ export async function runYuantaAllStatementsWorkflow(
       await context.event("decoding", "started", "source-decoding-started");
       const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
+        provider: "yuanta",
         productIds,
         selectedIds: selected,
         signal: context.signal,
@@ -341,29 +183,7 @@ export async function runYuantaAllStatementsWorkflow(
           if (typeId !== "deposit") await prepare(page, typeId);
         },
         assertSession,
-        collect: async (typeId, stagedItems, reportActivity) => {
-          const result = await collectors[typeId]!(
-            page,
-            inputByProduct[typeId],
-            context,
-            identity,
-            stagedItems,
-            reportActivity,
-          );
-          for (const item of stagedItems) {
-            if ((item.provider !== "yuanta" && item.provider !== "yuanta-fund")
-              || !item.itemKey || !item.command) {
-              throw new ProductCollectionFatalError("workflow-failed");
-            }
-            context.text.assertIntact(JSON.stringify(item.command));
-          }
-          return {
-            sourceCaptureCount: result.sourceCount,
-            rowCount: result.rowCount,
-            itemCount: result.itemCount,
-            ...(result.noDataEvidence === undefined ? {} : { noDataEvidence: result.noDataEvidence }),
-          };
-        },
+        collect: (typeId, product) => collectors[typeId](page, product),
         commit: (typeId, stagedItems) => {
           attemptedItems.push(...stagedItems);
           return financialCommit.execute(stagedItems, {

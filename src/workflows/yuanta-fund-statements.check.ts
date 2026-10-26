@@ -13,8 +13,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CanonicalInvestmentAdmissionError } from "../ledger/canonical/investment-financial-admission.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { YuantaFundWorkflowDependencies } from "./yuanta-fund-statements.ts";
+import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 
@@ -163,7 +164,7 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /sourceText\.assertIntact\(JSON\.stringify\(sourceCollection\.tables\)\)/u,
+  /text\.assertIntact\(JSON\.stringify\(sourceCollection\.tables\)\)/u,
 );
 assert.match(source, /export async function runYuantaFundStatements/u);
 assert.match(source, /reference-nav-and-fx-basis-date/);
@@ -451,9 +452,7 @@ assert.doesNotThrow(() =>
   ),
 );
 
-type FundSourceCollector = NonNullable<
-  Parameters<typeof runYuantaFundStatements>[3]["collectSourceTables"]
->;
+type FundSourceCollector = NonNullable<YuantaFundWorkflowDependencies["collectSourceTables"]>;
 const fundInput = yuantaFundStatementsInputSchema.parse({
   includePortfolioSummary: false,
   includeInvestmentDetails: true,
@@ -495,18 +494,25 @@ function completeAccountHistoryFixture(source: Awaited<ReturnType<FundSourceColl
     tables: [...source.tables.filter(table => table.category !== "historical-transactions"), ...results] };
 }
 
-const fundDependencies = (
+type FundRun = Readonly<{
+  collector: FundSourceCollector;
+  items: PGliteWorkflowRunItem[];
+  signal: AbortSignal;
+  now?: () => string;
+}>;
+const fundSource = (
   collector: FundSourceCollector,
-  deferredCommitItems: PGliteWorkflowRunItem[],
+  items: PGliteWorkflowRunItem[],
   signal: AbortSignal,
-): Parameters<typeof runYuantaFundStatements>[3] => ({
-  collectOnly: true,
-  deferredCommitItems,
-  sourceText: strictSourceText,
-  signal,
-  now: () => "2026-09-09T12:00:00.000Z",
-  collectSourceTables: collector,
-});
+): FundRun => ({ collector, items, signal });
+const collectFund = (input: typeof fundInput, run: FundRun) =>
+  runYuantaFundStatements(
+    {} as never,
+    { ...input, yuantaUserId: "synthetic-login", yuantaAccount: "synthetic-account" },
+    yuantaCollectionContext({ now: run.now ?? "2026-09-09T12:00:00.000Z", signal: run.signal }),
+    yuantaStagingHandle(run.items),
+    { collectSourceTables: run.collector },
+  );
 const committedInvestmentCapture = (items: readonly PGliteWorkflowRunItem[]) => {
   const command = items[0]?.command;
   if (!command || command.kind !== PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND)
@@ -521,31 +527,21 @@ const typedFundOriginalCwd = process.cwd();
 process.chdir(typedFundOutputDirectory);
 try {
   const admittedItems: PGliteWorkflowRunItem[] = [];
-  const collection = await runYuantaFundStatements(
-    {} as never,
-    fundInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(
+  const collection = await collectFund(fundInput, fundSource(
       validFundCollector,
       admittedItems,
       new AbortController().signal,
     ),
   );
   assert.deepEqual(collection, {
-    sourceCount: 2,
+    sourceCaptureCount: 2,
     rowCount: 6,
-    itemCount: 1,
   });
   assert.equal(admittedItems.length, 1);
-  assert.equal(admittedItems[0]?.provider, "yuanta-fund");
   assert.equal(admittedItems[0]?.product, "investment");
   assert.equal(committedInvestmentCapture(admittedItems).securities[0]?.producerSecurityId, "name:SANITIZED FUND");
   const mismatchedPositionItems: PGliteWorkflowRunItem[] = [];
-  await assert.rejects(runYuantaFundStatements(
-    {} as never,
-    fundInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({
+  await assert.rejects(collectFund(fundInput, fundSource(async () => ({
       positions: [{ ...position, paperNo: "FS000000010" }],
       tables: [overview, basisTable],
     }), mismatchedPositionItems, new AbortController().signal),
@@ -557,11 +553,7 @@ try {
   secondLot[2] = "SANITIZED FUND FS00000002";
   secondLot[6] = "0.125 1";
   secondLot[4] = "1.3125 1.3125";
-  await runYuantaFundStatements(
-    {} as never,
-    fundInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({
+  await collectFund(fundInput, fundSource(async () => ({
       positions: [position, secondPosition],
       tables: [
         { ...overview, rows: [...overview.rows, secondLot] }, basisTable,
@@ -637,9 +629,7 @@ try {
     rows: [["基金代碼", "基金名稱", "計價幣別"],
       ["YT01", "SANITIZED FUND", "TWD"], ["U001", "SANITIZED OUT FUND", "USD"], ["A001", "SANITIZED IN FUND", "USD"]],
   };
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => completeAccountHistoryFixture({
+  await collectFund(fundHistoryInput, fundSource(async () => completeAccountHistoryFixture({
       positions: [position],
       tables: [overview, basisTable, catalogTable, {
         category: "historical-transactions", fund: "S:FS00000001:YT01", period: "2026/08/01-2026/09/08",
@@ -665,9 +655,7 @@ try {
     return completeAccountHistoryFixture({ positions: [position, secondPosition],
       tables: [overview, basisTable, conversionTable, { ...conversionTable }] });
   };
-  await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(eventCollector, overlappingItems, new AbortController().signal)));
+  await assert.rejects(collectFund(fundHistoryInput, fundSource(eventCollector, overlappingItems, new AbortController().signal)));
   assert.equal(overlappingItems.length, 0, "Overlapping queries cannot double-count a conversion");
   const crossScopeTable = {
     category: "historical-transactions", fund: yuantaFundAccountHistoryKey("single"),
@@ -689,14 +677,10 @@ try {
   assert.throws(() => assertYuantaFundCanonicalAdmission(crossScopeAdmission), (error: unknown) =>
     error instanceof Error && error.cause instanceof Error && /overlapping account history queries/u.test(error.cause.message));
   const crossScopeItems: PGliteWorkflowRunItem[] = [];
-  await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => crossScopeSource, crossScopeItems, new AbortController().signal)));
+  await assert.rejects(collectFund(fundHistoryInput, fundSource(async () => crossScopeSource, crossScopeItems, new AbortController().signal)));
   assert.equal(crossScopeItems.length, 0, "Account scopes cannot double-count an ambiguous conversion");
   const aliasItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => completeAccountHistoryFixture({ positions: [position],
+  await collectFund(fundHistoryInput, fundSource(async () => completeAccountHistoryFixture({ positions: [position],
       tables: [overview, basisTable, { ...catalogTable, rows: [["基金代碼", "基金名稱", "計價幣別"], ["YT01", "SANITIZED LONGER CATALOG FUND NAME", "TWD"]] }, buyTable],
     }), aliasItems, new AbortController().signal));
   assert.equal(committedInvestmentCapture(aliasItems).transactions[0]?.securityKey, "yuanta-fund:name:SANITIZED FUND",
@@ -725,11 +709,7 @@ try {
     const collector: FundSourceCollector = async () => completeAccountHistoryFixture({
       positions: [position], tables: [overview, basisTable, table],
     });
-    await runYuantaFundStatements(
-      {} as never,
-      fundHistoryInput,
-      { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-      fundDependencies(collector, items, new AbortController().signal),
+    await collectFund(fundHistoryInput, fundSource(collector, items, new AbortController().signal),
     );
     const capture = committedInvestmentCapture(items);
     return { capture, items };
@@ -771,9 +751,7 @@ try {
     })),
   };
   const accountItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => accountSource, accountItems, new AbortController().signal));
+  await collectFund(fundHistoryInput, fundSource(async () => accountSource, accountItems, new AbortController().signal));
   const accountCapture = committedInvestmentCapture(accountItems);
   assert.equal(accountCapture.holdings.length, 1);
   assert.equal(accountCapture.transactions.length, 7);
@@ -789,9 +767,7 @@ try {
     { category: "investment-source-evidence", fund: null, period: null, tableLabel: "current-position-absence", rows: [["無基金部位"]] },
     ...accountTables.map(table => table === accountTables[0] ? { ...table,
       rows: [table.rows[0]!, table.rows[1]!, ["2026/09/01", ...table.rows[2]!.slice(1)]] } : table)] };
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => closedOnly, closedOnlyItems, new AbortController().signal));
+  await collectFund(fundHistoryInput, fundSource(async () => closedOnly, closedOnlyItems, new AbortController().signal));
   assert.equal(closedOnlyItems.length, 1);
   const closedOnlyCapture = committedInvestmentCapture(closedOnlyItems);
   assert.equal(closedOnlyCapture.transactions.length, 7);
@@ -802,9 +778,7 @@ try {
     ...accountTables.map(table => ({ ...table, rows: [["查無資料"]], cellLines: undefined })),
   ] };
   const fullyEmptyItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => fullyEmptySource, fullyEmptyItems, new AbortController().signal));
+  await collectFund(fundHistoryInput, fundSource(async () => fullyEmptySource, fullyEmptyItems, new AbortController().signal));
   assert.equal(fullyEmptyItems.length, 1);
   const fullyEmptyCapture = committedInvestmentCapture(fullyEmptyItems);
   assert.equal(fullyEmptyCapture.holdings.length, 0);
@@ -814,9 +788,7 @@ try {
   assert.deepEqual(fullyEmptyCapture.scope.transactionHistory, history);
   assert.deepEqual(fullyEmptyCapture.occurrenceGroupCoverage, accountSource.occurrenceGroupCoverage);
   const repeatedEmptyItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    { ...fundDependencies(async () => fullyEmptySource, repeatedEmptyItems, new AbortController().signal),
+  await collectFund(fundHistoryInput, { ...fundSource(async () => fullyEmptySource, repeatedEmptyItems, new AbortController().signal),
       now: () => "2026-09-10T12:00:00.000Z" });
   const repeatedEmptyCapture = committedInvestmentCapture(repeatedEmptyItems);
   assert.notEqual(repeatedEmptyCapture.captureId, fullyEmptyCapture.captureId);
@@ -834,30 +806,22 @@ try {
     { ...fullyEmptySource, accountHistoryQueryCoverage: yuantaFundAccountHistoryQueries.slice(0, -1) },
   ]) {
     const rejectedItems: PGliteWorkflowRunItem[] = [];
-    await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-      { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-      fundDependencies(async () => invalidSource, rejectedItems, new AbortController().signal)));
+    await assert.rejects(collectFund(fundHistoryInput, fundSource(async () => invalidSource, rejectedItems, new AbortController().signal)));
     assert.equal(rejectedItems.length, 0, "Empty history still requires explicit absence and every complete report");
   }
   const repeatAccountItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    { ...fundDependencies(async () => accountSource, repeatAccountItems, new AbortController().signal),
+  await collectFund(fundHistoryInput, { ...fundSource(async () => accountSource, repeatAccountItems, new AbortController().signal),
       now: () => "2026-09-10T12:00:00.000Z" });
   const missingMetadataItems: PGliteWorkflowRunItem[] = [];
   const missingMetadataSource = { ...accountSource, tables: accountSource.tables.filter(table => table.tableLabel !== "fund-security-catalog") };
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    { ...fundDependencies(async () => missingMetadataSource, missingMetadataItems, new AbortController().signal),
+  await collectFund(fundHistoryInput, { ...fundSource(async () => missingMetadataSource, missingMetadataItems, new AbortController().signal),
       now: () => "2026-09-11T12:00:00.000Z" });
   const missingMetadataCapture = committedInvestmentCapture(missingMetadataItems);
   assert.deepEqual(missingMetadataCapture.transactions.map(row => row.transactionKey), accountCapture.transactions.map(row => row.transactionKey),
     "Catalog removal or enrichment cannot change transaction identity");
   assert.ok(missingMetadataCapture.securities.every(security => security.identityEvidence.kind === "source-fund-name" && security.currency === ""));
   const normalizedNameItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    { ...fundDependencies(async () => ({ ...missingMetadataSource, tables: missingMetadataSource.tables.map(table => table === accountTables[0]
+  await collectFund(fundHistoryInput, { ...fundSource(async () => ({ ...missingMetadataSource, tables: missingMetadataSource.tables.map(table => table === accountTables[0]
       ? { ...table, rows: table.rows.map((row, index) => index === 0 ? row : row.map((cell, column) => column === 1 ? "SANITIZED ＣＬＯＳＥＤ ＦＵＮＤ" : cell)) } : table) }),
       normalizedNameItems, new AbortController().signal), now: () => "2026-09-12T12:00:00.000Z" });
   assert.deepEqual(committedInvestmentCapture(normalizedNameItems).transactions.map(row => row.transactionKey), accountCapture.transactions.map(row => row.transactionKey));
@@ -880,9 +844,7 @@ try {
     assert.equal((await createPGliteCanonicalOverviewQuery(accountStore).current()).projection.transactions.length, 7);
   } finally { await accountStore.close(); }
   const mixedCurrencyItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({ ...missingMetadataSource, tables: missingMetadataSource.tables.map(table => table === accountTables[5]
+  await collectFund(fundHistoryInput, fundSource(async () => ({ ...missingMetadataSource, tables: missingMetadataSource.tables.map(table => table === accountTables[5]
       ? { ...table, rows: table.rows.map((row, index) => index === 0 ? row : row.map((cell, column) => column === 3 ? "美元 100" : cell)) } : table) }),
       mixedCurrencyItems, new AbortController().signal));
   const mixedCurrencyCapture = committedInvestmentCapture(mixedCurrencyItems);
@@ -904,16 +866,12 @@ try {
       ? { ...table, rows: table.rows.map((row, index) => index === 0 ? row : row.map((cell, column) => column === 3 ? "100" : cell)) } : table) },
   ]) {
     const items: PGliteWorkflowRunItem[] = [];
-    await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-      { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-      fundDependencies(async () => incomplete, items, new AbortController().signal)));
+    await assert.rejects(collectFund(fundHistoryInput, fundSource(async () => incomplete, items, new AbortController().signal)));
     assert.equal(items.length, 0);
   }
   const firstHistory = await tradeKeysFor(duplicateBuyTable);
   const missingInventoryItems: PGliteWorkflowRunItem[] = [];
-  await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({ positions: [position], tables: [overview, basisTable, buyTable],
+  await assert.rejects(collectFund(fundHistoryInput, fundSource(async () => ({ positions: [position], tables: [overview, basisTable, buyTable],
       transactionHistory: fundHistoryProof.transactionHistory,
       occurrenceGroupCoverage: fundHistoryProof.occurrenceGroupCoverage,
     }), missingInventoryItems, new AbortController().signal)), /complete account-wide report inventory/u);
@@ -953,11 +911,7 @@ try {
   );
 
   const emptyHistoryItems: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements(
-    {} as never,
-    fundHistoryInput,
-    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => completeAccountHistoryFixture({
+  await collectFund(fundHistoryInput, fundSource(async () => completeAccountHistoryFixture({
       positions: [position], tables: [overview, basisTable],
     }), emptyHistoryItems, new AbortController().signal),
   );
@@ -970,14 +924,7 @@ try {
     positions: [position], tables: [overview, buyTable],
   });
   await assert.rejects(
-    runYuantaFundStatements(
-      {} as never,
-      fundHistoryInput,
-      {
-        yuanta_user_id: "synthetic-login",
-        yuanta_account: "synthetic-account",
-      },
-      fundDependencies(
+    collectFund(fundHistoryInput, fundSource(
         partialCollector,
         partialItems,
         new AbortController().signal,
@@ -1001,14 +948,7 @@ try {
     ],
   });
   await assert.rejects(
-    runYuantaFundStatements(
-      {} as never,
-      fundInput,
-      {
-        yuanta_user_id: "synthetic-login",
-        yuanta_account: "synthetic-account",
-      },
-      fundDependencies(
+    collectFund(fundInput, fundSource(
         malformedCollector,
         malformedItems,
         new AbortController().signal,
@@ -1025,14 +965,7 @@ try {
     return { positions: [position], tables: [overview, basisTable] };
   };
   await assert.rejects(
-    runYuantaFundStatements(
-      {} as never,
-      fundInput,
-      {
-        yuanta_user_id: "synthetic-login",
-        yuanta_account: "synthetic-account",
-      },
-      fundDependencies(abortAfterCollect, cancelledItems, cancellation.signal),
+    collectFund(fundInput, fundSource(abortAfterCollect, cancelledItems, cancellation.signal),
     ),
     /abort/u,
   );

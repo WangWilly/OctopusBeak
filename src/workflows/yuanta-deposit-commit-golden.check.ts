@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { YuantaAllWorkflowDependencies } from "./yuanta-all-statements.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
@@ -28,7 +28,7 @@ registerHooks({
 });
 
 const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
-const { runYuantaStatements, yuantaObservedAt, yuantaStatementsInputSchema } = await import("./yuanta-statements.ts");
+const { runYuantaStatements } = await import("./yuanta-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
 
@@ -127,15 +127,8 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
 async function runGolden(name: string, stubs: DepositStubs): Promise<void> {
   const recorder = recordDepositCommit();
   const collectDeposit: NonNullable<YuantaAllWorkflowDependencies["collectDeposit"]> = (
-    page, rawInput, context, identity, items, reportActivity,
-  ) => runYuantaStatements(page, yuantaStatementsInputSchema.parse(rawInput), {
-    sourceConnectionScope: identity.sourceConnectionScope,
-    sourceConnectionKey: identity.sourceConnectionKey,
-    observedAt: () => yuantaObservedAt(new Date(context.now())),
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    reportActivity,
+    page, input, context, product,
+  ) => runYuantaStatements(page, input, context, product, {
     preparePage: async () => undefined,
     ...stubs,
   });
