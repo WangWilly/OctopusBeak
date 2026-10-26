@@ -14,7 +14,7 @@ Yuanta fund and Fubon credit card already worked differently: one function read 
 
 **A product runner reads its source first, then builds and stages from what it read.** The read half is the only part that touches the page. The build half takes the source snapshot, the input, the workflow context and the product handle. It is exported, and checks drive it with snapshots instead of fake page steps. The runner composes the two halves and keeps the four-argument signature, so the fifth argument is deleted.
 
-**Yuanta deposit and Fubon deposit read in two phases.** They read current balances only after at least one statement capture was admitted as financial data, and only when the run was not cancelled. Yuanta's deposit golden pins that a source-only run never opens the balance page. Their build half therefore takes the statement snapshot and one function that reads current balances when the build asks for them.
+**Yuanta deposit and Fubon deposit read in two phases.** Yuanta reads current balances only after at least one statement capture was admitted as financial data. Fubon reads them after that, or when a USD-coded composite account deferred its currency proof to the balance table. Both read only when the run was not cancelled. Yuanta's deposit golden pins that a source-only run never opens the balance page. Their build half therefore takes the statement snapshot and one function that reads current balances when the build asks for them.
 
 Yuanta foreign currency, Yuanta loan, Yuanta fund, Fubon deposit and Fubon credit card follow this shape. Fubon loan and Yuanta credit card take no fake page steps and are left as they are.
 

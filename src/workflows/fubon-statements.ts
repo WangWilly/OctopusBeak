@@ -3063,6 +3063,7 @@ export async function stageFubonDeposit(
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
+      context.signal.throwIfAborted();
       const authority =
         financialCaptures[0]?.identity ??
         deriveFubonDomesticDepositAccountIdentity(
