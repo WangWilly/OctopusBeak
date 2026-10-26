@@ -43,6 +43,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
   }, async (context, input: TdccWorkflowInput) => {
     const selectedIds = selectedProducts(input);
     const tdcc = context.tdcc;
+    await context.event("preparation", "completed", "input-validated");
     await context.event("authentication", "started", "authentication-started");
     const lease = await tdcc.session.open();
     if (lease.status !== "ready") {

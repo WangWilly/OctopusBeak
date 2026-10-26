@@ -773,8 +773,9 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
   assert.deepEqual(executions, [["hncb", "deposit"], ["hncb", "loan"]], "the run commits each product with its provider and product type id");
   assert.equal(productRunResult(sourceOnly).status, "source-only", "a run that committed only source assertions is source-only");
 
-  const financial = await run({ deposit: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, loan: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND });
-  assert.equal(productRunResult(financial).status, "financial-admitted", "one financial command makes the run financial-admitted");
+  const financial = await run({ deposit: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, loan: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND });
+  assert.equal(productRunResult(financial).status, "financial-admitted",
+    "a financial command in an earlier product makes the run financial-admitted");
   assert.deepEqual(events, ["source-validation-completed:4/4", "source-validation-completed:4/4"], "the run reports its closing event once per run with its Source Capture count");
 }
 

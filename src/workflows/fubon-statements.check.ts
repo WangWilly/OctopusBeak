@@ -352,11 +352,13 @@ type DepositSource = Readonly<{
   accounts: readonly FubonDepositAccountOption[];
   statementFor: DepositStatementFor;
   currentRows: readonly FubonCurrentDepositBalanceRow[];
+  signal?: AbortSignal;
+  readCurrentBalances?: () => Promise<readonly FubonCurrentDepositBalanceRow[]>;
 }>;
 
 async function collectDeposit(
   input: FubonStatementsInput,
-  { stagedItems, accountIdentityContinuity, accounts, statementFor, currentRows }: DepositSource,
+  { stagedItems, accountIdentityContinuity, accounts, statementFor, currentRows, signal, readCurrentBalances }: DepositSource,
 ) {
   const events: string[] = [];
   const summary = await stageFubonDeposit(
@@ -369,7 +371,7 @@ async function collectDeposit(
     { ...input, sourceConnectionScope, sourceConnectionKey },
     {
       runId: "fubon-deposit-check",
-      signal: new AbortController().signal,
+      signal: signal ?? new AbortController().signal,
       now: () => "2026-01-31T12:00:00.000Z",
       browser: { withPage: async () => { throw new Error("the deposit check has no browser"); } },
       text: strictSourceText,
@@ -383,7 +385,7 @@ async function collectDeposit(
       reportActivity: async () => undefined,
       event: async (_stage, _outcome, code) => { events.push(code); },
     },
-    async () => currentRows,
+    readCurrentBalances ?? (async () => currentRows),
   );
   return { ...summary, events };
 }
@@ -429,6 +431,19 @@ try {
   );
   assert.equal(depositItem.command.request.capture.occurrenceGroupCoverage?.length, 1);
   assert.deepEqual(await readdir(typedOutputDir), [], "Fubon collection must not create source, output, or log files");
+
+  const cancellation = new AbortController();
+  cancellation.abort();
+  const cancelledItems: ProductStageRequest[] = [];
+  await assert.rejects(
+    collectDeposit(collectionInput, {
+      ...collectorOverrides(cancelledItems),
+      signal: cancellation.signal,
+      readCurrentBalances: async () => assert.fail("a cancelled run must not open the current-balance page"),
+    }),
+    /abort/u,
+  );
+  assert.deepEqual(cancelledItems, [], "a cancelled run stages nothing");
 
   const usdHoldingRow: FubonCurrentDepositBalanceRow = {
     ...currentBalanceRow,

@@ -293,9 +293,13 @@ async function interruption(promise: Promise<unknown>): Promise<ProductCollectio
 }
 
 test("a run reuses the saved session, commits every selected product, and reports exclusions only as counts", async () => {
-  await withHarness(async ({ run, secrets, count }) => {
+  await withHarness(async ({ run, secrets, count, events }) => {
     const fake = fakeTdcc();
     const result = await run(ALL, fake);
+    const codes = events.map((event) => `${event.stage} ${event.outcome} ${event.code}`);
+    assert.ok(codes.indexOf("preparation completed input-validated") >= 0
+      && codes.indexOf("preparation completed input-validated") < codes.indexOf("authentication started authentication-started"),
+    "a TDCC run reports its valid input before it opens a session");
     assert.equal(fake.calls.includes("AU001"), false, "a valid saved session needs no sign-in");
     assert.deepEqual(products(result), { securities: "success", fund: "success", settlement: "success" });
     assert.equal(result.status, "partial", "problematic TDCC exclusions make a run partial even when all admitted groups commit");

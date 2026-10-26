@@ -10,7 +10,7 @@ After ADR 0063 the run staged every item, but each workflow still wrote the rest
 
 - A `commit` closure that called `financialCommit.execute` with a second copy of the provider and one of four product labels: the product type id, `financial`, `credit-card` or `investment`. Only a label that names a product type gives commit events a `statementType`, so the commit stage of seven sources showed no product.
 - Five ways to decide whether a completed run was `source-only`. Fubon, Yuanta, CTBC and SinoPac meant "every committed item was a source assertion". HNCB and LINE Bank meant "no financial records", so a run that admitted zero-record deposit captures and current balances read as `source-only`. Cathay, Post, E.SUN and Yuanta Trade did not decide it, which was correct only because they never stage a source assertion.
-- Three closing events (`source-validation-completed`, `statement-collection-completed`, `all-source-admission-completed`) or none. Post, HNCB, E.SUN and Yuanta Trade also never reported `preparation completed`, so their preparation stage never completed on the dashboard.
+- Three closing events (`source-validation-completed`, `statement-collection-completed`, `all-source-admission-completed`) or none. Post, HNCB, E.SUN, Yuanta Trade and TDCC also never reported `preparation completed`, so their preparation stage never completed on the dashboard.
 
 ## Decision
 
@@ -30,7 +30,7 @@ After ADR 0063 the run staged every item, but each workflow still wrote the rest
 
 ## Consequences
 
-- An HNCB or LINE Bank run that admits only zero-record deposit captures and current balances is now `financial-admitted`, not `source-only`.
+- HNCB and LINE Bank decided `source-only` from whether any financial record was committed. They now follow the run's rule, so a run that commits zero-record deposit captures, with or without current balances, is `financial-admitted`. LINE Bank never stages a source assertion, so a LINE Bank run that commits is never `source-only`.
 - Commit attempts of CTBC, Post, HNCB, SinoPac and LINE Bank record `deposit`, E.SUN records `credit_card`, and Yuanta Trade records `securities`. No outcome decision reads that label.
 - Cathay's closing events are replaced by the run's single closing event. The dashboard shows event codes as diagnostic text only.
 - CTBC, HNCB, Post, SinoPac, LINE Bank, Yuanta Trade and TDCC, which reported no closing event before, now end with the run's.
