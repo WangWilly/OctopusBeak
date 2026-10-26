@@ -10,10 +10,10 @@ import {
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
   runFubonStatements,
+  stageFubonDeposit,
   type FubonDepositAccountOption,
   type FubonDepositProductContext,
   type FubonStatementsInput,
-  type FubonStatementsRunDependencies,
   type FubonDepositStatementEvidence,
   type FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
@@ -341,18 +341,31 @@ const currentBalanceRow: FubonCurrentDepositBalanceRow = {
 };
 const collectionInput = { dateRanges: ["30" as const], downloadFormat: "EXCEL" as const };
 
-type DepositRunOverrides = FubonStatementsRunDependencies & Readonly<{
+type DepositStatementFor = (
+  dateRange: FubonStatementsInput["dateRanges"][number],
+  account: FubonDepositAccountOption,
+) => FubonParsedDepositStatement;
+
+type DepositSource = Readonly<{
   stagedItems: ProductStageRequest[];
   accountIdentityContinuity: FubonDepositProductContext["accountIdentity"]["continuity"];
+  accounts: readonly FubonDepositAccountOption[];
+  statementFor: DepositStatementFor;
+  currentRows: readonly FubonCurrentDepositBalanceRow[];
 }>;
 
 async function collectDeposit(
   input: FubonStatementsInput,
-  { stagedItems, accountIdentityContinuity, ...sources }: DepositRunOverrides,
+  { stagedItems, accountIdentityContinuity, accounts, statementFor, currentRows }: DepositSource,
 ) {
   const events: string[] = [];
-  const summary = await runFubonStatements(
-    {} as never,
+  const summary = await stageFubonDeposit(
+    {
+      accounts: accounts.map((account) => ({
+        account,
+        statements: input.dateRanges.map((dateRange) => statementFor(dateRange, account)),
+      })),
+    },
     { ...input, sourceConnectionScope, sourceConnectionKey },
     {
       runId: "fubon-deposit-check",
@@ -370,7 +383,7 @@ async function collectDeposit(
       reportActivity: async () => undefined,
       event: async (_stage, _outcome, code) => { events.push(code); },
     },
-    sources,
+    async () => currentRows,
   );
   return { ...summary, events };
 }
@@ -380,16 +393,14 @@ const exclusionEvents = (events: readonly string[], kind: "current-balance" | "s
 
 function collectorOverrides(
   stagedItems: ProductStageRequest[],
-  fetchDepositStatement: NonNullable<FubonStatementsRunDependencies["fetchDepositStatement"]> = async () => statement,
-) {
+  statementFor: DepositStatementFor = () => statement,
+): DepositSource {
   return {
     stagedItems,
     accountIdentityContinuity: async () => ({ status: "unseen" as const }),
-    readCurrentDepositBalances: async () => [currentBalanceRow],
-    openTransactionDetailForAccountIndex: async () => "****0000",
-    readDepositAccountOptions: async () => [selectedAccount],
-    selectDepositAccount: async () => undefined,
-    fetchDepositStatement,
+    currentRows: [currentBalanceRow],
+    accounts: [selectedAccount],
+    statementFor,
   };
 }
 
@@ -432,7 +443,7 @@ try {
     collectionInput,
     {
       ...collectorOverrides(usdHoldingItems),
-      readCurrentDepositBalances: async () => [currentBalanceRow, usdHoldingRow],
+      currentRows: [currentBalanceRow, usdHoldingRow],
     },
   );
   const usdHoldingBalanceItems = usdHoldingItems.filter((item) =>
@@ -480,11 +491,11 @@ try {
   const unlinkableResult = await collectDeposit(
     collectionInput,
     {
-      ...collectorOverrides(unlinkableItems, async (_page, _range, account) =>
+      ...collectorOverrides(unlinkableItems, (_range, account) =>
         account.value === unlinkableAccount.value ? statementFor(unlinkableAccount) : statement,
       ),
-      readDepositAccountOptions: async () => [selectedAccount, unlinkableAccount],
-      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdRow],
+      accounts: [selectedAccount, unlinkableAccount],
+      currentRows: [currentBalanceRow, secondTwdRow, secondUsdRow],
     },
   );
   const depositAccountKeys = (items: ProductStageRequest[]) =>
@@ -570,13 +581,13 @@ try {
     const result = await collectDeposit(
       twoRangeInput,
       {
-        ...collectorOverrides(items, async (_page, range, account) =>
+        ...collectorOverrides(items, (range, account) =>
           account.value === usdCodedAccount.value
             ? usdStatement(range)
             : range === "30" ? statement : olderStatementFor(selectedAccount),
         ),
-        readDepositAccountOptions: async () => [selectedAccount, usdCodedAccount],
-        readCurrentDepositBalances: async () => snapshotRows,
+        accounts: [selectedAccount, usdCodedAccount],
+        currentRows: snapshotRows,
       },
     );
     return { items, result };
@@ -702,7 +713,7 @@ try {
     const result = await collectDeposit(
       twoRangeInput,
       {
-        ...collectorOverrides(items, async (_page, range, selected) => {
+        ...collectorOverrides(items, (range, selected) => {
           const account = options.find((option) => option.value === selected.value)!;
           if (account.value === selectedAccount.value) return range === "30" ? statement : olderStatementFor(selectedAccount);
           return range === "30" ? statementFor(account) : olderStatementFor(account);
@@ -711,8 +722,8 @@ try {
           requests.push(request);
           return continuityByNumber.get(request.identifier.value) ?? { status: "unseen" };
         },
-        readDepositAccountOptions: async () => [...options],
-        readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
+        accounts: options,
+        currentRows: [currentBalanceRow, secondTwdRow],
       },
     );
     return { items, requests, result };
@@ -803,7 +814,7 @@ try {
   const jpyCodedResult = await collectDeposit(
     collectionInput,
     {
-      ...collectorOverrides(jpyCodedItems, async (_page, _range, account) =>
+      ...collectorOverrides(jpyCodedItems, (_range, account) =>
         account.value === jpyCodedAccount.value
           ? {
               ...jpyCodedStatement,
@@ -812,8 +823,8 @@ try {
             }
           : statement,
       ),
-      readDepositAccountOptions: async () => [selectedAccount, jpyCodedAccount],
-      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow],
+      accounts: [selectedAccount, jpyCodedAccount],
+      currentRows: [currentBalanceRow, secondTwdRow],
     },
   );
   const jpyCodedDeposits = depositAccountKeys(jpyCodedItems);
@@ -901,11 +912,11 @@ try {
   const noRecordResult = await collectDeposit(
     collectionInput,
     {
-      ...collectorOverrides(noRecordItems, async (_page, _range, account) =>
+      ...collectorOverrides(noRecordItems, (_range, account) =>
         account.value === noRecordAccount.value ? noRecordStatement : statement,
       ),
-      readDepositAccountOptions: async () => [selectedAccount, noRecordAccount],
-      readCurrentDepositBalances: async () => [currentBalanceRow, secondTwdRow, secondUsdRow],
+      accounts: [selectedAccount, noRecordAccount],
+      currentRows: [currentBalanceRow, secondTwdRow, secondUsdRow],
     },
   );
   assert.deepEqual(exclusionEvents(noRecordResult.events, "current-balance"), []);
@@ -938,7 +949,7 @@ try {
   await assert.rejects(
     () => collectDeposit(
       collectionInput,
-      collectorOverrides(malformedItems, async () => malformedStatement),
+      collectorOverrides(malformedItems, () => malformedStatement),
     ),
     /amount-invalid|amount-sign-invalid|financial admission failed/iu,
   );
@@ -974,35 +985,13 @@ try {
   await collectDeposit(
     { dateRanges: ["1"], downloadFormat: "EXCEL" },
     {
-      ...collectorOverrides(incompleteItems, async () => incompleteStatement),
-      readDepositAccountOptions: async () => [incompleteAccount],
-      readCurrentDepositBalances: async () => [],
+      ...collectorOverrides(incompleteItems, () => incompleteStatement),
+      accounts: [incompleteAccount],
+      currentRows: [],
     },
   );
   assert.equal(incompleteItems.length, 1);
   assert.equal(incompleteItems[0]?.command.kind, PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
-
-  const laterAccount = {
-    value: "00987654321098",
-    label: "00987654321098 (013)",
-    branchName: "013",
-  };
-  const partialItems: ProductStageRequest[] = [];
-  await assert.rejects(
-    () => collectDeposit(
-      collectionInput,
-      {
-        ...collectorOverrides(partialItems, async (_page, _range, account) => {
-          if (account.value === laterAccount.value)
-            throw new Error("synthetic later-account fetch failure");
-          return statement;
-        }),
-        readDepositAccountOptions: async () => [selectedAccount, laterAccount],
-      },
-    ),
-    /later-account fetch failure/iu,
-  );
-  assert.deepEqual(partialItems, [], "a later source failure must not send earlier items to the commit port");
 } finally {
   process.chdir(originalCwd);
   await rm(typedOutputDir, { recursive: true, force: true });

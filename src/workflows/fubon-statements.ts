@@ -240,25 +240,16 @@ export type FubonDepositProductContext = WorkflowContext & Readonly<{
   accountIdentity: WorkflowAccountIdentityPort;
 }>;
 
-export type FubonStatementsRunDependencies = Readonly<{
-  openTransactionDetailForAccountIndex?: (
-    page: Page,
-    accountIndex: number,
-  ) => Promise<string>;
-  readDepositAccountOptions?: (
-    page: Page,
-  ) => Promise<FubonDepositAccountOption[]>;
-  selectDepositAccount?: (
-    page: Page,
-    account: FubonDepositAccountOption,
-  ) => Promise<void>;
-  fetchDepositStatement?: (
-    page: Page,
-    dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
-    account: FubonDepositAccountOption,
-  ) => Promise<FubonParsedDepositStatement>;
-  readCurrentDepositBalances?: typeof readFubonCurrentDepositBalances;
+export type FubonDepositSourceSnapshot = Readonly<{
+  accounts: readonly Readonly<{
+    account: FubonDepositAccountOption;
+    statements: readonly FubonParsedDepositStatement[];
+  }>[];
 }>;
+
+export type FubonCurrentDepositBalanceRead = (
+  request: Parameters<typeof readFubonCurrentDepositBalances>[1],
+) => Promise<readonly FubonCurrentDepositBalanceRow[]>;
 
 /** A TWD current-balance row whose account has no full account-number
  * evidence among this run's financial statement captures. Only this balance
@@ -2695,13 +2686,24 @@ function compareFubonDepositTelemetry(
   };
 }
 
-export type FubonDepositTelemetryRunDependencies = Pick<
-  FubonStatementsRunDependencies,
-  | "openTransactionDetailForAccountIndex"
-  | "readDepositAccountOptions"
-  | "selectDepositAccount"
-  | "fetchDepositStatement"
->;
+export type FubonDepositTelemetryRunDependencies = Readonly<{
+  openTransactionDetailForAccountIndex?: (
+    page: Page,
+    accountIndex: number,
+  ) => Promise<string>;
+  readDepositAccountOptions?: (
+    page: Page,
+  ) => Promise<FubonDepositAccountOption[]>;
+  selectDepositAccount?: (
+    page: Page,
+    account: FubonDepositAccountOption,
+  ) => Promise<void>;
+  fetchDepositStatement?: (
+    page: Page,
+    dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
+    account: FubonDepositAccountOption,
+  ) => Promise<FubonParsedDepositStatement>;
+}>;
 
 /**
  * Runs two identical bounded observations and one explicit zero-range probe.
@@ -2811,33 +2813,70 @@ function reconcileFubonDepositBalance(
   };
 }
 
-export async function runFubonStatements(
-  page: Page,
-  input: FubonDepositProductInput,
-  context: FubonDepositProductContext,
-  product: ProductCollectionHandle,
-  overrides: FubonStatementsRunDependencies = {},
-): Promise<ProductCollectionSummary> {
+function fubonDepositSourceIdentity(input: FubonDepositProductInput) {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
       'fubon-statements normalized output currently supports downloadFormat="EXCEL" only.',
     );
   }
-  const { sourceConnectionScope, sourceConnectionKey } =
-    requireSourceConnectionIdentity("fubon", "Fubon deposit", input);
+  return requireSourceConnectionIdentity("fubon", "Fubon deposit", input);
+}
 
-  const openTransactionDetail =
-    overrides.openTransactionDetailForAccountIndex ??
-    openTransactionDetailForAccountIndex;
-  const readAccounts =
-    overrides.readDepositAccountOptions ?? readFubonDepositAccountOptions;
-  const selectAccount = overrides.selectDepositAccount ?? selectDepositAccount;
-  const fetchStatement =
-    overrides.fetchDepositStatement ??
-    ((currentPage, dateRange, account) =>
-      fetchDepositStatement(currentPage, dateRange, account, context.text));
-  const readCurrent =
-    overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
+export async function runFubonStatements(
+  page: Page,
+  input: FubonDepositProductInput,
+  context: FubonDepositProductContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  fubonDepositSourceIdentity(input);
+  const snapshot = await readFubonDepositSourceSnapshot(page, input, context, product);
+  return stageFubonDeposit(snapshot, input, context, product, async (request) => {
+    await product.reportActivity("query");
+    const rows = await readFubonCurrentDepositBalances(page, request);
+    context.text.assertIntact(JSON.stringify(rows));
+    return rows;
+  });
+}
+
+async function readFubonDepositSourceSnapshot(
+  page: Page,
+  input: FubonDepositProductInput,
+  context: FubonDepositProductContext,
+  product: ProductCollectionHandle,
+): Promise<FubonDepositSourceSnapshot> {
+  await product.reportActivity("query");
+  await openTransactionDetailForAccountIndex(page, 0);
+  const accounts = await readFubonDepositAccountOptions(page);
+  const read: Array<FubonDepositSourceSnapshot["accounts"][number]> = [];
+  for (const account of accounts) {
+    context.signal.throwIfAborted();
+    await selectDepositAccount(page, account);
+    const statements: FubonParsedDepositStatement[] = [];
+    for (const dateRange of input.dateRanges) {
+      context.signal.throwIfAborted();
+      await product.reportActivity("query");
+      const statement = await fetchDepositStatement(page, dateRange, account, context.text);
+      context.text.assertIntact(JSON.stringify(statement));
+      statements.push(statement);
+    }
+    if (statements.length === 0) {
+      throw new Error(
+        "Fubon deposit evidence admission blocked: no query pages.",
+      );
+    }
+    read.push({ account, statements });
+  }
+  return { accounts: read };
+}
+
+export async function stageFubonDeposit(
+  snapshot: FubonDepositSourceSnapshot,
+  input: FubonDepositProductInput,
+  context: FubonDepositProductContext,
+  product: ProductCollectionHandle,
+  readCurrentBalances: FubonCurrentDepositBalanceRead,
+): Promise<ProductCollectionSummary> {
+  const { sourceConnectionScope, sourceConnectionKey } = fubonDepositSourceIdentity(input);
   const stableSourceConnectionKey = sourceConnectionKey;
   const stableSourceIdentity = {
     sourceConnectionScope,
@@ -2876,9 +2915,6 @@ export async function runFubonStatements(
   };
 
   {
-    await product.reportActivity("query");
-    await openTransactionDetail(page, 0);
-    const accounts = await readAccounts(page);
     let sourceCount = 0;
     let rowCount = 0;
 
@@ -3008,34 +3044,16 @@ export async function runFubonStatements(
       }
     };
 
-    const deferred: Array<{
-      account: FubonDepositAccountOption;
-      statements: FubonParsedDepositStatement[];
-    }> = [];
-    for (const account of accounts) {
-      context.signal.throwIfAborted();
-      await selectAccount(page, account);
-      const accountStatements: FubonParsedDepositStatement[] = [];
-
-      for (const dateRange of input.dateRanges) {
-        context.signal.throwIfAborted();
-        await product.reportActivity("query");
-        const statement = await fetchStatement(page, dateRange, account);
-        context.text.assertIntact(JSON.stringify(statement));
-        accountStatements.push(statement);
-      }
-      if (accountStatements.length === 0) {
-        throw new Error(
-          "Fubon deposit evidence admission blocked: no query pages.",
-        );
-      }
-      sourceCount += accountStatements.length;
-      rowCount += accountStatements.reduce((count, statement) => count + statement.rows.length, 0);
+    const deferred: Array<FubonDepositSourceSnapshot["accounts"][number]> = [];
+    for (const entry of snapshot.accounts) {
+      const { account, statements } = entry;
+      sourceCount += statements.length;
+      rowCount += statements.reduce((count, statement) => count + statement.rows.length, 0);
       if (isUsdCodedCompositeOfOwnLabel(account)) {
-        deferred.push({ account, statements: accountStatements });
+        deferred.push(entry);
         continue;
       }
-      await admitAccount(account, buildFubonDepositStatementEvidence(accountStatements));
+      await admitAccount(account, buildFubonDepositStatementEvidence(statements));
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -3045,7 +3063,6 @@ export async function runFubonStatements(
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
-      await product.reportActivity("query");
       const authority =
         financialCaptures[0]?.identity ??
         deriveFubonDomesticDepositAccountIdentity(
@@ -3053,16 +3070,15 @@ export async function runFubonStatements(
           undefined,
           stableSourceConnectionKey as `sha256:${string}`,
         );
-      currentRows = await readCurrent(page, {
-        observedAt: new Date().toISOString(),
+      currentRows = await readCurrentBalances({
+        observedAt: context.now(),
         financialAuthority: {
           sourceConnectionKey: authority.sourceConnectionKey,
           identityEpochKey: authority.identityEpochKey,
           authorityClass: "existing-financial-admission",
         },
       });
-      context.text.assertIntact(JSON.stringify(currentRows));
-      currentObservedAt = new Date().toISOString();
+      currentObservedAt = context.now();
     }
 
     for (const { account, statements } of deferred) {

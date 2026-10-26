@@ -3,7 +3,7 @@ import {
   captureFubonDepositTelemetry,
   fetchFubonDepositStatementViaUi,
   inspectFubonDepositResponseMetadata,
-  type FubonStatementsRunDependencies,
+  type FubonDepositTelemetryRunDependencies,
   type ParsedDepositStatementPage,
   type FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
@@ -322,7 +322,7 @@ const uiPageStatement = (
 const uiPage = new UiFakePage();
 const uiRanges: string[] = [];
 const uiStatement: NonNullable<
-  FubonStatementsRunDependencies["fetchDepositStatement"]
+  FubonDepositTelemetryRunDependencies["fetchDepositStatement"]
 > = async (page, range, account) => {
   uiRanges.push(range);
   return await fetchFubonDepositStatementViaUi(page, range, account, {

@@ -133,7 +133,7 @@ export type FubonCreditCardStatementsInput = z.infer<typeof inputSchema>;
 export type FubonCreditCardProductInput = FubonCreditCardStatementsInput & Readonly<{
   panFingerprintKey: FubonCreditCardPanFingerprintKey;
 }>;
-type FubonCreditCardSourceSnapshot = Readonly<{
+export type FubonCreditCardSourceSnapshot = Readonly<{
   currentUsedCredit?: FubonCurrentUsedCreditSnapshot;
   statementRows: readonly CsvRow[];
   statementPeriods: readonly string[];
@@ -142,13 +142,6 @@ type FubonCreditCardSourceSnapshot = Readonly<{
   unavailablePeriodOffsets: readonly number[];
   unbilledRows: readonly CsvRow[];
 }>;
-type FubonCreditCardRunOverrides = {
-  /** Injects a completely collected source snapshot for focused admission checks. */
-  readSourceSnapshot?: (
-    page: Page,
-    input: FubonCreditCardStatementsInput,
-  ) => Promise<FubonCreditCardSourceSnapshot>;
-};
 type PaymentStatus = z.infer<typeof paymentStatusSchema>;
 type StatementRowsResult = {
   rows: CsvRow[];
@@ -2312,75 +2305,87 @@ export async function runFubonCreditCardStatements(
   input: FubonCreditCardProductInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  overrides: FubonCreditCardRunOverrides = {},
 ): Promise<ProductCollectionSummary> {
-  let sourceSnapshot: FubonCreditCardSourceSnapshot;
-  if (overrides.readSourceSnapshot) {
-    await product.reportActivity("query");
-    sourceSnapshot = await overrides.readSourceSnapshot(page, input);
-  } else {
-    let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
-    try {
-      await product.reportActivity("query");
-      const currentCreditRead = await readFubonCurrentUsedCredit(page, context.text);
-      currentUsedCredit = currentCreditRead.snapshot;
-    } catch {}
-    await product.reportActivity("query");
-    await openStatementDetailsPage(page);
+  const sourceSnapshot = await readFubonCreditCardSourceSnapshot(page, input, context, product);
+  return stageFubonCreditCard(sourceSnapshot, input, context, product);
+}
 
-    const statementRows: CsvRow[] = [];
-    const statementPeriods: string[] = [];
-    const summaries: IssuerStatementSummary[] = [];
-    const gridStates: GridState[] = [];
-    const unavailablePeriodOffsets: number[] = [];
-    for await (const probe of iterateFubonStatementPeriodProbes(
-      page,
-      input.periodOffsets,
-    )) {
-      context.signal.throwIfAborted();
-      const { periodOffset, scope, status } = probe;
-      if (status === "temporarily-unavailable") {
-        unavailablePeriodOffsets.push(periodOffset);
-        continue;
-      }
-      if (status === "no-record") continue;
+async function readFubonCreditCardSourceSnapshot(
+  page: Page,
+  input: FubonCreditCardProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<FubonCreditCardSourceSnapshot> {
+  let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
+  try {
+    await product.reportActivity("query");
+    const currentCreditRead = await readFubonCurrentUsedCredit(page, context.text);
+    currentUsedCredit = currentCreditRead.snapshot;
+  } catch {}
+  await product.reportActivity("query");
+  await openStatementDetailsPage(page);
 
-      const periodLabel = await readStatementPeriodLabel(scope);
-      statementPeriods.push(periodLabel);
-      await product.reportActivity("query");
-      const statementResult = await readStatementRows(
-        scope,
-        periodLabel,
-        input.statementCardLabels,
-        input.canonicalHumanAttestation !== undefined,
-      );
-      statementRows.push(...statementResult.rows);
-      summaries.push(...statementResult.summaries);
-      gridStates.push(await gridState(scope));
+  const statementRows: CsvRow[] = [];
+  const statementPeriods: string[] = [];
+  const summaries: IssuerStatementSummary[] = [];
+  const gridStates: GridState[] = [];
+  const unavailablePeriodOffsets: number[] = [];
+  for await (const probe of iterateFubonStatementPeriodProbes(
+    page,
+    input.periodOffsets,
+  )) {
+    context.signal.throwIfAborted();
+    const { periodOffset, scope, status } = probe;
+    if (status === "temporarily-unavailable") {
+      unavailablePeriodOffsets.push(periodOffset);
+      continue;
     }
+    if (status === "no-record") continue;
 
+    const periodLabel = await readStatementPeriodLabel(scope);
+    statementPeriods.push(periodLabel);
     await product.reportActivity("query");
-    const unbilled = await openUnbilledDetailsPage(page);
-    const unbilledRows = await readUnbilledRows(
-      unbilled.scope,
-      input.unbilledCardNumbers,
+    const statementResult = await readStatementRows(
+      scope,
+      periodLabel,
+      input.statementCardLabels,
+      input.canonicalHumanAttestation !== undefined,
     );
-    gridStates.push(
-      unbilled.providerNoRecord
-        ? { providerNoRecord: true }
-        : await gridState(unbilled.scope),
-    );
-    sourceSnapshot = {
-      ...(currentUsedCredit ? { currentUsedCredit } : {}),
-      statementRows,
-      statementPeriods,
-      summaries,
-      unbilledRows,
-      gridStates,
-      unavailablePeriodOffsets,
-    };
+    statementRows.push(...statementResult.rows);
+    summaries.push(...statementResult.summaries);
+    gridStates.push(await gridState(scope));
   }
+
+  await product.reportActivity("query");
+  const unbilled = await openUnbilledDetailsPage(page);
+  const unbilledRows = await readUnbilledRows(
+    unbilled.scope,
+    input.unbilledCardNumbers,
+  );
+  gridStates.push(
+    unbilled.providerNoRecord
+      ? { providerNoRecord: true }
+      : await gridState(unbilled.scope),
+  );
+  const sourceSnapshot: FubonCreditCardSourceSnapshot = {
+    ...(currentUsedCredit ? { currentUsedCredit } : {}),
+    statementRows,
+    statementPeriods,
+    summaries,
+    unbilledRows,
+    gridStates,
+    unavailablePeriodOffsets,
+  };
   context.text.assertIntact(JSON.stringify(sourceSnapshot));
+  return sourceSnapshot;
+}
+
+export async function stageFubonCreditCard(
+  sourceSnapshot: FubonCreditCardSourceSnapshot,
+  input: FubonCreditCardProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
   const currentUsedCredit = sourceSnapshot.currentUsedCredit;
   const statementRows = [...sourceSnapshot.statementRows];
   const statementPeriods = [...sourceSnapshot.statementPeriods];
