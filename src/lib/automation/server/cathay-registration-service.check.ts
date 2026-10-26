@@ -34,9 +34,28 @@ type FixtureLog = {
   logins: number;
   trustedLogins: number;
   sends: string[];
+  sendListeners: Array<() => void>;
   submits: string[];
   trusted: number;
 };
+
+/**
+ * The page fires its send request from the click handler without the
+ * registration awaiting it, so the code step can begin before the fixture
+ * records the send.
+ */
+async function sendsRecorded(log: FixtureLog, count: number): Promise<readonly string[]> {
+  const deadline = AbortSignal.timeout(10_000);
+  while (log.sends.length < count) {
+    await new Promise<void>((resolve, reject) => {
+      log.sendListeners.push(resolve);
+      deadline.addEventListener("abort", () => reject(new Error(`Cathay fixture recorded ${log.sends.length} of ${count} sends`)), { once: true });
+    });
+  }
+  return log.sends;
+}
+
+let fixtureRuns = 0;
 
 function loginPage(view: NonNullable<FixtureOptions["view"]>) {
   return `<!doctype html><meta charset="utf-8"><title>Synthetic Cathay</title>
@@ -100,6 +119,7 @@ async function installCathayFixture(context: BrowserContext, options: FixtureOpt
         return await route.fulfill({ json: { trusted } });
       case "/fixture/send":
         log.sends.push(url.searchParams.get("channel") ?? "");
+        for (const listener of log.sendListeners.splice(0)) listener();
         return await route.fulfill({ json: {} });
       case "/fixture/verify": {
         const code = url.searchParams.get("code") ?? "";
@@ -144,13 +164,12 @@ async function withFixture(
       : Object.fromEntries(Object.entries(SIGN_IN).map(([key, value]) => [`LIBRETTO_CLOUD_${key.toUpperCase()}`, value])),
     codec,
   );
-  const log: FixtureLog = { logins: 0, trustedLogins: 0, sends: [], submits: [], trusted: 0 };
+  const log: FixtureLog = { logins: 0, trustedLogins: 0, sends: [], sendListeners: [], submits: [], trusted: 0 };
   const lock = createSourceDeviceLock();
-  let runs = 0;
   const openPage = <T>(signal: AbortSignal, run: (page: Page) => Promise<T>) =>
     createAppWorkflowBrowserPort({
       taskId: TASK_ID,
-      taskRunId: `fixture-run-${runs += 1}`,
+      taskRunId: `fixture-run-${fixtureRuns += 1}`,
       signal,
       userDataDirectory: root,
       credentialCodec: codec,
@@ -178,6 +197,8 @@ async function withFixture(
       openRunPage: (run) => openPage(new AbortController().signal, run),
     });
   } finally {
+    // A failed assertion must not leave a registration holding its page into the next check.
+    await service.cancelActive();
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -197,7 +218,7 @@ test("registering sends one code, adds the trusted device, and a later run signs
     const sms = await service.start();
     assert.equal(sms.status, "code-required");
     assert.equal(sms.status === "code-required" && sms.channel, "sms");
-    assert.deepEqual(log.sends, ["sms"]);
+    assert.deepEqual(await sendsRecorded(log, 1), ["sms"]);
     assert.equal(lock.holder(), "registration", "no sync may start while the person reads the code");
     const registrationId = sms.status === "code-required" ? sms.registrationId : "";
 
@@ -238,7 +259,7 @@ test("registration switches to the Email code when Cathay keeps its sender behin
     assert.equal(email.status === "code-required" && email.channel, "email");
     const registrationId = email.status === "code-required" ? email.registrationId : "";
     assert.deepEqual(await service.submitCode(registrationId, CODE), { status: "registered", channels: ["email"] });
-    assert.deepEqual(log.sends, ["email"]);
+    assert.deepEqual(await sendsRecorded(log, 1), ["email"]);
   });
 });
 
@@ -248,7 +269,7 @@ test("a rejected or expired code ends the registration without trusting or recor
       const sms = await service.start();
       const registrationId = sms.status === "code-required" ? sms.registrationId : "";
       assert.deepEqual(await service.submitCode(registrationId, "135791"), { status: "failed", reason });
-      assert.deepEqual(log.sends, ["sms"], "a failed code is never followed by another send");
+      assert.deepEqual(await sendsRecorded(log, 1), ["sms"], "a failed code is never followed by another send");
       assert.equal(log.trusted, 0);
       assert.deepEqual(service.status(), { registered: false });
       assert.equal(lock.holder(), null);
