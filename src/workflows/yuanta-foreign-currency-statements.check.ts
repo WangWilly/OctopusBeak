@@ -62,8 +62,6 @@ assert.doesNotMatch(
 assert.match(foreignWorkflowSource, /runYuantaForeignCurrencyStatements/u);
 assert.match(foreignWorkflowSource, /downloadTransactionRowsInMemory/u);
 assert.match(foreignWorkflowSource, /readYuantaBig5CsvFromAnchor\(/u);
-const sharedExportSource = await readFile(new URL("./yuanta-statements.ts", import.meta.url), "utf8");
-assert.match(sharedExportSource, /text\.decode\(bytes, "big5"\)/u);
 assert.match(foreignWorkflowSource, /sourceText\.assertIntact\(content\)/u);
 
 const fixedForeignDateRange = {

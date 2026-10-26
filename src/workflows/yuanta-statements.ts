@@ -12,6 +12,7 @@ import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { readYuantaBig5CsvFromAnchor } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -59,7 +60,6 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-const YUANTA_DOMESTIC_EXPORT_MAX_BYTES = 25 * 1024 * 1024;
 type BrowserScope = Page | Frame;
 const dateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
 const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
@@ -496,22 +496,6 @@ export function statementRowsFromDownloadedCsv(
   return statements;
 }
 
-type DownloadText = {
-  content: string;
-  byteLength: number;
-  contentDigest: `sha256:${string}`;
-  contentDisposition: string;
-  exportUrl: string;
-};
-
-type BrowserCsvResponse = Readonly<{
-  status: number;
-  byteLength: number;
-  base64: string;
-  contentDisposition: string;
-  exportUrl: string;
-}>;
-
 function filenameFromCsvResponse(
   contentDisposition: string,
   exportUrl: string,
@@ -556,162 +540,6 @@ function filenameFromCsvResponse(
     throw new Error("Yuanta domestic CSV filename is unsafe.");
   }
   return filename;
-}
-
-export async function readYuantaBig5CsvFromAnchor(
-  exportLink: Locator,
-  text: SourceTextPort,
-  signal: AbortSignal,
-): Promise<DownloadText> {
-  signal.throwIfAborted();
-  let onAbort: (() => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => {
-      reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error("Yuanta CSV retrieval was canceled."),
-      );
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  let response: BrowserCsvResponse;
-  try {
-    const read = exportLink.evaluate(
-      async (element, maxBytes): Promise<BrowserCsvResponse> => {
-        const anchor = element as HTMLAnchorElement;
-        const href = anchor.getAttribute("href")?.trim();
-        const documentUrl = new URL(anchor.ownerDocument.baseURI);
-        const pageOrigin = anchor.ownerDocument.location.origin;
-        let url: URL;
-        let requestBody: URLSearchParams | undefined;
-        if (
-          /^javascript:void\(0\);?$/iu.test(href ?? "") &&
-          /^\s*getDownload\(\s*['"]csv['"]\s*\)\s*;?\s*$/iu.test(anchor.getAttribute("onclick") ?? "")
-        ) {
-          const foreignForm = anchor.ownerDocument.querySelector('form[name="mform"]') as HTMLFormElement | null;
-          const isForeignExport = foreignForm !== null &&
-            /\/fxtransactiondetails$/iu.test(new URL(foreignForm.action, documentUrl).pathname);
-          const form = isForeignExport
-            ? foreignForm
-            : anchor.ownerDocument.querySelector('form[name="jform"]') as HTMLFormElement | null;
-          if (!form || form.method.toLowerCase() !== "post") {
-            throw new Error("Yuanta CSV export form is unavailable.");
-          }
-          url = new URL(form.action, documentUrl);
-          if (!(isForeignExport
-            ? /\/fxtransactiondetails$/iu.test(url.pathname)
-            : /\/transactiondetails$/iu.test(url.pathname))) {
-            throw new Error("Yuanta CSV export form has an unexpected action.");
-          }
-          if (!isForeignExport) url.searchParams.set("method", "downloadcsv");
-          requestBody = new URLSearchParams();
-          for (const [name, value] of new FormData(form)) {
-            if (typeof value !== "string") {
-              throw new Error("Yuanta CSV export form contains a file input.");
-            }
-            requestBody.append(name, value);
-          }
-          if (isForeignExport) {
-            const transactionType = anchor.ownerDocument.getElementById("txntype") as HTMLInputElement | null;
-            if (!transactionType || transactionType.form !== form || !transactionType.name) {
-              throw new Error("Yuanta foreign CSV export type is unavailable.");
-            }
-            requestBody.set(transactionType.name, "downloadcsv");
-          }
-        } else {
-          if (!href || /^(?:javascript|data):/iu.test(href)) {
-            throw new Error("Yuanta CSV link has no fetchable URL.");
-          }
-          url = new URL(href, documentUrl);
-        }
-        if (
-          !["http:", "https:"].includes(url.protocol) ||
-          url.username.length > 0 ||
-          url.password.length > 0 ||
-          url.origin !== pageOrigin
-        ) {
-          throw new Error("Yuanta CSV link left the authenticated origin.");
-        }
-
-        const fetched = await fetch(url.href, {
-          ...(requestBody ? { method: "POST", body: requestBody } : {}),
-          mode: "same-origin",
-          credentials: "same-origin",
-          cache: "no-store",
-          redirect: "follow",
-        });
-        if (new URL(fetched.url).origin !== pageOrigin) {
-          throw new Error("Yuanta CSV redirected outside the authenticated origin.");
-        }
-        if (fetched.status !== 200 || !fetched.ok) {
-          throw new Error("Yuanta CSV request did not return a complete response.");
-        }
-        const contentLength = fetched.headers.get("content-length");
-        if (contentLength !== null) {
-          if (!/^\d+$/u.test(contentLength)) {
-            throw new Error("Yuanta CSV response length is invalid.");
-          }
-          const declaredLength = Number(contentLength);
-          if (!Number.isSafeInteger(declaredLength) || declaredLength > maxBytes) {
-            throw new Error("Yuanta CSV exceeded the in-memory size limit.");
-          }
-        }
-
-        const reader = fetched.body?.getReader();
-        if (!reader) throw new Error("Yuanta CSV response body is missing.");
-        const chunks: Uint8Array[] = [];
-        let byteLength = 0;
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            byteLength += next.value.byteLength;
-            if (byteLength > maxBytes) {
-              await reader.cancel().catch(() => undefined);
-              throw new Error("Yuanta CSV exceeded the in-memory size limit.");
-            }
-            chunks.push(next.value);
-          }
-        } finally {
-          reader.releaseLock();
-        }
-        const bytes = new Uint8Array(byteLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        let binary = "";
-        for (let index = 0; index < bytes.length; index += 0x8000) {
-          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-        }
-        return {
-          status: fetched.status,
-          byteLength,
-          base64: btoa(binary),
-          contentDisposition: fetched.headers.get("content-disposition") ?? "",
-          exportUrl: fetched.url,
-        };
-      },
-      YUANTA_DOMESTIC_EXPORT_MAX_BYTES,
-    );
-    response = await Promise.race([read, aborted]);
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  }
-  signal.throwIfAborted();
-  const bytes = Buffer.from(response.base64, "base64");
-  if (bytes.byteLength !== response.byteLength) {
-    throw new Error("Yuanta CSV response was incomplete in memory.");
-  }
-  return {
-    content: text.decode(bytes, "big5"),
-    byteLength: bytes.byteLength,
-    contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-    contentDisposition: response.contentDisposition,
-    exportUrl: response.exportUrl,
-  };
 }
 
 function isYuantaDomesticAccountPlaceholder(option: {
