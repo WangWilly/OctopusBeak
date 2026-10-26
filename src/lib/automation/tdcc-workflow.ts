@@ -28,7 +28,9 @@ export type TdccWorkflowOptions = Readonly<{
 function selectedProducts(input: unknown): TdccProductId[] {
   const statementTypes = (input as Partial<TdccWorkflowInput> | null)?.statementTypes;
   if (!Array.isArray(statementTypes)) throw new ProductCollectionFatalError("workflow-failed");
-  return TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
+  const selected = TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
+  if (selected.length === 0) throw new ProductCollectionFatalError("workflow-failed");
+  return selected;
 }
 
 /**

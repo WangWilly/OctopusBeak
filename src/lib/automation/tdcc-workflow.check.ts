@@ -682,3 +682,14 @@ test("through the supervised worker frames, a rotated token is saved when the ru
       assert.equal(JSON.stringify(outcome).includes(accountNumber), false, "worker transport retains counts but no account identifiers");
   });
 });
+
+test("a selection with no TDCC product fails before it reports valid input or opens a session", async () => {
+  await withHarness(async ({ run, events }) => {
+    for (const statementTypes of [[], ["unknown"]]) {
+      const fake = fakeTdcc();
+      await assert.rejects(run({ statementTypes }, fake));
+      assert.deepEqual(fake.calls, [], "no TDCC request is made");
+    }
+    assert.equal(events.some((event) => event.code === "input-validated"), false);
+  });
+});
