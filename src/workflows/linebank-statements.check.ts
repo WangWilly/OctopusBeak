@@ -132,7 +132,7 @@ assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot
 assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
 assert.match(linebankWorkflowSource, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/u);
 assert.match(linebankWorkflowSource, /runLineBankProviderWorkflow/u);
-assert.match(linebankWorkflowSource, /financialCommit\.execute/u);
+assert.match(linebankWorkflowSource, /financialCommit: context\.financialCommit/u);
 assert.match(linebankWorkflowSource, /text:\s*context\.text/u);
 assert.doesNotMatch(
   linebankWorkflowSource,

@@ -3,7 +3,7 @@
     {
       "options": {
         "provider": "post",
-        "product": "financial"
+        "product": "deposit"
       },
       "items": [
         {
@@ -368,6 +368,11 @@
   ],
   "events": [
     {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
       "stage": "authentication",
       "outcome": "started",
       "code": "authentication-started"
@@ -446,6 +451,15 @@
         "completed": 3,
         "total": 3,
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     }
   ]

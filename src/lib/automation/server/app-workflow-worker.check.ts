@@ -540,7 +540,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
           product.stage(runItem());
           return { sourceCaptureCount: 1, rowCount: 1 };
         },
-        commit: (_typeId, staged) => context.financialCommit!.execute(staged),
+        financialCommit: context.financialCommit!,
         event: context.event,
         productFailure: context.productFailure,
       }));

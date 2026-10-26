@@ -1664,8 +1664,8 @@ try {
         },
       );
     },
-    commit: async (typeId, staged) => {
-      committedProducts.push(typeId);
+    financialCommit: { execute: async (staged, options) => {
+      committedProducts.push(options?.product ?? "");
       assert.equal(staged.length, 3, "statement and both currency balances remain complete items");
       assert.equal(new Set(staged.map((item) => item.itemKey)).size, 3);
       return {
@@ -1675,7 +1675,7 @@ try {
           status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
         })),
       };
-    },
+    } },
   });
   assert.equal(multiCurrency.status, "completed");
   assert.equal(multiCurrency.committedCount, 3);

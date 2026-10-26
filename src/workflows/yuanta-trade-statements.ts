@@ -1713,7 +1713,6 @@ export async function runYuantaTradeProviderWorkflow(
   if (!parsed.success) {
     throw new Error("YuanTa Trade workflow credentials or selection are invalid.");
   }
-  const financialCommit = context.financialCommit;
   const input = parsed.data;
   if (!input.includeHoldings || !input.includeTrades) {
     throw new Error("YuanTa Trade canonical collection requires holdings and trades.");
@@ -1726,6 +1725,7 @@ export async function runYuantaTradeProviderWorkflow(
   }
 
   context.signal.throwIfAborted();
+  await context.event("preparation", "completed", "input-validated");
   const now = new Date(context.now());
   const dateRange = {
     startDate: input.startDate ?? formatDate(defaultStartDate(now)),
@@ -1861,11 +1861,7 @@ export async function runYuantaTradeProviderWorkflow(
           rowCount: holdingRows.length + tradeRows.length,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "yuanta-trade",
-        product: "investment",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, { counts: collected });
   });

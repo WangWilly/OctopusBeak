@@ -1104,7 +1104,6 @@ export async function runCtbcProviderWorkflow(
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("CTBC workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
@@ -1112,7 +1111,6 @@ export async function runCtbcProviderWorkflow(
     await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
 
     let count = 0;
-    let financialAdmitted = false;
     const summary = await collectSelectedProducts({
       provider: "ctbc",
       productIds: ["deposit"],
@@ -1267,19 +1265,14 @@ export async function runCtbcProviderWorkflow(
 
         product.stage(...items, ...balances);
         count = collected.output.count;
-        financialAdmitted = financialCaptures.length > 0;
         return {
           sourceCaptureCount: validatedCaptures.length,
           rowCount: collected.output.rowCount,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "ctbc",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
 
-    return productRunResult(summary, { counts: { count }, sourceOnly: !financialAdmitted });
+    return productRunResult(summary, { counts: { count } });
   });
 }

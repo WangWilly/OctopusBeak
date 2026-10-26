@@ -1354,10 +1354,6 @@ async function collectEsunCreditCard(
     await context.event("validation", "failed", "source-validation-rejected");
     throw new Error("E.SUN source failed canonical completeness validation.");
   }
-  await context.event("validation", "completed", "source-validation-completed", {
-    completed: rows.length,
-    total: rows.length,
-  });
   context.signal.throwIfAborted();
 
   const cardRequest = creditCardCommandRequestFromCanonicalCapture(
@@ -1400,6 +1396,7 @@ export async function runEsunCreditCardProviderWorkflow(
     throw new Error("E.SUN canonical collection requires the complete default one-year source.");
   }
   context.signal.throwIfAborted();
+  await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
     await authenticateEsunPage(page, input.credentials, context);
@@ -1415,13 +1412,9 @@ export async function runEsunCreditCardProviderWorkflow(
       collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
         const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product.stage);
         creditCard = collected;
-        return { sourceCaptureCount: 0, rowCount: collected.count };
+        return { sourceCaptureCount: 1, rowCount: collected.count };
       },
-      commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
-        provider: "esun",
-        product: "credit-card",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
       // ADR 0051: the attached deposit product, read in the same signed-in page. It writes only Preview Financial Data.
       attached: attachedPreviewRun({
         context,

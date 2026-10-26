@@ -14,7 +14,7 @@ assert.doesNotMatch(providerSource, /from\s+["']libretto["']|export\s+default\s+
 assert.doesNotMatch(providerSource, /node:fs\/promises|writeFile|downloads|csvFilename|csvPath|jsonFilename|jsonPath|ctbcResponseDiagnostic/u);
 assert.doesNotMatch(providerSource, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client|runCtbcStatements/u);
 assert.match(providerSource, /runCtbcProviderWorkflow/u);
-assert.match(providerSource, /financialCommit\.execute/u);
+assert.match(providerSource, /financialCommit: context\.financialCommit/u);
 
 const uiAccounts = [
   { accountId: "fixture-a", label: "A", optionIndex: 0 },

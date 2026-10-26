@@ -527,12 +527,7 @@ export async function runCathayAllProviderWorkflow(
           rowCount: foreign.rowCount,
         };
       },
-      commit: async (typeId, stagedItems) =>
-        context.financialCommit.execute(stagedItems, {
-          provider: "cathay",
-          product: typeId,
-          signal: context.signal,
-        }),
+      financialCommit: context.financialCommit,
       attached: attachedPreviewRun({
         context,
         source: ATTACHED_PREVIEW_PRODUCTS.cathay,
@@ -545,32 +540,6 @@ export async function runCathayAllProviderWorkflow(
         assertSession,
       }),
     });
-
-    if (selectedIds.length > 0) {
-      const verifiedProducts = summary.products.filter((product) =>
-        (productIds as readonly string[]).includes(product.typeId));
-      const completedProducts = verifiedProducts.filter(
-        (product) =>
-          product.status === "success" ||
-          product.status === "no_data" ||
-          product.status === "not_held",
-      ).length;
-      await context.event("collection", "completed", "statement-collection-completed", {
-        completed: completedProducts,
-        total: selectedIds.length,
-      });
-      if (
-        verifiedProducts
-          .filter((product) => product.status !== "skipped")
-          .every((product) => product.status !== "failed")
-      ) {
-        const verifiedItemCount = verifiedProducts.reduce((total, product) => total + product.itemCount, 0);
-        await context.event("validation", "completed", "all-source-admission-completed", {
-          completed: verifiedItemCount,
-          total: verifiedItemCount,
-        });
-      }
-    }
 
     return productRunResult(summary, {
       counts: { count: statementCaptureCount },
