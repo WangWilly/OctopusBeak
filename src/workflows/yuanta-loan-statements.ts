@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
@@ -33,10 +33,8 @@ import type {
 import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
-
-const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-
-type BrowserScope = Page | Frame;
+import type { BrowserScope, FrameScope } from "./frame-scope.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 
 export type LoanAccountOption = {
   label: string;
@@ -579,190 +577,61 @@ export function parseYuantaLoanStatementRows(
   });
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
+/** The loan statement form: ready once one scope holds the account selector and the 一年 range link. */
+async function isLoanStatementForm(scope: BrowserScope): Promise<boolean> {
+  const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
+  const hasLoanRange = await hasAttachedLocator(
+    scope.locator("#duration a").filter({ hasText: "一年" }),
+  );
+  return hasAccount && hasLoanRange;
 }
 
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(scope.locator(selector))) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
-
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(locatorFor(scope))) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
-}
-
-async function firstVisibleLocator(
-  locator: Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    await locator.page().waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find a visible ${description}.`);
-}
-
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // YuanTa keeps timers alive; selector waits below confirm readiness.
-  });
-  await page.waitForTimeout(750);
-}
+const LOAN_TRANSACTION_DETAILS_ROUTE: YuantaRoute = {
+  path: "loantransactiondetails",
+  description: "YuanTa loan statement form",
+  ready: isLoanStatementForm,
+};
 
 async function findLoanStatementForm(
-  page: Page,
+  site: YuantaEbankSite,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
-      const hasLoanRange = await hasAttachedLocator(
-        scope.locator("#duration a").filter({ hasText: "一年" }),
-      );
-      if (hasAccount && hasLoanRange) return scope;
+  const { frames } = site;
+  return await frames.until(async () => {
+    for (const scope of frames.scopes()) {
+      if (await isLoanStatementForm(scope)) return scope;
     }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Could not find YuanTa loan statement form.");
-}
-
-async function openLoanStatementPage(page: Page): Promise<BrowserScope> {
-  const existing = await findLoanStatementForm(page, 5_000).catch(() => null);
-  if (existing) return existing;
-
-  if (await clickLoanStatementLink(page, 5_000)) {
-    return await findLoanStatementForm(page);
-  }
-
-  const cid = await readCurrentCid(page);
-  const fmain = await waitForFrame(page, "fmain");
-  await fmain.goto(
-    `${BANK_ORIGIN}/nib/tx/loantransactiondetails?type=page&cid=${encodeURIComponent(
-      cid,
-    )}`,
-    { waitUntil: "domcontentloaded" },
-  );
-  await settleAfterNavigation(page);
-
-  return await findLoanStatementForm(page);
-}
-
-async function clickLoanStatementLink(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<boolean> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate.locator('a[onclick*="loantransactiondetails"]').filter({
-        hasText: /^(貸款)?繳款明細查詢$/,
-      }),
-    "YuanTa loan statement link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!scope) return false;
-
-  const link = await firstVisibleLocator(
-    scope.locator('a[onclick*="loantransactiondetails"]').filter({
-      hasText: /^(貸款)?繳款明細查詢$/,
-    }),
-    "YuanTa loan statement link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!link) return false;
-
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  return true;
-}
-
-async function readCurrentCid(page: Page): Promise<string> {
-  const scope = await findScopeWithSelector(page, 'input[name="cid"]');
-  const cid = await scope.locator('input[name="cid"]').first().inputValue();
-  if (!cid) throw new Error("Could not read YuanTa session cid.");
-  return cid;
+    return null;
+  }, "Could not find YuanTa loan statement form.", { timeoutMs });
 }
 
 async function chooseDateRange(
-  page: Page,
+  site: YuantaEbankSite,
   input: WorkflowInput,
 ): Promise<void> {
-  const scope = await findLoanStatementForm(page);
-
-  if (input.customDateRange) {
-    const customLink = await firstVisibleLocator(
-      scope.locator("#duration a").filter({ hasText: "自訂" }),
-      'YuanTa loan date range link "自訂"',
-    );
-    await customLink.click({ force: true });
-    await scope.locator("#sdate").fill(input.customDateRange.startDate);
-    await scope.locator("#edate").fill(input.customDateRange.endDate);
-    return;
-  }
-
-  const label = dateRangeLabels[input.dateRange];
-  const link = await firstVisibleLocator(
-    scope.locator("#duration a").filter({ hasText: label }),
-    `YuanTa loan date range link "${label}"`,
+  const scope = await findLoanStatementForm(site);
+  await site.chooseDuration(
+    scope,
+    input.customDateRange
+      ? { customLabel: "自訂", ...input.customDateRange }
+      : { label: dateRangeLabels[input.dateRange] },
   );
-  await link.click({ force: true });
 }
 
 export async function readYuantaLoanAccountOptions(
-  page: Page,
+  site: YuantaEbankSite,
   _filters: string[] = [],
 ): Promise<LoanAccountOption[]> {
-  const scope = await findLoanStatementForm(page);
+  const { frames } = site;
+  const scope = await findLoanStatementForm(site);
   const options = scope.locator("#acctno option");
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const availableAccounts: LoanAccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await option.getAttribute("value")) ?? "";
-    const label = cleanText(await option.textContent());
+    const value = (await frames.race(option.getAttribute("value"))) ?? "";
+    const label = cleanText(await frames.race(option.textContent()));
     if (isUnavailableAccountOption(value, label)) continue;
 
     const account = { label, value };
@@ -826,55 +695,57 @@ export function yuantaLoanSelectorAccountEvidence(
 }
 
 async function queryLoanAccount(
-  page: Page,
+  site: YuantaEbankSite,
   input: WorkflowInput,
   account: LoanAccountOption,
 ): Promise<void> {
-  const scope = await findLoanStatementForm(page);
-  await scope.locator("#acctno").selectOption(account.value);
-  await chooseDateRange(page, input);
-  await clickAndWaitForNavigation(scope, "#submitbutton");
-  await findScopeWithSelector(page, "#resultdiv");
+  const { frames } = site;
+  const scope = await findLoanStatementForm(site);
+  await frames.race(scope.locator("#acctno").selectOption(account.value));
+  await chooseDateRange(site, input);
+  await frames.race(clickAndWaitForNavigation(scope, "#submitbutton"));
+  await frames.scopeWith("#resultdiv");
 }
 
 async function parseLoanStatementRows(
-  page: Page,
+  site: YuantaEbankSite,
   accountLabel: string,
   pageOrdinal: number,
-  options: Readonly<{ sourceText?: SourceTextPort; silent?: boolean }> = {},
+  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
 ): Promise<{
   rows: StatementRow[];
   pageOrdinal: number;
   pagination: YuantaLoanPaginationSignal;
 }> {
-  const scope = await findScopeWithSelector(page, "#resultdiv");
+  const { frames } = site;
+  const scope = await frames.scopeWith("#resultdiv");
   const tables = scope.locator("table.normalTable");
-  const tableCount = await tables.count();
+  const tableCount = await frames.race(tables.count());
   if (tableCount === 0)
     throw new Error("Yuanta loan result is missing the source table.");
 
   const resultTable = tables.nth(tableCount - 1);
-  await resultTable.locator("th").first().waitFor({ state: "attached" });
-  const headerCellCount = await resultTable.locator("th").count();
+  await frames.race(resultTable.locator("th").first().waitFor({ state: "attached" }));
+  const headerCellCount = await frames.race(resultTable.locator("th").count());
 
   const rows = resultTable.locator("tr");
-  const rowCount = await rows.count();
+  const rowCount = await frames.race(rows.count());
   const sourceRows: string[][] = [];
 
   for (let rowIndex = 1; rowIndex < rowCount; rowIndex += 1) {
     const cells = rows.nth(rowIndex).locator("td");
-    const cellCount = await cells.count();
+    const cellCount = await frames.race(cells.count());
 
     const values: string[] = [];
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
-      values.push(cleanText(await cells.nth(cellIndex).innerText()));
+      values.push(cleanText(await frames.race(cells.nth(cellIndex).innerText())));
     }
     sourceRows.push(values);
   }
 
   const parsedRows = parseYuantaLoanStatementRows(accountLabel, sourceRows);
-  const renderedHtml = await scope.locator("body").innerHTML().catch(() => "");
-  options.sourceText?.assertIntact(renderedHtml);
+  const renderedHtml = await frames.race(scope.locator("body").innerHTML());
+  options.sourceText.assertIntact(renderedHtml);
   return {
     rows: parsedRows,
     pageOrdinal,
@@ -892,6 +763,7 @@ async function parseLoanStatementRows(
 }
 
 async function findYuantaLoanNextPageControl(
+  frames: FrameScope,
   scope: BrowserScope,
 ): Promise<Locator | null> {
   const result = scope.locator("#resultdiv").first();
@@ -900,9 +772,9 @@ async function findYuantaLoanNextPageControl(
   const count = await controls.count().catch(() => 0);
   for (let index = 0; index < count; index += 1) {
     const control = controls.nth(index);
-    const markup = await control
-      .evaluate((element) => element.outerHTML)
-      .catch(() => "");
+    const markup = await frames.race(
+      control.evaluate((element) => element.outerHTML).catch(() => ""),
+    );
     if (markup && isLoanNextControl(markup)) return control;
   }
   return null;
@@ -1006,20 +878,28 @@ function materializeYuantaLoanCounterpartyEvidence(
   };
 }
 
+/** The markup of the first #resultdiv in the scope, read without waiting for one to attach. */
+async function readYuantaLoanResultMarkup(scope: BrowserScope): Promise<string | null> {
+  return await scope
+    .evaluate(() => document.querySelector("#resultdiv")?.innerHTML ?? null)
+    .catch(() => null);
+}
+
 async function traverseYuantaLoanStatementPages(
-  page: Page,
+  site: YuantaEbankSite,
   accountLabel: string,
-  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
+  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
 ): Promise<ReturnType<typeof assembleYuantaLoanStatement>> {
+  const { frames } = site;
   const pages: ParsedYuantaLoanPage[] = [];
   const fingerprints = new Set<string>();
 
   while (true) {
-    options.signal?.throwIfAborted();
+    frames.signal.throwIfAborted();
     if (pages.length >= YUANTA_LOAN_MAX_PAGES)
       throw new Error("Yuanta loan pagination exceeded the safe page limit.");
     const parsed = await parseLoanStatementRows(
-      page,
+      site,
       accountLabel,
       pages.length,
       options,
@@ -1040,16 +920,22 @@ async function traverseYuantaLoanStatementPages(
     pages.push(parsed);
     if (!parsed.pagination.nextPageTarget) break;
 
-    const scope = await findScopeWithSelector(page, "#resultdiv");
-    const nextControl = await findYuantaLoanNextPageControl(scope);
+    const scope = await frames.scopeWith("#resultdiv");
+    const nextControl = await findYuantaLoanNextPageControl(frames, scope);
     if (!nextControl)
       throw new Error(
         "Yuanta loan pagination control disappeared before traversal.",
       );
-    await nextControl.click({ force: true });
-    await settleAfterNavigation(page);
-    options.signal?.throwIfAborted();
-    await findScopeWithSelector(page, "#resultdiv");
+    const previousResult = await frames.race(readYuantaLoanResultMarkup(scope));
+    await frames.race(nextControl.click({ force: true }));
+    await frames.settle();
+    await frames.until(async () => {
+      for (const candidate of frames.scopes()) {
+        const result = await readYuantaLoanResultMarkup(candidate);
+        if (result !== null && result !== previousResult) return true;
+      }
+      return false;
+    }, "Yuanta loan next page did not replace the previous result.");
   }
 
   return assembleYuantaLoanStatement(pages);
@@ -1068,7 +954,8 @@ export type YuantaLoanSourceSnapshot = Readonly<{
   accounts: readonly YuantaLoanStatementRead[];
 }>;
 
-async function readYuantaLoanSource(
+/** Read every loan account's statement pages over the requested range (ADR 0065). */
+export async function readYuantaLoanSource(
   page: Page,
   input: YuantaLoanCollectionInput,
   context: WorkflowContext,
@@ -1077,18 +964,18 @@ async function readYuantaLoanSource(
   const { signal, text: sourceText } = context;
   signal.throwIfAborted();
   const range = canonicalLoanDateRange(input);
-  await openLoanStatementPage(page);
+  const site = yuantaEbankSite(page, context);
+  await site.open(LOAN_TRANSACTION_DETAILS_ROUTE);
   signal.throwIfAborted();
   const accounts: YuantaLoanStatementRead[] = [];
-  for (const account of await readYuantaLoanAccountOptions(page, input.loanAccountFilters)) {
+  for (const account of await readYuantaLoanAccountOptions(site, input.loanAccountFilters)) {
     signal.throwIfAborted();
     await product.reportActivity("query");
-    await queryLoanAccount(page, input, account);
+    await queryLoanAccount(site, input, account);
     signal.throwIfAborted();
     await product.reportActivity("query");
-    const statement = await traverseYuantaLoanStatementPages(page, maskAccountLabel(account.label), {
+    const statement = await traverseYuantaLoanStatementPages(site, maskAccountLabel(account.label), {
       sourceText,
-      signal,
       silent: true,
     });
     sourceText.assertIntact(
