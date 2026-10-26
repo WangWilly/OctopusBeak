@@ -687,7 +687,8 @@ test("a selection with no TDCC product fails before it reports valid input or op
   await withHarness(async ({ run, events }) => {
     for (const statementTypes of [[], ["unknown"]]) {
       const fake = fakeTdcc();
-      await assert.rejects(run({ statementTypes }, fake));
+      const error = await run({ statementTypes }, fake).then(() => null, (rejection: unknown) => rejection);
+      assert.equal(classifyTypedWorkflowFailure(error, events), "workflow-failed");
       assert.deepEqual(fake.calls, [], "no TDCC request is made");
     }
     assert.equal(events.some((event) => event.code === "input-validated"), false);

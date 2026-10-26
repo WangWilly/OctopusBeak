@@ -387,8 +387,14 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       },
       financialCommit: commitWith(async () => { throw new Error("duplicate staged identities must fail before commit"); }),
     }),
-    (error: unknown) => error instanceof ProductCollectionInterruptedError
-      && error.errorCode === "workflow-failed",
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "workflow-failed");
+      assert.deepEqual(error.summary.products.map(({ status, itemCount, committedCount }) => [status, itemCount, committedCount]), [
+        ["failed", 0, 0],
+      ], "a product stopped while staging completed no items");
+      return true;
+    },
   );
 }
 
