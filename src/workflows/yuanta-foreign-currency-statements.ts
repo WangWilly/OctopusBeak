@@ -2410,7 +2410,7 @@ export async function readYuantaForeignCurrencySource(
   // Every account is admitted or the build throws, so a non-empty account
   // list is exactly when the build has financial captures to join balances to.
   const currentBalances = accounts.length > 0
-    ? await readYuantaCurrentDepositBalances(page, "foreign", { observedAt: context.now() })
+    ? await readYuantaCurrentDepositBalances(site, "foreign", { observedAt: context.now() })
     : [];
   sourceText.assertIntact(JSON.stringify(currentBalances));
   return { accounts, downloads, currentBalances };
