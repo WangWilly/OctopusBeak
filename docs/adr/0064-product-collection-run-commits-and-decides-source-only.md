@@ -34,5 +34,6 @@ After ADR 0063 the run staged every item, but each workflow still wrote the rest
 - Commit attempts of CTBC, Post, HNCB, SinoPac and LINE Bank record `deposit`, E.SUN records `credit_card`, and Yuanta Trade records `securities`. No outcome decision reads that label.
 - Cathay's closing events are replaced by the run's single closing event. The dashboard shows event codes as diagnostic text only.
 - CTBC, HNCB, Post, SinoPac, LINE Bank, Yuanta Trade and TDCC, which reported no closing event before, now end with the run's.
+- A TDCC run whose selection names no TDCC product fails as `workflow-failed` before it opens a session. It used to open the session first, so an unregistered device failed as `device-registration-required` instead.
 - Post's per-statement `source-validation-completed` is now `advanced`, as HNCB's and SinoPac's already were, so `source-validation-completed` completes only once per run. Collectors still complete their own validation phases under other codes, such as CTBC's `canonical-admission-completed` and Post's `current-balance-validation-completed`.
 - E.SUN reports its one Source Capture instead of zero, so its collection, decoding and closing counts read 1/1 instead of 0/0, its run result's `sourceCaptureCount` is 1, and its own duplicate `source-validation-completed` event is gone.

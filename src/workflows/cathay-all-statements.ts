@@ -267,11 +267,6 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    if (selectedIds.length > 0) {
-      await context.event("collection", "started", "statement-collection-started", {
-        total: selectedIds.length,
-      });
-    }
     const readCurrent =
       dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
     const collectCurrentBalanceItems = async (

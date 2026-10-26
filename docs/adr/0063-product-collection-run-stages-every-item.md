@@ -21,7 +21,7 @@ Because none of these rules could be reached through the interface, about a doze
 
 **The workflow still chooses what it stages.** The command, the product label, the grouping and the relation commands stay with the workflow, as ADR 0054 requires. The product label stays per item because one product type stages several kinds, such as `domestic-deposit` and `current-balance` under `deposit`, and the deposit commit goldens pin them.
 
-**A failed check keeps today's outcome.** A command whose text is not intact fails that product as `source-integrity-failed`, and the run continues with the next product. A repeated identity stops the run as `workflow-failed`.
+**A failed check keeps today's outcome.** A command whose text is not intact fails that product as `source-integrity-failed`, and the run continues with the next product. A repeated identity stops the run as `workflow-failed`. Because the run now stops while the collector is still staging, that failed product reports no items, where it used to report the count its collector returned.
 
 **Product runners take the handle directly.** Each Yuanta and Fubon product runner takes the page, its parsed input, the workflow context and the product handle. The `*ForApp` adapters, `collectOnly` and the run-time port checks are deleted.
 
