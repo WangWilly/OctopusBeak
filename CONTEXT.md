@@ -839,6 +839,10 @@ _Avoid_: All-products success assumption, partial financial evidence, failure th
 The part of one verified source's run that collects and commits each selected product in turn, decides every product's outcome, stops on a refusal, cancellation, uncertain commit or lost session, and then collects the selected Attached Preview Products before ending the run with one Statement Run Summary. A workflow supplies only how to collect and commit each product.
 _Avoid_: Product loop, per-workflow product outcome, attached run
 
+**Product staging**:
+The Product Collection Run's acceptance of one commit item from a product's collector. The collector names the item's product label, key, and command; the run adds the source's provider, refuses a command whose text is not intact, refuses an identity already staged, and counts what it accepted.
+_Avoid_: Deferred commit items, staging array, collector item count
+
 **Product collection absence**:
 A non-failure collection outcome established by explicit source evidence, distinguishing a product the person does not hold from a product with no data in the queried scope. Neither outcome changes Statement Selection or establishes account closure, while navigation, authentication, timeout, and parsing failures establish neither kind of absence.
 _Avoid_: Missing-page ownership inference, empty-statement product absence, automatic deselection
