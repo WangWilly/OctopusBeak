@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
@@ -15,7 +15,8 @@ import {
   type DefaultTreeAdapterTypes,
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { readYuantaBig5CsvFromAnchor } from "./yuanta-ebank-site.ts";
+import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   deriveYuantaDomesticDepositQueryRange,
   yuantaObservedAt,
@@ -49,9 +50,6 @@ import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "../ledger/canonical/investment-funding-contract.ts";
-
-
-type BrowserScope = Page | Frame;
 
 export type AccountOption = {
   label: string;
@@ -1670,21 +1668,20 @@ async function refreshYuantaForeignCurrencyCsvControl(
  * result frame after submitting the query.
  */
 export async function findYuantaForeignCurrencyCsvDownloadControl(
-  page: Page,
+  site: YuantaEbankSite,
   timeoutMs = 60_000,
-  options: Readonly<{ silent?: boolean; signal?: AbortSignal }> = {},
+  options: Readonly<{ silent?: boolean }> = {},
 ): Promise<YuantaForeignCurrencyCsvControlTarget> {
-  const deadline = Date.now() + timeoutMs;
+  const { frames } = site;
   let lastObservations: YuantaForeignResultObservation[] = [];
 
-  while (Date.now() < deadline) {
-    options.signal?.throwIfAborted();
+  const target = await ifFound(frames.until(async (): Promise<YuantaForeignCurrencyCsvControlTarget | null> => {
     const observations: YuantaForeignResultObservation[] = [];
     let providerError = false;
     let providerNoData = false;
     let readyResultFound = false;
 
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of frames.scopes()) {
       const frameRoute = frameRouteObservation(scope);
       const results = await findYuantaForeignCurrencyResults(scope);
       if (results.length === 0) {
@@ -1805,10 +1802,9 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
       );
     }
 
-    const remainingMs = deadline - Date.now();
-    if (remainingMs > 0)
-      await page.waitForTimeout(Math.min(250, remainingMs));
-  }
+    return null;
+  }, "Could not find YuanTa foreign-currency CSV download link in any frame.", { timeoutMs }));
+  if (target) return target;
 
   logYuantaForeignCurrencyResultObservation(lastObservations, options.silent);
   if (
@@ -1832,10 +1828,10 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
  * never logged or returned to callers.
  */
 export async function readYuantaForeignCurrencyResultFingerprint(
-  page: Page,
+  site: YuantaEbankSite,
 ): Promise<string> {
   const fingerprints: string[] = [];
-  for (const scope of [page, ...page.frames()]) {
+  for (const scope of site.frames.scopes()) {
     const route = frameRouteObservation(scope);
     if (route.framePath !== "fxtransactiondetails") continue;
     const results = await findYuantaForeignCurrencyResults(scope);
@@ -1882,21 +1878,15 @@ export async function readYuantaForeignCurrencyResultFingerprint(
  * being accepted during the short interval before the new query renders.
  */
 export async function waitForYuantaForeignCurrencyResultTransition(
-  page: Page,
+  site: YuantaEbankSite,
   previousFingerprint: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const currentFingerprint =
-      await readYuantaForeignCurrencyResultFingerprint(page);
-    if (currentFingerprint !== previousFingerprint) return;
-    const remainingMs = deadline - Date.now();
-    if (remainingMs > 0)
-      await page.waitForTimeout(Math.min(250, remainingMs));
-  }
-  throw new Error(
+  await site.frames.until(
+    async () =>
+      (await readYuantaForeignCurrencyResultFingerprint(site)) !== previousFingerprint,
     "YuanTa foreign-currency query did not produce a fresh result state.",
+    { timeoutMs },
   );
 }
 
@@ -2025,226 +2015,81 @@ function isUnavailableOption(value: string, label: string): boolean {
   );
 }
 
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(scope.locator(selector))) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
+/** The FX transaction-details page: ready once one scope holds both the account and currency selectors. */
+const FX_TRANSACTION_DETAILS_ROUTE: YuantaRoute = {
+  path: "fxtransactiondetails",
+  description: "YuanTa foreign-currency details form",
+  ready: async (scope) =>
+    (await hasAttachedLocator(scope.locator("#acctno"))) &&
+    (await hasAttachedLocator(scope.locator('select[name="currency"]'))),
+};
 
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(locatorFor(scope))) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
-}
-
-async function firstVisibleLocator(
-  locator: Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    await locator.page().waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find a visible ${description}.`);
-}
-
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // YuanTa keeps timers alive; selector waits below confirm readiness.
-  });
-  await page.waitForTimeout(750);
-}
+/**
+ * Selecting an account reloads the form, but the old form already shows the
+ * selected account and its currency options until the reload lands. No
+ * captured page shows what marks the new form, so the selection waits as long
+ * as it always has before it reacquires the form.
+ */
+const ACCOUNT_CHANGE_PAUSE_MS = 750;
 
 async function settleYuantaForeignCurrencyScopeNavigation(
-  page: Page,
+  site: YuantaEbankSite,
   scope: BrowserScope,
 ): Promise<void> {
   // The account selector lives in the transaction frame. A page-level load
   // state can already be idle while that frame is still replacing its form,
   // so wait on both scopes before reacquiring any controls.
-  await scope.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // A provider frame may detach during the account-driven navigation.
-  });
-  await settleAfterNavigation(page);
-}
-
-async function openForeignCurrencyDetailsPage(
-  page: Page,
-): Promise<BrowserScope> {
-  const existing = await findForeignCurrencyDetailsForm(page, 5_000).catch(
-    () => null,
-  );
-  if (existing) return existing;
-
-  if (await clickForeignCurrencyDetailsLink(page, 5_000)) {
-    return await findForeignCurrencyDetailsForm(page);
-  }
-
-  const summaryScope = await findScopeWithSelector(page, "#submenuAreaFX");
-  await summaryScope.locator("#submenuAreaFX").click({ force: true });
-
-  if (await clickForeignCurrencyDetailsLink(page, 3_000)) {
-    return await findForeignCurrencyDetailsForm(page);
-  }
-
-  const demandDepositLink = await firstVisibleLocator(
-    summaryScope.locator("#submenu_innerFX a").filter({ hasText: "活期明細" }),
-    "YuanTa foreign-currency demand-deposit details link",
-  );
-  await demandDepositLink.click({ force: true });
-  await settleAfterNavigation(page);
-
-  const formAfterOverview = await findForeignCurrencyDetailsForm(page, 3_000)
-    .then((scope) => scope)
-    .catch(() => null);
-  if (formAfterOverview) return formAfterOverview;
-
-  if (await clickForeignCurrencyDetailsLink(page)) {
-    return await findForeignCurrencyDetailsForm(page);
-  }
-
-  throw new Error("Could not open YuanTa foreign-currency details page.");
-}
-
-async function findForeignCurrencyDetailsForm(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasAccount = await hasAttachedLocator(scope.locator("#acctno"));
-      const hasCurrency = await hasAttachedLocator(
-        scope.locator('select[name="currency"]'),
-      );
-      if (hasAccount && hasCurrency) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Could not find YuanTa foreign-currency details form.");
-}
-
-async function clickForeignCurrencyDetailsLink(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<boolean> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate.locator('a[onclick*="fxtransactiondetails"]').filter({
-        hasText: /^(外幣)?交易明細查詢$/,
-      }),
-    "YuanTa foreign-currency details link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!scope) return false;
-
-  const link = await firstVisibleLocator(
-    scope.locator('a[onclick*="fxtransactiondetails"]').filter({
-      hasText: /^(外幣)?交易明細查詢$/,
-    }),
-    "YuanTa foreign-currency details link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!link) return false;
-
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  return true;
+  await site.frames.settle(scope === site.frames.page ? undefined : scope as Frame);
 }
 
 async function chooseDateRange(
-  page: Page,
+  site: YuantaEbankSite,
   input: WorkflowInput,
 ): Promise<void> {
-  const scope = await findScopeWithSelector(page, "#acctno");
-
-  if (input.customDateRange) {
-    const customLink = await firstVisibleLocator(
-      scope.locator("#duration a").filter({ hasText: "自選" }),
-      'YuanTa date range link "自選"',
-    );
-    await customLink.click({ force: true });
-    await scope.locator("#sdate").fill(input.customDateRange.startDate);
-    await scope.locator("#edate").fill(input.customDateRange.endDate);
-    return;
-  }
-
-  const label = dateRangeLabels[input.dateRange];
-  const link = await firstVisibleLocator(
-    scope.locator("#duration a").filter({ hasText: label }),
-    `YuanTa date range link "${label}"`,
+  const scope = await site.frames.scopeWith("#acctno");
+  await site.chooseDuration(
+    scope,
+    input.customDateRange
+      ? { customLabel: "自選", ...input.customDateRange }
+      : { label: dateRangeLabels[input.dateRange] },
   );
-  await link.click({ force: true });
 }
 
 async function waitForCurrencyOptions(
-  page: Page,
+  site: YuantaEbankSite,
   scope: BrowserScope,
   expectedAccountValue?: string,
   timeoutMs = 10_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const { frames } = site;
+  await frames.until(async () => {
     if (
       expectedAccountValue !== undefined &&
-      (await readYuantaForeignCurrencySelectedAccount(scope)) !==
+      (await readYuantaForeignCurrencySelectedAccount(frames, scope)) !==
         expectedAccountValue
     ) {
-      await page.waitForTimeout(250);
-      continue;
+      return false;
     }
-    if (
-      await hasAttachedLocator(scope.locator('select[name="currency"] option'))
-    ) {
-      return;
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Timed out waiting for YuanTa currency options.");
+    return await hasAttachedLocator(scope.locator('select[name="currency"] option'));
+  }, "Timed out waiting for YuanTa currency options.", { timeoutMs });
 }
 
 async function readYuantaForeignCurrencySelectedAccount(
+  frames: FrameScope,
   scope: BrowserScope,
 ): Promise<string | null> {
   const selector = scope.locator("#acctno");
   try {
-    const value = await selector.inputValue();
+    const value = await frames.race(selector.inputValue());
     return value.trim();
   } catch {
-    return selector
+    frames.signal.throwIfAborted();
+    return await frames.race(selector
       .evaluate((element) => {
         if (!(element instanceof HTMLSelectElement)) return null;
         return element.value;
       })
-      .catch(() => null);
+      .catch(() => null));
   }
 }
 
@@ -2261,6 +2106,7 @@ function yuantaForeignCurrencyAccountSelectionError(
 }
 
 async function assertYuantaForeignCurrencyAccountSelection(
+  frames: FrameScope,
   scope: BrowserScope,
   account: AccountOption,
   phase: string,
@@ -2268,48 +2114,53 @@ async function assertYuantaForeignCurrencyAccountSelection(
   if (!(await hasAttachedLocator(scope.locator("#acctno")))) {
     throw yuantaForeignCurrencyAccountSelectionError(account, null, phase);
   }
-  const selected = await readYuantaForeignCurrencySelectedAccount(scope);
+  const selected = await readYuantaForeignCurrencySelectedAccount(frames, scope);
   if (selected !== account.value) {
     throw yuantaForeignCurrencyAccountSelectionError(account, selected, phase);
   }
 }
 
 async function waitForYuantaForeignCurrencyAccountSelection(
-  page: Page,
+  site: YuantaEbankSite,
   account: AccountOption,
   timeoutMs = 15_000,
 ): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (!(await hasAttachedLocator(scope.locator("#acctno")))) continue;
-      if ((await readYuantaForeignCurrencySelectedAccount(scope)) === account.value) {
-        return scope;
+  const { frames } = site;
+  const scope = await ifFound(frames.until(async () => {
+    for (const candidate of frames.scopes()) {
+      if (!(await hasAttachedLocator(candidate.locator("#acctno")))) continue;
+      if ((await readYuantaForeignCurrencySelectedAccount(frames, candidate)) === account.value) {
+        return candidate;
       }
     }
-    await page.waitForTimeout(250);
+    return null;
+  }, "YuanTa foreign-currency account selection did not settle.", { timeoutMs }));
+  if (!scope) {
+    throw yuantaForeignCurrencyAccountSelectionError(account, null, "after account change");
   }
-
-  throw yuantaForeignCurrencyAccountSelectionError(account, null, "after account change");
+  return scope;
 }
 
 async function selectAccount(
-  page: Page,
+  site: YuantaEbankSite,
   account: AccountOption,
 ): Promise<void> {
-  const originalScope = await findScopeWithSelector(page, "#acctno");
-  await originalScope.locator("#acctno").selectOption(account.value);
-  await settleYuantaForeignCurrencyScopeNavigation(page, originalScope);
+  const { frames } = site;
+  const originalScope = await frames.scopeWith("#acctno");
+  await frames.race(originalScope.locator("#acctno").selectOption(account.value));
+  await settleYuantaForeignCurrencyScopeNavigation(site, originalScope);
+  await frames.pause(ACCOUNT_CHANGE_PAUSE_MS);
 
   // Always reacquire the form after account-driven navigation. The old frame
   // can still expose its currency options while the provider is switching to
   // the requested account.
   const currentScope = await waitForYuantaForeignCurrencyAccountSelection(
-    page,
+    site,
     account,
   );
-  await waitForCurrencyOptions(page, currentScope, account.value);
+  await waitForCurrencyOptions(site, currentScope, account.value);
   await assertYuantaForeignCurrencyAccountSelection(
+    frames,
     currentScope,
     account,
     "after currency options settle",
@@ -2318,25 +2169,26 @@ async function selectAccount(
 
 /** Public browser seam used by deterministic workflow checks. */
 export async function selectYuantaForeignCurrencyAccount(
-  page: Page,
+  site: YuantaEbankSite,
   account: { label: string; value: string },
 ): Promise<void> {
-  await selectAccount(page, account);
+  await selectAccount(site, account);
 }
 
 export async function readYuantaForeignCurrencyAccountOptions(
-  page: Page,
+  site: YuantaEbankSite,
   _filters: string[] = [],
 ): Promise<AccountOption[]> {
-  const scope = await findScopeWithSelector(page, "#acctno");
+  const { frames } = site;
+  const scope = await frames.scopeWith("#acctno");
   const options = scope.locator("#acctno option");
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const availableAccounts: AccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await option.getAttribute("value")) ?? "";
-    const label = cleanText(await option.textContent());
+    const value = (await frames.race(option.getAttribute("value"))) ?? "";
+    const label = cleanText(await frames.race(option.textContent()));
     if (isUnavailableOption(value, label)) continue;
 
     const account = { label, value };
@@ -2355,20 +2207,21 @@ export async function readYuantaForeignCurrencyAccountOptions(
 }
 
 export async function readYuantaForeignCurrencyOptions(
-  page: Page,
+  site: YuantaEbankSite,
   filters: string[] = [],
 ): Promise<CurrencyOption[]> {
-  const scope = await findScopeWithSelector(page, "#acctno");
-  await waitForCurrencyOptions(page, scope);
+  const { frames } = site;
+  const scope = await frames.scopeWith("#acctno");
+  await waitForCurrencyOptions(site, scope);
 
   const options = scope.locator('select[name="currency"] option');
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const currencies: CurrencyOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await option.getAttribute("value")) ?? "";
-    const label = cleanText(await option.textContent());
+    const value = (await frames.race(option.getAttribute("value"))) ?? "";
+    const label = cleanText(await frames.race(option.textContent()));
     if (isUnavailableOption(value, label)) continue;
     currencies.push({ label, value });
   }
@@ -2395,54 +2248,59 @@ export async function readYuantaForeignCurrencyOptions(
 }
 
 async function queryAccountCurrency(
-  page: Page,
+  site: YuantaEbankSite,
   input: WorkflowInput,
   account: AccountOption,
   currency: CurrencyOption,
 ): Promise<void> {
-  await selectAccount(page, account);
+  const { frames } = site;
+  await selectAccount(site, account);
 
-  const currencyScope = await findScopeWithSelector(page, "#acctno");
+  const currencyScope = await frames.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
+    frames,
     currencyScope,
     account,
     "before setting currency",
   );
-  await currencyScope
+  await frames.race(currencyScope
     .locator('select[name="currency"]')
-    .selectOption(currency.value);
-  await chooseDateRange(page, input);
+    .selectOption(currency.value));
+  await chooseDateRange(site, input);
 
-  const channelScope = await findScopeWithSelector(page, "#acctno");
+  const channelScope = await frames.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
+    frames,
     channelScope,
     account,
     "before setting channel",
   );
-  await channelScope
+  await frames.race(channelScope
     .locator("#channelType")
-    .selectOption(channelTypeValues[input.channelType]);
+    .selectOption(channelTypeValues[input.channelType]));
 
-  const submitScope = await findScopeWithSelector(page, "#acctno");
+  const submitScope = await frames.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
+    frames,
     submitScope,
     account,
     "immediately before submit",
   );
   const previousResultFingerprint =
-    await readYuantaForeignCurrencyResultFingerprint(page);
-  await submitScope.locator("#submitbutton").click();
-  await settleAfterNavigation(page);
+    await readYuantaForeignCurrencyResultFingerprint(site);
+  await frames.race(submitScope.locator("#submitbutton").click());
+  await frames.settle();
   await waitForYuantaForeignCurrencyResultTransition(
-    page,
+    site,
     previousResultFingerprint,
   );
 
   const resultBindingScope = await waitForYuantaForeignCurrencyAccountSelection(
-    page,
+    site,
     account,
   );
   await assertYuantaForeignCurrencyAccountSelection(
+    frames,
     resultBindingScope,
     account,
     "before result binding",
@@ -2451,45 +2309,41 @@ async function queryAccountCurrency(
 
 /** Fetch the provider's verified export link into memory; App runs disable browser downloads. */
 async function downloadTransactionRowsInMemory(
-  page: Page,
+  site: YuantaEbankSite,
   accountLabel: string,
   accountValue: string,
   currencyLabel: string,
   currencyValue: string,
   requery: () => Promise<void>,
-  sourceText: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
+  sourceText: SourceTextPort,
 ): Promise<{ rows: ForeignCurrencyTransactionRow[] }> {
+  const { frames } = site;
   let target: YuantaForeignCurrencyCsvControlTarget;
   try {
-    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+    target = await findYuantaForeignCurrencyCsvDownloadControl(site, 60_000, {
       silent: true,
-      signal,
     });
   } catch (error) {
     if (!(error instanceof YuantaForeignCurrencyPendingResultError)) throw error;
-    signal?.throwIfAborted();
+    frames.signal.throwIfAborted();
     await requery();
-    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+    target = await findYuantaForeignCurrencyCsvDownloadControl(site, 60_000, {
       silent: true,
-      signal,
     });
   }
   if (target.kind === "empty") return { rows: [] };
-  signal?.throwIfAborted();
+  frames.signal.throwIfAborted();
   const control = await target.refresh();
   if (!control)
     throw new Error("Yuanta foreign-currency export control changed before in-memory retrieval.");
 
-  const controlOrigin = await control.evaluate((element) => element.ownerDocument.location.origin);
+  const controlOrigin = await frames.race(
+    control.evaluate((element) => element.ownerDocument.location.origin),
+  );
   if (controlOrigin !== new URL(YUANTA_ENTRY_URL).origin)
     throw new Error("Yuanta foreign-currency export left the bank origin.");
-  signal?.throwIfAborted();
-  const content = (await readYuantaBig5CsvFromAnchor(
-    control,
-    sourceText,
-    signal ?? new AbortController().signal,
-  )).content;
+  frames.signal.throwIfAborted();
+  const content = (await site.readCsv(control)).content;
   sourceText.assertIntact(content);
   const rows = transactionRowsFromDownloadedCsv(
     content,
@@ -2514,7 +2368,8 @@ export type YuantaForeignCurrencySourceSnapshot = Readonly<{
   currentBalances: readonly YuantaCurrentDepositBalanceRow[];
 }>;
 
-async function readYuantaForeignCurrencySource(
+/** Read every account and currency's CSV rows and the current FX balances (ADR 0065). */
+export async function readYuantaForeignCurrencySource(
   page: Page,
   input: YuantaForeignCurrencyCollectionInput,
   context: WorkflowContext,
@@ -2522,29 +2377,29 @@ async function readYuantaForeignCurrencySource(
 ): Promise<YuantaForeignCurrencySourceSnapshot> {
   const { signal, text: sourceText } = context;
   signal.throwIfAborted();
-  await openForeignCurrencyDetailsPage(page);
-  const accounts = await readYuantaForeignCurrencyAccountOptions(page, input.accountFilters);
+  const site = yuantaEbankSite(page, context);
+  await site.open(FX_TRANSACTION_DETAILS_ROUTE);
+  const accounts = await readYuantaForeignCurrencyAccountOptions(site, input.accountFilters);
   const downloads: YuantaForeignCurrencyDownload[] = [];
 
   for (const account of accounts) {
     signal.throwIfAborted();
-    await selectAccount(page, account);
-    const currencies = await readYuantaForeignCurrencyOptions(page, input.currencyFilters);
+    await selectAccount(site, account);
+    const currencies = await readYuantaForeignCurrencyOptions(site, input.currencyFilters);
     for (const currency of currencies) {
       signal.throwIfAborted();
       await product.reportActivity("query");
-      await queryAccountCurrency(page, input, account, currency);
+      await queryAccountCurrency(site, input, account, currency);
       signal.throwIfAborted();
       await product.reportActivity("download");
       const download = await downloadTransactionRowsInMemory(
-        page,
+        site,
         maskAccountLabel(account.label),
         account.value,
         currency.label,
         currency.value,
-        () => queryAccountCurrency(page, input, account, currency),
+        () => queryAccountCurrency(site, input, account, currency),
         sourceText,
-        signal,
       );
       sourceText.assertIntact(JSON.stringify(download));
       downloads.push({ account, currency, rows: download.rows });
