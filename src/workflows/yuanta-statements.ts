@@ -1037,6 +1037,6 @@ export async function runYuantaStatements(
     input,
     context,
     product,
-    (options) => readYuantaCurrentDepositBalances(page, "domestic", options),
+    (options) => readYuantaCurrentDepositBalances(yuantaEbankSite(page, context), "domestic", options),
   );
 }
