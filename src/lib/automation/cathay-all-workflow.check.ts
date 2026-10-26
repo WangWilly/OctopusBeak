@@ -282,10 +282,13 @@ test("Cathay all workflow collects and commits selected products independently w
       ],
     );
     assert.equal(output.status, "financial-admitted");
-    assert.ok(
-      harness.events.some(
-        (event) => event.code === "all-source-admission-completed",
-      ),
+    assert.deepEqual(
+      harness.events.filter((event) => [
+        "source-validation-completed",
+        "statement-collection-completed",
+        "all-source-admission-completed",
+      ].includes(event.code)),
+      [{ stage: "validation", code: "source-validation-completed" }],
     );
     assert.equal(existsSync(join(temporaryDirectory, "downloads")), false);
   } finally {

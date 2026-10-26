@@ -99,11 +99,10 @@ type WorkflowInput = Pick<
   "startDate" | "endDate" | "accountFilters"
 >;
 type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
-/** HNCB's own account counts and admission status for one deposit collection. */
+/** HNCB's own account counts for one deposit collection. */
 type HncbDepositCollection = Readonly<{
   accountCount: number;
   rowCount: number;
-  financial: boolean;
 }>;
 type DateParts = {
   year: number;
@@ -1204,11 +1203,7 @@ export async function runHncbStatements(
       deposit = collected;
       return { sourceCaptureCount, rowCount: collected.rowCount };
     },
-    commit: async (_typeId, stagedItems) => await overrides.financialCommit.execute(stagedItems, {
-      provider: "hncb",
-      product: "financial",
-      ...(overrides.signal ? { signal: overrides.signal } : {}),
-    }),
+    financialCommit: overrides.financialCommit,
     ...(overrides.attached ? { attached: overrides.attached } : {}),
   });
   const [verified, ...attached] = summary.products;
@@ -1217,7 +1212,6 @@ export async function runHncbStatements(
     counts: {
       accountCount: (succeeded?.accountCount ?? 0) + attached.reduce((total, product) => total + product.itemCount, 0),
     },
-    sourceOnly: succeeded !== null && !succeeded.financial,
   });
 }
 
@@ -1331,7 +1325,6 @@ async function collectHncbDeposit(
     if (captures.length === 0)
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
-    let financial = false;
     const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
     for (const [index, capture] of captures.entries()) {
       const input = {
@@ -1359,8 +1352,6 @@ async function collectHncbDeposit(
         financialCapture: admission.capture,
       });
       financialCaptures.push(admission.capture);
-      if (admission.capture.records.length > 0)
-        financial = true;
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -1432,7 +1423,6 @@ async function collectHncbDeposit(
       accountCount: captures.length,
       sourceCaptureCount: captures.length,
       rowCount: captures.reduce((total, capture) => total + capture.downloads.reduce((sum, download) => sum + download.rows.length, 0), 0),
-      financial,
     };
   }
 }
@@ -1447,6 +1437,7 @@ export async function runHncbProviderWorkflow(
     throw new Error("HNCB workflow input or sign-in details are missing or invalid.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
+  await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
     const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(parsed.data.credentials));

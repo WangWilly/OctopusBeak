@@ -21,7 +21,7 @@
     {
       "options": {
         "provider": "hncb",
-        "product": "financial"
+        "product": "deposit"
       },
       "items": [
         {
@@ -356,6 +356,15 @@
         "completed": 2,
         "total": 2,
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     }
   ]

@@ -91,11 +91,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
           product.stage(...collected.items);
           return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount };
         },
-        commit: (typeId, stagedItems) => context.financialCommit.execute(stagedItems, {
-          provider: "tdcc",
-          product: typeId,
-          signal: context.signal,
-        }),
+        financialCommit: context.financialCommit,
       });
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) {

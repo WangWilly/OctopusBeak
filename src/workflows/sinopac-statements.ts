@@ -1427,12 +1427,11 @@ function sinopacCaptureId(observedAt: string): string {
     .slice(0, 24)}-${Date.now()}`;
 }
 
-/** SinoPac's own account counts and admission status for one deposit collection. */
+/** SinoPac's own account counts for one deposit collection. */
 type SinopacDepositCollection = Readonly<{
   accountCount: number;
   rowCount: number;
   skippedAccountCount: number;
-  financial: boolean;
 }>;
 
 async function collectSinopacStatements(
@@ -1682,7 +1681,6 @@ async function collectSinopacStatements(
     rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
     skippedAccountCount: skippedAccounts.length,
     sourceCaptureCount: captureInputs.length,
-    financial: financialCapturesForCurrent.length > 0,
   };
 }
 
@@ -1773,11 +1771,7 @@ export async function runSinopacProviderWorkflow(
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },
-      commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
-        provider: "sinopac",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
       attached: attachedPreviewRun({
         context,
         source: ATTACHED_PREVIEW_PRODUCTS.sinopac,
@@ -1800,7 +1794,6 @@ export async function runSinopacProviderWorkflow(
         accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
         skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
       },
-      sourceOnly: succeeded !== null && !succeeded.financial,
     });
   });
 }

@@ -246,6 +246,7 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
       assert.deepEqual(
         harness.events.map(({ stage, code }) => [stage, code]),
         [
+          ["preparation", "input-validated"],
           ["authentication", "authentication-started"],
           ["authentication", "authentication-completed"],
           ["collection", "credit-card-collection-started"],
@@ -255,11 +256,11 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
           ["collection", "bill-summaries-collected"],
           ["decoding", "source-decoding-completed"],
           ["validation", "source-validation-started"],
-          ["validation", "source-validation-completed"],
           ["collection", "credit-card-collection-completed"],
           ["decoding", "credit-card-source-decoding-completed"],
           ["validation", "credit-card-source-validation-completed"],
           ["commit", "commit-port-called"],
+          ["validation", "source-validation-completed"],
         ],
       );
     }

@@ -960,8 +960,8 @@ export async function runPostProviderWorkflow(
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
+  await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
     await signIn(context, page, POST_SOURCE, postSignInPlan(parsed.data.credentials));
@@ -998,11 +998,7 @@ export async function runPostProviderWorkflow(
           rowCount: staged.rowCount,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "post",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, { counts: { accountCount } });
   });

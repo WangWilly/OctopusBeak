@@ -47,7 +47,7 @@ assert.doesNotMatch(
   "HNCB production must report progress through structured events",
 );
 assert.match(providerSource, /runHncbProviderWorkflow/u);
-assert.match(providerSource, /financialCommit\.execute\(/u);
+assert.match(providerSource, /financialCommit: overrides\.financialCommit/u);
 
 const accountA = ["0001", "0002", "0003"].join("");
 const accountB = ["0002", "0003", "0004"].join("");

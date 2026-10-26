@@ -5,6 +5,7 @@ import type {
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
+import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
 import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "./source-access.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
@@ -12,6 +13,7 @@ import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
 import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type {
   WorkflowEventCounts,
+  WorkflowFinancialCommitPort,
   WorkflowProductFailure,
   WorkflowContextStage,
   WorkflowProgressActivity,
@@ -21,6 +23,12 @@ import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
+
+/**
+ * Typed against the command name so a rename fails to compile, while the
+ * value import stays out of the TDCC probe's PGlite-free module graph.
+ */
+const SOURCE_ADMIT_COMMAND: typeof PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND = "financial.source.admit";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -131,6 +139,8 @@ export type ProductCollectionRunSummary = Readonly<{
   committedCount: number;
   /** Receipts of verified products only, when Attached Preview Products also wrote; absent means every receipt is verified. */
   verifiedCommittedCount?: number;
+  /** Every verified item the run committed was a source assertion (ADR 0064); absent means false. */
+  sourceOnly?: boolean;
   status: "completed" | "partial" | "failed";
 }>;
 
@@ -246,8 +256,8 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
   /** Must fail with a ProductCollectionFatalError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
   collect: (typeId: TId, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>;
-  /** Called once for each non-empty, fully collected product staging group. */
-  commit: (typeId: TId, stagedItems: readonly PGliteWorkflowRunItem[]) => Promise<PGliteWorkflowRunResult<unknown>>;
+  /** Commits each non-empty, fully collected product staging group, labelled with its product type id. */
+  financialCommit: WorkflowFinancialCommitPort;
   event?: ProductCollectionStageEvent;
   /** Receives a product's non-fatal failure with its error; the run itself continues. */
   productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
@@ -381,6 +391,8 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
   let itemCount = 0;
   let committedCount = 0;
   let firstFailure: unknown = null;
+  let committedAny = false;
+  let committedOnlySourceAssertions = true;
 
   const orderedOutcomes = () => productIds.map((typeId) => completedByType.get(typeId)
     ?? createOutcome(typeId, "skipped", 0, 0, { skipReason: "not_attempted" }));
@@ -490,8 +502,14 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
       let commitResult: PGliteWorkflowRunResult<unknown>;
       // The commit port reports this stage and has already verified the receipts (ADR 0056).
       lastStage = "commit";
+      committedAny = true;
+      committedOnlySourceAssertions &&= stagedItems.every((item) => item.command.kind === SOURCE_ADMIT_COMMAND);
       try {
-        commitResult = await options.commit(typeId, stagedItems);
+        commitResult = await options.financialCommit.execute(stagedItems, {
+          provider: options.provider,
+          product: typeId,
+          signal,
+        });
       } catch (error) {
         // Only the commit port knows a request may have landed; any other error
         // committed nothing. A cancellation stays a cancellation; an unrecorded
@@ -620,7 +638,17 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
 
   const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
   if (signal.aborted) throw new ProductCollectionInterruptedError("cancelled", summary);
-  return finishProductCollectionRun(summary, firstFailure, options.attached ? await options.attached() : null, signal);
+  const finished = finishProductCollectionRun(
+    { ...summary, sourceOnly: committedAny && committedOnlySourceAssertions },
+    firstFailure,
+    options.attached ? await options.attached() : null,
+    signal,
+  );
+  await options.event?.("validation", "completed", "source-validation-completed", {
+    completed: finished.sourceCaptureCount,
+    total: finished.sourceCaptureCount,
+  });
+  return finished;
 }
 
 /**
@@ -644,6 +672,7 @@ function finishProductCollectionRun(
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
     ...(attached ? { verifiedCommittedCount: verified.committedCount } : {}),
+    ...(verified.sourceOnly ? { sourceOnly: true } : {}),
     status: productRunStatus(products, committed),
   });
   // An uncertain commit remains a failure even when cancellation also wins.

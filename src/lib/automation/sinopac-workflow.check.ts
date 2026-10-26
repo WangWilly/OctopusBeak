@@ -154,7 +154,7 @@ test("SinoPac production execution exposes only the typed App provider path", as
     "utf8",
   );
   assert.match(providerSource, /runSinopacProviderWorkflow/u);
-  assert.match(providerSource, /financialCommit!?\.execute/u);
+  assert.match(providerSource, /financialCommit: context\.financialCommit/u);
   assert.doesNotMatch(
     providerSource,
     /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|LibrettoWorkflowContext/u,

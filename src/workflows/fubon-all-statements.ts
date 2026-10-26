@@ -3,9 +3,7 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { FUBON_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/fubon-credit-card-human-attestation-contract.ts";
-import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   collectSelectedProducts,
   type ProductCollectionHandle,
@@ -225,7 +223,6 @@ export async function runFubonAllStatementsWorkflow(
   const parsed = appInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Fubon workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
 
   const productIds = ["deposit", "credit_card", "loan"] as const;
   const selectedIds = parsed.data.statementTypes as readonly (typeof productIds)[number][];
@@ -261,7 +258,6 @@ export async function runFubonAllStatementsWorkflow(
     const stop = stopKeepAlive(page);
     try {
       await context.event("decoding", "started", "source-decoding-started");
-      const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
         provider: "fubon",
         productIds,
@@ -273,26 +269,12 @@ export async function runFubonAllStatementsWorkflow(
           : typeId === "credit_card"
             ? collectCreditCard(page, creditCardInput, context, product)
             : collectLoan(page, loanInput, context, product),
-        commit: (typeId, stagedItems) => {
-          attemptedItems.push(...stagedItems);
-          return financialCommit.execute(stagedItems, {
-            provider: "fubon",
-            product: typeId,
-            signal: context.signal,
-          });
-        },
+        financialCommit: context.financialCommit,
         event: context.event,
         productFailure: context.productFailure,
       });
-      await context.event("validation", "completed", "source-validation-completed", {
-        completed: summary.sourceCaptureCount,
-        total: summary.sourceCaptureCount,
-      });
-      const sourceOnly = attemptedItems.length > 0
-        && attemptedItems.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
       return productRunResult(summary, {
         counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
-        sourceOnly,
       });
     } finally {
       stop();

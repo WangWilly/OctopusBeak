@@ -2,8 +2,6 @@ import type { Frame, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
@@ -114,7 +112,6 @@ export async function runYuantaAllStatementsWorkflow(
   const parsed = appInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Yuanta workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
   const credentials = parsed.data.credentials;
   const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
   const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);
@@ -173,7 +170,6 @@ export async function runYuantaAllStatementsWorkflow(
     try {
       const { assertSession } = await signIn(context, page, YUANTA_SOURCE, yuantaBankSignInPlan(credentials));
       await context.event("decoding", "started", "source-decoding-started");
-      const attemptedItems: PGliteWorkflowRunItem[] = [];
       const summary = await collectSelectedProducts({
         provider: "yuanta",
         productIds,
@@ -184,26 +180,12 @@ export async function runYuantaAllStatementsWorkflow(
         },
         assertSession,
         collect: (typeId, product) => collectors[typeId](page, product),
-        commit: (typeId, stagedItems) => {
-          attemptedItems.push(...stagedItems);
-          return financialCommit.execute(stagedItems, {
-            provider: "yuanta",
-            product: typeId,
-            signal: context.signal,
-          });
-        },
+        financialCommit: context.financialCommit,
         event: context.event,
         productFailure: context.productFailure,
       });
-      await context.event("validation", "completed", "source-validation-completed", {
-        completed: summary.sourceCaptureCount,
-        total: summary.sourceCaptureCount,
-      });
-      const sourceOnly = attemptedItems.length > 0
-        && attemptedItems.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
       return productRunResult(summary, {
         counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
-        sourceOnly,
       });
     } finally {
       await signOut(page).catch(() => undefined);

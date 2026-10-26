@@ -1382,7 +1382,6 @@ export async function runLineBankProviderWorkflow(
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   const dateRange = resolveDateRange(parsed.data);
   const windows = linebankQueryWindows(dateRange);
@@ -1398,7 +1397,6 @@ export async function runLineBankProviderWorkflow(
       signal: context.signal,
     });
     let accountCount = 0;
-    let hasFinancialRecords = false;
     const summary = await collectSelectedProducts({
       provider: "linebank",
       productIds: ["deposit"],
@@ -1622,17 +1620,12 @@ export async function runLineBankProviderWorkflow(
         }
         product.stage(...statementItems, ...balanceItems);
         accountCount = accounts.length;
-        hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
         return {
           sourceCaptureCount: selectedSources.length,
           rowCount: statementRowCount,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "linebank",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, {
       counts: {
@@ -1640,7 +1633,6 @@ export async function runLineBankProviderWorkflow(
         statementRowCount: summary.rowCount,
         financialItemCount: summary.itemCount,
       },
-      sourceOnly: !hasFinancialRecords,
     });
   });
 }
