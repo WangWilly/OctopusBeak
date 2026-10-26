@@ -126,7 +126,6 @@ function collectors(calls: string[]) {
     collectCreditCard: collector(products[2]!, calls),
     collectLoan: collector(products[3]!, calls),
     collectFund: collector(products[4]!, calls),
-    prepareForComponent: async (_page: Page, product: string) => { calls.push(`prepared:${product}`); },
     signOut: async () => { calls.push("signed-out"); },
   };
 }
