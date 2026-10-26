@@ -162,25 +162,16 @@ async function runGolden(
   dateRanges: readonly string[] = ["30"],
 ): Promise<void> {
   const recorder = recordDepositCommit();
-  // Reports the page's query activity where the read half does, so the golden
-  // keeps pinning those collection events.
   const collectDeposit: NonNullable<FubonAllWorkflowDependencies["collectDeposit"]> = async (
     _page, input, context, product,
   ) => {
-    await product.reportActivity("query");
     const accounts = [];
     for (const entry of statements.values()) {
       const read: FubonParsedDepositStatement[] = [];
-      for (const _dateRange of input.dateRanges) {
-        await product.reportActivity("query");
-        read.push(entry);
-      }
+      for (const _dateRange of input.dateRanges) read.push(entry);
       accounts.push({ account: entry.accountOption, statements: read });
     }
-    return stageFubonDeposit({ accounts }, input, context, product, async () => {
-      await product.reportActivity("query");
-      return currentRows;
-    });
+    return stageFubonDeposit({ accounts }, input, context, product, async () => currentRows);
   };
   const result = await runFubonAllStatementsWorkflow(workflowContext(recorder, accountIdentityContinuity), {
     managedIdentitySecret: "synthetic-fubon-golden-secret",

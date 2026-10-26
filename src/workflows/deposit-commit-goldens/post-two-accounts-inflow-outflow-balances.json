@@ -578,7 +578,7 @@
     },
     {
       "stage": "validation",
-      "outcome": "completed",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 1,
@@ -587,7 +587,7 @@
     },
     {
       "stage": "validation",
-      "outcome": "completed",
+      "outcome": "advanced",
       "code": "source-validation-completed",
       "counts": {
         "completed": 2,

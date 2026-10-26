@@ -130,11 +130,6 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
   const collectDeposit: NonNullable<YuantaAllWorkflowDependencies["collectDeposit"]> = async (
     _page, input, context, product,
   ) => {
-    // The golden pins the activity events the read half reports while it reads.
-    for (const read of source.accounts) {
-      await product.reportActivity("query");
-      if (read.query === "download-ready") await product.reportActivity("download");
-    }
     return await stageYuantaDeposit(
       { observedAt: yuantaObservedAt(new Date(context.now())), accounts: source.accounts },
       input,
