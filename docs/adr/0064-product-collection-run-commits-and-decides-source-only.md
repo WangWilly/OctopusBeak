@@ -18,7 +18,7 @@ After ADR 0063 the run staged every item, but each workflow still wrote the rest
 
 **The run decides source-only.** A completed run is `source-only` when every item it committed is a source assertion command. The run remembers what it staged, because receipts do not carry the command kind. The summary carries the answer, and `productRunResult` no longer takes it as an option.
 
-**The run reports the end of verified collection.** When it returns a summary, the run reports `validation completed source-validation-completed` with the run's Source Capture count. Each workflow reports `preparation completed input-validated` once its input is valid.
+**The run reports the end of verified collection.** When it returns a summary for a run that selected verified products, the run reports `validation completed source-validation-completed` with the run's Source Capture count. A run that selected only Attached Preview Products reports no closing validation. Each workflow reports `preparation completed input-validated` once its input is valid, and a per-statement validation event inside a collector is `advanced`, not `completed`.
 
 **Sign-in stays with the workflow.** `withPage`, the Source sign-in step and sign-out keep their per-source differences: Cathay's session token, LINE Bank's post-sign-in page, Fubon's keep-alive, and E.SUN's and Cathay's own sign-in failures. TDCC keeps its session flow and summary and moves to the run's commit like every other caller.
 
@@ -33,3 +33,5 @@ After ADR 0063 the run staged every item, but each workflow still wrote the rest
 - An HNCB or LINE Bank run that admits only zero-record deposit captures and current balances is now `financial-admitted`, not `source-only`.
 - Commit attempts of CTBC, Post, HNCB, SinoPac and LINE Bank record `deposit`, E.SUN records `credit_card`, and Yuanta Trade records `securities`. No outcome decision reads that label.
 - Cathay's closing events are replaced by the run's single closing event. The dashboard shows event codes as diagnostic text only.
+- Post's per-statement `source-validation-completed` is now `advanced`, as HNCB's and SinoPac's already were, so only the run completes the validation stage.
+- E.SUN reports its one Source Capture instead of zero, so its collection, decoding and closing counts read 1/1 instead of 0/0, and its own duplicate `source-validation-completed` event is gone.

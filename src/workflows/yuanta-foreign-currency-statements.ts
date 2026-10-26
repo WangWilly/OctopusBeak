@@ -2551,6 +2551,7 @@ async function readYuantaForeignCurrencySource(
     }
   }
 
+  signal.throwIfAborted();
   // Every account is admitted or the build throws, so a non-empty account
   // list is exactly when the build has financial captures to join balances to.
   const currentBalances = accounts.length > 0

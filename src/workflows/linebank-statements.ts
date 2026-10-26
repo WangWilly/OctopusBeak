@@ -1488,7 +1488,6 @@ export async function runLineBankProviderWorkflow(
         });
         const observedAt = context.now();
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-        const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
         const statementItems: ProductStageRequest[] = [];
         const captureOccurrenceId = randomUUID();
         await productContext.event("validation", "started", "canonical-admission-started", {
@@ -1511,7 +1510,6 @@ export async function runLineBankProviderWorkflow(
                 throw new Error("LINE Bank selected domestic source authority is not supported.");
               const admitted = normalizeLineBankFinancialCapture(capture);
               domesticCaptures.push(capture);
-              financialCaptures.push(admitted);
               statementItems.push({
                 product: "domestic-deposit",
                 itemKey: captureId,
@@ -1537,7 +1535,6 @@ export async function runLineBankProviderWorkflow(
                   request: { capture: admitted },
                 },
               });
-              financialCaptures.push(admitted);
             }
             await productContext.event("validation", "advanced", "account-source-admitted", {
               completed: index + 1,

@@ -644,10 +644,12 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
     options.attached ? await options.attached() : null,
     signal,
   );
-  await options.event?.("validation", "completed", "source-validation-completed", {
-    completed: finished.sourceCaptureCount,
-    total: finished.sourceCaptureCount,
-  });
+  if (selectedIds.length > 0) {
+    await options.event?.("validation", "completed", "source-validation-completed", {
+      completed: finished.sourceCaptureCount,
+      total: finished.sourceCaptureCount,
+    });
+  }
   return finished;
 }
 

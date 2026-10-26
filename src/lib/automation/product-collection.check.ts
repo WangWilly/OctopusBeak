@@ -777,3 +777,19 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
   assert.equal(productRunResult(financial).status, "financial-admitted", "one financial command makes the run financial-admitted");
   assert.deepEqual(events, ["source-validation-completed:4/4", "source-validation-completed:4/4"], "the run reports its closing event once per run with its Source Capture count");
 }
+
+{
+  const codes: string[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "esun",
+    productIds: ["credit_card"],
+    selectedIds: [],
+    signal: signal().signal,
+    event: async (_stage, _outcome, code) => { codes.push(code); },
+    collect: async () => { throw new Error("an unselected verified product must not collect"); },
+    financialCommit: commitWith(async () => { throw new Error("an unselected verified product must not commit"); }),
+    attached: async () => previewRun(),
+  });
+  assert.equal(summary.status, "completed");
+  assert.ok(!codes.includes("source-validation-completed"), "a run without verified products reports no closing validation");
+}

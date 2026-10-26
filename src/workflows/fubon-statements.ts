@@ -254,11 +254,11 @@ export type FubonCurrentDepositBalanceRead = (
 /** A TWD current-balance row whose account has no full account-number
  * evidence among this run's financial statement captures. Only this balance
  * line stays out of the product. */
-export type FubonCurrentBalanceExclusion = Readonly<{
+type FubonCurrentBalanceExclusion = Readonly<{
   reason: "account-number-evidence-missing";
 }>;
 
-export type FubonStatementExclusion = Readonly<{
+type FubonStatementExclusion = Readonly<{
   reason: "account-currency-unproven" | "account-identity-ambiguous";
 }>;
 

@@ -856,7 +856,7 @@ async function stagePostStatements(
         `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
       );
     captures.push(admission.capture);
-    await overrides.event?.("validation", "completed", "source-validation-completed", {
+    await overrides.event?.("validation", "advanced", "source-validation-completed", {
       completed: index + 1,
       total: statements.length,
     });
