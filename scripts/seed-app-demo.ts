@@ -54,7 +54,7 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { runYuantaForeignCurrencyStatements } = await import("../src/workflows/yuanta-foreign-currency-statements.ts");
+const { stageYuantaForeignCurrency } = await import("../src/workflows/yuanta-foreign-currency-statements.ts");
 const { buildYuantaTradeCanonicalCaptures } = await import("../src/workflows/yuanta-trade-statements.ts");
 
 /**
@@ -284,7 +284,11 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await runYuantaForeignCurrencyStatements({} as never, {
+  await stageYuantaForeignCurrency({
+    accounts: [YUANTA_FX_ACCOUNT],
+    downloads: [{ account: YUANTA_FX_ACCOUNT, currency: { label: "美元", value: "USD" }, rows }],
+    currentBalances: [current],
+  }, {
     dateRange: "three_months",
     customDateRange: { startDate: slash(addDays(date, -179)), endDate: slash(date) },
     accountFilters: [],
@@ -299,14 +303,6 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "yuanta" }))); },
     reportActivity: async () => undefined,
     event: async () => undefined,
-  }, {
-    openPage: async () => ({} as never),
-    readAccounts: async () => [YUANTA_FX_ACCOUNT],
-    selectAccount: async () => undefined,
-    readCurrencies: async () => [{ label: "美元", value: "USD" }],
-    queryAccountCurrency: async () => undefined,
-    downloadRows: async () => ({ rows }),
-    readCurrentBalances: async () => [current],
   });
   return items;
 }

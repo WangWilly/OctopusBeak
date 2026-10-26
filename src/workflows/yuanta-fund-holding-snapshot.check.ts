@@ -10,7 +10,7 @@ import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/wor
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { InvestmentCaptureInput } from "../ledger/canonical/investment-financial-admission.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
-import type { YuantaFundWorkflowDependencies } from "./yuanta-fund-statements.ts";
+import type { YuantaFundSourceSnapshot } from "./yuanta-fund-statements.ts";
 import {
   yuantaFundAccountHistoryKey,
   yuantaFundAccountHistoryQueries,
@@ -27,9 +27,7 @@ registerHooks({
   },
 });
 
-const { runYuantaFundStatements, yuantaFundStatementsInputSchema } = await import("./yuanta-fund-statements.ts");
-
-type SourceTables = Awaited<ReturnType<NonNullable<YuantaFundWorkflowDependencies["collectSourceTables"]>>>;
+const { stageYuantaFund, yuantaFundStatementsInputSchema } = await import("./yuanta-fund-statements.ts");
 
 const position = { txnType: "S", paperNo: "FS00000001", trustNo: "YT01", label: "SANITIZED FUND" };
 
@@ -77,11 +75,11 @@ function redemption(redeemedOn: string) {
 
 /** A complete account-wide history whose reports are explicitly empty, apart from an optional full redemption. */
 function withHistory(
-  source: Pick<SourceTables, "positions" | "tables">,
+  source: Pick<YuantaFundSourceSnapshot, "positions" | "tables">,
   startDate: string,
   endDate: string,
   redeemedOn?: string,
-): SourceTables {
+): YuantaFundSourceSnapshot {
   const period = `${startDate.replaceAll("-", "/")}-${endDate.replaceAll("-", "/")}`;
   return {
     ...source,
@@ -100,10 +98,10 @@ function withHistory(
   };
 }
 
-async function collect(source: SourceTables, endDate: string, now: string): Promise<InvestmentCaptureInput> {
+async function collect(source: YuantaFundSourceSnapshot, endDate: string, now: string): Promise<InvestmentCaptureInput> {
   const items: PGliteWorkflowRunItem[] = [];
-  await runYuantaFundStatements(
-    {} as never,
+  await stageYuantaFund(
+    source,
     {
       ...yuantaFundStatementsInputSchema.parse({
         includePortfolioSummary: false, includeInvestmentDetails: true, includeHistoricalTransactions: true,
@@ -114,7 +112,6 @@ async function collect(source: SourceTables, endDate: string, now: string): Prom
     },
     yuantaCollectionContext({ now }),
     yuantaStagingHandle(items),
-    { collectSourceTables: async () => source },
   );
   assert.equal(items.length, 1);
   const command = items[0]!.command;

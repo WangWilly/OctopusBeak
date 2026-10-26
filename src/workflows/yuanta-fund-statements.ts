@@ -2144,7 +2144,7 @@ function taipeiDate(instant: string): string {
     .format(new Date(instant));
 }
 
-type YuantaFundSourceTables = Readonly<{
+export type YuantaFundSourceSnapshot = Readonly<{
   positions: readonly FundPosition[];
   tables: readonly ParsedTable[];
   transactionHistory?: Readonly<{
@@ -2166,7 +2166,7 @@ type YuantaFundHistoryProof = Readonly<{
 }>;
 
 function validateYuantaFundHistoryProof(
-  source: YuantaFundSourceTables,
+  source: YuantaFundSourceSnapshot,
   input: WorkflowInput,
 ): YuantaFundHistoryProof | undefined {
   const historicalTables = source.tables.filter(
@@ -2216,7 +2216,7 @@ function validateYuantaFundHistoryProof(
   return { transactionHistory: history, occurrenceGroupCoverage: coverage };
 }
 
-type YuantaFundSourceCollector = (
+async function readYuantaFundSource(
   page: Page,
   input: WorkflowInput,
   context: Readonly<{
@@ -2224,21 +2224,7 @@ type YuantaFundSourceCollector = (
     signal: AbortSignal;
     reportActivity?: (activity: "query" | "download") => Promise<void>;
   }>,
-) => Promise<YuantaFundSourceTables>;
-
-export type YuantaFundWorkflowDependencies = Readonly<{
-  collectSourceTables?: YuantaFundSourceCollector;
-}>;
-
-async function collectYuantaFundSourceTables(
-  page: Page,
-  input: WorkflowInput,
-  context: Readonly<{
-    sourceText: SourceTextPort;
-    signal: AbortSignal;
-    reportActivity?: (activity: "query" | "download") => Promise<void>;
-  }>,
-): Promise<YuantaFundSourceTables> {
+): Promise<YuantaFundSourceSnapshot> {
   const dateRange = resolveDateRange(input);
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
   const historyEndDate = canonicalSourceDate(dateRange.endDate);
@@ -2352,38 +2338,45 @@ async function collectYuantaFundSourceTables(
   };
 }
 
-export async function runYuantaFundStatements(
-  page: Page,
+/** Build and stage the fund investment capture from a read snapshot. */
+export async function stageYuantaFund(
+  snapshot: YuantaFundSourceSnapshot,
   input: YuantaFundCollectionInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  dependencies: YuantaFundWorkflowDependencies = {},
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
-  const sourceCollection = await (
-    dependencies.collectSourceTables ?? collectYuantaFundSourceTables
-  )(page, input, {
-    sourceText: context.text,
-    signal: context.signal,
-    reportActivity: product.reportActivity,
-  });
-  context.signal.throwIfAborted();
-  context.text.assertIntact(JSON.stringify(sourceCollection.tables));
+  context.text.assertIntact(JSON.stringify(snapshot.tables));
 
   const items = yuantaFundCanonicalItems(
     input,
-    sourceCollection.positions,
-    sourceCollection.tables,
-    validateYuantaFundHistoryProof(sourceCollection, input),
+    snapshot.positions,
+    snapshot.tables,
+    validateYuantaFundHistoryProof(snapshot, input),
     () => context.now(),
   );
   context.signal.throwIfAborted();
   product.stage(...items);
   return {
-    sourceCaptureCount: sourceCollection.tables.length,
-    rowCount: sourceCollection.tables.reduce(
+    sourceCaptureCount: snapshot.tables.length,
+    rowCount: snapshot.tables.reduce(
       (count, table) => count + table.rows.length,
       0,
     ),
   };
+}
+
+export async function runYuantaFundStatements(
+  page: Page,
+  input: YuantaFundCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  context.signal.throwIfAborted();
+  const snapshot = await readYuantaFundSource(page, input, {
+    sourceText: context.text,
+    signal: context.signal,
+    reportActivity: product.reportActivity,
+  });
+  return await stageYuantaFund(snapshot, input, context, product);
 }
