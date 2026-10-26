@@ -26,8 +26,8 @@ import { admitCanonicalInvestmentCapture } from "../src/ledger/canonical/investm
 import {
   deriveFubonDomesticDepositAccountNumberEvidence,
   runFubonStatements,
+  type FubonDepositProductContext,
   type FubonParsedDepositStatement,
-  type FubonStatementsRunDependencies,
 } from "../src/workflows/fubon-statements.ts";
 import { deriveFubonSourceConnectionKey, fubonStableLoginScope } from "../src/workflows/fubon-source-connection.ts";
 import {
@@ -176,7 +176,7 @@ function fubonStatementThrough(rows: readonly DepositRow[], through: string) {
 async function collectFubon(
   rows: readonly DepositRow[],
   date: string,
-  accountIdentityContinuity: FubonStatementsRunDependencies["accountIdentityContinuity"],
+  accountIdentityContinuity: FubonDepositProductContext["accountIdentity"]["continuity"],
 ): Promise<PGliteWorkflowRunItem[]> {
   const { statement, balance, rowCount } = fubonStatementThrough(rows, date);
   if (rowCount === 0) return [];
@@ -202,13 +202,20 @@ async function collectFubon(
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await runFubonStatements({} as never, { dateRanges: ["180"], downloadFormat: "EXCEL" }, {
+  await runFubonStatements({} as never, {
+    dateRanges: ["180"],
+    downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
-    deferredCommitItems: items,
-    sourceText: strictSourceText,
+  }, {
     signal: new AbortController().signal,
-    accountIdentityContinuity,
+    text: strictSourceText,
+    accountIdentity: { continuity: accountIdentityContinuity },
+  } as never, {
+    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "fubon" }))); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  }, {
     openTransactionDetailForAccountIndex: async () => "****7028",
     readDepositAccountOptions: async () => [FUBON_ACCOUNT],
     selectDepositAccount: async () => undefined,
@@ -283,18 +290,24 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     accountFilters: [],
     currencyFilters: [],
     channelType: "all",
-  }, { yuanta_user_id: "DEMO-YUANTA-USER" } as never, {
-    collectOnly: true,
-    deferredCommitItems: items,
-    openPage: async () => undefined,
+    yuantaUserId: "DEMO-YUANTA-USER",
+  }, {
+    signal: new AbortController().signal,
+    text: strictSourceText,
+    now: () => at,
+  } as never, {
+    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "yuanta" }))); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  }, {
+    openPage: async () => ({} as never),
     readAccounts: async () => [YUANTA_FX_ACCOUNT],
     selectAccount: async () => undefined,
     readCurrencies: async () => [{ label: "美元", value: "USD" }],
     queryAccountCurrency: async () => undefined,
     downloadRows: async () => ({ rows }),
     readCurrentBalances: async () => [current],
-    now: () => at,
-  } as never);
+  });
   return items;
 }
 

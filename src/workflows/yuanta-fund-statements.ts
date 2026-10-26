@@ -5,7 +5,6 @@ import {
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   admitCanonicalInvestmentCapture,
   CanonicalInvestmentAdmissionError,
@@ -19,14 +18,19 @@ import {
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occurrence-groups.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { resolveYuantaFundIdentity } from "./yuanta-fund-identity.ts";
 import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
 import { canonicalYuantaFundCurrency, isYuantaFundSourceCurrencyLabel, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
-import type { YuantaCredentials } from "./yuanta-auth.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const YUANTA_FUND_INVESTMENT_CONTRACT_VERSION =
@@ -93,6 +97,11 @@ export const yuantaFundStatementsInputSchema = z.object({
 const inputSchema = yuantaFundStatementsInputSchema;
 
 type WorkflowInput = z.infer<typeof inputSchema>;
+
+export type YuantaFundCollectionInput = WorkflowInput & Readonly<{
+  yuantaUserId: string;
+  yuantaAccount: string;
+}>;
 
 const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   three_months: 92,
@@ -1911,18 +1920,13 @@ export function assertYuantaFundCanonicalAdmission(
   );
 }
 
-function collectYuantaFundCanonicalItems(
-  credentials: YuantaCredentials,
+function yuantaFundCanonicalItems(
+  input: YuantaFundCollectionInput,
   positions: readonly FundPosition[],
   tables: readonly ParsedTable[],
   historyProof: YuantaFundHistoryProof | undefined,
-  options: Readonly<{
-    deferredCommitItems: PGliteWorkflowRunItem[];
-    sourceText: SourceTextPort;
-    signal: AbortSignal;
-    now(): string;
-  }>,
-): number {
+  now: () => string,
+): ProductStageRequest[] {
   const admission = evaluateYuantaFundCanonicalAdmission(tables, positions, historyProof);
   assertYuantaFundCanonicalAdmission(admission);
 
@@ -2020,14 +2024,14 @@ function collectYuantaFundCanonicalItems(
     : transactionRows;
 
   const sourceConnectionKey = deriveSourceConnectionIdentityKey("yuanta-fund", [
-    credentials.yuanta_user_id ?? "",
-    credentials.yuanta_account ?? "",
+    input.yuantaUserId,
+    input.yuantaAccount,
   ]);
   const accountKey = deriveSourceConnectionIdentityKey("yuanta-fund-account", [
     sourceConnectionKey,
-    credentials.yuanta_account ?? "",
+    input.yuantaAccount,
   ]);
-  const observedAt = options.now();
+  const observedAt = now();
   const captureGroups = new Map<
     string,
     {
@@ -2074,7 +2078,7 @@ function collectYuantaFundCanonicalItems(
       sourceConnectionKey,
       identityEpochKey: deriveSourceConnectionIdentityKey("yuanta-fund-epoch", [
         sourceConnectionKey,
-        credentials.yuanta_account ?? "",
+        input.yuantaAccount,
       ]),
       accountKey,
       reportingCurrency: "TWD",
@@ -2094,8 +2098,7 @@ function collectYuantaFundCanonicalItems(
   }
   if (captures.length === 0)
     throw new Error("Yuanta fund admission produced no canonical captures.");
-  const items: PGliteWorkflowRunItem[] = captures.map((capture) => ({
-    provider: "yuanta-fund",
+  return captures.map((capture) => ({
     product: "investment",
     itemKey: capture.captureId,
     command: {
@@ -2112,12 +2115,6 @@ function collectYuantaFundCanonicalItems(
       },
     ],
   }));
-  options.signal.throwIfAborted();
-  for (const item of items)
-    options.sourceText.assertIntact(JSON.stringify(item.command));
-  options.signal.throwIfAborted();
-  options.deferredCommitItems.push(...items);
-  return items.length;
 }
 
 /**
@@ -2146,12 +2143,6 @@ function taipeiDate(instant: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" })
     .format(new Date(instant));
 }
-
-export type YuantaFundWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-}>;
 
 type YuantaFundSourceTables = Readonly<{
   positions: readonly FundPosition[];
@@ -2236,12 +2227,6 @@ type YuantaFundSourceCollector = (
 ) => Promise<YuantaFundSourceTables>;
 
 export type YuantaFundWorkflowDependencies = Readonly<{
-  collectOnly: true;
-  deferredCommitItems: PGliteWorkflowRunItem[];
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  now(): string;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
   collectSourceTables?: YuantaFundSourceCollector;
 }>;
 
@@ -2369,34 +2354,36 @@ async function collectYuantaFundSourceTables(
 
 export async function runYuantaFundStatements(
   page: Page,
-  input: WorkflowInput,
-  credentials: YuantaCredentials,
-  dependencies: YuantaFundWorkflowDependencies,
-): Promise<YuantaFundWorkflowCollection> {
-  dependencies.signal.throwIfAborted();
+  input: YuantaFundCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  dependencies: YuantaFundWorkflowDependencies = {},
+): Promise<ProductCollectionSummary> {
+  context.signal.throwIfAborted();
   const sourceCollection = await (
     dependencies.collectSourceTables ?? collectYuantaFundSourceTables
   )(page, input, {
-    sourceText: dependencies.sourceText,
-    signal: dependencies.signal,
-    reportActivity: dependencies.reportActivity,
+    sourceText: context.text,
+    signal: context.signal,
+    reportActivity: product.reportActivity,
   });
-  dependencies.signal.throwIfAborted();
-  dependencies.sourceText.assertIntact(JSON.stringify(sourceCollection.tables));
+  context.signal.throwIfAborted();
+  context.text.assertIntact(JSON.stringify(sourceCollection.tables));
 
-  const itemCount = collectYuantaFundCanonicalItems(
-    credentials,
+  const items = yuantaFundCanonicalItems(
+    input,
     sourceCollection.positions,
     sourceCollection.tables,
     validateYuantaFundHistoryProof(sourceCollection, input),
-    dependencies,
+    () => context.now(),
   );
+  context.signal.throwIfAborted();
+  product.stage(...items);
   return {
-    sourceCount: sourceCollection.tables.length,
+    sourceCaptureCount: sourceCollection.tables.length,
     rowCount: sourceCollection.tables.reduce(
       (count, table) => count + table.rows.length,
       0,
     ),
-    itemCount,
   };
 }

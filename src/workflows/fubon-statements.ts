@@ -2,12 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import type {
-  AccountIdentityContinuity,
-  AccountIdentityContinuityRequest,
-} from "../ledger/pglite/account-identity-continuity.ts";
+import type { WorkflowAccountIdentityPort, WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { AccountIdentityContinuity } from "../ledger/pglite/account-identity-continuity.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -57,7 +54,12 @@ import type {
   TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import {
   readFubonCurrentDepositBalances,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -228,18 +230,18 @@ export type FubonParsedDepositStatement = {
   accountOption: FubonDepositAccountOptionEvidence;
 };
 
-export type FubonStatementsRunDependencies = Readonly<{
+export type FubonDepositProductInput = FubonStatementsInput & Readonly<{
   /** Stable login-derived Source Connection identity shared with loan runs. */
   sourceConnectionKey: string;
   /** Raw, non-secret stable login scope used by the canonical adapter. */
   sourceConnectionScope: string;
-  deferredCommitItems: PGliteWorkflowRunItem[];
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  accountIdentityContinuity: (
-    request: AccountIdentityContinuityRequest,
-  ) => Promise<AccountIdentityContinuity>;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
+}>;
+
+export type FubonDepositProductContext = WorkflowContext & Readonly<{
+  accountIdentity: WorkflowAccountIdentityPort;
+}>;
+
+export type FubonStatementsRunDependencies = Readonly<{
   openTransactionDetailForAccountIndex?: (
     page: Page,
     accountIndex: number,
@@ -287,16 +289,6 @@ export type FubonDepositReconciliationFailure =
   | "no-twd-snapshot-row"
   | "running-balance-mismatch"
   | "matches-non-twd-balance";
-
-export type FubonDepositWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-  financialAdmissionCount: number;
-  noDataEvidence?: boolean;
-  currentBalanceExclusions?: readonly FubonCurrentBalanceExclusion[];
-  statementExclusions?: readonly FubonStatementExclusion[];
-}>;
 
 export function fubonAccountOptionShape(value: string): string {
   return value.replace(/\d/gu, "9").replace(/\p{L}/gu, "A");
@@ -2856,16 +2848,18 @@ function reconcileFubonDepositBalance(
 
 export async function runFubonStatements(
   page: Page,
-  input: FubonStatementsInput,
-  overrides: FubonStatementsRunDependencies,
-): Promise<FubonDepositWorkflowCollection> {
+  input: FubonDepositProductInput,
+  context: FubonDepositProductContext,
+  product: ProductCollectionHandle,
+  overrides: FubonStatementsRunDependencies = {},
+): Promise<ProductCollectionSummary> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
       'fubon-statements normalized output currently supports downloadFormat="EXCEL" only.',
     );
   }
   const { sourceConnectionScope, sourceConnectionKey } =
-    requireSourceConnectionIdentity("fubon", "Fubon deposit", overrides);
+    requireSourceConnectionIdentity("fubon", "Fubon deposit", input);
 
   const openTransactionDetail =
     overrides.openTransactionDetailForAccountIndex ??
@@ -2876,7 +2870,7 @@ export async function runFubonStatements(
   const fetchStatement =
     overrides.fetchDepositStatement ??
     ((currentPage, dateRange, account) =>
-      fetchDepositStatement(currentPage, dateRange, account, overrides.sourceText));
+      fetchDepositStatement(currentPage, dateRange, account, context.text));
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
   const stableSourceConnectionKey = sourceConnectionKey;
@@ -2906,7 +2900,7 @@ export async function runFubonStatements(
   const continuityFor = (accountNumber: string, identityEpochKey: string) => {
     const known = continuityByAccountNumber.get(accountNumber);
     if (known) return known;
-    const continuity = overrides.accountIdentityContinuity({
+    const continuity = context.accountIdentity.continuity({
       integrationNamespace: "fubon",
       sourceConnectionKey: stableSourceConnectionKey,
       identityEpochKey,
@@ -2918,7 +2912,7 @@ export async function runFubonStatements(
   };
 
   {
-    await overrides.reportActivity?.("query");
+    await product.reportActivity("query");
     await openTransactionDetail(page, 0);
     const accounts = await readAccounts(page);
     let sourceCount = 0;
@@ -3069,15 +3063,15 @@ export async function runFubonStatements(
       statements: FubonParsedDepositStatement[];
     }> = [];
     for (const account of accounts) {
-      overrides.signal?.throwIfAborted();
+      context.signal.throwIfAborted();
       await selectAccount(page, account);
       const accountStatements: FubonParsedDepositStatement[] = [];
 
       for (const dateRange of input.dateRanges) {
-        overrides.signal?.throwIfAborted();
-        await overrides.reportActivity?.("query");
+        context.signal.throwIfAborted();
+        await product.reportActivity("query");
         const statement = await fetchStatement(page, dateRange, account);
-        overrides.sourceText.assertIntact(JSON.stringify(statement));
+        context.text.assertIntact(JSON.stringify(statement));
         accountStatements.push(statement);
       }
       if (accountStatements.length === 0) {
@@ -3101,7 +3095,7 @@ export async function runFubonStatements(
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
-      await overrides.reportActivity?.("query");
+      await product.reportActivity("query");
       const authority =
         financialCaptures[0]?.identity ??
         deriveFubonDomesticDepositAccountIdentity(
@@ -3117,7 +3111,7 @@ export async function runFubonStatements(
           authorityClass: "existing-financial-admission",
         },
       });
-      overrides.sourceText.assertIntact(JSON.stringify(currentRows));
+      context.text.assertIntact(JSON.stringify(currentRows));
       currentObservedAt = new Date().toISOString();
     }
 
@@ -3158,10 +3152,10 @@ export async function runFubonStatements(
       }
     }
 
-    overrides.signal.throwIfAborted();
-    const items: PGliteWorkflowRunItem[] = [];
+    context.signal.throwIfAborted();
+    const items: ProductStageRequest[] = [];
     for (const entry of sourceOnlyEntries) items.push({
-        provider: "fubon", product: "domestic-deposit", itemKey: entry.captureId,
+        product: "domestic-deposit", itemKey: entry.captureId,
         command: {
           kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
           request: createFubonDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
@@ -3170,7 +3164,7 @@ export async function runFubonStatements(
     for (const capture of financialDepositCaptures) {
         const relation = relationInputs.find((item) => item.captureId === capture.captureId);
         items.push({
-          provider: "fubon", product: "domestic-deposit", itemKey: capture.captureId,
+          product: "domestic-deposit", itemKey: capture.captureId,
           command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
           ...(relation ? {
             relationCommands: () => [{
@@ -3186,7 +3180,7 @@ export async function runFubonStatements(
         });
     }
     for (const capture of currentBalanceCaptures) items.push({
-        provider: "fubon", product: "current-balance",
+        product: "current-balance",
         itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
         command: {
           kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -3194,16 +3188,11 @@ export async function runFubonStatements(
         },
     });
 
-    for (const item of items)
-      overrides.sourceText.assertIntact(JSON.stringify(item.command));
-    overrides.deferredCommitItems.push(...items);
-    return {
-      sourceCount,
-      rowCount,
-      itemCount: items.length,
-      financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
-      currentBalanceExclusions,
-      statementExclusions,
-    };
+    product.stage(...items);
+    for (const exclusion of currentBalanceExclusions)
+      await product.event("collection", "advanced", `deposit-current-balance-excluded-${exclusion.reason}`);
+    for (const exclusion of statementExclusions)
+      await product.event("collection", "advanced", `deposit-statement-excluded-${exclusion.reason}`);
+    return { sourceCaptureCount: sourceCount, rowCount };
   }
 }

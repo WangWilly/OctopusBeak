@@ -59,6 +59,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     let collectedSummary: ProductCollectionRunSummary;
     try {
       collectedSummary = await collectSelectedProducts({
+        provider: "tdcc",
         productIds: TDCC_PRODUCT_IDS,
         selectedIds,
         signal: context.signal,
@@ -66,8 +67,8 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
         productFailure: context.productFailure,
         classifyFatal: tdccFatalCode,
         classifyFailure: tdccProductFailureCode,
-        async collect(typeId, stagedItems, reportActivity) {
-          await reportActivity("query");
+        async collect(typeId, product) {
+          await product.reportActivity("query");
           const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>
             TDCC_PRODUCT_COLLECTORS[typeId]({
               session,
@@ -84,12 +85,11 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
             return {
               sourceCaptureCount: collected.sourceCaptureCount,
               rowCount: collected.rowCount,
-              itemCount: 0,
               ...(decision.kind === "complete-with-exclusions" ? { completeWithExclusions: true } : {}),
             };
           }
-          stagedItems.push(...collected.items);
-          return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount, itemCount: collected.items.length };
+          product.stage(...collected.items);
+          return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount };
         },
         commit: (typeId, stagedItems) => context.financialCommit.execute(stagedItems, {
           provider: "tdcc",

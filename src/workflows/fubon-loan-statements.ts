@@ -1,7 +1,7 @@
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
@@ -20,16 +20,18 @@ import {
   type FubonLoanAccountNumberEvidence,
   type FubonLoanStatementRow,
 } from "../ledger/canonical/fubon-loan-admission.ts";
-import type {
-  ExplicitLoanTransactionLink,
-} from "../ledger/canonical/loan-repayment-relations-contract.ts";
 import {
   activateControlWithoutPointer,
   fillInputWithoutPointer,
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
 import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -106,22 +108,9 @@ export { inputSchema as fubonLoanStatementsInputSchema };
 
 export type FubonLoanStatementsInput = z.infer<typeof inputSchema>;
 
-export type FubonLoanStatementsRunDependencies = Readonly<{
+export type FubonLoanProductInput = FubonLoanStatementsInput & Readonly<{
   sourceConnectionScope: string;
   sourceConnectionKey: string;
-  deferredCommitItems: PGliteWorkflowRunItem[];
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
-  explicitRelationLinks?: readonly ExplicitLoanTransactionLink[];
-  observedAt?: () => string;
-}>;
-
-export type FubonLoanWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-  noDataEvidence?: boolean;
 }>;
 
 const FUBON_LOAN_MAX_PAGES = 10_000;
@@ -1402,9 +1391,10 @@ export async function parseFubonLoanStatementForCollection(
 
 export async function runFubonLoanStatements(
   page: Page,
-  input: FubonLoanStatementsInput,
-  overrides: FubonLoanStatementsRunDependencies,
-): Promise<FubonLoanWorkflowCollection> {
+  input: FubonLoanProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
       'fubon-loan-statements normalized collection currently supports downloadFormat="EXCEL" only.',
@@ -1414,20 +1404,19 @@ export async function runFubonLoanStatements(
   const {
     sourceConnectionScope,
     sourceConnectionKey: relationSourceConnectionKey,
-  } = requireSourceConnectionIdentity("fubon", "Fubon loan", overrides);
-  const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
-  await overrides.reportActivity?.("query");
+  } = requireSourceConnectionIdentity("fubon", "Fubon loan", input);
+  await product.reportActivity("query");
   let scope = await openLoanStatementsPage(page, { silent: true });
   const loanAccounts = await readLoanAccountOptions(scope, input.loanAccountLabels);
   const queryItems = requestedQueryItems(input);
   const explicitQueryItems = hasExplicitQueryItems(input);
   const dateRange = canonicalLoanDateRange(input);
   const skippedReasons: string[] = [];
-  const items: PGliteWorkflowRunItem[] = [];
+  const items: ProductStageRequest[] = [];
   let rowCount = 0;
 
   for (const account of loanAccounts) {
-    overrides.signal.throwIfAborted();
+    context.signal.throwIfAborted();
     scope = await selectLoanAccount(page, account);
     const availableQueryItems = await readAvailableLoanQueryItems(scope);
     const accountQueryItems = queryItems.filter((queryItem) =>
@@ -1446,16 +1435,16 @@ export async function runFubonLoanStatements(
     }
 
     for (const queryItem of accountQueryItems) {
-      overrides.signal.throwIfAborted();
+      context.signal.throwIfAborted();
       scope = await configureLoanQuery(page, input, queryItem);
-      await overrides.reportActivity?.("query");
-      const html = await fetchLoanQueryHtml(page, overrides.sourceText);
+      await product.reportActivity("query");
+      const html = await fetchLoanQueryHtml(page, context.text);
       const parsed = await parseFubonLoanStatementForCollection(
         page,
         html,
         account,
         input,
-        overrides.sourceText,
+        context.text,
       );
       const completeness = parsed.completeness;
       if (!completeness || parsed.pages.length !== completeness.pageCount)
@@ -1464,7 +1453,7 @@ export async function runFubonLoanStatements(
         accountValue: parsed.sourceAccountValue,
         ...(parsed.accountNumber ? { accountNumber: parsed.accountNumber } : {}),
         sourceConnectionScope,
-        observedAt: observedAt(),
+        observedAt: context.now(),
         startDate: dateRange.startDate,
         endDate: dateRange.endDate,
         scope: {
@@ -1496,7 +1485,6 @@ export async function runFubonLoanStatements(
       );
       const provenanceRecord = capture.records[0];
       items.push({
-        provider: "fubon",
         product: "loan",
         itemKey: `${capture.captureId}:${queryItem}`,
         command: {
@@ -1510,7 +1498,6 @@ export async function runFubonLoanStatements(
               sourceConnectionKey: relationSourceConnectionKey,
               integrationNamespace: "fubon",
               observedAt: capture.observedAt,
-              explicitLinks: overrides.explicitRelationLinks,
               counterpartyEvidence:
                 repaymentAccount && provenanceRecord
                   ? [
@@ -1544,13 +1531,10 @@ export async function runFubonLoanStatements(
     throw new StatementComponentAbsentError(
       `No Fubon loan statement query is available. First skipped account reason: ${skippedReasons[0]}`,
     );
-  overrides.signal.throwIfAborted();
-  for (const item of items)
-    overrides.sourceText.assertIntact(JSON.stringify(item.command));
-  overrides.deferredCommitItems.push(...items);
+  context.signal.throwIfAborted();
+  product.stage(...items);
   return {
-    sourceCount: items.length,
+    sourceCaptureCount: items.length,
     rowCount,
-    itemCount: items.length,
   };
 }

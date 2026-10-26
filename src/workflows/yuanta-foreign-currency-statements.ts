@@ -4,13 +4,12 @@ import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { YUANTA_ENTRY_URL, type YuantaCredentials } from "./yuanta-auth.ts";
+import { YUANTA_ENTRY_URL } from "./yuanta-auth.ts";
 import {
   parseFragment,
   type DefaultTreeAdapterTypes,
@@ -21,7 +20,13 @@ import {
   readYuantaBig5CsvFromAnchor,
   yuantaObservedAt,
 } from "./yuanta-statements.ts";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductCollectionSummary,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
@@ -111,6 +116,10 @@ const inputSchema = yuantaForeignCurrencyStatementsInputSchema;
 
 export type YuantaForeignCurrencyWorkflowInput = z.infer<typeof inputSchema>;
 type WorkflowInput = YuantaForeignCurrencyWorkflowInput;
+
+export type YuantaForeignCurrencyCollectionInput = WorkflowInput & Readonly<{
+  yuantaUserId: string;
+}>;
 
 type SourceDownloadMetadata = {
   accountValue: string;
@@ -2499,12 +2508,6 @@ async function downloadTransactionRowsInMemory(
   return { rows };
 }
 
-export type YuantaForeignCurrencyWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-}>;
-
 export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
   openPage?: typeof openForeignCurrencyDetailsPage;
   readAccounts?: typeof readYuantaForeignCurrencyAccountOptions;
@@ -2513,27 +2516,19 @@ export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
   queryAccountCurrency?: typeof queryAccountCurrency;
   downloadRows?: typeof downloadTransactionRowsInMemory;
   readCurrentBalances?: typeof readYuantaCurrentDepositBalances;
-  now?: () => string;
-  signal?: AbortSignal;
-  sourceText?: SourceTextPort;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
-  collectOnly?: true;
-  deferredCommitItems?: PGliteWorkflowRunItem[];
 }>;
 
 /** Collect every selected FX account/currency source and build canonical items without committing or writing files. */
 export async function runYuantaForeignCurrencyStatements(
   page: Page,
-  input: WorkflowInput,
-  credentials: YuantaCredentials,
-  overrides: YuantaForeignCurrencyWorkflowDependencies & Readonly<{
-    collectOnly: true;
-    deferredCommitItems: PGliteWorkflowRunItem[];
-  }>,
-): Promise<YuantaForeignCurrencyWorkflowCollection> {
-  const signal = overrides.signal;
-  const sourceText = overrides.sourceText ?? strictSourceText;
-  const checkCancelled = () => signal?.throwIfAborted();
+  input: YuantaForeignCurrencyCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  overrides: YuantaForeignCurrencyWorkflowDependencies = {},
+): Promise<ProductCollectionSummary> {
+  const { signal, text: sourceText } = context;
+  const now = () => context.now();
+  const checkCancelled = () => signal.throwIfAborted();
   const openPage = overrides.openPage ?? openForeignCurrencyDetailsPage;
   const readAccounts = overrides.readAccounts ?? readYuantaForeignCurrencyAccountOptions;
   const select = overrides.selectAccount ?? selectAccount;
@@ -2541,7 +2536,6 @@ export async function runYuantaForeignCurrencyStatements(
   const query = overrides.queryAccountCurrency ?? queryAccountCurrency;
   const downloadRows = overrides.downloadRows ?? downloadTransactionRowsInMemory;
   const readBalances = overrides.readCurrentBalances ?? readYuantaCurrentDepositBalances;
-  const now = overrides.now ?? (() => new Date().toISOString());
 
   checkCancelled();
   await openPage(page);
@@ -2556,10 +2550,10 @@ export async function runYuantaForeignCurrencyStatements(
     for (const currency of currencies) {
       checkCancelled();
       const maskedAccount = maskAccountLabel(account.label);
-      await overrides.reportActivity?.("query");
+      await product.reportActivity("query");
       await query(page, input, account, currency);
       checkCancelled();
-      await overrides.reportActivity?.("download");
+      await product.reportActivity("download");
       const download = await downloadRows(
         page,
         maskedAccount,
@@ -2607,12 +2601,11 @@ export async function runYuantaForeignCurrencyStatements(
       now(),
       captureOccurrenceId,
       zeroResultAuthority,
-      credentials.yuanta_user_id ?? "",
+      input.yuantaUserId,
     );
   });
   const admitted = captures.map((capture) => admitForeignCurrencyDepositCapture(capture));
-  const statementItems: PGliteWorkflowRunItem[] = admitted.map((capture) => ({
-    provider: "yuanta",
+  const statementItems: ProductStageRequest[] = admitted.map((capture) => ({
     product: "foreign-currency-deposit",
     itemKey: capture.identity.accountNo,
     command: {
@@ -2630,7 +2623,7 @@ export async function runYuantaForeignCurrencyStatements(
 
   // Current balances are source inputs too. Read, decode, and admit all of them
   // before the parent opens the one Canonical Financial Commit boundary.
-  const balanceItems: PGliteWorkflowRunItem[] = [];
+  const balanceItems: ProductStageRequest[] = [];
   if (admitted.length > 0) {
     const authorityCapture = admitted[0]!;
     const authority = {
@@ -2653,8 +2646,7 @@ export async function runYuantaForeignCurrencyStatements(
       const capture = admitCurrentDepositBalanceCapture(
         buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
       );
-      const item: PGliteWorkflowRunItem = {
-        provider: "yuanta",
+      balanceItems.push({
         product: "current-deposit-balance",
         // One account can hold multiple currencies; each balance capture needs
         // a distinct receipt identity within the product's staged items.
@@ -2663,21 +2655,14 @@ export async function runYuantaForeignCurrencyStatements(
           kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
           request: currentDepositBalanceCommandRequest(capture),
         },
-      };
-      sourceText.assertIntact(JSON.stringify(item.command));
-      balanceItems.push(item);
+      });
     }
   }
-  const items = [...statementItems, ...balanceItems];
-  for (const item of items) {
-    checkCancelled();
-    sourceText.assertIntact(JSON.stringify(item.command));
-  }
-  overrides.deferredCommitItems.push(...items);
+  checkCancelled();
+  product.stage(...statementItems, ...balanceItems);
   return {
-    sourceCount: sourceDownloads.length,
+    sourceCaptureCount: sourceDownloads.length,
     rowCount: rows.length,
-    itemCount: items.length,
   };
 }
 

@@ -5,7 +5,6 @@ import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
@@ -37,6 +36,7 @@ import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   collectSelectedProducts,
   ProductCollectionFatalError,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
@@ -1234,7 +1234,7 @@ async function collectEsunCreditCard(
   page: Page,
   context: WorkflowContext,
   input: EsunWorkflowInput,
-  stagedItems: PGliteWorkflowRunItem[],
+  stage: ProductCollectionHandle["stage"],
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const currentCreditResponse = page.waitForResponse(
@@ -1364,16 +1364,14 @@ async function collectEsunCreditCard(
     esunCanonicalSpineCapture(canonicalCapture),
     esunNeutralCreditCardCapture(canonicalCapture),
   );
-  stagedItems.push({
-    provider: "esun",
+  stage({
     product: "credit-card",
     itemKey: canonicalCapture.captureId,
     command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
   });
   if (currentUsedCredit) {
     const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
-    stagedItems.push({
-      provider: "esun",
+    stage({
       product: "current-balance",
       itemKey: balanceCapture.captureId,
       command: {
@@ -1408,15 +1406,16 @@ export async function runEsunCreditCardProviderWorkflow(
 
     let creditCard: EsunCreditCardCollection | null = null;
     const summary = await collectSelectedProducts({
+      provider: "esun",
       productIds: ["credit_card"],
       selectedIds: creditCardSelected ? ["credit_card"] : [],
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
-        const collected = await collectEsunCreditCard(page, { ...context, event }, input, stagedItems);
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+        const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product.stage);
         creditCard = collected;
-        return { sourceCaptureCount: 0, rowCount: collected.count, itemCount: stagedItems.length };
+        return { sourceCaptureCount: 0, rowCount: collected.count };
       },
       commit: async (_typeId, stagedItems) => await context.financialCommit.execute(stagedItems, {
         provider: "esun",

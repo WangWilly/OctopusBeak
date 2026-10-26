@@ -13,6 +13,7 @@ import {
 } from "./fubon-current-deposit-balances.ts";
 import type {
   FubonDepositAccountOptionEvidence,
+  FubonDepositProductContext,
   FubonDepositStatementPageEvidence,
   FubonParsedDepositStatement,
   FubonStatementsRunDependencies,
@@ -41,7 +42,7 @@ type Cells = [date: string, time: string, memo: string, outflow: string, inflow:
 type DepositStubs = Pick<
   FubonStatementsRunDependencies,
   "readDepositAccountOptions" | "fetchDepositStatement" | "readCurrentDepositBalances"
-> & Partial<Pick<FubonStatementsRunDependencies, "accountIdentityContinuity">>;
+> & Readonly<{ accountIdentityContinuity?: FubonDepositProductContext["accountIdentity"]["continuity"] }>;
 
 function option(value: string, label: string, branchName: string): FubonDepositAccountOptionEvidence {
   const accountNumber = deriveFubonDomesticDepositAccountNumberEvidence({ value, label });
@@ -132,7 +133,10 @@ function expandRelationCommands(
     : item) as PGliteWorkflowRunItem);
 }
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit" | "accountIdentity"> {
+function workflowContext(
+  recorder: ReturnType<typeof recordDepositCommit>,
+  continuity: FubonDepositProductContext["accountIdentity"]["continuity"] = async () => ({ status: "unseen" }),
+): WorkflowContextWith<"financialCommit" | "accountIdentity"> {
   return {
     runId: "fubon-deposit-golden",
     signal: new AbortController().signal,
@@ -143,7 +147,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     },
     text: strictSourceText,
     verification: { complete: async () => undefined },
-    accountIdentity: { continuity: async () => ({ status: "unseen" }) },
+    accountIdentity: { continuity },
     financialCommit: {
       execute: (items, options) => recorder.financialCommit.execute(expandRelationCommands(items), options),
     },
@@ -152,23 +156,20 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
   };
 }
 
-async function runGolden(name: string, stubs: DepositStubs, dateRanges: readonly string[] = ["30"]): Promise<void> {
+async function runGolden(
+  name: string,
+  { accountIdentityContinuity, ...stubs }: DepositStubs,
+  dateRanges: readonly string[] = ["30"],
+): Promise<void> {
   const recorder = recordDepositCommit();
   const collectDeposit: NonNullable<FubonAllWorkflowDependencies["collectDeposit"]> = (
-    page, input, context, identity, items, reportActivity,
-  ) => runFubonStatements(page, input, {
-    sourceConnectionScope: identity.sourceConnectionScope,
-    sourceConnectionKey: identity.sourceConnectionKey,
-    deferredCommitItems: items,
-    sourceText: context.text,
-    signal: context.signal,
-    accountIdentityContinuity: async () => ({ status: "unseen" }),
-    reportActivity,
+    page, input, context, product,
+  ) => runFubonStatements(page, input, context, product, {
     openTransactionDetailForAccountIndex: async () => "****0000",
     selectDepositAccount: async () => undefined,
     ...stubs,
   });
-  const result = await runFubonAllStatementsWorkflow(workflowContext(recorder), {
+  const result = await runFubonAllStatementsWorkflow(workflowContext(recorder, accountIdentityContinuity), {
     managedIdentitySecret: "synthetic-fubon-golden-secret",
     statementTypes: ["deposit"],
     credentials: {

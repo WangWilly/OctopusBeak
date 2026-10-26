@@ -531,13 +531,14 @@ test("a product failure inside a partial run appends one correlated diagnostic r
     requiresFinancialCommit: true,
     async run(context) {
       return productRunResult(await collectSelectedProducts({
+        provider: "fixture",
         productIds: ["deposit", "credit_card"],
         selectedIds: ["deposit", "credit_card"],
         signal: context.signal,
-        collect: async (typeId, staged) => {
+        collect: async (typeId, product) => {
           if (typeId === "credit_card") throw new TypeError("provider row 123-456-789 unreadable");
-          staged.push(runItem());
-          return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+          product.stage(runItem());
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
         commit: (_typeId, staged) => context.financialCommit!.execute(staged),
         event: context.event,

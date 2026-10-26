@@ -87,6 +87,7 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
           typeof runFubonLoanStatements
         >[1],
         {} as Parameters<typeof runFubonLoanStatements>[2],
+        {} as Parameters<typeof runFubonLoanStatements>[3],
       ),
     /stable caller-supplied Source Connection scope and key/u,
   );
