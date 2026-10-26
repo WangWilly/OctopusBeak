@@ -897,6 +897,10 @@ _Avoid_: Silent sign-out, account lock, device registration
 The part of a browser-driven Verified Source's run that signs in: it fills the Sign-in Details, completes any Verification Stage, submits, and waits for the signed-in page while classifying every provider dialog and prompt. It alone confirms a Session Takeover prompt, and it turns proven CAPTCHA rejection into a CAPTCHA Retry Trigger (ADR 0061).
 _Avoid_: Login attempt, per-source login helper
 
+**Source site**:
+A provider's signed-in website, meaning its frames, its routes and how each product's page is reached, starting where Source Sign-in ends. Each product declares where its page is, and the site reaches it the same way from any signed-in page, while every wait yields to the run's cancellation (ADR 0066).
+_Avoid_: eBank page, product navigation fallback
+
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
 _Avoid_: Log file, raw stdout, source record, financial fact
