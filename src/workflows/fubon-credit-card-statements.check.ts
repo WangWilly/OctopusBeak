@@ -35,8 +35,8 @@ const {
   parseFubonSettledStatementSummary,
   parseFubonCurrentCreditCardUsedCreditHtml,
   diagnoseFubonCurrentCreditCardUsedCreditHtml,
-  runFubonCreditCardStatements,
   resolveFubonSettledStatementCycles,
+  stageFubonCreditCard,
 } =
   await import("./fubon-credit-card-statements.ts");
 const { deriveFubonSourceConnectionKey } = await import(
@@ -71,24 +71,21 @@ test("typed Fubon card collection emits items without writing files", async () =
   process.chdir(temp);
   try {
     const { staged: deferredCommitItems, context, product } = cardCollection("2026-09-25T00:00:00.000Z");
-    const result = await runFubonCreditCardStatements(
-      {} as Page,
+    const result = await stageFubonCreditCard(
+      {
+        statementRows: [],
+        statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
+        summaries: [],
+        gridStates: Array.from({ length: 7 }, () => ({
+          currentPage: "1",
+          currentPageSize: "2147483647",
+        })),
+        unavailablePeriodOffsets: [],
+        unbilledRows: [],
+      },
       { ...fubonCreditCardStatementsInputSchema.parse({}), panFingerprintKey: cardFingerprintKey },
       context,
       product,
-      {
-        readSourceSnapshot: async () => ({
-          statementRows: [],
-          statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
-          summaries: [],
-          gridStates: Array.from({ length: 7 }, () => ({
-            currentPage: "1",
-            currentPageSize: "2147483647",
-          })),
-          unavailablePeriodOffsets: [],
-          unbilledRows: [],
-        }),
-      },
     );
 
     assert.deepEqual(result, {
@@ -1689,21 +1686,18 @@ assert.throws(
 );
 test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
   const { staged: deferredCommitItems, context, product } = cardCollection("2026-08-25T00:00:00.000Z");
-  const result = await runFubonCreditCardStatements(
-    {} as Page,
+  const result = await stageFubonCreditCard(
+    {
+      statementRows: canonicalStatementRows,
+      statementPeriods: summaries.map((summary) => summary.period),
+      summaries,
+      gridStates: providerNoRecordGridStates,
+      unavailablePeriodOffsets: [],
+      unbilledRows: [],
+    },
     { ...canonicalInput, panFingerprintKey: cardFingerprintKey },
     context,
     product,
-    {
-      readSourceSnapshot: async () => ({
-        statementRows: canonicalStatementRows,
-        statementPeriods: summaries.map((summary) => summary.period),
-        summaries,
-        gridStates: providerNoRecordGridStates,
-        unavailablePeriodOffsets: [],
-        unbilledRows: [],
-      }),
-    },
   );
   assert.deepEqual(result, {
     sourceCaptureCount: 7,
@@ -1887,21 +1881,18 @@ test("losing PAN visibility between captures does not re-admit billed transactio
     observedAt: string;
   }) => {
     const { staged: deferredCommitItems, context, product } = cardCollection(snapshot.observedAt);
-    await runFubonCreditCardStatements(
-      {} as Page,
+    await stageFubonCreditCard(
+      {
+        statementRows: canonicalStatementRows,
+        statementPeriods: summaries.map((summary) => summary.period),
+        summaries,
+        gridStates: panLabeledGridStates,
+        unavailablePeriodOffsets: [],
+        unbilledRows: snapshot.unbilledRows,
+      },
       { ...canonicalInput, panFingerprintKey: panVisibilityFingerprintKey },
       context,
       product,
-      {
-        readSourceSnapshot: async () => ({
-          statementRows: canonicalStatementRows,
-          statementPeriods: summaries.map((summary) => summary.period),
-          summaries,
-          gridStates: panLabeledGridStates,
-          unavailablePeriodOffsets: [],
-          unbilledRows: snapshot.unbilledRows,
-        }),
-      },
     );
     const item = deferredCommitItems[0]!;
     assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);
@@ -1943,21 +1934,18 @@ async function expectUnbilledHandOff(
     observedAt: string;
   }) => {
     const { staged: deferredCommitItems, context, product } = cardCollection(snapshot.observedAt);
-    await runFubonCreditCardStatements(
-      {} as Page,
+    await stageFubonCreditCard(
+      {
+        statementRows: snapshot.statementRows,
+        statementPeriods: snapshot.summaries.map((summary) => summary.period),
+        summaries: snapshot.summaries,
+        gridStates: snapshot.gridStates,
+        unavailablePeriodOffsets: [],
+        unbilledRows: snapshot.unbilledRows,
+      },
       { ...canonicalInput, panFingerprintKey: panVisibilityFingerprintKey },
       context,
       product,
-      {
-        readSourceSnapshot: async () => ({
-          statementRows: snapshot.statementRows,
-          statementPeriods: snapshot.summaries.map((summary) => summary.period),
-          summaries: snapshot.summaries,
-          gridStates: snapshot.gridStates,
-          unavailablePeriodOffsets: [],
-          unbilledRows: snapshot.unbilledRows,
-        }),
-      },
     );
     const item = deferredCommitItems[0]!;
     assert(item.command.kind === PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND);

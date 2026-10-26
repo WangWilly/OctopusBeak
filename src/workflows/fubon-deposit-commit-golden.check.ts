@@ -16,7 +16,6 @@ import type {
   FubonDepositProductContext,
   FubonDepositStatementPageEvidence,
   FubonParsedDepositStatement,
-  FubonStatementsRunDependencies,
 } from "./fubon-statements.ts";
 
 registerHooks({
@@ -33,16 +32,17 @@ registerHooks({
 });
 
 const { runFubonAllStatementsWorkflow } = await import("./fubon-all-statements.ts");
-const { deriveFubonDomesticDepositAccountNumberEvidence, runFubonStatements } = await import("./fubon-statements.ts");
+const { deriveFubonDomesticDepositAccountNumberEvidence, stageFubonDeposit } = await import("./fubon-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
 const QUERY_RANGE = { startDate: "2026/08/26", endDate: "2026/09/25" };
 
 type Cells = [date: string, time: string, memo: string, outflow: string, inflow: string, balance: string, note: string];
-type DepositStubs = Pick<
-  FubonStatementsRunDependencies,
-  "readDepositAccountOptions" | "fetchDepositStatement" | "readCurrentDepositBalances"
-> & Readonly<{ accountIdentityContinuity?: FubonDepositProductContext["accountIdentity"]["continuity"] }>;
+type DepositStubs = Readonly<{
+  statements: ReadonlyMap<string, FubonParsedDepositStatement>;
+  currentRows: readonly FubonCurrentDepositBalanceRow[];
+  accountIdentityContinuity?: FubonDepositProductContext["accountIdentity"]["continuity"];
+}>;
 
 function option(value: string, label: string, branchName: string): FubonDepositAccountOptionEvidence {
   const accountNumber = deriveFubonDomesticDepositAccountNumberEvidence({ value, label });
@@ -158,17 +158,30 @@ function workflowContext(
 
 async function runGolden(
   name: string,
-  { accountIdentityContinuity, ...stubs }: DepositStubs,
+  { accountIdentityContinuity, statements, currentRows }: DepositStubs,
   dateRanges: readonly string[] = ["30"],
 ): Promise<void> {
   const recorder = recordDepositCommit();
-  const collectDeposit: NonNullable<FubonAllWorkflowDependencies["collectDeposit"]> = (
-    page, input, context, product,
-  ) => runFubonStatements(page, input, context, product, {
-    openTransactionDetailForAccountIndex: async () => "****0000",
-    selectDepositAccount: async () => undefined,
-    ...stubs,
-  });
+  // Reports the page's query activity where the read half does, so the golden
+  // keeps pinning those collection events.
+  const collectDeposit: NonNullable<FubonAllWorkflowDependencies["collectDeposit"]> = async (
+    _page, input, context, product,
+  ) => {
+    await product.reportActivity("query");
+    const accounts = [];
+    for (const entry of statements.values()) {
+      const read: FubonParsedDepositStatement[] = [];
+      for (const _dateRange of input.dateRanges) {
+        await product.reportActivity("query");
+        read.push(entry);
+      }
+      accounts.push({ account: entry.accountOption, statements: read });
+    }
+    return stageFubonDeposit({ accounts }, input, context, product, async () => {
+      await product.reportActivity("query");
+      return currentRows;
+    });
+  };
   const result = await runFubonAllStatementsWorkflow(workflowContext(recorder, accountIdentityContinuity), {
     managedIdentitySecret: "synthetic-fubon-golden-secret",
     statementTypes: ["deposit"],
@@ -220,11 +233,7 @@ const secondRows: Cells[] = [
 ];
 
 function stubs(statements: ReadonlyMap<string, FubonParsedDepositStatement>, rows: FubonCurrentDepositBalanceRow[]): DepositStubs {
-  return {
-    readDepositAccountOptions: async () => [...statements.values()].map((entry) => entry.accountOption),
-    fetchDepositStatement: async (_page, _range, account) => statements.get(account.value)!,
-    readCurrentDepositBalances: async () => rows,
-  };
+  return { statements, currentRows: rows };
 }
 
 const primaryBalance = balance(primaryNumber, "012", "65000", "60000");

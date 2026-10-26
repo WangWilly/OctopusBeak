@@ -25,7 +25,7 @@ import { resolveYuantaFundIdentity } from "../src/workflows/yuanta-fund-identity
 import { admitCanonicalInvestmentCapture } from "../src/ledger/canonical/investment-financial-admission.ts";
 import {
   deriveFubonDomesticDepositAccountNumberEvidence,
-  runFubonStatements,
+  stageFubonDeposit,
   type FubonDepositProductContext,
   type FubonParsedDepositStatement,
 } from "../src/workflows/fubon-statements.ts";
@@ -202,26 +202,21 @@ async function collectFubon(
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await runFubonStatements({} as never, {
+  await stageFubonDeposit({ accounts: [{ account: FUBON_ACCOUNT, statements: [statement] }] }, {
     dateRanges: ["180"],
     downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
   }, {
     signal: new AbortController().signal,
+    now: () => new Date().toISOString(),
     text: strictSourceText,
     accountIdentity: { continuity: accountIdentityContinuity },
   } as never, {
     stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "fubon" }))); },
     reportActivity: async () => undefined,
     event: async () => undefined,
-  }, {
-    openTransactionDetailForAccountIndex: async () => "****7028",
-    readDepositAccountOptions: async () => [FUBON_ACCOUNT],
-    selectDepositAccount: async () => undefined,
-    fetchDepositStatement: async () => statement,
-    readCurrentDepositBalances: async () => [currentRow],
-  });
+  }, async () => [currentRow]);
   return items;
 }
 
