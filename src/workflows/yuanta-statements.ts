@@ -47,6 +47,7 @@ import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
+  type YuantaCurrentDepositFinancialAuthority,
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
@@ -103,26 +104,6 @@ export type YuantaStatementDownload = {
   /** Optional exact evidence from a provider detail/mandate page. */
   counterpartyAccountEvidence?: readonly YuantaCounterpartyAccountEvidence[];
 };
-
-export type YuantaStatementsRunDependencies = Readonly<{
-  preparePage?: (
-    page: Page,
-    dateRange: z.infer<typeof dateRangeSchema>,
-  ) => Promise<void>;
-  readDepositAccountOptions?: (
-    page: Page,
-  ) => Promise<Array<{ label: string; value: string }>>;
-  queryAccount?: (
-    page: Page,
-    account: { label: string; value: string },
-  ) => Promise<YuantaDepositQueryResult>;
-  downloadStatementRows?: (
-    page: Page,
-    account: { label: string; value: string },
-  ) => Promise<YuantaStatementDownload>;
-  /** Injected in checks; production reads the authenticated current-balance page. */
-  readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances;
-}>;
 
 type BankTransactionRow = {
   accountLabel: string;
@@ -961,7 +942,7 @@ function yuantaExplicitNoDataDownload(): YuantaStatementDownload {
   };
 }
 
-async function downloadStatementRows(
+export async function downloadYuantaStatementRows(
   page: Page,
   account: { label: string; value: string },
   sourceText: SourceTextPort,
@@ -1109,39 +1090,72 @@ function materializeYuantaCounterpartyEvidence(
   };
 }
 
-/** Collect domestic-deposit source items for the App-owned financial commit. */
-export async function runYuantaStatements(
+export type YuantaDepositAccount = Readonly<{ label: string; value: string }>;
+
+/** What the transaction-details page returned for one account's query. */
+export type YuantaDepositAccountRead =
+  | Readonly<{ account: YuantaDepositAccount; query: "provider-explicit-no-data" }>
+  | Readonly<{ account: YuantaDepositAccount; query: "download-ready"; download: YuantaStatementDownload }>;
+
+export type YuantaDepositSourceSnapshot = Readonly<{
+  /** Taken before the range is selected, so the query range matches the bank's date. */
+  observedAt: string;
+  accounts: readonly YuantaDepositAccountRead[];
+}>;
+
+export type YuantaReadCurrentDepositBalances = (
+  input: Readonly<{
+    observedAt: string;
+    financialAuthority: YuantaCurrentDepositFinancialAuthority;
+  }>,
+) => Promise<readonly YuantaCurrentDepositBalanceRow[]>;
+
+async function readYuantaDepositSource(
   page: Page,
   input: YuantaStatementsCollectionInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  overrides: YuantaStatementsRunDependencies = {},
+): Promise<YuantaDepositSourceSnapshot> {
+  const observedAt = yuantaObservedAt(new Date(context.now()));
+  // The canonical domestic scope is all visible TWD selectors. Input
+  // accountFilters remains accepted for compatibility but never narrows it.
+  context.signal.throwIfAborted();
+  await prepareYuantaDepositPage(page, input.dateRange);
+  context.signal.throwIfAborted();
+  const accounts: YuantaDepositAccountRead[] = [];
+  for (const account of await readYuantaDepositAccountOptions(page, [])) {
+    context.signal.throwIfAborted();
+    await product.reportActivity("query");
+    const query = await queryAccount(page, account);
+    context.signal.throwIfAborted();
+    if (query === "provider-explicit-no-data") {
+      accounts.push({ account, query });
+      continue;
+    }
+    await product.reportActivity("download");
+    const download = await downloadYuantaStatementRows(page, account, context.text, context.signal);
+    context.text.assertIntact(JSON.stringify(download));
+    accounts.push({ account, query, download });
+  }
+  return { observedAt, accounts };
+}
+
+/** Build and stage domestic-deposit source items from a read snapshot. */
+export async function stageYuantaDeposit(
+  snapshot: YuantaDepositSourceSnapshot,
+  input: YuantaStatementsCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  readCurrentBalances: YuantaReadCurrentDepositBalances,
 ): Promise<ProductCollectionSummary> {
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta deposit", input);
-  const prepare = overrides.preparePage ?? prepareYuantaDepositPage;
   const stableSourceIdentity = {
     sourceConnectionScope,
     sourceConnectionKey,
   } as const;
-  const readAccounts =
-    overrides.readDepositAccountOptions ??
-    ((candidatePage: Page) =>
-      readYuantaDepositAccountOptions(candidatePage, []));
-  const query = overrides.queryAccount ?? queryAccount;
-  const download =
-    overrides.downloadStatementRows ??
-    ((candidatePage: Page, account: { label: string; value: string }) =>
-      downloadStatementRows(
-        candidatePage,
-        account,
-        context.text,
-        context.signal,
-      ));
-  const readCurrent =
-    overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
   const nextTimestamp = createTimestampGenerator();
-  const observedAt = yuantaObservedAt(new Date(context.now()));
+  const { observedAt } = snapshot;
   const queryRange = deriveYuantaDomesticDepositQueryRange(
     input.dateRange,
     observedAt,
@@ -1159,25 +1173,11 @@ export async function runYuantaStatements(
   }> = [];
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
-  // The canonical domestic scope is all visible TWD selectors. Input
-  // accountFilters remains accepted for compatibility but never narrows it.
-  context.signal.throwIfAborted();
-  await prepare(page, input.dateRange);
-  context.signal.throwIfAborted();
-  const accounts = await readAccounts(page);
-  for (const account of accounts) {
-    context.signal.throwIfAborted();
-    await product.reportActivity("query");
-    const queryResult = await query(page, account);
-    context.signal.throwIfAborted();
-    let downloaded: YuantaStatementDownload;
-    if (queryResult === "provider-explicit-no-data") {
-      downloaded = yuantaExplicitNoDataDownload();
-    } else {
-      await product.reportActivity("download");
-      downloaded = await download(page, account);
-    }
-    context.text.assertIntact(JSON.stringify(downloaded));
+  for (const read of snapshot.accounts) {
+    const { account } = read;
+    const downloaded = read.query === "provider-explicit-no-data"
+      ? yuantaExplicitNoDataDownload()
+      : read.download;
     if (downloaded.source.terminal !== true)
       throw new Error(
         "Yuanta domestic deposit download did not reach a terminal CSV state.",
@@ -1242,7 +1242,7 @@ export async function runYuantaStatements(
   // failure here must not leave statement captures from this run behind.
   if (financialDepositCaptures.length > 0) {
     const authority = financialDepositCaptures[0]!.identity;
-    const currentRows = await readCurrent(page, "domestic", {
+    const currentRows = await readCurrentBalances({
       observedAt: yuantaObservedAt(new Date(context.now())),
       financialAuthority: {
         sourceConnectionKey: authority.sourceConnectionKey,
@@ -1312,4 +1312,22 @@ export async function runYuantaStatements(
   product.stage(...items);
 
   return { sourceCaptureCount, rowCount };
+}
+
+/** Collect domestic-deposit source items for the App-owned financial commit. */
+export async function runYuantaStatements(
+  page: Page,
+  input: YuantaStatementsCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  requireSourceConnectionIdentity("yuanta", "Yuanta deposit", input);
+  const snapshot = await readYuantaDepositSource(page, input, context, product);
+  return await stageYuantaDeposit(
+    snapshot,
+    input,
+    context,
+    product,
+    (options) => readYuantaCurrentDepositBalances(page, "domestic", options),
+  );
 }

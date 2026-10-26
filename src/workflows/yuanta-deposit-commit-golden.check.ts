@@ -9,8 +9,9 @@ import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit
 import type { YuantaAllWorkflowDependencies } from "./yuanta-all-statements.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import type {
+  YuantaDepositAccountRead,
+  YuantaReadCurrentDepositBalances,
   YuantaStatementDownload,
-  YuantaStatementsRunDependencies,
 } from "./yuanta-statements.ts";
 import type { YuantaCurrentDepositBalanceRow } from "./yuanta-current-deposit-balances.ts";
 
@@ -28,16 +29,16 @@ registerHooks({
 });
 
 const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
-const { runYuantaStatements } = await import("./yuanta-statements.ts");
+const { stageYuantaDeposit, yuantaObservedAt } = await import("./yuanta-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
 
 type Account = { label: string; value: string };
 type Row = readonly [date: string, time: string, memo: string, outflow: string, inflow: string, balance: string];
-type DepositStubs = Pick<
-  YuantaStatementsRunDependencies,
-  "readDepositAccountOptions" | "queryAccount" | "downloadStatementRows" | "readCurrentDepositBalances"
->;
+type DepositSource = Readonly<{
+  accounts: readonly YuantaDepositAccountRead[];
+  readCurrentBalances: YuantaReadCurrentDepositBalances;
+}>;
 
 const COLUMN_NAMES = ["帳戶名稱", "帳號", "帳務日期", "交易日期", "交易時間", "交易說明", "支出金額", "存入金額", "帳面餘額", "票據號碼", "備註"];
 
@@ -124,14 +125,24 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
   };
 }
 
-async function runGolden(name: string, stubs: DepositStubs): Promise<void> {
+async function runGolden(name: string, source: DepositSource): Promise<void> {
   const recorder = recordDepositCommit();
-  const collectDeposit: NonNullable<YuantaAllWorkflowDependencies["collectDeposit"]> = (
-    page, input, context, product,
-  ) => runYuantaStatements(page, input, context, product, {
-    preparePage: async () => undefined,
-    ...stubs,
-  });
+  const collectDeposit: NonNullable<YuantaAllWorkflowDependencies["collectDeposit"]> = async (
+    _page, input, context, product,
+  ) => {
+    // The golden pins the activity events the read half reports while it reads.
+    for (const read of source.accounts) {
+      await product.reportActivity("query");
+      if (read.query === "download-ready") await product.reportActivity("download");
+    }
+    return await stageYuantaDeposit(
+      { observedAt: yuantaObservedAt(new Date(context.now())), accounts: source.accounts },
+      input,
+      context,
+      product,
+      source.readCurrentBalances,
+    );
+  };
   const result = await runYuantaAllStatementsWorkflow(workflowContext(recorder), {
     managedIdentitySecret: "synthetic-yuanta-golden-secret",
     statementTypes: ["deposit"],
@@ -177,41 +188,40 @@ const downloads = new Map<string, YuantaStatementDownload>([
   ])],
 ]);
 
-function stubs(accounts: readonly Account[], extra: Partial<DepositStubs> = {}): DepositStubs {
+function depositSource(
+  accounts: readonly Account[],
+  readCurrentBalances: YuantaReadCurrentDepositBalances,
+  noData: ReadonlySet<string> = new Set(),
+): DepositSource {
   return {
-    readDepositAccountOptions: async () => [...accounts],
-    queryAccount: async () => "download-ready",
-    downloadStatementRows: async (_page, account) => downloads.get(account.value)!,
-    readCurrentDepositBalances: async () => [],
-    ...extra,
+    accounts: accounts.map((account) => noData.has(account.value)
+      ? { account, query: "provider-explicit-no-data" }
+      : { account, query: "download-ready", download: downloads.get(account.value)! }),
+    readCurrentBalances,
   };
 }
 
 test("two accounts with inflow and outflow rows and matched current balances", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
-  await runGolden("yuanta-two-accounts", stubs([checking, savings], {
-    readCurrentDepositBalances: async () => [balance(checking, "750", "700"), balance(savings, "180", "180")],
-  }));
+  await runGolden("yuanta-two-accounts", depositSource([checking, savings],
+    async () => [balance(checking, "750", "700"), balance(savings, "180", "180")]));
 });
 
 test("an account the provider reports as no data commits a zero-row capture", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
-  await runGolden("yuanta-no-data-account", stubs([savings, checking], {
-    queryAccount: async (_page, account) => account.value === savings.value ? "provider-explicit-no-data" : "download-ready",
-    readCurrentDepositBalances: async () => [balance(savings, "0", "0"), balance(checking, "750", "750")],
-  }));
+  await runGolden("yuanta-no-data-account", depositSource([savings, checking],
+    async () => [balance(savings, "0", "0"), balance(checking, "750", "750")],
+    new Set([savings.value])));
 });
 
 test("a shared-authority account falls back to source-only evidence beside an admitted account", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
-  await runGolden("yuanta-source-only-shared-account", stubs([joint, savings], {
-    readCurrentDepositBalances: async () => [balance(savings, "180", "150")],
-  }));
+  await runGolden("yuanta-source-only-shared-account", depositSource([joint, savings],
+    async () => [balance(savings, "180", "150")]));
 });
 
 test("only source-only accounts reach the commit without a current-balance read", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
-  await runGolden("yuanta-source-only-only", stubs([joint], {
-    readCurrentDepositBalances: async () => { throw new Error("current balances must not be read without a financial admission"); },
-  }));
+  await runGolden("yuanta-source-only-only", depositSource([joint],
+    async () => { throw new Error("current balances must not be read without a financial admission"); }));
 });

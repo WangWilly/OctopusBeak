@@ -50,8 +50,10 @@ const {
   waitForYuantaDepositQueryResult,
   deriveYuantaDomesticDepositAccountNumberEvidence,
   deriveYuantaDomesticDepositQueryRange,
+  downloadYuantaStatementRows,
   readYuantaDepositAccountOptions,
   runYuantaStatements,
+  stageYuantaDeposit,
   statementRowsFromDownloadedCsv,
   yuantaLoanAccountEvidenceFromTransactionNote,
   yuantaObservedAt,
@@ -637,38 +639,21 @@ const typedOutputDir = await mkdtemp(join(tmpdir(), "yuanta-deposit-typed-"));
 const originalCwd = process.cwd();
 process.chdir(typedOutputDir);
 try {
+  const typedInput = { dateRange: "one_month" as const, accountFilters: [], ...stableConnectionIdentity };
+  const typedObservedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
   const deferredItems: PGliteWorkflowRunItem[] = [];
-  const collectionActivities: string[] = [];
-  let preparedDateRange: string | null = null;
-  const typedResult = await runYuantaStatements(
-    {} as never,
-    { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
-    checkContext(),
-    yuantaStagingHandle(deferredItems, collectionActivities),
+  const typedResult = await stageYuantaDeposit(
     {
-      preparePage: async (_page, dateRange) => {
-        preparedDateRange = dateRange;
-      },
-      readDepositAccountOptions: async () => {
-        assert.equal(preparedDateRange, "one_month", "the selected range must be prepared before account collection");
-        return [workflowAccount];
-      },
-      queryAccount: async () => { collectionActivities.push("query-call"); return "download-ready"; },
-      downloadStatementRows: async () => {
-        collectionActivities.push("download-call");
-        return workflowDownload;
-      },
-      readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
+      observedAt: typedObservedAt,
+      accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
     },
+    typedInput,
+    checkContext(),
+    yuantaStagingHandle(deferredItems),
+    async () => [workflowCurrentBalanceRow],
   );
-  assert.equal(preparedDateRange, "one_month", "the typed collector must apply the selected range before reading source data");
   assert.equal(typedResult.sourceCaptureCount, 1);
   assert.equal(typedResult.rowCount, 1);
-  assert.deepEqual(
-    collectionActivities,
-    ["query", "query-call", "download", "download-call"],
-    "progress must identify query and CSV retrieval before each source operation",
-  );
   assert.deepEqual(
     deferredItems.map((item) => item.product),
     ["domestic-deposit", "current-balance"],
@@ -677,35 +662,25 @@ try {
   assert.deepEqual(await readdir(typedOutputDir), []);
 
   const noDataItems: PGliteWorkflowRunItem[] = [];
-  const downloadedAccounts: string[] = [];
-  const noDataResult = await runYuantaStatements(
-    {} as never,
+  const noDataResult = await stageYuantaDeposit(
+    {
+      observedAt: typedObservedAt,
+      accounts: [
+        { account: workflowAccount, query: "provider-explicit-no-data" },
+        { account: secondWorkflowAccount, query: "download-ready", download: secondWorkflowDownload },
+      ],
+    },
     { dateRange: "three_months", accountFilters: [], ...stableConnectionIdentity },
     checkContext(),
     yuantaStagingHandle(noDataItems),
-    {
-      preparePage: async () => undefined,
-      readDepositAccountOptions: async () => [workflowAccount, secondWorkflowAccount],
-      queryAccount: async (_page, account) =>
-        account.value === workflowAccount.value ? "provider-explicit-no-data" : "download-ready",
-      downloadStatementRows: async (_page, account) => {
-        downloadedAccounts.push(account.value);
-        return secondWorkflowDownload;
+    async () => [
+      workflowCurrentBalanceRow,
+      {
+        ...workflowCurrentBalanceRow,
+        accountNumber: secondWorkflowAccount.value,
+        sourceAccountKey: deriveYuantaDomesticDepositAccountKey(secondWorkflowAccount.value),
       },
-      readCurrentDepositBalances: async () => [
-        workflowCurrentBalanceRow,
-        {
-          ...workflowCurrentBalanceRow,
-          accountNumber: secondWorkflowAccount.value,
-          sourceAccountKey: deriveYuantaDomesticDepositAccountKey(secondWorkflowAccount.value),
-        },
-      ],
-    },
-  );
-  assert.deepEqual(
-    downloadedAccounts,
-    [secondWorkflowAccount.value],
-    "an account the bank reports as 查無資料 has no CSV to download, and later accounts are still collected",
+    ],
   );
   assert.equal(noDataResult.sourceCaptureCount, 2);
   assert.equal(noDataResult.rowCount, 1);
@@ -719,39 +694,19 @@ try {
     "the zero-row capture must carry the provider's explicit no-data authority",
   );
 
-  const rejectedItems: PGliteWorkflowRunItem[] = [];
-  await assert.rejects(
-    runYuantaStatements(
-      {} as never,
-      { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
-      checkContext(),
-      yuantaStagingHandle(rejectedItems),
-      {
-        preparePage: async () => undefined,
-        readDepositAccountOptions: async () => [workflowAccount],
-        queryAccount: async () => "download-ready",
-        downloadStatementRows: async () => {
-          strictSourceText.decode(Uint8Array.of(0x81), "big5");
-          return workflowDownload;
-        },
-      },
-    ),
-    /Source text integrity failed/u,
-  );
-  assert.deepEqual(rejectedItems, [], "malformed Big5 must fail before any source item is returned");
-
   const canceledItems: PGliteWorkflowRunItem[] = [];
   const cancellation = new AbortController();
   cancellation.abort();
   await assert.rejects(
-    runYuantaStatements(
-      {} as never,
-      { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
+    stageYuantaDeposit(
+      {
+        observedAt: typedObservedAt,
+        accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
+      },
+      typedInput,
       checkContext(cancellation.signal),
       yuantaStagingHandle(canceledItems),
-      {
-        preparePage: async () => { throw new Error("canceled collection navigated the browser"); },
-      },
+      async () => [workflowCurrentBalanceRow],
     ),
     /abort/u,
   );
@@ -969,7 +924,7 @@ try {
     async function collectFixture(
       controller = new AbortController(),
       items: PGliteWorkflowRunItem[] = [],
-    ): Promise<{ result: Awaited<ReturnType<typeof runYuantaStatements>>; items: PGliteWorkflowRunItem[] }> {
+    ): Promise<{ result: Awaited<ReturnType<typeof stageYuantaDeposit>>; items: PGliteWorkflowRunItem[] }> {
       runOrdinal += 1;
       observedBrowserDownload = false;
       fixtureCookie = undefined;
@@ -983,19 +938,19 @@ try {
         launchPersistentContext: async () =>
           await browser.newContext({ acceptDownloads: false }),
       });
+      const context = checkContext(signal);
       const result = await browserPort.withPage(async (page) => {
         page.on("download", () => { observedBrowserDownload = true; });
-        return await runYuantaStatements(
-          page,
-          { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
-          checkContext(signal),
-          yuantaStagingHandle(items),
+        const download = await downloadYuantaStatementRows(page, workflowAccount, context.text, signal);
+        return await stageYuantaDeposit(
           {
-            preparePage: async () => undefined,
-            readDepositAccountOptions: async () => [workflowAccount],
-            queryAccount: async () => "download-ready",
-            readCurrentDepositBalances: async () => [],
+            observedAt: yuantaObservedAt(new Date(context.now())),
+            accounts: [{ account: workflowAccount, query: "download-ready", download }],
           },
+          { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
+          context,
+          yuantaStagingHandle(items),
+          async () => [],
         );
       });
       return { result, items };

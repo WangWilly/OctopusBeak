@@ -53,7 +53,7 @@ import {
 
 type BrowserScope = Page | Frame;
 
-type AccountOption = {
+export type AccountOption = {
   label: string;
   value: string;
 };
@@ -85,7 +85,7 @@ export function deriveYuantaForeignAccountNumberEvidence(
   };
 }
 
-type CurrencyOption = {
+export type CurrencyOption = {
   label: string;
   value: string;
 };
@@ -121,14 +121,7 @@ export type YuantaForeignCurrencyCollectionInput = WorkflowInput & Readonly<{
   yuantaUserId: string;
 }>;
 
-type SourceDownloadMetadata = {
-  accountValue: string;
-  account: string;
-  currency: string;
-  rowCount: number;
-};
-
-type ForeignCurrencyTransactionRow = {
+export type ForeignCurrencyTransactionRow = {
   accountLabel: string;
   accountValue: string;
   queryCurrencyLabel: string;
@@ -2508,72 +2501,76 @@ async function downloadTransactionRowsInMemory(
   return { rows };
 }
 
-export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
-  openPage?: typeof openForeignCurrencyDetailsPage;
-  readAccounts?: typeof readYuantaForeignCurrencyAccountOptions;
-  selectAccount?: typeof selectAccount;
-  readCurrencies?: typeof readYuantaForeignCurrencyOptions;
-  queryAccountCurrency?: typeof queryAccountCurrency;
-  downloadRows?: typeof downloadTransactionRowsInMemory;
-  readCurrentBalances?: typeof readYuantaCurrentDepositBalances;
+/** One account and currency's in-memory CSV rows. */
+export type YuantaForeignCurrencyDownload = Readonly<{
+  account: AccountOption;
+  currency: CurrencyOption;
+  rows: readonly ForeignCurrencyTransactionRow[];
 }>;
 
-/** Collect every selected FX account/currency source and build canonical items without committing or writing files. */
-export async function runYuantaForeignCurrencyStatements(
+export type YuantaForeignCurrencySourceSnapshot = Readonly<{
+  accounts: readonly AccountOption[];
+  downloads: readonly YuantaForeignCurrencyDownload[];
+  currentBalances: readonly YuantaCurrentDepositBalanceRow[];
+}>;
+
+async function readYuantaForeignCurrencySource(
   page: Page,
   input: YuantaForeignCurrencyCollectionInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  overrides: YuantaForeignCurrencyWorkflowDependencies = {},
-): Promise<ProductCollectionSummary> {
+): Promise<YuantaForeignCurrencySourceSnapshot> {
   const { signal, text: sourceText } = context;
-  const now = () => context.now();
-  const checkCancelled = () => signal.throwIfAborted();
-  const openPage = overrides.openPage ?? openForeignCurrencyDetailsPage;
-  const readAccounts = overrides.readAccounts ?? readYuantaForeignCurrencyAccountOptions;
-  const select = overrides.selectAccount ?? selectAccount;
-  const readCurrencies = overrides.readCurrencies ?? readYuantaForeignCurrencyOptions;
-  const query = overrides.queryAccountCurrency ?? queryAccountCurrency;
-  const downloadRows = overrides.downloadRows ?? downloadTransactionRowsInMemory;
-  const readBalances = overrides.readCurrentBalances ?? readYuantaCurrentDepositBalances;
-
-  checkCancelled();
-  await openPage(page);
-  const accounts = await readAccounts(page, input.accountFilters);
-  const rows: ForeignCurrencyTransactionRow[] = [];
-  const sourceDownloads: SourceDownloadMetadata[] = [];
+  signal.throwIfAborted();
+  await openForeignCurrencyDetailsPage(page);
+  const accounts = await readYuantaForeignCurrencyAccountOptions(page, input.accountFilters);
+  const downloads: YuantaForeignCurrencyDownload[] = [];
 
   for (const account of accounts) {
-    checkCancelled();
-    await select(page, account);
-    const currencies = await readCurrencies(page, input.currencyFilters);
+    signal.throwIfAborted();
+    await selectAccount(page, account);
+    const currencies = await readYuantaForeignCurrencyOptions(page, input.currencyFilters);
     for (const currency of currencies) {
-      checkCancelled();
-      const maskedAccount = maskAccountLabel(account.label);
+      signal.throwIfAborted();
       await product.reportActivity("query");
-      await query(page, input, account, currency);
-      checkCancelled();
+      await queryAccountCurrency(page, input, account, currency);
+      signal.throwIfAborted();
       await product.reportActivity("download");
-      const download = await downloadRows(
+      const download = await downloadTransactionRowsInMemory(
         page,
-        maskedAccount,
+        maskAccountLabel(account.label),
         account.value,
         currency.label,
         currency.value,
-        () => query(page, input, account, currency),
+        () => queryAccountCurrency(page, input, account, currency),
         sourceText,
         signal,
       );
       sourceText.assertIntact(JSON.stringify(download));
-      rows.push(...download.rows);
-      sourceDownloads.push({
-        accountValue: account.value,
-        account: maskedAccount,
-        currency: currency.label,
-        rowCount: download.rows.length,
-      });
+      downloads.push({ account, currency, rows: download.rows });
     }
   }
+
+  // Every account is admitted or the build throws, so a non-empty account
+  // list is exactly when the build has financial captures to join balances to.
+  const currentBalances = accounts.length > 0
+    ? await readYuantaCurrentDepositBalances(page, "foreign", { observedAt: context.now() })
+    : [];
+  sourceText.assertIntact(JSON.stringify(currentBalances));
+  return { accounts, downloads, currentBalances };
+}
+
+/** Build and stage every FX account capture and current balance from a read snapshot. */
+export async function stageYuantaForeignCurrency(
+  snapshot: YuantaForeignCurrencySourceSnapshot,
+  input: YuantaForeignCurrencyCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  const { signal, text: sourceText } = context;
+  const now = () => context.now();
+  const checkCancelled = () => signal.throwIfAborted();
+  const rows = snapshot.downloads.flatMap((download) => download.rows);
 
   checkCancelled();
   const captureOccurrenceId = randomUUID();
@@ -2584,14 +2581,14 @@ export async function runYuantaForeignCurrencyStatements(
     accountRows.push(row);
     grouped.set(row.accountValue, accountRows);
   }
-  const captures = accounts.map((account) => {
+  const captures = snapshot.accounts.map((account) => {
     const accountRows = grouped.get(account.value) ?? [];
-    const accountDownloads = sourceDownloads.filter(
-      (download) => download.accountValue === account.value,
+    const accountDownloads = snapshot.downloads.filter(
+      (download) => download.account.value === account.value,
     );
     const zeroResultAuthority = accountRows.length === 0 &&
       accountDownloads.length > 0 &&
-      accountDownloads.every((download) => download.rowCount === 0)
+      accountDownloads.every((download) => download.rows.length === 0)
       ? "provider-explicit-no-data" as const
       : undefined;
     return buildYuantaForeignCurrencyCaptureInput(
@@ -2621,23 +2618,12 @@ export async function runYuantaForeignCurrencyStatements(
     }],
   }));
 
-  // Current balances are source inputs too. Read, decode, and admit all of them
-  // before the parent opens the one Canonical Financial Commit boundary.
+  // Current balances are source inputs too. Admit all of them before the
+  // parent opens the one Canonical Financial Commit boundary.
   const balanceItems: ProductStageRequest[] = [];
   if (admitted.length > 0) {
-    const authorityCapture = admitted[0]!;
-    const authority = {
-      sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
-      identityEpochKey: authorityCapture.identity.identityEpochKey,
-      authorityClass: "existing-financial-admission" as const,
-    };
-    const currentRows = await readBalances(page, "foreign", {
-      observedAt: now(),
-      financialAuthority: authority,
-    });
-    sourceText.assertIntact(JSON.stringify(currentRows));
     const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(admitted);
-    for (const unadjustedRow of currentRows) {
+    for (const unadjustedRow of snapshot.currentBalances) {
       checkCancelled();
       const row = { ...unadjustedRow, observedAt: now() };
       const matching = existingBySourceAccount.get(row.sourceAccountKey);
@@ -2661,9 +2647,20 @@ export async function runYuantaForeignCurrencyStatements(
   checkCancelled();
   product.stage(...statementItems, ...balanceItems);
   return {
-    sourceCaptureCount: sourceDownloads.length,
+    sourceCaptureCount: snapshot.downloads.length,
     rowCount: rows.length,
   };
+}
+
+/** Collect every selected FX account/currency source and build canonical items without committing or writing files. */
+export async function runYuantaForeignCurrencyStatements(
+  page: Page,
+  input: YuantaForeignCurrencyCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  const snapshot = await readYuantaForeignCurrencySource(page, input, context, product);
+  return await stageYuantaForeignCurrency(snapshot, input, context, product);
 }
 
 function sourceDateRange(input: WorkflowInput, observedAt: string): {

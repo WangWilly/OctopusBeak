@@ -30,6 +30,7 @@ const {
   readYuantaLoanAccountOptions,
   parseYuantaLoanStatementRows,
   runYuantaLoanStatements,
+  stageYuantaLoan,
   deriveYuantaLoanAccountNumberEvidence,
   yuantaLoanSelectorAccountEvidence,
 } =
@@ -124,7 +125,7 @@ assert.doesNotMatch(
   "the App-owned provider must not retain a separate runner or persistence path",
 );
 assert.match(loanSource, /sourceText\??\.assertIntact/u);
-assert.match(loanSource, /await openStatementPage\(page\)/);
+assert.match(loanSource, /await openLoanStatementPage\(page\)/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
@@ -192,8 +193,24 @@ test("Yuanta loan typed collection admits complete source without writing or com
   const deferred: PGliteWorkflowRunItem[] = [];
   const testLoanAccount = "1234".repeat(3) + "12";
   const account = { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount };
-  const collection = await runYuantaLoanStatements(
-    {} as never,
+  const collection = await stageYuantaLoan(
+    {
+      range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      accounts: [{
+        account,
+        observedAt: "2026-02-01T00:00:00.000Z",
+        statement: {
+          rows: [{
+            accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
+            paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+            transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
+            overpayment: "0.00", sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
+          }],
+          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+        },
+      }],
+    },
     {
       dateRange: "one_year",
       customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
@@ -206,24 +223,6 @@ test("Yuanta loan typed collection admits complete source without writing or com
     },
     yuantaCollectionContext({ now: "2026-02-01T00:00:00.000Z" }),
     yuantaStagingHandle(deferred),
-    {
-      openLoanStatementPage: async () => undefined,
-      readLoanAccountOptions: async () => [account],
-      queryLoanAccount: async () => undefined,
-      traverseLoanStatementPages: async (_page, _label, options) => {
-        assert.equal(options?.silent, true);
-        return {
-          rows: [{
-            accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
-            paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
-            transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
-            overpayment: "0.00", sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
-          }],
-          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
-          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
-        };
-      },
-    },
   );
   assert.deepEqual(collection, { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(deferred.length, 1);
@@ -231,10 +230,22 @@ test("Yuanta loan typed collection admits complete source without writing or com
 });
 
 test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
+  const loanAccountNumber = ["1234567", "8901234"].join("");
   const deferred: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
-    runYuantaLoanStatements(
-      {} as never,
+    stageYuantaLoan(
+      {
+        range: { startDate: "2025-09-25", endDate: "2026-09-25" },
+        accounts: [{
+          account: { label: `房屋貸款 - ${loanAccountNumber}`, value: loanAccountNumber },
+          observedAt: "2026-09-25T00:00:00.000Z",
+          statement: {
+            rows: [],
+            completeness: null,
+            pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
+          },
+        }],
+      },
       {
         dateRange: "one_year",
         loanAccountFilters: [],
@@ -246,18 +257,6 @@ test("Yuanta loan typed collection rejects an incomplete source before yielding 
       },
       yuantaCollectionContext(),
       yuantaStagingHandle(deferred),
-      {
-        openLoanStatementPage: async () => undefined,
-        readLoanAccountOptions: async () => [
-          { label: "房屋貸款 - 12345678901234", value: "12345678901234" },
-        ],
-        queryLoanAccount: async () => undefined,
-        traverseLoanStatementPages: async () => ({
-          rows: [],
-          completeness: null,
-          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
-        }),
-      },
     ),
     /explicit complete terminal page evidence/u,
   );

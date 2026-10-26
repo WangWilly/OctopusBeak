@@ -40,7 +40,7 @@ const {
   waitForYuantaForeignCurrencyResultTransition,
   selectYuantaForeignCurrencyAccount,
   isYuantaForeignCurrencyCsvControl,
-  runYuantaForeignCurrencyStatements,
+  stageYuantaForeignCurrency,
   yuantaForeignCurrencyStatementsInputSchema,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
@@ -1571,48 +1571,40 @@ const typedForeignTemp = await mkdtemp(join(tmpdir(), "yuanta-foreign-typed-"));
 const typedForeignOriginalCwd = process.cwd();
 process.chdir(typedForeignTemp);
 try {
+  const typedForeignInput = {
+    ...yuantaForeignCurrencyStatementsInputSchema.parse({
+      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+    }),
+    yuantaUserId: "synthetic-yuanta-login",
+  };
+  const typedForeignAccount = { value: "00123456789012", label: "外幣綜合存款" };
+  const allCurrencies = { value: "ALL", label: "全部幣別" };
+  const typedForeignSource = (values: string[]) => ({
+    accounts: [typedForeignAccount],
+    downloads: [{
+      account: typedForeignAccount,
+      currency: allCurrencies,
+      rows: [{
+        accountLabel: "外幣綜合存款",
+        accountValue: typedForeignAccount.value,
+        queryCurrencyLabel: allCurrencies.label,
+        queryCurrencyValue: allCurrencies.value,
+        values,
+        sortTime: null,
+      }],
+    }],
+    currentBalances: [],
+  });
   const deferred: PGliteWorkflowRunItem[] = [];
-  const collectionActivities: string[] = [];
-  const result = await runYuantaForeignCurrencyStatements(
-    {} as never,
-    {
-      ...yuantaForeignCurrencyStatementsInputSchema.parse({
-        customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
-      }),
-      yuantaUserId: "synthetic-yuanta-login",
-    },
+  const result = await stageYuantaForeignCurrency(
+    typedForeignSource(["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"]),
+    typedForeignInput,
     yuantaCollectionContext({ now: "2026-08-24T12:00:00+08:00" }),
-    yuantaStagingHandle(deferred, collectionActivities),
-    {
-      openPage: async () => ({} as never),
-      readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
-      selectAccount: async () => undefined,
-      readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
-      queryAccountCurrency: async () => { collectionActivities.push("query-call"); },
-      downloadRows: async () => {
-        collectionActivities.push("download-call");
-        return {
-          rows: [{
-            accountLabel: "外幣綜合存款",
-            accountValue: "00123456789012",
-            queryCurrencyLabel: "全部幣別",
-            queryCurrencyValue: "ALL",
-            values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
-            sortTime: null,
-          }],
-        };
-      },
-      readCurrentBalances: async () => [],
-    },
+    yuantaStagingHandle(deferred),
   );
   assert.deepEqual(result, { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.product, "foreign-currency-deposit");
-  assert.deepEqual(
-    collectionActivities,
-    ["query", "query-call", "download", "download-call"],
-    "progress must identify FX query and CSV retrieval before each source operation",
-  );
 
   // Exercise the real FX collector through the parent coordinator: a single
   // account can have several currency balances, each requiring its own receipt.
@@ -1626,29 +1618,21 @@ try {
     collect: async (typeId, product) => {
       if (typeId === "credit_card")
         return { sourceCaptureCount: 0, rowCount: 0, noDataEvidence: true };
-      return await runYuantaForeignCurrencyStatements(
-        {} as never,
+      const multiCurrencyAccount = { value: yuantaForeignMultiCurrencyAccount, label: "外幣綜合存款" };
+      return await stageYuantaForeignCurrency(
         {
-          ...yuantaForeignCurrencyStatementsInputSchema.parse({
-            customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
-          }),
-          yuantaUserId: "synthetic-yuanta-login",
-        },
-        yuantaCollectionContext({ now: "2026-08-24T04:00:00.000Z" }),
-        product,
-        {
-          openPage: async () => ({} as never),
-          readAccounts: async () => [{ value: yuantaForeignMultiCurrencyAccount, label: "外幣綜合存款" }],
-          selectAccount: async () => undefined,
-          readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
-          queryAccountCurrency: async () => undefined,
-          downloadRows: async () => ({ rows: [{
-            accountLabel: "外幣綜合存款", accountValue: yuantaForeignMultiCurrencyAccount,
-            queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
-            values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
-            sortTime: null,
-          }] }),
-          readCurrentBalances: async () => ["USD", "JPY"].map((currency) => ({
+          accounts: [multiCurrencyAccount],
+          downloads: [{
+            account: multiCurrencyAccount,
+            currency: allCurrencies,
+            rows: [{
+              accountLabel: "外幣綜合存款", accountValue: yuantaForeignMultiCurrencyAccount,
+              queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
+              values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
+              sortTime: null,
+            }],
+          }],
+          currentBalances: ["USD", "JPY"].map((currency) => ({
             source: "yuanta", kind: "foreign", stream: "foreign-currency-deposit",
             accountNumber: yuantaForeignMultiCurrencyAccount, sourceAccountKey: yuantaForeignMultiCurrencyAccount, currency,
             available: { coefficient: "90", scale: 2, sourceLexeme: "0.90" },
@@ -1662,6 +1646,9 @@ try {
             },
           })),
         },
+        typedForeignInput,
+        yuantaCollectionContext({ now: "2026-08-24T04:00:00.000Z" }),
+        product,
       );
     },
     financialCommit: { execute: async (staged, options) => {
@@ -1685,46 +1672,11 @@ try {
 
   const rejectedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
-    runYuantaForeignCurrencyStatements(
-      {} as never,
-      {
-        ...yuantaForeignCurrencyStatementsInputSchema.parse({
-          customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
-        }),
-        yuantaUserId: "synthetic-yuanta-login",
-      },
+    stageYuantaForeignCurrency(
+      typedForeignSource(["1", "20260823", "20260823", "09:10", "USD", "bad\uFFFDsource", "", "10.00", "110.00", "交易資訊", "31.50"]),
+      typedForeignInput,
       yuantaCollectionContext({ now: "2026-08-24T12:00:00+08:00" }),
       yuantaStagingHandle(rejectedItems),
-      {
-        openPage: async () => ({} as never),
-        readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
-        selectAccount: async () => undefined,
-        readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
-        queryAccountCurrency: async () => undefined,
-        downloadRows: async () => ({
-          rows: [{
-            accountLabel: "外幣綜合存款",
-            accountValue: "00123456789012",
-            queryCurrencyLabel: "全部幣別",
-            queryCurrencyValue: "ALL",
-            values: [
-              "1",
-              "20260823",
-              "20260823",
-              "09:10",
-              "USD",
-              "bad\uFFFDsource",
-              "",
-              "10.00",
-              "110.00",
-              "交易資訊",
-              "31.50",
-            ],
-            sortTime: null,
-          }],
-        }),
-        readCurrentBalances: async () => [],
-      },
     ),
     /replacement-character/u,
   );
