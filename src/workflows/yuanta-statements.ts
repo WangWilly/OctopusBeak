@@ -1241,6 +1241,7 @@ export async function stageYuantaDeposit(
   // Read and validate the point-in-time page before returning any items. A
   // failure here must not leave statement captures from this run behind.
   if (financialDepositCaptures.length > 0) {
+    context.signal.throwIfAborted();
     const authority = financialDepositCaptures[0]!.identity;
     const currentRows = await readCurrentBalances({
       observedAt: yuantaObservedAt(new Date(context.now())),

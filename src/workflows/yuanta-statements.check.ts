@@ -17,7 +17,6 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
 } from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
 import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
 import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -706,7 +705,7 @@ try {
       typedInput,
       checkContext(cancellation.signal),
       yuantaStagingHandle(canceledItems),
-      async () => [workflowCurrentBalanceRow],
+      async () => assert.fail("a cancelled run must not open the current-balance page"),
     ),
     /abort/u,
   );
