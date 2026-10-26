@@ -644,7 +644,9 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
     options.attached ? await options.attached() : null,
     signal,
   );
-  if (selectedIds.length > 0) {
+  // Validation completes only when a selected verified product did not fail;
+  // Attached Preview Products alone never complete it.
+  if (summary.products.some((product) => product.status !== "failed" && product.status !== "skipped")) {
     await options.event?.("validation", "completed", "source-validation-completed", {
       completed: finished.sourceCaptureCount,
       total: finished.sourceCaptureCount,

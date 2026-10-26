@@ -793,3 +793,19 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
   assert.equal(summary.status, "completed");
   assert.ok(!codes.includes("source-validation-completed"), "a run without verified products reports no closing validation");
 }
+
+{
+  const codes: string[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "cathay",
+    productIds: ["domestic"],
+    selectedIds: ["domestic"],
+    signal: signal().signal,
+    event: async (_stage, _outcome, code) => { codes.push(code); },
+    collect: async () => { throw new Error("synthetic verified source failure"); },
+    financialCommit: commitWith(async () => { throw new Error("a failed verified product must not commit"); }),
+    attached: async () => previewRun(),
+  });
+  assert.equal(summary.status, "partial", "attached receipts keep the run partial");
+  assert.ok(!codes.includes("source-validation-completed"), "a run whose verified products all failed never completes validation");
+}

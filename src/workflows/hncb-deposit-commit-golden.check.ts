@@ -165,3 +165,22 @@ test("HNCB golden: account-overview current balances matched to admitted account
   );
   assert.equal(commandKinds(recorded).length, 4);
 });
+
+test("HNCB golden: accounts with no data and current balances are financial-admitted, not source-only", async () => {
+  const recorded = await record(
+    "hncb-no-data-accounts-with-balances",
+    [
+      { value: accountA, label: accountA, statement: null },
+      { value: accountB, label: accountB, statement: null },
+    ],
+    { detail: [currentRow(accountA, "13800.00", "13800.00"), currentRow(accountB, "3500.00", "3400.00")] },
+  );
+  assert.equal((recorded.output as { status: string }).status, "financial-admitted",
+    "zero-record deposit captures and current balances are financial data (ADR 0064)");
+  assert.deepEqual(commandKinds(recorded), [
+    "financial.deposit.commit",
+    "financial.deposit.commit",
+    "financial.balance.capture",
+    "financial.balance.capture",
+  ]);
+});
