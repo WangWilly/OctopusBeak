@@ -327,7 +327,6 @@ assert.doesNotMatch(source, /from ["']node:fs\/promises["']|writeBankTransaction
 assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic provider must not write standalone logs or expose a legacy workflow entry");
 assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
 assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
-assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
 const lateNotice = new LateNotice();
 const dismissingLateNotice = dismissYuantaBankNotice(noticeFrame(lateNotice), 100);

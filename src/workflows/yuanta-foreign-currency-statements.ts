@@ -15,9 +15,9 @@ import {
   type DefaultTreeAdapterTypes,
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { readYuantaBig5CsvFromAnchor } from "./yuanta-ebank-site.ts";
 import {
   deriveYuantaDomesticDepositQueryRange,
-  readYuantaBig5CsvFromAnchor,
   yuantaObservedAt,
 } from "./yuanta-statements.ts";
 import {
