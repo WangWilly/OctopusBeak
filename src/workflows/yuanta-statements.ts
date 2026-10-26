@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Frame, Locator, Page } from "playwright";
+import type { Page } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
@@ -9,10 +9,10 @@ import {
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
-import { readYuantaBig5CsvFromAnchor } from "./yuanta-ebank-site.ts";
+import type { BrowserScope } from "./frame-scope.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -59,8 +59,6 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-type BrowserScope = Page | Frame;
 const dateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
 const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
   one_week: "一週",
@@ -556,152 +554,44 @@ function isYuantaDomesticAccountPlaceholder(option: {
   );
 }
 
-function cidFromUrl(url: string): string | null {
-  const match = url.match(/[?&]cid=([^&]+)/);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
-}
+/** The domestic transaction-details page: ready once a scope holds the account selector. */
+const TRANSACTION_DETAILS_ROUTE: YuantaRoute = {
+  path: "transactiondetails",
+  description: 'selector "#acctno"',
+  ready: async (scope) => await hasAttachedLocator(scope.locator("#acctno")),
+  menuId: "menu_transactiondetails",
+};
 
-function currentCidFromFrameUrls(page: Page): string | null {
-  for (const frame of page.frames()) {
-    const cid = cidFromUrl(frame.url());
-    if (cid) return cid;
-  }
-  return cidFromUrl(page.url());
-}
-
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(scope.locator(selector))) {
-        return scope;
-      }
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
-
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(locatorFor(scope))) {
-        return scope;
-      }
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
-}
-
-async function firstVisibleLocator(
-  locator: Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    await locator.page().waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find a visible ${description}.`);
-}
-
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // YuanTa keeps frames and timers alive; selector waits below confirm readiness.
-  });
-  await page.waitForTimeout(750);
-}
-
-async function openTransactionDetailsPage(page: Page): Promise<BrowserScope> {
-  const existing = await findScopeWithSelector(page, "#acctno", 5_000).catch(
-    () => null,
-  );
-  if (existing) return existing;
-
-  const fmain = page.frame({ name: "fmain" });
-  const cid = currentCidFromFrameUrls(page);
-  if (fmain && cid) {
-    await fmain.goto(
-      `${BANK_ORIGIN}/nib/tx/transactiondetails?type=page&cid=${encodeURIComponent(
-        cid,
-      )}`,
-      { waitUntil: "domcontentloaded" },
-    );
-    await settleAfterNavigation(page);
-
-    const direct = await findScopeWithSelector(page, "#acctno", 15_000).catch(
-      () => null,
-    );
-    if (direct) return direct;
-  }
-
-  const menuScope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("#menu_transactiondetails")
-        .or(candidate.locator("a").filter({ hasText: "臺幣交易明細查詢" }))
-        .first(),
-    "YuanTa transaction-details menu link",
-  );
-  const links = menuScope
-    .locator("#menu_transactiondetails")
-    .or(menuScope.locator("a").filter({ hasText: "臺幣交易明細查詢" }));
-  const link = await firstVisibleLocator(
-    links,
-    "YuanTa transaction-details menu link",
-  );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-
-  return await findScopeWithSelector(page, "#acctno");
-}
+/**
+ * After a submit the previous account's result can still be on the page, and
+ * no captured page shows what marks the new result, so the query waits as long
+ * as it always has before it looks for one.
+ */
+const QUERY_SUBMIT_PAUSE_MS = 750;
 
 async function prepareYuantaDepositPage(
-  page: Page,
+  site: YuantaEbankSite,
   dateRange: z.infer<typeof dateRangeSchema>,
 ): Promise<void> {
-  const scope = await openTransactionDetailsPage(page);
-  const label = dateRangeLabels[dateRange];
-  const link = await firstVisibleLocator(
-    scope.locator("#duration a").filter({ hasText: label }),
-    `YuanTa date range link "${label}"`,
-  );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  await findScopeWithSelector(page, "#acctno");
+  const scope = await site.open(TRANSACTION_DETAILS_ROUTE);
+  await site.chooseDuration(scope, { label: dateRangeLabels[dateRange] });
+  await site.frames.scopeWith("#acctno");
 }
 
 export async function readYuantaDepositAccountOptions(
-  page: Page,
+  site: YuantaEbankSite,
   _filters: string[] = [],
 ) {
-  const scope = await findScopeWithSelector(page, "#acctno");
+  const { frames } = site;
+  const scope = await frames.scopeWith("#acctno");
   const options = scope.locator("#acctno option");
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const availableAccounts: Array<{ label: string; value: string }> = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await option.getAttribute("value")) ?? "";
-    const label = cleanText(await option.textContent());
+    const value = (await frames.race(option.getAttribute("value"))) ?? "";
+    const label = cleanText(await frames.race(option.textContent()));
     const account = { label, value };
     if (isYuantaDomesticAccountPlaceholder(account)) continue;
     availableAccounts.push(account);
@@ -724,31 +614,32 @@ const csvDownloadLink = (scope: BrowserScope) =>
 
 /** Waits for the submitted query to show either a CSV link or the bank's 查無資料 row. */
 export async function waitForYuantaDepositQueryResult(
-  page: Page,
+  site: YuantaEbankSite,
   timeoutMs = 60_000,
 ): Promise<YuantaDepositQueryResult> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+  const { frames } = site;
+  return await frames.until<YuantaDepositQueryResult>(async () => {
+    for (const scope of frames.scopes()) {
       if (await hasAttachedLocator(csvDownloadLink(scope))) return "download-ready";
       if (await hasAttachedLocator(scope.getByText("查無資料", { exact: true }))) {
         return "provider-explicit-no-data";
       }
     }
-    await page.waitForTimeout(500);
-  }
-  throw new Error("Could not find YuanTa CSV download link or a no-data result in any frame.");
+    return null;
+  }, "Could not find YuanTa CSV download link or a no-data result in any frame.", { timeoutMs });
 }
 
 async function queryAccount(
-  page: Page,
+  site: YuantaEbankSite,
   account: { label: string; value: string },
 ): Promise<YuantaDepositQueryResult> {
-  const scope = await findScopeWithSelector(page, "#acctno");
-  await scope.locator("#acctno").selectOption(account.value);
-  await scope.locator("#submitbutton").click();
-  await settleAfterNavigation(page);
-  return await waitForYuantaDepositQueryResult(page);
+  const { frames } = site;
+  const scope = await frames.scopeWith("#acctno");
+  await frames.race(scope.locator("#acctno").selectOption(account.value));
+  await frames.race(scope.locator("#submitbutton").click());
+  await frames.settle();
+  await frames.pause(QUERY_SUBMIT_PAUSE_MS);
+  return await waitForYuantaDepositQueryResult(site);
 }
 
 const YUANTA_EXPLICIT_NO_DATA_FILENAME = "yuanta-provider-explicit-no-data";
@@ -771,26 +662,13 @@ function yuantaExplicitNoDataDownload(): YuantaStatementDownload {
 }
 
 export async function downloadYuantaStatementRows(
-  page: Page,
+  site: YuantaEbankSite,
   account: { label: string; value: string },
-  sourceText: SourceTextPort,
-  signal: AbortSignal,
 ): Promise<YuantaStatementDownload> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("a.order_2.m_color_check")
-        .filter({ hasText: "下載CSV檔" }),
-    "YuanTa CSV download link",
-  );
-
-  const exportLink = scope
-    .locator("a.order_2.m_color_check")
-    .filter({ hasText: "下載CSV檔" })
-    .first();
-  await exportLink.waitFor({ state: "attached", timeout: 60_000 });
-  const downloaded = await readYuantaBig5CsvFromAnchor(exportLink, sourceText, signal);
+  const scope = await site.frames.scopeWith(csvDownloadLink, "YuanTa CSV download link");
+  const exportLink = csvDownloadLink(scope).first();
+  await site.frames.race(exportLink.waitFor({ state: "attached", timeout: 60_000 }));
+  const downloaded = await site.readCsv(exportLink);
   const filename = filenameFromCsvResponse(
     downloaded.contentDisposition,
     downloaded.exportUrl,
@@ -938,7 +816,8 @@ export type YuantaReadCurrentDepositBalances = (
   }>,
 ) => Promise<readonly YuantaCurrentDepositBalanceRow[]>;
 
-async function readYuantaDepositSource(
+/** Read every visible account's query result from the transaction-details page (ADR 0065). */
+export async function readYuantaDepositSource(
   page: Page,
   input: YuantaStatementsCollectionInput,
   context: WorkflowContext,
@@ -948,20 +827,21 @@ async function readYuantaDepositSource(
   // The canonical domestic scope is all visible TWD selectors. Input
   // accountFilters remains accepted for compatibility but never narrows it.
   context.signal.throwIfAborted();
-  await prepareYuantaDepositPage(page, input.dateRange);
+  const site = yuantaEbankSite(page, context);
+  await prepareYuantaDepositPage(site, input.dateRange);
   context.signal.throwIfAborted();
   const accounts: YuantaDepositAccountRead[] = [];
-  for (const account of await readYuantaDepositAccountOptions(page, [])) {
+  for (const account of await readYuantaDepositAccountOptions(site, [])) {
     context.signal.throwIfAborted();
     await product.reportActivity("query");
-    const query = await queryAccount(page, account);
+    const query = await queryAccount(site, account);
     context.signal.throwIfAborted();
     if (query === "provider-explicit-no-data") {
       accounts.push({ account, query });
       continue;
     }
     await product.reportActivity("download");
-    const download = await downloadYuantaStatementRows(page, account, context.text, context.signal);
+    const download = await downloadYuantaStatementRows(site, account);
     context.text.assertIntact(JSON.stringify(download));
     accounts.push({ account, query, download });
   }
