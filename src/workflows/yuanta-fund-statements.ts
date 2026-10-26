@@ -17,7 +17,8 @@ import {
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occurrence-groups.ts";
-import { hasAttachedLocator } from "./browser-interaction.js";
+import type { BrowserScope } from "./frame-scope.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -32,13 +33,10 @@ import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
 import { canonicalYuantaFundCurrency, isYuantaFundSourceCurrencyLabel, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
 
-const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const YUANTA_FUND_INVESTMENT_CONTRACT_VERSION =
   "yuanta-fund/investment/canonical-v1" as const;
 const FUND_TABLE_SELECTOR =
   "table.rwdTable, table.normalTable, table.formTable";
-
-type BrowserScope = Page | Frame;
 
 type FundPosition = {
   // Bank form parameters: route, transaction number, native fund code.
@@ -608,309 +606,85 @@ function resolveDateRange(input: WorkflowInput): {
   return { startDate, endDate, label: `${startDate}-${endDate}` };
 }
 
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(scope.locator(selector))) return scope;
-    }
-    await page.waitForTimeout(500);
+/** Whether a scope shows fund tables and body text that matches the page it should be. */
+const fundTablesShow = (bodyPattern: RegExp) => async (scope: BrowserScope): Promise<boolean> => {
+  if ((await scope.locator(FUND_TABLE_SELECTOR).count().catch(() => 0)) === 0) return false;
+  return bodyPattern.test(cleanText(await scope.locator("body").innerText().catch(() => "")));
+};
+
+const FUND_PORTFOLIO_SUMMARY_ROUTE: YuantaRoute = {
+  path: "fundsummary?TxnType=FundSummary",
+  menuId: "menu_fundSummary",
+  description: "YuanTa fund portfolio summary tables",
+  ready: fundTablesShow(/基金名稱|幣別總計|投資金額/),
+};
+
+const FUND_INVESTMENT_OVERVIEW_ROUTE: YuantaRoute = {
+  path: "fundsummary?TxnType=unknow",
+  menuId: "menu_fundUknow",
+  description: "YuanTa fund investment detail tables",
+  ready: fundTablesShow(/投資日期|交易編號|基金明細查詢|無持有基金|未持有基金|無基金部位/),
+};
+
+const FUND_ACCOUNT_HISTORY_ROUTE: YuantaRoute = {
+  path: "fundtransactiondetails",
+  menuId: "menu_fundtransactiondetails",
+  description: "YuanTa account fund history query",
+  ready: async (scope) =>
+    (await scope.locator('input[name="fundtransactiondetails_sdate"]').count().catch(() => 0)) > 0,
+};
+
+const PREVIOUS_DOCUMENT_MARK = "__yuantaFundPreviousDocument";
+
+/** Mark every document shown now, so a wait after a form submit skips the page it replaced. */
+async function markShownDocuments(site: YuantaEbankSite): Promise<void> {
+  for (const scope of site.frames.scopes()) {
+    await site.frames.race(scope.evaluate((mark) => {
+      (window as unknown as Record<string, unknown>)[mark] = true;
+    }, PREVIOUS_DOCUMENT_MARK).catch(() => undefined));
   }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
 }
 
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(locatorFor(scope))) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
-}
-
-async function firstVisibleLocator(
-  locator: Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    await locator.page().waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find a visible ${description}.`);
-}
-
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // YuanTa keeps frames and timers alive; selector waits below confirm readiness.
-  });
-  await page.waitForTimeout(750);
-}
-
-async function readCurrentCid(page: Page): Promise<string | null> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) => candidate.locator('input[name="cid"]').first(),
-    "YuanTa cid field",
-    3_000,
-  ).catch(() => null);
-  if (scope) {
-    const cid = await scope
-      .locator('input[name="cid"]')
-      .first()
-      .inputValue()
-      .catch(() => "");
-    if (cid) return cid;
-  }
-
-  for (const frame of page.frames()) {
-    const match = frame.url().match(/[?&]cid=([^&]+)/);
-    if (match?.[1]) return decodeURIComponent(match[1]);
-  }
-
-  const pageMatch = page.url().match(/[?&]cid=([^&]+)/);
-  return pageMatch?.[1] ? decodeURIComponent(pageMatch[1]) : null;
-}
-
-async function gotoFundTransactionPage(
-  page: Page,
-  actionFragment: string,
-): Promise<boolean> {
-  const cid = await readCurrentCid(page);
-  const fmain = page.frame({ name: "fmain" });
-  if (!cid || !fmain) return false;
-
-  const separator = actionFragment.includes("?") ? "&" : "?";
-  await fmain.goto(
-    `${BANK_ORIGIN}/nib/tx/${actionFragment}${separator}type=page&cid=${encodeURIComponent(
-      cid,
-    )}`,
-    { waitUntil: "domcontentloaded" },
-  );
-  await settleAfterNavigation(page);
-  return true;
-}
-
-async function clickFundMenuLink(
-  page: Page,
-  actionFragment: string,
-  label: RegExp,
-  menuId: string,
-  description: string,
-): Promise<void> {
-  if (await gotoFundTransactionPage(page, actionFragment).catch(() => false)) {
-    return;
-  }
-
-  const initialScope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator(`a[onclick*="${actionFragment}"]`)
-        .filter({ hasText: label }),
-    description,
-    10_000,
-  ).catch(() => null);
-
-  const initialLink =
-    initialScope &&
-    (await firstVisibleLocator(
-      initialScope
-        .locator(`a[onclick*="${actionFragment}"]`)
-        .filter({ hasText: label }),
-      description,
-      5_000,
-    ).catch(() => null));
-  if (initialLink) {
-    await initialLink.click({ force: true });
-    await settleAfterNavigation(page);
-    return;
-  }
-
-  // The authenticated shell can retain fmenu/fmain while hiding the visual
-  // fund menu after another product navigation. Use Yuanta's own menuaction
-  // hook before waiting for a visible menu or re-authenticating.
-  if (await runFundMenuAction(page, actionFragment, menuId, 2_000)) return;
-
-  await revealFundMenu(page);
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator(`a[onclick*="${actionFragment}"]`)
-        .filter({ hasText: label }),
-    description,
-    10_000,
-  ).catch(() => null);
-
-  const link =
-    scope &&
-    (await firstVisibleLocator(
-      scope
-        .locator(`a[onclick*="${actionFragment}"]`)
-        .filter({ hasText: label }),
-      description,
-      5_000,
-    ).catch(() => null));
-  if (link) {
-    await link.click({ force: true });
-    await settleAfterNavigation(page);
-    return;
-  }
-
-  if (await runFundMenuAction(page, actionFragment, menuId, 10_000)) return;
-
-  throw new Error(`Could not click ${description}.`);
-}
-
-async function findMenuActionScope(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasMenuAction = await scope
-        .evaluate(() => {
-          const yuanTaWindow = window as typeof window & {
-            menuaction?: unknown;
-          };
-          return typeof yuanTaWindow.menuaction === "function";
-        })
-        .catch(() => false);
-      if (hasMenuAction) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Could not find YuanTa menuaction() in any frame.");
-}
-
-async function runFundMenuAction(
-  page: Page,
-  actionFragment: string,
-  menuId: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  const menuActionScope = await findMenuActionScope(page, timeoutMs).catch(
-    () => null,
-  );
-  if (!menuActionScope) return false;
-
-  await menuActionScope.evaluate(
-    ({ action, id }) => {
-      const yuanTaWindow = window as typeof window & {
-        menuaction?: (
-          menuAction: string,
-          menuId: string,
-          flag?: string,
-        ) => void;
-      };
-      if (typeof yuanTaWindow.menuaction !== "function") {
-        throw new Error("YuanTa page did not expose menuaction().");
-      }
-      yuanTaWindow.menuaction(action, id, "N");
-    },
-    { action: actionFragment, id: menuId },
-  );
-  await settleAfterNavigation(page);
-  return true;
-}
-
-async function revealFundMenu(page: Page): Promise<void> {
-  const fundMenuScope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate.locator('a[onclick*="doAction"][onclick*="FUND"]').first(),
-    "YuanTa fund top-level menu",
-    5_000,
-  ).catch(() => null);
-  if (!fundMenuScope) return;
-
-  const fundMenu = await firstVisibleLocator(
-    fundMenuScope.locator('a[onclick*="doAction"][onclick*="FUND"]'),
-    "YuanTa fund top-level menu",
-    5_000,
-  ).catch(() => null);
-  if (!fundMenu) return;
-
-  await fundMenu.click({ force: true });
-  await page.waitForTimeout(500);
-}
+const isMarkedDocument = (scope: BrowserScope) =>
+  scope.evaluate((mark) => (window as unknown as Record<string, unknown>)[mark] === true, PREVIOUS_DOCUMENT_MARK)
+    .catch(() => true);
 
 async function waitForFundTables(
-  page: Page,
+  site: YuantaEbankSite,
   bodyPattern: RegExp,
   description: string,
-  timeoutMs = 60_000,
+  options: Readonly<{ replacingMarked?: boolean }> = {},
 ): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasTable = await hasAttachedLocator(
-        scope.locator(FUND_TABLE_SELECTOR),
-      );
-      if (!hasTable) continue;
-
-      const bodyText = cleanText(
-        await scope
-          .locator("body")
-          .innerText()
-          .catch(() => ""),
-      );
-      if (bodyPattern.test(bodyText)) return scope;
+  const shows = fundTablesShow(bodyPattern);
+  return await site.frames.until(async () => {
+    for (const scope of site.frames.scopes()) {
+      if (options.replacingMarked && await isMarkedDocument(scope)) continue;
+      if (await shows(scope)) return scope;
     }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error(`Timed out waiting for ${description}.`);
+    return null;
+  }, `Timed out waiting for ${description}.`);
 }
 
-async function openPortfolioSummary(page: Page): Promise<BrowserScope> {
-  await clickFundMenuLink(
-    page,
-    "fundsummary?TxnType=FundSummary",
-    /基金歸戶總覽/,
-    "menu_fundSummary",
-    "YuanTa fund portfolio summary link",
-  );
-  return await waitForFundTables(
-    page,
-    /基金名稱|幣別總計|投資金額/,
-    "YuanTa fund portfolio summary tables",
-  );
+const settleScope = (site: YuantaEbankSite, scope: BrowserScope) =>
+  site.frames.settle(scope === site.frames.page ? undefined : scope as Frame);
+
+/** Wait for fund tables in a document that replaced the marked ones, then let it settle. */
+async function waitForSubmittedFundTables(
+  site: YuantaEbankSite,
+  bodyPattern: RegExp,
+  description: string,
+): Promise<BrowserScope> {
+  const scope = await waitForFundTables(site, bodyPattern, description, { replacingMarked: true });
+  await settleScope(site, scope);
+  return scope;
 }
 
-async function openInvestmentOverview(page: Page): Promise<BrowserScope> {
-  await clickFundMenuLink(
-    page,
-    "fundsummary?TxnType=unknow",
-    /基金投資明細總覽/,
-    "menu_fundUknow",
-    "YuanTa fund investment detail link",
-  );
-  return await waitForFundTables(
-    page,
-    /投資日期|交易編號|基金明細查詢|無持有基金|未持有基金|無基金部位/,
-    "YuanTa fund investment detail tables",
-  );
+async function openPortfolioSummary(site: YuantaEbankSite): Promise<BrowserScope> {
+  return await site.open(FUND_PORTFOLIO_SUMMARY_ROUTE);
+}
+
+async function openInvestmentOverview(site: YuantaEbankSite): Promise<BrowserScope> {
+  return await site.open(FUND_INVESTMENT_OVERVIEW_ROUTE);
 }
 
 export function isYuantaFundPositionAbsentText(
@@ -921,59 +695,53 @@ export function isYuantaFundPositionAbsentText(
   );
 }
 
-async function openOffHourOrders(page: Page): Promise<BrowserScope> {
-  await openInvestmentOverview(page);
+async function openOffHourOrders(site: YuantaEbankSite): Promise<BrowserScope> {
+  await openInvestmentOverview(site);
   const scope = await waitForFundTables(
-    page,
+    site,
     /doOffhourQuery|營業時間外交易查詢/,
     "YuanTa fund investment overview off-hour link",
   );
-  const link = await firstVisibleLocator(
-    scope.locator('a[onclick*="doOffhourQuery"]'),
+  const link = await site.frames.firstVisible(
+    (candidate) => candidate.locator('a[onclick*="doOffhourQuery"]'),
     "YuanTa regular fund off-hour orders link",
+    { in: scope },
   );
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
+  await site.frames.race(link.click({ force: true }));
+  await settleScope(site, scope);
+  // No captured page shows whether doOffhourQuery navigates or rewrites the
+  // overview in place, so there is no condition that the overview is gone.
+  await site.frames.pause(750);
   return await waitForFundTables(
-    page,
+    site,
     /申購基金|轉出基金|查詢起迄日/,
     "YuanTa off-hour fund orders tables",
   );
 }
 
 async function queryOffHourOrders(
-  page: Page,
+  site: YuantaEbankSite,
   startDate: string,
   endDate: string,
 ): Promise<BrowserScope> {
-  const scope = await findScopeWithSelector(page, "#sdate, #edate");
-  await scope.locator("#sdate").fill(startDate);
-  await scope.locator("#edate").fill(endDate);
-
-  const responsePromise = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        response.url().includes("/nib/tx/offhourqueryandcancel"),
-      { timeout: 30_000 },
-    )
-    .catch(() => null);
-  await submitForm(scope, "offhourqueryandcancel?method=query", {});
-  await responsePromise;
-  await settleAfterNavigation(page);
-  return await waitForFundTables(
-    page,
+  const scope = await site.frames.scopeWith("#sdate, #edate");
+  await site.frames.race(scope.locator("#sdate").fill(startDate));
+  await site.frames.race(scope.locator("#edate").fill(endDate));
+  await markShownDocuments(site);
+  await submitForm(site, scope, "offhourqueryandcancel?method=query", {});
+  return await waitForSubmittedFundTables(
+    site,
     /申購基金|轉出基金|查詢起迄日/,
     "queried YuanTa off-hour fund orders tables",
   );
 }
 
 export async function extractFundPositions(
-  page: Page,
+  site: YuantaEbankSite,
   allowEmptyHistory = false,
 ): Promise<FundPosition[]> {
   const scope = await waitForFundTables(
-    page,
+    site,
     /fundDetail|基金明細查詢|交易編號|無持有基金|未持有基金|無基金部位|查無基金/,
     "YuanTa fund positions",
   );
@@ -1028,74 +796,65 @@ export function yuantaFundHistoryResultIsUnpaged(markup: string): boolean {
 }
 
 async function openFundDetail(
-  page: Page,
+  site: YuantaEbankSite,
   position: FundPosition,
 ): Promise<BrowserScope> {
   const scope = await waitForFundTables(
-    page,
+    site,
     /fundDetail|基金明細查詢|交易編號/,
     "YuanTa fund investment detail tables",
   );
 
-  const responsePromise = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        response.url().includes("/nib/tx/fundsummary"),
-      { timeout: 30_000 },
-    )
-    .catch(() => null);
-  await submitForm(scope, "fundsummary", {
+  await markShownDocuments(site);
+  await submitForm(site, scope, "fundsummary", {
     TxnType: position.txnType,
     PapernNo: position.paperNo,
     TrustNo: position.trustNo,
   });
-  await responsePromise;
-  await settleAfterNavigation(page);
-  return await waitForFundTables(
-    page,
+  return await waitForSubmittedFundTables(
+    site,
     /交易明細查詢|參考淨值|投資日期/,
     `YuanTa fund detail page for ${position.paperNo}`,
   );
 }
 
 async function queryAccountFundTransactions(
-  page: Page,
+  site: YuantaEbankSite,
   query: YuantaFundAccountHistoryQuery,
   startDate: string,
   endDate: string,
 ): Promise<void> {
   // Re-enter the general account query: detail-page fields can retain a lot filter.
-  await clickFundMenuLink(page, "fundtransactiondetails", /基金交易明細/, "menu_fundtransactiondetails", "YuanTa account fund history query");
-  const scope = await findScopeWithSelector(page, 'input[name="fundtransactiondetails_sdate"]');
+  const scope = await site.open(FUND_ACCOUNT_HISTORY_ROUTE);
   for (const name of ["isFromFundDetail", "is_fromFund"]) {
     const field = scope.locator(`input[name="${name}"]`);
-    if (await field.count() && await field.first().inputValue() === "Y")
+    if (await field.count() && await site.frames.race(field.first().inputValue()) === "Y")
       throw new Error("YuanTa account fund history retained a position detail scope.");
   }
   const queryFields = yuantaFundAccountHistoryQueryFields(query, startDate, endDate);
-  const responsePromise = page.waitForResponse(response =>
+  await markShownDocuments(site);
+  const responsePromise = site.frames.race(site.frames.page.waitForResponse(response =>
     response.request().method() === "POST" &&
-    new URL(response.url()).pathname === "/nib/tx/fundtransactiondetails", { timeout: 30_000 });
+    new URL(response.url()).pathname === "/nib/tx/fundtransactiondetails", { timeout: 30_000 }));
   const [, response] = await Promise.all([
-    submitForm(scope, "fundtransactiondetails", queryFields), responsePromise,
+    submitForm(site, scope, "fundtransactiondetails", queryFields), responsePromise,
   ]);
   if (!response.ok()) throw new Error("YuanTa account fund history response failed.");
   assertYuantaFundHistoryQueryRequest(new URLSearchParams(response.request().postData() ?? ""), queryFields);
-  await settleAfterNavigation(page);
-  const resultScope = await waitForFundTables(page,
+  const resultScope = await waitForSubmittedFundTables(site,
     /查詢日期|申購匯率|贖回日期|轉出日期|入帳日期|分配日期|查無資料/,
     "YuanTa account fund history result");
-  if (!yuantaFundHistoryResultIsUnpaged(await resultScope.locator("body").innerHTML()))
+  if (!yuantaFundHistoryResultIsUnpaged(await site.frames.race(resultScope.locator("body").innerHTML())))
     throw new Error("YuanTa account fund history has untraversed pagination.");
 }
 
 async function submitForm(
+  site: YuantaEbankSite,
   scope: BrowserScope,
   action: string,
   values: Record<string, string>,
 ): Promise<void> {
-  await scope
+  await site.frames.race(scope
     .locator("form#mform, form[name='mform']")
     .first()
     .evaluate(
@@ -1120,19 +879,19 @@ async function submitForm(
         form.submit();
       },
       { action, values },
-    );
+    ));
 }
 
 async function parseFundTables(
-  page: Page,
+  site: YuantaEbankSite,
   category: string,
   fund: string | null,
   period: string | null,
-  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
+  sourceText: SourceTextPort,
 ): Promise<ParsedTable[]> {
-  options.signal?.throwIfAborted();
-  const scope = await findScopeWithSelector(page, FUND_TABLE_SELECTOR);
-  options.sourceText?.assertIntact(await scope.locator("body").innerHTML());
+  site.frames.signal.throwIfAborted();
+  const scope = await site.frames.scopeWith(FUND_TABLE_SELECTOR);
+  sourceText.assertIntact(await site.frames.race(scope.locator("body").innerHTML()));
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();
   const parsed: ParsedTable[] = [];
@@ -1158,7 +917,7 @@ async function parseFundTables(
     throw new Error(`No YuanTa fund tables found for ${category}.`);
   }
 
-  options.sourceText?.assertIntact(JSON.stringify(parsed));
+  sourceText.assertIntact(JSON.stringify(parsed));
 
   return parsed;
 }
@@ -1547,14 +1306,14 @@ function findMatchingHeaderRowIndex(
 }
 
 async function captureTables(
-  page: Page,
+  site: YuantaEbankSite,
   parsedTables: ParsedTable[],
   category: string,
   fund: string | null,
   period: string | null,
-  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
+  sourceText: SourceTextPort,
 ): Promise<void> {
-  const tables = await parseFundTables(page, category, fund, period, options);
+  const tables = await parseFundTables(site, category, fund, period, sourceText);
   for (const table of tables) {
     parsedTables.push(table);
   }
@@ -2216,15 +1975,15 @@ function validateYuantaFundHistoryProof(
   return { transactionHistory: history, occurrenceGroupCoverage: coverage };
 }
 
-async function readYuantaFundSource(
+/** Read the fund pages the input asks for, in order, before anything is built (ADR 0065). */
+export async function readYuantaFundSource(
   page: Page,
   input: WorkflowInput,
-  context: Readonly<{
-    sourceText: SourceTextPort;
-    signal: AbortSignal;
-    reportActivity?: (activity: "query" | "download") => Promise<void>;
-  }>,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
 ): Promise<YuantaFundSourceSnapshot> {
+  const site = yuantaEbankSite(page, context);
+  const sourceText = context.text;
   const dateRange = resolveDateRange(input);
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
   const historyEndDate = canonicalSourceDate(dateRange.endDate);
@@ -2233,48 +1992,47 @@ async function readYuantaFundSource(
   let positions: FundPosition[] = [];
   const checkCancelled = () => context.signal.throwIfAborted();
 
-
   if (input.includePortfolioSummary) {
     checkCancelled();
-    await context.reportActivity?.("query");
-    await openPortfolioSummary(page);
-    await captureTables(page, tables, "portfolio-summary", null, null, context);
+    await product.reportActivity("query");
+    await openPortfolioSummary(site);
+    await captureTables(site, tables, "portfolio-summary", null, null, sourceText);
   }
 
   if (input.includeInvestmentDetails || input.includeHistoricalTransactions) {
     checkCancelled();
-    await context.reportActivity?.("query");
-    const overviewScope = await openInvestmentOverview(page);
-    positions = await extractFundPositions(page, input.includeHistoricalTransactions);
+    await product.reportActivity("query");
+    const overviewScope = await openInvestmentOverview(site);
+    positions = await extractFundPositions(site, input.includeHistoricalTransactions);
     if (positions.length === 0 && input.includeHistoricalTransactions) {
-      if (!isYuantaFundPositionAbsentText(await overviewScope.locator("body").innerText()))
+      if (!isYuantaFundPositionAbsentText(await site.frames.race(overviewScope.locator("body").innerText())))
         throw new Error("YuanTa empty position inventory has no explicit source absence evidence.");
       tables.push({ category: "investment-source-evidence", fund: null, period: null,
         tableLabel: "current-position-absence", rows: [["無基金部位"]] });
     }
     await captureTables(
-      page,
+      site,
       tables,
       "investment-overview",
       null,
       null,
-      context,
+      sourceText,
     );
     if (positions.length === 0 && !input.includeHistoricalTransactions)
       throw new Error("Could not find matching YuanTa fund positions.");
 
     for (const position of positions) {
       checkCancelled();
-      await context.reportActivity?.("query");
-      await openInvestmentOverview(page);
-      await openFundDetail(page, position);
+      await product.reportActivity("query");
+      await openInvestmentOverview(site);
+      await openFundDetail(site, position);
       await captureTables(
-        page,
+        site,
         tables,
         "investment-source-evidence",
         fundPositionKey(position),
         null,
-        context,
+        sourceText,
       );
 
     }
@@ -2285,11 +2043,11 @@ async function readYuantaFundSource(
       throw new Error("YuanTa complete account history cannot use a fund subset filter.");
     for (const query of yuantaFundAccountHistoryQueries) {
       checkCancelled();
-      await context.reportActivity?.("query");
-      await queryAccountFundTransactions(page, query, dateRange.startDate, dateRange.endDate);
+      await product.reportActivity("query");
+      await queryAccountFundTransactions(site, query, dateRange.startDate, dateRange.endDate);
       const firstTable = tables.length;
       const key = yuantaFundAccountHistoryKey(query.investmentType);
-      await captureTables(page, tables, "historical-transactions", key, dateRange.label, context);
+      await captureTables(site, tables, "historical-transactions", key, dateRange.label, sourceText);
       for (const table of tables.slice(firstTable)) table.historyQuery = query;
       assertYuantaFundHistoryQueryResult(tables.slice(firstTable), key);
     }
@@ -2304,17 +2062,17 @@ async function readYuantaFundSource(
 
   if (input.includeOffHourOrders) {
     checkCancelled();
-    await context.reportActivity?.("query");
-    await openOffHourOrders(page);
-    await context.reportActivity?.("query");
-    await queryOffHourOrders(page, dateRange.startDate, dateRange.endDate);
+    await product.reportActivity("query");
+    await openOffHourOrders(site);
+    await product.reportActivity("query");
+    await queryOffHourOrders(site, dateRange.startDate, dateRange.endDate);
     await captureTables(
-      page,
+      site,
       tables,
       "offhour-orders",
       null,
       dateRange.label,
-      context,
+      sourceText,
     );
   }
 
@@ -2373,10 +2131,6 @@ export async function runYuantaFundStatements(
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
-  const snapshot = await readYuantaFundSource(page, input, {
-    sourceText: context.text,
-    signal: context.signal,
-    reportActivity: product.reportActivity,
-  });
+  const snapshot = await readYuantaFundSource(page, input, context, product);
   return await stageYuantaFund(snapshot, input, context, product);
 }
