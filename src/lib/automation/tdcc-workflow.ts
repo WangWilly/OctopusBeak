@@ -28,7 +28,9 @@ export type TdccWorkflowOptions = Readonly<{
 function selectedProducts(input: unknown): TdccProductId[] {
   const statementTypes = (input as Partial<TdccWorkflowInput> | null)?.statementTypes;
   if (!Array.isArray(statementTypes)) throw new ProductCollectionFatalError("workflow-failed");
-  return TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
+  const selected = TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
+  if (selected.length === 0) throw new ProductCollectionFatalError("workflow-failed");
+  return selected;
 }
 
 /**
@@ -43,6 +45,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
   }, async (context, input: TdccWorkflowInput) => {
     const selectedIds = selectedProducts(input);
     const tdcc = context.tdcc;
+    await context.event("preparation", "completed", "input-validated");
     await context.event("authentication", "started", "authentication-started");
     const lease = await tdcc.session.open();
     if (lease.status !== "ready") {
@@ -59,6 +62,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     let collectedSummary: ProductCollectionRunSummary;
     try {
       collectedSummary = await collectSelectedProducts({
+        provider: "tdcc",
         productIds: TDCC_PRODUCT_IDS,
         selectedIds,
         signal: context.signal,
@@ -66,8 +70,8 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
         productFailure: context.productFailure,
         classifyFatal: tdccFatalCode,
         classifyFailure: tdccProductFailureCode,
-        async collect(typeId, stagedItems, reportActivity) {
-          await reportActivity("query");
+        async collect(typeId, product) {
+          await product.reportActivity("query");
           const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>
             TDCC_PRODUCT_COLLECTORS[typeId]({
               session,
@@ -84,18 +88,13 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
             return {
               sourceCaptureCount: collected.sourceCaptureCount,
               rowCount: collected.rowCount,
-              itemCount: 0,
               ...(decision.kind === "complete-with-exclusions" ? { completeWithExclusions: true } : {}),
             };
           }
-          stagedItems.push(...collected.items);
-          return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount, itemCount: collected.items.length };
+          product.stage(...collected.items);
+          return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount };
         },
-        commit: (typeId, stagedItems) => context.financialCommit.execute(stagedItems, {
-          provider: "tdcc",
-          product: typeId,
-          signal: context.signal,
-        }),
+        financialCommit: context.financialCommit,
       });
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) {

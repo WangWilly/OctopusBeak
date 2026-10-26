@@ -337,6 +337,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
         ["collection", "deposit-collection-completed"],
         ["decoding", "deposit-source-decoding-completed"],
         ["validation", "deposit-source-validation-completed"],
+        ["validation", "source-validation-completed"],
       ],
     );
   } finally {

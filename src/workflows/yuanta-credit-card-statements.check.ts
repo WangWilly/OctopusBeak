@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
-import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -44,37 +44,9 @@ assert.doesNotMatch(
   "the provider must expose only its typed App runner",
 );
 assert.match(workflowSource, /error instanceof SourceTextIntegrityError/u);
-assert.match(workflowSource, /sourceText\.assertIntact/u);
-assert.match(workflowSource, /deferredCommitItems/u);
+assert.match(workflowSource, /context\.text\.assertIntact/u);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND/);
-const collectorStart = workflowSource.indexOf(
-  "async function collectYuantaCreditCardStatements(",
-);
-const commandSourcePreflight = workflowSource.indexOf(
-  "appCollection.sourceText.assertIntact(JSON.stringify(item.command))",
-);
-const privateCollectionAppend = workflowSource.indexOf(
-  "appCollection.items.push(...items)",
-);
-const runCollection = workflowSource.slice(
-  workflowSource.indexOf("export async function runYuantaCreditCardStatements("),
-  collectorStart,
-);
-const collectCall = runCollection.indexOf(
-  "await collectYuantaCreditCardStatements(",
-);
-const executorCollectionAppend = runCollection.indexOf(
-  "dependencies.deferredCommitItems.push(...appCollection.items)",
-);
-assert.ok(
-  commandSourcePreflight >= collectorStart &&
-    commandSourcePreflight < privateCollectionAppend &&
-    collectCall >= 0 &&
-    collectCall < executorCollectionAppend,
-  "complete command source preflight must precede any append to the Executor sink",
-);
-
 const {
   buildYuantaCanonicalCreditCardCaptures,
   deriveYuantaCanonicalHumanAttestation,
@@ -104,25 +76,16 @@ const {
   runYuantaCreditCardStatements,
 } = await import("./yuanta-credit-card-statements.ts");
 
-await assert.rejects(
-  runYuantaCreditCardStatements(
-    {} as never,
-    {},
-    {} as never,
-  ),
-  /App collection ports are unavailable/u,
-);
 const cancelledSink: PGliteWorkflowRunItem[] = [];
 const cancelled = new AbortController();
 cancelled.abort();
 await assert.rejects(
-  runYuantaCreditCardStatements({} as never, {}, {
-    collectOnly: true,
-    deferredCommitItems: cancelledSink,
-    sourceText: strictSourceText,
-    signal: cancelled.signal,
-    now: () => "2026-09-25T00:00:00.000Z",
-  }),
+  runYuantaCreditCardStatements(
+    {} as never,
+    {} as never,
+    yuantaCollectionContext({ signal: cancelled.signal }),
+    yuantaStagingHandle(cancelledSink),
+  ),
   /abort/i,
 );
 assert.deepEqual(cancelledSink, []);

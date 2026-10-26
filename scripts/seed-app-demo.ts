@@ -25,9 +25,9 @@ import { resolveYuantaFundIdentity } from "../src/workflows/yuanta-fund-identity
 import { admitCanonicalInvestmentCapture } from "../src/ledger/canonical/investment-financial-admission.ts";
 import {
   deriveFubonDomesticDepositAccountNumberEvidence,
-  runFubonStatements,
+  stageFubonDeposit,
+  type FubonDepositProductContext,
   type FubonParsedDepositStatement,
-  type FubonStatementsRunDependencies,
 } from "../src/workflows/fubon-statements.ts";
 import { deriveFubonSourceConnectionKey, fubonStableLoginScope } from "../src/workflows/fubon-source-connection.ts";
 import {
@@ -54,7 +54,7 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { runYuantaForeignCurrencyStatements } = await import("../src/workflows/yuanta-foreign-currency-statements.ts");
+const { stageYuantaForeignCurrency } = await import("../src/workflows/yuanta-foreign-currency-statements.ts");
 const { buildYuantaTradeCanonicalCaptures } = await import("../src/workflows/yuanta-trade-statements.ts");
 
 /**
@@ -176,7 +176,7 @@ function fubonStatementThrough(rows: readonly DepositRow[], through: string) {
 async function collectFubon(
   rows: readonly DepositRow[],
   date: string,
-  accountIdentityContinuity: FubonStatementsRunDependencies["accountIdentityContinuity"],
+  accountIdentityContinuity: FubonDepositProductContext["accountIdentity"]["continuity"],
 ): Promise<PGliteWorkflowRunItem[]> {
   const { statement, balance, rowCount } = fubonStatementThrough(rows, date);
   if (rowCount === 0) return [];
@@ -202,19 +202,21 @@ async function collectFubon(
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await runFubonStatements({} as never, { dateRanges: ["180"], downloadFormat: "EXCEL" }, {
+  await stageFubonDeposit({ accounts: [{ account: FUBON_ACCOUNT, statements: [statement] }] }, {
+    dateRanges: ["180"],
+    downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
-    deferredCommitItems: items,
-    sourceText: strictSourceText,
+  }, {
     signal: new AbortController().signal,
-    accountIdentityContinuity,
-    openTransactionDetailForAccountIndex: async () => "****7028",
-    readDepositAccountOptions: async () => [FUBON_ACCOUNT],
-    selectDepositAccount: async () => undefined,
-    fetchDepositStatement: async () => statement,
-    readCurrentDepositBalances: async () => [currentRow],
-  });
+    now: () => new Date().toISOString(),
+    text: strictSourceText,
+    accountIdentity: { continuity: accountIdentityContinuity },
+  } as never, {
+    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "fubon" }))); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  }, async () => [currentRow]);
   return items;
 }
 
@@ -277,24 +279,26 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await runYuantaForeignCurrencyStatements({} as never, {
+  await stageYuantaForeignCurrency({
+    accounts: [YUANTA_FX_ACCOUNT],
+    downloads: [{ account: YUANTA_FX_ACCOUNT, currency: { label: "美元", value: "USD" }, rows }],
+    currentBalances: [current],
+  }, {
     dateRange: "three_months",
     customDateRange: { startDate: slash(addDays(date, -179)), endDate: slash(date) },
     accountFilters: [],
     currencyFilters: [],
     channelType: "all",
-  }, { yuanta_user_id: "DEMO-YUANTA-USER" } as never, {
-    collectOnly: true,
-    deferredCommitItems: items,
-    openPage: async () => undefined,
-    readAccounts: async () => [YUANTA_FX_ACCOUNT],
-    selectAccount: async () => undefined,
-    readCurrencies: async () => [{ label: "美元", value: "USD" }],
-    queryAccountCurrency: async () => undefined,
-    downloadRows: async () => ({ rows }),
-    readCurrentBalances: async () => [current],
+    yuantaUserId: "DEMO-YUANTA-USER",
+  }, {
+    signal: new AbortController().signal,
+    text: strictSourceText,
     now: () => at,
-  } as never);
+  } as never, {
+    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "yuanta" }))); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  });
   return items;
 }
 

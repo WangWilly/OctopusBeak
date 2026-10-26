@@ -30,7 +30,7 @@ const skipped = { typeId: "deposit", status: "skipped", itemCount: 0, committedC
 test("a product run's status follows its verified receipts and reported absence", () => {
   const cases: readonly [string, ProductCollectionRunSummary, Parameters<typeof productRunResult>[1], string][] = [
     ["verified receipts", summary([success]), {}, "financial-admitted"],
-    ["source-only receipts", summary([success]), { sourceOnly: true }, "source-only"],
+    ["source-only receipts", summary([success], { sourceOnly: true }), {}, "source-only"],
     ["every product absent", summary([noData, notHeld]), {}, "no-data"],
     ["a recoverable failure beside receipts", summary([success, failed]), {}, "partial"],
     ["only preview writes", summary([skipped, attachedWrite], { verifiedCommittedCount: 0 }), {}, "completed"],

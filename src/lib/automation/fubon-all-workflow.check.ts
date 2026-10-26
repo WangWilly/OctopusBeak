@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
-import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
-import type { ProductCollectionInterruptedError } from "./product-collection.ts";
+import type { WorkflowContextWith } from "./workflow-executor.ts";
+import type { ProductCollectionInterruptedError, ProductStageRequest } from "./product-collection.ts";
 import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createServer } from "vite";
@@ -28,26 +28,21 @@ const [depositSource, cardSource, loanSource] = await Promise.all([
   readFile(new URL("../../workflows/fubon-credit-card-statements.ts", import.meta.url), "utf8"),
   readFile(new URL("../../workflows/fubon-loan-statements.ts", import.meta.url), "utf8"),
 ]);
-const depositRun = depositSource.slice(depositSource.indexOf("export async function runFubonStatements"));
-const cardRun = cardSource.slice(cardSource.indexOf("export async function runFubonCreditCardStatements"));
-const loanRun = loanSource.slice(loanSource.indexOf("export async function runFubonLoanStatements"));
-for (const [name, source, run] of [
-  ["deposit", depositSource, depositRun],
-  ["card", cardSource, cardRun],
-  ["loan", loanSource, loanRun],
+for (const [name, source] of [
+  ["deposit", depositSource],
+  ["card", cardSource],
+  ["loan", loanSource],
 ] as const) {
   assert.doesNotMatch(source, /from ["']node:fs|writeFile\(|mkdir\(/u, `${name} provider must not write source or output files`);
   assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u, `${name} provider must not commit outside the App port`);
-  assert.match(run, /deferredCommitItems\.push/u, `${name} provider must return prepared items to the injected App commit`);
 }
 
 const temp = await mkdtemp(join(tmpdir(), "fubon-typed-workflow-"));
 const originalCwd = process.cwd();
 process.chdir(temp);
 
-function item(product: string, value = "complete"): PGliteWorkflowRunItem {
+function item(product: string, value = "complete"): ProductStageRequest {
   return {
-    provider: "fubon",
     product,
     itemKey: `${product}-1`,
     command: {
@@ -140,40 +135,20 @@ try {
       },
       startSessionKeepAlive: () => () => { calls.push("keepalive-stopped"); },
       signOut: async () => { calls.push("signed-out"); },
-      collectDeposit: async (_page, _input, _context, _identity, items) => {
+      collectDeposit: async (_page, _input, _context, product) => {
         calls.push("deposit-collected");
-        items.push(item("deposit"));
-        return {
-          sourceCount: 1,
-          rowCount: 2,
-          itemCount: 1,
-          financialAdmissionCount: 1,
-          currentBalanceExclusions: [
-            { reason: "account-number-evidence-missing", unlinkedStatementAccountShapes: ["AAAAAAAAA-AAAAA-A"] },
-          ],
-          statementExclusions: [
-            {
-              reason: "account-currency-unproven",
-              accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-"),
-              reconciliation: "running-balance-mismatch",
-            },
-            {
-              reason: "account-identity-ambiguous",
-              accountShape: ["999", "9".repeat(16), "AAA", "99"].join("-"),
-              accountCount: 2,
-            },
-          ],
-        };
+        product.stage(item("deposit"));
+        return { sourceCaptureCount: 1, rowCount: 2 };
       },
-      collectCreditCard: async (_page, _input, _context, _identity, items) => {
+      collectCreditCard: async (_page, _input, _context, product) => {
         calls.push("card-collected");
-        items.push(item("credit-card"));
-        return { sourceCount: 1, rowCount: 3, itemCount: 1, financialAdmissionCount: 1 };
+        product.stage(item("credit-card"));
+        return { sourceCaptureCount: 1, rowCount: 3 };
       },
-      collectLoan: async (_page, _input, _context, _identity, items) => {
+      collectLoan: async (_page, _input, _context, product) => {
         calls.push("loan-collected");
-        items.push(item("loan"));
-        return { sourceCount: 1, rowCount: 4, itemCount: 1 };
+        product.stage(item("loan"));
+        return { sourceCaptureCount: 1, rowCount: 4 };
       },
     });
     assert.deepEqual(result, {
@@ -204,21 +179,6 @@ try {
     assert.ok(calls.indexOf("cookies-cleared") >= 0);
     assert.ok(calls.indexOf("cookies-cleared") < calls.indexOf("authenticated"));
     assert.ok(calls.includes("human:fubon-login-captcha"));
-    assert.ok(
-      calls.indexOf("event:collection:deposit-current-balance-excluded-account-number-evidence-missing")
-        > calls.indexOf("deposit-collected"),
-      "an excluded balance row is reported as an operational event",
-    );
-    assert.ok(
-      calls.indexOf("event:collection:deposit-statement-excluded-account-currency-unproven")
-        > calls.indexOf("deposit-collected"),
-      "a statement account excluded for unproven currency is reported as an operational event",
-    );
-    assert.ok(
-      calls.indexOf("event:collection:deposit-statement-excluded-account-identity-ambiguous")
-        > calls.indexOf("deposit-collected"),
-      "a statement account excluded for an ambiguous identity is reported as an operational event",
-    );
     assert.deepEqual(await readdir(temp), [], "typed provider path must not write source or log files");
   }
 
@@ -231,16 +191,16 @@ try {
         authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
+        collectDeposit: async (_page, _input, _context, product) => {
           calls.push("deposit-collected");
-          items.push(item("deposit"));
-          return { sourceCount: 1, rowCount: 2, itemCount: 1, financialAdmissionCount: 1 };
+          product.stage(item("deposit"));
+          return { sourceCaptureCount: 1, rowCount: 2 };
         },
         collectCreditCard: async () => {
           calls.push("card-failed-after-deposit");
           throw new Error("Fubon credit-card source failed completeness admission.");
         },
-        collectLoan: async () => ({ sourceCount: 1, rowCount: 0, itemCount: 0, noDataEvidence: true }),
+        collectLoan: async () => ({ sourceCaptureCount: 1, rowCount: 0, noDataEvidence: true }),
       });
     assert.ok(calls.indexOf("deposit-collected") < calls.indexOf("card-failed-after-deposit"));
     assert.equal(commitBatches.length, 1, "the complete deposit product remains committed");
@@ -261,18 +221,18 @@ try {
         authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
-          items.push(item("deposit", "bad\uFFFDsource"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 1, financialAdmissionCount: 0 };
+        collectDeposit: async (_page, _input, _context, product) => {
+          product.stage(item("deposit", "bad\uFFFDsource"));
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
-        collectCreditCard: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0, financialAdmissionCount: 0 }),
-        collectLoan: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0 }),
+        collectCreditCard: async () => ({ sourceCaptureCount: 0, rowCount: 0 }),
+        collectLoan: async () => ({ sourceCaptureCount: 0, rowCount: 0 }),
       }),
       (error: unknown) => {
         // The workflow is SSR-loaded, so its error class is not this module's.
         const interrupted = error as ProductCollectionInterruptedError;
         assert.equal(interrupted.name, "ProductCollectionInterruptedError");
-        assert.equal(interrupted.errorCode, "source-collection-failed");
+        assert.equal(interrupted.errorCode, "source-integrity-failed");
         assert.equal(interrupted.summary.status, "failed");
         assert.equal(interrupted.summary.committedCount, 0);
         assert.equal(interrupted.summary.products.find((product) => product.typeId === "deposit")?.status, "failed");
@@ -292,12 +252,12 @@ try {
         authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
-          items.push(item("deposit"));
+        collectDeposit: async (_page, _input, _context, product) => {
+          product.stage(item("deposit"));
           throw new Error("Fubon source lacks terminal pagination evidence.");
         },
-        collectCreditCard: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0, financialAdmissionCount: 0 }),
-        collectLoan: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0 }),
+        collectCreditCard: async () => ({ sourceCaptureCount: 0, rowCount: 0 }),
+        collectLoan: async () => ({ sourceCaptureCount: 0, rowCount: 0 }),
       }),
       (error: unknown) => {
         const interrupted = error as ProductCollectionInterruptedError;
@@ -322,15 +282,15 @@ try {
         authenticate: async () => ({ usedExistingSession: false }),
         startSessionKeepAlive: () => () => undefined,
         signOut: async () => undefined,
-        collectDeposit: async (_page, _input, _context, _identity, items) => {
-          items.push(item("deposit"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 1, financialAdmissionCount: 0 };
+        collectDeposit: async (_page, _input, _context, product) => {
+          product.stage(item("deposit"));
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
         collectCreditCard: async () => {
           controller.abort(new Error("cancelled"));
-          return { sourceCount: 1, rowCount: 1, itemCount: 0, financialAdmissionCount: 0 };
+          return { sourceCaptureCount: 1, rowCount: 1 };
         },
-        collectLoan: async () => ({ sourceCount: 0, rowCount: 0, itemCount: 0 }),
+        collectLoan: async () => ({ sourceCaptureCount: 0, rowCount: 0 }),
       }),
       (error: unknown) => {
         const summary = (error as { summary?: { products?: readonly { typeId: string; status: string; committedCount: number }[] } }).summary;
@@ -360,7 +320,7 @@ try {
       collectDeposit: async () => { calls.push("deposit-called"); throw new Error("unselected"); },
       collectCreditCard: async () => {
         calls.push("card-called");
-        return { sourceCount: 1, rowCount: 0, itemCount: 0, financialAdmissionCount: 0, noDataEvidence: true };
+        return { sourceCaptureCount: 1, rowCount: 0, noDataEvidence: true };
       },
       collectLoan: async () => { calls.push("loan-called"); throw new Error("unselected"); },
     });

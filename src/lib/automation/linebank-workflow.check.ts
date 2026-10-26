@@ -54,8 +54,9 @@ const source = {
 function transactionResponse(options: {
   pageNbr: number;
   incomplete?: boolean;
+  empty?: boolean;
 }): LineBankTransactionsResponse {
-  const rows = options.pageNbr === 1
+  const rows = options.pageNbr === 1 && !options.empty
     ? [{
         txSeqNbr: "101",
         crrnDpstNthCnt: 1,
@@ -76,7 +77,7 @@ function transactionResponse(options: {
       ...source,
       pageNbr: options.pageNbr,
       pageCnt: 1000,
-      totTxCnt: options.incomplete ? 2 : 1,
+      totTxCnt: options.empty ? 0 : options.incomplete ? 2 : 1,
       txCnt: rows.length,
       txLst: rows,
     },
@@ -87,6 +88,7 @@ function createPage(options: {
   signedIn?: boolean;
   malformedTransactions?: boolean;
   incompleteTransactions?: boolean;
+  noTransactions?: boolean;
   onSourceRead?: () => void;
   signInAfterPolls?: number;
   onPoll?: () => void;
@@ -178,6 +180,7 @@ function createPage(options: {
         : JSON.stringify(transactionResponse({
             pageNbr: argument.body?.pageNbr ?? 1,
             incomplete: options.incompleteTransactions,
+            empty: options.noTransactions,
           }));
       const bytes = isAccount || !options.malformedTransactions
         ? [...new TextEncoder().encode(body)]
@@ -315,6 +318,14 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
     process.chdir(previousDirectory);
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a LINE Bank run that commits a zero-record capture is financial-admitted, not source-only", async () => {
+  const harness = createContext({ page: createPage({ noTransactions: true }) });
+  const result = await runLineBankProviderWorkflow(harness.context, input);
+  assert.equal(result.status, "financial-admitted", "LINE Bank stages no source assertion, so a committed run is financial (ADR 0064)");
+  assert.equal(result.counts.statementRowCount, 0);
+  assert.ok((result.counts.committedCount ?? 0) > 0);
 });
 
 test("LINE Bank closes an approved alertdialog on an already signed-in page before it collects", async () => {

@@ -4,13 +4,16 @@ import type {
   PGliteWorkflowRunItem,
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
+import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
 import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "./source-access.ts";
-import { SourceTextIntegrityError } from "./source-text.ts";
+import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
 import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type {
   WorkflowEventCounts,
+  WorkflowFinancialCommitPort,
   WorkflowProductFailure,
   WorkflowContextStage,
   WorkflowProgressActivity,
@@ -20,6 +23,12 @@ import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
+
+/**
+ * Typed against the command name so a rename fails to compile, while the
+ * value import stays out of the TDCC probe's PGlite-free module graph.
+ */
+const SOURCE_ADMIT_COMMAND: typeof PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND = "financial.source.admit";
 
 /** The product IDs currently used by the app-owned multi-product workflows. */
 export const COLLECTION_PRODUCT_TYPE_IDS = [
@@ -116,8 +125,6 @@ export function sanitizeCollectionProductOutcomes(
 export type ProductCollectionSummary = Readonly<{
   sourceCaptureCount: number;
   rowCount: number;
-  /** Must equal the number of items appended to the product staging array. */
-  itemCount: number;
   /** Use only when the completed source response explicitly proves no data. */
   noDataEvidence?: boolean;
   /** The source completed with intentional exclusions and no admitted items. */
@@ -132,6 +139,8 @@ export type ProductCollectionRunSummary = Readonly<{
   committedCount: number;
   /** Receipts of verified products only, when Attached Preview Products also wrote; absent means every receipt is verified. */
   verifiedCommittedCount?: number;
+  /** Every verified item the run committed was a source assertion (ADR 0064); absent means false. */
+  sourceOnly?: boolean;
   status: "completed" | "partial" | "failed";
 }>;
 
@@ -146,6 +155,31 @@ export type ProductCollectionStageEvent = (
 export type ProductCollectionActivityReporter = (
   activity: WorkflowProgressActivity,
 ) => Promise<void>;
+
+/** One commit item a collector chooses; the run adds the provider (ADR 0063). */
+export type ProductStageRequest = Readonly<{
+  product: string;
+  itemKey: string;
+  command: PGliteWorkflowCommand;
+  relationCommands?: PGliteWorkflowRunItem["relationCommands"];
+}>;
+
+/** What the run hands each selected product's collector. */
+export type ProductCollectionHandle = Readonly<{
+  /**
+   * Throws `SourceTextIntegrityError` for a command whose text is not intact,
+   * which fails only this product, and `ProductCollectionFatalError` for an
+   * identity this product already staged, which stops the run.
+   */
+  stage: (...requests: readonly ProductStageRequest[]) => void;
+  reportActivity: ProductCollectionActivityReporter;
+  /**
+   * Reports the collector's own run events. A decoding or validation failure
+   * it reports names the product's failure when the collector then throws an
+   * untyped error.
+   */
+  event: ProductCollectionStageEvent;
+}>;
 
 /** Explicit evidence classification for a selected product with no records. */
 export class StatementComponentAbsentError extends Error {
@@ -207,10 +241,9 @@ export function interruptedProductCollectionFromOutput(
   }));
 }
 
-export type CollectSelectedProductsOptions<
-  TId extends CollectionProductTypeId,
-  TItem extends PGliteWorkflowRunItem,
-> = Readonly<{
+export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> = Readonly<{
+  /** The provider every staged item carries. */
+  provider: string;
   /** Every product supported by the parent workflow, in stable UI order. */
   productIds: readonly TId[];
   /**
@@ -222,19 +255,9 @@ export type CollectSelectedProductsOptions<
   prepare?: (typeId: TId) => Promise<void>;
   /** Must fail with a ProductCollectionFatalError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
-  /**
-   * `event` reports the collector's own run events. A decoding or validation
-   * failure it reports names the product's failure when the collector then
-   * throws an untyped error.
-   */
-  collect: (
-    typeId: TId,
-    stagedItems: TItem[],
-    reportActivity: ProductCollectionActivityReporter,
-    event: ProductCollectionStageEvent,
-  ) => Promise<ProductCollectionSummary>;
-  /** Called once for each non-empty, fully collected product staging group. */
-  commit: (typeId: TId, stagedItems: readonly TItem[]) => Promise<PGliteWorkflowRunResult<unknown>>;
+  collect: (typeId: TId, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>;
+  /** Commits each non-empty, fully collected product staging group, labelled with its product type id. */
+  financialCommit: WorkflowFinancialCommitPort;
   event?: ProductCollectionStageEvent;
   /** Receives a product's non-fatal failure with its error; the run itself continues. */
   productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
@@ -329,26 +352,31 @@ function itemIdentity(item: Pick<PGliteWorkflowRunItem, "provider" | "product" |
   return JSON.stringify([item.provider, item.product, item.itemKey]);
 }
 
-function hasUniqueStagedIdentities(items: readonly PGliteWorkflowRunItem[]): boolean {
+/** Accepts one product's items into its private commit group (ADR 0063). */
+function productStager(provider: string, staged: PGliteWorkflowRunItem[]): ProductCollectionHandle["stage"] {
   const identities = new Set<string>();
-  for (const item of items) {
-    if (!item.provider || !item.product || !item.itemKey) return false;
-    const identity = itemIdentity(item);
-    if (identities.has(identity)) return false;
-    identities.add(identity);
-  }
-  return true;
+  return (...requests) => {
+    for (const request of requests) {
+      const item: PGliteWorkflowRunItem = Object.freeze({ ...request, provider });
+      const identity = itemIdentity(item);
+      if (!provider || !item.product || !item.itemKey || identities.has(identity)) {
+        throw new ProductCollectionFatalError("workflow-failed");
+      }
+      strictSourceText.assertIntact(JSON.stringify(item.command));
+      identities.add(identity);
+      staged.push(item);
+    }
+  };
 }
 
 /**
- * Collect and commit one product at a time. Every collector writes into a
- * private staging array so a failure cannot leak incomplete items into another
+ * Collect and commit one product at a time. Every collector stages into a
+ * private commit group so a failure cannot leak incomplete items into another
  * product's commit. A product's own related evidence remains one commit group.
  */
-export async function collectSelectedProducts<
-  TId extends CollectionProductTypeId,
-  TItem extends PGliteWorkflowRunItem,
->(options: CollectSelectedProductsOptions<TId, TItem>): Promise<ProductCollectionRunSummary> {
+export async function collectSelectedProducts<TId extends CollectionProductTypeId>(
+  options: CollectSelectedProductsOptions<TId>,
+): Promise<ProductCollectionRunSummary> {
   const { productIds, selectedIds, signal } = options;
   validateSelection(productIds, selectedIds, options.attached !== undefined);
   const selected = new Set(selectedIds);
@@ -363,6 +391,8 @@ export async function collectSelectedProducts<
   let itemCount = 0;
   let committedCount = 0;
   let firstFailure: unknown = null;
+  let committedAny = false;
+  let committedOnlySourceAssertions = true;
 
   const orderedOutcomes = () => productIds.map((typeId) => completedByType.get(typeId)
     ?? createOutcome(typeId, "skipped", 0, 0, { skipReason: "not_attempted" }));
@@ -373,7 +403,7 @@ export async function collectSelectedProducts<
         orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
       ));
     }
-    const stagedItems: TItem[] = [];
+    const stagedItems: PGliteWorkflowRunItem[] = [];
     const codePrefix = slug(typeId);
     let sourceCountForProduct = 0;
     let rowsForProduct = 0;
@@ -401,26 +431,24 @@ export async function collectSelectedProducts<
       const reportActivity: ProductCollectionActivityReporter = async (activity) => {
         await emitProductEvent("collection", "advanced", `${codePrefix}-collection-${activity}-started`, { activity });
       };
-      const collected = await options.collect(typeId, stagedItems, reportActivity, collectorEvent);
+      const collected = await options.collect(typeId, {
+        stage: productStager(options.provider, stagedItems),
+        reportActivity,
+        event: collectorEvent,
+      });
       await options.assertSession?.();
 
       if (!isSafeCount(collected.sourceCaptureCount)
         || !isSafeCount(collected.rowCount)
-        || !isSafeCount(collected.itemCount)
         || (collected.noDataEvidence !== undefined && typeof collected.noDataEvidence !== "boolean")
         || (collected.completeWithExclusions !== undefined && typeof collected.completeWithExclusions !== "boolean")
         || (collected.completeWithExclusions === true
-          && (collected.itemCount !== 0 || collected.noDataEvidence === true))
-        || stagedItems.length !== collected.itemCount) {
+          && (stagedItems.length !== 0 || collected.noDataEvidence === true))) {
         throw new ProductCollectionFatalError("workflow-failed");
       }
       sourceCountForProduct = collected.sourceCaptureCount;
       rowsForProduct = collected.rowCount;
-      productItemCount = collected.itemCount;
-
-      if (!hasUniqueStagedIdentities(stagedItems)) {
-        throw new ProductCollectionFatalError("workflow-failed");
-      }
+      productItemCount = stagedItems.length;
       signal.throwIfAborted();
 
       if (stagedItems.length === 0) {
@@ -474,8 +502,14 @@ export async function collectSelectedProducts<
       let commitResult: PGliteWorkflowRunResult<unknown>;
       // The commit port reports this stage and has already verified the receipts (ADR 0056).
       lastStage = "commit";
+      committedAny = true;
+      committedOnlySourceAssertions &&= stagedItems.every((item) => item.command.kind === SOURCE_ADMIT_COMMAND);
       try {
-        commitResult = await options.commit(typeId, stagedItems);
+        commitResult = await options.financialCommit.execute(stagedItems, {
+          provider: options.provider,
+          product: typeId,
+          signal,
+        });
       } catch (error) {
         // Only the commit port knows a request may have landed; any other error
         // committed nothing. A cancellation stays a cancellation; an unrecorded
@@ -604,7 +638,21 @@ export async function collectSelectedProducts<
 
   const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
   if (signal.aborted) throw new ProductCollectionInterruptedError("cancelled", summary);
-  return finishProductCollectionRun(summary, firstFailure, options.attached ? await options.attached() : null, signal);
+  const finished = finishProductCollectionRun(
+    { ...summary, sourceOnly: committedAny && committedOnlySourceAssertions },
+    firstFailure,
+    options.attached ? await options.attached() : null,
+    signal,
+  );
+  // Validation completes only when a selected verified product did not fail;
+  // Attached Preview Products alone never complete it.
+  if (summary.products.some((product) => product.status !== "failed" && product.status !== "skipped")) {
+    await options.event?.("validation", "completed", "source-validation-completed", {
+      completed: finished.sourceCaptureCount,
+      total: finished.sourceCaptureCount,
+    });
+  }
+  return finished;
 }
 
 /**
@@ -628,6 +676,7 @@ function finishProductCollectionRun(
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
     ...(attached ? { verifiedCommittedCount: verified.committedCount } : {}),
+    ...(verified.sourceOnly ? { sourceOnly: true } : {}),
     status: productRunStatus(products, committed),
   });
   // An uncertain commit remains a failure even when cancellation also wins.

@@ -11,8 +11,8 @@ import {
   YUANTA_LOAN_PAGINATION_FIXTURES_V2,
 } from "./yuanta-loan-statements.fixtures.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -30,6 +30,7 @@ const {
   readYuantaLoanAccountOptions,
   parseYuantaLoanStatementRows,
   runYuantaLoanStatements,
+  stageYuantaLoan,
   deriveYuantaLoanAccountNumberEvidence,
   yuantaLoanSelectorAccountEvidence,
 } =
@@ -102,6 +103,8 @@ test("Yuanta exported loan run fails closed without caller Source Connection ide
       runYuantaLoanStatements(
         {} as Parameters<typeof runYuantaLoanStatements>[0],
         {} as Parameters<typeof runYuantaLoanStatements>[1],
+        yuantaCollectionContext(),
+        yuantaStagingHandle([]),
       ),
     /stable caller-supplied Source Connection scope and key/u,
   );
@@ -122,7 +125,7 @@ assert.doesNotMatch(
   "the App-owned provider must not retain a separate runner or persistence path",
 );
 assert.match(loanSource, /sourceText\??\.assertIntact/u);
-assert.match(loanSource, /await openStatementPage\(page\)/);
+assert.match(loanSource, /await openLoanStatementPage\(page\)/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
@@ -190,27 +193,13 @@ test("Yuanta loan typed collection admits complete source without writing or com
   const deferred: PGliteWorkflowRunItem[] = [];
   const testLoanAccount = "1234".repeat(3) + "12";
   const account = { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount };
-  const controller = new AbortController();
-  const collection = await runYuantaLoanStatements(
-    {} as never,
+  const collection = await stageYuantaLoan(
     {
-      dateRange: "one_year",
-      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-      loanAccountFilters: [],
-    },
-    {
-      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
-      sourceConnectionKey: deriveSourceConnectionIdentityKey(
-        "yuanta",
-        "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
-      ),
-      observedAt: () => "2026-02-01T00:00:00.000Z",
-      openLoanStatementPage: async () => undefined,
-      readLoanAccountOptions: async () => [account],
-      queryLoanAccount: async () => undefined,
-      traverseLoanStatementPages: async (_page, _label, options) => {
-        assert.equal(options?.silent, true);
-        return {
+      range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      accounts: [{
+        account,
+        observedAt: "2026-02-01T00:00:00.000Z",
+        statement: {
           rows: [{
             accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
             paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
@@ -219,46 +208,55 @@ test("Yuanta loan typed collection admits complete source without writing or com
           }],
           completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
           pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
-        };
-      },
-      collectOnly: true,
-      deferredCommitItems: deferred,
-      sourceText: strictSourceText,
-      signal: controller.signal,
+        },
+      }],
     },
+    {
+      dateRange: "one_year",
+      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+      loanAccountFilters: [],
+      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      sourceConnectionKey: deriveSourceConnectionIdentityKey(
+        "yuanta",
+        "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      ),
+    },
+    yuantaCollectionContext({ now: "2026-02-01T00:00:00.000Z" }),
+    yuantaStagingHandle(deferred),
   );
-  assert.deepEqual(collection, { sourceCount: 1, rowCount: 1, itemCount: 1 });
+  assert.deepEqual(collection, { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.product, "loan");
 });
 
 test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
+  const loanAccountNumber = ["1234567", "8901234"].join("");
   const deferred: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
-    runYuantaLoanStatements(
-      {} as never,
-      { dateRange: "one_year", loanAccountFilters: [] },
+    stageYuantaLoan(
       {
+        range: { startDate: "2025-09-25", endDate: "2026-09-25" },
+        accounts: [{
+          account: { label: `房屋貸款 - ${loanAccountNumber}`, value: loanAccountNumber },
+          observedAt: "2026-09-25T00:00:00.000Z",
+          statement: {
+            rows: [],
+            completeness: null,
+            pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
+          },
+        }],
+      },
+      {
+        dateRange: "one_year",
+        loanAccountFilters: [],
         sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
         sourceConnectionKey: deriveSourceConnectionIdentityKey(
           "yuanta",
           "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
         ),
-        openLoanStatementPage: async () => undefined,
-        readLoanAccountOptions: async () => [
-          { label: "房屋貸款 - 12345678901234", value: "12345678901234" },
-        ],
-        queryLoanAccount: async () => undefined,
-        traverseLoanStatementPages: async () => ({
-          rows: [],
-          completeness: null,
-          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
-        }),
-        collectOnly: true,
-        deferredCommitItems: deferred,
-        sourceText: strictSourceText,
-        signal: new AbortController().signal,
       },
+      yuantaCollectionContext(),
+      yuantaStagingHandle(deferred),
     ),
     /explicit complete terminal page evidence/u,
   );

@@ -5,8 +5,11 @@ import type {
   PGliteWorkflowRunItem,
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
-import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-client.ts";
-import type { WorkflowProductFailure } from "./workflow-executor.ts";
+import {
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../../ledger/pglite/workflow-client.ts";
+import type { WorkflowFinancialCommitPort, WorkflowProductFailure } from "./workflow-executor.ts";
 import {
   collectSelectedProducts,
   interruptedProductCollectionFromOutput,
@@ -14,15 +17,15 @@ import {
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
   type CollectionProductOutcome,
+  type ProductStageRequest,
 } from "./product-collection.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 import { productRunResult } from "./workflow-run-result.ts";
 
-function item(product: string, itemKey: string): PGliteWorkflowRunItem {
+function item(product: string, itemKey: string): ProductStageRequest {
   return {
-    provider: "fubon",
     product,
     itemKey,
     command: {
@@ -60,6 +63,13 @@ function result(
 
 const signal = () => new AbortController();
 
+/** A commit port whose result depends on the product type id the run labels it with. */
+function commitWith(
+  commit: (typeId: string, staged: readonly PGliteWorkflowRunItem[]) => Promise<PGliteWorkflowRunResult<unknown>>,
+): WorkflowFinancialCommitPort {
+  return { execute: (items, options) => commit(options?.product ?? "", items) };
+}
+
 /** A run in which nothing produced durable data throws its summary with the failed product's code. */
 async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const error = await run.then(() => null, (rejection: unknown) => rejection);
@@ -74,18 +84,19 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const collected: string[] = [];
   const commits: string[][] = [];
   const summary = await collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["credit_card"],
     signal: controller.signal,
-    collect: async (typeId, staged) => {
+    collect: async (typeId, product) => {
       collected.push(typeId);
-      staged.push(item(typeId, `${typeId}-1`));
-      return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      product.stage(item(typeId, `${typeId}-1`));
+      return { sourceCaptureCount: 1, rowCount: 1 };
     },
-    commit: async (_typeId, staged) => {
+    financialCommit: commitWith(async (_typeId, staged) => {
       commits.push(staged.map(({ itemKey }) => itemKey));
       return result("completed", staged.map(committed));
-    },
+    }),
   });
   assert.deepEqual(collected, ["credit_card"], "an unselected product is never invoked");
   assert.deepEqual(commits, [["credit_card-1"]]);
@@ -101,18 +112,19 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const committedProducts: string[] = [];
   const productFailures: WorkflowProductFailure[] = [];
   const summary = await collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
-    collect: async (typeId, staged) => {
-      staged.push(item(typeId, `${typeId}-staged`));
+    collect: async (typeId, product) => {
+      product.stage(item(typeId, `${typeId}-staged`));
       if (typeId === "credit_card") throw new Error("product decoder failed after staging");
-      return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      return { sourceCaptureCount: 1, rowCount: 1 };
     },
-    commit: async (typeId, staged) => {
+    financialCommit: commitWith(async (typeId, staged) => {
       committedProducts.push(typeId);
       return result("completed", staged.map(committed));
-    },
+    }),
     productFailure: async (failure) => { productFailures.push(failure); },
   });
   assert.deepEqual(committedProducts, ["deposit", "loan"]);
@@ -134,14 +146,15 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   const productFailures: WorkflowProductFailure[] = [];
   const summary = await collectSelectedProducts({
+    provider: "fubon",
     productIds: ["credit_card"],
     selectedIds: ["credit_card"],
     signal: controller.signal,
-    collect: async (typeId, staged) => {
-      staged.push(item(typeId, "transactions"), item(typeId, "current-balance"));
-      return { sourceCaptureCount: 0, rowCount: 141, itemCount: 2 };
+    collect: async (typeId, product) => {
+      product.stage(item(typeId, "transactions"), item(typeId, "current-balance"));
+      return { sourceCaptureCount: 0, rowCount: 141 };
     },
-    commit: async (_typeId, [transactions, balance]) => {
+    financialCommit: commitWith(async (_typeId, [transactions, balance]) => {
       const rejected = {
         provider: transactions!.provider,
         product: transactions!.product,
@@ -155,7 +168,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
         { ...rejected, status: "failed", failureKind: "item", diagnostics: [rejected] },
         committed(balance!),
       ], [rejected]);
-    },
+    }),
     productFailure: async (failure) => { productFailures.push(failure); },
   });
   assert.deepEqual(
@@ -172,14 +185,15 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   const committedProducts: string[] = [];
   const summary = await collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
-    collect: async (typeId, staged) => {
-      staged.push(item(typeId, `${typeId}-1`));
-      return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+    collect: async (typeId, product) => {
+      product.stage(item(typeId, `${typeId}-1`));
+      return { sourceCaptureCount: 1, rowCount: 1 };
     },
-    commit: async (typeId, staged) => {
+    financialCommit: commitWith(async (typeId, staged) => {
       if (typeId !== "credit_card") {
         committedProducts.push(typeId);
         return result("completed", staged.map(committed));
@@ -194,7 +208,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
         message: "Financial workflow command failed.",
       };
       return result("failed", [{ ...refused, status: "failed", failureKind: "item", diagnostics: [refused] }], [refused]);
-    },
+    }),
   });
   assert.deepEqual(committedProducts, ["deposit", "loan"], "products the store still admits keep collecting");
   assert.deepEqual(summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
@@ -209,6 +223,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const dispositions: Array<"no_data" | "not_held" | undefined> = ["no_data", "not_held", undefined];
   const absentFailures: string[] = [];
   const summary = await failedRunSummary(collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
@@ -216,7 +231,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       const disposition = dispositions[["deposit", "credit_card", "loan"].indexOf(typeId)]!;
       throw new StatementComponentAbsentError("no source record", disposition);
     },
-    commit: async () => { throw new Error("empty outcomes must not commit"); },
+    financialCommit: commitWith(async () => { throw new Error("empty outcomes must not commit"); }),
     productFailure: async (failure) => { absentFailures.push(failure.statementType); },
   }), "source-collection-failed");
   assert.deepEqual(absentFailures, ["loan"], "explicit absence evidence is not a failure diagnostic");
@@ -231,17 +246,18 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
-      collect: async (typeId, staged) => {
-        staged.push(item(typeId, `${typeId}-1`));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (typeId, product) => {
+        product.stage(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async (typeId, staged) => {
+      financialCommit: commitWith(async (typeId, staged) => {
         if (typeId === "deposit") controller.abort();
         return result("completed", staged.map(committed));
-      },
+      }),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -259,14 +275,15 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
-      collect: async (typeId, staged) => {
-        staged.push(item(typeId, `${typeId}-1`));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (typeId, product) => {
+        product.stage(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async (_typeId, staged) => result("completed", staged.map(committed)),
+      financialCommit: commitWith(async (_typeId, staged) => result("completed", staged.map(committed))),
       prepare: async (typeId) => {
         if (typeId === "credit_card") throw new ProductCollectionFatalError("authentication-failed");
       },
@@ -290,14 +307,15 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const commits: string[] = [];
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
-      collect: async (typeId, staged) => {
-        staged.push(item(typeId, `${typeId}-1`));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (typeId, product) => {
+        product.stage(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async (typeId, staged) => {
+      financialCommit: commitWith(async (typeId, staged) => {
         commits.push(typeId);
         if (typeId === "deposit") return result("completed", staged.map(committed));
         return result("failed", staged.map((entry) => ({
@@ -308,7 +326,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
           failureKind: "refused" as const,
           diagnostics: [],
         })));
-      },
+      }),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -327,18 +345,19 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit", "credit_card"],
       selectedIds: ["deposit", "credit_card"],
       signal: controller.signal,
-      collect: async (typeId, staged) => {
-        staged.push(item(typeId, `${typeId}-1`));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (typeId, product) => {
+        product.stage(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async (typeId, staged) => {
+      financialCommit: commitWith(async (typeId, staged) => {
         if (typeId === "deposit") return result("completed", staged.map(committed));
         // The commit port verified the receipts and found none that answers its item.
         throw new CommitOutcomeUnknownError(0);
-      },
+      }),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -357,32 +376,106 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
-      collect: async (_typeId, staged) => {
-        staged.push(item("domestic", "duplicate-key"), item("domestic", "duplicate-key"));
-        return { sourceCaptureCount: 1, rowCount: 2, itemCount: 2 };
+      collect: async (_typeId, product) => {
+        product.stage(item("domestic", "duplicate-key"));
+        product.stage(item("domestic", "duplicate-key"));
+        throw new Error("a repeated identity must stop the collector where it is staged");
       },
-      commit: async () => { throw new Error("duplicate staged identities must fail before commit"); },
+      financialCommit: commitWith(async () => { throw new Error("duplicate staged identities must fail before commit"); }),
     }),
-    (error: unknown) => error instanceof ProductCollectionInterruptedError
-      && error.errorCode === "workflow-failed",
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "workflow-failed");
+      assert.deepEqual(error.summary.products.map(({ status, itemCount, committedCount }) => [status, itemCount, committedCount]), [
+        ["failed", 0, 0],
+      ], "a product stopped while staging completed no items");
+      return true;
+    },
   );
+}
+
+{
+  const committedItems: PGliteWorkflowRunItem[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "yuanta",
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: signal().signal,
+    collect: async (_typeId, product) => {
+      product.stage(item("domestic-deposit", "same-key"), item("current-balance", "same-key"));
+      product.stage({ ...item("current-balance", "other-key"), provider: "smuggled" } as ProductStageRequest);
+      return { sourceCaptureCount: 1, rowCount: 3 };
+    },
+    financialCommit: commitWith(async (_typeId, staged) => {
+      committedItems.push(...staged);
+      return result("completed", staged.map(committed));
+    }),
+  });
+  assert.deepEqual(
+    committedItems.map(({ provider, product, itemKey }) => [provider, product, itemKey]),
+    [
+      ["yuanta", "domestic-deposit", "same-key"],
+      ["yuanta", "current-balance", "same-key"],
+      ["yuanta", "current-balance", "other-key"],
+    ],
+    "every staged item carries the run's provider, and product labels keep one key's kinds apart",
+  );
+  assert.equal(summary.products[0]?.itemCount, 3, "the run counts what it staged");
+  assert.equal(summary.itemCount, 3);
+}
+
+{
+  const committedProducts: string[] = [];
+  const productFailures: WorkflowProductFailure[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["deposit", "loan"],
+    selectedIds: ["deposit", "loan"],
+    signal: signal().signal,
+    collect: async (typeId, product) => {
+      product.stage(item(typeId, `${typeId}-intact`));
+      if (typeId === "deposit") {
+        product.stage({
+          product: typeId,
+          itemKey: "deposit-corrupt",
+          command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: { memo: "\uFFFD" } as never },
+        });
+      }
+      return { sourceCaptureCount: 1, rowCount: 1 };
+    },
+    financialCommit: commitWith(async (typeId, staged) => {
+      committedProducts.push(typeId);
+      return result("completed", staged.map(committed));
+    }),
+    productFailure: async (failure) => { productFailures.push(failure); },
+  });
+  assert.deepEqual(committedProducts, ["loan"], "a product that staged a corrupt command commits nothing");
+  assert.deepEqual(summary.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
+    ["deposit", "failed", "source-integrity-failed"],
+    ["loan", "success", undefined],
+  ], "a corrupt command fails only its product");
+  assert.deepEqual(productFailures.map(({ statementType, errorCode }) => [statementType, errorCode]), [
+    ["deposit", "source-integrity-failed"],
+  ]);
 }
 
 {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
-      collect: async (_typeId, staged) => {
-        staged.push(item("domestic", "deposit-1"), item("domestic", "deposit-2"));
-        return { sourceCaptureCount: 2, rowCount: 2, itemCount: 2 };
+      collect: async (_typeId, product) => {
+        product.stage(item("domestic", "deposit-1"), item("domestic", "deposit-2"));
+        return { sourceCaptureCount: 2, rowCount: 2 };
       },
-      commit: async () => { throw new CommitOutcomeUnknownError(1); },
+      financialCommit: commitWith(async () => { throw new CommitOutcomeUnknownError(1); }),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -400,18 +493,19 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   const controller = signal();
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
-      collect: async (_typeId, staged) => {
-        staged.push(item("deposit", "deposit-1"));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (_typeId, product) => {
+        product.stage(item("deposit", "deposit-1"));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async () => {
+      financialCommit: commitWith(async () => {
         controller.abort();
         controller.signal.throwIfAborted();
         throw new Error("unreachable");
-      },
+      }),
     }),
     (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
   );
@@ -423,17 +517,18 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
   let commits = 0;
   await assert.rejects(
     collectSelectedProducts({
+      provider: "fubon",
       productIds: ["deposit", "loan"],
       selectedIds: ["deposit", "loan"],
       signal: controller.signal,
-      collect: async (typeId, staged) => {
-        staged.push(item(typeId, `${typeId}-1`));
-        return { sourceCaptureCount: 1, rowCount: 1, itemCount: 1 };
+      collect: async (typeId, product) => {
+        product.stage(item(typeId, `${typeId}-1`));
+        return { sourceCaptureCount: 1, rowCount: 1 };
       },
-      commit: async () => {
+      financialCommit: commitWith(async () => {
         commits += 1;
         throw new Error("event-persistence-failed");
-      },
+      }),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -491,18 +586,19 @@ function depositRun(
 ) {
   const controller = options.controller ?? signal();
   return collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: controller.signal,
-    collect: async (typeId, staged) => {
+    collect: async (typeId, product) => {
       if (options.collect === "fail") throw new Error("synthetic incomplete verified source");
-      if (options.collect === "no_data") return { sourceCaptureCount: 2, rowCount: 0, itemCount: 0, noDataEvidence: true };
-      staged.push(item(typeId, `${typeId}-1`), item(typeId, `${typeId}-2`));
-      return { sourceCaptureCount: 2, rowCount: 17, itemCount: 2 };
+      if (options.collect === "no_data") return { sourceCaptureCount: 2, rowCount: 0, noDataEvidence: true };
+      product.stage(item(typeId, `${typeId}-1`), item(typeId, `${typeId}-2`));
+      return { sourceCaptureCount: 2, rowCount: 17 };
     },
-    commit: async (_typeId, staged) => options.commit === "refused"
+    financialCommit: commitWith(async (_typeId, staged) => options.commit === "refused"
       ? result("failed", staged.map((entry) => ({ ...committed(entry), status: "failed", failureKind: "refused" }) as never))
-      : result(options.commit ?? "completed", staged.map(committed)),
+      : result(options.commit ?? "completed", staged.map(committed))),
     ...(attached ? { attached } : {}),
   });
 }
@@ -581,11 +677,12 @@ for (const code of ["authentication-failed", "commit-outcome-unknown"] as const)
     firstFailure: new Error("synthetic invalid card source"),
   });
   await assert.rejects(collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit"],
     selectedIds: [],
     signal: signal().signal,
     collect: async () => { throw new Error("an unselected verified product must not collect"); },
-    commit: async () => { throw new Error("an unselected verified product must not commit"); },
+    financialCommit: commitWith(async () => { throw new Error("an unselected verified product must not commit"); }),
     attached: async () => collected,
   }), (error: unknown) => error === collected.firstFailure, "an attached-only sole failure keeps its original error");
 }
@@ -611,7 +708,8 @@ for (const attached of [failedPreview, previewRun({ products: [{ typeId: "credit
 {
   const summary = await depositRun(undefined);
   const output = productRunResult(summary);
-  assert.deepEqual(interruptedProductCollectionFromOutput(output)?.summary, summary,
+  const { sourceOnly: _decidedStatus, ...productsAndCounts } = summary;
+  assert.deepEqual(interruptedProductCollectionFromOutput(output)?.summary, productsAndCounts,
     "late cancellation rebuilds the run's products and counts from its run result");
   assert.equal(interruptedProductCollectionFromOutput({
     ...output,
@@ -622,15 +720,16 @@ for (const attached of [failedPreview, previewRun({ products: [{ typeId: "credit
 for (const [stage, expected] of [["validation", "source-validation-failed"], ["decoding", "source-integrity-failed"], [null, "source-collection-failed"]] as const) {
   const forwarded: string[] = [];
   const summary = await failedRunSummary(collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
     event: async (_stage, _outcome, code) => { forwarded.push(code); },
-    collect: async (_typeId, _staged, _reportActivity, event) => {
+    collect: async (_typeId, { event }) => {
       if (stage) await event(stage, "failed", "source-rejected");
       throw new Error("synthetic untyped collector failure");
     },
-    commit: async () => { throw new Error("a failed product must not commit"); },
+    financialCommit: commitWith(async () => { throw new Error("a failed product must not commit"); }),
   }), expected);
   assert.equal(summary.products[0]?.errorCode, expected, `a reported ${stage ?? "no"} failure names the product`);
   if (stage) assert.ok(forwarded.includes("source-rejected"), "collector events still reach the run");
@@ -638,14 +737,85 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
 
 {
   const summary = await failedRunSummary(collectSelectedProducts({
+    provider: "fubon",
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
-    collect: async (_typeId, _staged, _reportActivity, event) => {
+    collect: async (_typeId, { event }) => {
       await event("validation", "failed", "source-rejected");
       throw new SourceUnavailableError();
     },
-    commit: async () => { throw new Error("a failed product must not commit"); },
+    financialCommit: commitWith(async () => { throw new Error("a failed product must not commit"); }),
   }), "source-unavailable");
   assert.equal(summary.products[0]?.errorCode, "source-unavailable", "a typed error outranks a reported stage");
+}
+
+{
+  const executions: Array<[string | undefined, string | undefined]> = [];
+  const events: string[] = [];
+  const run = (kinds: Readonly<Record<string, string>>) => collectSelectedProducts({
+    provider: "hncb",
+    productIds: ["deposit", "loan"],
+    selectedIds: ["deposit", "loan"],
+    signal: signal().signal,
+    event: async (stage, outcome, code, counts) => {
+      if (stage === "validation" && outcome === "completed" && !code.startsWith("deposit-") && !code.startsWith("loan-")) {
+        events.push(`${code}:${counts?.completed}/${counts?.total}`);
+      }
+    },
+    collect: async (typeId, product) => {
+      product.stage({ ...item(typeId, `${typeId}-1`), command: { kind: kinds[typeId], request: {} } as never });
+      return { sourceCaptureCount: 2, rowCount: 1 };
+    },
+    financialCommit: {
+      execute: async (items, options) => {
+        executions.push([options?.provider, options?.product]);
+        return result("completed", items.map(committed));
+      },
+    },
+  });
+
+  const sourceOnly = await run({ deposit: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, loan: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND });
+  assert.deepEqual(executions, [["hncb", "deposit"], ["hncb", "loan"]], "the run commits each product with its provider and product type id");
+  assert.equal(productRunResult(sourceOnly).status, "source-only", "a run that committed only source assertions is source-only");
+
+  const financialFirst = await run({ deposit: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, loan: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND });
+  assert.equal(productRunResult(financialFirst).status, "financial-admitted",
+    "a financial command in an earlier product makes the run financial-admitted");
+  const financialLast = await run({ deposit: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, loan: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND });
+  assert.equal(productRunResult(financialLast).status, "financial-admitted",
+    "a financial command in a later product makes the run financial-admitted");
+  assert.deepEqual(events, Array(3).fill("source-validation-completed:4/4"), "the run reports its closing event once per run with its Source Capture count");
+}
+
+{
+  const codes: string[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "esun",
+    productIds: ["credit_card"],
+    selectedIds: [],
+    signal: signal().signal,
+    event: async (_stage, _outcome, code) => { codes.push(code); },
+    collect: async () => { throw new Error("an unselected verified product must not collect"); },
+    financialCommit: commitWith(async () => { throw new Error("an unselected verified product must not commit"); }),
+    attached: async () => previewRun(),
+  });
+  assert.equal(summary.status, "completed");
+  assert.ok(!codes.includes("source-validation-completed"), "a run without verified products reports no closing validation");
+}
+
+{
+  const codes: string[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "cathay",
+    productIds: ["domestic"],
+    selectedIds: ["domestic"],
+    signal: signal().signal,
+    event: async (_stage, _outcome, code) => { codes.push(code); },
+    collect: async () => { throw new Error("synthetic verified source failure"); },
+    financialCommit: commitWith(async () => { throw new Error("a failed verified product must not commit"); }),
+    attached: async () => previewRun(),
+  });
+  assert.equal(summary.status, "partial", "attached receipts keep the run partial");
+  assert.ok(!codes.includes("source-validation-completed"), "a run whose verified products all failed never completes validation");
 }

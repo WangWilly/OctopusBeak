@@ -22,7 +22,7 @@
     {
       "options": {
         "provider": "sinopac",
-        "product": "financial"
+        "product": "deposit"
       },
       "items": [
         {
@@ -995,6 +995,15 @@
         "completed": 4,
         "total": 4,
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     }
   ]

@@ -554,42 +554,6 @@
     {
       "stage": "collection",
       "outcome": "advanced",
-      "code": "deposit-collection-query-started",
-      "counts": {
-        "activity": "query",
-        "statementType": "deposit"
-      }
-    },
-    {
-      "stage": "collection",
-      "outcome": "advanced",
-      "code": "deposit-collection-query-started",
-      "counts": {
-        "activity": "query",
-        "statementType": "deposit"
-      }
-    },
-    {
-      "stage": "collection",
-      "outcome": "advanced",
-      "code": "deposit-collection-query-started",
-      "counts": {
-        "activity": "query",
-        "statementType": "deposit"
-      }
-    },
-    {
-      "stage": "collection",
-      "outcome": "advanced",
-      "code": "deposit-collection-query-started",
-      "counts": {
-        "activity": "query",
-        "statementType": "deposit"
-      }
-    },
-    {
-      "stage": "collection",
-      "outcome": "advanced",
       "code": "deposit-statement-excluded-account-identity-ambiguous"
     },
     {

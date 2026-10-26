@@ -8,7 +8,7 @@ const [allSource, domesticSource, foreignSource] = await Promise.all([
 ]);
 
 assert.match(allSource, /export async function runCathayAllProviderWorkflow/);
-assert.match(allSource, /context\.financialCommit!?\.execute\(/);
+assert.match(allSource, /financialCommit: context\.financialCommit/);
 assert.match(allSource, /collectCathayDomesticFinancialRequests/);
 assert.match(allSource, /collectCathayForeignFinancialCaptures/);
 assert.doesNotMatch(

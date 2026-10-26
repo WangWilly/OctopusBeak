@@ -3,9 +3,6 @@ import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  type PGliteWorkflowRunItem,
-} from "../ledger/pglite/workflow-run.ts";
-import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -42,6 +39,7 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import {
   collectSelectedProducts,
   type ProductCollectionSummary,
+  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
@@ -1106,7 +1104,6 @@ export async function runCtbcProviderWorkflow(
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("CTBC workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
 
@@ -1114,15 +1111,15 @@ export async function runCtbcProviderWorkflow(
     await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
 
     let count = 0;
-    let financialAdmitted = false;
     const summary = await collectSelectedProducts({
+      provider: "ctbc",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
-        const productContext: WorkflowContext = { ...context, event };
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         const collected = await (dependencies.collectStatements ??
           ((target, input) => collectCtbcStatements(
@@ -1164,7 +1161,7 @@ export async function runCtbcProviderWorkflow(
 
         const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
         const financialCaptures: ExistingCtbcFinancialCapture[] = [];
-        const items: PGliteWorkflowRunItem[] = [];
+        const items: ProductStageRequest[] = [];
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
           total: validatedCaptures.length,
@@ -1175,7 +1172,6 @@ export async function runCtbcProviderWorkflow(
           const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
           if (capture.responses.every((response) => response.rows.length === 0)) {
             items.push({
-              provider: "ctbc",
               product: "domestic-deposit",
               itemKey: captureId,
               command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
@@ -1198,7 +1194,6 @@ export async function runCtbcProviderWorkflow(
           }
           financialCaptures.push(admission.capture);
           items.push({
-            provider: "ctbc",
             product: "domestic-deposit",
             itemKey: captureId,
             command: {
@@ -1216,7 +1211,7 @@ export async function runCtbcProviderWorkflow(
         });
         context.signal.throwIfAborted();
         const readCurrent = dependencies.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
-        const balances: PGliteWorkflowRunItem[] = [];
+        const balances: ProductStageRequest[] = [];
         if (financialCaptures.length > 0) {
           await productContext.event("collection", "started", "current-balance-collection-started");
           await productContext.event("decoding", "started", "current-balance-decoding-started");
@@ -1245,7 +1240,6 @@ export async function runCtbcProviderWorkflow(
               if (!matching)
                 throw new Error("CTBC current deposit snapshot has no admitted account identity.");
               balances.push({
-                provider: "ctbc",
                 product: "current-balance",
                 itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
                 command: {
@@ -1269,22 +1263,16 @@ export async function runCtbcProviderWorkflow(
           });
         }
 
-        stagedItems.push(...items, ...balances);
+        product.stage(...items, ...balances);
         count = collected.output.count;
-        financialAdmitted = financialCaptures.length > 0;
         return {
           sourceCaptureCount: validatedCaptures.length,
           rowCount: collected.output.rowCount,
-          itemCount: stagedItems.length,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "ctbc",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
 
-    return productRunResult(summary, { counts: { count }, sourceOnly: !financialAdmitted });
+    return productRunResult(summary, { counts: { count } });
   });
 }

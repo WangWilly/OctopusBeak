@@ -95,8 +95,6 @@ export type ProductRunResult = WorkflowRunResult & Readonly<{ products: readonly
 export type ProductRunResultOptions = Readonly<{
   /** Counts only this provider reports, or a provider-scoped value of a run count. */
   counts?: WorkflowRunCounts;
-  /** Every committed item was a source assertion without financial facts. */
-  sourceOnly?: boolean;
   /** Preview Financial Data is never admitted, so a completed run stays `completed`. */
   preview?: boolean;
 }>;
@@ -128,7 +126,7 @@ export function productRunResult(
 function productRunStatusLabel(summary: ProductCollectionRunSummary, options: ProductRunResultOptions): WorkflowRunStatus {
   if (summary.status !== "completed" || options.preview) return summary.status;
   if ((summary.verifiedCommittedCount ?? summary.committedCount) > 0) {
-    return options.sourceOnly ? "source-only" : "financial-admitted";
+    return summary.sourceOnly ? "source-only" : "financial-admitted";
   }
   const attempted = summary.products.filter((product) => product.status !== "skipped");
   return attempted.length > 0 && attempted.every((product) => product.status === "no_data" || product.status === "not_held")
