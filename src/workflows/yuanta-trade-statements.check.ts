@@ -48,7 +48,7 @@ const workflowSource = await readFile(
 );
 assert.match(workflowSource, /runYuantaTradeProviderWorkflow/);
 assert.match(workflowSource, /buildYuantaInvestmentCapture/);
-assert.match(workflowSource, /financialCommit\.execute/);
+assert.match(workflowSource, /financialCommit: context\.financialCommit/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
 assert.doesNotMatch(

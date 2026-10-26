@@ -293,9 +293,13 @@ async function interruption(promise: Promise<unknown>): Promise<ProductCollectio
 }
 
 test("a run reuses the saved session, commits every selected product, and reports exclusions only as counts", async () => {
-  await withHarness(async ({ run, secrets, count }) => {
+  await withHarness(async ({ run, secrets, count, events }) => {
     const fake = fakeTdcc();
     const result = await run(ALL, fake);
+    const codes = events.map((event) => `${event.stage} ${event.outcome} ${event.code}`);
+    assert.ok(codes.indexOf("preparation completed input-validated") >= 0
+      && codes.indexOf("preparation completed input-validated") < codes.indexOf("authentication started authentication-started"),
+    "a TDCC run reports its valid input before it opens a session");
     assert.equal(fake.calls.includes("AU001"), false, "a valid saved session needs no sign-in");
     assert.deepEqual(products(result), { securities: "success", fund: "success", settlement: "success" });
     assert.equal(result.status, "partial", "problematic TDCC exclusions make a run partial even when all admitted groups commit");
@@ -676,5 +680,17 @@ test("through the supervised worker frames, a rotated token is saved when the ru
     assert.equal(JSON.stringify(outcome).includes("fixture-password"), false);
     for (const accountNumber of [TWD_ACCOUNT, HIDDEN_ACCOUNT, NAN_ACCOUNT, UNKNOWN_BANK_ACCOUNT])
       assert.equal(JSON.stringify(outcome).includes(accountNumber), false, "worker transport retains counts but no account identifiers");
+  });
+});
+
+test("a selection with no TDCC product fails before it reports valid input or opens a session", async () => {
+  await withHarness(async ({ run, events }) => {
+    for (const statementTypes of [[], ["unknown"]]) {
+      const fake = fakeTdcc();
+      const error = await run({ statementTypes }, fake).then(() => null, (rejection: unknown) => rejection);
+      assert.equal(classifyTypedWorkflowFailure(error, events), "workflow-failed");
+      assert.deepEqual(fake.calls, [], "no TDCC request is made");
+    }
+    assert.equal(events.some((event) => event.code === "input-validated"), false);
   });
 });

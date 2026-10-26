@@ -47,7 +47,7 @@ assert.doesNotMatch(
   "Post production must report progress through structured events",
 );
 assert.match(providerSource, /runPostProviderWorkflow/u);
-assert.match(providerSource, /financialCommit\.execute\(/u);
+assert.match(providerSource, /financialCommit: context\.financialCommit/u);
 
 const accountId = ["0311", "5240", "5293", "95"].join("");
 const requestPostData = JSON.stringify({

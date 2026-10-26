@@ -241,11 +241,15 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
       assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "esun");
       assert.equal(output.status, "financial-admitted");
       assert.equal(output.counts.canonicalCaptureCount, 1);
+      assert.equal(output.counts.sourceCaptureCount, 1, "E.SUN reports its one Source Capture (ADR 0064)");
       assert.equal(output.counts.count, monthCount);
+      assert.deepEqual(harness.events.find(({ code }) => code === "source-validation-completed")?.counts,
+        { completed: 1, total: 1 }, "the run closes validation with that capture");
       assert.equal("files" in (output as object), false);
       assert.deepEqual(
         harness.events.map(({ stage, code }) => [stage, code]),
         [
+          ["preparation", "input-validated"],
           ["authentication", "authentication-started"],
           ["authentication", "authentication-completed"],
           ["collection", "credit-card-collection-started"],
@@ -255,11 +259,11 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
           ["collection", "bill-summaries-collected"],
           ["decoding", "source-decoding-completed"],
           ["validation", "source-validation-started"],
-          ["validation", "source-validation-completed"],
           ["collection", "credit-card-collection-completed"],
           ["decoding", "credit-card-source-decoding-completed"],
           ["validation", "credit-card-source-validation-completed"],
           ["commit", "commit-port-called"],
+          ["validation", "source-validation-completed"],
         ],
       );
     }

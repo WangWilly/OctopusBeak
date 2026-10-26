@@ -52,9 +52,9 @@ import {
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import {
   collectSelectedProducts,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   ATTACHED_PREVIEW_PRODUCTS,
   attachedPreviewRun,
@@ -99,11 +99,10 @@ type WorkflowInput = Pick<
   "startDate" | "endDate" | "accountFilters"
 >;
 type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
-/** HNCB's own account counts and admission status for one deposit collection. */
+/** HNCB's own account counts for one deposit collection. */
 type HncbDepositCollection = Readonly<{
   accountCount: number;
   rowCount: number;
-  financial: boolean;
 }>;
 type DateParts = {
   year: number;
@@ -1192,22 +1191,19 @@ export async function runHncbStatements(
   const depositSelected = (input.statementTypes ?? ["deposit"]).includes("deposit");
   let deposit: HncbDepositCollection | null = null;
   const summary = await collectSelectedProducts({
+    provider: "hncb",
     productIds: ["deposit"],
     selectedIds: depositSelected ? ["deposit"] : [],
     signal: overrides.signal ?? new AbortController().signal,
     ...(overrides.assertSession ? { assertSession: overrides.assertSession } : {}),
     ...(overrides.event ? { event: overrides.event } : {}),
     ...(overrides.productFailure ? { productFailure: overrides.productFailure } : {}),
-    collect: async (_typeId, stagedItems, _reportActivity, event): Promise<ProductCollectionSummary> => {
-      const { sourceCaptureCount, itemCount, ...collected } = await collectHncbDeposit(page, input, { ...overrides, event }, stagedItems);
+    collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+      const { sourceCaptureCount, ...collected } = await collectHncbDeposit(page, input, { ...overrides, event: product.event }, product.stage);
       deposit = collected;
-      return { sourceCaptureCount, rowCount: collected.rowCount, itemCount };
+      return { sourceCaptureCount, rowCount: collected.rowCount };
     },
-    commit: async (_typeId, stagedItems) => await overrides.financialCommit.execute(stagedItems, {
-      provider: "hncb",
-      product: "financial",
-      ...(overrides.signal ? { signal: overrides.signal } : {}),
-    }),
+    financialCommit: overrides.financialCommit,
     ...(overrides.attached ? { attached: overrides.attached } : {}),
   });
   const [verified, ...attached] = summary.products;
@@ -1216,7 +1212,6 @@ export async function runHncbStatements(
     counts: {
       accountCount: (succeeded?.accountCount ?? 0) + attached.reduce((total, product) => total + product.itemCount, 0),
     },
-    sourceOnly: succeeded !== null && !succeeded.financial,
   });
 }
 
@@ -1224,7 +1219,7 @@ async function collectHncbDeposit(
   page: Page,
   input: WorkflowInput,
   overrides: HncbStatementsRunDependencies,
-  stagedItems: PGliteWorkflowRunItem[],
+  stage: ProductCollectionHandle["stage"],
 ): Promise<HncbDepositCollection & ProductCollectionSummary> {
   const readAccounts =
     overrides.readAccountOptions ??
@@ -1330,7 +1325,6 @@ async function collectHncbDeposit(
     if (captures.length === 0)
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
-    let financial = false;
     const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
     for (const [index, capture] of captures.entries()) {
       const input = {
@@ -1358,8 +1352,6 @@ async function collectHncbDeposit(
         financialCapture: admission.capture,
       });
       financialCaptures.push(admission.capture);
-      if (admission.capture.records.length > 0)
-        financial = true;
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -1404,21 +1396,21 @@ async function collectHncbDeposit(
 
     const items = [
       ...sourceOnlyEntries.map((entry) => ({
-        provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+        product: "domestic-deposit", itemKey: entry.captureId,
         command: {
           kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
           request: createHncbDomesticDepositSourceEvidence(entry.capture, entry.captureId),
         },
       } as const)),
       ...financialInputs.map((entry) => ({
-        provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+        product: "domestic-deposit", itemKey: entry.captureId,
         command: {
           kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
           request: { capture: entry.financialCapture },
         },
       } as const)),
       ...currentBalanceCaptures.map((capture) => ({
-        provider: "hncb", product: "current-balance",
+        product: "current-balance",
         itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
         command: {
           kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -1426,13 +1418,11 @@ async function collectHncbDeposit(
         },
       } as const)),
     ];
-    stagedItems.push(...items);
+    stage(...items);
     return {
       accountCount: captures.length,
       sourceCaptureCount: captures.length,
       rowCount: captures.reduce((total, capture) => total + capture.downloads.reduce((sum, download) => sum + download.rows.length, 0), 0),
-      itemCount: items.length,
-      financial,
     };
   }
 }
@@ -1447,6 +1437,7 @@ export async function runHncbProviderWorkflow(
     throw new Error("HNCB workflow input or sign-in details are missing or invalid.");
   const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
+  await context.event("preparation", "completed", "input-validated");
 
   return await context.browser.withPage(async (page) => {
     const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(parsed.data.credentials));

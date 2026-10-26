@@ -3,7 +3,7 @@
     {
       "options": {
         "provider": "ctbc",
-        "product": "financial"
+        "product": "deposit"
       },
       "items": [
         {
@@ -631,6 +631,15 @@
         "completed": 3,
         "total": 3,
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     }
   ]

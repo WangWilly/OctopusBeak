@@ -5,11 +5,11 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import {
   collectSelectedProducts,
   type ProductCollectionSummary,
+  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -1382,7 +1382,6 @@ export async function runLineBankProviderWorkflow(
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
-  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   const dateRange = resolveDateRange(parsed.data);
   const windows = linebankQueryWindows(dateRange);
@@ -1398,15 +1397,15 @@ export async function runLineBankProviderWorkflow(
       signal: context.signal,
     });
     let accountCount = 0;
-    let hasFinancialRecords = false;
     const summary = await collectSelectedProducts({
+      provider: "linebank",
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (_typeId, stagedItems: PGliteWorkflowRunItem[], _reportActivity, event): Promise<ProductCollectionSummary> => {
-        const productContext: WorkflowContext = { ...context, event };
+      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+        const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         await productContext.event("collection", "started", "current-balance-collection-started");
         await productContext.event("decoding", "started", "current-balance-decoding-started");
@@ -1489,8 +1488,7 @@ export async function runLineBankProviderWorkflow(
         });
         const observedAt = context.now();
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-        const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
-        const statementItems: PGliteWorkflowRunItem[] = [];
+        const statementItems: ProductStageRequest[] = [];
         const captureOccurrenceId = randomUUID();
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
@@ -1512,9 +1510,7 @@ export async function runLineBankProviderWorkflow(
                 throw new Error("LINE Bank selected domestic source authority is not supported.");
               const admitted = normalizeLineBankFinancialCapture(capture);
               domesticCaptures.push(capture);
-              financialCaptures.push(admitted);
               statementItems.push({
-                provider: "linebank",
                 product: "domestic-deposit",
                 itemKey: captureId,
                 command: {
@@ -1532,7 +1528,6 @@ export async function runLineBankProviderWorkflow(
               });
               const admitted = admitForeignCurrencyDepositCapture(capture);
               statementItems.push({
-                provider: "linebank",
                 product: "foreign-currency",
                 itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
                 command: {
@@ -1540,7 +1535,6 @@ export async function runLineBankProviderWorkflow(
                   request: { capture: admitted },
                 },
               });
-              financialCaptures.push(admitted);
             }
             await productContext.event("validation", "advanced", "account-source-admitted", {
               completed: index + 1,
@@ -1559,7 +1553,7 @@ export async function runLineBankProviderWorkflow(
           completed: statementItems.length,
           total: selectedSources.length,
         });
-        const balanceItems: PGliteWorkflowRunItem[] = [];
+        const balanceItems: ProductStageRequest[] = [];
         if (domesticCaptures.length > 0) {
           const selectedTwdAccountKeys = new Set(
             accounts
@@ -1599,7 +1593,6 @@ export async function runLineBankProviderWorkflow(
             for (const [index, capture] of currentBalanceCaptures.entries()) {
               context.signal.throwIfAborted();
               balanceItems.push({
-                provider: "linebank",
                 product: "current-balance",
                 itemKey: `current-balance:${index}`,
                 command: {
@@ -1622,20 +1615,14 @@ export async function runLineBankProviderWorkflow(
             total: currentBalanceRows.length,
           });
         }
-        stagedItems.push(...statementItems, ...balanceItems);
+        product.stage(...statementItems, ...balanceItems);
         accountCount = accounts.length;
-        hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
         return {
           sourceCaptureCount: selectedSources.length,
           rowCount: statementRowCount,
-          itemCount: stagedItems.length,
         };
       },
-      commit: (_typeId, stagedItems) => financialCommit.execute(stagedItems, {
-        provider: "linebank",
-        product: "financial",
-        signal: context.signal,
-      }),
+      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, {
       counts: {
@@ -1643,7 +1630,6 @@ export async function runLineBankProviderWorkflow(
         statementRowCount: summary.rowCount,
         financialItemCount: summary.itemCount,
       },
-      sourceOnly: !hasFinancialRecords,
     });
   });
 }

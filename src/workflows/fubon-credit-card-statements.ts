@@ -5,8 +5,13 @@ import {
   creditCardBalanceCommandRequest,
   fubonCreditCardCommandRequest,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type {
+  ProductCollectionHandle,
+  ProductCollectionSummary,
+  ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
@@ -125,14 +130,10 @@ const paymentStatusSchema = z.object({
 
 export { inputSchema as fubonCreditCardStatementsInputSchema };
 export type FubonCreditCardStatementsInput = z.infer<typeof inputSchema>;
-export type FubonCreditCardWorkflowCollection = Readonly<{
-  sourceCount: number;
-  rowCount: number;
-  itemCount: number;
-  financialAdmissionCount: number;
-  noDataEvidence?: boolean;
+export type FubonCreditCardProductInput = FubonCreditCardStatementsInput & Readonly<{
+  panFingerprintKey: FubonCreditCardPanFingerprintKey;
 }>;
-type FubonCreditCardSourceSnapshot = Readonly<{
+export type FubonCreditCardSourceSnapshot = Readonly<{
   currentUsedCredit?: FubonCurrentUsedCreditSnapshot;
   statementRows: readonly CsvRow[];
   statementPeriods: readonly string[];
@@ -141,19 +142,6 @@ type FubonCreditCardSourceSnapshot = Readonly<{
   unavailablePeriodOffsets: readonly number[];
   unbilledRows: readonly CsvRow[];
 }>;
-type FubonCreditCardRunOverrides = {
-  panFingerprintKey?: FubonCreditCardPanFingerprintKey;
-  deferredCommitItems: PGliteWorkflowRunItem[];
-  sourceText: SourceTextPort;
-  signal: AbortSignal;
-  reportActivity?: (activity: "query" | "download") => Promise<void>;
-  observedAt?: () => string;
-  /** Injects a completely collected source snapshot for focused admission checks. */
-  readSourceSnapshot?: (
-    page: Page,
-    input: FubonCreditCardStatementsInput,
-  ) => Promise<FubonCreditCardSourceSnapshot>;
-};
 type PaymentStatus = z.infer<typeof paymentStatusSchema>;
 type StatementRowsResult = {
   rows: CsvRow[];
@@ -2314,76 +2302,90 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
 
 export async function runFubonCreditCardStatements(
   page: Page,
-  input: FubonCreditCardStatementsInput,
-  overrides: FubonCreditCardRunOverrides,
-): Promise<FubonCreditCardWorkflowCollection> {
-  let sourceSnapshot: FubonCreditCardSourceSnapshot;
-  if (overrides.readSourceSnapshot) {
-    await overrides.reportActivity?.("query");
-    sourceSnapshot = await overrides.readSourceSnapshot(page, input);
-  } else {
-    let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
-    try {
-      await overrides.reportActivity?.("query");
-      const currentCreditRead = await readFubonCurrentUsedCredit(page, overrides.sourceText);
-      currentUsedCredit = currentCreditRead.snapshot;
-    } catch {}
-    await overrides.reportActivity?.("query");
-    await openStatementDetailsPage(page);
+  input: FubonCreditCardProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  const sourceSnapshot = await readFubonCreditCardSourceSnapshot(page, input, context, product);
+  return stageFubonCreditCard(sourceSnapshot, input, context, product);
+}
 
-    const statementRows: CsvRow[] = [];
-    const statementPeriods: string[] = [];
-    const summaries: IssuerStatementSummary[] = [];
-    const gridStates: GridState[] = [];
-    const unavailablePeriodOffsets: number[] = [];
-    for await (const probe of iterateFubonStatementPeriodProbes(
-      page,
-      input.periodOffsets,
-    )) {
-      overrides.signal.throwIfAborted();
-      const { periodOffset, scope, status } = probe;
-      if (status === "temporarily-unavailable") {
-        unavailablePeriodOffsets.push(periodOffset);
-        continue;
-      }
-      if (status === "no-record") continue;
+async function readFubonCreditCardSourceSnapshot(
+  page: Page,
+  input: FubonCreditCardProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<FubonCreditCardSourceSnapshot> {
+  let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
+  try {
+    await product.reportActivity("query");
+    const currentCreditRead = await readFubonCurrentUsedCredit(page, context.text);
+    currentUsedCredit = currentCreditRead.snapshot;
+  } catch {}
+  await product.reportActivity("query");
+  await openStatementDetailsPage(page);
 
-      const periodLabel = await readStatementPeriodLabel(scope);
-      statementPeriods.push(periodLabel);
-      await overrides.reportActivity?.("query");
-      const statementResult = await readStatementRows(
-        scope,
-        periodLabel,
-        input.statementCardLabels,
-        input.canonicalHumanAttestation !== undefined,
-      );
-      statementRows.push(...statementResult.rows);
-      summaries.push(...statementResult.summaries);
-      gridStates.push(await gridState(scope));
+  const statementRows: CsvRow[] = [];
+  const statementPeriods: string[] = [];
+  const summaries: IssuerStatementSummary[] = [];
+  const gridStates: GridState[] = [];
+  const unavailablePeriodOffsets: number[] = [];
+  for await (const probe of iterateFubonStatementPeriodProbes(
+    page,
+    input.periodOffsets,
+  )) {
+    context.signal.throwIfAborted();
+    const { periodOffset, scope, status } = probe;
+    if (status === "temporarily-unavailable") {
+      unavailablePeriodOffsets.push(periodOffset);
+      continue;
     }
+    if (status === "no-record") continue;
 
-    await overrides.reportActivity?.("query");
-    const unbilled = await openUnbilledDetailsPage(page);
-    const unbilledRows = await readUnbilledRows(
-      unbilled.scope,
-      input.unbilledCardNumbers,
+    const periodLabel = await readStatementPeriodLabel(scope);
+    statementPeriods.push(periodLabel);
+    await product.reportActivity("query");
+    const statementResult = await readStatementRows(
+      scope,
+      periodLabel,
+      input.statementCardLabels,
+      input.canonicalHumanAttestation !== undefined,
     );
-    gridStates.push(
-      unbilled.providerNoRecord
-        ? { providerNoRecord: true }
-        : await gridState(unbilled.scope),
-    );
-    sourceSnapshot = {
-      ...(currentUsedCredit ? { currentUsedCredit } : {}),
-      statementRows,
-      statementPeriods,
-      summaries,
-      unbilledRows,
-      gridStates,
-      unavailablePeriodOffsets,
-    };
+    statementRows.push(...statementResult.rows);
+    summaries.push(...statementResult.summaries);
+    gridStates.push(await gridState(scope));
   }
-  overrides.sourceText.assertIntact(JSON.stringify(sourceSnapshot));
+
+  await product.reportActivity("query");
+  const unbilled = await openUnbilledDetailsPage(page);
+  const unbilledRows = await readUnbilledRows(
+    unbilled.scope,
+    input.unbilledCardNumbers,
+  );
+  gridStates.push(
+    unbilled.providerNoRecord
+      ? { providerNoRecord: true }
+      : await gridState(unbilled.scope),
+  );
+  const sourceSnapshot: FubonCreditCardSourceSnapshot = {
+    ...(currentUsedCredit ? { currentUsedCredit } : {}),
+    statementRows,
+    statementPeriods,
+    summaries,
+    unbilledRows,
+    gridStates,
+    unavailablePeriodOffsets,
+  };
+  context.text.assertIntact(JSON.stringify(sourceSnapshot));
+  return sourceSnapshot;
+}
+
+export async function stageFubonCreditCard(
+  sourceSnapshot: FubonCreditCardSourceSnapshot,
+  input: FubonCreditCardProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
   const currentUsedCredit = sourceSnapshot.currentUsedCredit;
   const statementRows = [...sourceSnapshot.statementRows];
   const statementPeriods = [...sourceSnapshot.statementPeriods];
@@ -2436,7 +2438,7 @@ export async function runFubonCreditCardStatements(
     ? {
         snapshotMode: "full",
         captureId: randomUUID(),
-        capturedAt: overrides.observedAt?.() ?? new Date().toISOString(),
+        capturedAt: context.now(),
         captureKinds: ["billed", "unbilled"],
         completenessEvidence: {
           bank: "fubon",
@@ -2465,9 +2467,7 @@ export async function runFubonCreditCardStatements(
           summaries,
           gridStates,
           input,
-          ...(overrides.panFingerprintKey
-            ? { panFingerprintKey: overrides.panFingerprintKey }
-            : {}),
+          panFingerprintKey: input.panFingerprintKey,
       })
       : [];
   if (capture.snapshotMode !== "full")
@@ -2475,12 +2475,12 @@ export async function runFubonCreditCardStatements(
   if (canonicalCaptures.length === 0 &&
     statementRows.length + unbilledRows.length > 0)
     throw new Error("Fubon credit-card source has no admissible Canonical Financial Commit capture.");
-  const items: PGliteWorkflowRunItem[] = [];
+  const items: ProductStageRequest[] = [];
   if (canonicalCaptures.length > 0) {
     const requests = canonicalCaptures.map((capture) =>
       fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)));
     items.push(...requests.map((request) => ({
-      provider: "fubon", product: "credit-card", itemKey: request.capture.captureId,
+      product: "credit-card", itemKey: request.capture.captureId,
       command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
     })));
     if (currentUsedCredit) {
@@ -2488,7 +2488,7 @@ export async function runFubonCreditCardStatements(
         canonicalCaptures[0]!, currentUsedCredit,
       );
       items.push({
-        provider: "fubon", product: "current-balance", itemKey: balanceCapture.captureId,
+        product: "current-balance", itemKey: balanceCapture.captureId,
         command: {
           kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
           request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
@@ -2497,14 +2497,10 @@ export async function runFubonCreditCardStatements(
     }
   }
 
-  overrides.signal.throwIfAborted();
-  for (const item of items)
-    overrides.sourceText.assertIntact(JSON.stringify(item.command));
-  overrides.deferredCommitItems.push(...items);
+  context.signal.throwIfAborted();
+  product.stage(...items);
   return {
-    sourceCount: statementPeriods.length + 1,
+    sourceCaptureCount: statementPeriods.length + 1,
     rowCount: statementRows.length + unbilledRows.length,
-    itemCount: items.length,
-    financialAdmissionCount: canonicalCaptures.length,
   };
 }

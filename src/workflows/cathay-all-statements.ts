@@ -8,6 +8,7 @@ import {
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
+  type ProductStageRequest,
 } from "../lib/automation/product-collection.js";
 import {
   type CathayStrictSourceOptions,
@@ -46,7 +47,6 @@ import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -126,7 +126,7 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
     domestic: CathayDomesticFinancialCollection | undefined,
     foreign: CathayForeignFinancialCollection | undefined,
     context: WorkflowContext,
-  ) => Promise<readonly PGliteWorkflowRunItem[]>;
+  ) => Promise<readonly ProductStageRequest[]>;
   attachedPreviewPort?: (
     page: Page,
     session: () => CathaySession,
@@ -214,9 +214,8 @@ function currentBalanceItems(
     typeof buildCathayCurrentDepositBalanceCaptures
   >[number][],
   product: string,
-): PGliteWorkflowRunItem[] {
+): ProductStageRequest[] {
   return captures.map((capture, index) => ({
-    provider: "cathay",
     product,
     itemKey: `current-balance:${index}`,
     command: {
@@ -268,11 +267,6 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    if (selectedIds.length > 0) {
-      await context.event("collection", "started", "statement-collection-started", {
-        total: selectedIds.length,
-      });
-    }
     const readCurrent =
       dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
     const collectCurrentBalanceItems = async (
@@ -280,14 +274,14 @@ export async function runCathayAllProviderWorkflow(
       domestic: CathayDomesticFinancialCollection | undefined,
       foreign: CathayForeignFinancialCollection | undefined,
       reportActivity: ProductCollectionActivityReporter,
-    ): Promise<readonly PGliteWorkflowRunItem[]> => {
+    ): Promise<readonly ProductStageRequest[]> => {
       const label = typeId === "foreign_currency" ? "foreign" : "domestic";
       await context.event(
         "collection",
         "started",
         `${label}-current-balance-started`,
       );
-      let items: readonly PGliteWorkflowRunItem[];
+      let items: readonly ProductStageRequest[];
       await reportActivity("query");
       if (dependencies.collectCurrentBalanceItems) {
         items = await withAbort(
@@ -396,15 +390,16 @@ export async function runCathayAllProviderWorkflow(
     // A person may select only attached preview products. The run then signs
     // in and reports every verified product as not selected.
     const summary = await collectSelectedProducts({
+      provider: "cathay",
       productIds,
       selectedIds,
       signal: context.signal,
       assertSession,
       event: context.event,
       productFailure: context.productFailure,
-      collect: async (typeId, stagedItems, reportActivity): Promise<ProductCollectionSummary> => {
+      collect: async (typeId, product): Promise<ProductCollectionSummary> => {
         if (typeId === "domestic") {
-          await reportActivity("query");
+          await product.reportActivity("query");
           const domestic = await withAbort(
             (
               dependencies.collectDomestic ??
@@ -437,8 +432,7 @@ export async function runCathayAllProviderWorkflow(
             context.signal.throwIfAborted();
             statementSteps.push({ kind: "financial", request });
           }
-          stagedItems.push({
-            provider: "cathay",
+          product.stage({
             product: "domestic-statements",
             itemKey: `statements:${context.runId}:domestic`,
             command: {
@@ -454,20 +448,19 @@ export async function runCathayAllProviderWorkflow(
             "domestic",
             domestic,
             undefined,
-            reportActivity,
+            product.reportActivity,
           );
-          stagedItems.push(...balances);
+          product.stage(...balances);
           statementCaptureCount += domestic.captureCount;
           return {
             // Keep this legacy field scoped to statement-source captures;
-            // balance command items are reflected by itemCount instead.
+            // the run counts the staged balance command items.
             sourceCaptureCount: domestic.captureCount,
             rowCount: domestic.rowCount,
-            itemCount: stagedItems.length,
           };
         }
 
-        await reportActivity("query");
+        await product.reportActivity("query");
         const foreign = await withAbort(
           (
             dependencies.collectForeign ??
@@ -504,8 +497,7 @@ export async function runCathayAllProviderWorkflow(
             request: { capture: admitForeignCurrencyDepositCapture(capture) },
           });
         }
-        stagedItems.push({
-          provider: "cathay",
+        product.stage({
           product: "foreign-currency-statements",
           itemKey: `statements:${context.runId}:foreign-currency`,
           command: {
@@ -521,22 +513,16 @@ export async function runCathayAllProviderWorkflow(
           "foreign_currency",
           undefined,
           foreign,
-          reportActivity,
+          product.reportActivity,
         );
-        stagedItems.push(...balances);
+        product.stage(...balances);
         statementCaptureCount += foreign.captures.length;
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,
-          itemCount: stagedItems.length,
         };
       },
-      commit: async (typeId, stagedItems) =>
-        context.financialCommit.execute(stagedItems, {
-          provider: "cathay",
-          product: typeId,
-          signal: context.signal,
-        }),
+      financialCommit: context.financialCommit,
       attached: attachedPreviewRun({
         context,
         source: ATTACHED_PREVIEW_PRODUCTS.cathay,
@@ -549,32 +535,6 @@ export async function runCathayAllProviderWorkflow(
         assertSession,
       }),
     });
-
-    if (selectedIds.length > 0) {
-      const verifiedProducts = summary.products.filter((product) =>
-        (productIds as readonly string[]).includes(product.typeId));
-      const completedProducts = verifiedProducts.filter(
-        (product) =>
-          product.status === "success" ||
-          product.status === "no_data" ||
-          product.status === "not_held",
-      ).length;
-      await context.event("collection", "completed", "statement-collection-completed", {
-        completed: completedProducts,
-        total: selectedIds.length,
-      });
-      if (
-        verifiedProducts
-          .filter((product) => product.status !== "skipped")
-          .every((product) => product.status !== "failed")
-      ) {
-        const verifiedItemCount = verifiedProducts.reduce((total, product) => total + product.itemCount, 0);
-        await context.event("validation", "completed", "all-source-admission-completed", {
-          completed: verifiedItemCount,
-          total: verifiedItemCount,
-        });
-      }
-    }
 
     return productRunResult(summary, {
       counts: { count: statementCaptureCount },
