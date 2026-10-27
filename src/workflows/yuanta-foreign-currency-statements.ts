@@ -38,6 +38,10 @@ import {
   type YuantaCurrentDepositBalanceRow,
 } from "./yuanta-current-deposit-balances.ts";
 import {
+  matchCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
+import {
   admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
@@ -270,31 +274,30 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
   };
 }
 
-export function indexYuantaForeignCurrentDepositFinancialCaptures(
-  financialCaptures: readonly ExistingYuantaForeignFinancialCapture[],
-): ReadonlyMap<string, ExistingYuantaForeignFinancialCapture> {
-  const existingBySourceAccount = new Map<
-    string,
-    ExistingYuantaForeignFinancialCapture
-  >();
-  for (const candidate of financialCaptures) {
-    const sourceAccountKey =
-      candidate.identity.sourceAccountKey ?? candidate.identity.accountNo;
-    const prior = existingBySourceAccount.get(sourceAccountKey);
-    if (
-      prior &&
-      (prior.identity.sourceConnectionKey !==
-        candidate.identity.sourceConnectionKey ||
-        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
-        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
-    )
-      throw new Error(
-        "Yuanta foreign current deposit identities are ambiguous across financial captures.",
-      );
-    if (!prior) existingBySourceAccount.set(sourceAccountKey, candidate);
-  }
-  return existingBySourceAccount;
-}
+/**
+ * Yuanta foreign currency keys a balance by the source account key alone,
+ * with no currency: one admitted account matches its row in every currency.
+ * A row with no admitted capture fails the run. The first capture wins.
+ */
+export const yuantaForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ sourceAccountKey: string }>,
+  ExistingYuantaForeignFinancialCapture
+> = {
+  captureKey: ({ identity }) => identity.sourceAccountKey ?? identity.accountNo,
+  rowKey: (row) => row.sourceAccountKey,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest,
+  ambiguousMessage:
+    "Yuanta foreign current deposit identities are ambiguous across financial captures.",
+  unmatched: {
+    kind: "throw",
+    message:
+      "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
+  },
+};
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   one_week: "一週",
@@ -2478,13 +2481,14 @@ export async function stageYuantaForeignCurrency(
   // parent opens the one Canonical Financial Commit boundary.
   const balanceItems: ProductStageRequest[] = [];
   if (admitted.length > 0) {
-    const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(admitted);
-    for (const unadjustedRow of snapshot.currentBalances) {
+    const { matched } = matchCurrentBalanceCaptures(
+      snapshot.currentBalances,
+      admitted,
+      yuantaForeignCurrentBalanceCaptureMatching,
+    );
+    for (const { row: unadjustedRow, capture: matching } of matched) {
       checkCancelled();
       const row = { ...unadjustedRow, observedAt: now() };
-      const matching = existingBySourceAccount.get(row.sourceAccountKey);
-      if (!matching)
-        throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
       const capture = admitCurrentDepositBalanceCapture(
         buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
       );
