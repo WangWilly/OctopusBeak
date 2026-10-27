@@ -17,7 +17,6 @@ const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
-  registerWorkflowHumanAssistanceForTask,
 }, { YUANTA_TRADE_LOGIN_URL }] = await Promise.all([
   import("./tasks.ts"),
   import("./task-run-check-support.ts"),
@@ -58,11 +57,9 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   let observedStartUrl: string | undefined;
   let browserDispatches = 0;
   let commitCalls = 0;
-  let assertAssistanceRegistered: (() => Promise<void>) | undefined;
   const browser: WorkflowBrowserPort = {
     async withPage() {
       browserDispatches += 1;
-      await assertAssistanceRegistered?.();
       throw new Error("fixture App browser host reached");
     },
   };
@@ -76,13 +73,6 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    assertAssistanceRegistered = async () => {
-      await assert.rejects(
-        () => registerWorkflowHumanAssistanceForTask(task.workflowId, provider),
-        /already registered for this task/u,
-        "Yuanta Trade App dispatch registers its task-scoped assistance adapter",
-      );
-    };
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
       kind: task.kind,
@@ -108,8 +98,6 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no source or log files");
-    const unregister = await registerWorkflowHumanAssistanceForTask(task.workflowId, provider);
-    unregister();
   } finally {
     process.chdir(previousDirectory);
     await store.close();

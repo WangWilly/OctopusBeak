@@ -139,21 +139,18 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020"),
-    verification: {},
+    verification: {
+      async route(request, { onChallengeCaptured, ...dependencies }) {
+        const { routeYuantaTradeAppAssistanceRequest } = await import("../yuanta-trade-assistance.ts");
+        return await routeYuantaTradeAppAssistanceRequest(request, {
+          ...dependencies,
+          routeOptions: { onChallengeCaptured },
+        });
+      },
+    },
     input: { credentials: true },
     async load() {
       return (await import("../../../../workflows/yuanta-trade-statements.ts")).runYuantaTradeProviderWorkflow;
-    },
-    async registerHumanAssistance(provider) {
-      const [{ registerYuantaTradeAppAssistanceHandler }, { readAutomationSettings }] =
-        await Promise.all([
-          import("../yuanta-trade-assistance.ts"),
-          import("../settings.ts"),
-        ]);
-      return registerYuantaTradeAppAssistanceHandler({
-        provider,
-        settings: readAutomationSettings(),
-      });
     },
   }),
 };
