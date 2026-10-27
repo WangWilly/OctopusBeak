@@ -151,7 +151,6 @@ export function createAutomationRunner(options: Readonly<{
         run,
         pageForRun,
         launchVerificationSettings: { ...readAutomationSettings() },
-        initialExecutionOptions: { scheduledAtUtc: runOptions.scheduledAtUtc },
         execute: (executionOptions) => runExecution(task, run, {
           ...executionOptions,
           launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },

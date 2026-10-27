@@ -40,7 +40,10 @@ import {
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
 
-export type ActiveTaskRunFields = Pick<AutomationTaskRunUpdate, "attempt" | "maxAttempts" | "progress">;
+export type ActiveTaskRunFields = Pick<
+  AutomationTaskRunUpdate,
+  "attempt" | "maxAttempts" | "progress" | "browserRuntime"
+>;
 
 /** Why an Active Automation Task Run was asked to stop before it ended on its own. */
 export type TaskRunStop = "cancelled" | "forced" | "shutdown";
@@ -144,7 +147,6 @@ export type WorkflowExecutionOptions = Readonly<{
 export type ActiveAutomationTaskRun = Readonly<{
   taskId: string;
   taskRunId: string;
-  persistence: AutomationPersistencePort;
   /** Start a Workflow execution. Throws while another is current or once the run has finished. */
   beginExecution(executionId: string, options?: WorkflowExecutionOptions): WorkflowExecution;
   /** The execution that has begun and not ended, or null. */
@@ -429,7 +431,6 @@ export function openActiveTaskRun(input: Readonly<{
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
-    persistence,
     beginExecution,
     currentExecution: () => currentExecution,
     appendEvent: persistEvent,

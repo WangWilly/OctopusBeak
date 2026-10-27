@@ -145,7 +145,6 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         pageForRun: noHostedPage,
         launchVerificationSettings: settings,
         run,
-        initialExecutionOptions: {},
         routeWaitingRunVerification: (input) => routeWaitingRunVerification({
           ...input,
           solver: {
@@ -234,7 +233,6 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
         controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
       }),
       run,
-      initialExecutionOptions: {},
       async execute(options) {
         try {
           await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
@@ -290,7 +288,6 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         pageForRun: noHostedPage,
         launchVerificationSettings: {},
         run,
-        initialExecutionOptions: {},
         captchaRetryCooldownMs: () => undefined,
         routeWaitingRunVerification: async (input) => {
           routeCalls += 1;
@@ -351,7 +348,6 @@ test("exhausted App solver retries finalize with a typed verification failure an
       pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
-      initialExecutionOptions: {},
       captchaRetryCooldownMs: () => undefined,
       routeWaitingRunVerification: async (input) => {
         await input.onChallengeCaptured?.();
@@ -408,7 +404,6 @@ for (const scenario of [
         pageForRun: noHostedPage,
         launchVerificationSettings: {},
         run,
-        initialExecutionOptions: {},
         captchaRetryCooldownMs: () => undefined,
         routeWaitingRunVerification: async (input) => {
           routes += 1;
@@ -455,7 +450,6 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
       pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
-      initialExecutionOptions: {},
       routeWaitingRunVerification: async (input) => {
         routeCalls += 1;
         await input.onChallengeCaptured?.();
@@ -506,7 +500,6 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
       pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
-      initialExecutionOptions: {},
       routeWaitingRunVerification: async () => {
         genericRouteCalls += 1;
         return { kind: "failed" };
@@ -550,7 +543,6 @@ test("a run the store refused until a Canonical Reset is never retried by the CA
       pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
-      initialExecutionOptions: {},
       captchaRetryCooldownMs: () => undefined,
       routeWaitingRunVerification: async (input) => {
         await input.onChallengeCaptured?.();

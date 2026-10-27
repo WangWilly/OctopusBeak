@@ -3,7 +3,6 @@ import {
   AUTOMATION_CREDENTIALS_PATH,
   automationConfigEnv,
   getAutomationCredentialCodec,
-  type AutomationSettingsFile,
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
@@ -57,12 +56,10 @@ type ExecutionContext = Readonly<{
 }>;
 
 export type AutomationTaskExecutionOptions = {
-  scheduledAtUtc?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
   /** The authenticated PGlite endpoint, required by every workflow that commits or reads through it. */
   pgliteRpc?: PGliteWorkflowRpc;
-  launchVerificationSettings?: AutomationSettingsFile;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
   /** Answers this execution's human assistance requests; without it a request fails closed. */
@@ -182,7 +179,10 @@ function createBrowserRuntimeIdentityRecorder(
   let writeFailed = false;
   return {
     record(identity) {
-      pendingWrite = context.run.persistence.updateTaskRun(context.run.taskRunId, {
+      // The browser host reports the identity synchronously, so the write is
+      // queued on the run's write chain here and awaited by flush(), which
+      // turns a failed write into a failure of this execution.
+      pendingWrite = context.run.update({
         browserRuntime: {
           profileId: identity.profileId,
           profileRevision: identity.profileRevision,
