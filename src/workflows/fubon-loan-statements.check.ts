@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
-import type { Frame, Locator, Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "vite";
@@ -21,8 +21,11 @@ import {
   FUBON_LOAN_PAGINATION_FIXTURES_V1,
   FUBON_LOAN_PAGINATION_FIXTURES_V2,
 } from "./fubon-loan-statements.fixtures.ts";
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonEbankSite } from "./fubon-ebank-site.ts";
 
-const { runFubonLoanStatements } = await import("./fubon-loan-statements.ts");
+const { runFubonLoanStatements, fubonLoanStatementsInputSchema } = await import("./fubon-loan-statements.ts");
 const { buildFubonLoanCapture, assertFubonLoanCaptureAccountNumberEvidence } =
   await import("../ledger/canonical/fubon-loan-admission.ts");
 const { FUBON_LOAN_CONTRACT_VERSION } =
@@ -93,241 +96,6 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
   );
 });
 
-type FakeLocator = Locator & {
-  selector: string;
-  locator(selector: string): FakeLocator;
-};
-
-type FakeScope = {
-  name: string;
-  ready: boolean;
-  readyOnNavigationClick?: number;
-  linkPresent?: boolean;
-  onNavigationClick?: () => void;
-  navigationEvaluateHangs?: boolean;
-  probeHangs?: boolean;
-  busy: boolean;
-  navigationClicks: number;
-  dispatchCalls: number;
-  aborts: number;
-  probeAborts: number;
-  gotoCalls: number;
-  goto(): Promise<never>;
-  locator(selector: string): FakeLocator;
-};
-
-type LoanNavigationOptions = {
-  existingScopeTimeoutMs?: number;
-  formReadyTimeoutMs?: number;
-  retryFormReadyTimeoutMs?: number;
-  navigationControlTimeoutMs?: number;
-  navigationLinkTimeoutMs?: number;
-  silent?: boolean;
-};
-
-class TestHTMLElement {
-  click(): void {}
-}
-
-(globalThis as unknown as { HTMLElement: typeof TestHTMLElement }).HTMLElement =
-  TestHTMLElement;
-
-function fakeLocator(scope: FakeScope, selector: string): FakeLocator {
-  const locator = {
-    selector,
-    locator(childSelector: string) {
-      return fakeLocator(scope, `${selector} ${childSelector}`);
-    },
-    first() {
-      return this;
-    },
-    filter() {
-      return this;
-    },
-    count: async () => {
-      if (scope.busy || scope.probeHangs) {
-        return await new Promise<number>(() => undefined);
-      }
-      if (selector === "#form1\\:loanAccountCombo") {
-        return scope.ready ? 1 : 0;
-      }
-      if (selector === "form#form1") {
-        return scope.ready ? 1 : 0;
-      }
-      if (selector === "#menu_CLN") return 1;
-      if (
-        selector === "a.task_CLNQU001.menu_CLN02" ||
-        selector === 'a:has-text("貸款交易明細查詢")'
-      ) {
-        const linkPresent = scope.linkPresent ?? !scope.ready;
-        return linkPresent ? 1 : 0;
-      }
-      return 0;
-    },
-    async waitFor(options: {
-      state: "attached";
-      timeout?: number;
-      signal?: AbortSignal;
-    }) {
-      if (scope.busy || scope.probeHangs) {
-        await new Promise<never>((_resolve, reject) => {
-          const abort = () => {
-            scope.probeAborts += 1;
-            reject(new Error("probe aborted"));
-          };
-          if (options.signal?.aborted) {
-            abort();
-            return;
-          }
-          options.signal?.addEventListener("abort", abort, { once: true });
-        });
-      }
-
-      const present =
-        (selector === "#form1\\:loanAccountCombo" ||
-          selector === "form#form1" ||
-          selector === "#form1\\:loanAccountCombo option") &&
-        scope.ready;
-      const linkPresent =
-        selector === "a.task_CLNQU001.menu_CLN02" &&
-        (scope.linkPresent ?? !scope.ready);
-      if (present || linkPresent || selector === "#menu_CLN") return;
-
-      await new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("probe timed out")),
-          options.timeout ?? 0,
-        );
-        options.signal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            scope.probeAborts += 1;
-            reject(new Error("probe aborted"));
-          },
-          { once: true },
-        );
-      });
-    },
-    async getAttribute(name: string) {
-      assert.equal(name, "href");
-      return "/loan-statements";
-    },
-    async evaluate(callback: (element: HTMLElement) => unknown) {
-      if (
-        selector === "a.task_CLNQU001.menu_CLN02" &&
-        scope.navigationEvaluateHangs
-      ) {
-        scope.busy = true;
-        return await new Promise<never>(() => undefined);
-      }
-
-      const element = new TestHTMLElement();
-      element.click = () => {
-        if (selector === "a.task_CLNQU001.menu_CLN02") {
-          scope.navigationClicks += 1;
-          if (scope.readyOnNavigationClick === scope.navigationClicks) {
-            scope.ready = true;
-          }
-        }
-      };
-      return callback(element as unknown as HTMLElement);
-    },
-    async dispatchEvent(
-      type: string,
-      _eventInit: unknown,
-      options: { signal?: AbortSignal; timeout?: number },
-    ) {
-      assert.equal(type, "click");
-      scope.dispatchCalls += 1;
-      if (
-        selector === "a.task_CLNQU001.menu_CLN02" &&
-        scope.navigationEvaluateHangs
-      ) {
-        scope.busy = true;
-        await new Promise<never>((_resolve, reject) => {
-          options.signal?.addEventListener(
-            "abort",
-            () => {
-              scope.busy = false;
-              scope.aborts += 1;
-              reject(new Error("dispatch aborted"));
-            },
-            { once: true },
-          );
-        });
-      }
-
-      if (selector === "a.task_CLNQU001.menu_CLN02") {
-        scope.navigationClicks += 1;
-        if (scope.readyOnNavigationClick === scope.navigationClicks) {
-          scope.ready = true;
-        }
-        scope.onNavigationClick?.();
-      }
-    },
-  } as unknown as FakeLocator;
-  return locator;
-}
-
-function fakeScope(name: string): FakeScope {
-  const scope: FakeScope = {
-    name,
-    ready: false,
-    readyOnNavigationClick: undefined,
-    linkPresent: undefined,
-    onNavigationClick: undefined,
-    navigationEvaluateHangs: false,
-    probeHangs: false,
-    busy: false,
-    navigationClicks: 0,
-    dispatchCalls: 0,
-    aborts: 0,
-    probeAborts: 0,
-    gotoCalls: 0,
-    async goto() {
-      scope.gotoCalls += 1;
-      throw new Error("navigation timed out after 45s following HTTP 302");
-    },
-    locator(selector) {
-      return fakeLocator(scope, selector);
-    },
-  };
-  return scope;
-}
-
-function fakePage(scopes: FakeScope[]) {
-  const pageScope = fakeScope("page");
-  const page = {
-    locator(selector: string) {
-      const locator = pageScope.locator(selector);
-      locator.count = async () => 0;
-      locator.waitFor = async () => {
-        throw new Error(
-          "page scope does not contain a loan navigation control",
-        );
-      };
-      return locator;
-    },
-    frame({ name }: { name: string }) {
-      return scopes.find((scope) => scope.name === name) as unknown as Frame;
-    },
-    frames() {
-      return scopes as unknown as Frame[];
-    },
-    async waitForTimeout() {},
-  } as unknown as Page;
-  return page;
-}
-
-const fastNavigation: LoanNavigationOptions = {
-  existingScopeTimeoutMs: 10,
-  formReadyTimeoutMs: 10,
-  retryFormReadyTimeoutMs: 10,
-  navigationControlTimeoutMs: 10,
-  navigationLinkTimeoutMs: 10,
-};
-
 const server = await createServer({
   configFile: false,
   cacheDir: "/tmp/octopus-beak-fubon-loan-statements-check",
@@ -338,17 +106,13 @@ const server = await createServer({
 const module = await server
   .ssrLoadModule("/src/workflows/fubon-loan-statements.ts")
   .finally(() => server.close());
-const navigateToLoanStatementsPage = module.navigateToLoanStatementsPage as (
-  page: Page,
-  options?: LoanNavigationOptions,
-) => Promise<unknown>;
 const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
   rows: readonly string[][],
 ) => string[][];
 const parseFubonLoanPaginationSignal =
   module.parseFubonLoanPaginationSignal as (html: string) => unknown;
 const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCollection as (
-  page: Page,
+  site: FubonEbankSite,
   html: string,
   account: { label: string; value: string },
   input: {
@@ -439,7 +203,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
     } as unknown as Page;
     const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
     const result = await parseFubonLoanStatementForCollection(
-      page,
+      fubonEbankSite(page, { signal: new AbortController().signal, text: strictSourceText }),
       fixtureHtml,
       {
         label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
@@ -508,122 +272,6 @@ test("extracts only a complete unmasked Fubon loan selector account", () => {
     }),
     null,
   );
-});
-
-test("uses an already-rendered loan form without navigation or goto", async () => {
-  const scope = fakeScope("txnFrame");
-  scope.ready = true;
-  const page = fakePage([scope]);
-
-  const result = await navigateToLoanStatementsPage(page, fastNavigation);
-
-  assert.equal(result, scope);
-  assert.equal(scope.navigationClicks, 0);
-  assert.equal(scope.gotoCalls, 0);
-});
-
-test("uses the current DOM after a redirect-trigger timeout instead of goto", async () => {
-  const legacyNavigation = fakeScope("legacy");
-  await assert.rejects(
-    legacyNavigation.goto(),
-    /navigation timed out after 45s following HTTP 302/,
-  );
-  assert.equal(legacyNavigation.gotoCalls, 1);
-
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.readyOnNavigationClick = 1;
-  const page = fakePage([header, landing]);
-
-  const result = await navigateToLoanStatementsPage(page, fastNavigation);
-
-  assert.equal(result, landing);
-  assert.equal(landing.gotoCalls, 0);
-  assert.equal(landing.navigationClicks, 1);
-});
-
-test("allows exactly one controlled retry and preserves the bounded failure", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.readyOnNavigationClick = 2;
-  const page = fakePage([header, landing]);
-
-  const result = await navigateToLoanStatementsPage(page, fastNavigation);
-
-  assert.equal(result, landing);
-  assert.equal(landing.navigationClicks, 2);
-
-  const absentHeader = fakeScope("frame1");
-  const absentLanding = fakeScope("txnFrame");
-  const absent = fakePage([absentHeader, absentLanding]);
-  await assert.rejects(
-    navigateToLoanStatementsPage(absent, fastNavigation),
-    new Error("Could not navigate to the loan statement page."),
-  );
-  assert.equal(absentLanding.navigationClicks, 2);
-  assert.equal(absentLanding.gotoCalls, 0);
-});
-
-test("fails closed when the loan navigation link is absent", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.linkPresent = false;
-  const page = fakePage([header, landing]);
-
-  await assert.rejects(
-    navigateToLoanStatementsPage(page, fastNavigation),
-    new Error("Could not navigate to the loan statement page."),
-  );
-  assert.equal(landing.navigationClicks, 0);
-});
-
-test("re-resolves the transaction frame after the first navigation replaces it", async () => {
-  const header = fakeScope("frame1");
-  const previousLanding = fakeScope("txnFrame");
-  const replacementLanding = fakeScope("txnFrame");
-  replacementLanding.ready = true;
-  const scopes = [header, previousLanding];
-  const page = fakePage(scopes);
-  previousLanding.onNavigationClick = () => {
-    scopes.splice(1, 1, replacementLanding);
-  };
-
-  const result = await navigateToLoanStatementsPage(page, fastNavigation);
-
-  assert.equal(result, replacementLanding);
-  assert.equal(previousLanding.navigationClicks, 1);
-  assert.equal(replacementLanding.navigationClicks, 0);
-});
-
-test("aborts a stuck navigation action before probing the replaced frame", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.navigationEvaluateHangs = true;
-  const page = fakePage([header, landing]);
-
-  const boundedNavigation = Promise.race([
-    navigateToLoanStatementsPage(page, {
-      existingScopeTimeoutMs: 10,
-      formReadyTimeoutMs: 10,
-      retryFormReadyTimeoutMs: 10,
-      navigationControlTimeoutMs: 5,
-      navigationLinkTimeoutMs: 10,
-    }),
-    new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error("navigation exceeded the test deadline")),
-        250,
-      );
-    }),
-  ]);
-
-  await assert.rejects(
-    boundedNavigation,
-    new Error("Could not navigate to the loan statement page."),
-  );
-  assert.equal(landing.busy, false);
-  assert.equal(landing.dispatchCalls, 2);
-  assert.equal(landing.aborts, 2);
 });
 
 test("fails closed when a Fubon result contains an unexpected non-header row", () => {
@@ -821,29 +469,6 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
   assert.equal(parsed.rows.length, 2);
 });
 
-test("bounds a frame probe that never resolves and fails closed", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.probeHangs = true;
-  const page = fakePage([header, landing]);
-
-  const boundedNavigation = Promise.race([
-    navigateToLoanStatementsPage(page, fastNavigation),
-    new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error("navigation exceeded the test deadline")),
-        250,
-      );
-    }),
-  ]);
-
-  await assert.rejects(
-    boundedNavigation,
-    new Error("Could not navigate to the loan statement page."),
-  );
-  assert.ok(landing.probeAborts > 0);
-});
-
 test("commits and resolves one Fubon loan capture through authenticated PGlite RPC", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "fubon-loan-pglite-"));
   const worker = createPGliteViewWorkerClient(
@@ -988,94 +613,196 @@ test("commits and resolves one Fubon loan capture through authenticated PGlite R
   }
 });
 
-test("emits non-sensitive bounded navigation stage telemetry", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.readyOnNavigationClick = 1;
-  const page = fakePage([header, landing]);
-  const originalLog = console.log;
-  const events: Array<[stage: string, status: string]> = [];
-  console.log = ((stage: unknown, payload: unknown) => {
-    const status =
-      typeof payload === "object" &&
-      payload !== null &&
-      "status" in payload &&
-      typeof payload.status === "string"
-        ? payload.status
-        : "";
-    events.push([String(stage), status]);
-  }) as typeof console.log;
-
-  try {
-    await navigateToLoanStatementsPage(page, fastNavigation);
-  } finally {
-    console.log = originalLog;
+// The whole read against a synthetic signed-in frame1/txnFrame frameset served
+// by route interception (ADR 0066): the 貸款服務 menu reveals the task link, the
+// link is clicked in place, each account is selected behind the bank mask and
+// queried over the custom range, and a two-page result is followed to its
+// terminal page through form postbacks.
+const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
+const LOAN_QUERY_PATH = "/B2C/clnqu/clnqu001/CLNQU001_Home.faces";
+const LOAN_DIRECT_PATH = "/B2C/clnqu/clnqu001/direct.faces";
+const shellLoanAccounts = [
+  { value: "opaque-loan-a", label: `${syntheticFubonLoanAccountNumber} (房屋貸款)` },
+  { value: "opaque-loan-b", label: "**********4321 (信用貸款)" },
+];
+const shellLoanHeader = `<a id="menu_CLN" href="javascript:void(0)" onclick="openLoanMenu()">貸款服務</a><div id="cln"></div>
+<script>
+  function openLoanMenu() {
+    parent.menuOpens = (parent.menuOpens ?? 0) + 1;
+    document.getElementById("cln").innerHTML =
+      '<a class="task_CLNQU001 menu_CLN02" href="${LOAN_DIRECT_PATH}" onclick="event.preventDefault(); parent.frames.txnFrame.location.href=\\'${LOAN_QUERY_PATH}\\'">貸款交易明細查詢</a>';
   }
+</script>`;
+const loanResultGrid = (rows: string[][], page: string, next: string) => `
+  <table><tr><td>分行名稱</td><td>sanitized-branch</td><td>幣別</td><td>TWD</td></tr><tr><td>帳號類別</td><td>sanitized-loan</td></tr></table>
+  <input type="hidden" name="resultGrid:dataGridCurrentPage" value="${page}">
+  <table id="resultGrid" class="tb1 queryResult"><tbody>
+    <tr>${["交易日期", "交易內容", "異動金額", "利率", "計息起日", "計息止日", "餘額", "備註"].map((header) => `<td>${header}</td>`).join("")}</tr>
+    ${rows.map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}
+  </tbody></table>${next}`;
+const loanRow = (date: string, content: string, balance: string) =>
+  [date, content, "100.00", "1.50", date, date, balance, ""];
+const loanResultFor = (account: string, page: string) => {
+  if (account === shellLoanAccounts[0]!.value && page === "1") {
+    return loanResultGrid(
+      [loanRow("2026/01/05", "還款", "900.00")],
+      "1",
+      `<a onclick="setDataGridCurrentPage('opaque', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a>`,
+    );
+  }
+  if (account === shellLoanAccounts[0]!.value) {
+    return loanResultGrid([loanRow("2026/01/20", "繳息", "800.00")], "2", "");
+  }
+  return loanResultGrid([loanRow("2026/01/10", "LOAN-PAYMENT", "500.00")], "1", "");
+};
+const loanQueryForm = (selected: string, result: string) => `<form id="form1" method="post" action="${LOAN_QUERY_PATH}">
+    <select id="form1:loanAccountCombo" name="form1:loanAccountCombo" onchange="showQueryItems()">
+      <option value="none">請選擇</option>
+      ${shellLoanAccounts.map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`).join("")}
+    </select>
+    <select id="form1:queryItemCombo" name="form1:queryItemCombo"></select>
+    <input type="radio" class="queryPeriod" name="form1:queryPeriod" value="quick">
+    <input type="radio" class="queryPeriod" name="form1:queryPeriod" value="custom">
+    <input type="radio" class="quickKind" name="form1:quickKind" value="6">
+    <input id="form1:startDate" name="form1:startDate" value="">
+    <input id="form1:endDate" name="form1:endDate" value="">
+    <a id="form1:doValidate" href="javascript:void(0)">查詢</a>
+    ${result}
+  </form>
+  <script>
+    function showQueryItems() {
+      const mask = document.createElement("div");
+      mask.className = "_mask";
+      mask.style.cssText = "position:fixed;inset:0";
+      document.body.appendChild(mask);
+      setTimeout(() => {
+        document.getElementById("form1:queryItemCombo").innerHTML =
+          '<option value="TRANSACTION_DETAIL_QUERY">交易明細</option><option value="DATES_DETAIL_QUERY">日期明細</option>';
+        mask.remove();
+      }, 300);
+    }
+  </script>`;
 
-  assert.deepEqual(events, [
-    ["loan-existing-form-probe", "start"],
-    ["loan-existing-form-probe", "timeout"],
-    ["loan-menu-trigger", "start"],
-    ["loan-menu-trigger", "success"],
-    ["loan-link-resolve", "start"],
-    ["loan-link-resolve", "success"],
-    ["loan-form-ready", "start"],
-    ["loan-form-ready", "success"],
-  ]);
+async function readLoanThroughShell(
+  options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void; brokenAccount?: string }> = {},
+) {
+  const browser = await chromium.launch({ headless: true });
+  const shellPage = await browser.newPage();
+  const posted: Array<{ account: string; page: string; submit: boolean; period?: string; range?: string }> = [];
+  const requested: string[] = [];
+  const staged: ProductStageRequest[] = [];
+  const activities: string[] = [];
+  const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+  try {
+    await shellPage.route(`${SITE_ORIGIN}/**`, async (route) => {
+      const request = route.request();
+      const { pathname } = new URL(request.url());
+      requested.push(pathname);
+      if (pathname === LOAN_QUERY_PATH && request.method() === "POST") {
+        const body = new URLSearchParams(request.postData() ?? "");
+        const account = body.get("form1:loanAccountCombo") ?? "";
+        const submit = body.has("form1:doValidate");
+        const page = submit ? "1" : body.get("resultGrid:dataGridCurrentPage") ?? "";
+        // The query names its period; a next-page postback only names the page.
+        posted.push({
+          account,
+          page,
+          submit,
+          ...(submit
+            ? {
+                period: body.get("form1:queryPeriod") ?? "",
+                range: `${body.get("form1:startDate")}~${body.get("form1:endDate")}`,
+              }
+            : {}),
+        });
+        if (account === options.holdAccount) {
+          options.onHeld?.();
+          return;
+        }
+        if (account === options.brokenAccount) {
+          return await route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xc3, 0x28]) });
+        }
+        return await route.fulfill(html(loanQueryForm(account, loanResultFor(account, page))));
+      }
+      switch (pathname) {
+        case "/B2C/common/Index.faces":
+          return await route.fulfill(html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`));
+        case "/B2C/header.faces":
+          return await route.fulfill(html(shellLoanHeader));
+        case LOAN_QUERY_PATH:
+          return await route.fulfill(html(loanQueryForm("", "")));
+        default:
+          return await route.fulfill(html(`<p>${pathname}</p>`));
+      }
+    });
+    await shellPage.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+    const credentials = { fubon_user_id: "synthetic-user-id", fubon_account: "synthetic-user" };
+    const summary = await runFubonLoanStatements(
+      shellPage,
+      {
+        ...fubonLoanStatementsInputSchema.parse({
+          dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+        }),
+        sourceConnectionScope: fubonStableLoginScope(credentials)!,
+        sourceConnectionKey: deriveFubonSourceConnectionKey(credentials)!,
+      },
+      {
+        signal: options.signal ?? new AbortController().signal,
+        text: strictSourceText,
+        now: () => "2026-02-01T00:00:00.000Z",
+      } as unknown as Parameters<typeof runFubonLoanStatements>[2],
+      {
+        stage: (...items: readonly ProductStageRequest[]) => { staged.push(...items); },
+        reportActivity: async (activity: string) => { activities.push(activity); },
+        event: async () => {},
+      } as unknown as Parameters<typeof runFubonLoanStatements>[3],
+    );
+    const menuOpens = await shellPage.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
+    return { summary, posted, requested, staged, activities, menuOpens };
+  } finally {
+    await browser.close();
+  }
+}
+
+test("Fubon loan reads every account through the bank's own task link and pages to the terminal result", async () => {
+  const read = await readLoanThroughShell();
+  assert.equal(read.menuOpens, 1, "the task link is revealed through the 貸款服務 menu");
+  assert.ok(!read.requested.includes(LOAN_DIRECT_PATH), "the task link's href is never navigated to directly");
+  assert.deepEqual(
+    read.posted,
+    [
+      { account: shellLoanAccounts[0]!.value, page: "1", submit: true, period: "custom", range: "2026/01/01~2026/01/31" },
+      { account: shellLoanAccounts[0]!.value, page: "2", submit: false },
+      { account: shellLoanAccounts[1]!.value, page: "1", submit: true, period: "custom", range: "2026/01/01~2026/01/31" },
+    ],
+    "each account is queried in order, and a next page is posted from the replaced document",
+  );
+  assert.deepEqual(read.summary, { sourceCaptureCount: 2, rowCount: 3 });
+  assert.deepEqual(read.activities, ["query", "query", "query"]);
+  assert.deepEqual(
+    read.staged.map((item) => {
+      const capture = (item.command.request as { capture: { scope: { pageCount: number }; records: unknown[] } }).capture;
+      return [item.product, capture.scope.pageCount, capture.records.length];
+    }),
+    [["loan", 2, 2], ["loan", 1, 1]],
+  );
 });
 
-test("emits exactly one ordered link/readiness retry", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.readyOnNavigationClick = 2;
-  const page = fakePage([header, landing]);
-  const originalLog = console.log;
-  const events: Array<[stage: string, status: string]> = [];
-  console.log = ((stage: unknown, payload: unknown) => {
-    const status =
-      typeof payload === "object" &&
-      payload !== null &&
-      "status" in payload &&
-      typeof payload.status === "string"
-        ? payload.status
-        : "";
-    events.push([String(stage), status]);
-  }) as typeof console.log;
-
-  try {
-    await navigateToLoanStatementsPage(page, fastNavigation);
-  } finally {
-    console.log = originalLog;
-  }
-
-  assert.deepEqual(events, [
-    ["loan-existing-form-probe", "start"],
-    ["loan-existing-form-probe", "timeout"],
-    ["loan-menu-trigger", "start"],
-    ["loan-menu-trigger", "success"],
-    ["loan-link-resolve", "start"],
-    ["loan-link-resolve", "success"],
-    ["loan-form-ready", "start"],
-    ["loan-form-ready", "timeout"],
-    ["loan-link-resolve", "start"],
-    ["loan-link-resolve", "success"],
-    ["loan-form-ready", "start"],
-    ["loan-form-ready", "success"],
-  ]);
+test("Fubon loan fails a reply with malformed bytes as a source integrity failure", async () => {
+  await assert.rejects(
+    readLoanThroughShell({ brokenAccount: shellLoanAccounts[1]!.value }),
+    SourceTextIntegrityError,
+  );
 });
 
-test("typed collection suppresses raw loan navigation diagnostics", async () => {
-  const header = fakeScope("frame1");
-  const landing = fakeScope("txnFrame");
-  landing.readyOnNavigationClick = 1;
-  const page = fakePage([header, landing]);
-  const originalLog = console.log;
-  const logs: unknown[][] = [];
-  console.log = ((...values: unknown[]) => logs.push(values)) as typeof console.log;
-  try {
-    await navigateToLoanStatementsPage(page, { ...fastNavigation, silent: true });
-  } finally {
-    console.log = originalLog;
-  }
-  assert.deepEqual(logs, []);
+test("Fubon loan stops inside a held query postback when the run is cancelled", async () => {
+  const controller = new AbortController();
+  await assert.rejects(
+    readLoanThroughShell({
+      signal: controller.signal,
+      holdAccount: shellLoanAccounts[1]!.value,
+      onHeld: () => controller.abort(new Error("loan query cancelled")),
+    }),
+    /loan query cancelled/u,
+  );
 });

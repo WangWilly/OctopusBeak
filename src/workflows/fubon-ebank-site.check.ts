@@ -29,15 +29,17 @@ const HEADER = `<a id="menu_CLN" href="javascript:void(0)" onclick="openLoanMenu
 </script>`;
 
 async function withFubonShell(
-  body: (page: Page, posted: string[]) => Promise<void>,
+  body: (page: Page, posted: string[], requested: string[]) => Promise<void>,
   options: Readonly<{ shell?: "frameset" | "signed-out" }> = {},
 ): Promise<void> {
   const page = await browser.newPage();
   const posted: string[] = [];
+  const requested: string[] = [];
   try {
     await page.route(`${ORIGIN}/**`, async (route) => {
       const request = route.request();
       const { pathname } = new URL(request.url());
+      requested.push(pathname);
       const html = (body: string) => route.fulfill({ contentType: "text/html; charset=utf-8", body });
       if (request.method() === "POST") {
         posted.push(`${pathname} ${request.postData() ?? ""}`);
@@ -56,7 +58,9 @@ async function withFubonShell(
         case "/B2C/home.faces":
           return await html(`<a href="/B2C/deposit.faces">我的存款</a>
             <a class="task_RETRY" href="javascript:void(0)"
-              onclick="parent.retryClicks = (parent.retryClicks ?? 0) + 1; if (parent.retryClicks >= 2) location.href = '/B2C/retry.faces';">重試任務</a>`);
+              onclick="parent.retryClicks = (parent.retryClicks ?? 0) + 1; if (parent.retryClicks >= 2) location.href = '/B2C/retry.faces';">重試任務</a>
+            <a class="task_HANDOFF" href="/B2C/direct.faces"
+              onclick="event.preventDefault(); location.href = '/B2C/handoff.faces';">交接任務</a>`);
         case "/B2C/deposit.faces":
           return await html(`<div class="_mask" style="position:fixed;inset:0">處理中</div>
             <a class="input_sel fastFunctionLinks">帳戶</a>
@@ -65,12 +69,14 @@ async function withFubonShell(
           return await html(`<form id="form1" method="post" action="/B2C/loan.faces"><input name="acct" value="0012" /></form>`);
         case "/B2C/retry.faces":
           return await html(`<div id="retried">完成</div>`);
+        case "/B2C/handoff.faces":
+          return await html(`<div id="handed-off">完成</div>`);
         default:
           return await html(`<p>${pathname}</p>`);
       }
     });
     await page.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
-    await body(page, posted);
+    await body(page, posted, requested);
   } finally {
     await page.close();
   }
@@ -124,6 +130,19 @@ test("a task that does not render after its first trigger is triggered once more
     });
     assert.equal(await scope.locator("#retried").count(), 1);
     assert.equal((await counters(page)).retryClicks, 2);
+  }));
+
+test("a route clicked in place lets the bank redirect instead of following the link's href", () =>
+  withFubonShell(async (page, _posted, requested) => {
+    const site = fubonEbankSite(page, context());
+    const scope = await site.open({
+      description: "handed-off task",
+      link: (candidate) => candidate.locator("a.task_HANDOFF"),
+      clickInPlace: true,
+      ready: attached("#handed-off"),
+    });
+    assert.equal(await scope.locator("#handed-off").count(), 1);
+    assert.ok(!requested.includes("/B2C/direct.faces"), "the link's href is never navigated to directly");
   }));
 
 test("a page without the header frame fails as a lost session", () =>
