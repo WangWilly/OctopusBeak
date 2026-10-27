@@ -13,12 +13,12 @@ import type { WorkflowFinancialCommitPort, WorkflowProductFailure } from "./work
 import {
   collectSelectedProducts,
   interruptedProductCollectionFromOutput,
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
   type CollectionProductOutcome,
   type ProductStageRequest,
 } from "./product-collection.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
@@ -285,7 +285,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       },
       financialCommit: commitWith(async (_typeId, staged) => result("completed", staged.map(committed))),
       prepare: async (typeId) => {
-        if (typeId === "credit_card") throw new ProductCollectionFatalError("authentication-failed");
+        if (typeId === "credit_card") throw new FailureCodeError("authentication-failed");
       },
     }),
     (error: unknown) => {

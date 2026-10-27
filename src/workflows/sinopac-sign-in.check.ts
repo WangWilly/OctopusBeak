@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import { matchesRejectionDialog, matchesTakeoverDialog } from "../lib/automation/sign-in-prompt.ts";
 import { SINOPAC_CAPTCHA_INPUT_SELECTOR } from "../lib/automation/sinopac-captcha.ts";
@@ -97,7 +97,7 @@ test("SinoPac signs in through the step and keeps its own session probe", () =>
     await signedIn.assertSession();
     await page.goto(SINOPAC_LOGIN_URL);
     const lost = await failure(signedIn.assertSession());
-    assert.ok(lost instanceof ProductCollectionFatalError);
+    assert.ok(lost instanceof FailureCodeError);
     assert.equal(lost.errorCode, "authentication-failed");
     assert.equal(dialogListeners(page), 0);
   }));

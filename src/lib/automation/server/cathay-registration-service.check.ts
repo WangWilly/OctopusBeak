@@ -6,7 +6,7 @@ import test from "node:test";
 import type { BrowserContext, Page } from "playwright";
 import { cathaySignInPlan, signInCathayForApp } from "../../../workflows/cathay-statements.ts";
 import { recordedRun } from "../../../workflows/sign-in-check-harness.ts";
-import { ProductCollectionFatalError } from "../product-collection.ts";
+import { FailureCodeError } from "../workflow-failures.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import {
   createCathayRegistrationService,
@@ -245,7 +245,7 @@ test("a run that meets Cathay's OTP stops asking for device registration and sen
     await assert.rejects(
       openRunPage((page) => signInAsRun(page, events)),
       (error: unknown) =>
-        error instanceof ProductCollectionFatalError && error.errorCode === "device-registration-required",
+        error instanceof FailureCodeError && error.errorCode === "device-registration-required",
     );
     assert.deepEqual(log.sends, []);
     assert.deepEqual(log.submits, []);

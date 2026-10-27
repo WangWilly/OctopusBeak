@@ -1361,7 +1361,7 @@ export type HncbStatementsContext = Pick<
 >;
 
 export type HncbStatementsRun = Readonly<{
-  /** From sign-in: throws a ProductCollectionFatalError once the signed-in session is gone. */
+  /** From sign-in: throws a FailureCodeError once the signed-in session is gone. */
   assertSession?: () => Promise<void>;
   /** The selected Attached Preview Products, collected after the deposit. */
   attached?: () => Promise<PreviewProductRun>;

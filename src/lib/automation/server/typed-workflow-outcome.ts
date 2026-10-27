@@ -5,7 +5,6 @@ import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.t
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
 import {
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   sanitizeCollectionProductOutcomes,
   type CollectionProductOutcome,
@@ -20,6 +19,7 @@ import {
   type WorkflowRunStatus,
 } from "../workflow-run-result.ts";
 import {
+  FailureCodeError,
   TYPED_WORKFLOW_ERROR_CODES,
   type TypedWorkflowErrorCode,
 } from "../workflow-failures.ts";
@@ -116,7 +116,7 @@ export function classifyTypedWorkflowFailure(
   events: readonly WorkflowRunEvent[],
   signalAborted = false,
 ): TypedWorkflowErrorCode {
-  if (error instanceof ProductCollectionInterruptedError || error instanceof ProductCollectionFatalError) {
+  if (error instanceof ProductCollectionInterruptedError || error instanceof FailureCodeError) {
     if (ERROR_CODES.has(error.errorCode)) return error.errorCode;
   }
   if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";

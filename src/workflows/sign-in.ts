@@ -1,6 +1,6 @@
 import { errors, type Dialog, type Frame, type Locator, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   matchesRejectionDialog,
   matchesTakeoverDialog,
@@ -215,7 +215,7 @@ class Attempt {
       usedExistingSession,
       assertSession: async () => {
         if (!(await session(this.page, this.context.signal))) {
-          throw new ProductCollectionFatalError("authentication-failed");
+          throw new FailureCodeError("authentication-failed");
         }
       },
     };

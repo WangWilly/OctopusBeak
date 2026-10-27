@@ -4,12 +4,12 @@ import {
   collectSelectedProducts,
   type CollectionProductOutcome,
   type CollectionProductTypeId,
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.js";
+import { FailureCodeError } from "../lib/automation/workflow-failures.js";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
@@ -376,13 +376,13 @@ export async function runCathayAllProviderWorkflow(
         );
       } catch (error) {
         if (context.signal.aborted) throw error;
-        throw new ProductCollectionFatalError("authentication-failed");
+        throw new FailureCodeError("authentication-failed");
       }
       if (
         checkedSession.customerId !== session.customerId ||
         checkedSession.idType !== session.idType
       ) {
-        throw new ProductCollectionFatalError("authentication-failed");
+        throw new FailureCodeError("authentication-failed");
       }
       session = checkedSession;
     };

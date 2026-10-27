@@ -28,10 +28,10 @@ import {
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import {
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   type ProductStageRequest,
 } from "./product-collection.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
 import { parsePreviewWrite, type PreviewCreditCollection, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
 import {

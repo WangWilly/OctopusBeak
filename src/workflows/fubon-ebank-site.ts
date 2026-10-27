@@ -1,5 +1,5 @@
 import type { Frame, Locator, Page, Response } from "playwright";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
@@ -62,7 +62,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
 
   const header = async (): Promise<Frame> => {
     const frame = await ifFound(frames.frame(HEADER_FRAME, { timeoutMs: SHELL_TIMEOUT_MS }));
-    if (!frame) throw new ProductCollectionFatalError("authentication-failed");
+    if (!frame) throw new FailureCodeError("authentication-failed");
     return frame;
   };
 
