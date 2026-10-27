@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { chromium } from "playwright";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
 import {
   buildFubonLoanPaymentAccountEvidence,
@@ -9,6 +10,7 @@ import {
   indexFubonCurrentDepositFinancialCaptures,
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
+  readFubonDepositSourceSnapshot,
   runFubonStatements,
   stageFubonDeposit,
   type FubonDepositAccountOption,
@@ -26,6 +28,7 @@ import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   type FubonCurrentDepositBalanceRow,
 } from "./fubon-current-deposit-balances.ts";
+import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type {
@@ -216,70 +219,6 @@ await assert.rejects(
     {} as never,
   ),
   /stable caller-supplied Source Connection scope and key/u,
-);
-
-class FakeOption {
-  private readonly value: string;
-  private readonly label: string;
-  private readonly failure?: Error;
-
-  constructor(value: string, label: string, failure?: Error) {
-    this.value = value;
-    this.label = label;
-    this.failure = failure;
-  }
-
-  async getAttribute(name: string): Promise<string | null> {
-    if (this.failure) throw this.failure;
-    return name === "value" ? this.value : null;
-  }
-
-  async textContent(): Promise<string> {
-    if (this.failure) throw this.failure;
-    return this.label;
-  }
-}
-
-class FakeOptionList {
-  private readonly items: FakeOption[];
-  constructor(items: FakeOption[]) { this.items = items; }
-  async count() { return this.items.length; }
-  nth(index: number) { return this.items[index]!; }
-}
-
-function fakeDepositPage(options: Array<{ value: string; label: string; failure?: Error }>) {
-  const list = new FakeOptionList(options.map((option) => new FakeOption(option.value, option.label, option.failure)));
-  const select = { async count() { return 1; }, locator() { return list; } };
-  return {
-    locator(selector: string) { return selector.endsWith(" option") ? list : select; },
-    frames() { return []; },
-    async waitForTimeout() {},
-  } as never;
-}
-
-await assert.rejects(
-  () => readFubonDepositAccountOptions(fakeDepositPage([])),
-  (error: unknown) => error instanceof StatementComponentAbsentError && error.skipReason === "absent",
-);
-await assert.rejects(
-  () => readFubonDepositAccountOptions(fakeDepositPage([
-    { value: "none", label: "請選擇帳戶" },
-    { value: "", label: "" },
-  ])),
-  (error: unknown) => error instanceof StatementComponentAbsentError && error.skipReason === "absent",
-);
-assert.deepEqual(
-  await readFubonDepositAccountOptions(fakeDepositPage([
-    { value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" },
-    { value: "none", label: "請選擇帳戶" },
-  ])),
-  [{ value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" }],
-);
-await assert.rejects(
-  () => readFubonDepositAccountOptions(fakeDepositPage([
-    { value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)", failure: new Error("unknown option read failure") },
-  ])),
-  /unknown option read failure/u,
 );
 
 const fixture = FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2;
@@ -1010,4 +949,190 @@ try {
 } finally {
   process.chdir(originalCwd);
   await rm(typedOutputDir, { recursive: true, force: true });
+}
+
+// The read half against real Chromium. The account selector and a synthetic
+// signed-in frameset are served by route interception (ADR 0066).
+const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
+const siteContext = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
+const browser = await chromium.launch({ headless: true });
+try {
+  const selectorPage = await browser.newPage();
+  const showAccountSelector = (options: Array<{ value: string; label: string }>) =>
+    selectorPage.setContent(`<select id="form1:comboAccount">${options
+      .map((option) => `<option value="${option.value}">${option.label}</option>`)
+      .join("")}</select>`);
+  const selectorSite = (signal?: AbortSignal) => fubonEbankSite(selectorPage, siteContext(signal));
+  await showAccountSelector([]);
+  await assert.rejects(
+    () => readFubonDepositAccountOptions(selectorSite()),
+    (error: unknown) => error instanceof StatementComponentAbsentError && error.skipReason === "absent",
+  );
+  await showAccountSelector([
+    { value: "none", label: "請選擇帳戶" },
+    { value: "", label: "" },
+  ]);
+  await assert.rejects(
+    () => readFubonDepositAccountOptions(selectorSite()),
+    (error: unknown) => error instanceof StatementComponentAbsentError && error.skipReason === "absent",
+  );
+  await showAccountSelector([
+    { value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" },
+    { value: "none", label: "請選擇帳戶" },
+  ]);
+  assert.deepEqual(
+    await readFubonDepositAccountOptions(selectorSite()),
+    [{ value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" }],
+  );
+  await selectorPage.setContent("<p>載入中</p>");
+  const cancelledSelector = new AbortController();
+  const pendingOptions = readFubonDepositAccountOptions(selectorSite(cancelledSelector.signal));
+  setTimeout(() => cancelledSelector.abort(new Error("option read cancelled")), 300);
+  await assert.rejects(pendingOptions, /option read cancelled/u, "a cancelled run stops inside the account selector wait");
+  await selectorPage.close();
+
+  // A failed option read is not swallowed into a shorter account list.
+  const failingOption = { getAttribute: async () => { throw new Error("unknown option read failure"); } };
+  const failingOptions = { count: async () => 1, nth: () => failingOption };
+  const failingPage = {
+    mainFrame: () => failingPage,
+    frames: () => [],
+    locator: (selector: string) => selector.endsWith(" option") ? failingOptions : { count: async () => 1 },
+  };
+  await assert.rejects(
+    () => readFubonDepositAccountOptions(fubonEbankSite(failingPage as never, siteContext())),
+    /unknown option read failure/u,
+  );
+
+  const QUERY_PATH = "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces";
+  const shellAccounts = [
+    { value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" },
+    { value: "SYNTHETIC-TWD-B", label: "SYNTHETIC-TWD-B (034)" },
+  ];
+  const queryForm = (selected: string, result: string) => `<script>function setupComboBox() {} var comboAccountItems = [];</script>
+    <form id="form1" method="post" action="${QUERY_PATH}">
+      <select id="form1:comboAccount" name="form1:comboAccount">
+        <option value="none">請選擇帳戶</option>
+        ${shellAccounts.map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`).join("")}
+      </select>
+      <input type="radio" id="form1:rdoDay30" name="form1:rdoGroup3" value="30">
+      <input id="form1:startDate" name="form1:startDate" value="2026/01/01">
+      <input id="form1:endDate" name="form1:endDate" value="2026/01/31">
+      <a id="form1:doValidateAndSubmit" href="javascript:void(0)">查詢</a>
+      ${result}
+    </form>
+    <script>
+      setupComboBox("form1:comboAccount", "", "${selected}");
+      ${shellAccounts.map((account, index) => `comboAccountItems[${index}] = new Array("${account.label}", "${account.value}");`).join("\n")}
+    </script>`;
+  const resultGrid = (rows: string[][], next: string) => `<table id="resultGrid" class="tb1 queryResult"><tr>
+      <th>帳務日期</th><th>交易時間</th><th>摘要</th><th>支出金額</th><th>存入金額</th><th>即時餘額</th><th>附註</th>
+    </tr>${rows.map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</table>${next}`;
+  const resultFor = (account: string, page: string) => {
+    if (account === shellAccounts[0]!.value && page === "1") {
+      return resultGrid(
+        [["2026/01/02", "09:10:11", "轉帳", "", "100", "100", ""]],
+        `<a onclick="setDataGridCurrentPage('x', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a>`,
+      );
+    }
+    if (account === shellAccounts[0]!.value) {
+      return resultGrid([["2026/01/03", "10:00:00", "提款", "40", "", "60", ""]], "");
+    }
+    return resultGrid([], "");
+  };
+
+  async function readThroughShell(
+    options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void }> = {},
+  ) {
+    const shellPage = await browser.newPage();
+    const posted: Array<{ account: string; page: string; submit: boolean }> = [];
+    const clicks: string[] = [];
+    const activities: string[] = [];
+    const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+    try {
+      await shellPage.exposeFunction("recordClick", (name: string) => { clicks.push(name); });
+      await shellPage.route(`${SITE_ORIGIN}/**`, async (route) => {
+        const request = route.request();
+        const { pathname } = new URL(request.url());
+        if (pathname === QUERY_PATH && request.method() === "POST") {
+          const body = new URLSearchParams(request.postData() ?? "");
+          const account = body.get("form1:comboAccount") ?? "";
+          const page = body.get("resultGrid:dataGridCurrentPage") ?? "";
+          posted.push({ account, page, submit: body.has("form1:doValidateAndSubmit") });
+          if (account === options.holdAccount) {
+            options.onHeld?.();
+            return;
+          }
+          return await route.fulfill(html(queryForm(account, resultFor(account, page))));
+        }
+        switch (pathname) {
+          case "/B2C/common/Index.faces":
+            return await route.fulfill(html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`));
+          case "/B2C/home.faces":
+            return await route.fulfill(html(`<a href="/B2C/deposits.faces">我的存款</a>`));
+          case "/B2C/deposits.faces":
+            return await route.fulfill(html(`<table>${shellAccounts.map((account) => `<tr>
+              <td>${account.label}</td>
+              <td><a class="input_sel fastFunctionLinks" href="javascript:void(0)" onclick="recordClick('quick:${account.value}')">快速功能</a></td>
+              <td><a class="btn_sel" href="javascript:void(0)" onclick="recordClick('details:${account.value}'); location.href='${QUERY_PATH}'">交易明細查詢</a></td>
+            </tr>`).join("")}</table>`));
+          case QUERY_PATH:
+            return await route.fulfill(html(queryForm("", "")));
+          default:
+            return await route.fulfill(html(`<p>${pathname}</p>`));
+        }
+      });
+      await shellPage.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+      const snapshot = await readFubonDepositSourceSnapshot(
+        fubonEbankSite(shellPage, siteContext(options.signal)),
+        { dateRanges: ["30"], downloadFormat: "EXCEL" },
+        siteContext(options.signal),
+        { reportActivity: async (activity) => { activities.push(activity); } },
+      );
+      return { snapshot, posted, clicks, activities };
+    } finally {
+      await shellPage.close();
+    }
+  }
+
+  const shellRead = await readThroughShell();
+  assert.deepEqual(
+    shellRead.clicks,
+    [`quick:${shellAccounts[0]!.value}`, `details:${shellAccounts[0]!.value}`],
+    "the deposits page is reached through 我的存款, and the first row opens its transaction details",
+  );
+  assert.deepEqual(
+    shellRead.posted,
+    [
+      { account: shellAccounts[0]!.value, page: "1", submit: true },
+      { account: shellAccounts[0]!.value, page: "2", submit: false },
+      { account: shellAccounts[1]!.value, page: "1", submit: true },
+    ],
+    "each account is queried in order, and a next page is posted from the replaced document",
+  );
+  assert.deepEqual(
+    shellRead.snapshot.accounts.map(({ account, statements }) => ({
+      account: account.value,
+      pages: statements.flatMap((statement) => statement.pages.map((page) => page.rows.map((row) => row.cells[2]))),
+    })),
+    [
+      { account: shellAccounts[0]!.value, pages: [["轉帳"], ["提款"]] },
+      { account: shellAccounts[1]!.value, pages: [[]] },
+    ],
+  );
+  assert.equal(shellRead.snapshot.accounts[0]!.statements[0]!.pages[0]!.selectedAccount.value, shellAccounts[0]!.value);
+  assert.deepEqual(shellRead.activities, ["query", "query", "query"]);
+
+  const cancelledShell = new AbortController();
+  await assert.rejects(
+    readThroughShell({
+      signal: cancelledShell.signal,
+      holdAccount: shellAccounts[1]!.value,
+      onHeld: () => cancelledShell.abort(new Error("deposit query cancelled")),
+    }),
+    /deposit query cancelled/u,
+    "a run cancelled while the bank holds a query postback rejects with its reason",
+  );
+} finally {
+  await browser.close();
 }

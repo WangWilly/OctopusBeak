@@ -18,6 +18,10 @@ import type { YuantaFundSourceSnapshot } from "./yuanta-fund-statements.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
+import { test } from "node:test";
+import { chromium } from "playwright";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -120,14 +124,15 @@ assert.throws(() => yuantaFundModule.normalizedRowsForTable({ ...redemptionAccou
 assert.throws(() => yuantaFundModule.normalizedRowsForTable({ ...redemptionAccountTable,
   cellColspans: [...redemptionAccountTable.cellColspans.slice(0, 2), [1, 2, 1, 1, 1, 1, 1, 1]],
 }), /aggregate footer/u);
-const emptyHoldingsPage = {
+/** A Yuanta eBank site over a fake page whose only scope shows an overview with no position. */
+const emptyHoldingsSite = yuantaEbankSite({
+  mainFrame: () => null,
   frames: () => [],
   locator: (selector: string) => selector === "body" ? { innerText: async () => "無基金部位" }
-    : selector.startsWith("a[") ? { count: async () => 0 }
-    : { first: () => ({ waitFor: async () => undefined }) },
-};
-assert.deepEqual(await yuantaFundModule.extractFundPositions(emptyHoldingsPage as never, true), []);
-await assert.rejects(yuantaFundModule.extractFundPositions(emptyHoldingsPage as never),
+    : { count: async () => selector.startsWith("a[") ? 0 : 1 },
+} as never, { signal: new AbortController().signal, text: strictSourceText });
+assert.deepEqual(await yuantaFundModule.extractFundPositions(emptyHoldingsSite, true), []);
+await assert.rejects(yuantaFundModule.extractFundPositions(emptyHoldingsSite),
   /No YuanTa fund position/u);
 const evaluateYuantaFundCanonicalAdmission: typeof yuantaFundModule.evaluateYuantaFundCanonicalAdmission =
   yuantaFundModule.evaluateYuantaFundCanonicalAdmission;
@@ -150,8 +155,7 @@ const source = await readFile(
 );
 
 assert.doesNotMatch(source, /console\.|emitAutomationProgress/);
-assert.match(source, /positions = await extractFundPositions\(page, input.includeHistoricalTransactions\)/);
-assert.match(source, /runFundMenuAction\(/);
+assert.match(source, /positions = await extractFundPositions\(site, input.includeHistoricalTransactions\)/);
 assert.match(source, /evaluateYuantaFundCanonicalAdmission/);
 assert.match(source, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
@@ -968,3 +972,194 @@ try {
   process.chdir(typedFundOriginalCwd);
   await rm(typedFundOutputDirectory, { recursive: true, force: true });
 }
+
+// The read half against a synthetic signed-in frameset (ADR 0066): the site
+// opens each fund route in fmain, the position detail, every account history
+// report and the off-hour query are submitted, and each read waits for the
+// page that replaced the one it submitted from.
+const FUND_SHELL_CID = "synthetic-fund-cid";
+type FundShellOptions = Readonly<{
+  input: Record<string, unknown>;
+  signal?: AbortSignal;
+  /** The summary route renders only a shell, as when the fund menu must be entered through menuaction(). */
+  summaryNeedsMenu?: boolean;
+  holdHistoryQuery?: () => void;
+  detailNav?: string;
+}>;
+
+async function readFundThroughShell(browser: import("playwright").Browser, options: FundShellOptions) {
+  const page = await browser.newPage();
+  const served: string[] = [];
+  const posted: Array<Readonly<{ path: string; fields: URLSearchParams }>> = [];
+  const activities: string[] = [];
+  const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+  const mform = (extra = "") => `<form id="mform" name="mform" method="post" action="/nib/tx/fundsummary">
+    <input type="hidden" name="cid" value="${FUND_SHELL_CID}">${extra}</form>`;
+  const summary = `${mform()}<table class="rwdTable"><tr><th>基金名稱</th><th>基金類型</th><th>投資幣別</th></tr>
+    <tr><td>SANITIZED FUND</td><td>股票型</td><td>台幣</td></tr></table>`;
+  const overview = `${mform()}<table class="rwdTable"><tr><th>投資日期</th><th>基金名稱</th><th>交易編號</th><th>累積配息</th></tr>
+    <tr><td>2026/01/02</td><td><a href="#" onclick="fundDetail('FundSingleDetail','FS00000001','YT01')">SANITIZED FUND</a></td><td>FS00000001</td><td>0</td></tr></table>
+    <a href="#" onclick="doOffhourQuery()">營業時間外交易查詢</a>
+    <script>function doOffhourQuery() { location.href = "/nib/tx/offhourqueryandcancel?method=init"; }</script>`;
+  const detail = `${mform()}<table class="normalTable"><tr><th>參考項目</th><th>參考基準日</th><th>參考淨值</th></tr>
+    <tr><td>${options.detailNav ?? "淨值"}</td><td>2026/01/30</td><td>10.5</td></tr></table>`;
+  // The query form shows 查詢日期, so a read of the form instead of its result would look like a result.
+  const historyForm = `${mform(`<input name="fundtransactiondetails_sdate"><input name="fundtransactiondetails_edate">`)}
+    <table class="formTable"><tr><td>查詢日期</td><td>起迄</td></tr></table>`;
+  const historyResult = `${mform()}<table class="normalTable"><tr><td>查無資料</td></tr></table>`;
+  const offHourForm = `${mform(`<input id="sdate" name="sdate"><input id="edate" name="edate">`)}
+    <table class="formTable"><tr><td>查詢起迄日</td><td>起迄</td></tr></table>`;
+  const offHourResult = `${mform()}<table class="normalTable"><tr><th>申購基金</th><th>投資類型</th><th>申購日期</th></tr>
+    <tr><td>SANITIZED FUND</td><td>單筆</td><td>2026/01/15</td></tr></table>`;
+  try {
+    await page.route(`${YUANTA_EBANK_ORIGIN}/**`, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      served.push(`${request.method()} ${url.pathname}${url.search}`);
+      if (request.method() === "POST") {
+        const fields = new URLSearchParams(request.postData() ?? "");
+        posted.push({ path: `${url.pathname}${url.search}`, fields });
+        // The detail and off-hour results arrive late, while the page they were submitted from still shows.
+        const late = () => new Promise((resolve) => setTimeout(resolve, 500));
+        if (url.pathname === "/nib/tx/fundsummary") return await late().then(() => route.fulfill(html(detail)));
+        if (url.pathname === "/nib/tx/fundtransactiondetails") {
+          if (options.holdHistoryQuery) {
+            options.holdHistoryQuery();
+            return;
+          }
+          return await route.fulfill(html(historyResult));
+        }
+        if (url.pathname === "/nib/tx/offhourqueryandcancel") return await late().then(() => route.fulfill(html(offHourResult)));
+      }
+      const signedIn = url.searchParams.get("cid") === FUND_SHELL_CID;
+      switch (url.pathname) {
+        case "/nib/shell.jsp":
+          return await route.fulfill(html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/home?type=page&cid=${FUND_SHELL_CID}"></iframe>`));
+        case "/nib/menu.jsp":
+          return await route.fulfill(html(`<script>
+            window.menuaction = (action, id, flag) => {
+              parent.menuCalls = [...(parent.menuCalls ?? []), [action, id, flag]];
+              parent.frames.fmain.location.href = "/nib/tx/" + action + "&menu=" + id;
+            };
+          </script>`));
+        case "/nib/tx/fundsummary": {
+          const txnType = url.searchParams.get("TxnType");
+          if (txnType === "FundSummary") {
+            const rendered = options.summaryNeedsMenu ? url.searchParams.get("menu") === "menu_fundSummary" : signedIn;
+            return await route.fulfill(html(rendered ? summary : `<p>請由選單進入</p>`));
+          }
+          if (txnType === "unknow" && signedIn) return await route.fulfill(html(overview));
+          break;
+        }
+        case "/nib/tx/fundtransactiondetails":
+          if (signedIn) return await route.fulfill(html(historyForm));
+          break;
+        case "/nib/tx/offhourqueryandcancel":
+          return await route.fulfill(html(offHourForm));
+      }
+      return await route.fulfill(html(`<p>${url.pathname}</p>`));
+    });
+    await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp`, { waitUntil: "load" });
+    const snapshot = await yuantaFundModule.readYuantaFundSource(
+      page,
+      yuantaFundStatementsInputSchema.parse(options.input),
+      yuantaCollectionContext({ signal: options.signal }),
+      yuantaStagingHandle([], activities),
+    );
+    const menuCalls = await page.evaluate(() => (window as { menuCalls?: unknown }).menuCalls);
+    return { snapshot, served, posted, activities, menuCalls };
+  } finally {
+    await page.close();
+  }
+}
+
+test("Yuanta fund source reads every page through the fund routes and submits each query from its page", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const input = {
+    customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+    includeOffHourOrders: true,
+  };
+  try {
+    const read = await readFundThroughShell(browser, { input });
+    for (const route of ["fundsummary?TxnType=FundSummary", "fundsummary?TxnType=unknow", "fundtransactiondetails"]) {
+      const separator = route.includes("?") ? "&" : "?";
+      assert.ok(
+        read.served.includes(`GET /nib/tx/${route}${separator}type=page&cid=${FUND_SHELL_CID}`),
+        `the ${route} route opens in fmain with the session's cid`,
+      );
+    }
+    assert.equal(read.menuCalls, undefined, "a route that renders its page needs no menuaction()");
+    assert.deepEqual(read.posted.map((post) => post.path), [
+      "/nib/tx/fundsummary",
+      ...yuantaFundAccountHistoryQueries.map(() => "/nib/tx/fundtransactiondetails"),
+      "/nib/tx/offhourqueryandcancel?method=query",
+    ]);
+    const detailQuery = read.posted[0]!.fields;
+    assert.deepEqual(
+      [detailQuery.get("TxnType"), detailQuery.get("PapernNo"), detailQuery.get("TrustNo")],
+      ["FundSingleDetail", "FS00000001", "YT01"],
+    );
+    assert.deepEqual(
+      read.posted.slice(1, -1).map((post) => [post.fields.get("inv_type"), post.fields.get("qry_option"),
+        post.fields.get("fundtransactiondetails_sdate"), post.fields.get("fundtransactiondetails_edate")]),
+      yuantaFundAccountHistoryQueries.map((query) => [query.investmentType, query.detail, "2026/01/01", "2026/01/31"]),
+      "every account history report is queried in order over the requested range",
+    );
+    assert.deepEqual(
+      [read.posted.at(-1)!.fields.get("sdate"), read.posted.at(-1)!.fields.get("edate")],
+      ["2026/01/01", "2026/01/31"],
+    );
+    assert.equal(read.activities.length, 3 + yuantaFundAccountHistoryQueries.length + 2);
+    assert.deepEqual(read.snapshot.positions, [
+      { txnType: "FundSingleDetail", paperNo: "FS00000001", trustNo: "YT01", label: "SANITIZED FUND" },
+    ]);
+    const labels = (category: string) =>
+      read.snapshot.tables.filter((table) => table.category === category).map((table) => table.tableLabel);
+    assert.deepEqual(labels("portfolio-summary"), ["portfolio-summary"]);
+    assert.deepEqual(labels("investment-overview"), ["investment-detail"]);
+    assert.deepEqual(labels("investment-source-evidence"), ["reference-nav"], "the detail page, not the overview it was submitted from");
+    const history = read.snapshot.tables.filter((table) => table.category === "historical-transactions");
+    assert.equal(history.length, yuantaFundAccountHistoryQueries.length);
+    assert.ok(
+      history.every((table) => table.rows.flat().join(" ") === "查無資料"),
+      "each history read is the submitted result, not the query form it replaced",
+    );
+    assert.deepEqual(labels("offhour-orders"), ["offhour-buy-orders"]);
+    assert.deepEqual(read.snapshot.accountHistoryQueryCoverage, yuantaFundAccountHistoryQueries);
+
+    await assert.rejects(
+      readFundThroughShell(browser, { input, detailNav: "淨�值" }),
+      SourceTextIntegrityError,
+      "a detail page with a replacement character fails the read",
+    );
+
+    const cancellation = new AbortController();
+    const started = Date.now();
+    await assert.rejects(
+      readFundThroughShell(browser, {
+        input,
+        signal: cancellation.signal,
+        holdHistoryQuery: () => cancellation.abort(new Error("fund read cancelled")),
+      }),
+      /fund read cancelled/u,
+      "a run cancelled mid-query stops inside its wait",
+    );
+    assert.ok(Date.now() - started < 10_000, "the cancelled query does not wait out its response timeout");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Yuanta fund summary falls back to the fund menu's menuaction() when its route renders no tables", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const read = await readFundThroughShell(browser, {
+      input: { includePortfolioSummary: true, includeHistoricalTransactions: false },
+      summaryNeedsMenu: true,
+    });
+    assert.deepEqual(read.menuCalls, [["fundsummary?TxnType=FundSummary", "menu_fundSummary", "N"]]);
+    assert.deepEqual(read.snapshot.tables.map((table) => table.tableLabel), ["portfolio-summary"]);
+  } finally {
+    await browser.close();
+  }
+});

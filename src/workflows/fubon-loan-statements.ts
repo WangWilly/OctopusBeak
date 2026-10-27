@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -21,11 +21,11 @@ import {
   type FubonLoanStatementRow,
 } from "../ledger/canonical/fubon-loan-admission.ts";
 import {
-  activateControlWithoutPointer,
   fillInputWithoutPointer,
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
-import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
+import type { BrowserScope } from "./frame-scope.ts";
+import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -33,48 +33,28 @@ import {
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 
-const BANK_ENTRY_URL =
-  "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
-
-type BrowserScope = Page | Frame;
-
 const LOAN_ACCOUNT_SELECTOR = "#form1\\:loanAccountCombo";
 const LOAN_FORM_SELECTOR = "form#form1";
-const LOAN_NAVIGATION_ERROR = "Could not navigate to the loan statement page.";
 
-export type LoanNavigationOptions = Readonly<{
-  existingScopeTimeoutMs?: number;
-  formReadyTimeoutMs?: number;
-  retryFormReadyTimeoutMs?: number;
-  navigationControlTimeoutMs?: number;
-  navigationLinkTimeoutMs?: number;
-  silent?: boolean;
-}>;
+const attached = async (locator: Locator) => (await locator.count().catch(() => 0)) > 0;
 
-const DEFAULT_LOAN_NAVIGATION_OPTIONS: Required<LoanNavigationOptions> = {
-  existingScopeTimeoutMs: 5_000,
-  formReadyTimeoutMs: 30_000,
-  retryFormReadyTimeoutMs: 5_000,
-  navigationControlTimeoutMs: 5_000,
-  navigationLinkTimeoutMs: 30_000,
-  silent: false,
+/**
+ * The bank's 貸款交易明細查詢 task, revealed by the 貸款服務 header menu. Its link
+ * is clicked in place: navigating a frame to its href loses the bank's 302
+ * hand-off and can wait forever for a document the bank never exposes.
+ */
+const LOAN_STATEMENTS_ROUTE: FubonRoute = {
+  description: "loan statement page",
+  link: (scope) => [
+    scope.locator("a.task_CLNQU001.menu_CLN02"),
+    scope.locator("a").filter({ hasText: "貸款交易明細查詢" }),
+  ],
+  menu: "#menu_CLN",
+  clickInPlace: true,
+  ready: async (scope) =>
+    (await attached(scope.locator(LOAN_ACCOUNT_SELECTOR))) &&
+    (await attached(scope.locator(LOAN_FORM_SELECTOR))),
 };
-
-type LoanNavigationStage =
-  | "loan-existing-form-probe"
-  | "loan-link-resolve"
-  | "loan-menu-trigger"
-  | "loan-form-ready";
-
-type LoanNavigationStageStatus = "start" | "success" | "timeout" | "failure";
-
-function logLoanNavigationStage(
-  stage: LoanNavigationStage,
-  status: LoanNavigationStageStatus,
-  silent = false,
-): void {
-  if (!silent) console.log(stage, { status });
-}
 
 const queryItemSchema = z.enum([
   "TRANSACTION_DETAIL_QUERY",
@@ -649,240 +629,6 @@ function matchesFilter(value: string, filters: string[]): boolean {
   });
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
-}
-
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if (await waitForLoanAttached(locator, deadline)) return scope;
-      if (Date.now() >= deadline) break;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
-
-function scopesForLoanNavigation(page: Page): BrowserScope[] {
-  const scopes: BrowserScope[] = [page];
-  const currentTransactionFrame = page.frame({ name: "txnFrame" });
-  if (currentTransactionFrame) scopes.push(currentTransactionFrame);
-
-  for (const frame of page.frames()) {
-    if (frame !== currentTransactionFrame) scopes.push(frame);
-  }
-
-  return scopes;
-}
-
-async function waitForLoanAttached(
-  locator: Locator,
-  deadline: number,
-  probeSliceMs = 250,
-): Promise<boolean> {
-  const remainingMs = deadline - Date.now();
-  const timeoutMs = Math.min(probeSliceMs, remainingMs);
-  if (timeoutMs <= 0) return false;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    await locator.first().waitFor({
-      state: "attached",
-      timeout: timeoutMs,
-      signal: controller.signal,
-    });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function hasLoanForm(
-  scope: BrowserScope,
-  deadline: number,
-): Promise<boolean> {
-  const combo = scope.locator(LOAN_ACCOUNT_SELECTOR).first();
-  if (!(await waitForLoanAttached(combo, deadline))) return false;
-
-  const form = scope.locator(LOAN_FORM_SELECTOR).first();
-  return await waitForLoanAttached(form, deadline);
-}
-
-async function findLoanFormScope(
-  page: Page,
-  timeoutMs: number,
-  stage: Exclude<
-    LoanNavigationStage,
-    "loan-link-resolve" | "loan-menu-trigger"
-  >,
-  silent = false,
-): Promise<BrowserScope> {
-  logLoanNavigationStage(stage, "start", silent);
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (true) {
-    for (const scope of scopesForLoanNavigation(page)) {
-      if (await hasLoanForm(scope, deadline)) {
-        logLoanNavigationStage(stage, "success", silent);
-        return scope;
-      }
-      if (Date.now() >= deadline) break;
-    }
-
-    if (Date.now() >= deadline) break;
-    await page.waitForTimeout(
-      Math.min(250, Math.max(1, deadline - Date.now())),
-    );
-  }
-
-  logLoanNavigationStage(stage, "timeout", silent);
-  throw new Error(
-    `Could not find selector "${LOAN_ACCOUNT_SELECTOR}" in any frame.`,
-  );
-}
-
-async function findLoanNavigationLink(
-  page: Page,
-  timeoutMs: number,
-  silent = false,
-): Promise<Locator> {
-  logLoanNavigationStage("loan-link-resolve", "start", silent);
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (true) {
-    for (const scope of scopesForLoanNavigation(page)) {
-      const taskLink = scope.locator("a.task_CLNQU001.menu_CLN02").first();
-      if (await waitForLoanAttached(taskLink, deadline)) {
-        logLoanNavigationStage("loan-link-resolve", "success", silent);
-        return taskLink;
-      }
-      if (Date.now() >= deadline) break;
-
-      const textLink = scope
-        .locator("a")
-        .filter({ hasText: "貸款交易明細查詢" })
-        .first();
-      if (await waitForLoanAttached(textLink, deadline)) {
-        logLoanNavigationStage("loan-link-resolve", "success", silent);
-        return textLink;
-      }
-      if (Date.now() >= deadline) break;
-    }
-
-    if (Date.now() >= deadline) break;
-    await page.waitForTimeout(
-      Math.min(250, Math.max(1, deadline - Date.now())),
-    );
-  }
-
-  logLoanNavigationStage("loan-link-resolve", "timeout", silent);
-  throw new Error("Could not find the loan statement navigation control.");
-}
-
-async function activateLoanControlWithTimeout(
-  locator: Locator,
-  timeoutMs: number,
-): Promise<void> {
-  const controller = new AbortController();
-  const action = activateControlWithoutPointer(locator, {
-    signal: controller.signal,
-    timeout: 0,
-  });
-  let timedOut = false;
-  const timer = setTimeout(
-    () => {
-      timedOut = true;
-      controller.abort();
-    },
-    Math.max(0, timeoutMs),
-  );
-
-  try {
-    await action;
-    if (timedOut) {
-      throw new Error("Loan navigation control timed out.");
-    }
-  } catch (error) {
-    if (timedOut) {
-      throw new Error("Loan navigation control timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const locator = locatorFor(scope);
-      if (await waitForLoanAttached(locator, deadline)) return scope;
-      if (Date.now() >= deadline) break;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
-}
-
-async function waitForNoVisibleBankMask(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let hasVisibleMask = false;
-    for (const scope of [page, ...page.frames()]) {
-      const masks = scope.locator("div._mask, ._mask");
-      const count = await masks.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        if (
-          await masks
-            .nth(index)
-            .isVisible()
-            .catch(() => false)
-        ) {
-          hasVisibleMask = true;
-          break;
-        }
-      }
-      if (hasVisibleMask) break;
-    }
-
-    if (!hasVisibleMask) return;
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error("Timed out waiting for the bank loading mask to clear.");
-}
-
-function loanForm(scope: BrowserScope): Locator {
-  return scope.locator("form#form1").first();
-}
-
 function loanResultTable(scope: BrowserScope): Locator {
   return scope
     .locator("table")
@@ -890,99 +636,6 @@ function loanResultTable(scope: BrowserScope): Locator {
     .filter({ hasText: "異動金額" })
     .filter({ hasText: "餘額" })
     .first();
-}
-
-export async function navigateToLoanStatementsPage(
-  page: Page,
-  options: LoanNavigationOptions = {},
-): Promise<BrowserScope> {
-  const timings = {
-    ...DEFAULT_LOAN_NAVIGATION_OPTIONS,
-    ...options,
-  };
-
-  // A previous statement component may already have left the loan form in a
-  // live frame. Reuse that DOM before triggering another bank redirect.
-  try {
-    return await findLoanFormScope(
-      page,
-      timings.existingScopeTimeoutMs,
-      "loan-existing-form-probe",
-      timings.silent,
-    );
-  } catch {
-    // Continue with the bounded navigation trigger below.
-  }
-
-  logLoanNavigationStage("loan-menu-trigger", "start", timings.silent);
-  try {
-    const headerFrame = await waitForFrame(
-      page,
-      "frame1",
-      timings.navigationLinkTimeoutMs,
-    );
-    await activateLoanControlWithTimeout(
-      headerFrame.locator("#menu_CLN"),
-      timings.navigationControlTimeoutMs,
-    );
-    logLoanNavigationStage("loan-menu-trigger", "success", timings.silent);
-  } catch {
-    logLoanNavigationStage("loan-menu-trigger", "failure", timings.silent);
-    // The transaction frame can already be on the target page. In that case
-    // the link trigger is unnecessary, and the readiness probe below is the
-    // source of truth.
-  }
-
-  let navigationLink: Locator | undefined;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!navigationLink) {
-      navigationLink = await findLoanNavigationLink(
-        page,
-        timings.navigationLinkTimeoutMs,
-        timings.silent,
-      ).catch(() => undefined);
-    }
-
-    if (navigationLink) {
-      try {
-        // Trigger the bank-owned redirect through the current DOM. Directly
-        // navigating the frame loses the 302 hand-off and can wait forever for
-        // a destination document that the bank never exposes.
-        await activateLoanControlWithTimeout(
-          navigationLink,
-          timings.navigationControlTimeoutMs,
-        );
-      } catch {
-        // A timed-out trigger is not proof that the redirect failed. Probe the
-        // current DOM before the single controlled retry.
-      }
-    }
-
-    try {
-      return await findLoanFormScope(
-        page,
-        attempt === 0
-          ? timings.formReadyTimeoutMs
-          : timings.retryFormReadyTimeoutMs,
-        "loan-form-ready",
-        timings.silent,
-      );
-    } catch {
-      if (attempt === 0) {
-        // Re-resolve the link once in case the first trigger replaced the
-        // transaction frame. The loop allows exactly one retry/fallback.
-        navigationLink = undefined;
-      }
-    }
-  }
-
-  throw new Error(LOAN_NAVIGATION_ERROR);
-}
-
-async function openLoanStatementsPage(page: Page, options: LoanNavigationOptions = {}): Promise<BrowserScope> {
-  const scope = await navigateToLoanStatementsPage(page, options);
-  await loanForm(scope).waitFor({ state: "attached", timeout: 60_000 });
-  return scope;
 }
 
 type LoanAccountOption = {
@@ -1061,23 +714,27 @@ function canonicalLoanDateRange(input: FubonLoanStatementsInput): {
 }
 
 async function readLoanAccountOptions(
+  site: FubonEbankSite,
   scope: BrowserScope,
   filters: string[],
 ): Promise<LoanAccountOption[]> {
-  const combo = scope.locator("#form1\\:loanAccountCombo");
-  await combo.locator("option").first().waitFor({
-    state: "attached",
-    timeout: 60_000,
-  });
+  const { frames } = site;
+  const combo = scope.locator(LOAN_ACCOUNT_SELECTOR);
+  await frames.race(
+    combo.locator("option").first().waitFor({
+      state: "attached",
+      timeout: 60_000,
+    }),
+  );
 
   const options = combo.locator("option");
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const result: LoanAccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await option.getAttribute("value"));
-    const label = cleanText(await option.textContent());
+    const value = cleanText(await frames.race(option.getAttribute("value")));
+    const label = cleanText(await frames.race(option.textContent()));
     if (!value || value === "none" || !label) continue;
     if (!matchesFilter(label, filters)) continue;
     result.push({ label, value });
@@ -1093,36 +750,41 @@ async function readLoanAccountOptions(
 }
 
 async function selectLoanAccount(
-  page: Page,
+  site: FubonEbankSite,
   account: LoanAccountOption,
 ): Promise<BrowserScope> {
-  let scope = await findScopeWithSelector(page, "#form1\\:loanAccountCombo");
-  await waitForNoVisibleBankMask(page);
+  const scope = await site.frames.scopeWith(LOAN_ACCOUNT_SELECTOR);
+  await site.waitForMaskToClear();
 
-  await selectOptionWithoutPointer(
-    scope.locator("#form1\\:loanAccountCombo"),
-    account.value,
+  await site.frames.race(
+    selectOptionWithoutPointer(scope.locator(LOAN_ACCOUNT_SELECTOR), account.value),
   );
-  await waitForNoVisibleBankMask(page);
+  await site.waitForMaskToClear();
 
-  return await findScopeWithSelector(page, "#form1\\:queryItemCombo");
+  return await site.frames.scopeWith("#form1\\:queryItemCombo");
 }
 
 async function readAvailableLoanQueryItems(
+  site: FubonEbankSite,
   scope: BrowserScope,
 ): Promise<QueryItem[]> {
+  const { frames } = site;
   const combo = scope.locator("#form1\\:queryItemCombo");
-  await combo.locator("option").first().waitFor({
-    state: "attached",
-    timeout: 60_000,
-  });
+  await frames.race(
+    combo.locator("option").first().waitFor({
+      state: "attached",
+      timeout: 60_000,
+    }),
+  );
 
   const options = combo.locator("option");
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const result: QueryItem[] = [];
 
   for (let index = 0; index < count; index += 1) {
-    const value = cleanText(await options.nth(index).getAttribute("value"));
+    const value = cleanText(
+      await frames.race(options.nth(index).getAttribute("value")),
+    );
     const parsed = queryItemSchema.safeParse(value);
     if (parsed.success && !result.includes(parsed.data)) {
       result.push(parsed.data);
@@ -1133,41 +795,41 @@ async function readAvailableLoanQueryItems(
 }
 
 async function configureLoanQuery(
-  page: Page,
+  site: FubonEbankSite,
   input: FubonLoanStatementsInput,
   queryItem: QueryItem,
 ): Promise<BrowserScope> {
-  const scope = await findScopeWithSelector(page, "#form1\\:queryItemCombo");
-  const availableQueryItems = await readAvailableLoanQueryItems(scope);
+  const { frames } = site;
+  const scope = await frames.scopeWith("#form1\\:queryItemCombo");
+  const availableQueryItems = await readAvailableLoanQueryItems(site, scope);
   if (!availableQueryItems.includes(queryItem)) {
     throw new Error(
       `Loan query item is not available for this account: ${queryItem}`,
     );
   }
 
-  await selectOptionWithoutPointer(
-    scope.locator("#form1\\:queryItemCombo"),
-    queryItem,
+  await frames.race(
+    selectOptionWithoutPointer(scope.locator("#form1\\:queryItemCombo"), queryItem),
   );
-  await waitForNoVisibleBankMask(page);
+  await site.waitForMaskToClear();
 
   if (input.dateRange) {
-    await activateControlWithoutPointer(
-      scope.locator('input.queryPeriod[value="custom"]'),
+    await site.activate(scope.locator('input.queryPeriod[value="custom"]'));
+    await frames.race(
+      fillInputWithoutPointer(
+        scope.locator("#form1\\:startDate"),
+        input.dateRange.startDate,
+      ),
     );
-    await fillInputWithoutPointer(
-      scope.locator("#form1\\:startDate"),
-      input.dateRange.startDate,
-    );
-    await fillInputWithoutPointer(
-      scope.locator("#form1\\:endDate"),
-      input.dateRange.endDate,
+    await frames.race(
+      fillInputWithoutPointer(
+        scope.locator("#form1\\:endDate"),
+        input.dateRange.endDate,
+      ),
     );
   } else {
-    await activateControlWithoutPointer(
-      scope.locator('input.queryPeriod[value="quick"]'),
-    );
-    await activateControlWithoutPointer(
+    await site.activate(scope.locator('input.queryPeriod[value="quick"]'));
+    await site.activate(
       scope.locator(`input.quickKind[value="${input.quickMonths}"]`),
     );
   }
@@ -1176,12 +838,12 @@ async function configureLoanQuery(
 }
 
 async function parseLoanStatementHtml(
-  page: Page,
+  site: FubonEbankSite,
   html: string,
   pageOrdinal: number,
   silent = false,
 ): Promise<ParsedFubonLoanPage> {
-  const parsed = (await page.evaluate(
+  const parsed = (await site.frames.race(site.frames.page.evaluate(
     ({ html: sourceHtml, headers }) => {
       const clean = (value: string | null | undefined) =>
         (value ?? "")
@@ -1249,7 +911,7 @@ async function parseLoanStatementHtml(
       };
     },
     { html, headers: loanHeaders },
-  )) as {
+  ))) as {
     accountType: string;
     branchName: string;
     currency: string;
@@ -1267,15 +929,14 @@ async function parseLoanStatementHtml(
   };
 }
 
-async function fetchLoanQueryHtml(page: Page, sourceText?: SourceTextPort): Promise<string> {
-  const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
-  const html = await fetchFormPostbackHtml(
+async function fetchLoanQueryHtml(site: FubonEbankSite): Promise<string> {
+  const scope = await site.frames.scopeWith("#form1\\:doValidate");
+  const html = await site.postback(
     scope.locator("form").first(),
     "form1:doValidate",
   );
-  sourceText?.assertIntact(html);
-  await replaceDocumentHtml(scope, html);
-  await findScopeWithLocator(page, loanResultTable, "loan result table");
+  await site.replaceDocument(scope, html);
+  await site.frames.scopeWith(loanResultTable, "loan result table");
 
   return html;
 }
@@ -1326,11 +987,10 @@ export function assembleFubonLoanStatement(
 }
 
 async function fetchFubonLoanStatementPages(
-  page: Page,
+  site: FubonEbankSite,
   firstHtml: string,
   account: LoanAccountOption,
   input: FubonLoanStatementsInput,
-  sourceText?: SourceTextPort,
   silent = false,
 ): Promise<ParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
@@ -1338,10 +998,9 @@ async function fetchFubonLoanStatementPages(
   let html = firstHtml;
 
   while (true) {
-    sourceText?.assertIntact(html);
     if (pages.length >= FUBON_LOAN_MAX_PAGES)
       throw new Error("Fubon loan pagination exceeded the safe page limit.");
-    const parsed = await parseLoanStatementHtml(page, html, pages.length, silent);
+    const parsed = await parseLoanStatementHtml(site, html, pages.length, silent);
     pages.push(parsed);
     if (!parsed.pagination.nextPage) break;
     if (!parsed.pagination.pageFieldName)
@@ -1353,22 +1012,21 @@ async function fetchFubonLoanStatementPages(
       throw new Error("Fubon loan pagination repeated a page request.");
     requests.add(requestKey);
 
-    const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
-    html = await fetchFormPostbackHtml(
+    const scope = await site.frames.scopeWith("#form1\\:doValidate");
+    html = await site.postback(
       scope.locator("form").first(),
       undefined,
       { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
     );
-    sourceText?.assertIntact(html);
-    await replaceDocumentHtml(scope, html);
-    await findScopeWithLocator(page, loanResultTable, "loan result table");
+    await site.replaceDocument(scope, html);
+    await site.frames.scopeWith(loanResultTable, "loan result table");
   }
 
   return assembleFubonLoanStatement(pages, account, input);
 }
 
 export async function parseFubonLoanStatementForCollection(
-  page: Page,
+  site: FubonEbankSite,
   html: string,
   account: LoanAccountOption,
   input: FubonLoanStatementsInput,
@@ -1376,11 +1034,10 @@ export async function parseFubonLoanStatementForCollection(
 ): Promise<ParsedLoanStatement> {
   sourceText.assertIntact(html);
   const parsed = await fetchFubonLoanStatementPages(
-    page,
+    site,
     html,
     account,
     input,
-    sourceText,
     true,
   );
   sourceText.assertIntact(JSON.stringify(parsed));
@@ -1405,9 +1062,10 @@ export async function runFubonLoanStatements(
     sourceConnectionScope,
     sourceConnectionKey: relationSourceConnectionKey,
   } = requireSourceConnectionIdentity("fubon", "Fubon loan", input);
+  const site = fubonEbankSite(page, context);
   await product.reportActivity("query");
-  let scope = await openLoanStatementsPage(page, { silent: true });
-  const loanAccounts = await readLoanAccountOptions(scope, input.loanAccountLabels);
+  let scope = await site.open(LOAN_STATEMENTS_ROUTE);
+  const loanAccounts = await readLoanAccountOptions(site, scope, input.loanAccountLabels);
   const queryItems = requestedQueryItems(input);
   const explicitQueryItems = hasExplicitQueryItems(input);
   const dateRange = canonicalLoanDateRange(input);
@@ -1417,8 +1075,8 @@ export async function runFubonLoanStatements(
 
   for (const account of loanAccounts) {
     context.signal.throwIfAborted();
-    scope = await selectLoanAccount(page, account);
-    const availableQueryItems = await readAvailableLoanQueryItems(scope);
+    scope = await selectLoanAccount(site, account);
+    const availableQueryItems = await readAvailableLoanQueryItems(site, scope);
     const accountQueryItems = queryItems.filter((queryItem) =>
       availableQueryItems.includes(queryItem),
     );
@@ -1436,11 +1094,11 @@ export async function runFubonLoanStatements(
 
     for (const queryItem of accountQueryItems) {
       context.signal.throwIfAborted();
-      scope = await configureLoanQuery(page, input, queryItem);
+      scope = await configureLoanQuery(site, input, queryItem);
       await product.reportActivity("query");
-      const html = await fetchLoanQueryHtml(page, context.text);
+      const html = await fetchLoanQueryHtml(site);
       const parsed = await parseFubonLoanStatementForCollection(
-        page,
+        site,
         html,
         account,
         input,

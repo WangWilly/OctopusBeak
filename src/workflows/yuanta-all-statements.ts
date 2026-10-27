@@ -1,10 +1,9 @@
-import type { Frame, Page } from "playwright";
+import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
   collectSelectedProducts,
-  ProductCollectionFatalError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
@@ -44,30 +43,10 @@ import {
 
 export { deriveYuantaCanonicalHumanAttestation } from "./yuanta-credit-card-statements.ts";
 
-const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-
 function componentInputSchema(schema: z.ZodTypeAny) {
   return schema.optional().default({});
 }
 
-async function readCurrentCid(page: Page): Promise<string | null> {
-  for (const scope of [...page.frames(), page] as Array<Frame | Page>) {
-    const cid = await scope
-      .locator('input[name="cid"]')
-      .first()
-      .inputValue()
-      .catch(() => "");
-    if (cid) return cid;
-  }
-
-  for (const frame of page.frames()) {
-    const match = frame.url().match(/[?&]cid=([^&]+)/);
-    if (match?.[1]) return decodeURIComponent(match[1]);
-  }
-
-  const pageMatch = page.url().match(/[?&]cid=([^&]+)/);
-  return pageMatch?.[1] ? decodeURIComponent(pageMatch[1]) : null;
-}
 
 const appInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
@@ -99,7 +78,6 @@ export type YuantaAllWorkflowDependencies = Readonly<{
   collectCreditCard?: YuantaProductRunner<YuantaCreditCardCollectionInput>;
   collectLoan?: YuantaProductRunner<YuantaLoanCollectionInput>;
   collectFund?: YuantaProductRunner<YuantaFundCollectionInput>;
-  prepareForComponent?: (page: Page, product: string) => Promise<void>;
   signOut?: (page: Page) => Promise<void>;
 }>;
 
@@ -126,7 +104,6 @@ export async function runYuantaAllStatementsWorkflow(
   const collectCreditCard = overrides.collectCreditCard ?? runYuantaCreditCardStatements;
   const collectLoan = overrides.collectLoan ?? runYuantaLoanStatements;
   const collectFund = overrides.collectFund ?? runYuantaFundStatements;
-  const prepare = overrides.prepareForComponent ?? prepareYuantaPageForApp;
   const signOut = overrides.signOut ?? logoutYuantaForApp;
 
   const productIds = ["deposit", "foreign_currency", "credit_card", "loan", "fund"] as const;
@@ -175,9 +152,6 @@ export async function runYuantaAllStatementsWorkflow(
         productIds,
         selectedIds: selected,
         signal: context.signal,
-        prepare: async (typeId) => {
-          if (typeId !== "deposit") await prepare(page, typeId);
-        },
         assertSession,
         collect: (typeId, product) => collectors[typeId](page, product),
         financialCommit: context.financialCommit,
@@ -200,21 +174,3 @@ async function logoutYuantaForApp(page: Page): Promise<void> {
   }).catch(() => undefined);
 }
 
-async function prepareYuantaPageForApp(page: Page, product: string): Promise<void> {
-  if (product === "fund" || product === "deposit") return;
-  const routes: Readonly<Record<string, string>> = {
-    foreign_currency: "fxtransactiondetails",
-    credit_card: "creditcardbillsquery",
-    loan: "loantransactiondetails",
-  };
-  const route = routes[product];
-  if (!route) throw new ProductCollectionFatalError("workflow-failed");
-  const frame = page.frame({ name: "fmain" });
-  if (!frame) throw new ProductCollectionFatalError("authentication-failed");
-  const cid = await readCurrentCid(page);
-  if (!cid) throw new ProductCollectionFatalError("authentication-failed");
-  await frame.goto(
-    `${BANK_ORIGIN}/nib/tx/${route}?type=page&cid=${encodeURIComponent(cid)}`,
-    { waitUntil: "domcontentloaded" },
-  );
-}

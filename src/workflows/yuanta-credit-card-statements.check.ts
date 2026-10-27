@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { test } from "node:test";
+import { chromium } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -22,7 +27,7 @@ const workflowSource = await readFile(
 );
 const workflowImports = workflowSource.slice(
   0,
-  workflowSource.indexOf("\n\ntype BrowserScope"),
+  workflowSource.indexOf("\n\nexport type YuantaCreditCardMonthOption"),
 );
 assert.match(
   workflowImports,
@@ -74,6 +79,7 @@ const {
   yuantaCreditCardCaptureBuilderOptions,
   yuantaCreditCardTerminalPagesFromHtml,
   runYuantaCreditCardStatements,
+  yuantaCreditCardStatementsInputSchema,
 } = await import("./yuanta-credit-card-statements.ts");
 
 const cancelledSink: PGliteWorkflowRunItem[] = [];
@@ -253,18 +259,22 @@ class SummaryPageFixture {
     this,
     [this.hiddenMenuLink],
   );
-  readonly mainFrame = new SummaryFrameFixture(
+  readonly contentFrame = new SummaryFrameFixture(
     "fmain",
     this,
     [this.visibleMainLink],
   );
 
   frame({ name }: { name: string }): SummaryFrameFixture | null {
-    return name === "fmain" ? this.mainFrame : null;
+    return name === "fmain" ? this.contentFrame : null;
+  }
+
+  mainFrame(): null {
+    return null;
   }
 
   frames(): SummaryFrameFixture[] {
-    return [this.menuFrame, this.mainFrame];
+    return [this.menuFrame, this.contentFrame];
   }
 
   locator(_selector: string): SummaryLinkLocatorFixture {
@@ -277,13 +287,19 @@ class SummaryPageFixture {
   ): SummaryLinkLocatorFixture {
     return new SummaryLinkLocatorFixture([], this);
   }
+}
 
-  async waitForTimeout(): Promise<void> {}
+/** A Yuanta eBank site over a fake page, for the page steps that only probe locators. */
+function fakeYuantaSite(page: unknown) {
+  return yuantaEbankSite(page as never, {
+    signal: new AbortController().signal,
+    text: strictSourceText,
+  });
 }
 
 const summaryLinkFixture = new SummaryPageFixture();
 const visibleSummaryLink = await findYuantaCreditCardSummaryLink(
-  summaryLinkFixture as never,
+  fakeYuantaSite(summaryLinkFixture),
   250,
 );
 assert.ok(visibleSummaryLink);
@@ -301,6 +317,9 @@ const responseBodyCurrentCreditHtml = `
 let summaryClickArguments: unknown[] | undefined;
 let renderedDomRead = false;
 const responseBodyFixture = {
+  mainFrame() {
+    return null;
+  },
   frames() {
     return [
       { url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardbillsquery" },
@@ -314,7 +333,6 @@ const responseBodyFixture = {
     return responseBodyResponseFixture;
   },
   async waitForLoadState() {},
-  async waitForTimeout() {},
   locator() {
     renderedDomRead = true;
     throw new Error("rendered frame never exposed the response table");
@@ -328,8 +346,8 @@ const responseBodyResponseFixture = {
     date: "Thu, 10 Sep 2026 02:03:04 GMT",
     "cache-control": "no-store",
   }),
-  async text() {
-    return responseBodyCurrentCreditHtml;
+  async body() {
+    return Buffer.from(responseBodyCurrentCreditHtml, "utf8");
   },
 };
 const responseBodyLinkFixture = {
@@ -338,7 +356,7 @@ const responseBodyLinkFixture = {
   },
 };
 const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
-  responseBodyFixture as never,
+  fakeYuantaSite(responseBodyFixture),
   responseBodyLinkFixture as never,
 );
 assert.deepEqual(summaryClickArguments, []);
@@ -2011,3 +2029,210 @@ assert.equal(
   )?.instrumentKey,
 );
 assert.equal(rewardsCaptures[0]!.transactions.length, 8);
+
+// The runner against a synthetic signed-in frameset (ADR 0066): the site opens
+// the bills route in fmain, every month and the unbilled grid are posted from
+// its form, and the current-credit summary is read from its POST response.
+test("Yuanta credit card reads the bills, unbilled and summary pages through the creditcardbillsquery route", async () => {
+  const SHELL_CID = "synthetic-card-cid";
+  const periods = ["115/06", "115/05", "115/04", "115/03", "115/02", "115/01"];
+  const summaryLink = `<a href="#" onclick="document.sform.submit(); return false;">信用卡總覽</a>
+    <form name="sform" method="post" action="/nib/tx/creditcardsummary"><input type="hidden" name="cid" value="${SHELL_CID}"></form>`;
+  const monthForm = (withField = true) => `<form id="mform" name="mform" method="post" action="/nib/tx/creditcardbillsquery">
+    <input type="hidden" name="menutype" value="creditcardbillsquery"><input type="hidden" name="iconid" value="menu_creditcardbillsquery">
+    ${withField ? '<input type="hidden" name="cdHistoryQuery" value="">' : ""}
+  </form>`;
+  const monthLinks = periods.map((period, index) => `<a href="#" onclick="queryMonth('${index}')">${period}</a>`).join("");
+  const cardBlock = (description: string, day: string) => `<div class="cardBx Mb_m">
+    <div class="cardHead"><h4>SYNTHETIC PRIMARY CARD 主卡</h4></div>
+    <ul class="cardInfoD"><li><h5>卡號</h5><p>4111-11**-****-1234</p></li></ul>
+    <table class="rwdTable">
+      <tr><th>消費日期</th><th>入帳日期</th><th>消費明細</th><th>國家/幣別</th><th>外幣折算日</th><th>外幣金額</th><th>新臺幣金額</th></tr>
+      <tr><td>${day}</td><td>${day}</td><td>${description}</td><td>台灣/TWD</td><td></td><td></td><td>100.00</td></tr>
+    </table>
+  </div>`;
+  const billsPage = (withField = true, withMonths = true) => `${summaryLink}<div id="months">${withMonths ? monthLinks : ""}</div>
+    <table class="rwdTable"><tr><td>歷史帳單明細</td></tr></table>${monthForm(withField)}`;
+  const historyPage = (index: number) => {
+    const period = periods[index]!;
+    const month = period.slice(4);
+    const due = String(Number(month) + 1).padStart(2, "0");
+    return `${billsPage()}${cardBlock(`BILLED ${period}`, `2026-${month}-02`)}
+      <table class="settled-summary">
+        <tr><th>帳單月份</th><th>結帳日</th><th>出帳日</th><th>繳款截止日</th><th>本期應繳總額</th><th>本期最低應繳額</th></tr>
+        <tr><td>${period}</td><td>${period}/20</td><td>${period}/21</td><td>115/${due}/05</td><td>1,000</td><td>100</td></tr>
+      </table>`;
+  };
+  const currentCreditPage = `<table class="rwdTable">
+    <tr><th>信用額度</th><th>已使用額度</th><th>信用額度餘額</th><th>預借現金額度</th></tr>
+    <tr><td>160,000</td><td>3,741</td><td>156,259</td><td>16,000</td></tr>
+  </table>`;
+  const input = {
+    ...yuantaCreditCardStatementsInputSchema.parse({}),
+    canonicalHumanAttestation: deriveYuantaCanonicalHumanAttestation(
+      { yuanta_user_id: "user-001", yuanta_account: "main-account" },
+      "synthetic-managed-secret",
+    )!,
+    instrumentFingerprintSecret: "synthetic-managed-secret",
+  };
+
+  const browser = await chromium.launch({ headless: true });
+  async function readThroughShell(
+    options: Readonly<{
+      signal?: AbortSignal;
+      billsWithoutForm?: boolean;
+      holdMonth?: () => void;
+      summaryBody?: Buffer;
+      productAbsent?: boolean;
+      absentElsewhere?: boolean;
+      withoutMonthLinks?: boolean;
+      posted?: string[];
+      onBillsServed?: () => void;
+    }> = {},
+  ) {
+    const page = await browser.newPage();
+    const served: string[] = [];
+    const posted: string[] = options.posted ?? [];
+    const staged: PGliteWorkflowRunItem[] = [];
+    const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+    try {
+      await page.route(`${YUANTA_EBANK_ORIGIN}/**`, async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        served.push(`${request.method()} ${url.pathname}${url.search}`);
+        const fields = new URLSearchParams(request.postData() ?? "");
+        if (url.pathname === "/nib/shell.jsp") {
+          return await route.fulfill(html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/home?type=page&cid=${SHELL_CID}"></iframe>`));
+        }
+        if (url.pathname === "/nib/tx/creditcardbillsquery" && request.method() === "GET") {
+          if (url.searchParams.get("cid") !== SHELL_CID) return await route.fulfill(html("<p>連線逾時</p>"));
+          options.onBillsServed?.();
+          if (options.absentElsewhere) return await route.fulfill(html(`<script>location.replace("/nib/tx/notice")</script>`));
+          return await route.fulfill(html(options.productAbsent ? "<p>您目前未持有信用卡</p>" : billsPage(!options.billsWithoutForm, !options.withoutMonthLinks)));
+        }
+        if (url.pathname === "/nib/tx/notice") return await route.fulfill(html("<p>您目前未持有信用卡</p>"));
+        if (url.pathname === "/nib/tx/creditcardbillsquery" && url.searchParams.get("method") === "queryHistoryDetail") {
+          posted.push(`month ${fields.get("cdHistoryQuery")}`);
+          if (options.holdMonth) {
+            options.holdMonth();
+            return;
+          }
+          return await route.fulfill(html(historyPage(Number(fields.get("cdHistoryQuery")))));
+        }
+        if (url.pathname === "/nib/tx/creditcardunbilled") {
+          posted.push(`unbilled ${fields.get("menutype")} ${fields.get("iconid")}`);
+          return await route.fulfill(html(`${summaryLink}${cardBlock("UNBILLED", "2026-07-02")}`));
+        }
+        if (url.pathname === "/nib/tx/creditcardsummary" && request.method() === "POST") {
+          posted.push("summary");
+          return await route.fulfill({
+            contentType: "text/html; charset=utf-8",
+            headers: { date: "Thu, 10 Sep 2026 02:03:04 GMT", "cache-control": "no-store" },
+            body: options.summaryBody ?? Buffer.from(currentCreditPage, "utf8"),
+          });
+        }
+        return await route.fulfill(html(`<p>${url.pathname}</p>`));
+      });
+      await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
+      const summary = await runYuantaCreditCardStatements(
+        page,
+        input,
+        yuantaCollectionContext({ signal: options.signal, now: "2026-07-10T00:00:00.000Z" }),
+        yuantaStagingHandle(staged),
+      );
+      return { summary, served, posted, staged };
+    } finally {
+      await page.close();
+    }
+  }
+
+  /** Cancel a run and measure how long it takes to reject after the signal fires. */
+  async function cancelledWithin(
+    run: (controller: AbortController, cancelAt: (delayMs: number) => void) => Promise<unknown>,
+  ): Promise<number> {
+    const controller = new AbortController();
+    const reason = new Error("credit card read cancelled");
+    let cancelledAt = 0;
+    const cancelAt = (delayMs: number) => {
+      setTimeout(() => {
+        cancelledAt = Date.now();
+        controller.abort(reason);
+      }, delayMs);
+    };
+    await assert.rejects(run(controller, cancelAt), (error) => error === reason);
+    assert.ok(cancelledAt > 0, "the run was still waiting when it was cancelled");
+    return Date.now() - cancelledAt;
+  }
+
+  try {
+    const read = await readThroughShell();
+    assert.ok(
+      read.served.includes(`GET /nib/tx/creditcardbillsquery?type=page&cid=${SHELL_CID}`),
+      "the bills page opens through the creditcardbillsquery route with the session's cid",
+    );
+    assert.deepEqual(
+      read.posted,
+      [
+        ...periods.map((_period, index) => `month ${index}`),
+        "unbilled creditcardunbilled menu_creditcardunbilled",
+        "summary",
+      ],
+      "every month is posted in order from the bills form, then the unbilled grid, then the summary",
+    );
+    assert.deepEqual(read.summary, { sourceCaptureCount: 8, rowCount: 7 });
+    assert.deepEqual(
+      read.staged.map((item) => item.product),
+      ["credit-card", "current-balance"],
+      "a full capture stages the statements and the current used credit read from the summary response",
+    );
+
+    await assert.rejects(
+      readThroughShell({ productAbsent: true }),
+      (error) => error instanceof StatementComponentAbsentError && error.disposition === "not_held",
+      "a login without a card fails as not held while the route renders",
+    );
+    const absentElsewhereStartedAt = Date.now();
+    await assert.rejects(
+      readThroughShell({ absentElsewhere: true }),
+      (error) => error instanceof StatementComponentAbsentError && error.disposition === "not_held",
+      "a login without a card that the bank redirects to a notice elsewhere also fails as not held",
+    );
+    assert.ok(Date.now() - absentElsewhereStartedAt < 15_000, "the redirected notice is recognised without waiting out the route");
+
+    // The bills page is ready once fmain shows creditcardbillsquery, as the
+    // old read of the served page was: a page without month links is not
+    // waited on for 60 s, it fails at once in the month-link parser.
+    const noMonthsStartedAt = Date.now();
+    const noMonthsPosted: string[] = [];
+    await assert.rejects(
+      readThroughShell({ withoutMonthLinks: true, posted: noMonthsPosted }),
+      /Could not find YuanTa credit card statement month links\./u,
+    );
+    assert.deepEqual(noMonthsPosted, [], "no month or unbilled query is posted");
+    assert.ok(
+      Date.now() - noMonthsStartedAt < 15_000,
+      "a bills page without month links fails in the parser, not after the 60 s route wait",
+    );
+
+    await assert.rejects(
+      readThroughShell({ summaryBody: Buffer.from([0x3c, 0x70, 0x3e, 0xff, 0xfe]) }),
+      SourceTextIntegrityError,
+      "an undecodable summary response fails the product instead of reading as an empty body",
+    );
+
+    const afterFormWait = await cancelledWithin((controller, cancelAt) =>
+      readThroughShell({
+        signal: controller.signal,
+        billsWithoutForm: true,
+        // The route renders and settles well within 3 s; the run then waits up to 120 s for the month form.
+        onBillsServed: () => cancelAt(3_000),
+      }));
+    assert.ok(afterFormWait < 2_000, `a run cancelled in the bills form wait rejects promptly (${afterFormWait} ms)`);
+
+    const afterMonthWait = await cancelledWithin((controller, cancelAt) =>
+      readThroughShell({ signal: controller.signal, holdMonth: () => cancelAt(0) }));
+    assert.ok(afterMonthWait < 2_000, `a run cancelled in the month response wait rejects promptly (${afterMonthWait} ms)`);
+  } finally {
+    await browser.close();
+  }
+});

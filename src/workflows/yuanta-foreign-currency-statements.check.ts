@@ -11,6 +11,9 @@ import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/inv
 import { collectSelectedProducts } from "../lib/automation/product-collection.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { chromium } from "playwright";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 
 const syntheticYuantaForeignAccountNumber = ["0012", "3456", "7890"].join("");
 
@@ -29,6 +32,7 @@ registerHooks({
 const {
   readYuantaForeignCurrencyAccountOptions,
   readYuantaForeignCurrencyOptions,
+  readYuantaForeignCurrencySource,
   buildYuantaForeignCurrencyCaptureInput,
   buildYuantaForeignCurrentDepositBalanceCapture,
   deriveYuantaForeignAccountNumberEvidence,
@@ -61,9 +65,6 @@ assert.doesNotMatch(
 );
 assert.match(foreignWorkflowSource, /runYuantaForeignCurrencyStatements/u);
 assert.match(foreignWorkflowSource, /downloadTransactionRowsInMemory/u);
-assert.match(foreignWorkflowSource, /readYuantaBig5CsvFromAnchor\(/u);
-const sharedExportSource = await readFile(new URL("./yuanta-statements.ts", import.meta.url), "utf8");
-assert.match(sharedExportSource, /text\.decode\(bytes, "big5"\)/u);
 assert.match(foreignWorkflowSource, /sourceText\.assertIntact\(content\)/u);
 
 const fixedForeignDateRange = {
@@ -144,13 +145,18 @@ function locatorForOptions(options: Array<{ value: string; label: string }>) {
   };
 }
 
+/** A Yuanta eBank site over a fake page; frame searches poll the fake's scopes. */
+function fakeSite(page: object, signal = new AbortController().signal) {
+  return yuantaEbankSite(page as never, { signal, text: strictSourceText });
+}
+
 function foreignOptionsPage(
   accounts: Array<{ value: string; label: string }>,
   currencies: Array<{ value: string; label: string }>,
-): never {
-  return {
+) {
+  return fakeSite({
+    mainFrame: () => null,
     frames: () => [],
-    waitForTimeout: async () => {},
     locator: (selector: string) => {
       if (selector === "#acctno") return locatorForOptions(accounts);
       if (selector === "#acctno option") return locatorForOptions(accounts);
@@ -159,7 +165,7 @@ function foreignOptionsPage(
       }
       throw new Error(`Unexpected selector ${selector}`);
     },
-  } as never;
+  });
 }
 
 const yuantaForeignResultFixtures = {
@@ -630,7 +636,8 @@ class FakeScope {
 
 class FakePage extends FakeScope {
   private readonly childFrames: FakeScope[];
-  onWait: (() => void) | undefined;
+  /** Runs each time a frame search lists the page's frames, once per poll. */
+  onPoll: (() => void) | undefined;
 
   constructor(
     html: string,
@@ -641,12 +648,13 @@ class FakePage extends FakeScope {
     this.childFrames = childFrames;
   }
 
-  frames(): FakeScope[] {
-    return this.childFrames;
+  mainFrame(): null {
+    return null;
   }
 
-  async waitForTimeout(_milliseconds?: number): Promise<void> {
-    this.onWait?.();
+  frames(): FakeScope[] {
+    this.onPoll?.();
+    return this.childFrames;
   }
 
   async waitForLoadState(): Promise<void> {}
@@ -655,15 +663,16 @@ class FakePage extends FakeScope {
 class DelayedAccountSelectionPage extends FakePage {
   selectedAccount = "account-one";
   pendingAccount: string | null = null;
-  waitCount = 0;
+  pollCount = 0;
 
   constructor() {
     super(
       '<form><select id="acctno"><option value="account-one">第一帳戶</option><option value="account-two">第二帳戶</option></select><select name="currency"><option value="USD">美元</option></select></form>',
     );
-    this.onWait = () => {
-      this.waitCount += 1;
-      if (this.waitCount >= 2 && this.pendingAccount) {
+    this.onPoll = () => {
+      this.pollCount += 1;
+      // The first poll after the change still sees the old account.
+      if (this.pollCount >= 3 && this.pendingAccount) {
         this.selectedAccount = this.pendingAccount;
       }
     };
@@ -702,7 +711,7 @@ function requireDownloadTarget(target: DownloadTarget) {
 
 const timestampOnlyTarget = requireDownloadTarget(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(yuantaForeignResultFixtures.timestampOnlyWithExternalStatement) as never,
+    fakeSite(new FakePage(yuantaForeignResultFixtures.timestampOnlyWithExternalStatement)),
     500,
   ),
 );
@@ -710,7 +719,7 @@ assert.equal(await timestampOnlyTarget.control.innerText(), "下載 CSV 檔");
 
 const liveFrameTarget = requireDownloadTarget(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(yuantaForeignResultFixtures.liveFrameShape) as never,
+    fakeSite(new FakePage(yuantaForeignResultFixtures.liveFrameShape)),
     500,
   ),
 );
@@ -724,7 +733,7 @@ const reorderedLivePage = new FakePage(yuantaForeignResultFixtures.liveFrameShap
 const unstableGlobalAnchors = reorderedLivePage.locator("a");
 const reorderedTarget = requireDownloadTarget(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    reorderedLivePage as never,
+    fakeSite(reorderedLivePage),
     500,
   ),
 );
@@ -768,7 +777,7 @@ const hiddenWideTableFrame = yuantaForeignResultFixtures.liveFrameShape.replace(
 );
 const hiddenWideTableTarget = requireDownloadTarget(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(hiddenWideTableFrame) as never,
+    fakeSite(new FakePage(hiddenWideTableFrame)),
     500,
   ),
 );
@@ -780,7 +789,7 @@ const hiddenStatementTableFrame = yuantaForeignResultFixtures.liveFrameShape.rep
 );
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(hiddenStatementTableFrame) as never,
+    fakeSite(new FakePage(hiddenStatementTableFrame)),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -792,7 +801,7 @@ const ambiguousLiveFrame = yuantaForeignResultFixtures.liveFrameShape.replace(
 );
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(ambiguousLiveFrame) as never,
+    fakeSite(new FakePage(ambiguousLiveFrame)),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -804,7 +813,7 @@ const ambiguousLiveLinks = yuantaForeignResultFixtures.liveFrameShape.replace(
 );
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(ambiguousLiveLinks) as never,
+    fakeSite(new FakePage(ambiguousLiveLinks)),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -812,11 +821,11 @@ await assert.rejects(
 
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(
+    fakeSite(new FakePage(
       yuantaForeignResultFixtures.liveFrameShape,
       [],
       "https://ebank.yuantabank.com.tw/nib/mainmenu",
-    ) as never,
+    )),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -824,7 +833,7 @@ await assert.rejects(
 
 const providerNoDataPage = new FakePage(yuantaForeignResultFixtures.providerNoData);
 const providerNoDataTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  providerNoDataPage as never,
+  fakeSite(providerNoDataPage),
   500,
 );
 assert.deepEqual(providerNoDataTarget, {
@@ -837,7 +846,7 @@ const providerNoDataTablePage = new FakePage(
 );
 const providerNoDataTableTarget =
   await findYuantaForeignCurrencyCsvDownloadControl(
-    providerNoDataTablePage as never,
+    fakeSite(providerNoDataTablePage),
     500,
   );
 assert.deepEqual(providerNoDataTableTarget, {
@@ -850,13 +859,13 @@ assert.deepEqual(providerNoDataTableTarget, {
 // typed source boundary; no native browser download object is created.
 const firstAccountTarget = requireDownloadTarget(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(yuantaForeignResultFixtures.liveFrameShape) as never,
+    fakeSite(new FakePage(yuantaForeignResultFixtures.liveFrameShape)),
     500,
   ),
 );
 assert.equal(firstAccountTarget.kind, "download");
 const secondAccountTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  new FakePage(yuantaForeignResultFixtures.providerNoDataTable) as never,
+  fakeSite(new FakePage(yuantaForeignResultFixtures.providerNoDataTable)),
   500,
 );
 assert.deepEqual(secondAccountTarget, {
@@ -872,7 +881,7 @@ const staleReadyWithProviderNoDataPage = new FakePage(
 );
 const staleReadyWithProviderNoDataTarget =
   await findYuantaForeignCurrencyCsvDownloadControl(
-    staleReadyWithProviderNoDataPage as never,
+    fakeSite(staleReadyWithProviderNoDataPage),
     500,
   );
 assert.deepEqual(staleReadyWithProviderNoDataTarget, {
@@ -885,31 +894,31 @@ assert.deepEqual(staleReadyWithProviderNoDataTarget, {
 // the old CSV is downloadable before the provider renders its no-data table.
 const temporalFencePage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
 const temporalFenceBefore = await readYuantaForeignCurrencyResultFingerprint(
-  temporalFencePage as never,
+  fakeSite(temporalFencePage),
 );
-let temporalFenceWaits = 0;
-temporalFencePage.onWait = () => {
-  temporalFenceWaits += 1;
-  if (temporalFenceWaits === 1) {
+let temporalFencePolls = 0;
+temporalFencePage.onPoll = () => {
+  temporalFencePolls += 1;
+  if (temporalFencePolls === 1) {
     // A provider timestamp can change before the old table is replaced. It
     // must not release the prior account's ready result.
     temporalFencePage.html = yuantaForeignResultFixtures.liveFrameShape.replace(
       "2026/09/03 10:40:00",
       "2026/09/03 10:41:00",
     );
-  } else if (temporalFenceWaits >= 2) {
+  } else if (temporalFencePolls >= 2) {
     temporalFencePage.html = yuantaForeignResultFixtures.providerNoDataTable;
   }
 };
 await waitForYuantaForeignCurrencyResultTransition(
-  temporalFencePage as never,
+  fakeSite(temporalFencePage),
   temporalFenceBefore,
-  500,
+  2_000,
 );
-assert.ok(temporalFenceWaits >= 2);
+assert.ok(temporalFencePolls >= 2);
 assert.deepEqual(
   await findYuantaForeignCurrencyCsvDownloadControl(
-    temporalFencePage as never,
+    fakeSite(temporalFencePage),
     500,
   ),
   { kind: "empty", reason: "provider-explicit-no-data" },
@@ -919,16 +928,16 @@ assert.deepEqual(
 // attached while the provider is still switching accounts. Selection must
 // wait for the requested value to be observable on the current form.
 const delayedAccountPage = new DelayedAccountSelectionPage();
-await selectYuantaForeignCurrencyAccount(delayedAccountPage as never, {
+await selectYuantaForeignCurrencyAccount(fakeSite(delayedAccountPage), {
   label: "第二帳戶",
   value: "account-two",
 });
 assert.equal(delayedAccountPage.selectedAccount, "account-two");
-assert.ok(delayedAccountPage.waitCount >= 2);
+assert.ok(delayedAccountPage.pollCount >= 3);
 
 const providerErrorPage = new FakePage(yuantaForeignResultFixtures.providerError);
 await assert.rejects(
-  findYuantaForeignCurrencyCsvDownloadControl(providerErrorPage as never, 500),
+  findYuantaForeignCurrencyCsvDownloadControl(fakeSite(providerErrorPage), 500),
   /explicit result error/i,
 );
 
@@ -944,7 +953,7 @@ console.log = (...args: unknown[]) => {
 };
 try {
   await assert.rejects(
-    findYuantaForeignCurrencyCsvDownloadControl(diagnosticLogPage as never, 500),
+    findYuantaForeignCurrencyCsvDownloadControl(fakeSite(diagnosticLogPage), 500),
     /Could not find YuanTa foreign-currency CSV download link in any frame\./,
   );
 } finally {
@@ -981,8 +990,20 @@ assert.doesNotMatch(
 
 const timeoutPage = new FakePage(yuantaForeignResultFixtures.pendingResult);
 await assert.rejects(
-  findYuantaForeignCurrencyCsvDownloadControl(timeoutPage as never, 25),
+  findYuantaForeignCurrencyCsvDownloadControl(fakeSite(timeoutPage), 25),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
+);
+const pendingResultWait = new AbortController();
+const cancelledResultWait = findYuantaForeignCurrencyCsvDownloadControl(
+  fakeSite(timeoutPage, pendingResultWait.signal),
+  60_000,
+  { silent: true },
+);
+pendingResultWait.abort(new Error("fx result wait cancelled"));
+await assert.rejects(
+  cancelledResultWait,
+  /fx result wait cancelled/u,
+  "a cancelled run stops inside the result wait instead of polling for a minute",
 );
 
 const unrelatedCsvOutsideResultPage = new FakePage(
@@ -990,7 +1011,7 @@ const unrelatedCsvOutsideResultPage = new FakePage(
 );
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    unrelatedCsvOutsideResultPage as never,
+    fakeSite(unrelatedCsvOutsideResultPage),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -1004,7 +1025,7 @@ const globalCsvOutsideTransactionTable =
   '<footer><a aria-label="下載 CSV 檔" href="/forms.csv" onclick="getDownload(\'csv\')">下載 CSV 檔</a></footer>';
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(globalCsvOutsideTransactionTable) as never,
+    fakeSite(new FakePage(globalCsvOutsideTransactionTable)),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -1015,7 +1036,7 @@ const onlyTableWithGlobalCsv = `<div id="resultdiv"><h2>查詢結果：</h2><p>�
   <footer><a aria-label="下載 CSV 檔" href="/forms.csv" onclick="getDownload('csv')">下載 CSV 檔</a></footer></main>`;
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
-    new FakePage(onlyTableWithGlobalCsv) as never,
+    fakeSite(new FakePage(onlyTableWithGlobalCsv)),
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,
@@ -1801,5 +1822,190 @@ function yuantaForeignWindowCapture(
     );
   } finally {
     await store.close();
+  }
+}
+
+// The read half against a synthetic signed-in frameset (ADR 0066): the site
+// opens the FX route in fmain, each account is selected, queried over the
+// requested custom range, and its CSV export is fetched and decoded as Big5.
+{
+  const big5Codes = new Map<string, Buffer>();
+  const big5Decoder = new TextDecoder("big5", { fatal: true });
+  for (let lead = 0x81; lead <= 0xfe; lead += 1) {
+    for (let trail = 0x40; trail <= 0xfe; trail += 1) {
+      if (trail > 0x7e && trail < 0xa1) continue;
+      const code = Buffer.from([lead, trail]);
+      try {
+        const char = big5Decoder.decode(code);
+        if (!big5Codes.has(char)) big5Codes.set(char, code);
+      } catch {
+        // An unassigned code point.
+      }
+    }
+  }
+  const big5 = (text: string) =>
+    Buffer.concat([...text].map((char) => char.charCodeAt(0) < 0x80
+      ? Buffer.from(char, "latin1")
+      : big5Codes.get(char) ?? assert.fail(`no Big5 code for ${char}`)));
+
+  const SHELL_CID = "synthetic-fx-cid";
+  const fxAccounts = [
+    { value: "00123456789012", label: "外幣綜合存款 00123456789012" },
+    { value: "00123456789013", label: "外幣活期存款 00123456789013" },
+  ];
+  const fxCsvBytes = big5([
+    "帳號,帳務日期,交易日期,交易時間,幣別,交易說明,支出金額,存入金額,帳面餘額,交易資訊,匯率",
+    "00123456789012,20260823,20260823,09:10,USD,外幣存入,,10.00,110.00,交易資訊,31.50",
+    "",
+  ].join("\r\n"));
+  const fxInput = {
+    ...yuantaForeignCurrencyStatementsInputSchema.parse({
+      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+    }),
+    yuantaUserId: "synthetic-yuanta-login",
+  };
+
+  const browser = await chromium.launch({ headless: true });
+  async function readThroughShell(
+    options: Readonly<{ signal?: AbortSignal; holdQuery?: () => void; csvBytes?: Buffer }> = {},
+  ) {
+    const page = await browser.newPage();
+    const served: string[] = [];
+    const queried: string[] = [];
+    const exported: string[] = [];
+    const items: PGliteWorkflowRunItem[] = [];
+    const activities: string[] = [];
+    const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+    const recordPick = "parent.picked = [...(parent.picked ?? []), this.textContent]; return false;";
+    const form = (selected: string, result: string) => `<form name="mform" method="post" action="/nib/tx/fxtransactiondetails">
+      <input type="hidden" name="cid" value="${SHELL_CID}">
+      <input type="hidden" id="txntype" name="txntype" value="">
+      <select id="acctno" name="acctno" onchange="document.getElementById('txntype').value = 'changeaccount'; this.form.submit();">
+        <option value="">請選擇帳戶</option>
+        ${fxAccounts.map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`).join("")}
+      </select>
+      <select name="currency">${selected ? '<option value="ALL">全部幣別</option><option value="USD">美元</option>' : ""}</select>
+      <select id="channelType" name="channelType"><option value="A">全部</option><option value="N">網路銀行</option></select>
+      <div id="duration"><a href="#" onclick="${recordPick}">三個月</a><a href="#" onclick="${recordPick}">自選</a></div>
+      <input id="sdate" name="sdate"><input id="edate" name="edate">
+      <button id="submitbutton" type="submit" onclick="document.getElementById('txntype').value = 'query';">查詢</button>
+    </form>${result}`;
+    const queriedAt = '<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/08/24 10:40:00</p></div>';
+    const statement = `${queriedAt}<div class="foreign-transaction-panel"><div class="foreign-table-wrap">
+      <table class="normalTable"><thead><tr><th>帳務日期</th><th>幣別</th><th>存入金額</th></tr></thead><tbody><tr><td>20260823</td><td>USD</td><td>10.00</td></tr></tbody></table>
+      <div class="foreign-export"><a aria-label="下載 CSV 檔" href="javascript:void(0);" onclick="getDownload('csv')">下載 CSV 檔</a></div>
+    </div></div>`;
+    const noData = `${queriedAt}<table id="tabtable"><tbody><tr><td>查無資料</td></tr></tbody></table>`;
+    const summary = `<form name="fx" method="post" action="/nib/tx/finance_overview_for_summary"></form>
+      <a id="submenuAreaFX" href="#" onclick="return false;">外幣</a>
+      <section><h2>目前外幣存款總額</h2><a href="#" onclick="document.forms.fx.submit(); return false;">活期明細</a></section>`;
+    const balances = `<table class="normalTable">
+      <tr><th>分行名稱</th><th>產品名稱</th><th>幣別</th><th>帳號</th><th>可用餘額</th><th>帳面餘額</th><th>參考匯率</th><th>臺幣市值</th></tr>
+      <tr><td>營業部</td><td>外幣綜合存款</td><td>美元</td><td>00123456789012</td><td>90.00</td><td>110.00</td><td>31.50</td><td>3,465</td></tr>
+    </table>`;
+    try {
+      await page.route(`${YUANTA_EBANK_ORIGIN}/**`, async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        served.push(`${request.method()} ${url.pathname}${url.search}`);
+        if (url.pathname === "/nib/shell.jsp") {
+          return await route.fulfill(html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/home?type=page&cid=${SHELL_CID}"></iframe>`));
+        }
+        if (url.pathname === "/nib/tx/fxtransactiondetails" && request.method() === "POST") {
+          const fields = new URLSearchParams(request.postData() ?? "");
+          const account = fields.get("acctno") ?? "";
+          switch (fields.get("txntype")) {
+            case "downloadcsv":
+              exported.push(account);
+              return await route.fulfill({
+                contentType: "text/csv",
+                headers: { "content-disposition": 'attachment; filename="fx.csv"' },
+                body: options.csvBytes ?? fxCsvBytes,
+              });
+            case "query":
+              queried.push([account, fields.get("currency"), fields.get("sdate"), fields.get("edate"), fields.get("channelType")].join(" "));
+              if (options.holdQuery) {
+                options.holdQuery();
+                return;
+              }
+              return await route.fulfill(html(form(account, account === fxAccounts[0]!.value ? statement : noData)));
+            default:
+              return await route.fulfill(html(form(account, "")));
+          }
+        }
+        if (url.pathname === "/nib/tx/fxtransactiondetails" && url.searchParams.get("cid") === SHELL_CID) {
+          return await route.fulfill(html(form("", "")));
+        }
+        if (url.pathname === "/nib/tx/summary") return await route.fulfill(html(summary));
+        if (url.pathname === "/nib/tx/finance_overview_for_summary") {
+          return await route.fulfill({
+            ...html(balances),
+            headers: { date: "Mon, 24 Aug 2026 02:00:00 GMT", "cache-control": "no-store" },
+          });
+        }
+        return await route.fulfill(html(`<p>${url.pathname}</p>`));
+      });
+      await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
+      const snapshot = await readYuantaForeignCurrencySource(
+        page,
+        fxInput,
+        yuantaCollectionContext({ signal: options.signal, now: "2026-08-24T10:00:00+08:00" }),
+        yuantaStagingHandle(items, activities),
+      );
+      const picked = await page.evaluate(() => (window as { picked?: string[] }).picked ?? []);
+      return { snapshot, served, queried, exported, items, activities, picked };
+    } finally {
+      await page.close();
+    }
+  }
+
+  try {
+    const shellRead = await readThroughShell();
+    assert.ok(
+      shellRead.served.includes(`GET /nib/tx/fxtransactiondetails?type=page&cid=${SHELL_CID}`),
+      "the FX page opens through the fxtransactiondetails route with the session's cid",
+    );
+    assert.deepEqual(
+      shellRead.queried,
+      fxAccounts.map((account) => `${account.value} ALL 2026/08/14 2026/08/24 A`),
+      "every account is queried in order for all currencies over the custom range",
+    );
+    assert.deepEqual(shellRead.picked, ["自選", "自選"], "the custom range link is picked for each query");
+    assert.deepEqual(shellRead.exported, [fxAccounts[0]!.value], "only the account with a statement exports its CSV");
+    assert.deepEqual(shellRead.activities, ["query", "download", "query", "download"]);
+    assert.deepEqual(shellRead.snapshot.accounts, fxAccounts);
+    assert.deepEqual(
+      shellRead.snapshot.downloads.map((download) => [download.account.value, download.currency.value, download.rows.length]),
+      [[fxAccounts[0]!.value, "ALL", 1], [fxAccounts[1]!.value, "ALL", 0]],
+      "a CSV result and the bank's 查無資料 result are told apart per account",
+    );
+    assert.deepEqual(
+      shellRead.snapshot.downloads[0]!.rows[0]!.values,
+      ["00123456789012", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
+      "the Big5 export decodes to the provider's columns",
+    );
+    assert.deepEqual(
+      shellRead.snapshot.currentBalances.map((row) => [row.accountNumber, row.currency, row.ledger.sourceLexeme]),
+      [["00123456789012", "USD", "110.00"]],
+    );
+    assert.deepEqual(shellRead.items, [], "the read half stages nothing");
+
+    await assert.rejects(
+      readThroughShell({ csvBytes: Buffer.concat([big5("帳號,"), Buffer.from([0xa4, 0x20])]) }),
+      SourceTextIntegrityError,
+      "an FX export that is not valid Big5 fails the read instead of decoding with replacement characters",
+    );
+
+    const shellCancellation = new AbortController();
+    await assert.rejects(
+      readThroughShell({
+        signal: shellCancellation.signal,
+        holdQuery: () => shellCancellation.abort(new Error("fx read cancelled")),
+      }),
+      /fx read cancelled/u,
+      "a run cancelled mid-query stops inside its wait",
+    );
+  } finally {
+    await browser.close();
   }
 }

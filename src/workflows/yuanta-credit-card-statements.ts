@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import type { Frame, Locator, Page, Response } from "playwright";
+import { errors, type Locator, type Page, type Response } from "playwright";
 import { z } from "zod";
 import {
   creditCardBalanceCommandRequest,
@@ -47,8 +47,17 @@ import {
   yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
-
-type BrowserScope = Page | Frame;
+import {
+  FrameScopeTimeoutError,
+  ifFound,
+  type BrowserScope,
+  type FrameScope,
+} from "./frame-scope.ts";
+import {
+  yuantaEbankSite,
+  type YuantaEbankSite,
+  type YuantaRoute,
+} from "./yuanta-ebank-site.ts";
 
 export type YuantaCreditCardMonthOption = {
   index: number;
@@ -471,237 +480,101 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [...page.frames(), page]) {
-      if (await hasAttachedLocator(scope.locator(selector))) return scope;
-    }
-    await page.waitForTimeout(250);
+/**
+ * The historical-bills page: ready once a scope's document is the
+ * creditcardbillsquery page. Its served HTML is checked for product-absent
+ * text and parsed for month links afterwards, as the bills read always did.
+ * A login without a card may land on a notice elsewhere instead, which is
+ * product absence, as the old bills search found it.
+ */
+async function isCreditCardBillsPage(scope: BrowserScope): Promise<boolean> {
+  let pathname: string;
+  try {
+    pathname = new URL(scope.url()).pathname;
+  } catch {
+    return false;
   }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
+  if (pathname === "/nib/tx/creditcardbillsquery")
+    return await hasAttachedLocator(scope.locator("body"));
+  const bodyText = await scope.locator("body").textContent({ timeout: 500 }).catch(() => "");
+  if (isCreditCardProductAbsentText(bodyText)) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa credit-card product is available for this login.",
+      "not_held",
+    );
+  }
+  return false;
 }
 
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [...page.frames(), page]) {
-      if (await hasAttachedLocator(locatorFor(scope))) return scope;
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Could not find ${description} in any frame.`);
+const CREDIT_CARD_BILLS_ROUTE: YuantaRoute = {
+  path: "creditcardbillsquery",
+  description: "YuanTa credit card bills page",
+  ready: isCreditCardBillsPage,
+};
+
+function isCreditCardBillsPageResponse(response: Response): boolean {
+  const request = response.request();
+  return (
+    request.method() === "GET" &&
+    request.isNavigationRequest() &&
+    // A redirect carries no body; the bills read is the document it lands on.
+    response.status() < 300 &&
+    new URL(response.url()).pathname === "/nib/tx/creditcardbillsquery"
+  );
 }
 
-async function firstVisibleLocator(
-  locator: Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    await locator.page().waitForTimeout(250);
-  }
+type CreditCardBillsPage = Readonly<{
+  /** The scope that shows the bills page and holds its month form. */
+  scope: BrowserScope;
+  /** The bills page as the provider served it. */
+  html: string;
+}>;
 
-  throw new Error(`Could not find a visible ${description}.`);
+/** Open the bills route and read the document the provider served for it. */
+async function openCreditCardBillsPage(
+  site: YuantaEbankSite,
+): Promise<CreditCardBillsPage> {
+  const { frames } = site;
+  const [html, scope] = await Promise.all([
+    frames
+      .race(frames.page.waitForResponse(isCreditCardBillsPageResponse))
+      .then((response) => site.readHtml(response)),
+    site.open(CREDIT_CARD_BILLS_ROUTE),
+  ]);
+  return { scope, html };
 }
 
 /**
  * YuanTa renders a copy of the menu in fmenu while the usable controls live
- * in fmain.  Search fmain first and test visibility on every candidate so a
- * hidden fmenu match cannot prevent the visible fmain control from winning.
+ * in fmain.  Search fmain for the whole bounded wait first, so a hidden fmenu
+ * clone cannot win while fmain is still rendering, then search every scope.
  */
 async function firstVisibleYuantaScopedLocator(
-  page: Page,
+  frames: FrameScope,
   locatorFor: (scope: BrowserScope) => Locator,
-  _description: string,
+  description: string,
   timeoutMs = 5_000,
 ): Promise<Locator | null> {
-  const findVisible = async (scope: BrowserScope): Promise<Locator | null> => {
-    const locator = locatorFor(scope);
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const candidate = locator.nth(index);
-      if (await candidate.isVisible().catch(() => false)) return candidate;
-    }
-    return null;
-  };
-
-  // Keep the known content frame authoritative for its whole bounded wait.
-  // A hidden fmenu clone must not win while fmain is still rendering.
-  const fmain = page.frame({ name: "fmain" });
+  const fmain = frames.page.frame({ name: "fmain" });
   if (fmain) {
-    const fmainDeadline = Date.now() + timeoutMs;
-    while (Date.now() < fmainDeadline) {
-      const candidate = await findVisible(fmain);
-      if (candidate) return candidate;
-      await page.waitForTimeout(250);
-    }
+    const candidate = await ifFound(
+      frames.firstVisible(locatorFor, description, { in: fmain, timeoutMs }),
+    );
+    if (candidate) return candidate;
   }
-
-  const fallbackDeadline = Date.now() + timeoutMs;
-  while (Date.now() < fallbackDeadline) {
-    const scopes = [
-      ...page.frames().filter((frame) => frame !== fmain),
-      page,
-    ];
-    for (const scope of scopes) {
-      const candidate = await findVisible(scope);
-      if (candidate) return candidate;
-    }
-    await page.waitForTimeout(250);
-  }
-  return null;
-}
-
-async function settleAfterNavigation(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
-    // YuanTa keeps timers alive; selector waits below confirm readiness.
-  });
-  await page.waitForTimeout(250);
-}
-
-async function openCreditCardBillsPage(page: Page): Promise<BrowserScope> {
-  const existing = await findCreditCardBillsScope(page, 5_000).catch(
-    () => null,
-  );
-  if (existing) {
-    const ready = await waitForCreditCardBillsReady(
-      page,
-      undefined,
-      8_000,
-    ).catch(() => null);
-    if (ready) return ready;
-  }
-
-  if (await clickCreditCardBillsLink(page, 5_000)) {
-    return await waitForCreditCardBillsReady(page);
-  }
-
-  const menuScope = await findScopeWithSelector(page, "#submenuAreaCD", 5_000)
-    .then((scope) => scope)
-    .catch(() => null);
-  if (menuScope) {
-    await firstVisibleLocator(
-      menuScope.locator("#submenuAreaCD"),
-      "YuanTa credit card menu",
-      5_000,
-    )
-      .then((link) => link.click({ force: true }))
-      .catch(() => undefined);
-    await page.waitForTimeout(250);
-  }
-
-  if (await clickCreditCardBillsLink(page)) {
-    return await waitForCreditCardBillsReady(page);
-  }
-
-  throw new Error("Could not open YuanTa credit card bills page.");
-}
-
-async function findCreditCardBillsScope(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [...page.frames(), page]) {
-      const hasMonthLink = await hasAttachedLocator(
-        scope.locator('a[onclick*="queryMonth("]'),
-      );
-      const hasTable = await hasAttachedLocator(
-        scope.locator("table.rwdTable"),
-      );
-      if (hasMonthLink && hasTable) return scope;
-      const bodyText = await scope
-        .locator("body")
-        .textContent({ timeout: 500 })
-        .catch(() => "");
-      if (isCreditCardProductAbsentText(bodyText)) {
-        throw new StatementComponentAbsentError(
-          "No YuanTa credit-card product is available for this login.",
-          "not_held",
-        );
-      }
-    }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error("Could not find YuanTa credit card bills page in any frame.");
-}
-
-async function waitForCreditCardBillsReady(
-  page: Page,
-  period?: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const scope = await findCreditCardBillsScope(page, 3_000).catch(() => null);
-    if (scope) {
-      const hasPeriod =
-        !period ||
-        (await scope
-          .locator("body")
-          .filter({ hasText: period })
-          .count()
-          .catch(() => 0)) > 0;
-
-      if (hasPeriod) return scope;
-    }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error(
-    "Timed out waiting for YuanTa credit card bills page tables.",
+  return await ifFound(
+    frames.firstVisible(locatorFor, description, { timeoutMs }),
   );
 }
 
-async function clickCreditCardBillsLink(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<boolean> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator(
-          'a[onclick*="creditcardbillsquery"], a[onclick*="turnCDFunc(2)"]',
-        )
-        .filter({ hasText: /歷史帳單明細/ }),
-    "YuanTa credit card bills link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!scope) return false;
-
-  const link = await firstVisibleLocator(
-    scope
-      .locator(
-        'a[onclick*="creditcardbillsquery"], a[onclick*="turnCDFunc(2)"]',
-      )
-      .filter({ hasText: /歷史帳單明細/ }),
-    "YuanTa credit card bills link",
-    timeoutMs,
-  ).catch(() => null);
-  if (!link) return false;
-
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  return true;
+/** Resolve a Playwright wait that ran out of time to null; cancellation and every other failure still reject. */
+async function unlessTimedOut<T>(wait: Promise<T>): Promise<T | null> {
+  try {
+    return await wait;
+  } catch (error) {
+    if (error instanceof errors.TimeoutError) return null;
+    throw error;
+  }
 }
 
 function selectMonthOptions(
@@ -726,60 +599,12 @@ function selectMonthOptions(
   return selected;
 }
 
-async function findYuantaMenuActionScope(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const hasMenuAction = await scope
-        .evaluate(() => {
-          const yuanTaWindow = window as typeof window & {
-            menuaction?: unknown;
-          };
-          return typeof yuanTaWindow.menuaction === "function";
-        })
-        .catch(() => false);
-      if (hasMenuAction) return scope;
-    }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error("Could not find YuanTa menuaction() in any frame.");
-}
-
-async function runYuantaMenuAction(
-  page: Page,
-  action: string,
-  menuId: string,
-): Promise<void> {
-  const scope = await findYuantaMenuActionScope(page);
-  await scope.evaluate(
-    ({ action: menuAction, menuId: id }) => {
-      const yuanTaWindow = window as typeof window & {
-        menuaction?: (
-          actionName: string,
-          actionId: string,
-          flag?: string,
-        ) => void;
-      };
-      if (typeof yuanTaWindow.menuaction !== "function")
-        throw new Error("YuanTa page did not expose menuaction().");
-      yuanTaWindow.menuaction(menuAction, id, "N");
-    },
-    { action, menuId },
-  );
-  await settleAfterNavigation(page);
-}
-
 async function waitForYuantaCreditCardSummary(
-  page: Page,
+  frames: FrameScope,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+  return await frames.until(async () => {
+    for (const scope of frames.scopes()) {
       const bodyText = cleanText(
         await scope.locator("body").innerText().catch(() => ""),
       );
@@ -791,10 +616,8 @@ async function waitForYuantaCreditCardSummary(
       )
         return scope;
     }
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error("Timed out waiting for YuanTa credit-card summary.");
+    return null;
+  }, "Timed out waiting for YuanTa credit-card summary.", { timeoutMs });
 }
 
 const yuantaSummaryResultText =
@@ -803,6 +626,7 @@ const yuantaCurrentCreditResultText =
   /信用額度|已使用額度|信用額度餘額/u;
 
 async function findYuantaSummaryPagerControl(
+  frames: FrameScope,
   scope: BrowserScope,
 ): Promise<Locator | null> {
   const summaryTable = scope.locator("table").filter({
@@ -818,9 +642,9 @@ async function findYuantaSummaryPagerControl(
     const count = await controls.count().catch(() => 0);
     for (let index = 0; index < count; index += 1) {
       const control = controls.nth(index);
-      const controlHtml = await control
-        .evaluate((element) => element.outerHTML)
-        .catch(() => "");
+      const controlHtml = await frames.race(
+        control.evaluate((element) => element.outerHTML).catch(() => ""),
+      );
       if (controlHtml && isActiveYuantaSummaryPagerControl(controlHtml))
         return control;
     }
@@ -829,17 +653,14 @@ async function findYuantaSummaryPagerControl(
 }
 
 async function readYuantaSummaryHtml(
-  page: Page,
+  frames: FrameScope,
   previousHtml?: string,
 ): Promise<string> {
-  const deadline = Date.now() + 60_000;
-  const preferredFrame = page.frame({ name: "fmain" });
-  const scopes = [
-    ...(preferredFrame ? [preferredFrame] : []),
-    ...page.frames().filter((frame) => frame !== preferredFrame),
-    page,
-  ];
-  while (Date.now() < deadline) {
+  return await frames.until(async () => {
+    const preferredFrame = frames.page.frame({ name: "fmain" });
+    const scopes = preferredFrame
+      ? [preferredFrame, ...frames.scopes().filter((scope) => scope !== preferredFrame)]
+      : frames.scopes();
     for (const scope of scopes) {
       const bodyText = cleanText(
         await scope.locator("body").innerText().catch(() => ""),
@@ -853,19 +674,20 @@ async function readYuantaSummaryHtml(
       if (html && (previousHtml === undefined || html !== previousHtml))
         return html;
     }
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Timed out waiting for the next YuanTa credit-card summary page.");
+    return null;
+  }, "Timed out waiting for the next YuanTa credit-card summary page.", {
+    timeoutMs: 60_000,
+  });
 }
 
 async function findYuantaVisibleTextControl(
-  page: Page,
+  frames: FrameScope,
   pattern: RegExp,
   description: string,
   timeoutMs = 5_000,
 ): Promise<Locator | null> {
   let link = await firstVisibleYuantaScopedLocator(
-    page,
+    frames,
     (candidate) => candidate.getByRole("link", { name: pattern }),
     description,
     timeoutMs,
@@ -873,7 +695,7 @@ async function findYuantaVisibleTextControl(
   if (link) return link;
 
   link = await firstVisibleYuantaScopedLocator(
-    page,
+    frames,
     (candidate) => candidate.getByText(pattern),
     `${description} text control`,
     timeoutMs,
@@ -882,11 +704,11 @@ async function findYuantaVisibleTextControl(
 }
 
 export async function findYuantaCreditCardSummaryLink(
-  page: Page,
+  site: YuantaEbankSite,
   timeoutMs = 5_000,
 ): Promise<Locator | null> {
   return await firstVisibleYuantaScopedLocator(
-    page,
+    site.frames,
     (candidate) =>
       candidate.getByRole("link", { name: "信用卡總覽", exact: true }),
     "YuanTa credit card summary link",
@@ -898,10 +720,11 @@ export async function findYuantaCreditCardSummaryLink(
  * visible credit-card summary link.  The combined workflow often leaves the
  * frame on the historical-bills page, where the direct menu action can take a
  * long time to settle without loading the current-limit table. */
-async function openYuantaFeatureOverview(page: Page): Promise<boolean> {
+async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean> {
+  const { frames } = site;
   const featureOverviewPattern = /功\s*能\s*總\s*覽/u;
   let link = await findYuantaVisibleTextControl(
-    page,
+    frames,
     featureOverviewPattern,
     "YuanTa feature overview link",
   );
@@ -910,15 +733,15 @@ async function openYuantaFeatureOverview(page: Page): Promise<boolean> {
     // to the reviewed signed-in home page through its visible 首頁 control,
     // then select 功 能 總 覽 from that page.
     const homeLink = await findYuantaVisibleTextControl(
-      page,
+      frames,
       /^首頁$/u,
       "YuanTa home link",
     );
     if (homeLink) {
-      await homeLink.click({ force: true });
-      await settleAfterNavigation(page);
+      await frames.race(homeLink.click({ force: true }));
+      await frames.settle();
       link = await findYuantaVisibleTextControl(
-        page,
+        frames,
         featureOverviewPattern,
         "YuanTa feature overview link",
         15_000,
@@ -927,12 +750,11 @@ async function openYuantaFeatureOverview(page: Page): Promise<boolean> {
   }
   if (!link) return false;
 
-  await link.click({ force: true });
-  await settleAfterNavigation(page);
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const scope of [page.frame({ name: "fmain" }), ...page.frames(), page]) {
-      if (!scope) continue;
+  await frames.race(link.click({ force: true }));
+  await frames.settle();
+  const shown = await ifFound(frames.until(async () => {
+    const fmain = frames.page.frame({ name: "fmain" });
+    for (const scope of fmain ? [fmain, ...frames.scopes()] : frames.scopes()) {
       const pathname = (() => {
         try {
           return new URL(scope.url()).pathname;
@@ -948,9 +770,9 @@ async function openYuantaFeatureOverview(page: Page): Promise<boolean> {
       if (pathname === "/nib/pages/vnib/feature-overview" || hasSummaryLink)
         return true;
     }
-    await page.waitForTimeout(250);
-  }
-  return false;
+    return null;
+  }, "Timed out waiting for the YuanTa feature overview.", { timeoutMs: 15_000 }));
+  return shown ?? false;
 }
 
 function yuantaResponsePath(response: Response | null): string | null {
@@ -1061,35 +883,34 @@ function currentYuantaCreditEvidence(
 }
 
 export async function loadYuantaCreditCardSummaryPage(
-  page: Page,
+  site: YuantaEbankSite,
   link?: Locator,
 ): Promise<{
   firstHtml: string;
   response: Response | null;
   evidence: ReturnType<typeof currentYuantaCreditEvidence>;
 }> {
-  const responsePromise = page
-    .waitForResponse(
-      (response) =>
-        response.url().includes("/nib/tx/creditcardsummary") &&
-        response.request().method() === "POST",
-      { timeout: 30_000 },
-    )
-    .catch(() => null);
-  if (link) {
-    await link.click();
-    await settleAfterNavigation(page);
-  } else {
-    await runYuantaMenuAction(
-      page,
-      "creditcardsummary",
-      "menu_creditcardsummary",
-    );
-  }
-  const response = await responsePromise;
-  const framePaths = yuantaFramePaths(page);
-  let responseHtml = "";
-  if (response) responseHtml = await response.text().catch(() => "");
+  const { frames } = site;
+  const [response] = await Promise.all([
+    unlessTimedOut(
+      frames.race(
+        frames.page.waitForResponse(
+          (candidate) =>
+            candidate.url().includes("/nib/tx/creditcardsummary") &&
+            candidate.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+      ),
+    ),
+    (async () => {
+      if (link) await frames.race(link.click());
+      else
+        await site.menuAction("creditcardsummary", "menu_creditcardsummary", 60_000);
+      await frames.settle();
+    })(),
+  ]);
+  const framePaths = yuantaFramePaths(frames.page);
+  const responseHtml = response ? await site.readHtml(response) : "";
   const responseTableHeaders = yuantaRwdTableHeaders(responseHtml);
   const responseShape =
     diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(responseHtml);
@@ -1108,8 +929,9 @@ export async function loadYuantaCreditCardSummaryPage(
 
   let firstHtml: string;
   try {
-    firstHtml = await readYuantaSummaryHtml(page);
-  } catch {
+    firstHtml = await readYuantaSummaryHtml(frames);
+  } catch (error) {
+    if (!(error instanceof FrameScopeTimeoutError)) throw error;
     throw new YuantaCreditSummaryNavigationError(
       "summary-page-not-ready",
       currentYuantaCreditEvidence(responseHtml, response, {
@@ -1133,29 +955,30 @@ export async function loadYuantaCreditCardSummaryPage(
 }
 
 async function traverseYuantaSummaryWithCurrentEvidence(
-  page: Page,
+  site: YuantaEbankSite,
   firstHtml: string,
   evidence: ReturnType<typeof currentYuantaCreditEvidence>,
-  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
+  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
 ): Promise<YuantaCreditCardSummaryTraversal> {
-  options.sourceText?.assertIntact(firstHtml);
-  options.signal?.throwIfAborted();
+  const { frames } = site;
+  options.sourceText.assertIntact(firstHtml);
+  frames.signal.throwIfAborted();
   let currentHtml = firstHtml;
   try {
     const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
       firstHtml,
       async (_request) => {
-        const scope = await waitForYuantaCreditCardSummary(page);
-        const pager = await findYuantaSummaryPagerControl(scope);
+        const scope = await waitForYuantaCreditCardSummary(frames);
+        const pager = await findYuantaSummaryPagerControl(frames, scope);
         if (!pager)
           throw new Error(
             "YuanTa settled statement pagination control disappeared before traversal.",
           );
-        await pager.click({ force: true });
-        await settleAfterNavigation(page);
-        options.signal?.throwIfAborted();
-        const nextHtml = await readYuantaSummaryHtml(page, currentHtml);
-        options.sourceText?.assertIntact(nextHtml);
+        await frames.race(pager.click({ force: true }));
+        await frames.settle();
+        frames.signal.throwIfAborted();
+        const nextHtml = await readYuantaSummaryHtml(frames, currentHtml);
+        options.sourceText.assertIntact(nextHtml);
         currentHtml = nextHtml;
         return nextHtml;
       },
@@ -1189,10 +1012,10 @@ async function traverseYuantaSummaryWithCurrentEvidence(
 }
 
 async function submitCreditCardSummary(
-  page: Page,
-  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
+  site: YuantaEbankSite,
+  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
 ): Promise<YuantaCreditCardSummaryTraversal> {
-  let link = await findYuantaCreditCardSummaryLink(page);
+  let link = await findYuantaCreditCardSummaryLink(site);
   let navigationRoute:
     | "visible-summary-link"
     | "feature-overview-visible-summary-link"
@@ -1200,9 +1023,9 @@ async function submitCreditCardSummary(
     ? "visible-summary-link"
     : "menuaction-fallback";
   if (!link) {
-    const openedFeatureOverview = await openYuantaFeatureOverview(page);
+    const openedFeatureOverview = await openYuantaFeatureOverview(site);
     if (openedFeatureOverview) {
-      link = await findYuantaCreditCardSummaryLink(page, 15_000);
+      link = await findYuantaCreditCardSummaryLink(site, 15_000);
       if (link) navigationRoute = "feature-overview-visible-summary-link";
       else
         throw new YuantaCreditSummaryNavigationError(
@@ -1218,13 +1041,18 @@ async function submitCreditCardSummary(
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
-    loaded = await loadYuantaCreditCardSummaryPage(page, link ?? undefined);
+    loaded = await loadYuantaCreditCardSummaryPage(site, link ?? undefined);
   } catch (error) {
-    if (error instanceof YuantaCreditSummaryNavigationError) throw error;
+    if (
+      error instanceof YuantaCreditSummaryNavigationError ||
+      error instanceof SourceTextIntegrityError ||
+      site.frames.signal.aborted
+    )
+      throw error;
     throw new YuantaCreditSummaryNavigationError("summary-page-not-ready");
   }
   return await traverseYuantaSummaryWithCurrentEvidence(
-    page,
+    site,
     loaded.firstHtml,
     loaded.evidence,
     options,
@@ -4726,114 +4554,86 @@ export function buildYuantaCanonicalCreditCardCaptures(
   return capture ? [capture] : [];
 }
 
-async function creditCardBillsFrame(page: Page): Promise<Frame> {
-  const preferred = page.frame({ name: "fmain" });
-  if (preferred) return preferred;
-  return page.mainFrame();
-}
-
-async function waitForCreditCardForm(frame: Frame): Promise<void> {
-  await frame.waitForSelector(
-    'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
-    { state: "attached", timeout: 120_000 },
+async function waitForCreditCardForm(
+  frames: FrameScope,
+  bills: BrowserScope,
+): Promise<void> {
+  await frames.race(
+    bills.waitForSelector(
+      'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
+      { state: "attached", timeout: 120_000 },
+    ),
   );
-}
-
-async function readCreditCardBillsHtmlFromFrameUrl(
-  frame: Frame,
-): Promise<string | null> {
-  const url = frame.url();
-  if (!url.includes("creditcardbillsquery")) return null;
-
-  const response = await frame.goto(url, { waitUntil: "domcontentloaded" });
-  if (!response)
-    throw new Error("YuanTa credit card bills page did not respond.");
-  return await response.text();
-}
-
-async function readCreditCardBillsHtmlFromCurrentUrl(
-  page: Page,
-): Promise<string | null> {
-  const preferred = page.frame({ name: "fmain" });
-  if (preferred) {
-    const html = await readCreditCardBillsHtmlFromFrameUrl(preferred);
-    if (html) return html;
-  }
-
-  for (const frame of page.frames()) {
-    if (frame === preferred) continue;
-    const html = await readCreditCardBillsHtmlFromFrameUrl(frame);
-    if (html) return html;
-  }
-
-  return null;
-}
-
-async function readCurrentCreditCardBillsHtml(page: Page): Promise<string> {
-  const currentHtml = await readCreditCardBillsHtmlFromCurrentUrl(page);
-  if (currentHtml) return currentHtml;
-
-  await openCreditCardBillsPage(page);
-  const openedHtml = await readCreditCardBillsHtmlFromCurrentUrl(page);
-  if (openedHtml) return openedHtml;
-
-  throw new Error("YuanTa credit card bills frame is not on the bills page.");
 }
 
 async function submitCreditCardMonth(
-  page: Page,
+  site: YuantaEbankSite,
+  bills: BrowserScope,
   month: MonthOption,
 ): Promise<string> {
-  const frame = await creditCardBillsFrame(page);
-  await waitForCreditCardForm(frame);
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response
-        .url()
-        .includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
-      response.request().method() === "POST",
-    { timeout: 120_000 },
-  );
-  await frame.evaluate((monthIndex) => {
-    const form = document.forms.namedItem("mform");
-    if (!form) throw new Error("YuanTa credit card form was not found.");
-    const field = form.elements.namedItem(
-      "cdHistoryQuery",
-    ) as HTMLInputElement | null;
-    if (!field)
-      throw new Error("YuanTa credit card form missed cdHistoryQuery.");
-    field.value = String(monthIndex);
-    form.action = "../tx/creditcardbillsquery?method=queryHistoryDetail";
-    form.submit();
-  }, month.index);
-
-  return await (await responsePromise).text();
+  const { frames } = site;
+  await waitForCreditCardForm(frames, bills);
+  const [response] = await Promise.all([
+    frames.race(
+      frames.page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
+          response.request().method() === "POST",
+        { timeout: 120_000 },
+      ),
+    ),
+    frames.race(
+      bills.evaluate((monthIndex) => {
+        const form = document.forms.namedItem("mform");
+        if (!form) throw new Error("YuanTa credit card form was not found.");
+        const field = form.elements.namedItem(
+          "cdHistoryQuery",
+        ) as HTMLInputElement | null;
+        if (!field)
+          throw new Error("YuanTa credit card form missed cdHistoryQuery.");
+        field.value = String(monthIndex);
+        form.action = "../tx/creditcardbillsquery?method=queryHistoryDetail";
+        form.submit();
+      }, month.index),
+    ),
+  ]);
+  return await site.readHtml(response);
 }
 
-async function submitCreditCardUnbilled(page: Page): Promise<string> {
-  const frame = await creditCardBillsFrame(page);
-  await waitForCreditCardForm(frame);
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes("/nib/tx/creditcardunbilled") &&
-      response.request().method() === "POST",
-    { timeout: 120_000 },
-  );
-  await frame.evaluate(() => {
-    const form = document.forms.namedItem("mform");
-    if (!form) throw new Error("YuanTa credit card form was not found.");
-    const set = (name: string, value: string) => {
-      const field = form.elements.namedItem(name) as HTMLInputElement | null;
-      if (field) field.value = value;
-    };
-    set("menutype", "creditcardunbilled");
-    set("iconid", "menu_creditcardunbilled");
-    set("cdHistoryQuery", "");
-    form.action = "../tx/creditcardunbilled";
-    form.submit();
-  });
-
-  return await (await responsePromise).text();
+async function submitCreditCardUnbilled(
+  site: YuantaEbankSite,
+  bills: BrowserScope,
+): Promise<string> {
+  const { frames } = site;
+  await waitForCreditCardForm(frames, bills);
+  const [response] = await Promise.all([
+    frames.race(
+      frames.page.waitForResponse(
+        (response) =>
+          response.url().includes("/nib/tx/creditcardunbilled") &&
+          response.request().method() === "POST",
+        { timeout: 120_000 },
+      ),
+    ),
+    frames.race(
+      bills.evaluate(() => {
+        const form = document.forms.namedItem("mform");
+        if (!form) throw new Error("YuanTa credit card form was not found.");
+        const set = (name: string, value: string) => {
+          const field = form.elements.namedItem(name) as HTMLInputElement | null;
+          if (field) field.value = value;
+        };
+        set("menutype", "creditcardunbilled");
+        set("iconid", "menu_creditcardunbilled");
+        set("cdHistoryQuery", "");
+        form.action = "../tx/creditcardunbilled";
+        form.submit();
+      }),
+    ),
+  ]);
+  return await site.readHtml(response);
 }
 
 export async function runYuantaCreditCardStatements(
@@ -4843,6 +4643,7 @@ export async function runYuantaCreditCardStatements(
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
+  const site = yuantaEbankSite(page, context);
   const log = (..._args: unknown[]): void => undefined;
   const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
 
@@ -4851,7 +4652,8 @@ export async function runYuantaCreditCardStatements(
     startedAt: new Date(pageReadyStartedAt).toISOString(),
   });
   await product.reportActivity("query");
-  const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+  const bills = await openCreditCardBillsPage(site);
+  const currentMonthHtml = bills.html;
   context.text.assertIntact(currentMonthHtml);
   context.signal.throwIfAborted();
   if (isCreditCardProductAbsentText(currentMonthHtml)) {
@@ -4895,7 +4697,7 @@ export async function runYuantaCreditCardStatements(
         startedAt: new Date(monthStartedAt).toISOString(),
       });
       await product.reportActivity("query");
-      return submitCreditCardMonth(page, month);
+      return submitCreditCardMonth(site, bills.scope, month);
     },
     async (month, monthHtml, monthPosition) => {
       context.signal.throwIfAborted();
@@ -4934,7 +4736,7 @@ export async function runYuantaCreditCardStatements(
       startedAt: new Date(unbilledStartedAt).toISOString(),
     });
     await product.reportActivity("query");
-    const unbilledHtml = await submitCreditCardUnbilled(page);
+    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope);
     context.text.assertIntact(unbilledHtml);
     context.signal.throwIfAborted();
     if (hasUntraversedPager(unbilledHtml)) {
@@ -4973,9 +4775,8 @@ export async function runYuantaCreditCardStatements(
     let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
     try {
       await product.reportActivity("query");
-      summaryTraversal = await submitCreditCardSummary(page, {
+      summaryTraversal = await submitCreditCardSummary(site, {
         sourceText: context.text,
-        signal: context.signal,
         silent: true,
       });
       context.text.assertIntact(JSON.stringify(summaryTraversal));

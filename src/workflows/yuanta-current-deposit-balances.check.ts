@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { after, before, test } from "node:test";
+import { chromium, type Browser } from "playwright";
 
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,
   YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS,
-  navigateYuantaCurrentDepositSummary,
   parseYuantaCurrentDepositBalanceSnapshot,
   parseYuantaCurrentDepositBalanceTable,
   readYuantaCurrentDepositBalances,
-  yuantaCurrentDepositSummaryUrl,
   type YuantaCurrentDepositResponseMetadata,
 } from "./yuanta-current-deposit-balances.ts";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 
 type Cell = {
   kind: "cell";
@@ -140,7 +142,7 @@ const domestic = parseYuantaCurrentDepositBalanceSnapshot({
 });
 
 assert.equal(domestic.length, 2);
-assert.equal(domestic[0]?.accountNumber, "0012345678901234");
+assert.equal(domestic[0]?.accountNumber, domesticRows[0][2]);
 assert.equal(domestic[0]?.currency, "TWD");
 assert.deepEqual(domestic[0]?.available, {
   coefficient: "102550",
@@ -231,8 +233,8 @@ assert.deepEqual(
     ledger: row.ledger.coefficient,
   })),
   [
-    { accountNumber: "0011223344556677", currency: "USD", available: "100025", ledger: "101075" },
-    { accountNumber: "9988776655443322", currency: "JPY", available: "2500", ledger: "2450" },
+    { accountNumber: foreignRows[0][3], currency: "USD", available: "100025", ledger: "101075" },
+    { accountNumber: foreignRows[1][3], currency: "JPY", available: "2500", ledger: "2450" },
   ],
 );
 assert.equal(foreign[0]?.providerHttpDate, "Tue, 08 Sep 2026 13:24:22 GMT");
@@ -385,341 +387,126 @@ assert.throws(
   /not an exact decimal/u,
 );
 
-// The all-statements run leaves fmain on a product page. The current reader
-// must restore the provider's observed summary route before looking for the
-// balance card; this fixture proves the route and cid propagation directly.
-const navigationCalls: Array<{
-  url: string;
-  waitUntil?: string;
-}> = [];
-const navigationFrame = {
-  url: () =>
-    "https://ebank.yuantabank.com.tw/nib/tx/fxtransactiondetails?type=page&cid=cid-fixture",
-  locator: (_selector: string) => ({
-    first: () => ({
-      count: async () => 0,
-      inputValue: async () => "",
-    }),
-  }),
-  goto: async (url: string, options: { waitUntil?: string }) => {
-    navigationCalls.push({ url, waitUntil: options.waitUntil });
-  },
+const CID = "synthetic-cid";
+const CANCELLED = new Error("synthetic cancellation");
+const balanceHeaders = {
+  date: "Tue, 08 Sep 2026 13:24:22 GMT",
+  "cache-control": "private, no-store",
 };
-const navigationPage = {
-  frame: ({ name }: { name: string }) =>
-    name === "fmain" ? navigationFrame : null,
-  frames: () => [navigationFrame],
-  locator: (selector: string) => navigationFrame.locator(selector),
-  url: () => "https://ebank.yuantabank.com.tw/nib/login.jsp",
-  waitForTimeout: async () => {},
-};
-assert.equal(
-  yuantaCurrentDepositSummaryUrl("cid-fixture"),
-  "https://ebank.yuantabank.com.tw/nib/tx/summary?type=page&cid=cid-fixture",
-);
-assert.equal(
-  await navigateYuantaCurrentDepositSummary(navigationPage as never),
-  true,
-);
-assert.deepEqual(navigationCalls, [
-  {
-    url: "https://ebank.yuantabank.com.tw/nib/tx/summary?type=page&cid=cid-fixture",
-    waitUntil: "domcontentloaded",
-  },
-]);
-assert.equal(
-  await navigateYuantaCurrentDepositSummary({
-    frame: () => null,
-    frames: () => [],
-    locator: (selector: string) => navigationFrame.locator(selector),
-    url: () => "https://ebank.yuantabank.com.tw/nib/login.jsp",
-    waitForTimeout: async () => {},
-  } as never),
-  false,
-);
+const htmlRow = (tag: "th" | "td", values: readonly string[]) =>
+  `<tr>${values.map((value) => `<${tag}>${value}</${tag}>`).join("")}</tr>`;
+const balanceTables = {
+  domestic: `<table class="normalTable botM2">${htmlRow("th", YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS)}${htmlRow("td", domesticRows[0])}${htmlRow("th", ["筆數:1筆", "總計(臺幣TWD):1,025.50"])}</table>`,
+  foreign: `<table class="normalTable">${htmlRow("th", YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS)}${htmlRow("td", ["臺北分行", "外幣活期", "USD", "0011223344556677", "1,000.25", "1,010.75", "31.2", "31,200"])}</table>`,
+} as const;
+// The FX card is hidden until its summary tab is clicked, and carries a hidden
+// 活期明細 link that must never be clicked.
+const SUMMARY_PAGE = `<form name="tw" method="post" action="/nib/tx/finance_overview_for_summary"><input type="hidden" name="kind" value="domestic"></form>
+<form name="fx" method="post" action="/nib/tx/finance_overview_for_summary"><input type="hidden" name="kind" value="foreign"></form>
+<section><h2>目前臺幣存款總額</h2><a href="#" onclick="document.forms.tw.submit(); return false;">活期明細</a></section>
+<a id="submenuAreaFX" href="#" onclick="parent.tabClicks = (parent.tabClicks ?? 0) + 1; document.getElementById('fx').style.display = ''; return false;">外幣</a>
+<section id="fx" style="display: none"><h2>目前外幣存款總額</h2>
+  <a href="#" style="display: none" onclick="parent.hiddenClicked = true; return false;">活期明細</a>
+  <a href="#" onclick="document.forms.fx.submit(); return false;">活期明細</a>
+</section>`;
 
-type ReaderLinkNode = {
-  kind: "reader-link";
-  text: string;
-  visible: boolean;
-  onClick: () => void;
-};
-type ReaderTabNode = {
-  kind: "reader-tab";
-  visible: boolean;
-  onClick: () => void;
-};
-type ReaderContainerNode = {
-  kind: "reader-container";
-  links: ReaderLinkNode[];
-  parent?: ReaderHeadingNode;
-};
-type ReaderHeadingNode = {
-  kind: "reader-heading";
-  text: string;
-  parent: ReaderContainerNode;
-};
-type ReaderTableNode = {
-  kind: "reader-table";
-  className: string;
-  rows: Row[];
-};
-type ReaderNode =
-  | ReaderLinkNode
-  | ReaderTabNode
-  | ReaderContainerNode
-  | ReaderHeadingNode
-  | ReaderTableNode
-  | Row
-  | Cell;
+let browser: Browser;
+before(async () => {
+  browser = await chromium.launch({ headless: true });
+});
+after(async () => {
+  await browser.close();
+});
 
-class ReaderPageFixture {
-  tableReady = false;
-  summaryTabClicks = 0;
-  clickedLink: string | null = null;
-  private responseResolver: ((response: object) => void) | null = null;
-  readonly response = {
-    url: () => `https://ebank.yuantabank.com.tw${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
-    status: () => 200,
-    request: () => ({ method: () => "POST" }),
-    allHeaders: async () => ({
-      date: "Tue, 08 Sep 2026 13:24:22 GMT",
-      "cache-control": "private, no-store",
-    }),
-  };
-  readonly foreignFrame = new ReaderFrameFixture(this);
-
-  constructor() {
-    const hiddenLink: ReaderLinkNode = {
-      kind: "reader-link",
-      text: "活期明細",
-      visible: false,
-      onClick: () => {
-        throw new Error("The hidden foreign-currency link must not be clicked.");
-      },
-    };
-    const visibleLink: ReaderLinkNode = {
-      kind: "reader-link",
-      text: "活期明細",
-      visible: true,
-      onClick: () => {
-        this.clickedLink = "visible";
-        this.tableReady = true;
-        this.responseResolver?.(this.response);
-      },
-    };
-    const container: ReaderContainerNode = {
-      kind: "reader-container",
-      links: [hiddenLink, visibleLink],
-    };
-    const heading: ReaderHeadingNode = {
-      kind: "reader-heading",
-      text: "目前外幣存款總額",
-      parent: container,
-    };
-    container.parent = heading;
-    this.foreignFrame.nodes = [
-      {
-        kind: "reader-tab",
-        visible: true,
-        onClick: () => {
-          this.summaryTabClicks += 1;
-        },
-      },
-      heading,
-      tableReaderNode([
-        header(YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS),
-        data(["臺北分行", "外幣活期", "USD", "0011223344556677", "1,000.25", "1,010.75", "31.2", "31,200"]),
-      ]),
-    ];
-  }
-
-  frames(): ReaderFrameFixture[] {
-    return [this.foreignFrame];
-  }
-
-  frame({ name }: { name: string }): ReaderFrameFixture | null {
-    return name === "fmain" ? this.foreignFrame : null;
-  }
-
-  locator(_selector: string): ReaderLocator {
-    return new ReaderLocator([], this);
-  }
-
-  url(): string {
-    return "https://ebank.yuantabank.com.tw/nib/login.jsp";
-  }
-
-  async waitForTimeout(): Promise<void> {}
-
-  waitForResponse(
-    _predicate: unknown,
-    _options?: unknown,
-  ): Promise<object> {
-    return new Promise((resolve) => {
-      this.responseResolver = resolve;
+/**
+ * Read balances from a synthetic fmenu/fmain frameset whose fmain was left on
+ * a product page, as the statement runs leave it.
+ */
+async function readThroughShell(
+  kind: "domestic" | "foreign",
+  options: Readonly<{ cid?: boolean; signal?: AbortSignal; holdBalance?: () => void }> = {},
+) {
+  const page = await browser.newPage();
+  const served: string[] = [];
+  const cid = options.cid ?? true;
+  const query = cid ? `?type=page&cid=${CID}` : "";
+  try {
+    await page.route(`${YUANTA_EBANK_ORIGIN}/**`, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      served.push(`${request.method()} ${url.pathname}${url.search}`);
+      const html = (body: string) => route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      switch (url.pathname) {
+        case "/nib/shell.jsp":
+          return await html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/fxtransactiondetails${query}"></iframe>`);
+        case "/nib/tx/summary":
+          return await html(SUMMARY_PAGE);
+        case YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH: {
+          if (options.holdBalance) {
+            options.holdBalance();
+            return;
+          }
+          const posted = new URLSearchParams(request.postData() ?? "").get("kind");
+          return await route.fulfill({
+            contentType: "text/html; charset=utf-8",
+            headers: balanceHeaders,
+            body: posted === "foreign" ? balanceTables.foreign : balanceTables.domestic,
+          });
+        }
+        default:
+          return await html(`<p>${url.pathname}</p>`);
+      }
     });
+    await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp${query}`, { waitUntil: "load" });
+    const site = yuantaEbankSite(page, {
+      signal: options.signal ?? new AbortController().signal,
+      text: strictSourceText,
+    });
+    const rows = await readYuantaCurrentDepositBalances(site, kind, { observedAt, timeoutMs: 5_000 });
+    const clicks = await page.evaluate(() => ({
+      tab: (window as { tabClicks?: number }).tabClicks ?? 0,
+      hidden: (window as { hiddenClicked?: boolean }).hiddenClicked ?? false,
+    }));
+    return { rows, served, clicks };
+  } finally {
+    await page.close();
   }
 }
 
-class ReaderFrameFixture {
-  nodes: ReaderNode[] = [];
-  private readonly page: ReaderPageFixture;
+test("the foreign reader reopens the summary with the session's cid, reveals the FX tab and reads the posted table", async () => {
+  const { rows, served, clicks } = await readThroughShell("foreign");
+  assert.ok(served.includes(`GET /nib/tx/summary?type=page&cid=${CID}`), "fmain is sent back to the summary route");
+  assert.deepEqual(clicks, { tab: 1, hidden: false }, "the FX tab is clicked once and the hidden link never");
+  assert.ok(served.includes(`POST ${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`));
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.accountNumber, row.currency, row.ledger.sourceLexeme, row.providerHttpDate]),
+    [["foreign", "0011223344556677", "USD", "1,010.75", balanceHeaders.date]],
+    "the balances and HTTP Date come from the observed POST response",
+  );
+});
 
-  constructor(page: ReaderPageFixture) {
-    this.page = page;
-  }
+test("the domestic reader opens the summary without a cid when the session carries none", async () => {
+  const { rows, served, clicks } = await readThroughShell("domestic", { cid: false });
+  assert.ok(served.includes("GET /nib/tx/summary"), "the summary route is opened without a query");
+  assert.equal(clicks.tab, 0, "the domestic card is not behind the FX tab");
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.accountNumber, row.available.sourceLexeme, row.effectiveAt]),
+    [["domestic", "0012345678901234", "1,025.50", "2026-09-08T13:24:22.000Z"]],
+    "the footer totals row is not a balance",
+  );
+});
 
-  locator(selector: string): ReaderLocator {
-    if (selector === 'input[name="cid"]') {
-      return new ReaderLocator([], this.page);
-    }
-    if (selector === "#submenuAreaFX") {
-      return new ReaderLocator(
-        this.nodes.filter((node) => node.kind === "reader-tab"),
-        this.page,
-      );
-    }
-    if (selector.startsWith("table.normalTable")) {
-      return new ReaderLocator(
-        this.page.tableReady
-          ? this.nodes.filter((node) => node.kind === "reader-table")
-          : [],
-        this.page,
-      );
-    }
-    if (selector.includes("h1") && selector.includes("[role='heading']")) {
-      return new ReaderLocator(
-        this.nodes.filter((node) => node.kind === "reader-heading"),
-        this.page,
-      );
-    }
-    return new ReaderLocator([], this.page);
-  }
-
-  url(): string {
-    return "https://ebank.yuantabank.com.tw/nib/tx/fxtransactiondetails?cid=fixture";
-  }
-}
-
-class ReaderLocator {
-  private readonly nodes: readonly ReaderNode[];
-  private readonly page: ReaderPageFixture;
-
-  constructor(
-    nodes: readonly ReaderNode[],
-    page: ReaderPageFixture,
-  ) {
-    this.nodes = nodes;
-    this.page = page;
-  }
-
-  locator(selector: string): ReaderLocator {
-    const descendants: ReaderNode[] = [];
-    for (const node of this.nodes) {
-      if (node.kind === "reader-heading") {
-        if (selector === "xpath=..") descendants.push(node.parent);
-        continue;
-      }
-      if (node.kind === "reader-container") {
-        if (selector === "a") descendants.push(...node.links);
-        continue;
-      }
-      if (node.kind === "reader-table" && selector === "tr") {
-        descendants.push(...node.rows);
-        continue;
-      }
-      if (node.kind !== "row") continue;
-      if (selector === "table") continue;
-      const cells = node.cells.filter((cell) => {
-        if (selector === "th, td") return true;
-        if (selector === "th") return cell.tag === "th";
-        if (selector === "td") return cell.tag === "td";
-        return false;
-      });
-      descendants.push(...cells);
-    }
-    return new ReaderLocator(descendants, this.page);
-  }
-
-  filter(options: { hasText: string | RegExp }): ReaderLocator {
-    const pattern = options.hasText;
-    return new ReaderLocator(
-      this.nodes.filter((node) => {
-        const text =
-          node.kind === "reader-link" || node.kind === "reader-heading"
-            ? node.text
-            : "";
-        return typeof pattern === "string" ? text.includes(pattern) : pattern.test(text);
-      }),
-      this.page,
-    );
-  }
-
-  nth(index: number): ReaderLocator {
-    return new ReaderLocator(this.nodes[index] ? [this.nodes[index]!] : [], this.page);
-  }
-
-  first(): ReaderLocator {
-    return this.nth(0);
-  }
-
-  async count(): Promise<number> {
-    return this.nodes.length;
-  }
-
-  async isVisible(): Promise<boolean> {
-    const node = this.nodes[0];
-    return node?.kind === "reader-link" || node?.kind === "reader-tab"
-      ? node.visible
-      : false;
-  }
-
-  async click(): Promise<void> {
-    const node = this.nodes[0];
-    if (node?.kind === "reader-link" || node?.kind === "reader-tab") {
-      node.onClick();
-    }
-  }
-
-  async innerText(): Promise<string> {
-    const node = this.nodes[0];
-    if (node?.kind === "cell") return node.text;
-    throw new Error("Reader fixture innerText is only defined for cells.");
-  }
-
-  async getAttribute(name: string): Promise<string | null> {
-    const node = this.nodes[0];
-    if (node?.kind === "reader-table" && name === "class") return node.className;
-    if (node?.kind === "cell" && name === "class") return node.className ?? null;
-    return null;
-  }
-}
-
-function tableReaderNode(rows: Row[]): ReaderTableNode {
-  return { kind: "reader-table", className: "normalTable", rows };
-}
-
-const readerPage = new ReaderPageFixture();
-const readerRows = await readYuantaCurrentDepositBalances(
-  readerPage as never,
-  "foreign",
-  { observedAt, timeoutMs: 2_000 },
-);
-assert.equal(readerPage.summaryTabClicks, 1);
-assert.equal(readerPage.clickedLink, "visible");
-assert.deepEqual(
-  readerRows.map((row) => ({ accountNumber: row.accountNumber, currency: row.currency })),
-  [{ accountNumber: "0011223344556677", currency: "USD" }],
-);
+test("cancelling the run interrupts the balance response wait", async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  await assert.rejects(
+    readThroughShell("domestic", { signal: controller.signal, holdBalance: () => controller.abort(CANCELLED) }),
+    (error: unknown) => error === CANCELLED,
+  );
+  assert.ok(Date.now() - started < 4_000, "the reader does not wait out its 5 s response timeout");
+});
 
 const source = await readFile(new URL("./yuanta-current-deposit-balances.ts", import.meta.url), "utf8");
-assert.match(source, /waitForResponse/);
-assert.match(source, /\/nib\/tx\/summary/u);
-assert.match(source, /page\.frame\(\{ name: "fmain" \}\)/u);
-assert.match(source, /目前臺幣存款總額/u);
-assert.match(source, /目前外幣存款總額/u);
-assert.match(source, /isVisible()/u);
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
 assert.doesNotMatch(source, /click\(\{\s*force:/u);
 

@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { after, before, test } from "node:test";
+import { chromium, type Browser, type Page } from "playwright";
+
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 
 import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   FUBON_CURRENT_DEPOSIT_HEADERS,
   parseFubonCurrentDepositBalanceSnapshot,
   parseFubonCurrentDepositBalanceTable,
-  waitForFubonCurrentDepositHeader,
+  readFubonCurrentDepositBalances,
   type FubonCurrentDepositResponseMetadata,
 } from "./fubon-current-deposit-balances.ts";
 
@@ -243,30 +248,6 @@ await assert.rejects(
   /headers are not recognized/u,
 );
 
-let headerProbeCount = 0;
-let sleepCount = 0;
-assert.equal(
-  await waitForFubonCurrentDepositHeader(
-    async () => {
-      headerProbeCount += 1;
-      return headerProbeCount === 3;
-    },
-    1_000,
-    async () => {
-      sleepCount += 1;
-    },
-  ),
-  true,
-);
-assert.equal(headerProbeCount, 3);
-assert.equal(sleepCount, 2);
-assert.equal(
-  await waitForFubonCurrentDepositHeader(async () => false, 0, async () => {
-    throw new Error("a timed-out header poll must not sleep");
-  }),
-  false,
-);
-
 const wrongVisibleWidth = tableLocator([
   header(FUBON_CURRENT_DEPOSIT_HEADERS),
   data([...visibleRows[0], "overlong-visible"], hiddenRows[0]),
@@ -414,15 +395,118 @@ assert.throws(
 );
 
 const source = await readFile(new URL("./fubon-current-deposit-balances.ts", import.meta.url), "utf8");
-assert.match(source, /waitForResponse/);
-assert.match(source, /存款交易查詢/u);
-assert.match(source, /我的存款/u);
-assert.match(source, /td:not\(\.hide\)/u);
-assert.match(source, /tableHasCurrentDepositHeader/u);
-assert.match(source, /FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS/u);
-assert.match(source, /waitForFubonCurrentDepositHeader/u);
 assert.doesNotMatch(source, /DEBUG-fubon-v27/u);
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
 assert.doesNotMatch(source, /click\(\{\s*force:/u);
+
+
+const ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
+const PROVIDER_DATE = "Tue, 08 Sep 2026 13:40:10 GMT";
+const cells = (values: readonly string[], tag: "th" | "td") =>
+  values.map((value) => `<${tag}>${value}</${tag}>`).join("");
+const HEADER_ROW = `<tr>${cells(FUBON_CURRENT_DEPOSIT_HEADERS, "th")}</tr>`;
+const DATA_ROWS = visibleRows
+  .map((row, index) =>
+    `<tr>${cells(row, "td")}${hiddenRows[index]!.map((value) => `<td class="hide" style="display:none">${value}</td>`).join("")}</tr>`)
+  .join("");
+
+let browser: Browser;
+before(async () => {
+  browser = await chromium.launch({ headless: true });
+});
+after(async () => {
+  await browser.close();
+});
+
+type Shell = Readonly<{ headerRowDelayMs?: number; balanceHangs?: boolean }>;
+
+/**
+ * frame1 holds 存款交易查詢, which only a real pointer click opens, and that
+ * reveals 我的存款, which loads the balance page into txnFrame.
+ */
+async function withDepositShell(
+  options: Shell,
+  body: (page: Page, requested: string[]) => Promise<void>,
+): Promise<void> {
+  const page = await browser.newPage();
+  const requested: string[] = [];
+  try {
+    await page.route(`${ORIGIN}/**`, async (route) => {
+      const { pathname } = new URL(route.request().url());
+      requested.push(pathname);
+      const html = (content: string, headers: Record<string, string> = {}) =>
+        route.fulfill({ contentType: "text/html; charset=utf-8", headers, body: content });
+      switch (pathname) {
+        case "/B2C/common/Index.faces":
+          return await html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`);
+        case "/B2C/header.faces":
+          return await html(`<a id="menu_CDS" href="javascript:void(0)">存款交易查詢</a><div id="cds"></div>
+            <script>
+              document.getElementById("menu_CDS").addEventListener("click", (event) => {
+                if (!event.isTrusted) return;
+                document.getElementById("cds").innerHTML =
+                  '<a class="task_CBOQU003 menu_CDS0102" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href=\\'${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}\\'">我的存款</a>';
+              });
+            </script>`);
+        case "/B2C/home.faces":
+          return await html(`<p>首頁</p>`);
+        case FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH: {
+          if (options.balanceHangs) return;
+          const rows = options.headerRowDelayMs === undefined
+            ? `${HEADER_ROW}${DATA_ROWS}`
+            : DATA_ROWS;
+          const lateHeader = options.headerRowDelayMs === undefined
+            ? ""
+            : `<script>setTimeout(() => document.querySelector("tbody").insertAdjacentHTML("afterbegin", ${JSON.stringify(HEADER_ROW)}), ${options.headerRowDelayMs});</script>`;
+          return await html(
+            `<table id="form1:resultGrid_DataGridBody" class="tb_bkBody m10"><tbody>${rows}</tbody></table>${lateHeader}`,
+            { date: PROVIDER_DATE, "cache-control": "no-store, no-cache" },
+          );
+        }
+        default:
+          return await html(`<p>${pathname}</p>`);
+      }
+    });
+    await page.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+    await body(page, requested);
+  } finally {
+    await page.close();
+  }
+}
+
+const siteFor = (page: Page, signal = new AbortController().signal) =>
+  fubonEbankSite(page, { signal, text: strictSourceText });
+
+test("the balance page is reached through 存款交易查詢 and 我的存款, and its response is the evidence", () =>
+  withDepositShell({}, async (page, requested) => {
+    const rows = await readFubonCurrentDepositBalances(siteFor(page), { observedAt, timeoutMs: 10_000 });
+    assert.deepEqual(rows.map((row) => [row.accountNumber, row.currency, row.instantBalance.sourceLexeme]), [
+      ["00123456789012", "TWD", "0"],
+      ["98765432109876", "USD", "2,000.00"],
+    ]);
+    assert.equal(rows[0]?.providerHttpDate, PROVIDER_DATE);
+    assert.equal(rows[0]?.sourceEvidence.cacheControl, "no-store, no-cache");
+    assert.equal(requested.filter((path) => path === FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH).length, 1);
+  }));
+
+test("a header row that renders after the table is waited for before the table is parsed", () =>
+  withDepositShell({ headerRowDelayMs: 600 }, async (page) => {
+    const rows = await readFubonCurrentDepositBalances(siteFor(page), { observedAt, timeoutMs: 10_000 });
+    assert.equal(rows.length, 2);
+  }));
+
+test("a run cancelled while the bank holds the balance response rejects with its reason", () =>
+  withDepositShell({ balanceHangs: true }, async (page, requested) => {
+    const controller = new AbortController();
+    const cancelled = new Error("synthetic cancellation");
+    const read = readFubonCurrentDepositBalances(siteFor(page, controller.signal), { observedAt });
+    const startedAt = Date.now();
+    while (!requested.includes(FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH)) {
+      assert.ok(Date.now() - startedAt < 10_000, "the balance page was never requested");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    controller.abort(cancelled);
+    await assert.rejects(read, (error) => error === cancelled);
+  }));
 
 console.log("fubon-current-deposit-balances.check passed");

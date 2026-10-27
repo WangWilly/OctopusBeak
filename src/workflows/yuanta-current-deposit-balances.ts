@@ -1,10 +1,12 @@
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Locator, Response } from "playwright";
 
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
+import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
 
 /**
  * Yuanta's current deposit summary is a source snapshot.  It is reached from
- * the authenticated home page by clicking the matching `活期明細` link and
+ * the authenticated summary page by clicking the matching `活期明細` link and
  * causes this POST to be rendered in the fmain frame.
  */
 export const YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
@@ -14,8 +16,6 @@ export const YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
   "yuanta/current-deposit-balance-v1" as const;
 export const YUANTA_CURRENT_DEPOSIT_BALANCE_HOST =
   "ebank.yuantabank.com.tw" as const;
-/** Authenticated summary route observed before product-specific pages. */
-export const YUANTA_CURRENT_DEPOSIT_SUMMARY_PATH = "/nib/tx/summary" as const;
 
 export const YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS = [
   "產品名稱",
@@ -102,8 +102,6 @@ export type YuantaCurrentDepositSnapshotInput = Readonly<{
   observedAt: string;
   financialAuthority?: YuantaCurrentDepositFinancialAuthority;
 }>;
-
-type BrowserScope = Page | Frame;
 
 const SUMMARY_HEADING: Record<YuantaCurrentDepositKind, string> = {
   domestic: "目前臺幣存款總額",
@@ -284,90 +282,6 @@ function expectedStream(
     : "foreign-currency-deposit";
 }
 
-function cidFromUrl(url: string): string | null {
-  try {
-    const value = new URL(url).searchParams.get("cid");
-    return value?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-async function currentYuantaCid(page: Page): Promise<string | null> {
-  for (const scope of [page, ...page.frames()]) {
-    const field = scope.locator('input[name="cid"]').first();
-    const count = await field.count().catch(() => 0);
-    if (count === 0) continue;
-    const value = await field.inputValue().catch(() => "");
-    if (value.trim()) return value.trim();
-  }
-  for (const frame of page.frames()) {
-    const cid = cidFromUrl(frame.url());
-    if (cid) return cid;
-  }
-  return cidFromUrl(page.url());
-}
-
-/**
- * Build the provider route used to restore the authenticated summary shell.
- * The current session may retain a cid in the frame URL; when it does not,
- * the provider still accepts the session-bound route without a query string.
- */
-export function yuantaCurrentDepositSummaryUrl(cid?: string | null): string {
-  const url = new URL(
-    YUANTA_CURRENT_DEPOSIT_SUMMARY_PATH,
-    `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}`,
-  );
-  if (cid) {
-    url.searchParams.set("type", "page");
-    url.searchParams.set("cid", cid);
-  }
-  return url.toString();
-}
-
-/**
- * Return the authenticated fmain frame to Yuanta's summary route. This is a
- * navigation helper only: it does not submit or replay the balance POST.
- */
-export async function navigateYuantaCurrentDepositSummary(
-  page: Page,
-): Promise<boolean> {
-  const fmain = page.frame({ name: "fmain" });
-  if (!fmain) return false;
-  await fmain.goto(yuantaCurrentDepositSummaryUrl(await currentYuantaCid(page)), {
-    waitUntil: "domcontentloaded",
-  });
-  await page.waitForTimeout(750);
-  return true;
-}
-
-/**
- * The FX card is behind the provider's foreign-currency summary tab. The tab
- * can be present in more than one frame while the summary shell settles, so
- * reveal the first visible control before inspecting the card links.
- */
-async function revealYuantaForeignSummaryTab(
-  page: Page,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const tabs = scope.locator("#submenuAreaFX");
-      const count = await tabs.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const tab = tabs.nth(index);
-        if (!(await tab.isVisible().catch(() => false))) continue;
-        await tab.click();
-        await page.waitForTimeout(250);
-        return true;
-      }
-    }
-    await page.waitForTimeout(250);
-  }
-  return false;
-}
-
 /**
  * Parse table data after the DOM reader has identified the exact provider
  * header. Footer totals are intentionally outside this input and therefore
@@ -516,77 +430,69 @@ export async function parseYuantaCurrentDepositBalanceTable(
   return parseYuantaCurrentDepositBalanceSnapshot({ ...input, rows: dataRows });
 }
 
-async function findScopeWithSummaryLink(
-  page: Page,
-  kind: YuantaCurrentDepositKind,
-  timeoutMs: number,
-): Promise<{ scope: BrowserScope; link: Locator }> {
-  const headingText = SUMMARY_HEADING[kind];
-  const findLink = async (): Promise<
-    { scope: BrowserScope; link: Locator } | null
-  > => {
-    for (const scope of [page, ...page.frames()]) {
-      const headings = scope
-        .locator("h1, h2, h3, h4, h5, h6, [role='heading']")
-        .filter({ hasText: new RegExp(`^\\s*${headingText}\\s*$`, "u") });
-      const headingCount = await headings.count().catch(() => 0);
-      for (let index = 0; index < headingCount; index += 1) {
-        let container = headings.nth(index);
-        for (let depth = 0; depth < 6; depth += 1) {
-          const links = container
-            .locator("a")
-            .filter({ hasText: /^\s*活期明細\s*$/u });
-          const linkCount = await links.count().catch(() => 0);
-          for (let linkIndex = 0; linkIndex < linkCount; linkIndex += 1) {
-            const link = links.nth(linkIndex);
-            if (await link.isVisible().catch(() => false)) {
-              return { scope, link };
-            }
-          }
-          container = container.locator("xpath=..");
-        }
-      }
-    }
-    return null;
-  };
+const FOREIGN_SUMMARY_TAB = "#submenuAreaFX";
 
-  if (kind === "foreign") {
-    await revealYuantaForeignSummaryTab(page, Math.min(timeoutMs, 5_000));
+async function firstVisibleIn(locator: Locator): Promise<Locator | null> {
+  const count = await locator.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (await candidate.isVisible().catch(() => false)) return candidate;
   }
-  const existing = await findLink();
-  if (existing) return existing;
-
-  // The all-statements run leaves fmain on the last product page. Restore the
-  // authenticated summary route once before polling for the product card.
-  await navigateYuantaCurrentDepositSummary(page).catch(() => false);
-  if (kind === "foreign") {
-    await revealYuantaForeignSummaryTab(page, Math.min(timeoutMs, 5_000));
-  }
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const match = await findLink();
-    if (match) return match;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Could not find Yuanta ${kind} current deposit details link.`);
+  return null;
 }
 
-async function findCurrentDepositTable(
-  page: Page,
+/** The visible `活期明細` link on this kind's summary card, searched up from its heading. */
+async function summaryDetailsLink(
+  scope: BrowserScope,
+  kind: YuantaCurrentDepositKind,
+): Promise<Locator | null> {
+  const headings = scope
+    .locator("h1, h2, h3, h4, h5, h6, [role='heading']")
+    .filter({ hasText: new RegExp(`^\\s*${SUMMARY_HEADING[kind]}\\s*$`, "u") });
+  const headingCount = await headings.count().catch(() => 0);
+  for (let index = 0; index < headingCount; index += 1) {
+    let container = headings.nth(index);
+    for (let depth = 0; depth < 6; depth += 1) {
+      const link = await firstVisibleIn(
+        container.locator("a").filter({ hasText: /^\s*活期明細\s*$/u }),
+      );
+      if (link) return link;
+      container = container.locator("xpath=..");
+    }
+  }
+  return null;
+}
+
+/**
+ * The authenticated summary page, reached with or without a cid. The FX card
+ * is behind the foreign-currency summary tab, so the foreign summary is ready
+ * once its tab or its details link shows.
+ */
+function currentDepositSummaryRoute(kind: YuantaCurrentDepositKind): YuantaRoute {
+  return {
+    path: "summary",
+    description: `the Yuanta ${kind} current deposit summary`,
+    cid: "optional",
+    ready: async (scope) =>
+      (await summaryDetailsLink(scope, kind)) !== null ||
+      (kind === "foreign" && (await firstVisibleIn(scope.locator(FOREIGN_SUMMARY_TAB))) !== null),
+  };
+}
+
+function findCurrentDepositTable(
+  frames: FrameScope,
   kind: YuantaCurrentDepositKind,
   timeoutMs: number,
 ): Promise<Locator> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+  const expected = expectedHeaders(kind);
+  return frames.until(async () => {
+    for (const scope of frames.scopes()) {
       const tables = scope.locator("table.normalTable");
       const count = await tables.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
         const table = tables.nth(index);
         const classes = await tableClass(table).catch(() => new Set<string>());
         if (kind === "domestic" && !classes.has("botM2")) continue;
-        const expected = expectedHeaders(kind);
         const rows = table.locator("tr");
         const rowCount = await rows.count().catch(() => 0);
         for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
@@ -602,9 +508,8 @@ async function findCurrentDepositTable(
         }
       }
     }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Could not find Yuanta ${kind} current deposit table.`);
+    return null;
+  }, `Could not find Yuanta ${kind} current deposit table.`, { timeoutMs });
 }
 
 function responseMatches(
@@ -624,12 +529,12 @@ function responseMatches(
 }
 
 /**
- * Navigate from the authenticated home-page summary card and parse the
- * resulting current-state table. The response is observed through Playwright
- * only; this function never fetches or replays the provider request.
+ * Open the authenticated summary page, follow the kind's summary card and
+ * parse the resulting current-state table. The response is observed through
+ * Playwright only; this function never fetches or replays the provider request.
  */
 export async function readYuantaCurrentDepositBalances(
-  page: Page,
+  site: YuantaEbankSite,
   kind: YuantaCurrentDepositKind,
   input: Readonly<{
     observedAt: string;
@@ -638,13 +543,31 @@ export async function readYuantaCurrentDepositBalances(
   }>,
 ): Promise<readonly YuantaCurrentDepositBalanceRow[]> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const { link } = await findScopeWithSummaryLink(page, kind, timeoutMs);
-  const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
-  await link.click();
-  const response = await responsePromise;
-  const headers = await response.allHeaders();
-  const table = await findCurrentDepositTable(page, kind, timeoutMs);
-  return parseYuantaCurrentDepositBalanceTable(table, {
+  const { frames } = site;
+  // The run leaves fmain on the last product page; the summary route brings back the cards.
+  await site.open(currentDepositSummaryRoute(kind));
+  if (kind === "foreign") {
+    const tab = await ifFound(frames.firstVisible(
+      (scope) => scope.locator(FOREIGN_SUMMARY_TAB),
+      "Yuanta foreign-currency summary tab",
+      { timeoutMs: Math.min(timeoutMs, 5_000) },
+    ));
+    if (tab) await frames.race(tab.click());
+  }
+  const link = await frames.until(async () => {
+    for (const scope of frames.scopes()) {
+      const found = await summaryDetailsLink(scope, kind);
+      if (found) return found;
+    }
+    return null;
+  }, `Could not find Yuanta ${kind} current deposit details link.`, { timeoutMs });
+  const [response] = await Promise.all([
+    frames.race(frames.page.waitForResponse(responseMatches, { timeout: timeoutMs })),
+    frames.race(link.click()),
+  ]);
+  const headers = await frames.race(response.allHeaders());
+  const table = await findCurrentDepositTable(frames, kind, timeoutMs);
+  return await frames.race(parseYuantaCurrentDepositBalanceTable(table, {
     kind,
     observedAt: input.observedAt,
     financialAuthority: input.financialAuthority,
@@ -654,5 +577,5 @@ export async function readYuantaCurrentDepositBalances(
       method: response.request().method(),
       headers,
     },
-  });
+  }));
 }

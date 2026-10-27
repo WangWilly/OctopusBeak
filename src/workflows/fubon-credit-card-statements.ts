@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Frame, Locator, Page, Response } from "playwright";
+import { errors, type Locator, type Page, type Response } from "playwright";
 import { z } from "zod";
 import {
   creditCardBalanceCommandRequest,
@@ -49,22 +49,15 @@ import {
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
-import {
-  activateControlWithoutPointer,
-  hasAttachedLocator,
-} from "./browser-interaction.ts";
+import { hasAttachedLocator } from "./browser-interaction.ts";
+import type { BrowserScope } from "./frame-scope.ts";
+import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
-
-const BANK_ENTRY_URL =
-  "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
-
-export type FubonBrowserScope = Page | Frame;
-type BrowserScope = FubonBrowserScope;
 
 export type FubonStatementPeriodProbe = {
   periodOffset: number;
   status: "available" | "no-record" | "temporarily-unavailable";
-  scope: FubonBrowserScope;
+  scope: BrowserScope;
 };
 
 type CsvRow = Record<string, string>;
@@ -338,117 +331,6 @@ function paymentStatusFromRows(
   };
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame "${name}".`);
-}
-
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const locator = scope.locator(selector).first();
-      if (await hasAttachedLocator(locator)) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`Could not find selector "${selector}" in any frame.`);
-}
-
-async function waitForNoVisibleBankMask(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let hasVisibleMask = false;
-    for (const scope of [page, ...page.frames()]) {
-      const masks = scope.locator("div._mask, ._mask");
-      const count = await masks.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        if (
-          await masks
-            .nth(index)
-            .isVisible()
-            .catch(() => false)
-        ) {
-          hasVisibleMask = true;
-          break;
-        }
-      }
-      if (hasVisibleMask) break;
-    }
-
-    if (!hasVisibleMask) return;
-    await page.waitForTimeout(250);
-  }
-
-  throw new Error("Timed out waiting for the bank loading mask to clear.");
-}
-
-async function clickLinkByClassOrText(
-  page: Page,
-  classSelector: string,
-  text: string,
-  timeoutMs = 60_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const classLink = scope.locator(`a.${classSelector}`).first();
-      const textLink = scope.locator("a").filter({ hasText: text }).first();
-
-      for (const link of [classLink, textLink]) {
-        if (!(await hasAttachedLocator(link))) continue;
-
-        const href = await link.getAttribute("href");
-        if (href && href !== "#" && !href.startsWith("javascript:")) {
-          await scope.goto(new URL(href, BANK_ENTRY_URL).toString(), {
-            waitUntil: "domcontentloaded",
-          });
-        } else {
-          await activateControlWithoutPointer(link);
-        }
-        return;
-      }
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find link "${text}".`);
-}
-
-async function openCreditCardFunctionPage(
-  page: Page,
-  classSelector: string,
-  text: string,
-): Promise<void> {
-  try {
-    await clickLinkByClassOrText(page, classSelector, text, 5_000);
-    return;
-  } catch {
-    // The combined workflow may be sitting in another product area after login.
-  }
-
-  const headerFrame = await waitForFrame(page, "frame1");
-  await activateControlWithoutPointer(headerFrame.locator("#menu_CCC"));
-  await clickLinkByClassOrText(page, classSelector, text);
-}
-
 function fubonEndpointDiagnostic(response: Response | null): Pick<
   FubonCurrentUsedCreditDiagnostic,
   | "responseMatched"
@@ -554,34 +436,70 @@ function fubonCurrentCreditDiagnostic(
   };
 }
 
+/** A task under the 信用卡 header menu, reached through its task link (ADR 0066). */
+function creditCardRoute(
+  description: string,
+  taskClass: string,
+  text: string,
+  ready: FubonRoute["ready"],
+): FubonRoute {
+  return {
+    description,
+    // The task class names this link exactly; the text can also match another menu's link.
+    link: (scope) => [scope.locator(`a.${taskClass}`), scope.locator("a").filter({ hasText: text })],
+    menu: "#menu_CCC",
+    ready,
+  };
+}
+
+const CURRENT_CREDIT_ROUTE = creditCardRoute(
+  "Fubon current credit balance table",
+  "task_CCCQU002.menu_CCC0201",
+  "帳務查詢",
+  (scope) => hasAttachedLocator(scope.locator("table.CBO_totalTb")),
+);
+
+const STATEMENT_DETAILS_ROUTE = creditCardRoute(
+  "credit card statement result",
+  "task_CCCQU003.menu_CCC0202",
+  "帳單明細查詢",
+  isStatementDetailsResult,
+);
+
+const UNBILLED_DETAILS_ROUTE = creditCardRoute(
+  "unbilled credit card result",
+  "task_CCCQU004.menu_CCC0203",
+  "未出帳單消費明細",
+  isUnbilledDetailsResult,
+);
+
 async function readFubonCurrentUsedCredit(
-  page: Page,
-  sourceText?: SourceTextPort,
+  site: FubonEbankSite,
+  sourceText: SourceTextPort,
 ): Promise<FubonCurrentUsedCreditReadResult> {
-  const responsePromise = page
-    .waitForResponse(
-      (response) =>
-        response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
-        response.request().method() === "GET",
-      { timeout: 60_000 },
-    )
-    .catch(() => null);
-  await openCreditCardFunctionPage(page, "task_CCCQU002.menu_CCC0201", "帳務查詢");
-  const deadline = Date.now() + 60_000;
-  let scope: BrowserScope | undefined;
-  while (Date.now() < deadline && !scope) {
-    for (const candidate of [page, ...page.frames()]) {
-      if (await candidate.locator("table.CBO_totalTb").count().catch(() => 0)) {
-        scope = candidate;
-        break;
-      }
-    }
-    if (!scope) await page.waitForTimeout(250);
-  }
-  if (!scope) throw new Error("Fubon current credit balance table was not found.");
-  const html = await scope.locator("body").innerHTML();
-  sourceText?.assertIntact(html);
-  const response = await responsePromise;
+  const { frames } = site;
+  const readBalanceTable = async () => {
+    const scope = await site.open(CURRENT_CREDIT_ROUTE);
+    return await frames.race(scope.locator("body").innerHTML());
+  };
+  // The page's own GET carries the HTTP Date evidence; a page that renders without it reads as missing-response.
+  const [response, html] = await frames.race(
+    Promise.all([
+      frames.page
+        .waitForResponse(
+          (response) =>
+            response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
+            response.request().method() === "GET",
+          { timeout: 60_000 },
+        )
+        .catch((error: unknown) => {
+          if (error instanceof errors.TimeoutError) return null;
+          throw error;
+        }),
+      readBalanceTable(),
+    ]),
+  );
+  sourceText.assertIntact(html);
   let parsed: FubonCurrentUsedCreditSnapshot | undefined;
   try {
     parsed = parseFubonCurrentCreditCardUsedCreditHtml(html);
@@ -706,13 +624,8 @@ function fubonCreditCurrentSnapshotCapture(
   });
 }
 
-async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
-  await openCreditCardFunctionPage(
-    page,
-    "task_CCCQU003.menu_CCC0202",
-    "帳單明細查詢",
-  );
-  const scope = await findStatementDetailsScope(page);
+async function openStatementDetailsPage(site: FubonEbankSite): Promise<BrowserScope> {
+  const scope = await site.open(STATEMENT_DETAILS_ROUTE);
   if (await hasFubonCreditCardNoRecord(scope)) {
     throw new StatementComponentAbsentError(
       "Fubon credit-card statement records are not available for this account.",
@@ -720,28 +633,40 @@ async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
     );
   }
   if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
-  await statementDetailsTable(scope).waitFor({
-    state: "attached",
-    timeout: 60_000,
-  });
+  await site.frames.race(
+    statementDetailsTable(scope).waitFor({
+      state: "attached",
+      timeout: 60_000,
+    }),
+  );
   return scope;
 }
 
+async function isStatementDetailsResult(scope: BrowserScope): Promise<boolean> {
+  return (
+    (await hasAttachedLocator(statementDetailsTable(scope))) ||
+    (await hasFubonCreditCardNoRecord(scope)) ||
+    (await hasFubonCreditCardStatementUnavailable(scope))
+  );
+}
+
+async function isUnbilledDetailsResult(scope: BrowserScope): Promise<boolean> {
+  return (
+    (await hasAttachedLocator(unbilledDetailsTable(scope))) ||
+    (await hasFubonCreditCardNoRecord(scope))
+  );
+}
+
 async function findStatementDetailsScope(
-  page: Page,
+  site: FubonEbankSite,
   timeoutMs = 60_000,
 ): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(statementDetailsTable(scope))) return scope;
-      if (await hasFubonCreditCardNoRecord(scope)) return scope;
-      if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
+  return await site.frames.until(async () => {
+    for (const scope of site.frames.scopes()) {
+      if (await isStatementDetailsResult(scope)) return scope;
     }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Could not find credit card statement result in any frame.");
+    return null;
+  }, "Could not find credit card statement result in any frame.", { timeoutMs });
 }
 
 /**
@@ -750,12 +675,12 @@ async function findStatementDetailsScope(
  * because the bank reuses/replaces the transaction frame on tab changes.
  */
 export async function* iterateFubonStatementPeriodProbes(
-  page: Page,
+  site: FubonEbankSite,
   periodOffsets: readonly number[],
 ): AsyncGenerator<FubonStatementPeriodProbe> {
   for (const periodOffset of periodOffsets) {
-    await selectStatementPeriod(page, periodOffset);
-    const scope = await findStatementDetailsScope(page);
+    await selectStatementPeriod(site, periodOffset);
+    const scope = await findStatementDetailsScope(site);
     const status = (await hasFubonCreditCardStatementUnavailable(scope))
       ? "temporarily-unavailable"
       : (await hasFubonCreditCardNoRecord(scope))
@@ -766,24 +691,21 @@ export async function* iterateFubonStatementPeriodProbes(
 }
 
 async function openUnbilledDetailsPage(
-  page: Page,
+  site: FubonEbankSite,
 ): Promise<{ scope: BrowserScope; providerNoRecord: boolean }> {
-  await openCreditCardFunctionPage(
-    page,
-    "task_CCCQU004.menu_CCC0203",
-    "未出帳單消費明細",
-  );
-  const scope = await findUnbilledDetailsScope(page);
+  const scope = await site.open(UNBILLED_DETAILS_ROUTE);
   if (
     !(await hasAttachedLocator(unbilledDetailsTable(scope))) &&
     (await hasFubonCreditCardNoRecord(scope))
   )
     return { scope, providerNoRecord: true };
 
-  await unbilledDetailsTable(scope).waitFor({
-    state: "attached",
-    timeout: 60_000,
-  });
+  await site.frames.race(
+    unbilledDetailsTable(scope).waitFor({
+      state: "attached",
+      timeout: 60_000,
+    }),
+  );
   return { scope, providerNoRecord: false };
 }
 
@@ -805,22 +727,6 @@ async function hasFubonCreditCardStatementUnavailable(
     .textContent({ timeout: 500 })
     .catch(() => "");
   return isFubonCreditCardStatementUnavailableText(bodyText);
-}
-
-async function findUnbilledDetailsScope(
-  page: Page,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (await hasAttachedLocator(unbilledDetailsTable(scope))) return scope;
-      if (await hasFubonCreditCardNoRecord(scope)) return scope;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error("Could not find unbilled credit card result in any frame.");
 }
 
 function statementDetailsTable(scope: BrowserScope): Locator {
@@ -895,9 +801,12 @@ async function gridState(scope: BrowserScope): Promise<GridState> {
   };
 }
 
-async function readStatementPeriodLabel(scope: BrowserScope): Promise<string> {
+async function readStatementPeriodLabel(
+  site: FubonEbankSite,
+  scope: BrowserScope,
+): Promise<string> {
   const rows = statementSummaryTable(scope).locator("tr");
-  await rows.nth(1).waitFor({ state: "attached", timeout: 60_000 });
+  await site.frames.race(rows.nth(1).waitFor({ state: "attached", timeout: 60_000 }));
   const cells = await readCells(rows.nth(1));
   return cells[0] ?? "";
 }
@@ -1288,42 +1197,36 @@ function hasUsefulData(cells: string[]): boolean {
   return cells.some(Boolean);
 }
 
+const PERIOD_SELECTOR = "#form1\\:period";
+
 async function selectStatementPeriod(
-  page: Page,
+  site: FubonEbankSite,
   periodOffset: number,
 ): Promise<BrowserScope> {
+  const { frames } = site;
   const period = periodTabs.find((item) => item.offset === periodOffset);
   if (!period) throw new Error(`Unsupported period offset ${periodOffset}.`);
 
-  let scope = await findScopeWithSelector(page, "#form1\\:period");
-  const currentValue = await scope
-    .locator("#form1\\:period")
-    .getAttribute("value");
+  const scope = await frames.scopeWith(PERIOD_SELECTOR);
+  const currentValue = await frames.race(
+    scope.locator(PERIOD_SELECTOR).getAttribute("value"),
+  );
 
-  await waitForNoVisibleBankMask(page);
+  await site.waitForMaskToClear();
 
-  if (currentValue !== String(periodOffset)) {
-    const tab = scope.locator("a").filter({ hasText: period.label }).first();
-    await tab.waitFor({ state: "attached", timeout: 60_000 });
-    await activateControlWithoutPointer(tab);
+  if (currentValue === String(periodOffset)) return scope;
 
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      scope = await findScopeWithSelector(page, "#form1\\:period", 5_000);
-      const value = await scope
-        .locator("#form1\\:period")
-        .getAttribute("value");
-      if (value === String(periodOffset)) {
-        await waitForNoVisibleBankMask(page);
-        return scope;
-      }
-      await page.waitForTimeout(500);
-    }
+  const tab = scope.locator("a").filter({ hasText: period.label }).first();
+  await frames.race(tab.waitFor({ state: "attached", timeout: 60_000 }));
+  await site.activate(tab);
 
-    throw new Error(`Timed out switching to period tab "${period.label}".`);
-  }
-
-  return scope;
+  const switched = await frames.until(async () => {
+    const candidate = await frames.scopeWith(PERIOD_SELECTOR, undefined, { timeoutMs: 5_000 });
+    const value = await candidate.locator(PERIOD_SELECTOR).getAttribute("value");
+    return value === String(periodOffset) ? candidate : null;
+  }, `Timed out switching to period tab "${period.label}".`, { timeoutMs: 60_000 });
+  await site.waitForMaskToClear();
+  return switched;
 }
 
 async function readStatementRows(
@@ -2310,20 +2213,24 @@ export async function runFubonCreditCardStatements(
   return stageFubonCreditCard(sourceSnapshot, input, context, product);
 }
 
-async function readFubonCreditCardSourceSnapshot(
+export async function readFubonCreditCardSourceSnapshot(
   page: Page,
-  input: FubonCreditCardProductInput,
+  input: FubonCreditCardStatementsInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<FubonCreditCardSourceSnapshot> {
+  const site = fubonEbankSite(page, context);
   let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
   try {
     await product.reportActivity("query");
-    const currentCreditRead = await readFubonCurrentUsedCredit(page, context.text);
+    const currentCreditRead = await readFubonCurrentUsedCredit(site, context.text);
     currentUsedCredit = currentCreditRead.snapshot;
-  } catch {}
+  } catch (error) {
+    // The current balance is optional evidence; only cancellation stops the read here.
+    if (context.signal.aborted) throw error;
+  }
   await product.reportActivity("query");
-  await openStatementDetailsPage(page);
+  await openStatementDetailsPage(site);
 
   const statementRows: CsvRow[] = [];
   const statementPeriods: string[] = [];
@@ -2331,7 +2238,7 @@ async function readFubonCreditCardSourceSnapshot(
   const gridStates: GridState[] = [];
   const unavailablePeriodOffsets: number[] = [];
   for await (const probe of iterateFubonStatementPeriodProbes(
-    page,
+    site,
     input.periodOffsets,
   )) {
     context.signal.throwIfAborted();
@@ -2342,7 +2249,7 @@ async function readFubonCreditCardSourceSnapshot(
     }
     if (status === "no-record") continue;
 
-    const periodLabel = await readStatementPeriodLabel(scope);
+    const periodLabel = await readStatementPeriodLabel(site, scope);
     statementPeriods.push(periodLabel);
     await product.reportActivity("query");
     const statementResult = await readStatementRows(
@@ -2357,7 +2264,7 @@ async function readFubonCreditCardSourceSnapshot(
   }
 
   await product.reportActivity("query");
-  const unbilled = await openUnbilledDetailsPage(page);
+  const unbilled = await openUnbilledDetailsPage(site);
   const unbilledRows = await readUnbilledRows(
     unbilled.scope,
     input.unbilledCardNumbers,
