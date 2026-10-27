@@ -20,23 +20,11 @@ import {
   type VerificationSolver,
 } from "./verification-solver.ts";
 import { localVerificationSolver } from "./local-verification-solver.ts";
+import { automationViewer, type PageForRun } from "./automation-viewer.ts";
 import {
-  captureChallengeImageForContract,
-  clickVerificationTarget,
-  injectVerificationSelections,
-} from "./automation-viewer.ts";
-import {
-  captureProviderVerificationAudio,
-  captureProviderVerificationImage,
-  injectProviderVerificationAnswer,
-  isProviderVerificationImageCurrent,
-  probeProviderVerificationPostSubmit,
-  providerVerificationHandlesChallengeImage,
-  providerVerificationRefreshesChallengeImage,
-  refreshProviderVerificationImage,
+  createProviderVerificationHost,
+  type ProviderVerificationHost,
 } from "./provider-verification.ts";
-import { appWorkflowPageForSession } from "./app-browser-host.ts";
-import type { ProviderVerificationHost } from "./provider-verification.ts";
 import { taskById } from "./tasks.ts";
 import { VERIFIED_SOURCES } from "./sources/index.ts";
 import { readAutomationSettings } from "./settings.ts";
@@ -196,14 +184,15 @@ export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new 
   VERIFIED_SOURCES.filter((source) => source.workflow.verification?.rejection !== undefined).map((source) => source.task.id),
 );
 
-export function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
+export function appProviderPostSubmitProbe(pageForRun: PageForRun): ProviderVerificationHost["probePostSubmit"] {
+  const host = createProviderVerificationHost({ pageForRun });
   return async (viewerKey, contract, resume) =>
-    await probeProviderVerificationPostSubmit(
+    await host.probePostSubmit(
       viewerKey,
       contract,
       resume,
       async () => {
-        const page = appWorkflowPageForSession(viewerKey);
+        const page = pageForRun(viewerKey);
         if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
         await page.context().close();
       },
@@ -321,8 +310,10 @@ export async function routeVerificationActor(input: {
   return { kind: "retryable", reason: "solver-exhausted" };
 }
 
-/** Browser seams for one contract; omitted seams use the App's provider and viewer defaults. */
+/** Browser seams for one contract; omitted seams use the App's provider and viewer over `pageForRun`. */
 export type VerificationRoutingSeams = {
+  /** Finds the page the run's current Workflow execution hosts. */
+  pageForRun: PageForRun;
   resumeAppWorkflow: () => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
@@ -356,17 +347,12 @@ export function verificationRoutingDependencies(
   contract: HumanAssistanceContract,
   input: VerificationRoutingSeams,
 ): VerificationRoutingDependencies {
-  const providerVerification: VerificationChallengeImageProvider = input.providerVerification ?? {
-    handlesChallengeImage: providerVerificationHandlesChallengeImage,
-    captureChallengeImage: captureProviderVerificationImage,
-    isChallengeImageCurrent: isProviderVerificationImageCurrent,
-    refreshesChallengeImage: providerVerificationRefreshesChallengeImage,
-    refreshChallengeImage: refreshProviderVerificationImage,
-  };
+  const viewer = automationViewer(input.pageForRun);
+  const providerHost = createProviderVerificationHost({ pageForRun: input.pageForRun });
   const imageSelection = selectVerificationChallengeImage(contract, {
-    provider: providerVerification,
+    provider: input.providerVerification ?? providerHost,
     genericCaptureChallengeImage: input.genericCaptureChallengeImage
-      ?? captureChallengeImageForContract,
+      ?? viewer.captureChallengeImage,
   });
   const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
   const selectedCapture = imageSelection.providerOwned
@@ -381,16 +367,16 @@ export function verificationRoutingDependencies(
     captureChallengeImage: selectedCapture,
     captureChallengeAudio: input.captureChallengeAudio
       ?? input.providerCaptureChallengeAudio
-      ?? captureProviderVerificationAudio,
+      ?? providerHost.captureChallengeAudio,
     validateChallengeImage: input.validateChallengeImage
       ?? imageSelection.validateChallengeImage,
     refreshChallenge: input.refreshChallenge ?? imageSelection.refreshChallenge,
     injectAnswer: input.injectAnswer
       ?? input.providerInjectAnswer
-      ?? injectProviderVerificationAnswer,
+      ?? providerHost.injectAnswer,
     probePostSubmit: input.providerProbePostSubmit,
-    injectSelections: input.injectSelections ?? injectVerificationSelections,
-    clickTarget: input.clickTarget ?? clickVerificationTarget,
+    injectSelections: input.injectSelections ?? viewer.injectSelections,
+    clickTarget: input.clickTarget ?? viewer.clickTarget,
     resumeAppWorkflow: input.resumeAppWorkflow,
     finalizeFailed: input.finalizeFailed,
     onChallengeCaptured: input.onChallengeCaptured,

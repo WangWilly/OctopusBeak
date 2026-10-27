@@ -22,6 +22,8 @@ import {
 } from "./yuanta-trade-assistance.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
+const noHostedPage = () => null;
+
 const TASK_ID = "yuanta-trade-statements";
 
 function audioContract(): HumanAssistanceContractInput {
@@ -230,6 +232,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
   });
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: host,
     routeOptions: {
       solver: {
@@ -290,6 +293,7 @@ test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   let solverCalls = 0;
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: {
@@ -325,6 +329,7 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
   const { store, provider, run } = await createRun();
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
   };
   try {
@@ -342,6 +347,7 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
   const { store, provider, run } = await createRun();
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
@@ -369,7 +375,7 @@ test("Yuanta Trade unsupported native verification fails closed in solver mode",
         ...opened,
         contract: certificateContract(),
         signal: new AbortController().signal,
-      }, { settings: {} }),
+      }, { settings: {}, pageForRun: noHostedPage }),
       /not supported by the automatic solver/u,
     );
     const saved = await provider.automation.taskRunById(run.taskRunId);
@@ -390,6 +396,7 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
   const injected: string[] = [];
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: {

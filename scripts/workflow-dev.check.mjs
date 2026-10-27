@@ -8,9 +8,9 @@ import { test } from "node:test";
 import {
   createDevelopmentBrowserPort,
   createLocalSolverHumanAssistancePort,
+  developmentPageHost,
 } from "./workflow-dev.ts";
 import { createBrowserRuntime } from "../src/lib/automation/server/browser-runtime.ts";
-import { appWorkflowPageForSession } from "../src/lib/automation/server/app-browser-host.ts";
 import { APP_WORKFLOW_DEFINITIONS } from "../src/lib/automation/server/app-workflow-registry.ts";
 
 const cli = fileURLToPath(new URL("./workflow-dev.ts", import.meta.url));
@@ -134,7 +134,7 @@ test("development verification runs the App solver route on the registered sessi
   const { calls, route } = recordingRoute({ kind: "resumed" });
   const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
     workflowId: "sinopac-statements",
-    sessionKey: "dev-session",
+    pageHost: developmentPageHost("dev-session"),
     route,
   });
   assert.equal(await port.request(textCaptchaStage, new AbortController().signal), "entered");
@@ -150,11 +150,32 @@ test("development verification runs the App solver route on the registered sessi
   assert.equal(probeResumed, true, "workflow-owned CAPTCHA outcomes resume without a provider dialog probe");
 });
 
+test("development verification's default seams reach the page its adapter hosts", async () => {
+  const { calls, route } = recordingRoute({ kind: "resumed" });
+  const pageHost = developmentPageHost("dev-session");
+  const shots = [];
+  const page = { screenshot: async (options) => { shots.push(options); return Buffer.from("challenge"); } };
+  const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
+    workflowId: "sinopac-statements",
+    pageHost,
+    route,
+  });
+  await port.request(textCaptchaStage, new AbortController().signal);
+  const { dependencies, contract } = calls[0];
+  await assert.rejects(dependencies.captureChallengeImage("dev-session", contract), /No active App browser page/u);
+  const release = pageHost.host(page);
+  assert.throws(() => pageHost.host(page), /already hosts a page/u);
+  assert.ok(await dependencies.captureChallengeImage("dev-session", contract));
+  release();
+  assert.equal(pageHost.pageForRun("dev-session"), null);
+  assert.equal(shots.length, 1);
+});
+
 test("development verification fails closed where the App has no solver route", async () => {
   const { calls, route } = recordingRoute({ kind: "resumed" });
   const unrouted = createLocalSolverHumanAssistancePort(new AbortController().signal, {
     workflowId: "esun-credit-card-statements",
-    sessionKey: "dev-session",
+    pageHost: developmentPageHost("dev-session"),
     route,
   });
   await assert.rejects(
@@ -163,7 +184,7 @@ test("development verification fails closed where the App has no solver route", 
   );
   const routed = createLocalSolverHumanAssistancePort(new AbortController().signal, {
     workflowId: "yuanta-trade-statements",
-    sessionKey: "dev-session",
+    pageHost: developmentPageHost("dev-session"),
     route,
   });
   const { challengeKind: _kind, challengeImageRegion: _region, ...nonSolverStage } = textCaptchaStage;
@@ -178,7 +199,7 @@ test("development verification rejects a route that ends before resuming the wor
   const { route } = recordingRoute({ kind: "retryable", reason: "solver-exhausted" }, { resume: false });
   const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
     workflowId: "fubon-all-statements",
-    sessionKey: "dev-session",
+    pageHost: developmentPageHost("dev-session"),
     route,
   });
   await assert.rejects(
@@ -231,15 +252,20 @@ test("development browser exposes its page to the solver seams only while the wo
     getChromiumVersion: async () => "151.0.7922.34",
     platform: "darwin",
   });
+  const pageHost = developmentPageHost("dev-session");
   const port = createDevelopmentBrowserPort(
     new AbortController().signal,
     undefined,
     async () => browser,
-    { runtime, sessionKey: "dev-session" },
+    { runtime, pageHost },
   );
-  const registered = await port.withPage(async () => appWorkflowPageForSession("dev-session"));
-  assert.equal(registered, page);
-  assert.equal(appWorkflowPageForSession("dev-session"), null);
+  assert.equal(pageHost.pageForRun("dev-session"), null);
+  const hosted = await port.withPage(async () => [
+    pageHost.pageForRun("dev-session"),
+    pageHost.pageForRun("another-session"),
+  ]);
+  assert.deepEqual(hosted, [page, null], "the lookup serves its one page only under its own session key");
+  assert.equal(pageHost.pageForRun("dev-session"), null, "closing the development browser releases the page");
 });
 
 test("development headless mode applies the same named runtime profile to launch and context", async () => {

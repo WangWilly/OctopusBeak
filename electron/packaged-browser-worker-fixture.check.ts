@@ -71,7 +71,7 @@ function fakePage(version = chromiumVersion, exposeBrowser = true): Page {
 /** The fixture's own startTask and cancelTask stand in for the runtime's. */
 function fixtureRuntime(provider: AutomationPersistenceProvider) {
   const unused = () => { throw new Error("The check supplies its own task controls."); };
-  return { provider, startWithoutAdmission: unused, cancel: unused };
+  return { provider, startWithoutAdmission: unused, cancel: unused, activeRun: unused };
 }
 
 test("packaged fixture runs real success and cancel contracts with allow-listed runtime proof", async () => {

@@ -15,6 +15,8 @@ import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
+const noHostedPage = () => null;
+
 const sinopacContract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
   title: "Enter the SinoPac CAPTCHA",
@@ -140,6 +142,7 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
       const campaign = runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
+        pageForRun: noHostedPage,
         launchVerificationSettings: settings,
         run,
         initialExecutionOptions: {},
@@ -224,6 +227,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     const campaign = runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
+      pageForRun: noHostedPage,
       launchVerificationSettings: {},
       // A route still solving when the App closes.
       routeWaitingRunVerification: () => new Promise((_resolve, reject) => {
@@ -283,6 +287,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
       const campaign = runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
+        pageForRun: noHostedPage,
         launchVerificationSettings: {},
         run,
         initialExecutionOptions: {},
@@ -343,6 +348,7 @@ test("exhausted App solver retries finalize with a typed verification failure an
     const result = await runCaptchaRetryCampaign({
       taskId,
       appWorkflow: true,
+      pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -399,6 +405,7 @@ for (const scenario of [
       const result = await runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
+        pageForRun: noHostedPage,
         launchVerificationSettings: {},
         run,
         initialExecutionOptions: {},
@@ -445,6 +452,7 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
     const campaign = runCaptchaRetryCampaign({
       taskId: "yuanta-trade-statements",
       appWorkflow: true,
+      pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -495,6 +503,7 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
     const campaign = runCaptchaRetryCampaign({
       taskId: "yuanta-trade-statements",
       appWorkflow: true,
+      pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -538,6 +547,7 @@ test("a run the store refused until a Canonical Reset is never retried by the CA
     const result = await runCaptchaRetryCampaign({
       taskId: "fubon-all-statements",
       appWorkflow: true,
+      pageForRun: noHostedPage,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},

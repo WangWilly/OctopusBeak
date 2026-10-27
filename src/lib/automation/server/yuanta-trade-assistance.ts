@@ -13,12 +13,7 @@ import {
   routeWaitingRunVerification,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
-import {
-  clickVerificationTarget,
-  captureChallengeImageForContract,
-  injectVerificationSelections,
-  withViewerPage,
-} from "./automation-viewer.ts";
+import { automationViewer, type PageForRun } from "./automation-viewer.ts";
 import { YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR } from "../yuanta-trade-captcha.ts";
 
 type VerificationRouteInput = Parameters<typeof routeWaitingRunVerification>[0];
@@ -41,6 +36,7 @@ export type YuantaTradeVerificationRouteOptions = Partial<Pick<
 
 export type YuantaTradeAppAssistanceDependencies = Readonly<{
   settings: AutomationSettingsFile;
+  pageForRun: PageForRun;
   verificationHost?: ProviderVerificationHost;
   route?: typeof routeWaitingRunVerification;
   waitForImageChallengeSubmission?: (
@@ -151,8 +147,9 @@ export async function routeYuantaTradeAppAssistanceRequest(
     throw new Error("Yuanta Trade image challenge has no supported local solver.");
   }
 
+  const viewer = automationViewer(dependencies.pageForRun);
   const host = guardedHost(
-    dependencies.verificationHost ?? createProviderVerificationHost(),
+    dependencies.verificationHost ?? createProviderVerificationHost({ pageForRun: dependencies.pageForRun }),
     request.signal,
   );
   const route = dependencies.route ?? routeWaitingRunVerification;
@@ -166,14 +163,14 @@ export async function routeYuantaTradeAppAssistanceRequest(
     ?? routeOptions.providerInjectAnswer
     ?? host.injectAnswer;
   const imageCapture = routeOptions.captureChallengeImage
-    ?? captureChallengeImageForContract;
+    ?? viewer.captureChallengeImage;
   const selectionInjection = routeOptions.injectSelections
-    ?? injectVerificationSelections;
+    ?? viewer.injectSelections;
   const targetClick = routeOptions.clickTarget
-    ?? clickVerificationTarget;
+    ?? viewer.clickTarget;
   let assistanceResumed = false;
   const waitForImageSubmit = dependencies.waitForImageChallengeSubmission
-    ?? (async (viewerKey: string, signal: AbortSignal) => withViewerPage(viewerKey, async (page) => {
+    ?? (async (viewerKey: string, signal: AbortSignal) => viewer.withPage(viewerKey, async (page) => {
       signal.throwIfAborted();
       try {
         await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR)
@@ -195,6 +192,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
       }
       : {}),
     run: request.run,
+    pageForRun: dependencies.pageForRun,
     settings: dependencies.settings,
     providerVerification: host,
     ...(routeOptions.captureChallengeImage

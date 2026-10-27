@@ -25,12 +25,15 @@ import {
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
+import type { PageForRun } from "./automation-viewer.ts";
 
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
   /** Browser workflows and the App-owned nonbrowser workflows route explicitly. */
   appWorkflow: boolean;
   run: ActiveAutomationTaskRun;
+  /** Finds the page each round's Workflow execution hosts, for verification routing. */
+  pageForRun: PageForRun;
   launchVerificationSettings: AutomationSettingsFile;
   initialExecutionOptions: AutomationTaskExecutionOptions;
   execute: (options: AutomationTaskExecutionOptions) => Promise<TaskRunReport>;
@@ -123,6 +126,7 @@ export async function runCaptchaRetryCampaign(
   const {
     taskId,
     run,
+    pageForRun,
     launchVerificationSettings,
     execute,
   } = dependencies;
@@ -176,9 +180,11 @@ export async function runCaptchaRetryCampaign(
                 settings: launchVerificationSettings,
                 route,
                 onChallengeCaptured,
+                pageForRun,
               })
             : await route({
               run: request.run,
+              pageForRun,
               resumeAppWorkflow: () => completeAppWorkflowHumanAssistance(request),
               finalizeFailed: async (message) => {
                 request.signal.throwIfAborted();
@@ -194,7 +200,7 @@ export async function runCaptchaRetryCampaign(
                   return status === "completed" || status === "partial"
                     ? "none" : "unrecognized-dialog";
                 }
-                : appProviderPostSubmitProbe(),
+                : appProviderPostSubmitProbe(pageForRun),
               onChallengeCaptured,
               settings: launchVerificationSettings,
             });

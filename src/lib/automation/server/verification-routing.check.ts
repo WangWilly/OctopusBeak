@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_CHALLENGES_PER_ROUND,
+  appProviderPostSubmitProbe,
   routeVerificationActor,
   routeWaitingRunVerification,
   selectVerificationChallengeImage,
@@ -148,6 +149,7 @@ test("App verification uses its task-run ID and ignores legacy session text", as
       taskRunId,
       current: () => run as unknown as AutomationTaskRun,
     },
+    pageForRun: () => null,
     settings: {},
     solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
     providerVerification: {
@@ -316,6 +318,7 @@ test("only a provider-owned image whose owner declares a control gets a refresh 
 
   const wired = verificationRoutingDependencies(captchaContract(), {
     providerVerification: provider(true, true),
+    pageForRun: () => null,
     resumeAppWorkflow: async () => {},
     providerProbePostSubmit: async () => "none",
     finalizeFailed: async () => {},
@@ -323,9 +326,47 @@ test("only a provider-owned image whose owner declares a control gets a refresh 
   assert.ok(wired.refreshChallenge);
   const generic = verificationRoutingDependencies(captchaContract(), {
     providerVerification: provider(false, true),
+    pageForRun: () => null,
     resumeAppWorkflow: async () => {},
     providerProbePostSubmit: async () => "none",
     finalizeFailed: async () => {},
   });
   assert.equal(generic.refreshChallenge, undefined);
+});
+
+test("the default viewer seams reach a run's page only through the page lookup", async () => {
+  const shots: unknown[] = [];
+  const clicks: Array<[number, number]> = [];
+  const page = {
+    screenshot: async (options: unknown) => { shots.push(options); return Buffer.from("challenge"); },
+    mouse: { click: async (x: number, y: number) => { clicks.push([x, y]); } },
+  };
+  const pageForRun = (taskRunId: string) => taskRunId === "hosted-run" ? page as never : null;
+  const dependencies = verificationRoutingDependencies(captchaContract(), {
+    pageForRun,
+    resumeAppWorkflow: async () => {},
+    providerProbePostSubmit: async () => "none",
+    finalizeFailed: async () => {},
+  });
+  assert.deepEqual(await dependencies.captureChallengeImage("hosted-run", captchaContract()), Buffer.from("challenge"));
+  assert.deepEqual(shots, [{ clip: { x: 0, y: 0, width: 200, height: 80 }, type: "png" }]);
+  await dependencies.injectSelections("hosted-run", captchaContract(), [{ x: 5, y: 6 }]);
+  assert.deepEqual(clicks, [[5, 6]]);
+  await assert.rejects(
+    dependencies.captureChallengeImage("other-run", captchaContract()),
+    /No active App browser page is available/u,
+  );
+  await assert.rejects(
+    dependencies.injectSelections("other-run", captchaContract(), [{ x: 5, y: 6 }]),
+    /No active App browser page is available/u,
+  );
+  assert.equal(shots.length, 1);
+  assert.equal(clicks.length, 1);
+});
+
+test("the App post-submit probe resumes without a provider adapter and needs no page", async () => {
+  let resumed = false;
+  const probe = appProviderPostSubmitProbe(() => null);
+  assert.equal(await probe("no-page-run", captchaContract(), async () => { resumed = true; }), "none");
+  assert.equal(resumed, true);
 });

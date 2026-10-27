@@ -28,7 +28,7 @@ import {
   workflowStartUrlForTask,
 } from "../src/lib/automation/server/app-workflow-registry.ts";
 import type { PGliteWorkflowRunItem } from "../src/ledger/pglite/workflow-run.ts";
-import { registerAppWorkflowPage } from "../src/lib/automation/server/app-browser-host.ts";
+import type { PageForRun } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
   appProviderPostSubmitProbe,
@@ -189,6 +189,33 @@ export function createDryRunFinancialCommitPort(
   };
 }
 
+/**
+ * workflow:dev's adapter at the page-lookup seam (ADR 0067). It has no
+ * runner, so it looks up the one page its development browser hosts, under
+ * the session key its solver route uses as the run id.
+ */
+export type DevelopmentPageHost = Readonly<{
+  sessionKey: string;
+  /** Hold the opened page until the returned release runs. Throws while another is held. */
+  host(page: Page): () => void;
+  pageForRun: PageForRun;
+}>;
+
+export function developmentPageHost(sessionKey: string): DevelopmentPageHost {
+  let hosted: Page | null = null;
+  return {
+    sessionKey,
+    host(page) {
+      if (hosted) throw new Error("The development browser already hosts a page.");
+      hosted = page;
+      return () => {
+        if (hosted === page) hosted = null;
+      };
+    },
+    pageForRun: (taskRunId) => taskRunId === sessionKey ? hosted : null,
+  };
+}
+
 export function createDevelopmentBrowserPort(
   signal: AbortSignal,
   startUrl?: string,
@@ -198,8 +225,8 @@ export function createDevelopmentBrowserPort(
     headless?: boolean;
     profile?: BrowserRuntimeProfileId;
     runtime?: BrowserRuntime;
-    /** Registers the page where the App's solver seams resolve it. */
-    sessionKey?: string;
+    /** Holds the page where the App's solver seams look it up. */
+    pageHost?: DevelopmentPageHost;
     contextOptions?: BrowserContextOptions;
   }> = {},
 ): WorkflowExecutorPorts["browser"] {
@@ -213,7 +240,7 @@ export function createDevelopmentBrowserPort(
         args: [...profile.args],
       });
       const closeOnAbort = () => { void browser.close().catch(() => {}); };
-      let unregister = () => {};
+      let releasePage = () => {};
       signal.addEventListener("abort", closeOnAbort, { once: true });
       try {
         signal.throwIfAborted();
@@ -224,14 +251,14 @@ export function createDevelopmentBrowserPort(
           ...options.contextOptions,
         });
         const page = await context.newPage();
-        if (options.sessionKey) unregister = registerAppWorkflowPage(options.sessionKey, page);
+        if (options.pageHost) releasePage = options.pageHost.host(page);
         if (startUrl) {
           await page.goto(startUrl, { waitUntil: "domcontentloaded" });
           signal.throwIfAborted();
         }
         return await run(page);
       } finally {
-        unregister();
+        releasePage();
         signal.removeEventListener("abort", closeOnAbort);
         await browser.close().catch(() => {});
       }
@@ -245,17 +272,18 @@ type LocalSolverRoute = Readonly<{
 }>;
 
 /**
- * Verify through the App's local solver route against the development browser
- * page registered under `sessionKey`. Like the App, the request settles when
+ * Verify through the App's local solver route against the page `pageHost`
+ * holds. Like the App, the request settles when
  * the solver resumes the workflow and fails closed for any stage the App would
  * not route.
  */
 export function createLocalSolverHumanAssistancePort(
   signal: AbortSignal,
-  options: Readonly<{ workflowId: string; sessionKey: string }> & LocalSolverRoute,
+  options: Readonly<{ workflowId: string; pageHost: DevelopmentPageHost }> & LocalSolverRoute,
 ): WorkflowExecutorPorts["humanAssistance"] {
   const route = options.route ?? routeVerificationActor;
   const dependencies = options.dependencies ?? verificationRoutingDependencies;
+  const { sessionKey, pageForRun } = options.pageHost;
   let version = 0;
   return {
     async request(input, requestSignal) {
@@ -278,9 +306,10 @@ export function createLocalSolverHumanAssistancePort(
         requestSignal.addEventListener("abort", onAbort, { once: true });
         void route({
           contract,
-          taskRunId: options.sessionKey,
+          taskRunId: sessionKey,
           confidenceThreshold: verificationConfidenceThreshold(contract, readAutomationSettingsFile()),
           dependencies: dependencies(contract, {
+            pageForRun,
             resumeAppWorkflow: () => {
               resumed = true;
               resolve(completed);
@@ -288,7 +317,7 @@ export function createLocalSolverHumanAssistancePort(
             finalizeFailed: (message) => { throw new Error(message); },
             providerProbePostSubmit: WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(options.workflowId)
               ? async (_session, _contract, resume) => { await resume(); return "none"; }
-              : appProviderPostSubmitProbe(),
+              : appProviderPostSubmitProbe(pageForRun),
           }),
         }).then(
           (outcome) => outcome.kind === "resumed" ? undefined : outcome.kind,
@@ -312,11 +341,11 @@ function makePorts(
   commitPort?: WorkflowFinancialCommitPort,
   browserOptions: Readonly<{ headless?: boolean; profile?: BrowserRuntimeProfileId }> = {},
 ): WorkflowExecutorPorts {
-  const sessionKey = randomUUID();
+  const pageHost = developmentPageHost(randomUUID());
   return {
-    browser: createDevelopmentBrowserPort(signal, startUrl, undefined, { ...browserOptions, sessionKey }),
+    browser: createDevelopmentBrowserPort(signal, startUrl, undefined, { ...browserOptions, pageHost }),
     text: strictSourceText,
-    humanAssistance: createLocalSolverHumanAssistancePort(signal, { workflowId, sessionKey }),
+    humanAssistance: createLocalSolverHumanAssistancePort(signal, { workflowId, pageHost }),
     ...(commitPort ? {
       financialCommit: commitPort,
       commitAttempts: {
