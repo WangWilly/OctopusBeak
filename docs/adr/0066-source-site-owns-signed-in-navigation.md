@@ -30,14 +30,14 @@ Every wait races the run's signal and rejects with `signal.reason`, so the Produ
 
 **One Source site module per bank owns navigation after sign-in.** `src/workflows/yuanta-ebank-site.ts` and `src/workflows/fubon-ebank-site.ts` build on the frame-scope module.
 
-- Each product declares its route as data: a `cid` route and a fallback menu for Yuanta, or a menu id and task class for Fubon.
+- Each product declares its route as data: a `cid` route and a fallback menu for Yuanta, or a menu id and task class for Fubon. A Fubon route whose link the bank must redirect itself, such as the loan task, declares `clickInPlace`, so the site clicks it instead of following its href.
 - The site module opens that route the same way from any signed-in page. It no longer reuses a form that happens to be on the page.
 - Yuanta's `prepare` hook is deleted.
 - Site behavior stays in its module: Yuanta's `menuaction()` and date-range picker, and Fubon's menus, bank mask and postbacks.
 
 **The site module decodes response bytes strictly.** It reads raw bytes and decodes them through the run's `SourceTextPort` with `fatal: true`: UTF-8 for HTML and Big5 for Yuanta's CSV exports. Invalid bytes fail the product as `source-integrity-failed`. The source text port becomes required for these products. HTML read from the DOM is left as it is, because the browser has already decoded it.
 
-**Product runners keep what they read and in what order.** Each Yuanta and Fubon product runner reads through its site module and keeps the read-then-build split of ADR 0065.
+**Product runners keep what they read and in what order.** Each Yuanta and Fubon product runner reads through its site module and keeps the read-then-build split of ADR 0065. Two reads compose the frame scope directly instead of calling `open`, because their evidence is the response to one specific click: Yuanta's current used credit summary, whose POST reply proves the balance, and Fubon's current deposit balances, which need a real pointer click paired with the balance response.
 
 ## Considered options
 
