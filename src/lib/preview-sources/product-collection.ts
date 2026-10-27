@@ -14,7 +14,7 @@ import {
   type CollectionProductOutcome,
   type ProductCollectionRunSummary,
 } from "../automation/product-collection.ts";
-import { FailureCodeError } from "../automation/workflow-failures.ts";
+import { FailureCodeError, WORKFLOW_FAILURE_ENDS_RUN } from "../automation/workflow-failures.ts";
 import { productRunStatus } from "../automation/product-run-status.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
@@ -82,7 +82,7 @@ const SESSION_REASONS: ReadonlySet<PreviewFailureReason> = new Set([
 
 function fatalCode(error: unknown): TypedWorkflowErrorCode | null {
   if (error instanceof PreviewSourceFailure) return SESSION_REASONS.has(error.reason) ? error.errorCode : null;
-  if (error instanceof FailureCodeError) return error.errorCode;
+  if (error instanceof FailureCodeError) return WORKFLOW_FAILURE_ENDS_RUN[error.errorCode] ? error.errorCode : null;
   return null;
 }
 

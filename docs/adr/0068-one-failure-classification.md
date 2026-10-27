@@ -12,7 +12,7 @@ Three modules turn a thrown error and run events into a Failure code, and they d
 - The worker runtime calls `classifyTypedWorkflowFailure`. It puts every other error class before a stopped run, and puts `CaptchaProviderRejectedError` after the stop and after `verification-solver-exhausted`.
 - The host's `workerFailure` checks `solver-route-unavailable` itself, then calls the same classifier a second time with the execution's events.
 
-TDCC maps its own errors through `classifyFatal` and `classifyFailure` hooks that only the Product collection run reads. A `TdccError` thrown outside product collection, such as during sign-in, is named from its stage alone, so an untrusted device becomes `authentication-failed` instead of `device-registration-required`.
+TDCC maps its own errors through `classifyFatal` and `classifyFailure` hooks that only the Product collection run reads. TDCC signs in lazily inside product collection, so today its errors reach the hooks. Any other reader of a `TdccError`, such as the run-level classifier or a check harness, names it from its stage alone, so an untrusted device would become `authentication-failed` instead of `device-registration-required`.
 
 ## Decision
 
@@ -32,14 +32,14 @@ Whether a stop outranks a failure stays the Active automation task run's decisio
 
 **Whether a code ends the run is a fact of the code.** It sits in the Failure code table in `workflow-failures.ts`, beside the user action. The Product collection run reads it instead of keeping its own list of run-ending errors.
 
-**Sources translate their errors at their own seam.** TDCC converts `TdccError` into the shared typed errors in its client, using a general error that carries a Failure code where no specific class exists. The `classifyFatal` and `classifyFailure` hooks are deleted.
+**Sources name their errors at their own seam.** `FailureCodeError` carries a Failure code from wherever it is thrown. Each TDCC error class extends it: `TdccError` derives its code from its failure reason and endpoint, and the TDCC contract, device-registration and summary-invariant errors carry theirs. The `classifyFatal` and `classifyFailure` hooks are deleted.
 
 **The host keeps deciding `proven`.** `execution-outcome` still applies ADR 0058's rule for a worker code, and still never reports `commit-outcome-unknown`. A worker that ended cancelled reported no failure to classify, so its report stays `cancelled` whatever signals the host recorded.
 
 ## Considered options
 
 - **Send raw evidence from the worker and name the code once on the host.** Rejected. The worker protocol would need a serialized error kind, and ADR 0058's proven worker code would lose its meaning, only to remove one call site.
-- **Keep a per-source hook as an input to the classification.** Rejected. Any caller that forgets to pass it repeats the TDCC sign-in gap.
+- **Keep a per-source hook as an input to the classification.** Rejected. Any caller that forgets to pass it names a TDCC error from its stage alone.
 - **Let the classification return whether the run ends.** Rejected. No code is run-ending in one place and product-local in another, so the fact belongs to the code.
 - **Name a stopped run before any thrown error.** Rejected. A typed error is direct evidence of what failed, and ADR 0058 already ranks the stop above it when deciding the run.
 

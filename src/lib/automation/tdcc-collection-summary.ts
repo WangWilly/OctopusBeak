@@ -3,6 +3,7 @@ import type { TdccSettlementExclusion } from "../../ledger/canonical/tdcc-settle
 import type { TdccProductCollection } from "../../workflows/tdcc-epassbook-collection.ts";
 import type { CollectionProductOutcome, ProductCollectionRunSummary } from "./product-collection.ts";
 import { productRunStatus } from "./product-run-status.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
 
 export const TDCC_PRODUCT_IDS = ["securities", "fund", "settlement"] as const;
 export type TdccProductId = typeof TDCC_PRODUCT_IDS[number];
@@ -29,9 +30,9 @@ export type TdccProductCollectionEvidence = Readonly<{
   exclusionCounts: TdccExclusionCountPatch;
 }>;
 
-export class TdccCollectionSummaryInvariantError extends Error {
+export class TdccCollectionSummaryInvariantError extends FailureCodeError {
   constructor() {
-    super("TDCC collection evidence violated its run or count invariant.");
+    super("workflow-failed", "TDCC collection evidence violated its run or count invariant.");
     this.name = "TdccCollectionSummaryInvariantError";
   }
 }

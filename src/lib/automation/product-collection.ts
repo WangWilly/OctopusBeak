@@ -252,10 +252,6 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
   event?: ProductCollectionStageEvent;
   /** Receives a product's non-fatal failure with its error; the run itself continues. */
   productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
-  /** Provider-specific typed session/terminal-state errors can join the shared fatal set. */
-  classifyFatal?: (error: unknown) => TypedWorkflowErrorCode | undefined;
-  /** Names a recoverable product failure more precisely than source-collection-failed. */
-  classifyFailure?: (error: unknown) => TypedWorkflowErrorCode | undefined;
   /**
    * Collects the selected Attached Preview Products (ADR 0051) after every
    * verified product has run. Build it with `attachedPreviewRun`; it is
@@ -546,8 +542,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         try {
           await options.assertSession();
         } catch (sessionError) {
-          const sessionCode = options.classifyFatal?.(sessionError)
-            ?? classifyFailure({ error: sessionError, events: SESSION_CHECK, stopped: false });
+          const sessionCode = classifyFailure({ error: sessionError, events: SESSION_CHECK, stopped: false });
           const existing = completedByType.get(typeId);
           completedByType.set(typeId, createOutcome(typeId, "failed", existing?.itemCount ?? 0, existing?.committedCount ?? 0, {
             errorCode: sessionCode,
@@ -556,9 +551,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           throw new ProductCollectionInterruptedError(sessionCode, summary);
         }
       };
-      const errorCode = options.classifyFatal?.(error)
-        ?? options.classifyFailure?.(error)
-        ?? classifyFailure({ error, events: productEvidence(failedStages), stopped: signal.aborted });
+      const errorCode = classifyFailure({ error, events: productEvidence(failedStages), stopped: signal.aborted });
 
       if (WORKFLOW_FAILURE_ENDS_RUN[errorCode]) {
         const current = completedByType.get(typeId);

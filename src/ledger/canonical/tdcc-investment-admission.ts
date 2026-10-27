@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { FailureCodeError } from "../../lib/automation/workflow-failures.ts";
 import {
   admitCanonicalInvestmentCapture,
   type InvestmentCaptureInput,
@@ -22,9 +23,9 @@ import {
 } from "../../lib/institutions/institutions.ts";
 
 /** A TR001, TR002, or TR051V1 response that breaks the investment contract. The whole attempted capture is cancelled. */
-export class TdccInvestmentContractError extends Error {
+export class TdccInvestmentContractError extends FailureCodeError {
   constructor(message: string) {
-    super(message);
+    super("source-validation-failed", message);
     this.name = "TdccInvestmentContractError";
   }
 }
