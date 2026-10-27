@@ -147,7 +147,6 @@ function verificationHost(input: {
   onAudio?: (session: string) => void;
   onImage?: (session: string) => void;
   onInput?: (session: string, targetId: string, contract: HumanAssistanceContractInput) => void;
-  onResume?: (session: string, stageId: string) => void;
 } = {}): ProviderVerificationHost {
   return {
     async captureChallengeImage(session) {
@@ -173,11 +172,6 @@ function verificationHost(input: {
       return { accepted: true };
     },
     async injectAnswer() {},
-    async probePostSubmit(session, contract, resume) {
-      input.onResume?.(session, contract.stageId);
-      await resume();
-      return "none";
-    },
     async inspectCompletion(_session, contract) {
       return contract.stageId === "yuanta-trade-captcha-checkbox";
     },
@@ -228,7 +222,6 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
   let solverCalls = 0;
   const host = verificationHost({
     onAudio(session) { sessions.push(session); actions.push("capture-audio"); },
-    onResume(session, stageId) { sessions.push(session); actions.push(`resume:${stageId}`); },
   });
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
@@ -268,16 +261,14 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
         "capture-audio",
         "solve:audio-captcha",
         "answer:123456",
-        "resume:yuanta-trade-audio-verification",
         "capture-audio",
         "solve:audio-captcha",
         "answer:123456",
-        "resume:yuanta-trade-audio-verification",
         "click:captcha-checkbox",
       ],
     );
     assert.equal(solverCalls, 2);
-    assert.equal(sessions.length, 7);
+    assert.equal(sessions.length, 5);
     assert.ok(sessions.every((session) => session === run.taskRunId));
     assert.deepEqual(await readdir(artifactRoot), [], "App assistance writes no workflow files");
   } finally {

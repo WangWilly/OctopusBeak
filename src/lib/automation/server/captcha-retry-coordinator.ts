@@ -12,8 +12,8 @@ import {
 import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
-  appProviderPostSubmitProbe,
   appWorkflowRoutesVerification,
+  resumeWithoutPostSubmitProbe,
   routeWaitingRunVerification,
   sourceVerificationRoute,
   type VerificationRoutingOutcome,
@@ -199,7 +199,7 @@ export async function runCaptchaRetryCampaign(
                   return status === "completed" || status === "partial"
                     ? "none" : "unrecognized-dialog";
                 }
-                : appProviderPostSubmitProbe(pageForRun),
+                : resumeWithoutPostSubmitProbe,
               onChallengeCaptured,
               settings: launchVerificationSettings,
             });

@@ -50,7 +50,7 @@ export type VerificationRoutingDependencies = {
     contract: HumanAssistanceContract,
     answer: string,
   ) => Promise<void>;
-  probePostSubmit?: ProviderVerificationHost["probePostSubmit"];
+  probePostSubmit?: VerificationPostSubmitProbe;
   injectSelections: (
     taskRunId: string,
     contract: HumanAssistanceContract,
@@ -74,6 +74,18 @@ export type VerificationRoutingDependencies = {
     contract: HumanAssistanceContract,
   ) => Promise<boolean>;
 };
+
+/** What the provider made of a submitted answer once the workflow resumed. */
+export type VerificationPostSubmitOutcome =
+  | "none"
+  | "provider-rejected"
+  | "unrecognized-dialog";
+
+export type VerificationPostSubmitProbe = (
+  session: string,
+  contract: HumanAssistanceContract,
+  resume: () => Promise<void>,
+) => Promise<VerificationPostSubmitOutcome>;
 
 export const MAX_CHALLENGES_PER_ROUND = 5;
 
@@ -184,20 +196,14 @@ export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new 
   VERIFIED_SOURCES.filter((source) => source.workflow.verification?.rejection !== undefined).map((source) => source.task.id),
 );
 
-export function appProviderPostSubmitProbe(pageForRun: PageForRun): ProviderVerificationHost["probePostSubmit"] {
-  const host = createProviderVerificationHost({ pageForRun });
-  return async (viewerKey, contract, resume) =>
-    await host.probePostSubmit(
-      viewerKey,
-      contract,
-      resume,
-      async () => {
-        const page = pageForRun(viewerKey);
-        if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
-        await page.context().close();
-      },
-    );
-}
+/**
+ * Resume a workflow that does not report its own CAPTCHA outcome. No
+ * provider probes the page after submit, so its outcome is always "none".
+ */
+export const resumeWithoutPostSubmitProbe: VerificationPostSubmitProbe = async (_session, _contract, resume) => {
+  await resume();
+  return "none";
+};
 
 export async function routeVerificationActor(input: {
   contract: HumanAssistanceContract | null;
@@ -322,7 +328,7 @@ export type VerificationRoutingSeams = {
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
   refreshChallenge?: VerificationRoutingDependencies["refreshChallenge"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
-  providerProbePostSubmit: ProviderVerificationHost["probePostSubmit"];
+  providerProbePostSubmit: VerificationPostSubmitProbe;
   providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];

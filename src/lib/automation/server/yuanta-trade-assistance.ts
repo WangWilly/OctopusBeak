@@ -11,6 +11,7 @@ import {
 } from "./provider-verification.ts";
 import {
   routeWaitingRunVerification,
+  type VerificationPostSubmitOutcome,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
 import { automationViewer, type PageForRun } from "./automation-viewer.ts";
@@ -113,13 +114,6 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
     captureChallengeAudio: guardedAsync(signal, host.captureChallengeAudio),
     sendInput: guardedAsync(signal, host.sendInput),
     injectAnswer: guardedAsync(signal, host.injectAnswer),
-    probePostSubmit: guardedAsync(signal, async (viewerKey, contract, resume) => (
-      host.probePostSubmit(
-        viewerKey,
-        contract,
-        guardedAsync(signal, async () => resume()),
-      )
-    )),
     inspectCompletion: guardedAsync(signal, host.inspectCompletion),
   };
 }
@@ -235,7 +229,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
       : {}),
     providerProbePostSubmit: guardedAsync(
       request.signal,
-      async (viewerKey, contract, resume) => {
+      async (viewerKey, contract, resume): Promise<VerificationPostSubmitOutcome> => {
         if (
           contract.stageId === "yuanta-trade-audio-verification"
           && !audioAnswerInjected
@@ -264,11 +258,8 @@ export async function routeYuantaTradeAppAssistanceRequest(
             return "none";
           }
         }
-        return host.probePostSubmit(
-          viewerKey,
-          contract,
-          async () => { await resume(); },
-        );
+        await resume();
+        return "none";
       },
     ),
     resumeAppWorkflow: async () => {

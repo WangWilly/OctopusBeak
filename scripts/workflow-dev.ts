@@ -30,9 +30,8 @@ import {
 import type { PGliteWorkflowRunItem } from "../src/ledger/pglite/workflow-run.ts";
 import type { PageForRun } from "../src/lib/automation/server/automation-viewer.ts";
 import {
-  WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
-  appProviderPostSubmitProbe,
   appWorkflowRoutesVerification,
+  resumeWithoutPostSubmitProbe,
   routeVerificationActor,
   verificationConfidenceThreshold,
   verificationRoutingDependencies,
@@ -315,9 +314,7 @@ export function createLocalSolverHumanAssistancePort(
               resolve(completed);
             },
             finalizeFailed: (message) => { throw new Error(message); },
-            providerProbePostSubmit: WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(options.workflowId)
-              ? async (_session, _contract, resume) => { await resume(); return "none"; }
-              : appProviderPostSubmitProbe(pageForRun),
+            providerProbePostSubmit: resumeWithoutPostSubmitProbe,
           }),
         }).then(
           (outcome) => outcome.kind === "resumed" ? undefined : outcome.kind,
