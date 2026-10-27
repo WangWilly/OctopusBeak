@@ -67,6 +67,10 @@ import {
   type SinopacIdentityRawRow,
   type SinopacIdentitySiteAssessment,
 } from "./sinopac-identity-evidence.ts";
+import {
+  matchCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import {
@@ -346,27 +350,37 @@ export function buildSinopacCurrentDepositBalanceCapture(
   };
 }
 
-export function indexSinopacCurrentDepositFinancialCaptures(
-  financialCaptures: readonly ExistingSinopacFinancialCapture[],
-): ReadonlyMap<string, ExistingSinopacFinancialCapture> {
-  const result = new Map<string, ExistingSinopacFinancialCapture>();
-  for (const candidate of financialCaptures) {
-    const sourceAccountKey =
-      candidate.identity.sourceAccountKey ?? candidate.identity.accountNo;
-    const key = `${candidate.identity.stream}\u0000${sourceAccountKey}\u0000${candidate.sourceCurrency}`;
-    const prior = result.get(key);
-    if (
-      prior &&
-      (prior.identity.sourceConnectionKey !== candidate.identity.sourceConnectionKey ||
-        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
-        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
-    ) {
-      throw new Error("SinoPac current deposit identities are ambiguous across financial captures.");
-    }
-    if (!prior) result.set(key, candidate);
-  }
-  return result;
+function sinopacCaptureAccount(capture: ExistingSinopacFinancialCapture): string {
+  const sourceAccountKey = capture.identity.sourceAccountKey ?? capture.identity.accountNo;
+  return `${capture.identity.stream}\u0000${sourceAccountKey}`;
 }
+
+/**
+ * SinoPac keys a balance by stream, source account and currency. A row for an
+ * account the run never admitted is skipped, but a row for an admitted account
+ * in another currency is a currency mismatch. The first capture under a key wins.
+ */
+export const sinopacCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  SinopacCurrentDepositBalanceRow,
+  ExistingSinopacFinancialCapture
+> = {
+  captureKey: (capture) => `${sinopacCaptureAccount(capture)}\u0000${capture.sourceCurrency}`,
+  rowKey: (row) => `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest,
+  ambiguousMessage: "SinoPac current deposit identities are ambiguous across financial captures.",
+  unmatched: {
+    kind: "skip",
+    throwWhenAccountAdmitted: {
+      rowAccount: (row) => `${row.stream}\u0000${row.sourceAccountKey}`,
+      captureAccount: sinopacCaptureAccount,
+      message: "SinoPac current deposit currency does not match the existing statement scope.",
+    },
+  },
+};
 
 export const SINOPAC_LOGIN_URL = LOGIN_URL;
 
@@ -1645,18 +1659,12 @@ export async function stageSinopacDeposit(
       throw error;
     }
     signal.throwIfAborted();
-    const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
+    const { matched } = matchCurrentBalanceCaptures(
+      currentRows,
       financialCapturesForCurrent,
+      sinopacCurrentBalanceCaptureMatching,
     );
-    for (const row of currentRows) {
-      const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
-      const matching = existingByIdentity.get(exactKey);
-      if (!matching) {
-        const prefix = `${row.stream}\u0000${row.sourceAccountKey}\u0000`;
-        if ([...existingByIdentity.keys()].some((key) => key.startsWith(prefix)))
-          throw new Error("SinoPac current deposit currency does not match the existing statement scope.");
-        continue;
-      }
+    for (const { row, capture: matching } of matched) {
       try {
         const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
         balanceItems.push({
