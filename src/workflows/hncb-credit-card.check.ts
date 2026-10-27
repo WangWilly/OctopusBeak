@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import type { Frame, Page } from "playwright";
+import type { Page } from "playwright";
 import type { PreviewCreditCollection, PreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -14,7 +14,13 @@ import {
   type HncbCardPage,
   type HncbCardRange,
 } from "./hncb-credit-card.ts";
-import { runHncbProviderWorkflow, runHncbStatements } from "./hncb-statements.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import {
+  readHncbDepositSource,
+  runHncbProviderWorkflow,
+  runHncbStatements,
+  stageHncbDeposit,
+} from "./hncb-statements.ts";
 
 const NOW = "2026-10-15T02:00:00.000Z";
 const DATE = "Thu, 15 Oct 2026 02:00:00 GMT";
@@ -251,26 +257,35 @@ function depositRun(options: Readonly<{
     accountFilters: [],
     statementTypes: options.statementTypes ?? ["deposit"],
   }, {
+    signal: options.signal ?? new AbortController().signal,
+    text: strictSourceText,
+    event: async () => undefined,
     financialCommit: options.financialCommit ?? { execute: committedResult },
-    ...(options.signal ? { signal: options.signal } : {}),
+  }, {
     ...(options.attached ? { attached: options.attached } : {}),
-    readAccountOptions: async () => [{ value: depositAccount, label: `HNCB ${depositAccount}` }],
-    queryAccount: async () => ({} as Frame),
-    readCurrentDepositBalances: async () => [],
-    readCurrentDepositOverviewBalances: async () => [],
-    downloadStatement: async () => {
-      if (options.downloadFails) throw new Error("export page changed");
-      return {
-        account: depositAccount,
-        accountId: depositAccount,
-        queryPeriod: "2026/08/01-2026/08/31",
-        currency: "TWD",
-        rows: [["2026/08/02", "09:10:11", "2026/08/03", "TWD", "100", "", "900", "fixture", "", "", ""]],
-        filename: "hncb-domestic-deposit-export.xls",
-        byteLength: exportBytes.byteLength,
-        contentDigest: `sha256:${createHash("sha256").update(exportBytes).digest("base64url")}`,
-      };
-    },
+    collectDeposit: async (_page, input, context, product) => await stageHncbDeposit(
+      await readHncbDepositSource({
+        accounts: async () => [{ value: depositAccount, label: `HNCB ${depositAccount}` }],
+        query: async () => ({
+          download: async () => {
+            if (options.downloadFails) throw new Error("export page changed");
+            return {
+              account: depositAccount,
+              accountId: depositAccount,
+              queryPeriod: "2026/08/01-2026/08/31",
+              currency: "TWD",
+              rows: [["2026/08/02", "09:10:11", "2026/08/03", "TWD", "100", "", "900", "fixture", "", "", ""]],
+              filename: "hncb-domestic-deposit-export.xls",
+              byteLength: exportBytes.byteLength,
+              contentDigest: `sha256:${createHash("sha256").update(exportBytes).digest("base64url")}`,
+            };
+          },
+        }),
+      }, input, context, product),
+      context,
+      product,
+      async () => [],
+    ),
   });
 }
 
