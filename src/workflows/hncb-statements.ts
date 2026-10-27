@@ -64,6 +64,10 @@ import { withAbort } from "./abort.ts";
 import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import {
+  matchCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -305,31 +309,32 @@ export function buildHncbCurrentDepositBalanceCapture(
   };
 }
 
-export function indexHncbCurrentDepositFinancialCaptures(
-  financialCaptures: readonly ExistingHncbFinancialCapture[],
-): ReadonlyMap<string, ExistingHncbFinancialCapture> {
-  const existingByAccountNumber = new Map<string, ExistingHncbFinancialCapture>();
-  for (const candidate of financialCaptures) {
-    const accountNumber = candidate.identity.accountNumber?.value;
-    if (!accountNumber) continue;
-    const prior = existingByAccountNumber.get(accountNumber);
-    if (
-      prior &&
-      (prior.identity.sourceConnectionKey !==
-        candidate.identity.sourceConnectionKey ||
-        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
-        (prior.identity.sourceAccountKey ?? prior.identity.accountNo) !==
-          (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) ||
-        prior.identity.subjectDigest !== candidate.identity.subjectDigest ||
-        (prior.identity.currency ?? null) !== (candidate.identity.currency ?? null))
-    )
-      throw new Error(
-        "HNCB current deposit identities are ambiguous across financial captures.",
-      );
-    if (!prior) existingByAccountNumber.set(accountNumber, candidate);
-  }
-  return existingByAccountNumber;
-}
+/**
+ * HNCB keys a balance by the full account number. A capture without account
+ * number evidence is left out of the index, and a row with no admitted capture
+ * fails the run. The first capture under a number wins.
+ */
+export const hncbCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ accountNumber: string }>,
+  ExistingHncbFinancialCapture
+> = {
+  captureKey: (capture) => capture.identity.accountNumber?.value || undefined,
+  rowKey: (row) => row.accountNumber,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    (kept.identity.sourceAccountKey ?? kept.identity.accountNo) ===
+      (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest &&
+    (kept.identity.currency ?? null) === (candidate.identity.currency ?? null),
+  ambiguousMessage: "HNCB current deposit identities are ambiguous across financial captures.",
+  unmatched: {
+    kind: "throw",
+    message:
+      "HNCB current deposit snapshot contains an account without existing full account-number evidence.",
+  },
+};
 
 const sourceTransactionHeaders = [
   "交易日期",
@@ -1297,20 +1302,14 @@ export async function stageHncbDeposit(
       },
     });
     const currentObservedAt = hncbObservedAt();
-    const existingByAccountNumber = indexHncbCurrentDepositFinancialCaptures(
+    const { matched } = matchCurrentBalanceCaptures(
+      currentRows.map((row) => ({ ...row, observedAt: currentObservedAt })),
       financialCaptures,
+      hncbCurrentBalanceCaptureMatching,
     );
-    currentBalanceCaptures = currentRows.map((unadjustedRow) => {
-      const row = { ...unadjustedRow, observedAt: currentObservedAt };
-      const matching = existingByAccountNumber.get(row.accountNumber);
-      if (!matching)
-        throw new Error(
-          "HNCB current deposit snapshot contains an account without existing full account-number evidence.",
-        );
-      return admitCurrentDepositBalanceCapture(
-        buildHncbCurrentDepositBalanceCapture(row, matching),
-      );
-    });
+    currentBalanceCaptures = matched.map(({ row, capture }) =>
+      admitCurrentDepositBalanceCapture(buildHncbCurrentDepositBalanceCapture(row, capture)),
+    );
   }
 
   product.stage(
