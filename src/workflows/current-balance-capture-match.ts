@@ -36,6 +36,12 @@ export type CurrentBalanceCaptureMatching<Row, Capture> = Readonly<{
    */
   sameIdentity: (kept: Capture, candidate: Capture) => boolean;
   ambiguousMessage: string;
+  /**
+   * A bank whose key omits the source connection and identity epoch declares
+   * that every admitted capture shares one scope; captures that span more
+   * than one throw `message` before anything is indexed.
+   */
+  oneScope?: Readonly<{ scope: (capture: Capture) => string; message: string }>;
   unmatched: CurrentBalanceUnmatchedPolicy<Row, Capture>;
 }>;
 
@@ -51,11 +57,14 @@ export type CurrentBalanceCaptureIndex<Row, Capture> = Readonly<{
   match: <Matched extends Row>(rows: readonly Matched[]) => CurrentBalanceCaptureMatch<Matched, Capture>;
 }>;
 
-/** Index the admitted captures, throwing when a key is ambiguous. */
+/** Index the admitted captures, throwing when their scope or a key is ambiguous. */
 export function indexCurrentBalanceCaptures<Row, Capture>(
   captures: readonly Capture[],
   matching: CurrentBalanceCaptureMatching<Row, Capture>,
 ): CurrentBalanceCaptureIndex<Row, Capture> {
+  const oneScope = matching.oneScope;
+  if (oneScope && new Set(captures.map(oneScope.scope)).size > 1)
+    throw new Error(oneScope.message);
   const index = new Map<string, Capture>();
   for (const candidate of captures) {
     const key = matching.captureKey(candidate);

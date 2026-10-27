@@ -682,10 +682,9 @@ export function buildPostCurrentDepositBalanceCapture(
 /**
  * Chunghwa Post keys a balance by each capture's own stream and source account
  * key. Every Post capture carries one constant source connection and the
- * identity epoch of the run's single human attestation manifest, so the
- * connection and epoch belong to the identity a shared key must agree on
- * rather than to the key. A row with no admitted capture fails the run. The
- * first capture wins.
+ * identity epoch of the run's single human attestation manifest, so captures
+ * spanning more than one connection or epoch fail closed before matching. A
+ * row with no admitted capture fails the run. The first capture wins.
  */
 export const postCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
   Readonly<{ stream: string; sourceAccountKey: string }>,
@@ -703,6 +702,11 @@ export const postCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
     kept.identity.subjectDigest === candidate.identity.subjectDigest &&
     kept.identity.currency === candidate.identity.currency,
   ambiguousMessage: "Post current deposit identities are ambiguous across financial captures.",
+  oneScope: {
+    scope: ({ identity }) => `${identity.sourceConnectionKey}\u0000${identity.identityEpochKey}`,
+    message:
+      "Post current deposit captures span more than one source connection or identity epoch.",
+  },
   unmatched: {
     kind: "throw",
     message:
