@@ -20,10 +20,8 @@ import {
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import type { CommitAttemptRecorder, CommitAttemptReport } from "../commit-attempt.ts";
-import {
-  classifyTypedWorkflowFailure,
-  summarizeInterruptedProductCollection,
-} from "./typed-workflow-outcome.ts";
+import { classifyFailure } from "../failure-classification.ts";
+import { summarizeInterruptedProductCollection } from "./typed-workflow-outcome.ts";
 import {
   appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
@@ -495,7 +493,7 @@ export async function runAppWorkflowWorker(
     const summary = summarizeInterruptedProductCollection(error);
     const errorCode = protocolFailure
       ? "protocol-invalid"
-      : classifyTypedWorkflowFailure(error, events, controller.signal.aborted);
+      : classifyFailure({ error, events, stopped: controller.signal.aborted });
     if (errorCode === "cancelled" && controller.signal.aborted && !protocolFailure) {
       try {
         send({

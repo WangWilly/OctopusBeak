@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { EventEmitter } from "node:events";
 import type { Page } from "playwright";
 import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
-import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
+import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { reportedVerificationPort } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowHumanAssistancePort } from "../lib/automation/workflow-executor.ts";
@@ -56,7 +56,7 @@ export function recordedRun(page: Page, assist: Assist) {
     context,
     controller,
     codes,
-    classify: (error: unknown) => classifyTypedWorkflowFailure(error, events, controller.signal.aborted),
+    classify: (error: unknown) => classifyFailure({ error, events, stopped: controller.signal.aborted }),
   };
 }
 

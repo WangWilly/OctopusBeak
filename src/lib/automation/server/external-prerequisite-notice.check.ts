@@ -10,7 +10,7 @@ import { userActionForFailure, workflowFailureExplanation } from "../workflow-fa
 import { openActiveTaskRun, type TaskRunReport } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { YUANTA_SERVISIGN_PREREQUISITE } from "./sources/yuanta-trade.ts";
-import { classifyTypedWorkflowFailure } from "./typed-workflow-outcome.ts";
+import { classifyFailure } from "../failure-classification.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
@@ -51,10 +51,11 @@ async function runYuantaTrade(report: TaskRunReport, unavailable: boolean) {
 }
 
 test("a missing external component is its own failure, not a sign-in failure", () => {
-  const code = classifyTypedWorkflowFailure(
-    new ExternalPrerequisiteUnavailableError("yuanta-servisign"),
-    missingComponent,
-  );
+  const code = classifyFailure({
+    error: new ExternalPrerequisiteUnavailableError("yuanta-servisign"),
+    events: missingComponent,
+    stopped: false,
+  });
   assert.equal(code, "external-prerequisite-unavailable");
   assert.equal(userActionForFailure(code), null, "the in-app notice, not an OS notification, guides the repair");
   assert.match(workflowFailureExplanation(code, "zh-TW") ?? "", /元件/u);
