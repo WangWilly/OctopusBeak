@@ -14,6 +14,7 @@ import {
   type CurrentDepositSourceRecordInput,
   type CurrentDepositTimeEvidence,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import type { PGliteCanonicalFinancialCommitRequest } from "../ledger/pglite/canonical-source-store.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "cathay/domestic-deposit/current-balance-v1" as const;
@@ -238,6 +239,52 @@ export function buildCathayCurrentDepositBalanceCaptures(
     });
   }
   return captures;
+}
+
+type CathayDomesticAdmittedRequest = Readonly<{
+  capture: Pick<
+    PGliteCanonicalFinancialCommitRequest["capture"],
+    "sourceConnectionKey" | "identityEpoch" | "stream"
+  >;
+  account: Pick<PGliteCanonicalFinancialCommitRequest["account"], "sourceAccountKey">;
+}>;
+
+/** Attach domestic current balances to the run's admitted statement captures,
+ * taking connection, epoch, stream, and account key from those captures. */
+export function buildCathayDomesticCurrentDepositBalanceCaptures(
+  rows: readonly CathayCurrentDepositBalanceRow[],
+  admitted: readonly CathayDomesticAdmittedRequest[],
+): readonly CurrentDepositBalanceCaptureInput[] {
+  const first = admitted[0];
+  if (
+    !first ||
+    admitted.some(
+      (request) =>
+        request.capture.sourceConnectionKey !== first.capture.sourceConnectionKey ||
+        request.capture.identityEpoch !== first.capture.identityEpoch ||
+        request.capture.stream !== first.capture.stream,
+    )
+  ) {
+    throw new Error("Cathay domestic admitted captures do not share one source identity.");
+  }
+  const admittedKeys = new Set(admitted.map((request) => request.account.sourceAccountKey));
+  const selectedRows = rows.filter(
+    (row) => row.kind === "domestic" && admittedKeys.has(row.sourceAccountKey),
+  );
+  if (
+    [...admittedKeys].some((key) => !selectedRows.some((row) => row.sourceAccountKey === key)) ||
+    selectedRows.some((row) => row.stream !== first.capture.stream)
+  ) {
+    throw new Error("Cathay domestic current balance source omitted a selected account.");
+  }
+  const { sourceConnectionKey, identityEpoch } = first.capture;
+  return buildCathayCurrentDepositBalanceCaptures(selectedRows, {
+    sourceConnectionKey,
+    identityEpochKey: identityEpoch,
+    subjectDigest: cathayCurrentSubjectDigest(sourceConnectionKey, identityEpoch),
+    observedAt: selectedRows[0]!.observedAt,
+    scopeDate: selectedRows[0]!.observedAt.slice(0, 10),
+  });
 }
 
 export function cathayCurrentSubjectDigest(
