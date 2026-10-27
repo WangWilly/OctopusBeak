@@ -6,7 +6,6 @@ import test from "node:test";
 import type {
   HumanAssistanceContractInput,
 } from "../human-assistance.ts";
-import type { VerificationSolver } from "./verification-solver.ts";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -15,16 +14,51 @@ import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assis
 import { openExecutionForCheck } from "./task-run-check-support.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
   routeYuantaTradeAppAssistanceRequest,
   type YuantaTradeAppAssistanceDependencies,
 } from "./yuanta-trade-assistance.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { after, before } from "node:test";
+import { chromium, type Browser, type Page } from "playwright";
+import { openSyntheticPage, scriptedSolver } from "./verification-page-check-support.ts";
 
 const noHostedPage = () => null;
 
 const TASK_ID = "yuanta-trade-statements";
+const AUDIO_INPUT_RECT = { x: 10, y: 80, width: 120, height: 30 };
+const CHECKBOX_RECT = { x: 10, y: 20, width: 32, height: 32 };
+const AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
+
+const at = (rect: { x: number; y: number; width: number; height: number }) =>
+  `position:absolute;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;margin:0;box-sizing:border-box`;
+
+/** Yuanta Trade's sign-in verification: the audio code field and the CAPTCHA checkbox. */
+function loginPage(options: { checkboxSticks?: boolean } = {}) {
+  return `<body style="margin:0">
+    <input id="chbYCaptchaV2" type="checkbox" style="${at(CHECKBOX_RECT)}"
+      ${options.checkboxSticks === false ? 'onclick="return false"' : ""}>
+    <input id="audio-code" style="${at(AUDIO_INPUT_RECT)}">
+  </body>`;
+}
+
+let browser: Browser;
+before(async () => { browser = await chromium.launch({ headless: true }); });
+after(async () => { await browser.close(); });
+
+async function openLoginPage(options: { audio?: boolean; checkboxSticks?: boolean } = {}) {
+  return openSyntheticPage(browser, loginPage(options), options.audio === false
+    ? []
+    : [{ path: AUDIO_PATH, contentType: "audio/wav", body: Buffer.from("fixture audio") }]);
+}
+
+/** The run's page lookup, recording every run id it is asked for. */
+function hostedPage(taskRunId: string, page: Page, lookups: string[] = []) {
+  return (candidate: string) => {
+    lookups.push(candidate);
+    return candidate === taskRunId ? page : null;
+  };
+}
 
 function audioContract(): HumanAssistanceContractInput {
   return {
@@ -43,7 +77,7 @@ function audioContract(): HumanAssistanceContractInput {
       label: "Verification code",
       semanticId: "yuanta-trade.login.audio-code-input",
       modes: ["type"],
-      rect: { x: 10, y: 20, width: 120, height: 30 },
+      rect: AUDIO_INPUT_RECT,
     }],
     contextRegions: [{
       id: "audio-verification",
@@ -66,7 +100,7 @@ function checkboxContract(): HumanAssistanceContractInput {
       label: "CAPTCHA checkbox",
       semanticId: "yuanta-trade.login.captcha-checkbox",
       modes: ["click"],
-      rect: { x: 10, y: 20, width: 32, height: 32 },
+      rect: CHECKBOX_RECT,
     }],
     contextRegions: [{
       id: "captcha-control",
@@ -143,41 +177,6 @@ function certificateContract(): HumanAssistanceContractInput {
   };
 }
 
-function verificationHost(input: {
-  onAudio?: (session: string) => void;
-  onImage?: (session: string) => void;
-  onInput?: (session: string, targetId: string, contract: HumanAssistanceContractInput) => void;
-} = {}): ProviderVerificationHost {
-  return {
-    async captureChallengeImage(session) {
-      input.onImage?.(session);
-      return Buffer.from("fixture image");
-    },
-    async isChallengeImageCurrent() { return true; },
-    handlesChallengeImage: (contract) => contract.challengeImageRegion?.semanticId
-      === "yuanta-trade.login.challenge-image",
-    refreshesChallengeImage: () => false,
-    async refreshChallengeImage() { return false; },
-    handlesChallengeAudio: (contract) => contract.challengeAudioSource?.semanticId
-      === "yuanta-trade.login.audio-challenge",
-    async captureChallengeAudio(session) {
-      input.onAudio?.(session);
-      return Buffer.from("fixture audio");
-    },
-    async sendInput(session, rawInput) {
-      const targetId = typeof rawInput === "object" && rawInput !== null && "targetId" in rawInput
-        ? String(rawInput.targetId)
-        : "";
-      input.onInput?.(session, targetId, imageContract());
-      return { accepted: true };
-    },
-    async injectAnswer() {},
-    async inspectCompletion(_session, contract) {
-      return contract.stageId === "yuanta-trade-captcha-checkbox";
-    },
-  };
-}
-
 async function createRun() {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const provider = createPgliteOperationalProvider(store);
@@ -217,114 +216,100 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
   const artifactRoot = await mkdtemp(join(tmpdir(), "yuanta-trade-assistance-"));
   const originalCwd = process.cwd();
   const { store, provider, run } = await createRun();
-  const actions: string[] = [];
-  const sessions: string[] = [];
-  let solverCalls = 0;
-  const host = verificationHost({
-    onAudio(session) { sessions.push(session); actions.push("capture-audio"); },
+  const page = await openLoginPage();
+  const lookups: string[] = [];
+  const answers: string[] = [];
+  const solver = scriptedSolver((input) => {
+    assert.equal(input.challengeKind, "audio-captcha");
+    assert.deepEqual(input.audio, Buffer.from("fixture audio"));
+    return { answer: "123456", confidence: 0.99 };
   });
   const dependencies: YuantaTradeAppAssistanceDependencies = {
     settings: solverSettings,
-    pageForRun: noHostedPage,
-    verificationHost: host,
-    routeOptions: {
-      solver: {
-        async solve(input) {
-          solverCalls += 1;
-          actions.push(`solve:${input.challengeKind}`);
-          assert.equal(input.challengeKind, "audio-captcha");
-          return { answer: "123456", confidence: 0.99 };
-        },
-      } satisfies VerificationSolver,
-      providerInjectAnswer: async (session, _contract, answer) => {
-        sessions.push(session);
-        actions.push(`answer:${answer}`);
-      },
-      clickTarget: async (session, _contract, targetId) => {
-        sessions.push(session);
-        actions.push(`click:${targetId}`);
-      },
-    },
+    pageForRun: hostedPage(run.taskRunId, page, lookups),
+    solver,
   };
 
   try {
     process.chdir(artifactRoot);
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
-    for (const contract of [audioContract(), audioContract(), checkboxContract()]) {
+    for (const contract of [audioContract(), audioContract()]) {
       await assistance.request(contract, new AbortController().signal);
+      answers.push(await page.inputValue("#audio-code"));
+      await page.fill("#audio-code", "");
     }
+    await assistance.request(checkboxContract(), new AbortController().signal);
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
     assert.equal(finalRun?.status, "running");
-    assert.deepEqual(
-      actions,
-      [
-        "capture-audio",
-        "solve:audio-captcha",
-        "answer:123456",
-        "capture-audio",
-        "solve:audio-captcha",
-        "answer:123456",
-        "click:captcha-checkbox",
-      ],
-    );
-    assert.equal(solverCalls, 2);
-    assert.equal(sessions.length, 5);
-    assert.ok(sessions.every((session) => session === run.taskRunId));
+    assert.deepEqual(answers, ["123456", "123456"]);
+    assert.equal(solver.inputs.length, 2);
+    assert.equal(await page.isChecked("#chbYCaptchaV2"), true);
+    assert.ok(lookups.length > 0);
+    assert.ok(lookups.every((session) => session === run.taskRunId));
     assert.deepEqual(await readdir(artifactRoot), [], "App assistance writes no workflow files");
   } finally {
     process.chdir(originalCwd);
+    await page.close();
     await store.close();
     await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
+test("Yuanta Trade fails closed when the CAPTCHA checkbox does not reach its verified state", async () => {
+  const { store, provider, run } = await createRun();
+  const page = await openLoginPage({ checkboxSticks: false });
+  try {
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      settings: solverSettings,
+      pageForRun: hostedPage(run.taskRunId, page),
+    });
+    await assert.rejects(
+      assistance.request(checkboxContract(), new AbortController().signal),
+      /checkbox did not reach its verified state/u,
+    );
+  } finally {
+    await page.close();
+    await store.close();
+  }
+});
+
 test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   const { store, provider, run } = await createRun();
+  const page = await openLoginPage();
   const controller = new AbortController();
-  let solverCalls = 0;
-  const dependencies: YuantaTradeAppAssistanceDependencies = {
-    settings: solverSettings,
-    pageForRun: noHostedPage,
-    verificationHost: verificationHost(),
-    routeOptions: {
-      solver: {
-        async solve() {
-          solverCalls += 1;
-          return { answer: "123456", confidence: 0.1 };
-        },
-      },
-      providerCaptureChallengeAudio: async () => Buffer.from("fixture audio"),
-    },
-  };
-
+  const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.1 }));
   try {
-    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      settings: solverSettings,
+      pageForRun: hostedPage(run.taskRunId, page),
+      solver,
+    });
     await assert.rejects(
       Promise.race([
         assistance.request(audioContract(), controller.signal),
         new Promise<never>((_resolve, reject) => setTimeout(
           () => reject(new Error("Yuanta Trade solver silently kept waiting")),
-          1_000,
+          5_000,
         )),
       ]),
       /retryable: solver-exhausted/u,
     );
-    assert.equal(solverCalls, 1);
+    assert.equal(solver.inputs.length, 1);
+    assert.equal(await page.inputValue("#audio-code"), "");
   } finally {
     controller.abort();
+    await page.close();
     await store.close();
   }
 });
 
 test("Yuanta Trade image challenge fails explicitly in solver mode", async () => {
   const { store, provider, run } = await createRun();
-  const dependencies: YuantaTradeAppAssistanceDependencies = {
-    settings: solverSettings,
-    pageForRun: noHostedPage,
-    verificationHost: verificationHost(),
-  };
   try {
-    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      settings: solverSettings,
+      pageForRun: noHostedPage,
+    });
     await assert.rejects(
       assistance.request(imageContract(), new AbortController().signal),
       /image challenge has no supported local solver/u,
@@ -334,24 +319,24 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
   }
 });
 
-test("Yuanta Trade fails closed when the solver route does not resume the stage", async () => {
+test("Yuanta Trade fails closed when the audio challenge cannot be fetched", async () => {
   const { store, provider, run } = await createRun();
-  const dependencies: YuantaTradeAppAssistanceDependencies = {
-    settings: solverSettings,
-    pageForRun: noHostedPage,
-    verificationHost: verificationHost(),
-    routeOptions: {
-      solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
-      providerCaptureChallengeAudio: async () => null,
-    },
-  };
+  const page = await openLoginPage({ audio: false });
+  const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.99 }));
   try {
-    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      settings: solverSettings,
+      pageForRun: hostedPage(run.taskRunId, page),
+      solver,
+    });
     await assert.rejects(
       assistance.request(audioContract(), new AbortController().signal),
-      /did not complete the current stage/u,
+      /verification assistance failed closed/u,
     );
+    assert.equal(solver.inputs.length, 0);
+    assert.equal(await page.inputValue("#audio-code"), "");
   } finally {
+    await page.close();
     await store.close();
   }
 });
@@ -380,16 +365,16 @@ test("Yuanta Trade unsupported native verification fails closed in solver mode",
 
 test("Yuanta Trade assistance cancellation prevents delayed solver output from reaching the page", async () => {
   const { store, provider, run } = await createRun();
+  const page = await openLoginPage();
   let releaseSolver!: () => void;
   let solverStarted!: () => void;
   const started = new Promise<void>((resolve) => { solverStarted = resolve; });
   const delayed = new Promise<void>((resolve) => { releaseSolver = resolve; });
-  const injected: string[] = [];
-  const dependencies: YuantaTradeAppAssistanceDependencies = {
-    settings: solverSettings,
-    pageForRun: noHostedPage,
-    verificationHost: verificationHost(),
-    routeOptions: {
+  try {
+    const controller = new AbortController();
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      settings: solverSettings,
+      pageForRun: hostedPage(run.taskRunId, page),
       solver: {
         async solve() {
           solverStarted();
@@ -397,21 +382,15 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
           return { answer: "123456", confidence: 0.99 };
         },
       },
-      providerCaptureChallengeAudio: async () => Buffer.from("fixture audio"),
-      providerInjectAnswer: async (_session, _contract, answer) => { injected.push(answer); },
-    },
-  };
-
-  try {
-    const controller = new AbortController();
-    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
+    });
     const request = assistance.request(audioContract(), controller.signal);
     await started;
     controller.abort(new Error("App shutdown"));
     releaseSolver();
     await assert.rejects(request, /App shutdown/u);
-    assert.deepEqual(injected, []);
+    assert.equal(await page.inputValue("#audio-code"), "");
   } finally {
+    await page.close();
     await store.close();
   }
 });
