@@ -1,23 +1,34 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import type { Frame, Page } from "playwright";
-import { runHncbStatements, type HncbStatementsRunDependencies } from "./hncb-statements.ts";
+import type { Page } from "playwright";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import {
+  hncbCurrentDepositBalances,
+  readHncbDepositSource,
+  runHncbStatements,
+  stageHncbDeposit,
+  type HncbDepositSource,
+  type HncbReadCurrentDepositBalances,
+  type HncbStatementDownload,
+} from "./hncb-statements.ts";
 import {
   assertDepositCommitGolden,
   recordDepositCommit,
 } from "./deposit-commit-golden.ts";
 
-// runHncbProviderWorkflow drives a real HNCB page before it reaches
-// runHncbStatements, so the goldens enter at runHncbStatements: it owns source
-// admission, financial admission, current balance, and the commit.
+// runHncbProviderWorkflow signs in to a real HNCB page before it reaches
+// runHncbStatements, so the goldens enter at runHncbStatements. Its deposit
+// runner reads a fake source through the real read half, then stages through
+// the real build half: source admission, financial admission, current
+// balance, and the commit.
 const NOW = Date.parse("2026-09-01T04:00:00.000Z");
 const accountA = ["9000", "0000", "0011"].join("");
 const accountB = ["9000", "0000", "0022"].join("");
 const input = { startDate: "2026/08/01", endDate: "2026/08/31", accountFilters: [] };
 
-type Statement = Awaited<ReturnType<NonNullable<HncbStatementsRunDependencies["downloadStatement"]>>>;
-type CurrentRows = Awaited<ReturnType<NonNullable<HncbStatementsRunDependencies["readCurrentDepositBalances"]>>>;
-type OverviewRows = Awaited<ReturnType<NonNullable<HncbStatementsRunDependencies["readCurrentDepositOverviewBalances"]>>>;
+type Statement = HncbStatementDownload;
+type CurrentRows = Awaited<ReturnType<HncbReadCurrentDepositBalances>>;
+type OverviewRows = CurrentRows;
 
 function row(date: string, time: string, outflow: string, inflow: string, balance: string, memo: string): string[] {
   return [date, time, date, "TWD", outflow, inflow, balance, memo, "", "", ""];
@@ -82,6 +93,16 @@ function overviewRow(accountNumber: string, amount: string): OverviewRows[number
 
 type Account = Readonly<{ value: string; label: string; statement: Statement | null }>;
 
+function source(accounts: readonly Account[]): HncbDepositSource {
+  return {
+    accounts: async () => accounts.map(({ value, label }) => ({ value, label })),
+    query: async (account) => {
+      const { statement } = accounts.find((candidate) => candidate.value === account.value)!;
+      return statement && { download: async () => statement };
+    },
+  };
+}
+
 async function record(
   name: string,
   accounts: readonly Account[],
@@ -90,18 +111,19 @@ async function record(
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     const recorder = recordDepositCommit();
-    const output = await runHncbStatements({} as Page, input, {
-      financialCommit: recorder.financialCommit,
+    const context = {
+      signal: new AbortController().signal,
+      text: strictSourceText,
       event: recorder.event,
-      readAccountOptions: async () => accounts.map(({ value, label }) => ({ value, label })),
-      queryAccount: async (_page, account) =>
-        accounts.find((candidate) => candidate.value === account.value)!.statement
-          ? ({ account: account.value } as unknown as Frame)
-          : null,
-      downloadStatement: async (_page, _fallback, frame) =>
-        accounts.find((candidate) => candidate.value === (frame as unknown as { account: string }).account)!.statement!,
-      readCurrentDepositBalances: async () => current.detail ?? [],
-      readCurrentDepositOverviewBalances: async () => current.overview ?? [],
+      financialCommit: recorder.financialCommit,
+    };
+    const output = await runHncbStatements({} as Page, input, context, {
+      collectDeposit: async (_page, depositInput, depositContext, product) => await stageHncbDeposit(
+        await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
+        depositContext,
+        product,
+        hncbCurrentDepositBalances(async () => current.overview ?? [], async () => current.detail ?? []),
+      ),
     });
     const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);

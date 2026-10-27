@@ -5,11 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { chromium, type Frame, type Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import {
   downloadCurrentStatementInMemory,
   parseStatementExport,
+  readHncbDepositSource,
   runHncbStatements,
+  stageHncbDeposit,
+  type HncbDepositRunner,
+  type HncbDepositSource,
+  type HncbStatementDownload,
+  type HncbStatementsContext,
 } from "../../workflows/hncb-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
@@ -25,6 +31,33 @@ const exportBytes = Buffer.from(
 const parsedFixture = parseStatementExport(strictSourceText.decode(exportBytes, "big5"), account);
 assert.equal(parsedFixture.queryPeriod, "2026/08/01-2026/08/31");
 assert.equal(parsedFixture.currency, "TWD");
+
+/** The real read and build halves over one account whose query opens `download`, with no current balances. */
+function oneAccount(download: () => Promise<HncbStatementDownload>): HncbDepositRunner {
+  const source: HncbDepositSource = {
+    accounts: async () => [{ value: account, label: `HNCB ${account}` }],
+    query: async () => ({ download }),
+  };
+  return async (_page, input, context, product) => await stageHncbDeposit(
+    await readHncbDepositSource(source, input, context, product),
+    context,
+    product,
+    async () => [],
+  );
+}
+
+function runContext(
+  financialCommit: WorkflowFinancialCommitPort,
+  overrides: Partial<HncbStatementsContext> = {},
+): HncbStatementsContext {
+  return {
+    signal: new AbortController().signal,
+    text: strictSourceText,
+    event: async () => undefined,
+    financialCommit,
+    ...overrides,
+  };
+}
 
 function reply(response: ServerResponse, status: number, body: string | Buffer): void {
   response.writeHead(status, {
@@ -129,30 +162,28 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     let statementDigest: string | undefined;
     let statementByteLength = -1;
     await openExportLink();
+    const context = runContext(financialCommit, {
+      event: async (stage, _outcome, code) => { events.push({ stage, code }); },
+    });
     const output = await runHncbStatements(page, {
       startDate: "2026/08/01",
       endDate: "2026/08/31",
       accountFilters: [],
-    }, {
-      financialCommit,
-      readAccountOptions: async () => [{ value: account, label: `HNCB ${account}` }],
-      queryAccount: async (candidatePage) => candidatePage.mainFrame(),
-      readCurrentDepositBalances: async () => [],
-      readCurrentDepositOverviewBalances: async () => [],
-      event: async (stage, _outcome, code) => { events.push({ stage, code }); },
-      downloadStatement: async (candidatePage, fallbackAccount, frame, text) => {
+    }, context, {
+      collectDeposit: oneAccount(async () => {
         const statement = await downloadCurrentStatementInMemory(
-          candidatePage,
-          fallbackAccount,
-          frame,
-          text,
+          page,
+          `HNCB ${account}`,
+          page.mainFrame(),
+          context.text,
+          context.signal,
           5_000,
         );
         statementResponse = statement.sourceResponse;
         statementDigest = statement.contentDigest;
         statementByteLength = statement.byteLength;
         return statement;
-      },
+      }),
     });
 
     assert.equal(output.status, "financial-admitted");
@@ -220,6 +251,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           account,
           page.mainFrame(),
           strictSourceText,
+          new AbortController().signal,
           5_000,
         ),
         scenario.error,
@@ -273,23 +305,15 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     endDate: "2026/08/31",
     accountFilters: [],
   };
-  const dependencies = {
-    financialCommit,
-    readAccountOptions: async () => [{ value: account, label: `HNCB ${account}` }],
-    queryAccount: async () => ({} as Frame),
-    readCurrentDepositBalances: async () => [],
-    readCurrentDepositOverviewBalances: async () => [],
-  };
   const page = {} as Page;
   try {
     process.chdir(workingDirectory);
     await assert.rejects(
-      runHncbStatements(page, baseInput, {
-        ...dependencies,
-        downloadStatement: async () => {
+      runHncbStatements(page, baseInput, runContext(financialCommit), {
+        collectDeposit: oneAccount(async () => {
           strictSourceText.decode(Uint8Array.of(0x81), "big5");
           throw new Error("unreachable");
-        },
+        }),
       }),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -301,9 +325,8 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     assert.equal(commitItems.length, 0);
 
     await assert.rejects(
-      runHncbStatements(page, baseInput, {
-        ...dependencies,
-        downloadStatement: async () => ({
+      runHncbStatements(page, baseInput, runContext(financialCommit), {
+        collectDeposit: oneAccount(async () => ({
           account: account,
           accountId: account,
           queryPeriod: "2026/08/01-2026/08/31",
@@ -312,7 +335,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
           filename: "hncb-domestic-deposit-export.xls",
           byteLength: 0,
           contentDigest: "sha256:empty-export",
-        }),
+        })),
       }),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -324,10 +347,10 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     assert.equal(commitItems.length, 0);
 
     const events: Array<{ stage: string; code: string }> = [];
-    const result = await runHncbStatements(page, baseInput, {
-      ...dependencies,
+    const result = await runHncbStatements(page, baseInput, runContext(financialCommit, {
       event: async (stage, _outcome, code) => { events.push({ stage, code }); },
-      downloadStatement: async () => ({
+    }), {
+      collectDeposit: oneAccount(async () => ({
         account,
         accountId: account,
         queryPeriod: "2026/08/01-2026/08/31",
@@ -339,7 +362,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
         filename: "hncb-domestic-deposit-export.xls",
         byteLength: exportBytes.byteLength,
         contentDigest: `sha256:${createHash("sha256").update(exportBytes).digest("base64url")}`,
-      }),
+      })),
     });
     assert.equal(result.status, "financial-admitted");
     assert.equal(result.counts.accountCount, 1);
@@ -350,9 +373,8 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     const cancelled = new AbortController();
     cancelled.abort(new Error("cancelled"));
     await assert.rejects(
-      runHncbStatements(page, baseInput, {
-        ...dependencies,
-        signal: cancelled.signal,
+      runHncbStatements(page, baseInput, runContext(financialCommit, { signal: cancelled.signal }), {
+        collectDeposit: oneAccount(async () => { throw new Error("unreachable"); }),
       }),
       (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
     );
@@ -376,7 +398,7 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
   };
   const page = { async waitForEvent() { return popup; } } as never;
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
-  const run = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, 20);
+  const run = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, new AbortController().signal, 20);
   let watchdog: ReturnType<typeof setTimeout>;
   try {
     await assert.rejects(Promise.race([
@@ -389,4 +411,25 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
     releaseSubmit();
     await run.catch(() => undefined);
   }
+});
+
+test("HNCB export stops at the run's cancellation instead of its deadline", async () => {
+  let releaseSubmit!: () => void;
+  let closed = false;
+  const blockedSubmit = new Promise<void>(resolve => { releaseSubmit = resolve; });
+  const popup = {
+    async waitForLoadState() {},
+    async route() {},
+    async evaluate() { await blockedSubmit; },
+    async unroute() {},
+    async close() { closed = true; releaseSubmit(); },
+  };
+  const page = { async waitForEvent() { return popup; } } as never;
+  const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
+  const run = new AbortController();
+  const reason = new Error("run cancelled");
+  const download = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, run.signal, 60_000);
+  setTimeout(() => run.abort(reason), 10);
+  await assert.rejects(download, (error: unknown) => error === reason);
+  assert.equal(closed, true);
 });
