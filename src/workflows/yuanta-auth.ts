@@ -7,6 +7,13 @@ import {
 } from "../ledger/canonical/source-connection-identity.ts";
 import { withAbort } from "./abort.ts";
 import type { DialogDecision, FormPlan } from "./sign-in.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import {
+  YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
+  YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  YUANTA_BANK_MAIN_FRAME_NAME,
+} from "../lib/automation/yuanta-captcha.ts";
 
 export const YUANTA_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const YUANTA_BANK_ORIGIN = new URL(YUANTA_ENTRY_URL).origin;
@@ -76,11 +83,25 @@ function normalizeYuantaDialogText(message: string): string {
     .replace(/\s+/g, "");
 }
 
+/** The CAPTCHA rejection wording the Yuanta source definition declares. */
+function declaredCaptchaRejectionText(): string {
+  const evidence = YUANTA_SOURCE.workflow.verification?.rejection;
+  if (
+    typeof evidence === "object"
+    && "dialog" in evidence
+    && typeof evidence.dialog === "object"
+    && "exact" in evidence.dialog
+  ) return evidence.dialog.exact;
+  throw new Error("The Yuanta source must declare its CAPTCHA rejection as exact dialog text.");
+}
+
+const CAPTCHA_REJECTION_TEXT = normalizeYuantaDialogText(declaredCaptchaRejectionText());
+
 function classifyYuantaBankDialogMessage(
   message: string,
 ): YuantaBankDialogCategory {
   const normalized = normalizeYuantaDialogText(message);
-  if (normalized === normalizeYuantaDialogText("驗證碼不正確，請重新輸入")) {
+  if (normalized === CAPTCHA_REJECTION_TEXT) {
     return "captcha-rejected";
   }
   if (/帳號或密碼錯誤|使用者名稱或密碼錯誤/.test(normalized)) {
@@ -132,11 +153,11 @@ async function waitForMainFrame(
 ): Promise<Frame> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const frame = page.frame({ name: "main" });
+    const frame = page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME });
     if (frame) return frame;
     await page.waitForTimeout(250);
   }
-  throw new Error('Timed out waiting for frame "main".');
+  throw new Error(`Timed out waiting for frame "${YUANTA_BANK_MAIN_FRAME_NAME}".`);
 }
 
 export function yuantaBankCaptchaAssistanceStage(
@@ -149,7 +170,7 @@ export function yuantaBankCaptchaAssistanceStage(
       {
         id: "captcha-input",
         label: "CAPTCHA input",
-        semanticId: "yuanta-bank.login.captcha-input",
+        semanticId: YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
         modes: ["click", "type"],
         locator: loginFrame.locator("#gcode"),
       },
@@ -179,8 +200,8 @@ export function yuantaBankCaptchaAssistanceStage(
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",
-      semanticId: "yuanta-bank.login.captcha-image",
-      locator: loginFrame.locator('img[src*="GOTP"]:visible').first(),
+      semanticId: YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
+      locator: loginFrame.locator(YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR).first(),
     },
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: {
@@ -267,7 +288,7 @@ export async function isYuantaSignedIn(page: Page): Promise<boolean> {
   const urls = [page.url(), ...page.frames().map((frame) => frame.url())];
   if (urls.some((url) => isYuantaUnauthenticatedUrl(url))) return false;
 
-  const loginFrame = page.frame({ name: "main" });
+  const loginFrame = page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME });
   if (
     loginFrame &&
     (await hasVisibleLocator(loginFrame, YUANTA_LOGIN_FIELD_SELECTOR))
@@ -388,7 +409,7 @@ export function yuantaBankSignInPlan(credentials: YuantaCredentials): FormPlan {
     fill: (page, signal) => withAbort(fillLoginForm(page, credentials), signal),
     captcha: {
       stage: async (page) => yuantaBankCaptchaAssistanceStage(await waitForMainFrame(page)),
-      answer: (page) => (page.frame({ name: "main" }) ?? page.mainFrame()).locator("#gcode"),
+      answer: (page) => (page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME }) ?? page.mainFrame()).locator("#gcode"),
     },
     submit: async (page, signal) => {
       // Navigation may recreate the login frame while Assist is open.
