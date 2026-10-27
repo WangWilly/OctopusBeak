@@ -19,7 +19,13 @@ import {
   SINOPAC_CARD_SUMMARY_PATH,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
-import { runSinopacProviderWorkflow } from "./sinopac-statements.ts";
+import {
+  readSinopacDepositSource,
+  runSinopacProviderWorkflow,
+  stageSinopacDeposit,
+  type SinopacDepositSource,
+  type SinopacProviderWorkflowDependencies,
+} from "./sinopac-statements.ts";
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
@@ -302,14 +308,28 @@ const workflowInput = (selection: Readonly<{ statementTypes: string[]; attachedP
   ...selection,
 });
 
-const verifiedOverrides = {
-  readAccounts: async () => [{ DataText: "Synthetic TWD account", DataValue: accountId, DisplayText: "TWD" }],
+// The real read and build halves over a fake SinoPac source.
+function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDependencies {
+  return {
+    collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
+      await readSinopacDepositSource(source, depositInput, context, product),
+      depositInput,
+      context,
+      product,
+      source.readCurrentBalances,
+    ),
+  };
+}
+
+const verifiedSource: SinopacDepositSource = {
+  listAccounts: async () => [{ DataText: "Synthetic TWD account", DataValue: accountId, DisplayText: "TWD" }],
   queryTransactions: async () => ({
     Header: "SUCCESS",
     SubInfo: [{ DataText1: "2026/09/03 09:21", DataText2: "2026/09/03", DataText3: "Synthetic salary", DataText4: "-100", DataText5: "900", DataText7: "", DataText8: "" }],
   }),
-  readCurrentDepositBalances: async () => [],
+  readCurrentBalances: async () => [],
 };
+const verifiedOverrides = depositFrom(verifiedSource);
 
 test("the SinoPac workflow writes attached cards only through the preview port, after its verified commit", async () => {
   const writes: PreviewWrite[] = [];
@@ -508,8 +528,7 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
     workflowContext(writes, commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     {
-      ...verifiedOverrides,
-      queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
+      ...depositFrom({ ...verifiedSource, queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }) }),
       cardTransport: transport,
     },
   );

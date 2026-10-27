@@ -7,11 +7,17 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 import {
   decodeSinopacJsonSource,
+  readSinopacDepositSource,
   runSinopacProviderWorkflow,
+  stageSinopacDeposit,
+  type SinopacDepositSource,
   type SinopacJsonSourceResponse,
+  type SinopacProviderWorkflowDependencies,
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
+import { parseSinopacCurrentDepositBalanceSnapshot } from "../../workflows/sinopac-current-deposit-balances.ts";
+import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -20,7 +26,7 @@ import {
   type CommitAttemptReport,
 } from "./commit-attempt.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, type ProductCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -148,13 +154,43 @@ const account = {
   DisplayText: "TWD",
 };
 
+const salaryRow = {
+  DataText1: "2026/09/03 09:21",
+  DataText2: "2026/09/03",
+  DataText3: "Synthetic salary",
+  DataText4: "-100",
+  DataText5: "900",
+  DataText7: "",
+  DataText8: "",
+};
+
+function fakeSource(overrides: Partial<SinopacDepositSource> = {}): SinopacDepositSource {
+  return {
+    listAccounts: async () => [account],
+    queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [salaryRow] }),
+    readCurrentBalances: async () => [],
+    ...overrides,
+  };
+}
+
+// The real read and build halves over a fake SinoPac source.
+function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDependencies {
+  return {
+    collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
+      await readSinopacDepositSource(source, depositInput, context, product),
+      depositInput,
+      context,
+      product,
+      source.readCurrentBalances,
+    ),
+  };
+}
+
 test("SinoPac production execution exposes only the typed App provider path", async () => {
   const providerSource = await readFile(
     new URL("../../workflows/sinopac-statements.ts", import.meta.url),
     "utf8",
   );
-  assert.match(providerSource, /runSinopacProviderWorkflow/u);
-  assert.match(providerSource, /financialCommit: context\.financialCommit/u);
   assert.doesNotMatch(
     providerSource,
     /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|LibrettoWorkflowContext/u,
@@ -167,6 +203,142 @@ test("SinoPac production execution exposes only the typed App provider path", as
     providerSource,
     /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client/u,
   );
+});
+
+function productHandle(staged: ProductStageRequest[], codes: string[]): ProductCollectionHandle {
+  return {
+    stage: (...requests) => { staged.push(...requests); },
+    reportActivity: async () => undefined,
+    event: async (_stage, _outcome, code) => { codes.push(code); },
+  };
+}
+
+function currentBalanceRow(observedAt: string) {
+  return parseSinopacCurrentDepositBalanceSnapshot({
+    payload: [{
+      SubInfo: [{
+        AcctText: "Synthetic TWD account",
+        AcctValue: accountId,
+        AcctValueFormat: "###-###-#######-#",
+        Curr: "TWD",
+        CurText: "新台幣",
+        AvailBalance: "900",
+        AvailBalInt: null,
+        MaxAvail: "900",
+        OutStdLmt: "0",
+        FixBalance: "0",
+        NonTrxferFlg: "False",
+        Category: "1001",
+        DigiTalFg: "",
+      }],
+      Header: "SUCCESS",
+      Message: "",
+    }],
+    response: {
+      url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
+      status: 200,
+      method: "POST",
+      headers: {
+        "content-type": "application/json;charset=UTF-8",
+        "cache-control": "no-cache,no-store",
+        date: "Thu, 24 Sep 2026 03:59:00 GMT",
+      },
+    },
+    observedAt,
+  });
+}
+
+test("the SinoPac read half lists accounts, then reads and admits each account's windows", async () => {
+  const codes: string[] = [];
+  const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
+  const queried: string[] = [];
+  const snapshot = await readSinopacDepositSource(fakeSource({
+    listAccounts: async () => [account, { DataText: "Synthetic USD account", DataValue: "002", DisplayText: "USD" }],
+    queryTransactions: async (candidate, window, businessDate) => {
+      queried.push(`${candidate.DataValue} ${window.startDate}-${window.endDate} ${businessDate}`);
+      return { Header: "SUCCESS", SubInfo: [salaryRow] };
+    },
+  }), { ...input, currencyFilters: ["TWD"] }, context, productHandle([], codes));
+  assert.deepEqual(queried, [`${accountId} 20260903-20260903 20260903`]);
+  assert.equal(snapshot.observedAt, "2026-09-24T12:00:00.000+08:00");
+  assert.deepEqual(snapshot.accounts.map((read) => [read.capture.product, read.rowCount, read.providerNoData]), [
+    ["domestic-deposit", 1, false],
+  ]);
+  assert.deepEqual(codes, [
+    "account-list-collection-started",
+    "account-list-collected",
+    "source-collection-started",
+    "source-decoding-started",
+    "source-decoding-completed",
+    "account-window-collected",
+    "source-validation-started",
+    "source-validation-completed",
+  ]);
+});
+
+test("the SinoPac read half reports an undecodable window before it fails", async () => {
+  const codes: string[] = [];
+  const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
+  await assert.rejects(readSinopacDepositSource(fakeSource({
+    queryTransactions: async () => { throw new SourceTextIntegrityError("invalid-encoding"); },
+  }), input, context, productHandle([], codes)), SourceTextIntegrityError);
+  assert.equal(codes.at(-1), "source-decode-rejected");
+});
+
+test("a SinoPac snapshot of provider no-data stages source only and never reads current balances", async () => {
+  const codes: string[] = [];
+  const staged: ProductStageRequest[] = [];
+  const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
+  const product = productHandle(staged, codes);
+  const snapshot = await readSinopacDepositSource(fakeSource({
+    queryTransactions: async () => ({ Header: "FAIL", Message: "查無資料", SubInfo: [] }),
+  }), input, context, product);
+  let balanceReads = 0;
+  const counts = await stageSinopacDeposit(snapshot, input, context, product, async () => {
+    balanceReads += 1;
+    return [];
+  });
+  assert.equal(balanceReads, 0);
+  assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
+    "domestic-deposit:financial.source.admit",
+  ]);
+  assert.deepEqual(counts, { accountCount: 1, rowCount: 0, skippedAccountCount: 1, sourceCaptureCount: 1 });
+  assert.equal(codes.includes("current-balance-collection-started"), false);
+});
+
+test("a financial SinoPac snapshot reads current balances once and stages the matching account's balance", async () => {
+  const codes: string[] = [];
+  const staged: ProductStageRequest[] = [];
+  const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
+  const product = productHandle(staged, codes);
+  const snapshot = await readSinopacDepositSource(fakeSource(), input, context, product);
+  codes.length = 0;
+  const balanceReads: string[] = [];
+  const counts = await stageSinopacDeposit(snapshot, input, context, product, async ({ observedAt }) => {
+    balanceReads.push(observedAt);
+    return currentBalanceRow(observedAt);
+  });
+  assert.deepEqual(balanceReads, [snapshot.observedAt]);
+  assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
+    "domestic-deposit:financial.mixed.commit",
+    `current-balance:${PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND}`,
+  ]);
+  assert.deepEqual(counts, { accountCount: 1, rowCount: 1, skippedAccountCount: 0, sourceCaptureCount: 1 });
+  assert.deepEqual(codes, ["current-balance-collection-started", "current-balance-validation-completed"]);
+});
+
+test("a failed SinoPac current-balance read fails the build before anything is staged", async () => {
+  const codes: string[] = [];
+  const staged: ProductStageRequest[] = [];
+  const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
+  const product = productHandle(staged, codes);
+  const snapshot = await readSinopacDepositSource(fakeSource(), input, context, product);
+  await assert.rejects(
+    stageSinopacDeposit(snapshot, input, context, product, async () => { throw new Error("synthetic balance page failure"); }),
+    /synthetic balance page failure/u,
+  );
+  assert.deepEqual(staged, []);
+  assert.equal(codes.at(-1), "current-balance-source-rejected");
 });
 
 test("SinoPac source JSON is decoded strictly after terminal response checks", () => {
@@ -217,22 +389,7 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
   });
   try {
     process.chdir(outputDir);
-    const output = await runSinopacProviderWorkflow(context, input, {
-      readAccounts: async () => [account],
-      queryTransactions: async () => ({
-        Header: "SUCCESS",
-        SubInfo: [{
-          DataText1: "2026/09/03 09:21",
-          DataText2: "2026/09/03",
-          DataText3: "Synthetic salary",
-          DataText4: "-100",
-          DataText5: "900",
-          DataText7: "",
-          DataText8: "",
-        }],
-      }),
-      readCurrentDepositBalances: async () => [],
-    });
+    const output = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource()));
 
     assert.equal(output.status, "financial-admitted");
     assert.deepEqual(output.counts, {
@@ -277,22 +434,7 @@ test("a failed SinoPac Canonical Financial Commit is classified as a commit fail
     page: pageFixture(),
     financialCommit: failingCommit,
   });
-  const error = await runSinopacProviderWorkflow(context, input, {
-    readAccounts: async () => [account],
-    queryTransactions: async () => ({
-      Header: "SUCCESS",
-      SubInfo: [{
-        DataText1: "2026/09/03 09:21",
-        DataText2: "2026/09/03",
-        DataText3: "Synthetic salary",
-        DataText4: "-100",
-        DataText5: "900",
-        DataText7: "",
-        DataText8: "",
-      }],
-    }),
-    readCurrentDepositBalances: async () => [],
-  }).then(() => null, (thrown: unknown) => thrown);
+  const error = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource())).then(() => null, (thrown: unknown) => thrown);
 
   assert.ok(error instanceof Error);
   assert.equal(
@@ -306,11 +448,9 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
   const calls: unknown[][] = [];
   const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub(calls) });
   await assert.rejects(
-    runSinopacProviderWorkflow(context, input, {
-      readAccounts: async () => [account],
+    runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
       queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
-      readCurrentDepositBalances: async () => [],
-    }),
+    }))),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
       assert.equal(error.errorCode, "source-validation-failed");
@@ -340,19 +480,7 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
     },
   });
 
-  const output = await runSinopacProviderWorkflow(context, input, {
-    readAccounts: async () => [account],
-    queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [{
-      DataText1: "2026/09/03 09:21",
-      DataText2: "2026/09/03",
-      DataText3: "Synthetic salary",
-      DataText4: "-100",
-      DataText5: "900",
-      DataText7: "",
-      DataText8: "",
-    }] }),
-    readCurrentDepositBalances: async () => [],
-  });
+  const output = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource()));
 
   assert.equal(assistanceCalls, 1);
   assert.equal(calls.length, 1);
@@ -370,11 +498,9 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
       controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
     }),
   });
-  const running = runSinopacProviderWorkflow(context, input, {
-    readAccounts: async () => { readAccountsCalls += 1; return [account]; },
-    queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
-    readCurrentDepositBalances: async () => [],
-  });
+  const running = runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
+    listAccounts: async () => { readAccountsCalls += 1; return [account]; },
+  })));
   await new Promise((resolve) => setTimeout(resolve, 0));
   controller.abort(new Error("cancelled by test"));
   await assert.rejects(running, /cancelled by test/u);
