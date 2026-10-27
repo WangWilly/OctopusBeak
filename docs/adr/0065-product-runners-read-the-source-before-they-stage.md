@@ -16,7 +16,7 @@ Yuanta fund and Fubon credit card already worked differently: one function read 
 
 **Yuanta deposit and Fubon deposit read in two phases.** Yuanta reads current balances only after at least one statement capture was admitted as financial data. Fubon reads them after that, or when a USD-coded composite account deferred its currency proof to the balance table. Both read only when the run was not cancelled. Yuanta's deposit golden pins that a source-only run never opens the balance page. Their build half therefore takes the statement snapshot and one function that reads current balances when the build asks for them.
 
-Yuanta foreign currency, Yuanta loan, Yuanta fund, Fubon deposit and Fubon credit card follow this shape. Fubon loan and Yuanta credit card take no fake page steps and are left as they are.
+Yuanta foreign currency, Yuanta loan, Yuanta fund, Fubon deposit and Fubon credit card follow this shape. Fubon loan and Yuanta credit card take no fake page steps and are left as they are. Yuanta credit card later took the same split, with its HTML parsing in `yuanta-credit-card-parser.ts` and its full-or-partial capture decision in the build half.
 
 ## Considered options
 

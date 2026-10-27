@@ -50,6 +50,14 @@ export type YuantaCreditCardIssuerSummary = {
 const YUANTA_SUMMARY_MAX_PAGES = 100;
 
 /** Stable source scope for issuer-settled summaries found in each history query. */
+/**
+ * The settled-summary extraction contract this parser implements. The human
+ * attestation manifest names the same id, so changing how periods or balances
+ * are extracted means bumping both.
+ */
+export const YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT =
+  "yuanta-credit-card.settled-summary-parser.v7-exact-period-balance-a" as const;
+
 export const YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY =
   "yuanta-credit-card.queryHistoryDetail.settled-summary-v2" as const;
 
