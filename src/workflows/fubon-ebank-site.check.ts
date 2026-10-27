@@ -56,7 +56,9 @@ async function withFubonShell(
         case "/B2C/header.faces":
           return await html(HEADER);
         case "/B2C/home.faces":
-          return await html(`<a href="/B2C/deposit.faces">我的存款</a>
+          return await html(`<a href="/B2C/elsewhere.faces">帳務查詢說明</a>
+            <a class="task_CCCQU002" href="/B2C/statements.faces">帳務查詢</a>
+            <a href="/B2C/deposit.faces">我的存款</a>
             <a class="task_RETRY" href="javascript:void(0)"
               onclick="parent.retryClicks = (parent.retryClicks ?? 0) + 1; if (parent.retryClicks >= 2) location.href = '/B2C/retry.faces';">重試任務</a>
             <a class="task_HANDOFF" href="/B2C/direct.faces"
@@ -67,6 +69,8 @@ async function withFubonShell(
             <script>setTimeout(() => document.querySelector("._mask").remove(), 400);</script>`);
         case "/B2C/loan.faces":
           return await html(`<form id="form1" method="post" action="/B2C/loan.faces"><input name="acct" value="0012" /></form>`);
+        case "/B2C/statements.faces":
+          return await html(`<table class="CBO_totalTb"></table>`);
         case "/B2C/retry.faces":
           return await html(`<div id="retried">完成</div>`);
         case "/B2C/handoff.faces":
@@ -177,4 +181,15 @@ test("a form postback decodes its reply as strict UTF-8, and malformed bytes fai
 
     const reloaded = await site.open(LOAN);
     await assert.rejects(site.postback(reloaded.locator("form#form1"), undefined, { broken: "1" }), SourceTextIntegrityError);
+  }));
+
+test("a task class link wins over an earlier link that only shares its text", () =>
+  withFubonShell(async (page) => {
+    const site = fubonEbankSite(page, context());
+    const scope = await site.open({
+      description: "statements page",
+      link: (candidate) => [candidate.locator("a.task_CCCQU002"), candidate.locator("a").filter({ hasText: "帳務查詢" })],
+      ready: attached("table.CBO_totalTb"),
+    });
+    assert.equal(await scope.locator("table.CBO_totalTb").count(), 1);
   }));

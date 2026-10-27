@@ -45,10 +45,10 @@ const attached = async (locator: Locator) => (await locator.count().catch(() => 
  */
 const LOAN_STATEMENTS_ROUTE: FubonRoute = {
   description: "loan statement page",
-  link: (scope) =>
-    scope
-      .locator("a.task_CLNQU001.menu_CLN02")
-      .or(scope.locator("a").filter({ hasText: "貸款交易明細查詢" })),
+  link: (scope) => [
+    scope.locator("a.task_CLNQU001.menu_CLN02"),
+    scope.locator("a").filter({ hasText: "貸款交易明細查詢" }),
+  ],
   menu: "#menu_CLN",
   clickInPlace: true,
   ready: async (scope) =>

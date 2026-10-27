@@ -45,7 +45,7 @@ export type YuantaEbankSite = Readonly<{
   cid(): Promise<string | null>;
   /** Open a product's page from any signed-in page and return the scope that shows it. */
   open(route: YuantaRoute): Promise<BrowserScope>;
-  menuAction(path: string, menuId: string): Promise<void>;
+  menuAction(path: string, menuId: string, timeoutMs?: number): Promise<void>;
   chooseDuration(scope: BrowserScope, duration: YuantaDuration): Promise<void>;
   /** Decode an HTML response strictly as UTF-8. */
   readHtml(response: Response): Promise<string>;
@@ -94,7 +94,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
       return null;
     }, `Could not find ${route.description} in any frame.`, { timeoutMs });
 
-  const menuAction = async (path: string, menuId: string) => {
+  const menuAction = async (path: string, menuId: string, timeoutMs = MENU_ACTION_TIMEOUT_MS) => {
     const scope = await frames.until(async () => {
       for (const candidate of frames.scopes()) {
         const exposed = await candidate
@@ -103,7 +103,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         if (exposed) return candidate;
       }
       return null;
-    }, "Could not find YuanTa menuaction() in any frame.", { timeoutMs: MENU_ACTION_TIMEOUT_MS });
+    }, "Could not find YuanTa menuaction() in any frame.", { timeoutMs });
     await frames.race(scope.evaluate(({ action, id }) => {
       const menuaction = (window as { menuaction?: (action: string, id: string, flag: string) => void }).menuaction;
       if (typeof menuaction !== "function") throw new Error("YuanTa page did not expose menuaction().");

@@ -484,6 +484,8 @@ function toAsciiDigits(value: string): string {
  * The historical-bills page: ready once a scope's document is the
  * creditcardbillsquery page. Its served HTML is checked for product-absent
  * text and parsed for month links afterwards, as the bills read always did.
+ * A login without a card may land on a notice elsewhere instead, which is
+ * product absence, as the old bills search found it.
  */
 async function isCreditCardBillsPage(scope: BrowserScope): Promise<boolean> {
   let pathname: string;
@@ -492,10 +494,16 @@ async function isCreditCardBillsPage(scope: BrowserScope): Promise<boolean> {
   } catch {
     return false;
   }
-  return (
-    pathname === "/nib/tx/creditcardbillsquery" &&
-    (await hasAttachedLocator(scope.locator("body")))
-  );
+  if (pathname === "/nib/tx/creditcardbillsquery")
+    return await hasAttachedLocator(scope.locator("body"));
+  const bodyText = await scope.locator("body").textContent({ timeout: 500 }).catch(() => "");
+  if (isCreditCardProductAbsentText(bodyText)) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa credit-card product is available for this login.",
+      "not_held",
+    );
+  }
+  return false;
 }
 
 const CREDIT_CARD_BILLS_ROUTE: YuantaRoute = {
@@ -509,6 +517,8 @@ function isCreditCardBillsPageResponse(response: Response): boolean {
   return (
     request.method() === "GET" &&
     request.isNavigationRequest() &&
+    // A redirect carries no body; the bills read is the document it lands on.
+    response.status() < 300 &&
     new URL(response.url()).pathname === "/nib/tx/creditcardbillsquery"
   );
 }
@@ -895,7 +905,7 @@ export async function loadYuantaCreditCardSummaryPage(
     (async () => {
       if (link) await frames.race(link.click());
       else
-        await site.menuAction("creditcardsummary", "menu_creditcardsummary");
+        await site.menuAction("creditcardsummary", "menu_creditcardsummary", 60_000);
       await frames.settle();
     })(),
   ]);
