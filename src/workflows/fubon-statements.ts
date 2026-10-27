@@ -2741,7 +2741,7 @@ export async function runFubonStatements(
   const snapshot = await readFubonDepositSourceSnapshot(site, input, context, product);
   return stageFubonDeposit(snapshot, input, context, product, async (request) => {
     await product.reportActivity("query");
-    const rows = await readFubonCurrentDepositBalances(page, request);
+    const rows = await readFubonCurrentDepositBalances(site, request);
     context.text.assertIntact(JSON.stringify(rows));
     return rows;
   });

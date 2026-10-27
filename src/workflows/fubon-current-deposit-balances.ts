@@ -1,6 +1,8 @@
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Response } from "playwright";
 
+import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
+import type { FubonEbankSite } from "./fubon-ebank-site.ts";
 
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
@@ -321,20 +323,6 @@ async function tableHasCurrentDepositHeader(table: Locator): Promise<boolean> {
   return false;
 }
 
-export async function waitForFubonCurrentDepositHeader(
-  isReady: () => Promise<boolean>,
-  timeoutMs: number,
-  sleep: (milliseconds: number) => Promise<void>,
-): Promise<boolean> {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (true) {
-    if (await isReady()) return true;
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) return false;
-    await sleep(Math.min(250, remainingMs));
-  }
-}
-
 /**
  * Parse the observed table through Locator APIs. The table must contain
  * exactly twelve TD cells per data row: ten visible contract cells followed
@@ -397,48 +385,35 @@ export async function parseFubonCurrentDepositBalanceTable(
   return parseFubonCurrentDepositBalanceSnapshot({ ...input, rows: dataRows });
 }
 
-async function findExactControl(
-  page: Page,
+function findExactControl(
+  frames: FrameScope,
   text: string,
   timeoutMs: number,
 ): Promise<Locator> {
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const controls = scope.locator("a, button").filter({ hasText: matcher });
-      const count = await controls.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const control = controls.nth(index);
-        if (await control.isVisible().catch(() => false)) return control;
-      }
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Could not find Fubon control "${text}".`);
+  return frames.firstVisible(
+    (scope) => scope.locator("a, button").filter({ hasText: matcher }),
+    `Fubon control "${text}"`,
+    { timeoutMs },
+  );
 }
 
-async function findCurrentDepositTable(page: Page, timeoutMs: number): Promise<Locator> {
+async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): Promise<Locator> {
   const deadline = Date.now() + timeoutMs;
-  let candidate: Locator | undefined;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+  const table = await frames.until(async () => {
+    for (const scope of frames.scopes()) {
       const table = scope.locator(FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_SELECTOR);
-      if ((await table.count().catch(() => 0)) !== 1) continue;
-      candidate = table;
-      const remainingMs = Math.max(0, deadline - Date.now());
-      const headerReady = await waitForFubonCurrentDepositHeader(
-        () => tableHasCurrentDepositHeader(table),
-        Math.min(remainingMs, FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS),
-        (milliseconds) => page.waitForTimeout(milliseconds),
-      );
-      if (headerReady) return table;
-      return table;
+      if ((await table.count().catch(() => 0)) === 1) return table;
     }
-    await page.waitForTimeout(250);
-  }
-  if (candidate) return candidate;
-  throw new Error("Could not find Fubon current deposit table.");
+    return null;
+  }, "Could not find Fubon current deposit table.", { timeoutMs });
+  // The table can attach before its header row renders; give the header a grace period, then let the parser decide.
+  await ifFound(frames.until(
+    () => tableHasCurrentDepositHeader(table),
+    "Timed out waiting for the Fubon current deposit header.",
+    { timeoutMs: Math.min(Math.max(0, deadline - Date.now()), FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS) },
+  ));
+  return table;
 }
 
 function responseMatches(response: Response): boolean {
@@ -455,22 +430,25 @@ function responseMatches(response: Response): boolean {
 
 /** Navigate through 存款交易查詢 → 我的存款 and parse the current table. */
 export async function readFubonCurrentDepositBalances(
-  page: Page,
+  site: FubonEbankSite,
   input: Readonly<{
     observedAt: string;
     financialAuthority?: FubonCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly FubonCurrentDepositBalanceRow[]> {
+  const { frames } = site;
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const depositMenu = await findExactControl(page, "存款交易查詢", timeoutMs);
-  await depositMenu.click();
-  const myDeposit = await findExactControl(page, "我的存款", timeoutMs);
-  const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
-  await myDeposit.click();
-  const response = await responsePromise;
-  const headers = await response.allHeaders();
-  const table = await findCurrentDepositTable(page, timeoutMs);
+  const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
+  await frames.race(depositMenu.click());
+  const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
+  // The page's own response carries the HTTP Date and Cache-Control evidence, so it is paired with the click that requests it.
+  const [response] = await frames.race(Promise.all([
+    frames.page.waitForResponse(responseMatches, { timeout: timeoutMs }),
+    myDeposit.click(),
+  ]));
+  const headers = await frames.race(response.allHeaders());
+  const table = await findCurrentDepositTable(frames, timeoutMs);
   return parseFubonCurrentDepositBalanceTable(table, {
     observedAt: input.observedAt,
     financialAuthority: input.financialAuthority,
