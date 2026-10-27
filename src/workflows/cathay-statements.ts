@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
-  ProductCollectionFatalError,
   StatementComponentAbsentError,
 } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
@@ -726,7 +726,7 @@ async function cathaySignedIn(page: Page, signal: AbortSignal, progress: Progres
     .first();
   if (!(await withAbort(challenge.isVisible().catch(() => false), signal))) return false;
   await progress("device-registration-required");
-  throw new ProductCollectionFatalError("device-registration-required");
+  throw new FailureCodeError("device-registration-required");
 }
 
 /** Reports each form step as an authentication advance; nothing is reported once the attempt ends. */
@@ -768,7 +768,7 @@ export async function signInCathayForApp(context: WorkflowContext, page: Page, p
   } catch (error) {
     if (!(error instanceof SignInDeadlineError)) throw error;
     await context.event("authentication", "advanced", "authentication-sign-in-unconfirmed");
-    throw new ProductCollectionFatalError("verification-failed");
+    throw new FailureCodeError("verification-failed");
   }
 }
 

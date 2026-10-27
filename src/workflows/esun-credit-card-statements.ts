@@ -35,10 +35,10 @@ import { productRunResult, type WorkflowRunResult } from "../lib/automation/work
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   collectSelectedProducts,
-  ProductCollectionFatalError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
@@ -1390,7 +1390,7 @@ export async function runEsunCreditCardProviderWorkflow(
   const input = parsed.data;
   const creditCardSelected = input.statementTypes.includes("credit_card");
   if (!creditCardSelected && input.attachedPreviewProducts.length === 0) {
-    throw new ProductCollectionFatalError("collection-scope-changed");
+    throw new FailureCodeError("collection-scope-changed");
   }
   if (input.startDate || input.endDate) {
     throw new Error("E.SUN canonical collection requires the complete default one-year source.");

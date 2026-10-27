@@ -8,7 +8,7 @@ import type {
   PreviewPurchase,
   PreviewStatement,
 } from "../../ledger/pglite/preview-financial-data.ts";
-import { ProductCollectionFatalError } from "../automation/product-collection.ts";
+import { FailureCodeError } from "../automation/workflow-failures.ts";
 import type { PreviewHttp, PreviewHttpOpener } from "./browser-http.ts";
 import { nodeHttp } from "./node-http.ts";
 import type { PreviewProductAbsence } from "./product-collection.ts";
@@ -150,7 +150,7 @@ function asksForVerification(body: SourceRecord): boolean {
 }
 
 function protocolOutdated(): never {
-  throw new ProductCollectionFatalError("provider-protocol-outdated");
+  throw new FailureCodeError("provider-protocol-outdated");
 }
 
 function client(context: PreviewWorkflowContext, http: PreviewHttp, deviceCode: string) {

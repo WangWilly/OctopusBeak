@@ -25,6 +25,17 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
 
 export type TypedWorkflowErrorCode = typeof TYPED_WORKFLOW_ERROR_CODES[number];
 
+/** A failure whose Failure code is already known where it is thrown. */
+export class FailureCodeError extends Error {
+  readonly errorCode: TypedWorkflowErrorCode;
+
+  constructor(errorCode: TypedWorkflowErrorCode, message = "The workflow stopped with a typed failure.") {
+    super(message);
+    this.name = "FailureCodeError";
+    this.errorCode = errorCode;
+  }
+}
+
 export type UserAction =
   | "register-device"
   | "check-sign-in-details"

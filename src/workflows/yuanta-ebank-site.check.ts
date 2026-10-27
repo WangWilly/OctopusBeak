@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, yuantaRouteUrl, type YuantaRoute } from "./yuanta-ebank-site.ts";
@@ -142,7 +142,7 @@ test("an optional-cid route opens without a cid, and a required one fails as a l
     assert.ok(served.paths.includes("/nib/tx/summary"));
     await assert.rejects(
       site.open(DEPOSIT),
-      (error: unknown) => error instanceof ProductCollectionFatalError && error.errorCode === "authentication-failed",
+      (error: unknown) => error instanceof FailureCodeError && error.errorCode === "authentication-failed",
     );
   }, { cidInUrl: false }));
 
@@ -151,7 +151,7 @@ test("a shell without fmain fails as a lost session", () =>
     const site = yuantaEbankSite(page, context());
     await assert.rejects(
       site.open(DEPOSIT),
-      (error: unknown) => error instanceof ProductCollectionFatalError && error.errorCode === "authentication-failed",
+      (error: unknown) => error instanceof FailureCodeError && error.errorCode === "authentication-failed",
     );
   }, { shell: "no-fmain" }));
 

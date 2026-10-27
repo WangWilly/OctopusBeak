@@ -1,5 +1,5 @@
 import type { PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
-import { ProductCollectionFatalError } from "../automation/product-collection.ts";
+import { FailureCodeError } from "../automation/workflow-failures.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { PreviewLocalDate } from "../../ledger/pglite/preview-financial-data.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
@@ -19,7 +19,7 @@ const FAILURE_CODES = {
 
 export type PreviewFailureReason = keyof typeof FAILURE_CODES;
 
-export class PreviewSourceFailure extends ProductCollectionFatalError {
+export class PreviewSourceFailure extends FailureCodeError {
   readonly reason: PreviewFailureReason;
 
   constructor(reason: PreviewFailureReason, detail: string) {

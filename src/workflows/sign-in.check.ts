@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, errors, type Browser, type Dialog, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { RejectionEvidence, TakeoverPrompt } from "../lib/automation/sign-in-prompt.ts";
 import { VerificationStageIncompleteError, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import {
@@ -822,7 +822,7 @@ test("assertSession comes from the session probe, or not at all", async () => {
     await assertSession();
     await page.evaluate(() => (window as unknown as { hide(): void }).hide());
     const error = await failure(assertSession());
-    assert.ok(error instanceof ProductCollectionFatalError);
+    assert.ok(error instanceof FailureCodeError);
     assert.equal(error.errorCode, "authentication-failed");
   });
   await withPage("show()", async (page) => {

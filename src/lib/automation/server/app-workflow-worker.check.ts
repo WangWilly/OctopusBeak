@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
-import { collectSelectedProducts, ProductCollectionFatalError } from "../product-collection.ts";
+import { collectSelectedProducts } from "../product-collection.ts";
+import { FailureCodeError } from "../workflow-failures.ts";
 import type { WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { PGliteWorkflowRunItem, PGliteWorkflowRunResult } from "../../../ledger/pglite/workflow-run.ts";
 import {
@@ -654,7 +655,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
     requiresFinancialCommit: false,
     async run(context) {
       await context.event("authentication", "advanced", "device-registration-required");
-      throw new ProductCollectionFatalError("device-registration-required");
+      throw new FailureCodeError("device-registration-required");
     },
   };
   try {

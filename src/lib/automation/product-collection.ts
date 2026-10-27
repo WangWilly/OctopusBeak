@@ -10,7 +10,7 @@ import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "./source-access.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
-import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
+import { FailureCodeError, TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type {
   WorkflowEventCounts,
   WorkflowFinancialCommitPort,
@@ -168,7 +168,7 @@ export type ProductStageRequest = Readonly<{
 export type ProductCollectionHandle = Readonly<{
   /**
    * Throws `SourceTextIntegrityError` for a command whose text is not intact,
-   * which fails only this product, and `ProductCollectionFatalError` for an
+   * which fails only this product, and `FailureCodeError` for an
    * identity this product already staged, which stops the run.
    */
   stage: (...requests: readonly ProductStageRequest[]) => void;
@@ -193,26 +193,14 @@ export class StatementComponentAbsentError extends Error {
   }
 }
 
-/** An authenticated session, required capability, or workflow invariant failed. */
-export class ProductCollectionFatalError extends Error {
-  readonly errorCode: TypedWorkflowErrorCode;
-
-  constructor(errorCode: TypedWorkflowErrorCode) {
-    super("Product collection stopped because a required workflow condition failed.");
-    this.name = "ProductCollectionFatalError";
-    this.errorCode = errorCode;
-  }
-}
 
 /** Carries only bounded, typed product results across the worker boundary. */
-export class ProductCollectionInterruptedError extends Error {
-  readonly errorCode: TypedWorkflowErrorCode;
+export class ProductCollectionInterruptedError extends FailureCodeError {
   readonly summary: ProductCollectionRunSummary;
 
   constructor(errorCode: TypedWorkflowErrorCode, summary: ProductCollectionRunSummary) {
-    super("Product collection stopped before every selected product completed.");
+    super(errorCode, "Product collection stopped before every selected product completed.");
     this.name = "ProductCollectionInterruptedError";
-    this.errorCode = errorCode;
     this.summary = summary;
   }
 }
@@ -253,7 +241,7 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
   selectedIds: readonly TId[];
   signal: AbortSignal;
   prepare?: (typeId: TId) => Promise<void>;
-  /** Must fail with a ProductCollectionFatalError if the source session is no longer valid. */
+  /** Must fail with a FailureCodeError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
   collect: (typeId: TId, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>;
   /** Commits each non-empty, fully collected product staging group, labelled with its product type id. */
@@ -282,7 +270,7 @@ function slug(typeId: string): string {
 }
 
 function defaultFatalCode(error: unknown): TypedWorkflowErrorCode | undefined {
-  if (error instanceof ProductCollectionFatalError) return error.errorCode;
+  if (error instanceof FailureCodeError) return error.errorCode;
   if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
   if (error instanceof SourceUnavailableError) return "source-unavailable";
   if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
@@ -312,12 +300,12 @@ function validateSelection<TId extends CollectionProductTypeId>(
   attachedSelected: boolean,
 ): void {
   if (productIds.length === 0 || new Set(productIds).size !== productIds.length) {
-    throw new ProductCollectionFatalError("workflow-failed");
+    throw new FailureCodeError("workflow-failed");
   }
   const supported = new Set(productIds);
   if ((selectedIds.length === 0 && !attachedSelected) || new Set(selectedIds).size !== selectedIds.length
     || selectedIds.some((typeId) => !supported.has(typeId))) {
-    throw new ProductCollectionFatalError("workflow-failed");
+    throw new FailureCodeError("workflow-failed");
   }
 }
 
@@ -360,7 +348,7 @@ function productStager(provider: string, staged: PGliteWorkflowRunItem[]): Produ
       const item: PGliteWorkflowRunItem = Object.freeze({ ...request, provider });
       const identity = itemIdentity(item);
       if (!provider || !item.product || !item.itemKey || identities.has(identity)) {
-        throw new ProductCollectionFatalError("workflow-failed");
+        throw new FailureCodeError("workflow-failed");
       }
       strictSourceText.assertIntact(JSON.stringify(item.command));
       identities.add(identity);
@@ -444,7 +432,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         || (collected.completeWithExclusions !== undefined && typeof collected.completeWithExclusions !== "boolean")
         || (collected.completeWithExclusions === true
           && (stagedItems.length !== 0 || collected.noDataEvidence === true))) {
-        throw new ProductCollectionFatalError("workflow-failed");
+        throw new FailureCodeError("workflow-failed");
       }
       sourceCountForProduct = collected.sourceCaptureCount;
       rowsForProduct = collected.rowCount;
@@ -516,7 +504,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         // start means the run cannot record commits, so no later product may try.
         if (!(error instanceof CommitOutcomeUnknownError)) {
           if (signal.aborted) throw error;
-          throw new ProductCollectionFatalError("workflow-failed");
+          throw new FailureCodeError("workflow-failed");
         }
         committedCount += error.committedCount;
         const commitFailure = createOutcome(typeId, "failed", productItemCount, error.committedCount, {

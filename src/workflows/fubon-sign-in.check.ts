@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { fubonSignInPlan } from "./fubon-all-statements.ts";
 import { FubonLoginRefusedError, FubonLoginRejectedError } from "./fubon-auth.ts";
@@ -150,7 +150,7 @@ test("Fubon signs in through the step, confirms the 0212 takeover once and keeps
     await signedIn.assertSession();
     await signOut(page);
     const lost = await failure(signedIn.assertSession());
-    assert.ok(lost instanceof ProductCollectionFatalError);
+    assert.ok(lost instanceof FailureCodeError);
     assert.equal(lost.errorCode, "authentication-failed");
   }));
 

@@ -10,11 +10,11 @@ import type {
 import { PreviewDataRejected } from "./source-id.ts";
 import type { InstitutionKey } from "../institutions/institutions.ts";
 import {
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   type CollectionProductOutcome,
   type ProductCollectionRunSummary,
 } from "../automation/product-collection.ts";
+import { FailureCodeError } from "../automation/workflow-failures.ts";
 import { productRunStatus } from "../automation/product-run-status.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
@@ -82,7 +82,7 @@ const SESSION_REASONS: ReadonlySet<PreviewFailureReason> = new Set([
 
 function fatalCode(error: unknown): TypedWorkflowErrorCode | null {
   if (error instanceof PreviewSourceFailure) return SESSION_REASONS.has(error.reason) ? error.errorCode : null;
-  if (error instanceof ProductCollectionFatalError) return error.errorCode;
+  if (error instanceof FailureCodeError) return error.errorCode;
   return null;
 }
 
@@ -136,7 +136,7 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
       await options.assertSession?.();
       await event(product, "collection", "started", "collection-started", { activity: "query" });
       const collector = options.collectors[product];
-      if (!collector) throw new ProductCollectionFatalError("workflow-failed");
+      if (!collector) throw new FailureCodeError("workflow-failed");
       const result = collectionFor(product, await collector() as PreviewProductCollectorResult<typeof product>);
       if ("absent" in result) {
         done.set(product, outcome(product, result.absent));
