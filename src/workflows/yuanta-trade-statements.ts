@@ -31,9 +31,15 @@ import {
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 import {
+  YUANTA_TRADE_AUDIO_SEMANTIC_ID,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
+  YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -100,7 +106,7 @@ export function yuantaTradeAudioAssistanceStage(
     challengeAudioSource: {
       id: "audio-challenge",
       label: "Verification audio challenge",
-      semanticId: "yuanta-trade.login.audio-challenge",
+      semanticId: YUANTA_TRADE_AUDIO_SEMANTIC_ID,
     },
     charset: "digits" as const,
     expectedAnswerLength: 6,
@@ -133,13 +139,13 @@ export function yuantaTradeCaptchaCheckboxAssistanceStage(
   authPage: Page,
 ): VerificationStage {
   return {
-    stageId: "yuanta-trade-captcha-checkbox",
+    stageId: YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
     title: "Complete the YuanTa Trade CAPTCHA checkbox",
     challengeKind: "checkbox",
     targets: [{
       id: "captcha-checkbox",
       label: "CAPTCHA checkbox",
-      semanticId: "yuanta-trade.login.captcha-checkbox",
+      semanticId: YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
       modes: ["click"],
       locator: yuantaTradeCaptchaCheckbox(authPage),
     }],
@@ -169,14 +175,14 @@ export async function yuantaTradeImageAssistanceStage(
   const targets = Array.from({ length: imageCount }, (_, index) => ({
     id: `challenge-image-${index + 1}`,
     label: `Challenge image ${index + 1}`,
-    semanticId: "yuanta-trade.login.challenge-control",
+    semanticId: YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
     modes: ["click"] as const,
     locator: images.nth(index),
   }));
   targets.push({
     id: "challenge-submit",
     label: "Verify challenge",
-    semanticId: "yuanta-trade.login.challenge-submit",
+    semanticId: YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
     modes: ["click"],
     locator: yuantaTradeCaptchaSubmit(modal),
   });
@@ -1605,7 +1611,7 @@ async function submitTypedLoginIfReady(page: Page, signal: AbortSignal): Promise
   const loginButton = page.locator("#loginBtn");
   if (!(await loginButton.isVisible().catch(() => false))) return;
 
-  const checkbox = page.locator("#chbYCaptchaV2");
+  const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR);
   if (await checkbox.isVisible().catch(() => false)) {
     const checked = await checkbox.isChecked().catch(() => false);
     if (!checked) {
@@ -1642,7 +1648,7 @@ async function signInYuantaTrade(
     }
   }
 
-  const checkbox = page.locator("#chbYCaptchaV2");
+  const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR);
   if (
     await checkbox.isVisible().catch(() => false) &&
     !(await checkbox.isChecked().catch(() => false))

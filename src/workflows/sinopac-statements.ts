@@ -57,6 +57,7 @@ import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
+  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
   SINOPAC_IDENTITY_FIELD_NAMES,
@@ -823,7 +824,7 @@ export function sinopacCaptchaAssistanceStage(
       {
         id: "captcha-input",
         label: "CAPTCHA input",
-        semanticId: "sinopac.login.captcha-input",
+        semanticId: SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
         modes: ["click", "type"],
         locator: page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
       },

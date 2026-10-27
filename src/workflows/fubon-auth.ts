@@ -1,21 +1,39 @@
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { errorCodeFromDialog, sanitizedDialogAlert } from "../lib/automation/fubon-dialog.ts";
-import type { DialogSnapshot } from "../lib/automation/sign-in-prompt.ts";
+import type { DialogSnapshot, PageMatch } from "../lib/automation/sign-in-prompt.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { withAbort } from "./abort.ts";
-import type { DialogDecision } from "./sign-in.ts";
+import { locatePageMatch, type DialogDecision } from "./sign-in.ts";
+import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
+import {
+  FUBON_CAPTCHA_IMAGE_SELECTOR,
+  FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+  FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+  FUBON_LOGIN_FRAME_NAME,
+} from "../lib/automation/fubon-captcha.ts";
 
 const FUBON_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 const FUBON_AUTH_FRAME_NAME = "frame1";
-const FUBON_LOGIN_FRAME_NAME = "txnFrame";
 const DEFAULT_OUTCOME_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const LOGIN_FORM_REJECTION_GRACE_MS = 10_000;
-const CAPTCHA_REJECTION_TEXT = /^0290\s*驗證碼輸入錯誤$/u;
-const LOGIN_REFUSED_TEXT = /^請輸入身分證字號\s*請輸入使用者代碼\s*請輸入使用者密碼$/u;
+/** The in-frame CAPTCHA rejection the Fubon source definition declares. */
+function declaredCaptchaRejection(): PageMatch {
+  const evidence = FUBON_SOURCE.workflow.verification?.rejection;
+  if (typeof evidence !== "object" || "dialog" in evidence) {
+    throw new Error("The Fubon source must declare its CAPTCHA rejection as on-page text.");
+  }
+  return evidence;
+}
+
+const CAPTCHA_REJECTION = declaredCaptchaRejection();
+const LOGIN_REFUSED: PageMatch = {
+  frame: FUBON_LOGIN_FRAME_NAME,
+  text: { pattern: /^請輸入身分證字號\s*請輸入使用者代碼\s*請輸入使用者密碼$/u },
+};
 const MARKER_PROBE_TIMEOUT_MS = 100;
 const DEFAULT_LOGIN_FILL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS = 50;
@@ -1168,7 +1186,7 @@ export function fubonCaptchaAssistanceStage(
       {
         id: "captcha-input",
         label: "CAPTCHA input",
-        semanticId: "fubon.login.captcha-input",
+        semanticId: FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
         modes: ["click", "type"],
         locator: frame.locator("#m1_userCaptcha"),
       },
@@ -1202,8 +1220,8 @@ export function fubonCaptchaAssistanceStage(
     challengeImageRegion: {
       id: "captcha-image",
       label: "CAPTCHA image",
-      semanticId: "fubon.login.captcha-image",
-      locator: frame.locator('img[src*="captchaImage"]:visible').first(),
+      semanticId: FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+      locator: frame.locator(FUBON_CAPTCHA_IMAGE_SELECTOR).first(),
     },
     completion: { mode: "inline", targetIds: ["captcha-input"] },
     focus: {
@@ -1569,10 +1587,10 @@ function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
 }
 
 /** Fubon renders login responses inline in the login frame, not as dialogs. */
-async function fubonLoginResponseVisible(page: Page, text: RegExp): Promise<boolean> {
+async function fubonLoginResponseVisible(page: Page, response: PageMatch): Promise<boolean> {
   try {
-    const frame = page.frame({ name: FUBON_LOGIN_FRAME_NAME });
-    return Boolean(await frame?.getByText(text).first().isVisible());
+    const found = locatePageMatch(page, response);
+    return Boolean(await found?.match.first().isVisible());
   } catch {
     return false;
   }
@@ -1633,11 +1651,11 @@ export async function waitForFubonPostLoginOutcome(
       throwDialogRejection(dialogMessage, snapshot);
     }
 
-    if (await fubonLoginResponseVisible(page, CAPTCHA_REJECTION_TEXT)) {
+    if (await fubonLoginResponseVisible(page, CAPTCHA_REJECTION)) {
       if (!options.silent) emitOutcome("rejected", "captcha-rejected");
       throw new CaptchaProviderRejectedError();
     }
-    if (await fubonLoginResponseVisible(page, LOGIN_REFUSED_TEXT)) {
+    if (await fubonLoginResponseVisible(page, LOGIN_REFUSED)) {
       if (!options.silent) emitOutcome("rejected", "login-refused");
       throw new FubonLoginRefusedError();
     }

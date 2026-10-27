@@ -15,65 +15,57 @@ import {
 import {
   solveVerificationChallenge,
   verificationPlanForContract,
+  type SolveDependencies,
   type SolveOutcome,
-  type VerificationSelectionPoint,
   type VerificationSolver,
 } from "./verification-solver.ts";
 import { localVerificationSolver } from "./local-verification-solver.ts";
 import { automationViewer, type PageForRun } from "./automation-viewer.ts";
-import {
-  createProviderVerificationHost,
-  type ProviderVerificationHost,
-} from "./provider-verification.ts";
+import { createProviderVerificationHost } from "./provider-verification.ts";
 import { taskById } from "./tasks.ts";
 import { VERIFIED_SOURCES } from "./sources/index.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 
-export type VerificationRoutingDependencies = {
-  solver: VerificationSolver;
-  captureChallengeImage: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-  ) => Promise<Buffer | null>;
-  captureChallengeAudio?: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-  ) => Promise<Buffer | null>;
-  validateChallengeImage?: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-  ) => Promise<boolean>;
-  injectAnswer: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-    answer: string,
-  ) => Promise<void>;
-  probePostSubmit?: ProviderVerificationHost["probePostSubmit"];
-  injectSelections: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-    selections: readonly VerificationSelectionPoint[],
-  ) => Promise<void>;
-  clickTarget: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-    targetId: string,
-  ) => Promise<void>;
-  resumeAppWorkflow: () => void | Promise<void>;
-  finalizeFailed: (message: string) => void | Promise<void>;
-  /** Called once after a non-empty challenge image has been captured. */
-  onChallengeCaptured?: () => void | Promise<void>;
+/** What the provider made of a submitted answer once the workflow resumed. */
+export type VerificationPostSubmitOutcome =
+  | "none"
+  | "provider-rejected"
+  | "unrecognized-dialog";
+
+/**
+ * What a caller supplies to route one verification stage. Everything that
+ * touches the page comes from the Provider verification adapter resolved for
+ * the contract, over `pageForRun`.
+ */
+export type VerificationRoutingSeams = {
+  /** Finds the page the run's current Workflow execution hosts. */
+  pageForRun: PageForRun;
   /**
-   * Present only for a provider-owned image whose owner declares an in-page
-   * refresh control. Its presence widens the round to MAX_CHALLENGES_PER_ROUND.
+   * The assistance request's signal. Once it aborts, the route performs no
+   * further page operation and rejects with its reason.
    */
-  refreshChallenge?: (
-    taskRunId: string,
-    contract: HumanAssistanceContract,
-  ) => Promise<boolean>;
+  signal: AbortSignal;
+  solver: VerificationSolver;
+  /** Continues the paused workflow once the stage is answered. */
+  resume: () => void | Promise<void>;
+  /**
+   * Called after `resume` only when the route submitted an answer (or found
+   * no challenge): what the provider made of it. A workflow that proves the
+   * rejection itself reports it here once its execution settles.
+   */
+  postSubmitOutcome: () => Promise<VerificationPostSubmitOutcome>;
+  finalizeFailed: (message: string) => void | Promise<void>;
+  /** Called once after a non-empty challenge has been captured. */
+  onChallengeCaptured: () => void | Promise<void>;
 };
+
+/** The App's local solver, shared by every route that has no other. */
+export const appVerificationSolver: VerificationSolver = localVerificationSolver();
+
+/** Reports "none" for a workflow that does not prove a CAPTCHA rejection itself. */
+export const noPostSubmitOutcome = async (): Promise<VerificationPostSubmitOutcome> => "none";
 
 export const MAX_CHALLENGES_PER_ROUND = 5;
 
@@ -95,61 +87,87 @@ export async function solveChallengeRound(input: {
   return { status: "exhausted" };
 }
 
-export type VerificationChallengeImageProvider = Pick<
-  ProviderVerificationHost,
-  | "handlesChallengeImage"
-  | "captureChallengeImage"
-  | "isChallengeImageCurrent"
-  | "refreshesChallengeImage"
-  | "refreshChallengeImage"
->;
-
-export type VerificationChallengeImageSelection = {
-  captureChallengeImage: VerificationRoutingDependencies["captureChallengeImage"];
-  validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
-  refreshChallenge?: VerificationRoutingDependencies["refreshChallenge"];
-  /** A registered source owner treats a null capture as a hard failure. */
-  providerOwned: boolean;
-};
-
-class ProviderChallengeImageCaptureError extends Error {
-  constructor() {
-    super("Verification challenge image capture failed.");
-    this.name = "ProviderChallengeImageCaptureError";
+class ProviderChallengeCaptureError extends Error {
+  constructor(media: "image" | "audio") {
+    super(`Verification challenge ${media} capture failed.`);
+    this.name = "ProviderChallengeCaptureError";
   }
 }
 
+type ChallengeSteps = {
+  captureChallengeImage: () => Promise<Buffer | null>;
+  captureChallengeAudio: () => Promise<Buffer | null>;
+  validateChallengeImage?: () => Promise<boolean>;
+  /** Present only when the challenge-image owner declares an In-page CAPTCHA Refresh. */
+  refreshChallenge?: () => Promise<boolean>;
+  injectAnswer: SolveDependencies["injectAnswer"];
+  injectSelections: NonNullable<SolveDependencies["injectSelections"]>;
+  clickTarget: (targetId: string) => Promise<void>;
+};
+
 /**
- * Select the image seam once for a contract. A registered provider owner is
- * authoritative: a failed provider capture is returned as-is and never
- * falls through to the generic contract rectangle screenshot. Contracts
- * without a source owner retain the generic viewer behavior.
+ * Bind one contract's page steps. A provider that owns the challenge media is
+ * authoritative: a failed capture is a hard failure and never falls through
+ * to the generic contract-rectangle screenshot. Contracts without an owner
+ * keep the generic viewer behaviour.
  */
-export function selectVerificationChallengeImage(
+function challengeSteps(
   contract: HumanAssistanceContract,
-  options: {
-    provider: VerificationChallengeImageProvider;
-    genericCaptureChallengeImage: VerificationRoutingDependencies["captureChallengeImage"];
-  },
-): VerificationChallengeImageSelection {
-  if (options.provider.handlesChallengeImage(contract)) {
-    return {
-      captureChallengeImage: (viewerKey, currentContract) =>
-        options.provider.captureChallengeImage(viewerKey, currentContract),
-      validateChallengeImage: (viewerKey, currentContract) =>
-        options.provider.isChallengeImageCurrent(viewerKey, currentContract),
-      ...(options.provider.refreshesChallengeImage(contract)
-        ? {
-            refreshChallenge: (viewerKey: string, currentContract: HumanAssistanceContract) =>
-              options.provider.refreshChallengeImage(viewerKey, currentContract),
-          }
-        : {}),
-      providerOwned: true,
+  taskRunId: string,
+  pageForRun: PageForRun,
+  signal: AbortSignal,
+): ChallengeSteps {
+  const steps = providerSteps(contract, taskRunId, pageForRun);
+  // Every provider stops acting on the page as soon as the request is cancelled.
+  const guarded = <A extends unknown[], R>(step: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      signal.throwIfAborted();
+      const result = await step(...args);
+      signal.throwIfAborted();
+      return result;
     };
-  }
   return {
-    captureChallengeImage: options.genericCaptureChallengeImage,
-    providerOwned: false,
+    captureChallengeImage: guarded(steps.captureChallengeImage),
+    captureChallengeAudio: guarded(steps.captureChallengeAudio),
+    validateChallengeImage: steps.validateChallengeImage && guarded(steps.validateChallengeImage),
+    refreshChallenge: steps.refreshChallenge && guarded(steps.refreshChallenge),
+    injectAnswer: guarded(steps.injectAnswer),
+    injectSelections: guarded(steps.injectSelections),
+    clickTarget: guarded(steps.clickTarget),
+  };
+}
+
+function providerSteps(
+  contract: HumanAssistanceContract,
+  taskRunId: string,
+  pageForRun: PageForRun,
+): ChallengeSteps {
+  const viewer = automationViewer(pageForRun);
+  const provider = createProviderVerificationHost({ pageForRun });
+  const required = (media: "image" | "audio", capture: () => Promise<Buffer | null>) => async () => {
+    const bytes = await capture();
+    if (bytes === null) throw new ProviderChallengeCaptureError(media);
+    return bytes;
+  };
+  const imageOwned = provider.handlesChallengeImage(contract);
+  const captureImage = () => provider.captureChallengeImage(taskRunId, contract);
+  const captureAudio = () => provider.captureChallengeAudio(taskRunId, contract);
+  return {
+    captureChallengeImage: imageOwned
+      ? required("image", captureImage)
+      : () => viewer.captureChallengeImage(taskRunId, contract),
+    validateChallengeImage: imageOwned
+      ? () => provider.isChallengeImageCurrent(taskRunId, contract)
+      : undefined,
+    refreshChallenge: imageOwned && provider.refreshesChallengeImage(contract)
+      ? () => provider.refreshChallengeImage(taskRunId, contract)
+      : undefined,
+    captureChallengeAudio: provider.handlesChallengeAudio(contract)
+      ? required("audio", captureAudio)
+      : captureAudio,
+    injectAnswer: (answer) => provider.injectAnswer(taskRunId, contract, answer),
+    injectSelections: (selections) => viewer.injectSelections(taskRunId, contract, selections),
+    clickTarget: (targetId) => provider.clickTarget(taskRunId, contract, targetId),
   };
 }
 
@@ -160,8 +178,6 @@ export type VerificationRoutingOutcome =
     kind: "retryable";
     reason: "solver-exhausted" | "provider-rejected";
   };
-
-const defaultLocalSolver = localVerificationSolver();
 
 const verificationOf = (taskId: string) =>
   VERIFIED_SOURCES.find((source) => source.task.id === taskId)?.workflow.verification;
@@ -184,21 +200,6 @@ export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new 
   VERIFIED_SOURCES.filter((source) => source.workflow.verification?.rejection !== undefined).map((source) => source.task.id),
 );
 
-export function appProviderPostSubmitProbe(pageForRun: PageForRun): ProviderVerificationHost["probePostSubmit"] {
-  const host = createProviderVerificationHost({ pageForRun });
-  return async (viewerKey, contract, resume) =>
-    await host.probePostSubmit(
-      viewerKey,
-      contract,
-      resume,
-      async () => {
-        const page = pageForRun(viewerKey);
-        if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
-        await page.context().close();
-      },
-    );
-}
-
 export async function routeVerificationActor(input: {
   contract: HumanAssistanceContract | null;
   taskRunId: string;
@@ -210,26 +211,35 @@ export async function routeVerificationActor(input: {
   ocrAttemptPlan?: readonly CaptchaOcrAttemptStrategy[];
   solveAcceptancePolicy?: SolveAcceptancePolicy;
   expectedAnswerLength?: number;
-  dependencies: VerificationRoutingDependencies;
+  seams: VerificationRoutingSeams;
 }): Promise<VerificationRoutingOutcome> {
   const contract = input.contract;
   const plan = verificationPlanForContract(contract);
-  const deps = input.dependencies;
+  const seams = input.seams;
+  seams.signal.throwIfAborted();
   if (plan.kind === "proceed") {
-    await deps.resumeAppWorkflow();
+    await seams.resume();
     return { kind: "resumed" };
   }
+  const steps = challengeSteps(contract!, input.taskRunId, seams.pageForRun, seams.signal);
   if (plan.kind === "click") {
-    await deps.clickTarget(input.taskRunId, contract!, plan.targetId);
-    await deps.resumeAppWorkflow();
+    await steps.clickTarget(plan.targetId);
+    await seams.resume();
     return { kind: "resumed" };
   }
   if (plan.kind === "unsolvable") {
-    await deps.finalizeFailed("Verification challenge cannot be solved.");
+    await seams.finalizeFailed("Verification challenge cannot be solved.");
     return { kind: "failed" };
   }
   let outcome: SolveOutcome;
   let challengeCaptured = false;
+  const noteCaptured = async (media: Buffer | null) => {
+    if (media !== null && !challengeCaptured) {
+      challengeCaptured = true;
+      await seams.onChallengeCaptured();
+    }
+    return media;
+  };
   try {
     const solverMetadata = resolveHumanAssistanceSolverMetadata(contract, {
       prompt: input.prompt,
@@ -240,97 +250,52 @@ export async function routeVerificationActor(input: {
       solveAcceptancePolicy: input.solveAcceptancePolicy,
       expectedAnswerLength: input.expectedAnswerLength,
     });
-    const solveDependencies: Parameters<typeof solveVerificationChallenge>[0] = {
+    const solveDependencies: SolveDependencies = {
       challengeKind: plan.challengeKind,
       confidenceThreshold:
         contract?.solverConfidenceThreshold
         ?? input.confidenceThreshold
         ?? DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
-      solver: deps.solver,
-      captureChallengeImage: async () => {
-        const image = await deps.captureChallengeImage(input.taskRunId, contract!);
-        if (image !== null && !challengeCaptured) {
-          challengeCaptured = true;
-          await deps.onChallengeCaptured?.();
-        }
-        return image;
-      },
-      captureChallengeAudio: deps.captureChallengeAudio
-        ? async () => {
-            const audio = await deps.captureChallengeAudio!(input.taskRunId, contract!);
-            if (audio !== null && !challengeCaptured) {
-              challengeCaptured = true;
-              await deps.onChallengeCaptured?.();
-            }
-            return audio;
-          }
-        : undefined,
-      injectAnswer: (answer) =>
-        deps.injectAnswer(input.taskRunId, contract!, answer),
-      injectSelections: (selections) =>
-        deps.injectSelections(input.taskRunId, contract!, selections),
-      validateChallengeImage: deps.validateChallengeImage
-        ? () => deps.validateChallengeImage!(input.taskRunId, contract!)
-        : undefined,
+      solver: seams.solver,
+      captureChallengeImage: async () => noteCaptured(await steps.captureChallengeImage()),
+      captureChallengeAudio: async () => noteCaptured(await steps.captureChallengeAudio()),
+      injectAnswer: steps.injectAnswer,
+      injectSelections: steps.injectSelections,
+      validateChallengeImage: steps.validateChallengeImage,
       ...solverMetadata,
     };
-    const refreshChallenge = deps.refreshChallenge;
+    const refreshChallenge = steps.refreshChallenge;
     outcome = await solveChallengeRound({
       budget: refreshChallenge ? MAX_CHALLENGES_PER_ROUND : 1,
       solveOnce: () => solveVerificationChallenge(solveDependencies),
-      refresh: refreshChallenge
-        ? () => refreshChallenge(input.taskRunId, contract!)
-        : undefined,
+      refresh: refreshChallenge,
     });
   } catch (error) {
-    await deps.finalizeFailed(
-      error instanceof ProviderChallengeImageCaptureError
+    seams.signal.throwIfAborted();
+    await seams.finalizeFailed(
+      error instanceof ProviderChallengeCaptureError
         ? error.message
         : "Verification solver failed to solve the challenge.",
     );
     return { kind: "failed" };
   }
   if (outcome.status === "solved" || outcome.status === "absent") {
-    const postSubmitOutcome = deps.probePostSubmit
-      ? await deps.probePostSubmit(
-        input.taskRunId,
-        contract!,
-        () => Promise.resolve(deps.resumeAppWorkflow()),
-      )
-      : (await deps.resumeAppWorkflow(), "none" as const);
+    // Not checked after resume: the resumed workflow's own cleanup may abort
+    // the request while postSubmitOutcome joins its execution.
+    seams.signal.throwIfAborted();
+    await seams.resume();
+    const postSubmitOutcome = await seams.postSubmitOutcome();
     if (postSubmitOutcome === "provider-rejected") {
       return { kind: "retryable", reason: "provider-rejected" };
     }
     if (postSubmitOutcome === "unrecognized-dialog") {
-      await deps.finalizeFailed("Provider login dialog was not recognized.");
+      await seams.finalizeFailed("Provider login dialog was not recognized.");
       return { kind: "failed" };
     }
     return { kind: "resumed" };
   }
   return { kind: "retryable", reason: "solver-exhausted" };
 }
-
-/** Browser seams for one contract; omitted seams use the App's provider and viewer over `pageForRun`. */
-export type VerificationRoutingSeams = {
-  /** Finds the page the run's current Workflow execution hosts. */
-  pageForRun: PageForRun;
-  resumeAppWorkflow: () => void | Promise<void>;
-  solver?: VerificationSolver;
-  captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
-  captureChallengeAudio?: VerificationRoutingDependencies["captureChallengeAudio"];
-  providerCaptureChallengeAudio?: ProviderVerificationHost["captureChallengeAudio"];
-  validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
-  refreshChallenge?: VerificationRoutingDependencies["refreshChallenge"];
-  injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
-  providerProbePostSubmit: ProviderVerificationHost["probePostSubmit"];
-  providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
-  injectSelections?: VerificationRoutingDependencies["injectSelections"];
-  clickTarget?: VerificationRoutingDependencies["clickTarget"];
-  finalizeFailed: VerificationRoutingDependencies["finalizeFailed"];
-  onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
-  providerVerification?: VerificationChallengeImageProvider;
-  genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
-};
 
 export function verificationConfidenceThreshold(
   contract: HumanAssistanceContract,
@@ -343,67 +308,28 @@ export function verificationConfidenceThreshold(
     : undefined;
 }
 
-export function verificationRoutingDependencies(
-  contract: HumanAssistanceContract,
-  input: VerificationRoutingSeams,
-): VerificationRoutingDependencies {
-  const viewer = automationViewer(input.pageForRun);
-  const providerHost = createProviderVerificationHost({ pageForRun: input.pageForRun });
-  const imageSelection = selectVerificationChallengeImage(contract, {
-    provider: input.providerVerification ?? providerHost,
-    genericCaptureChallengeImage: input.genericCaptureChallengeImage
-      ?? viewer.captureChallengeImage,
-  });
-  const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
-  const selectedCapture = imageSelection.providerOwned
-    ? async (selectedTaskRunId: string, selectedContract: HumanAssistanceContract) => {
-        const image = await capture(selectedTaskRunId, selectedContract);
-        if (image === null) throw new ProviderChallengeImageCaptureError();
-        return image;
-      }
-    : capture;
-  return {
-    solver: input.solver ?? defaultLocalSolver,
-    captureChallengeImage: selectedCapture,
-    captureChallengeAudio: input.captureChallengeAudio
-      ?? input.providerCaptureChallengeAudio
-      ?? providerHost.captureChallengeAudio,
-    validateChallengeImage: input.validateChallengeImage
-      ?? imageSelection.validateChallengeImage,
-    refreshChallenge: input.refreshChallenge ?? imageSelection.refreshChallenge,
-    injectAnswer: input.injectAnswer
-      ?? input.providerInjectAnswer
-      ?? providerHost.injectAnswer,
-    probePostSubmit: input.providerProbePostSubmit,
-    injectSelections: input.injectSelections ?? viewer.injectSelections,
-    clickTarget: input.clickTarget ?? viewer.clickTarget,
-    resumeAppWorkflow: input.resumeAppWorkflow,
-    finalizeFailed: input.finalizeFailed,
-    onChallengeCaptured: input.onChallengeCaptured,
-  };
-}
-
 export async function routeWaitingRunVerification(input: VerificationRoutingSeams & {
   /** The run whose current human assistance stage this routes. */
   run: Pick<ActiveAutomationTaskRun, "taskId" | "taskRunId" | "current">;
   settings?: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
-  const task = taskById(input.run.taskId);
+  const { run: activeRun, settings: givenSettings, ...seams } = input;
+  const task = taskById(activeRun.taskId);
   if (!task?.workflowId) {
-    await input.finalizeFailed("Verification routing requires an App browser workflow.");
+    await seams.finalizeFailed("Verification routing requires an App browser workflow.");
     return { kind: "failed" };
   }
-  const settings = input.settings ?? readAutomationSettings();
-  const run = input.run.current();
+  const settings = givenSettings ?? readAutomationSettings();
+  const run = activeRun.current();
   if (run.status !== "waiting_for_human" || !run.humanAssistanceContract) {
-    await input.finalizeFailed("App workflow verification stage is unavailable.");
+    await seams.finalizeFailed("App workflow verification stage is unavailable.");
     return { kind: "failed" };
   }
   const contract = run.humanAssistanceContract;
   return routeVerificationActor({
     contract,
-    taskRunId: input.run.taskRunId,
+    taskRunId: activeRun.taskRunId,
     confidenceThreshold: verificationConfidenceThreshold(contract, settings),
-    dependencies: verificationRoutingDependencies(contract, input),
+    seams,
   });
 }

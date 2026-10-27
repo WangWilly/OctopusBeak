@@ -140,12 +140,9 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     runtime: browser("https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020"),
     verification: {
-      async route(request, { onChallengeCaptured, ...dependencies }) {
+      async route(request, dependencies) {
         const { routeYuantaTradeAppAssistanceRequest } = await import("../yuanta-trade-assistance.ts");
-        return await routeYuantaTradeAppAssistanceRequest(request, {
-          ...dependencies,
-          routeOptions: { onChallengeCaptured },
-        });
+        return await routeYuantaTradeAppAssistanceRequest(request, dependencies);
       },
     },
     input: { credentials: true },

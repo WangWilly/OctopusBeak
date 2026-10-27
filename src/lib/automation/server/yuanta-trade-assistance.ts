@@ -6,44 +6,28 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import {
-  createProviderVerificationHost,
-  type ProviderVerificationHost,
-} from "./provider-verification.ts";
-import {
+  appVerificationSolver,
+  noPostSubmitOutcome,
   routeWaitingRunVerification,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
-import { automationViewer, type PageForRun } from "./automation-viewer.ts";
-import { YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR } from "../yuanta-trade-captcha.ts";
-
-type VerificationRouteInput = Parameters<typeof routeWaitingRunVerification>[0];
-
-/** Injectable browser and solver seams for deterministic App-side checks. */
-export type YuantaTradeVerificationRouteOptions = Partial<Pick<
-  VerificationRouteInput,
-  | "solver"
-  | "captureChallengeImage"
-  | "captureChallengeAudio"
-  | "providerCaptureChallengeAudio"
-  | "validateChallengeImage"
-  | "injectAnswer"
-  | "providerInjectAnswer"
-  | "injectSelections"
-  | "clickTarget"
-  | "genericCaptureChallengeImage"
-  | "onChallengeCaptured"
->>;
+import type { PageForRun } from "./automation-viewer.ts";
+import type { VerificationSolver } from "./verification-solver.ts";
+import {
+  YUANTA_TRADE_AUDIO_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
+  YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
+  YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
+} from "../yuanta-trade-captcha.ts";
 
 export type YuantaTradeAppAssistanceDependencies = Readonly<{
   settings: AutomationSettingsFile;
   pageForRun: PageForRun;
-  verificationHost?: ProviderVerificationHost;
   route?: typeof routeWaitingRunVerification;
-  waitForImageChallengeSubmission?: (
-    viewerKey: string,
-    signal: AbortSignal,
-  ) => Promise<boolean>;
-  routeOptions?: YuantaTradeVerificationRouteOptions;
+  /** Defaults to the App's local solver. */
+  solver?: VerificationSolver;
+  onChallengeCaptured?: () => void | Promise<void>;
 }>;
 
 function targetWithSemanticId(
@@ -60,68 +44,25 @@ function targetWithSemanticId(
 function isSupportedAutomaticStage(contract: HumanAssistanceContractInput) {
   if (contract.stageId === "yuanta-trade-audio-verification") {
     return contract.challengeKind === "audio-captcha"
-      && contract.challengeAudioSource?.semanticId === "yuanta-trade.login.audio-challenge"
+      && contract.challengeAudioSource?.semanticId === YUANTA_TRADE_AUDIO_SEMANTIC_ID
       && targetWithSemanticId(contract, "yuanta-trade.login.audio-code-input")?.modes.includes("type") === true;
   }
-  if (contract.stageId === "yuanta-trade-captcha-checkbox") {
+  if (contract.stageId === YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID) {
     return contract.challengeKind === "checkbox"
-      && targetWithSemanticId(contract, "yuanta-trade.login.captcha-checkbox")?.modes.includes("click") === true;
+      && targetWithSemanticId(contract, YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID)?.modes.includes("click") === true;
   }
   if (contract.stageId === "yuanta-trade-challenge") {
     const submit = contract.targets.find((target) => (
       target.id === "challenge-submit"
-      && target.semanticId === "yuanta-trade.login.challenge-submit"
+      && target.semanticId === YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID
       && target.modes.includes("click")
     ));
     return contract.challengeKind === "image-selection"
       && contract.challengeImageRegion?.semanticId === "yuanta-trade.login.challenge-image"
-      && targetWithSemanticId(contract, "yuanta-trade.login.challenge-control")?.modes.includes("click") === true
+      && targetWithSemanticId(contract, YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID)?.modes.includes("click") === true
       && submit !== undefined;
   }
   return false;
-}
-
-function guardedAsync<TArgs extends unknown[], TResult>(
-  signal: AbortSignal,
-  operation: (...args: TArgs) => Promise<TResult>,
-): (...args: TArgs) => Promise<TResult> {
-  return async (...args) => {
-    signal.throwIfAborted();
-    const result = await operation(...args);
-    signal.throwIfAborted();
-    return result;
-  };
-}
-
-function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): ProviderVerificationHost {
-  return {
-    captureChallengeImage: guardedAsync(signal, host.captureChallengeImage),
-    isChallengeImageCurrent: guardedAsync(signal, host.isChallengeImageCurrent),
-    handlesChallengeImage(contract) {
-      signal.throwIfAborted();
-      return host.handlesChallengeImage(contract);
-    },
-    refreshesChallengeImage(contract) {
-      signal.throwIfAborted();
-      return host.refreshesChallengeImage(contract);
-    },
-    refreshChallengeImage: guardedAsync(signal, host.refreshChallengeImage),
-    handlesChallengeAudio(contract) {
-      signal.throwIfAborted();
-      return host.handlesChallengeAudio(contract);
-    },
-    captureChallengeAudio: guardedAsync(signal, host.captureChallengeAudio),
-    sendInput: guardedAsync(signal, host.sendInput),
-    injectAnswer: guardedAsync(signal, host.injectAnswer),
-    probePostSubmit: guardedAsync(signal, async (viewerKey, contract, resume) => (
-      host.probePostSubmit(
-        viewerKey,
-        contract,
-        guardedAsync(signal, async () => resume()),
-      )
-    )),
-    inspectCompletion: guardedAsync(signal, host.inspectCompletion),
-  };
 }
 
 export async function routeYuantaTradeAppAssistanceRequest(
@@ -147,149 +88,36 @@ export async function routeYuantaTradeAppAssistanceRequest(
     throw new Error("Yuanta Trade image challenge has no supported local solver.");
   }
 
-  const viewer = automationViewer(dependencies.pageForRun);
-  const host = guardedHost(
-    dependencies.verificationHost ?? createProviderVerificationHost({ pageForRun: dependencies.pageForRun }),
-    request.signal,
-  );
   const route = dependencies.route ?? routeWaitingRunVerification;
-  const routeOptions = dependencies.routeOptions ?? {};
-  let audioAnswerInjected = false;
-  let imageSelectionsInjected = false;
-  const audioCapture = routeOptions.captureChallengeAudio
-    ?? routeOptions.providerCaptureChallengeAudio
-    ?? host.captureChallengeAudio;
-  const answerInjection = routeOptions.injectAnswer
-    ?? routeOptions.providerInjectAnswer
-    ?? host.injectAnswer;
-  const imageCapture = routeOptions.captureChallengeImage
-    ?? viewer.captureChallengeImage;
-  const selectionInjection = routeOptions.injectSelections
-    ?? viewer.injectSelections;
-  const targetClick = routeOptions.clickTarget
-    ?? viewer.clickTarget;
+  const solver = dependencies.solver ?? appVerificationSolver;
   let assistanceResumed = false;
-  const waitForImageSubmit = dependencies.waitForImageChallengeSubmission
-    ?? (async (viewerKey: string, signal: AbortSignal) => viewer.withPage(viewerKey, async (page) => {
-      signal.throwIfAborted();
-      try {
-        await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR)
-          .first()
-          .waitFor({ state: "hidden", timeout: 12_000 });
-        signal.throwIfAborted();
-        return true;
-      } catch {
-        signal.throwIfAborted();
-        return false;
-      }
-    }));
-  const options: VerificationRouteInput = {
-    ...(routeOptions.solver
-      ? {
-        solver: {
-          solve: guardedAsync(request.signal, routeOptions.solver.solve.bind(routeOptions.solver)),
-        },
-      }
-      : {}),
+  const outcome = await route({
     run: request.run,
     pageForRun: dependencies.pageForRun,
     settings: dependencies.settings,
-    providerVerification: host,
-    ...(routeOptions.captureChallengeImage
-      ? { captureChallengeImage: guardedAsync(request.signal, routeOptions.captureChallengeImage) }
-      : {}),
-    captureChallengeAudio: guardedAsync(request.signal, audioCapture),
-    providerCaptureChallengeAudio: guardedAsync(request.signal, audioCapture),
-    ...(routeOptions.validateChallengeImage
-      ? { validateChallengeImage: guardedAsync(request.signal, routeOptions.validateChallengeImage) }
-      : {}),
-    injectAnswer: guardedAsync(request.signal, async (viewerKey, contract, answer) => {
-      await answerInjection(viewerKey, contract, answer);
-      if (contract.stageId === "yuanta-trade-audio-verification") audioAnswerInjected = true;
-    }),
-    providerInjectAnswer: guardedAsync(request.signal, async (viewerKey, contract, answer) => {
-      await answerInjection(viewerKey, contract, answer);
-      if (contract.stageId === "yuanta-trade-audio-verification") audioAnswerInjected = true;
-    }),
-    injectSelections: guardedAsync(request.signal, async (viewerKey, contract, selections) => {
-      await selectionInjection(viewerKey, contract, selections);
-      if (contract.stageId === "yuanta-trade-challenge") imageSelectionsInjected = true;
-    }),
-    clickTarget: guardedAsync(request.signal, async (viewerKey, contract, targetId) => {
-      await targetClick(viewerKey, contract, targetId);
-      if (
-        contract.stageId === "yuanta-trade-captcha-checkbox"
-        && !await host.inspectCompletion(viewerKey, contract)
-      ) {
-        throw new Error("Yuanta Trade CAPTCHA checkbox did not reach its verified state.");
-      }
-    }),
-    genericCaptureChallengeImage: guardedAsync(request.signal,
-      routeOptions.genericCaptureChallengeImage ?? imageCapture),
-    ...(routeOptions.onChallengeCaptured
-      ? {
-        onChallengeCaptured: guardedAsync(request.signal, async () => {
-          await routeOptions.onChallengeCaptured?.();
-        }),
-      }
-      : {}),
-    providerProbePostSubmit: guardedAsync(
-      request.signal,
-      async (viewerKey, contract, resume) => {
-        if (
-          contract.stageId === "yuanta-trade-audio-verification"
-          && !audioAnswerInjected
-        ) {
-          return "none";
-        }
-        // The image-selection solver only clicks selected tiles. Yuanta's
-        // provider contract declares submission separately, so click its
-        // declared target before the workflow continues on this same run.
-        if (contract.stageId === "yuanta-trade-challenge") {
-          if (!imageSelectionsInjected) return "none";
-          const submit = contract.targets.find((target) => (
-            target.id === "challenge-submit"
-            && target.semanticId === "yuanta-trade.login.challenge-submit"
-            && target.modes.includes("click")
-          ));
-          if (!submit) {
-            throw new Error("Yuanta Trade image challenge has no declared submit target.");
-          }
-          await host.sendInput(viewerKey, {
-            type: "click",
-            targetId: submit.id,
-            contractVersion: contract.version,
-          }, contract);
-          if (!await waitForImageSubmit(viewerKey, request.signal)) {
-            return "none";
-          }
-        }
-        return host.probePostSubmit(
-          viewerKey,
-          contract,
-          async () => { await resume(); },
-        );
-      },
-    ),
-    resumeAppWorkflow: async () => {
+    // The route performs no page operation once the request is cancelled.
+    signal: request.signal,
+    solver,
+    resume: async () => {
       await completeAppWorkflowHumanAssistance(request);
       assistanceResumed = true;
     },
+    postSubmitOutcome: noPostSubmitOutcome,
     finalizeFailed: async () => {
       // The executor owns the terminal transition. In particular, an abort
       // must remain a cancellation and never be converted into a route error.
       request.signal.throwIfAborted();
     },
-  };
-
-  const outcome = await route(options);
+    onChallengeCaptured: async () => {
+      await dependencies.onChallengeCaptured?.();
+    },
+  });
   if (request.signal.aborted) return;
   if (outcome.kind === "failed") {
     throw new Error("Yuanta Trade verification assistance failed closed.");
   }
   if (outcome.kind === "retryable") return outcome;
-  // A missing audio/image source or a still-visible image challenge never
-  // grants permission to resume the workflow.
+  // A stage the route did not resume never grants permission to continue.
   if (outcome.kind === "resumed" && !assistanceResumed) {
     throw new Error("Yuanta Trade verification did not complete the current stage.");
   }

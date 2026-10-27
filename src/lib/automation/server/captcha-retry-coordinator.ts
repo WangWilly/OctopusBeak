@@ -12,8 +12,9 @@ import {
 import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
-  appProviderPostSubmitProbe,
   appWorkflowRoutesVerification,
+  appVerificationSolver,
+  noPostSubmitOutcome,
   routeWaitingRunVerification,
   sourceVerificationRoute,
   type VerificationRoutingOutcome,
@@ -184,14 +185,11 @@ export async function runCaptchaRetryCampaign(
             : await route({
               run: request.run,
               pageForRun,
-              resumeAppWorkflow: () => completeAppWorkflowHumanAssistance(request),
-              finalizeFailed: async (message) => {
-                request.signal.throwIfAborted();
-                throw new Error(message);
-              },
-              providerProbePostSubmit: workflowOwnsCaptchaOutcome
-                ? async (_session, _contract, resume) => {
-                  await resume();
+              signal: request.signal,
+              solver: appVerificationSolver,
+              resume: () => completeAppWorkflowHumanAssistance(request),
+              postSubmitOutcome: workflowOwnsCaptchaOutcome
+                ? async () => {
                   // Join the worker and browser cleanup before starting another round.
                   // Cleanup normally aborts the assistance request signal.
                   const { status, errorCode } = run.assess(await executionSettled);
@@ -199,7 +197,11 @@ export async function runCaptchaRetryCampaign(
                   return status === "completed" || status === "partial"
                     ? "none" : "unrecognized-dialog";
                 }
-                : appProviderPostSubmitProbe(pageForRun),
+                : noPostSubmitOutcome,
+              finalizeFailed: async (message) => {
+                request.signal.throwIfAborted();
+                throw new Error(message);
+              },
               onChallengeCaptured,
               settings: launchVerificationSettings,
             });

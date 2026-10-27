@@ -1,19 +1,43 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
+import { chromium, type Browser, type Page } from "playwright";
 import {
   MAX_CHALLENGES_PER_ROUND,
-  appProviderPostSubmitProbe,
   routeVerificationActor,
   routeWaitingRunVerification,
-  selectVerificationChallengeImage,
-  verificationRoutingDependencies,
-  type VerificationRoutingDependencies,
+  solveChallengeRound,
+  type VerificationPostSubmitOutcome,
+  type VerificationRoutingSeams,
 } from "./verification-routing.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
+import type { PageForRun } from "./automation-viewer.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
+import {
+  openSyntheticPage,
+  pageForRunOf,
+  pngDataUrl,
+  scriptedSolver,
+} from "./verification-page-check-support.ts";
 
-function captchaContract(): HumanAssistanceContract {
+const RUN = "routing-run";
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+const imageRect = { x: 20, y: 20, width: 120, height: 40 };
+const inputRect = { x: 20, y: 80, width: 120, height: 24 };
+const checkboxRect = { x: 20, y: 140, width: 20, height: 20 };
+
+const at = (rect: { x: number; y: number; width: number; height: number }) =>
+  `position:absolute;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;margin:0;box-sizing:border-box`;
+
+/** A login page with no provider adapter: generic screenshot capture and rectangle typing. */
+const LOGIN_PAGE = `<body style="margin:0">
+  <img id="challenge" src="${pngDataUrl(120, 40)}" style="${at(imageRect)}">
+  <input id="code" style="${at(inputRect)}">
+  <input id="checkbox" type="checkbox" style="${at(checkboxRect)}">
+</body>`;
+
+function captchaContract(overrides: Partial<HumanAssistanceContract> = {}): HumanAssistanceContract {
   return {
     schemaVersion: 1,
     version: 1,
@@ -24,7 +48,7 @@ function captchaContract(): HumanAssistanceContract {
       label: "CAPTCHA input",
       semanticId: "provider.login.captcha-input",
       modes: ["click", "type"],
-      rect: { x: 10, y: 20, width: 100, height: 24 },
+      rect: inputRect,
     }],
     contextRegions: [],
     challengeKind: "text-captcha",
@@ -33,340 +57,292 @@ function captchaContract(): HumanAssistanceContract {
       id: "captcha-image",
       label: "CAPTCHA image",
       semanticId: "provider.login.captcha-image",
-      rect: { x: 0, y: 0, width: 200, height: 80 },
+      rect: imageRect,
     },
     completion: { mode: "inline", targetIds: ["captcha-input"], status: "pending" },
     focus: { targetId: "captcha-input", contextRegionIds: [] },
+    ...overrides,
   };
 }
 
-function trackedDependencies(): { calls: string[]; dependencies: VerificationRoutingDependencies } {
-  const calls: string[] = [];
-  const solver: VerificationSolver = {
-    async solve() {
-      calls.push("solve");
-      return { answer: "1234", confidence: 0.99 };
-    },
-  };
-  return {
-    calls,
-    dependencies: {
-      solver,
-      captureChallengeImage: async () => {
-        calls.push("capture");
-        return Buffer.from("captcha");
-      },
-      injectAnswer: async (_session, _contract, answer) => {
-        assert.equal(answer, "1234");
-        calls.push("inject");
-      },
-      injectSelections: async () => {},
-      clickTarget: async () => {},
-      resumeAppWorkflow: async () => { calls.push("resume"); },
-      finalizeFailed: async () => { calls.push("failed"); },
-    },
-  };
-}
-
-test("solver route captures, validates, injects, and resumes through the declared seam", async () => {
-  const tracked = trackedDependencies();
-  assert.deepEqual(await routeVerificationActor({
-    contract: captchaContract(),
-    taskRunId: "run-solver",
-    confidenceThreshold: 0.9,
-    dependencies: tracked.dependencies,
-  }), { kind: "resumed" });
-  assert.deepEqual(tracked.calls, ["capture", "solve", "inject", "resume"]);
-});
-
-test("audio capture opens exactly one CAPTCHA campaign round", async () => {
-  const tracked = trackedDependencies();
-  let captures = 0;
-  const contract: HumanAssistanceContract = {
-    ...captchaContract(),
+function audioContract(): HumanAssistanceContract {
+  return captchaContract({
+    stageId: "yuanta-trade-audio-verification",
     challengeKind: "audio-captcha",
     challengeImageRegion: undefined,
     challengeAudioSource: {
-      id: "audio",
+      id: "audio-challenge",
       label: "Audio challenge",
-      semanticId: "provider.login.audio",
+      semanticId: "yuanta-trade.login.audio-challenge",
     },
     expectedAnswerLength: 6,
-  };
-  assert.deepEqual(await routeVerificationActor({
-    contract,
-    taskRunId: "audio-run",
-    confidenceThreshold: 0.9,
-    dependencies: {
-      ...tracked.dependencies,
-      solver: { async solve() { return { answer: "123456", confidence: 0.1 }; } },
-      captureChallengeAudio: async () => Buffer.from("audio bytes"),
-      onChallengeCaptured: async () => { captures += 1; },
-    },
-  }), { kind: "retryable", reason: "solver-exhausted" });
-  assert.equal(captures, 1);
-});
-
-test("a provider image owner never falls back to generic capture after failure", async () => {
-  const calls: string[] = [];
-  const selection = selectVerificationChallengeImage(captchaContract(), {
-    provider: {
-      handlesChallengeImage: () => true,
-      captureChallengeImage: async () => {
-        calls.push("provider");
-        return null;
-      },
-      isChallengeImageCurrent: async () => true,
-      refreshesChallengeImage: () => false,
-      refreshChallengeImage: async () => false,
-    },
-    genericCaptureChallengeImage: async () => {
-      calls.push("generic");
-      return Buffer.from("generic");
-    },
+    targets: [{
+      id: "captcha-input",
+      label: "Audio answer",
+      semanticId: "yuanta-trade.login.audio-code-input",
+      modes: ["type"],
+      rect: inputRect,
+    }],
   });
-  assert.equal(selection.providerOwned, true);
-  assert.equal(await selection.captureChallengeImage("ses-owner", captchaContract()), null);
-  assert.deepEqual(calls, ["provider"]);
-});
+}
 
-test("App verification uses its task-run ID and ignores legacy session text", async () => {
-  const taskRunId = "typed-verification-run";
-  const routeIds: string[] = [];
-  const run = {
-    taskId: "sinopac-statements",
-    taskRunId,
-    kind: "crawler",
-    status: "waiting_for_human",
-    logPath: "",
-    logTail: "Workflow paused. libretto resume --session stale-session-id",
-    humanAssistanceContract: captchaContract(),
-    events: [],
+function checkboxContract(): HumanAssistanceContract {
+  return captchaContract({
+    stageId: "provider-checkbox",
+    challengeKind: "checkbox",
+    challengeImageRegion: undefined,
+    targets: [{
+      id: "checkbox",
+      label: "I am not a robot",
+      semanticId: "provider.login.checkbox",
+      modes: ["click"],
+      rect: checkboxRect,
+    }],
+    completion: { mode: "inline", targetIds: ["checkbox"], status: "pending" },
+    focus: { targetId: "checkbox", contextRegionIds: [] },
+  });
+}
+
+let browser: Browser;
+before(async () => { browser = await chromium.launch({ headless: true }); });
+after(async () => { await browser.close(); });
+
+type Recorded = { seams: VerificationRoutingSeams; calls: string[]; failures: string[] };
+
+function recordingSeams(
+  pageForRun: PageForRun,
+  solver: VerificationSolver,
+  postSubmit: VerificationPostSubmitOutcome = "none",
+): Recorded {
+  const calls: string[] = [];
+  const failures: string[] = [];
+  return {
+    calls,
+    failures,
+    seams: {
+      pageForRun,
+      signal: new AbortController().signal,
+      solver,
+      resume: () => { calls.push("resume"); },
+      postSubmitOutcome: async () => { calls.push("post-submit"); return postSubmit; },
+      finalizeFailed: (message) => { failures.push(message); },
+      onChallengeCaptured: () => { calls.push("captured"); },
+    },
   };
-  const outcome = await routeWaitingRunVerification({
-    run: {
+}
+
+async function withLoginPage<T>(
+  action: (page: Page) => Promise<T>,
+  html = LOGIN_PAGE,
+  routes: Parameters<typeof openSyntheticPage>[2] = [],
+) {
+  const page = await openSyntheticPage(browser, html, routes);
+  try {
+    return await action(page);
+  } finally {
+    await page.close();
+  }
+}
+
+const route = (contract: HumanAssistanceContract, seams: VerificationRoutingSeams) =>
+  routeVerificationActor({ contract, taskRunId: RUN, confidenceThreshold: 0.9, seams });
+
+test("an accepted answer is captured from the page, typed into it, resumed and then classified", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(await route(captchaContract(), recorded.seams), { kind: "resumed" });
+    assert.equal(await page.inputValue("#code"), "1234");
+    assert.deepEqual(recorded.calls, ["captured", "resume", "post-submit"]);
+    assert.equal(solver.inputs.length, 1);
+    assert.deepEqual(solver.inputs[0]!.image!.subarray(0, 4), PNG_SIGNATURE);
+    assert.deepEqual(recorded.failures, []);
+  }));
+
+test("an unaccepted challenge exhausts the round without typing or resuming", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.1 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(await route(captchaContract(), recorded.seams), {
+      kind: "retryable",
+      reason: "solver-exhausted",
+    });
+    assert.equal(await page.inputValue("#code"), "");
+    assert.deepEqual(recorded.calls, ["captured"], "the round is consumed once, never submitted");
+    assert.ok(solver.inputs.length >= 1);
+  }));
+
+test("a provider rejection reported after resume makes the round retryable", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver, "provider-rejected");
+    assert.deepEqual(await route(captchaContract(), recorded.seams), {
+      kind: "retryable",
+      reason: "provider-rejected",
+    });
+    assert.deepEqual(recorded.calls, ["captured", "resume", "post-submit"]);
+  }));
+
+test("an unrecognized post-submit dialog fails the route closed", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver, "unrecognized-dialog");
+    assert.deepEqual(await route(captchaContract(), recorded.seams), { kind: "failed" });
+    assert.deepEqual(recorded.failures, ["Provider login dialog was not recognized."]);
+  }));
+
+test("a provider-owned image that cannot be captured fails without a generic screenshot", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    // SinoPac's adapter owns this image; the page has no #imgCode to capture.
+    const sinopac = captchaContract({
+      stageId: "sinopac-login-captcha",
+      targets: [{ ...captchaContract().targets[0]!, semanticId: "sinopac.login.captcha-input" }],
+      challengeImageRegion: { ...captchaContract().challengeImageRegion!, semanticId: "sinopac.login.captcha-image" },
+    });
+    assert.deepEqual(await route(sinopac, recorded.seams), { kind: "failed" });
+    assert.deepEqual(recorded.failures, ["Verification challenge image capture failed."]);
+    assert.equal(solver.inputs.length, 0);
+    assert.deepEqual(recorded.calls, []);
+  }));
+
+test("the route reaches only the page its run hosts", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf("another-run", page), solver);
+    assert.deepEqual(await route(captchaContract(), recorded.seams), { kind: "failed" });
+    assert.equal(solver.inputs.length, 0);
+    assert.equal(await page.inputValue("#code"), "");
+    assert.deepEqual(recorded.calls, []);
+  }));
+
+const AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
+
+test("provider-owned audio is fetched in the page, solved and typed", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(await route(audioContract(), recorded.seams), { kind: "resumed" });
+    assert.deepEqual(solver.inputs[0]!.audio, Buffer.from("fixture audio"));
+    assert.equal(await page.inputValue("#code"), "123456");
+    assert.deepEqual(recorded.calls, ["captured", "resume", "post-submit"]);
+  }, LOGIN_PAGE, [{ path: AUDIO_PATH, contentType: "audio/wav", body: Buffer.from("fixture audio") }]));
+
+test("provider-owned audio that cannot be fetched fails instead of resuming unanswered", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(await route(audioContract(), recorded.seams), { kind: "failed" });
+    assert.deepEqual(recorded.failures, ["Verification challenge audio capture failed."]);
+    assert.deepEqual(recorded.calls, []);
+  }));
+
+test("a checkbox stage is clicked on the page and resumed without a post-submit outcome", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => assert.fail("a checkbox is not solved"));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(await route(checkboxContract(), recorded.seams), { kind: "resumed" });
+    assert.equal(await page.isChecked("#checkbox"), true);
+    assert.deepEqual(recorded.calls, ["resume"]);
+  }));
+
+test("a stage without challenge media is unsolvable", () =>
+  withLoginPage(async (page) => {
+    const solver = scriptedSolver(() => assert.fail("nothing to solve"));
+    const recorded = recordingSeams(pageForRunOf(RUN, page), solver);
+    assert.deepEqual(
+      await route(captchaContract({ challengeImageRegion: undefined }), recorded.seams),
+      { kind: "failed" },
+    );
+    assert.deepEqual(recorded.failures, ["Verification challenge cannot be solved."]);
+  }));
+
+test("App verification routes the waiting run's contract against that run's page", () =>
+  withLoginPage(async (page) => {
+    const taskRunId = "typed-verification-run";
+    const run = {
       taskId: "sinopac-statements",
       taskRunId,
-      current: () => run as unknown as AutomationTaskRun,
-    },
-    pageForRun: () => null,
-    settings: {},
-    solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
-    providerVerification: {
-      handlesChallengeImage: () => true,
-      async captureChallengeImage(viewerKey) {
-        routeIds.push(viewerKey);
-        return Buffer.from("challenge");
+      kind: "crawler",
+      status: "waiting_for_human",
+      logPath: "",
+      logTail: "Workflow paused. libretto resume --session stale-session-id",
+      humanAssistanceContract: captchaContract(),
+      events: [],
+    };
+    const solver = scriptedSolver(() => ({ answer: "1234", confidence: 0.99 }));
+    const recorded = recordingSeams(pageForRunOf(taskRunId, page), solver);
+    const outcome = await routeWaitingRunVerification({
+      ...recorded.seams,
+      run: {
+        taskId: "sinopac-statements",
+        taskRunId,
+        current: () => run as unknown as AutomationTaskRun,
       },
-      async isChallengeImageCurrent(viewerKey) {
-        routeIds.push(viewerKey);
-        return true;
-      },
-      refreshesChallengeImage: () => false,
-      async refreshChallengeImage() { return false; },
-    },
-    injectAnswer: async (viewerKey) => { routeIds.push(viewerKey); },
-    providerProbePostSubmit: async (viewerKey, _contract, resume) => {
-      routeIds.push(viewerKey);
-      await resume();
-      return "none";
-    },
-    resumeAppWorkflow: async () => { routeIds.push(taskRunId); },
-    finalizeFailed: async () => { assert.fail("valid typed challenge should not fail"); },
-  });
+      settings: {},
+    });
+    assert.deepEqual(outcome, { kind: "resumed" });
+    assert.equal(await page.inputValue("#code"), "1234");
+    assert.deepEqual(recorded.failures, []);
+  }));
 
-  assert.deepEqual(outcome, { kind: "resumed" });
-  assert.equal(routeIds.length, 4);
-  assert.ok(routeIds.every((viewerKey) => viewerKey === taskRunId));
-});
-
-type RefreshBehavior = "new-challenge" | "unchanged" | "throws";
-
-function refreshRound(options: { refresh?: RefreshBehavior; acceptOnChallenge?: number }) {
+function refreshRound(options: { refresh?: "new-challenge" | "unchanged" | "throws"; acceptOnChallenge?: number }) {
   let challenge = 1;
-  const capturedChallenges = new Set<number>();
-  const counts = { refreshes: 0, injects: 0, probes: 0, resumes: 0, captureEvents: 0 };
-  const failures: string[] = [];
-  const dependencies: VerificationRoutingDependencies = {
-    solver: {
-      async solve() {
-        return {
-          answer: "1234",
-          confidence: challenge === options.acceptOnChallenge ? 0.99 : 0.1,
-        };
-      },
-    },
-    captureChallengeImage: async () => {
-      capturedChallenges.add(challenge);
-      return Buffer.from(`challenge-${challenge}`);
-    },
-    injectAnswer: async () => { counts.injects += 1; },
-    probePostSubmit: async (_session, _contract, resume) => {
-      counts.probes += 1;
-      await resume();
-      return "none";
-    },
-    injectSelections: async () => {},
-    clickTarget: async () => {},
-    resumeAppWorkflow: async () => { counts.resumes += 1; },
-    finalizeFailed: async (message) => { failures.push(message); },
-    onChallengeCaptured: async () => { counts.captureEvents += 1; },
-    ...(options.refresh
-      ? {
-          refreshChallenge: async () => {
-            counts.refreshes += 1;
-            if (options.refresh === "throws") throw new Error("refresh control detached");
-            if (options.refresh === "unchanged") return false;
-            challenge += 1;
-            return true;
-          },
-        }
-      : {}),
-  };
+  const solved: number[] = [];
+  let refreshes = 0;
   return {
-    counts,
-    failures,
-    capturedChallenges,
-    route: () => routeVerificationActor({
-      contract: captchaContract(),
-      taskRunId: "refresh-run",
-      confidenceThreshold: 0.9,
-      dependencies,
+    solved,
+    refreshes: () => refreshes,
+    round: () => solveChallengeRound({
+      budget: options.refresh ? MAX_CHALLENGES_PER_ROUND : 1,
+      solveOnce: async () => {
+        solved.push(challenge);
+        return { status: challenge === options.acceptOnChallenge ? "solved" : "exhausted" };
+      },
+      refresh: options.refresh
+        ? async () => {
+          refreshes += 1;
+          if (options.refresh === "throws") throw new Error("refresh control detached");
+          if (options.refresh === "unchanged") return false;
+          challenge += 1;
+          return true;
+        }
+        : undefined,
     }),
   };
 }
 
-test("a refresh-capable round solves five challenges without submitting any", async () => {
+test("a refresh-capable round tries five challenges without submitting any", async () => {
   const round = refreshRound({ refresh: "new-challenge" });
-  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
-  assert.deepEqual([...round.capturedChallenges], [1, 2, 3, 4, 5]);
+  assert.deepEqual(await round.round(), { status: "exhausted" });
   assert.equal(MAX_CHALLENGES_PER_ROUND, 5);
-  assert.deepEqual(round.counts, {
-    refreshes: 4,
-    injects: 0,
-    probes: 0,
-    resumes: 0,
-    captureEvents: 1,
-  });
-  assert.deepEqual(round.failures, []);
+  assert.deepEqual(round.solved, [1, 2, 3, 4, 5]);
+  assert.equal(round.refreshes(), 4);
 });
 
-test("a refresh-capable round submits once when a later challenge is accepted", async () => {
+test("a refresh-capable round stops at the first accepted challenge", async () => {
   const round = refreshRound({ refresh: "new-challenge", acceptOnChallenge: 3 });
-  assert.deepEqual(await round.route(), { kind: "resumed" });
-  assert.deepEqual([...round.capturedChallenges], [1, 2, 3]);
-  assert.deepEqual(round.counts, {
-    refreshes: 2,
-    injects: 1,
-    probes: 1,
-    resumes: 1,
-    captureEvents: 1,
-  });
+  assert.deepEqual(await round.round(), { status: "solved" });
+  assert.deepEqual(round.solved, [1, 2, 3]);
+  assert.equal(round.refreshes(), 2);
 });
 
-test("a refresh that yields no new challenge ends the round without submitting", async () => {
+test("a refresh that yields no new challenge ends the round", async () => {
   const round = refreshRound({ refresh: "unchanged" });
-  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
-  assert.deepEqual([...round.capturedChallenges], [1]);
-  assert.equal(round.counts.refreshes, 1);
-  assert.equal(round.counts.injects, 0);
-  assert.equal(round.counts.resumes, 0);
+  assert.deepEqual(await round.round(), { status: "exhausted" });
+  assert.deepEqual(round.solved, [1]);
+  assert.equal(round.refreshes(), 1);
 });
 
 test("a provider without a refresh control keeps one challenge per round", async () => {
   const round = refreshRound({});
-  assert.deepEqual(await round.route(), { kind: "retryable", reason: "solver-exhausted" });
-  assert.deepEqual([...round.capturedChallenges], [1]);
-  assert.equal(round.counts.refreshes, 0);
-  assert.equal(round.counts.injects, 0);
-  assert.equal(round.counts.resumes, 0);
+  assert.deepEqual(await round.round(), { status: "exhausted" });
+  assert.deepEqual(round.solved, [1]);
 });
 
-test("a refresh error fails the run instead of restarting it", async () => {
+test("a refresh error propagates so the route fails instead of restarting", async () => {
   const round = refreshRound({ refresh: "throws" });
-  assert.deepEqual(await round.route(), { kind: "failed" });
-  assert.equal(round.failures.length, 1);
-  assert.equal(round.counts.resumes, 0);
-  assert.equal(round.counts.probes, 0);
-  assert.equal(round.counts.injects, 0);
-});
-
-test("only a provider-owned image whose owner declares a control gets a refresh seam", async () => {
-  const refreshed: string[] = [];
-  const provider = (owns: boolean, declaresRefresh: boolean) => ({
-    handlesChallengeImage: () => owns,
-    captureChallengeImage: async () => Buffer.from("provider"),
-    isChallengeImageCurrent: async () => true,
-    refreshesChallengeImage: () => declaresRefresh,
-    refreshChallengeImage: async (session: string) => {
-      refreshed.push(session);
-      return true;
-    },
-  });
-  const genericCaptureChallengeImage = async () => Buffer.from("generic");
-  const select = (owns: boolean, declaresRefresh: boolean) => selectVerificationChallengeImage(
-    captchaContract(),
-    { provider: provider(owns, declaresRefresh), genericCaptureChallengeImage },
-  );
-
-  const declaring = select(true, true);
-  assert.ok(declaring.refreshChallenge);
-  assert.equal(await declaring.refreshChallenge("owner-session", captchaContract()), true);
-  assert.deepEqual(refreshed, ["owner-session"]);
-  assert.equal(select(true, false).refreshChallenge, undefined);
-  assert.equal(select(false, true).refreshChallenge, undefined);
-
-  const wired = verificationRoutingDependencies(captchaContract(), {
-    providerVerification: provider(true, true),
-    pageForRun: () => null,
-    resumeAppWorkflow: async () => {},
-    providerProbePostSubmit: async () => "none",
-    finalizeFailed: async () => {},
-  });
-  assert.ok(wired.refreshChallenge);
-  const generic = verificationRoutingDependencies(captchaContract(), {
-    providerVerification: provider(false, true),
-    pageForRun: () => null,
-    resumeAppWorkflow: async () => {},
-    providerProbePostSubmit: async () => "none",
-    finalizeFailed: async () => {},
-  });
-  assert.equal(generic.refreshChallenge, undefined);
-});
-
-test("the default viewer seams reach a run's page only through the page lookup", async () => {
-  const shots: unknown[] = [];
-  const clicks: Array<[number, number]> = [];
-  const page = {
-    screenshot: async (options: unknown) => { shots.push(options); return Buffer.from("challenge"); },
-    mouse: { click: async (x: number, y: number) => { clicks.push([x, y]); } },
-  };
-  const pageForRun = (taskRunId: string) => taskRunId === "hosted-run" ? page as never : null;
-  const dependencies = verificationRoutingDependencies(captchaContract(), {
-    pageForRun,
-    resumeAppWorkflow: async () => {},
-    providerProbePostSubmit: async () => "none",
-    finalizeFailed: async () => {},
-  });
-  assert.deepEqual(await dependencies.captureChallengeImage("hosted-run", captchaContract()), Buffer.from("challenge"));
-  assert.deepEqual(shots, [{ clip: { x: 0, y: 0, width: 200, height: 80 }, type: "png" }]);
-  await dependencies.injectSelections("hosted-run", captchaContract(), [{ x: 5, y: 6 }]);
-  assert.deepEqual(clicks, [[5, 6]]);
-  await assert.rejects(
-    dependencies.captureChallengeImage("other-run", captchaContract()),
-    /No active App browser page is available/u,
-  );
-  await assert.rejects(
-    dependencies.injectSelections("other-run", captchaContract(), [{ x: 5, y: 6 }]),
-    /No active App browser page is available/u,
-  );
-  assert.equal(shots.length, 1);
-  assert.equal(clicks.length, 1);
-});
-
-test("the App post-submit probe resumes without a provider adapter and needs no page", async () => {
-  let resumed = false;
-  const probe = appProviderPostSubmitProbe(() => null);
-  assert.equal(await probe("no-page-run", captchaContract(), async () => { resumed = true; }), "none");
-  assert.equal(resumed, true);
+  await assert.rejects(round.round(), /refresh control detached/u);
+  assert.deepEqual(round.solved, [1]);
 });
