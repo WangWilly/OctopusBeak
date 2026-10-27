@@ -9,10 +9,12 @@ import {
   POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
   buildPostCurrentDepositBalanceCapture,
   parsePostCurrentDepositBalanceSnapshot,
+  postCurrentBalanceCaptureMatching,
   readPostCurrentDepositBalances,
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00.123+08:00";
@@ -419,4 +421,30 @@ test("Post replay keys are stable while a changed BAL creates a new source recor
   );
   assert.notEqual(first.records[0]?.sourceRecordKey, changed.records[0]?.sourceRecordKey);
   assert.equal(first.observations[0]?.observationKey, changed.observations[0]?.observationKey);
+});
+
+test("Post current balances fail closed when captures span more than one connection or epoch", () => {
+  const otherAccount = { accountNo: "post-other-account", sourceAccountKey: "post-other-account", accountNumber: { value: "post-other-account" } };
+  const row = { stream: "domestic-deposit", sourceAccountKey: "post-other-account" };
+  for (const otherScope of [
+    { sourceConnectionKey: "post-user-other-connection" },
+    { identityEpochKey: "post-user-other-epoch" },
+  ])
+    assert.throws(
+      () => matchCurrentBalanceCaptures(
+        [row],
+        [financialCapture, { identity: { ...financialCapture.identity, ...otherScope, ...otherAccount } }],
+        postCurrentBalanceCaptureMatching,
+      ),
+      /^Error: Post current deposit captures span more than one source connection or identity epoch\.$/u,
+    );
+  assert.deepEqual(
+    matchCurrentBalanceCaptures(
+      [row],
+      [financialCapture, { identity: { ...financialCapture.identity, ...otherAccount } }],
+      postCurrentBalanceCaptureMatching,
+    ).matched.map(({ capture }) => capture.identity.sourceAccountKey),
+    ["post-other-account"],
+    "captures in the run's one scope still match by their own key",
+  );
 });

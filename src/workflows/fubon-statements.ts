@@ -62,6 +62,10 @@ import {
   type FubonCurrentDepositBalanceRow,
 } from "./fubon-current-deposit-balances.ts";
 import {
+  matchCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
+import {
   admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
@@ -421,30 +425,28 @@ export function buildFubonCurrentDepositBalanceCapture(
   };
 }
 
-export function indexFubonCurrentDepositFinancialCaptures(
-  financialCaptures: readonly ExistingFubonFinancialCapture[],
-): ReadonlyMap<string, ExistingFubonFinancialCapture> {
-  const existingByAccountNumber = new Map<string, ExistingFubonFinancialCapture>();
-  for (const candidate of financialCaptures) {
-    const accountNumber = candidate.identity.accountNumber?.value;
-    if (!accountNumber) continue;
-    const prior = existingByAccountNumber.get(accountNumber);
-    if (
-      prior &&
-      (prior.identity.sourceConnectionKey !==
-        candidate.identity.sourceConnectionKey ||
-        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
-        (prior.identity.sourceAccountKey ?? prior.identity.accountNo) !==
-          (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) ||
-        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
-    )
-      throw new Error(
-        "Fubon current deposit identities are ambiguous across financial captures.",
-      );
-    if (!prior) existingByAccountNumber.set(accountNumber, candidate);
-  }
-  return existingByAccountNumber;
-}
+/**
+ * Fubon keys a balance by the full account number (ADR 0049). A capture
+ * without account number evidence is left out of the index, and a row with
+ * no admitted capture is excluded so the run reports
+ * `account-number-evidence-missing`. The first capture under a number wins.
+ */
+export const fubonCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ accountNumber: string }>,
+  ExistingFubonFinancialCapture
+> = {
+  captureKey: (capture) => capture.identity.accountNumber?.value || undefined,
+  rowKey: (row) => row.accountNumber,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    (kept.identity.sourceAccountKey ?? kept.identity.accountNo) ===
+      (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest,
+  ambiguousMessage: "Fubon current deposit identities are ambiguous across financial captures.",
+  unmatched: { kind: "exclude" },
+};
 
 export type ParsedDepositStatementPage = {
   account: string;
@@ -3006,23 +3008,22 @@ export async function stageFubonDeposit(
     }
 
     if (financialCaptures.length > 0) {
-      const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
+      // An account number that continues several admitted accounts was
+      // already excluded as account-identity-ambiguous (ADR 0049).
+      const { matched, excluded } = matchCurrentBalanceCaptures(
+        selectFubonDomesticCurrentDepositRows(currentRows)
+          .filter((row) => !ambiguousAccountNumbers.has(row.accountNumber))
+          .map((row) => ({ ...row, observedAt: currentObservedAt })),
         financialCaptures,
+        fubonCurrentBalanceCaptureMatching,
       );
-      for (const unadjustedRow of selectFubonDomesticCurrentDepositRows(currentRows)) {
-        if (ambiguousAccountNumbers.has(unadjustedRow.accountNumber)) continue;
-        const row = { ...unadjustedRow, observedAt: currentObservedAt };
-        const matching = existingByAccountNumber.get(row.accountNumber);
-        if (!matching) {
-          currentBalanceExclusions.push({ reason: "account-number-evidence-missing" });
-          continue;
-        }
+      currentBalanceExclusions.push(
+        ...excluded.map(() => ({ reason: "account-number-evidence-missing" } as const)),
+      );
+      for (const { row, capture } of matched)
         currentBalanceCaptures.push(
-          admitCurrentDepositBalanceCapture(
-            buildFubonCurrentDepositBalanceCapture(row, matching),
-          ),
+          admitCurrentDepositBalanceCapture(buildFubonCurrentDepositBalanceCapture(row, capture)),
         );
-      }
     }
 
     context.signal.throwIfAborted();

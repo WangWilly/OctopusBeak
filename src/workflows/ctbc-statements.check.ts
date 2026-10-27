@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { indexCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -9,7 +10,7 @@ import {
   buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
-  indexCtbcCurrentDepositFinancialCaptures,
+  ctbcCurrentBalanceCaptureMatching,
   resolveCtbcAccountScope,
   stageCtbcDeposit,
   type CtbcDepositSourceSnapshot,
@@ -150,17 +151,40 @@ assert.doesNotMatch(
   /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|deviceId/u,
 );
 
-const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures([
-  existingIdentity,
-]);
-assert.equal(
-  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }),
-  existingIdentity,
+const admittedCaptures = indexCurrentBalanceCaptures(
+  [existingIdentity],
+  ctbcCurrentBalanceCaptureMatching,
 );
 assert.equal(
-  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }),
-  undefined,
+  admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }])
+    .matched[0]?.capture,
+  existingIdentity,
 );
+assert.throws(
+  () => admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }]),
+  /^Error: CTBC current deposit snapshot has no admitted account identity\.$/u,
+);
+for (const otherScope of [
+  { sourceConnectionKey: "sha256:other-ctbc-connection" },
+  { identityEpochKey: "sha256:other-ctbc-epoch" },
+])
+  assert.throws(
+    () => indexCurrentBalanceCaptures([
+      existingIdentity,
+      {
+        ...existingIdentity,
+        identity: {
+          ...existingIdentity.identity,
+          ...otherScope,
+          accountNo: conflictingCtbcAccountNumber,
+          sourceAccountKey: conflictingCtbcAccountNumber,
+          accountNumber: { value: conflictingCtbcAccountNumber },
+        },
+      },
+    ], ctbcCurrentBalanceCaptureMatching),
+    /^Error: CTBC current deposit captures span more than one source connection or identity epoch\.$/u,
+    "a capture outside the run's connection and epoch fails closed",
+  );
 assert.throws(
   () =>
     buildCtbcCurrentDepositBalanceCapture(currentRow, {
