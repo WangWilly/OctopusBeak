@@ -1095,8 +1095,39 @@ export async function runYuantaCreditCardStatements(
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
-  const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
+  const snapshot = await readYuantaCreditCardSource(site, input, context, product);
+  return stageYuantaCreditCard(snapshot, input, context, product);
+}
 
+/** What one credit-card run read from the eBank pages, before anything is built (ADR 0065). */
+export type YuantaCreditCardSourceSnapshot = Readonly<{
+  /** Every billed month the bills page offered. */
+  allMonthOptions: readonly MonthOption[];
+  /** The billed months the run queried, in query order. */
+  selectedMonthOptions: readonly MonthOption[];
+  billedRows: readonly StatementRow[];
+  /** One settled-summary page per selected month; empty when the summary was not requested. */
+  billedHistoryPages: readonly YuantaCreditCardHistorySettledSummaryPage[];
+  /** One entry per billed response, then one for the unbilled response when it was read. */
+  terminalPages: readonly boolean[];
+  /** Empty when unbilled rows were not requested. */
+  unbilledRows: readonly StatementRow[];
+  /** The optional current used-credit evidence from the summary page. */
+  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
+}>;
+
+/**
+ * Read the bills page, each selected billed month, the unbilled page and the
+ * optional current used-credit summary. This is the only half that touches
+ * the page.
+ */
+export async function readYuantaCreditCardSource(
+  site: YuantaEbankSite,
+  input: YuantaCreditCardCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<YuantaCreditCardSourceSnapshot> {
+  context.signal.throwIfAborted();
   await product.reportActivity("query");
   const bills = await openCreditCardBillsPage(site);
   const currentMonthHtml = bills.html;
@@ -1117,13 +1148,13 @@ export async function runYuantaCreditCardStatements(
     currentMonthHtml,
     null,
   ).monthOptions;
-  const monthOptions = selectMonthOptions(allMonthOptions, input);
+  const selectedMonthOptions = selectMonthOptions(allMonthOptions, input);
   const billedRows: StatementRow[] = [];
   const billedHistoryPages: YuantaCreditCardHistorySettledSummaryPage[] = [];
   const terminalPages: boolean[] = [];
 
   await submitCreditCardMonthOptions(
-    monthOptions,
+    selectedMonthOptions,
     async (month) => {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
@@ -1161,22 +1192,16 @@ export async function runYuantaCreditCardStatements(
     unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
   }
 
-  let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
-  let statementSummaries: YuantaCreditCardStatementSummary[] = [];
   let currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined;
   if (input.includeSummary) {
-    issuerSummaries = collectYuantaCreditCardHistorySummaries(
-      billedHistoryPages,
-      monthOptions,
-    );
-    if (issuerSummaries.length >= 2)
-      statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
     try {
       await product.reportActivity("query");
       const summaryTraversal = await submitCreditCardSummary(site, context.text);
       context.text.assertIntact(JSON.stringify(summaryTraversal));
       currentUsedCredit = summaryTraversal.currentUsedCredit;
     } catch (error) {
+      // The current used credit is optional evidence; only text corruption
+      // and cancellation stop the read here.
       if (
         error instanceof SourceTextIntegrityError ||
         context.signal.aborted
@@ -1186,10 +1211,54 @@ export async function runYuantaCreditCardStatements(
     }
   }
 
+  return {
+    allMonthOptions,
+    selectedMonthOptions,
+    billedRows,
+    billedHistoryPages,
+    terminalPages,
+    unbilledRows,
+    ...(currentUsedCredit ? { currentUsedCredit } : {}),
+  };
+}
+
+/**
+ * Build the issuer summaries, decide between a full and a partial capture
+ * (ADR 0062), and stage the credit-card capture and its current balance when
+ * the read covered the whole Query Inventory.
+ */
+export function stageYuantaCreditCard(
+  snapshot: YuantaCreditCardSourceSnapshot,
+  input: YuantaCreditCardCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): ProductCollectionSummary {
+  const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
+  const {
+    allMonthOptions,
+    selectedMonthOptions,
+    billedRows,
+    billedHistoryPages,
+    terminalPages,
+    unbilledRows,
+    currentUsedCredit,
+  } = snapshot;
+
+  let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
+  let statementSummaries: YuantaCreditCardStatementSummary[] = [];
+  if (input.includeSummary) {
+    issuerSummaries = collectYuantaCreditCardHistorySummaries(
+      billedHistoryPages,
+      selectedMonthOptions,
+    );
+    if (issuerSummaries.length >= 2)
+      statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
+  }
+
   const isFullCapture =
     !input.monthIndexes &&
     input.includeUnbilled &&
-    monthOptions.length === allMonthOptions.length &&
+    selectedMonthOptions.length === allMonthOptions.length &&
     statementGridQueryShortfalls(YUANTA_STATEMENT_GRID, {
       billedPeriods: allMonthOptions.map((month) => month.label),
       terminalGrids: terminalPages,
@@ -1221,7 +1290,7 @@ export async function runYuantaCreditCardStatements(
         completenessEvidence: {
           bank: "yuanta",
           reason: "scope_not_full",
-          monthIndexes: monthOptions.map((month) => month.index),
+          monthIndexes: selectedMonthOptions.map((month) => month.index),
           unbilled: input.includeUnbilled,
           summary: {
             requested: input.includeSummary,
@@ -1238,7 +1307,7 @@ export async function runYuantaCreditCardStatements(
       identity: canonicalHumanAttestation,
       instrumentFingerprintSecret,
       allMonthOptions,
-      selectedMonthOptions: monthOptions,
+      selectedMonthOptions,
       includeUnbilled: input.includeUnbilled,
       includeSummary: input.includeSummary,
       terminalPages,
@@ -1286,7 +1355,7 @@ export async function runYuantaCreditCardStatements(
   context.signal.throwIfAborted();
   return {
     sourceCaptureCount:
-      monthOptions.length +
+      selectedMonthOptions.length +
       (input.includeUnbilled ? 1 : 0) +
       (input.includeSummary ? 1 : 0),
     rowCount: billedRows.length + unbilledRows.length,
