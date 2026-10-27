@@ -18,8 +18,8 @@ import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { CHECK_PGLITE_RPC, executeTaskRunForCheck, observingExecutions, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution, type AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import {
-  registerAppWorkflowHumanAssistanceRequestHandler,
-  resumeAppWorkflowHumanAssistance,
+  completeAppWorkflowHumanAssistance,
+  type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
@@ -426,7 +426,6 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
   const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   const persistedEvents = new Set<string>();
-  let unregisterRoute: (() => void) | undefined;
   try {
     const provider = createPgliteOperationalProvider(store);
     const appendRunEvent = provider.automation.appendRunEvent.bind(provider.automation);
@@ -451,8 +450,12 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       let active: ActiveAutomationTaskRun | undefined;
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
+      let assistanceRequest: AppWorkflowHumanAssistanceRequest | undefined;
       const execution = executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
+        // The scenario resumes the stage itself; the route only keeps it
+        // from failing closed as unrouted.
+        assistanceRoute: (request) => { assistanceRequest = request; },
         pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv,
         onRunOpened: (run) => {
@@ -511,13 +514,12 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       if (scenario === "assistance-completion") {
         const waitingDeadline = Date.now() + 10_000;
         while (Date.now() < waitingDeadline) {
-          const run = await provider.automation.taskRunById(taskRunId);
-          if (run?.status === "waiting_for_human") break;
+          if (assistanceRequest) break;
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
+        assert.ok(assistanceRequest, "the worker's request reaches the execution's route");
         assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "waiting_for_human");
-        await provider.automation.updateHumanAssistanceCompletion(taskRunId, "entered");
-        assert.equal(await resumeAppWorkflowHumanAssistance(taskRunId, "entered"), true);
+        await completeAppWorkflowHumanAssistance(assistanceRequest);
       } else if (scenario === "commit-cancel" || scenario === "commit-cancel-settled") {
         const commitDeadline = Date.now() + 10_000;
         while (Date.now() < commitDeadline) {
@@ -533,9 +535,6 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
 
-    // The test resumes the stage itself; the registered route only keeps it
-    // from failing closed as unrouted.
-    unregisterRoute = registerAppWorkflowHumanAssistanceRequestHandler(task.id, () => {});
     const completed = await runScenario("assistance-completion");
     assert.equal(completed.result.status, "completed");
     assert.equal(completed.run?.status, "completed");
@@ -569,7 +568,6 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(forced.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.notEqual(forced.run?.terminationMode, "forced", "the run was not finalized as cancellation");
   } finally {
-    unregisterRoute?.();
     await store.close();
   }
 });

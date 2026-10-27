@@ -138,7 +138,6 @@ export function createAutomationRunner(options: Readonly<{
       return await runCaptchaRetryCampaign({
         taskId: task.id,
         appWorkflow: task.kind === "crawler",
-        provider,
         run,
         launchVerificationSettings: { ...readAutomationSettings() },
         initialExecutionOptions: { scheduledAtUtc: runOptions.scheduledAtUtc },

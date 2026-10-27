@@ -41,7 +41,7 @@ import { taskById } from "./tasks.ts";
 import { VERIFIED_SOURCES } from "./sources/index.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 
 export type VerificationRoutingDependencies = {
   solver: VerificationSolver;
@@ -398,31 +398,25 @@ export function verificationRoutingDependencies(
 }
 
 export async function routeWaitingRunVerification(input: VerificationRoutingSeams & {
-  taskId: string;
-  taskRunId: string;
-  provider: AutomationPersistenceProvider;
+  /** The run whose current human assistance stage this routes. */
+  run: Pick<ActiveAutomationTaskRun, "taskId" | "taskRunId" | "current">;
   settings?: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
-  const task = taskById(input.taskId);
+  const task = taskById(input.run.taskId);
   if (!task?.workflowId) {
     await input.finalizeFailed("Verification routing requires an App browser workflow.");
     return { kind: "failed" };
   }
   const settings = input.settings ?? readAutomationSettings();
-  const run = await input.provider.automation.taskRunById(input.taskRunId);
-  if (
-    !run
-    || run.taskId !== input.taskId
-    || run.status !== "waiting_for_human"
-    || !run.humanAssistanceContract
-  ) {
+  const run = input.run.current();
+  if (run.status !== "waiting_for_human" || !run.humanAssistanceContract) {
     await input.finalizeFailed("App workflow verification stage is unavailable.");
     return { kind: "failed" };
   }
   const contract = run.humanAssistanceContract;
   return routeVerificationActor({
     contract,
-    taskRunId: input.taskRunId,
+    taskRunId: input.run.taskRunId,
     confidenceThreshold: verificationConfidenceThreshold(contract, settings),
     dependencies: verificationRoutingDependencies(contract, input),
   });

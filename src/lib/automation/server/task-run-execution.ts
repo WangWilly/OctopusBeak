@@ -33,7 +33,10 @@ import {
   type AppWorkflowBrowserProfile,
 } from "./app-browser-host.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
-import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import {
+  createAppWorkflowHumanAssistancePort,
+  type HumanAssistanceRoute,
+} from "./app-workflow-human-assistance.ts";
 import {
   runSupervisedAppWorkflow,
   type RunSupervisedAppWorkflowOptions,
@@ -63,6 +66,8 @@ export type AutomationTaskExecutionOptions = {
   launchVerificationSettings?: AutomationSettingsFile;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
+  /** Answers this execution's human assistance requests; without it a request fails closed. */
+  assistanceRoute?: HumanAssistanceRoute;
   attempt?: number;
   maxAttempts?: number;
   /** This execution is another round of the same visible run. */
@@ -401,7 +406,9 @@ export async function runAutomationTaskExecution(
     progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
   });
   if (!started) return CANCELLED;
-  const execution = run.beginExecution(options.executionId ?? randomUUID());
+  const execution = run.beginExecution(options.executionId ?? randomUUID(), {
+    assistanceRoute: options.assistanceRoute,
+  });
   try {
     return await executeAppWorkflow({ task, run, execution }, options);
   } finally {
