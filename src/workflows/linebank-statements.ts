@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -14,14 +14,7 @@ import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import type {
-  DomesticDepositSourceTime,
-  LineBankHumanAttestedV13ValidatedCapture,
-} from "../ledger/canonical/linebank-domestic-deposit-contract.ts";
-import {
-  admitCanonicalFinancialDepositCapture,
-  type CanonicalFinancialDepositValidatedCapture,
-} from "../ledger/canonical/canonical-financial-deposit-admission.ts";
+import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
@@ -45,164 +38,6 @@ const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
 const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
-
-const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
-const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
-
-
-function linebankCanonicalToken(...parts: string[]): string {
-  return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;
-}
-
-function linebankCanonicalDate(value: string): string {
-  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
-}
-
-function linebankCanonicalDateTime(value: DomesticDepositSourceTime): string {
-  return `${linebankCanonicalDate(value.localDate)}T${value.localTime.slice(0, 2)}:${value.localTime.slice(2, 4)}:${value.localTime.slice(4, 6)}`;
-}
-
-function linebankCompactFinancialRecord(
-  capture: LineBankHumanAttestedV13ValidatedCapture,
-  record: LineBankHumanAttestedV13ValidatedCapture["records"][number],
-): string {
-  return JSON.stringify({
-    sourceOccurrenceKey: record.sourceOccurrenceKey,
-    baseOccurrenceKey: record.baseOccurrenceKey,
-    sourceChangeFingerprint: record.sourceChangeFingerprint,
-    accountKey: capture.accountKey,
-    sourceConnection: capture.sourceConnection,
-    stream: capture.stream,
-    contractVersion: capture.contractVersion,
-    identityEpoch: capture.identityEpoch,
-    sourceSequence: record.sourceSequence,
-    occurrenceCounter: record.occurrenceCounter,
-    sourceSequenceKey: record.sourceOccurrenceKey,
-    sourceTime: record.sourceTime,
-    direction: record.direction,
-    sourceDirectionCode: record.sourceDirectionCode,
-    amount: record.amount,
-    balanceAfter: record.balanceAfter,
-    currency: record.currency,
-    description: record.description ?? null,
-    cancellation: "N",
-    cancellationFlags: record.cancellationFlags,
-    provenance: { matchingRuleVersion: "occurrence-v1" },
-  });
-}
-
-/** Keep LINE Bank's provider vocabulary in the adapter before execution. */
-export function normalizeLineBankFinancialCapture(
-  capture: LineBankHumanAttestedV13ValidatedCapture,
-): CanonicalFinancialDepositValidatedCapture {
-  const contractFingerprint = linebankCanonicalToken(
-    "linebank-v13-contract",
-    capture.contractVersion,
-    capture.humanAttestation.evidenceVersion,
-  );
-  const preflightFingerprint = linebankCanonicalToken(
-    "linebank-v13-scope",
-    capture.sourceScopeEvidence.evidenceVersion,
-    capture.authority.kind,
-    capture.authority.membershipEffectiveDate ?? "personal-main",
-  );
-  return admitCanonicalFinancialDepositCapture({
-    captureId: capture.captureId,
-    authorityRoute: LINEBANK_V13_AUTHORITY,
-    contractVersion: "human-attested-v13",
-    identity: {
-      integrationNamespace: "linebank",
-      sourceConnectionKey: linebankCanonicalToken(
-        "linebank-connection",
-        capture.sourceConnection,
-      ),
-      identityEpochKey: linebankCanonicalToken(
-        "linebank-epoch",
-        capture.sourceConnection,
-        String(capture.identityEpoch),
-      ),
-      stream: capture.stream,
-      recordKind: LINEBANK_V13_RECORD_KIND,
-      subjectDigest: capture.accountKey,
-      accountNo: capture.accountKey,
-      sourceAccountKey: capture.accountKey,
-      accountNumber: capture.accountNumber ?? null,
-      accountType: "depository",
-      currency: "TWD",
-    },
-    observedAt: capture.observedAt,
-    scope: {
-      startDate: linebankCanonicalDate(capture.scope.startDate),
-      endDate: linebankCanonicalDate(capture.scope.endDate),
-      scopeKind: "bounded-range",
-      completeness: "complete-range",
-      completenessBasis:
-        "human-attested-requested-scope-all-pages-stable-totals",
-      completenessRuleVersion: "linebank/domestic-deposit/human-attested-v13",
-      absenceAuthority: "comparable-complete-range",
-      contractFingerprint,
-      preflightFingerprint,
-      pageCount: capture.pageCount,
-    },
-    semantics: {
-      postingStatus: capture.postingStatus,
-      postingOrigin: "human_attested_history",
-      postingBasis: "human-attested-formally-posted",
-      postingRuleVersion: "linebank/domestic-deposit/human-attested-v13",
-      economicStatus: "normal",
-      administrativeState: "active",
-      semanticRuleVersion: "linebank/domestic-deposit/human-attested-v13",
-      effectiveTimeBasis: capture.effectiveTimeBasis,
-      effectiveTimeRuleVersion: "linebank/domestic-deposit/human-attested-v13",
-      timeZone: capture.timeZone,
-      timePrecision: "second",
-      timeOrigin: "source_reported",
-      requireBalance: true,
-    },
-    pages: capture.pages.map((page) => ({
-      pageOrdinal: page.pageNbr - 1,
-      responseCode: "200",
-      terminal: page.pageNbr === capture.pageCount,
-      rowCount: page.txCnt,
-      responseDigest: linebankCanonicalToken(
-        "linebank-v13-page",
-        capture.captureId,
-        String(page.pageNbr),
-        String(page.txCnt),
-      ),
-      proofKind: "human-attested-requested-scope-all-pages-stable-totals",
-      contractFingerprint,
-      preflightFingerprint,
-      metadataJson: JSON.stringify({
-        pageNbr: page.pageNbr,
-        pageCapacity: page.pageCnt,
-        totalCount: page.totTxCnt,
-        rowCount: page.txCnt,
-      }),
-    })),
-    records: capture.records.map((record) => ({
-      occurrenceKey: record.sourceOccurrenceKey,
-      collisionKey: record.baseOccurrenceKey,
-      providerKey: record.sourceOccurrenceKey,
-      contentHash: record.sourceChangeFingerprint,
-      sequenceLexeme: record.sourceOccurrenceKey,
-      compactJson: linebankCompactFinancialRecord(capture, record),
-      amount: record.amount,
-      balanceAfter: record.balanceAfter,
-      currency: record.currency,
-      description: record.description ?? null,
-      direction: record.direction,
-      sourceTime: {
-        localDate: linebankCanonicalDate(record.sourceTime.localDate),
-        localTime: `${record.sourceTime.localTime.slice(0, 2)}:${record.sourceTime.localTime.slice(2, 4)}:${record.sourceTime.localTime.slice(4, 6)}`,
-        timeZone: record.sourceTime.timeZone,
-        epochMilliseconds: record.sourceTime.epochMilliseconds,
-      },
-      effectiveOn: linebankCanonicalDate(record.sourceTime.localDate),
-      transactionDateTimeLocal: linebankCanonicalDateTime(record.sourceTime),
-    })),
-  });
-}
 
 const dateSchema = z.string().regex(/^\d{8}$/);
 
@@ -458,9 +293,6 @@ function formatTime(value: string | undefined): string {
   if (!/^\d{6}$/.test(raw)) return cleanText(value);
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
 }
-
-export const LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION =
-  "observed-time-v1" as const;
 
 /** Reconstruct the source timestamp using Taiwan's fixed UTC+8 offset. */
 export function linebankEpochMillisecondsFromSourceDateTime(
@@ -1490,6 +1322,9 @@ export async function runLineBankProviderWorkflow(
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
         const statementItems: ProductStageRequest[] = [];
         const captureOccurrenceId = randomUUID();
+        const { normalizeLineBankFinancialCapture } = await import(
+          "../ledger/canonical/linebank-domestic-deposit.ts"
+        );
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
           total: selectedSources.length,
