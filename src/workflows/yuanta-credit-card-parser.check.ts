@@ -7,8 +7,16 @@ import {
   parseYuantaCurrentCreditCardUsedCreditSummaryHtml,
   resolveYuantaSettledStatementCycles,
   traverseYuantaCreditCardSettledStatementSummaryPages,
+  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
   YuantaCreditCardSummaryParseError,
 } from "./yuanta-credit-card-parser.ts";
+import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST } from "../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts";
+
+assert.equal(
+  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics.settledSummaryParserContract,
+  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
+  "the attested manifest names the parser contract this module implements",
+);
 
 const yuantaCurrentCredit = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(`
   <table class="rwdTable">

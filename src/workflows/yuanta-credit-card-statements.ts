@@ -242,22 +242,12 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
-export function isCreditCardNoRecordText(
-  value: string | null | undefined,
-): boolean {
-  return /查無資料|查無相關資料|無資料|無消費/.test(cleanText(value));
-}
-
 export function isCreditCardProductAbsentText(
   value: string | null | undefined,
 ): boolean {
   return /未持有信用卡|目前(?:無|沒有)信用卡|無信用卡產品|尚未申請信用卡|查無信用卡|無可用信用卡|未持有卡片/.test(
     cleanText(value),
   );
-}
-
-export function creditCardNoRecordLocator(scope: BrowserScope): Locator {
-  return scope.locator("#creditNoRecordMsg, #creditNoUnbilledMsg, .errorArea");
 }
 
 /**
