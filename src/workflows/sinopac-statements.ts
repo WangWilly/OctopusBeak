@@ -132,12 +132,6 @@ export type DateRange = {
   endDate: string;
 };
 
-type SinopacSkippedAccount = Readonly<{
-  accountId: string;
-  currency: string;
-  reason: "provider-explicit-no-data";
-}>;
-
 export type SinopacAccount = {
   DataText?: string;
   DataValue?: string;
@@ -158,22 +152,6 @@ export type SinopacTransactionResponse = {
   SubInfo?: SinopacRawTransactionRow[];
 };
 
-export type SinopacStatementsRunDependencies = {
-  text: SourceTextPort;
-  signal: AbortSignal;
-  event: WorkflowContext["event"];
-  observedAt: string;
-  queryTransactions?: (
-    account: SinopacAccount,
-    dateRange: DateRange,
-    businessDate: string,
-  ) => Promise<SinopacTransactionResponse>;
-  readCurrentDepositBalances: (
-    page: Page,
-    input: Readonly<{ observedAt: string; timeoutMs?: number }>,
-  ) => Promise<readonly SinopacCurrentDepositBalanceRow[]>;
-};
-
 export type SinopacRawTransactionRow = Partial<
   Record<(typeof SINOPAC_IDENTITY_FIELD_NAMES)[number], string>
 >;
@@ -191,12 +169,6 @@ export type SinopacJsonSourceResponse = Readonly<{
 }>;
 
 export type SinopacWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
-export type SinopacProviderWorkflowOverrides = Readonly<{
-  readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
-  queryTransactions?: SinopacStatementsRunDependencies["queryTransactions"];
-  readCurrentDepositBalances?: SinopacStatementsRunDependencies["readCurrentDepositBalances"];
-  cardTransport?: SinopacCardTransport;
-}>;
 
 type ExistingSinopacFinancialCapture = Readonly<{
   identity: Readonly<{
@@ -933,9 +905,9 @@ function isSinopacEndpointResponse(response: Response, pathname: string): boolea
 
 async function openTransactionPage(
   page: Page,
-  text: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
-  event?: WorkflowContext["event"],
+  text: SourceTextPort,
+  signal: AbortSignal,
+  event: ProductCollectionHandle["event"],
 ): Promise<SinopacAccount[]> {
   const responsePromise = page.waitForResponse(
     (response) => isSinopacEndpointResponse(response, ACCOUNT_ENDPOINT),
@@ -973,7 +945,7 @@ async function openTransactionPage(
       text,
     });
   } catch (error) {
-    await event?.(
+    await event(
       error instanceof SourceTextIntegrityError ? "decoding" : "validation",
       "failed",
       error instanceof SourceTextIntegrityError
@@ -983,15 +955,10 @@ async function openTransactionPage(
     throw error;
   }
   if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0])) {
-    await event?.("validation", "failed", "account-source-response-rejected");
+    await event("validation", "failed", "account-source-response-rejected");
     throw new Error("SinoPac account source response is incomplete.");
   }
-  const accounts = accountListFromResponse(payload as SinopacAccountResponse[]);
-  await event?.("collection", "advanced", "account-list-collected", {
-    completed: accounts.length,
-    total: accounts.length,
-  });
-  return accounts;
+  return accountListFromResponse(payload as SinopacAccountResponse[]);
 }
 
 class SinopacApiClient {
@@ -1116,9 +1083,7 @@ class SinopacApiClient {
       `${TRANSACTION_ENDPOINT}?${Date.now()}`,
       body,
     );
-    return validateSinopacTransactionRows(
-      sinopacSingleEnvelope<SinopacTransactionResponse>(payload, "transaction"),
-    );
+    return sinopacSingleEnvelope<SinopacTransactionResponse>(payload, "transaction");
   }
 }
 
@@ -1271,11 +1236,11 @@ export async function runSinopacIdentityValidation(
   for (const querySet of querySets) {
     const windows: SinopacIdentityCapture["windows"] = [];
     for (const window of sinopacQueryWindows(querySet.range)) {
-      const response = await apiClient.fetchTransactions(
+      const response = validateSinopacTransactionRows(await apiClient.fetchTransactions(
         accounts[0]!,
         window,
         querySet.range.endDate,
-      );
+      ));
       windows.push({
         window,
         response: { ...response },
@@ -1434,21 +1399,70 @@ type SinopacDepositCollection = Readonly<{
   skippedAccountCount: number;
 }>;
 
-async function collectSinopacStatements(
+export type SinopacReadCurrentDepositBalances = (
+  input: Readonly<{ observedAt: string }>,
+) => Promise<readonly SinopacCurrentDepositBalanceRow[]>;
+
+/** SinoPac's signed-in deposit pages, read as the verbs the deposit runner needs (ADR 0065). */
+export type SinopacDepositSource = Readonly<{
+  /** Opens the transaction-details page and reads the account list it requests. */
+  listAccounts: () => Promise<SinopacAccount[]>;
+  queryTransactions: (
+    account: SinopacAccount,
+    window: DateRange,
+    businessDate: string,
+  ) => Promise<SinopacTransactionResponse>;
+  readCurrentBalances: SinopacReadCurrentDepositBalances;
+}>;
+
+export function sinopacDepositSource(
   page: Page,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): SinopacDepositSource {
+  const apiClient = new SinopacApiClient(page, context.text, context.signal);
+  return {
+    listAccounts: () => openTransactionPage(page, context.text, context.signal, product.event),
+    queryTransactions: (account, window, businessDate) =>
+      apiClient.fetchTransactions(account, window, businessDate),
+    readCurrentBalances: (input) =>
+      readSinopacCurrentDepositBalancesWithText(page, context.text, context.signal, input),
+  };
+}
+
+/** One selected account's statement capture, structurally admitted as it was read. */
+export type SinopacDepositAccountRead = Readonly<{
+  capture: SinopacStatementValidatedCapture;
+  rowCount: number;
+  providerNoData: boolean;
+}>;
+
+export type SinopacDepositSourceSnapshot = Readonly<{
+  observedAt: string;
+  accounts: readonly SinopacDepositAccountRead[];
+}>;
+
+/** Read every selected account's query windows from SinoPac (ADR 0065). */
+export async function readSinopacDepositSource(
+  source: SinopacDepositSource,
   input: SinopacWorkflowInput,
-  initialAccounts: SinopacAccount[],
-  overrides: SinopacStatementsRunDependencies,
-  stage: ProductCollectionHandle["stage"],
-): Promise<SinopacDepositCollection & ProductCollectionSummary> {
-  const signal = overrides.signal;
-  const text = overrides.text;
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<SinopacDepositSourceSnapshot> {
+  const { signal } = context;
+  const { event } = product;
+  await event("collection", "started", "account-list-collection-started");
+  const listed = await withAbort(source.listAccounts(), signal);
   signal.throwIfAborted();
+  await event("collection", "advanced", "account-list-collected", {
+    completed: listed.length,
+    total: listed.length,
+  });
+  const observedAt = context.now();
   const dateRange = resolveDateRange(input);
   const windows = sinopacQueryWindows(dateRange);
-  const apiClient = new SinopacApiClient(page, text, signal);
   const accounts = sinopacFilterAccounts(
-    initialAccounts,
+    listed,
     input.accountFilters,
     input.currencyFilters,
   );
@@ -1467,21 +1481,10 @@ async function collectSinopacStatements(
     );
   }
 
-  const observedAt = overrides.observedAt;
-  const readCurrent = overrides.readCurrentDepositBalances;
-  const captureOccurrenceId = sinopacCaptureId(observedAt);
-  const captureInputs: Array<{
-    capture: SinopacStatementValidatedCapture;
-    pending: PendingSinopacSource;
-  }> = [];
-  const skippedAccounts: SinopacSkippedAccount[] = [];
-  const financialCapturesForCurrent: Array<{
-    sourceCapture: SinopacStatementValidatedCapture;
-    financialCapture: ExistingSinopacFinancialCapture;
-  }> = [];
+  const reads: SinopacDepositAccountRead[] = [];
   const sourceTotal = accounts.length * windows.length;
   let sourceCompleted = 0;
-  await overrides.event?.("collection", "started", "source-collection-started", {
+  await event("collection", "started", "source-collection-started", {
     completed: 0,
     total: sourceTotal,
   });
@@ -1489,20 +1492,19 @@ async function collectSinopacStatements(
     const rows: SinopacStatementRow[] = [];
     let explicitNoData = true;
     for (const window of windows) {
-      signal?.throwIfAborted();
-      await overrides.event?.("decoding", "started", "source-decoding-started", {
+      signal.throwIfAborted();
+      await event("decoding", "started", "source-decoding-started", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
       let response: SinopacTransactionResponse;
       try {
-        response = await withAbort((
-          overrides.queryTransactions ??
-          ((candidate, range, businessDate) =>
-            apiClient.fetchTransactions(candidate, range, businessDate))
-        )(account, window, dateRange.endDate), signal);
+        response = validateSinopacTransactionRows(await withAbort(
+          source.queryTransactions(account, window, dateRange.endDate),
+          signal,
+        ));
       } catch (error) {
-        await overrides.event?.(
+        await event(
           error instanceof SourceTextIntegrityError ? "decoding" : "validation",
           "failed",
           error instanceof SourceTextIntegrityError
@@ -1512,21 +1514,19 @@ async function collectSinopacStatements(
         );
         throw error;
       }
-      signal?.throwIfAborted();
-      response = validateSinopacTransactionRows(response);
-      const windowRows = sinopacApiRowsToStatementRows(response.SubInfo ?? []);
+      signal.throwIfAborted();
       if (
         response.Header !== "FAIL" ||
         cleanText(response.Message) !== "查無資料"
       )
         explicitNoData = false;
-      rows.push(...windowRows);
+      rows.push(...sinopacApiRowsToStatementRows(response.SubInfo ?? []));
       sourceCompleted += 1;
-      await overrides.event?.("decoding", "advanced", "source-decoding-completed", {
+      await event("decoding", "advanced", "source-decoding-completed", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
-      await overrides.event?.("collection", "advanced", "account-window-collected", {
+      await event("collection", "advanced", "account-window-collected", {
         completed: sourceCompleted,
         total: sourceTotal,
       });
@@ -1536,8 +1536,8 @@ async function collectSinopacStatements(
       queryPeriods: windows.map(queryPeriod),
       rows: sortRows(rows),
     };
-    await overrides.event?.("validation", "started", "source-validation-started", {
-      completed: captureInputs.length,
+    await event("validation", "started", "source-validation-started", {
+      completed: reads.length,
       total: accounts.length,
     });
     const structural = admitSinopacStatementCaptureEvidence(
@@ -1550,29 +1550,45 @@ async function collectSinopacStatements(
       ),
     );
     if (structural.status !== "admissible" || !structural.capture) {
-      await overrides.event?.("validation", "failed", "source-admission-rejected", {
-        completed: captureInputs.length,
+      await event("validation", "failed", "source-admission-rejected", {
+        completed: reads.length,
         total: accounts.length,
       });
       throw new Error(
         `SinoPac statement source admission blocked: ${structural.diagnostics.join(", ")}`,
       );
     }
-    captureInputs.push({ capture: structural.capture, pending });
-    if (explicitNoData) {
-      skippedAccounts.push({
-        accountId: accountId(account),
-        currency: accountCurrency(account),
-        reason: "provider-explicit-no-data",
-      });
-    }
-    await overrides.event?.("validation", "advanced", "source-validation-completed", {
-      completed: captureInputs.length,
+    reads.push({
+      capture: structural.capture,
+      rowCount: pending.rows.length,
+      providerNoData: explicitNoData,
+    });
+    await event("validation", "advanced", "source-validation-completed", {
+      completed: reads.length,
       total: accounts.length,
     });
   }
+  return { observedAt, accounts: reads };
+}
+
+/**
+ * Build and stage deposit items from a read snapshot. Current balances are
+ * read only when at least one account was admitted as financial data.
+ */
+export async function stageSinopacDeposit(
+  snapshot: SinopacDepositSourceSnapshot,
+  _input: SinopacWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  readCurrentBalances: SinopacReadCurrentDepositBalances,
+): Promise<SinopacDepositCollection & ProductCollectionSummary> {
+  const { signal } = context;
+  const { event } = product;
+  const { observedAt } = snapshot;
+  const captureOccurrenceId = sinopacCaptureId(observedAt);
+  const financialCapturesForCurrent: ExistingSinopacFinancialCapture[] = [];
   const items: ProductStageRequest[] = [];
-  for (const [index, { capture }] of captureInputs.entries()) {
+  for (const [index, { capture }] of snapshot.accounts.entries()) {
     const sourceEvidence = capture.product === "domestic-deposit"
       ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
       : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`);
@@ -1593,21 +1609,14 @@ async function collectSinopacStatements(
           capture,
           `${captureOccurrenceId}:foreign:${index}`,
         );
-    if (financial && (financial.status !== "admitted" || !financial.capture)) {
-      await overrides.event?.("validation", "failed", "financial-admission-rejected", {
+    if (financial.status !== "admitted" || !financial.capture) {
+      await event("validation", "failed", "financial-admission-rejected", {
         completed: index,
-        total: captureInputs.length,
+        total: snapshot.accounts.length,
       });
       throw new Error(`SinoPac ${capture.product} financial admission failed: ${financial.diagnostics.join(", ")}`);
     }
     const financialCapture = financial.capture;
-    if (!financialCapture) {
-      await overrides.event?.("validation", "failed", "financial-admission-rejected", {
-        completed: index,
-        total: captureInputs.length,
-      });
-      throw new Error("SinoPac financial capture is missing.");
-    }
     items.push({
       product: capture.product, itemKey: `${capture.product}:${index}`,
       command: {
@@ -1619,30 +1628,24 @@ async function collectSinopacStatements(
       },
     });
     financialCapturesForCurrent.push({
-      sourceCapture: capture,
-      financialCapture: {
-        identity: financialCapture.identity,
-        sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
-      },
+      identity: financialCapture.identity,
+      sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
     });
   }
 
   const balanceItems: ProductStageRequest[] = [];
   if (financialCapturesForCurrent.length > 0) {
-    await overrides.event?.("collection", "started", "current-balance-collection-started");
+    await event("collection", "started", "current-balance-collection-started");
     let currentRows: readonly SinopacCurrentDepositBalanceRow[];
     try {
-      currentRows = await withAbort(
-        readCurrent(page, { observedAt }),
-        signal,
-      );
+      currentRows = await withAbort(readCurrentBalances({ observedAt }), signal);
     } catch (error) {
-      await overrides.event?.("validation", "failed", "current-balance-source-rejected");
+      await event("validation", "failed", "current-balance-source-rejected");
       throw error;
     }
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
-      financialCapturesForCurrent.map(({ financialCapture }) => financialCapture),
+      financialCapturesForCurrent,
     );
     for (const row of currentRows) {
       const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
@@ -1666,29 +1669,46 @@ async function collectSinopacStatements(
           },
         });
       } catch (error) {
-        await overrides.event?.("validation", "failed", "current-balance-admission-rejected");
+        await event("validation", "failed", "current-balance-admission-rejected");
         throw error;
       }
     }
-    await overrides.event?.("validation", "completed", "current-balance-validation-completed", {
+    await event("validation", "completed", "current-balance-validation-completed", {
       completed: balanceItems.length,
       total: currentRows.length,
     });
   }
-  stage(...items, ...balanceItems);
+  product.stage(...items, ...balanceItems);
   return {
-    accountCount: captureInputs.length,
-    rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
-    skippedAccountCount: skippedAccounts.length,
-    sourceCaptureCount: captureInputs.length,
+    accountCount: snapshot.accounts.length,
+    rowCount: snapshot.accounts.reduce((count, read) => count + read.rowCount, 0),
+    skippedAccountCount: snapshot.accounts.filter((read) => read.providerNoData).length,
+    sourceCaptureCount: snapshot.accounts.length,
   };
 }
+
+/** Read SinoPac's deposit source from the signed-in page, then build and stage from it. */
+export async function runSinopacDeposit(
+  page: Page,
+  input: SinopacWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<SinopacDepositCollection & ProductCollectionSummary> {
+  const source = sinopacDepositSource(page, context, product);
+  const snapshot = await readSinopacDepositSource(source, input, context, product);
+  return await stageSinopacDeposit(snapshot, input, context, product, source.readCurrentBalances);
+}
+
+export type SinopacProviderWorkflowDependencies = Readonly<{
+  collectDeposit?: typeof runSinopacDeposit;
+  cardTransport?: SinopacCardTransport;
+}>;
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
   context: WorkflowContextWith<"financialCommit", "previewWrite">,
   rawInput: unknown,
-  overrides: SinopacProviderWorkflowOverrides = {},
+  dependencies: SinopacProviderWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
@@ -1699,6 +1719,7 @@ export async function runSinopacProviderWorkflow(
     throw new Error("SinoPac workflow has no statement type or attached product selected.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
+  const collectDeposit = dependencies.collectDeposit ?? runSinopacDeposit;
 
   return await context.browser.withPage(async (page) => {
     const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(parsed.data.credentials));
@@ -1712,7 +1733,8 @@ export async function runSinopacProviderWorkflow(
       startDate,
       endDate,
     };
-    const dateRange = resolveDateRange(workflowInput);
+    // An inverted range fails the run before any product starts.
+    resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
     let deposit: SinopacDepositCollection | null = null;
@@ -1725,49 +1747,7 @@ export async function runSinopacProviderWorkflow(
       event: context.event,
       productFailure: context.productFailure,
       collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
-        const { event } = product;
-        let accounts: SinopacAccount[];
-        if (overrides.readAccounts) {
-          await event("collection", "started", "account-list-collection-started");
-          accounts = await withAbort(
-            overrides.readAccounts(dateRange),
-            context.signal,
-          );
-          context.signal.throwIfAborted();
-          await event("collection", "advanced", "account-list-collected", {
-            completed: accounts.length,
-            total: accounts.length,
-          });
-        } else {
-          accounts = await openTransactionPage(
-            page,
-            context.text,
-            context.signal,
-            event,
-          );
-        }
-        const { sourceCaptureCount, ...collected } = await collectSinopacStatements(
-          page,
-          workflowInput,
-          accounts,
-          {
-            text: context.text,
-            signal: context.signal,
-            event: event,
-            observedAt: context.now(),
-            ...(overrides.queryTransactions
-              ? { queryTransactions: overrides.queryTransactions }
-              : {}),
-            readCurrentDepositBalances: overrides.readCurrentDepositBalances ??
-              ((target, balanceInput) => readSinopacCurrentDepositBalancesWithText(
-                target,
-                context.text,
-                context.signal,
-                balanceInput,
-              )),
-          },
-          product.stage,
-        );
+        const { sourceCaptureCount, ...collected } = await collectDeposit(page, workflowInput, context, product);
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },
@@ -1777,7 +1757,7 @@ export async function runSinopacProviderWorkflow(
         source: ATTACHED_PREVIEW_PRODUCTS.sinopac,
         selected: attachedProducts,
         collectors: () => {
-          const transport = overrides.cardTransport ?? sinopacCardPageTransport(page, context.signal);
+          const transport = dependencies.cardTransport ?? sinopacCardPageTransport(page, context.signal);
           return {
             // Attached products have no structure report yet, so responses are validated but not kept.
             credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),

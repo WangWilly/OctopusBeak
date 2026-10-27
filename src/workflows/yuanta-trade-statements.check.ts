@@ -22,7 +22,10 @@ import {
   normalizeRows,
   normalizeTradeRows,
   parseReportPage,
+  readYuantaTradeSource,
   runYuantaTradeProviderWorkflow,
+  stageYuantaTrade,
+  type YuantaTradeCollectionInput,
   type YuantaTradeReportPage,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
@@ -41,16 +44,19 @@ import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRu
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
+import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import {
+  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { InvestmentValidatedCapture } from "../ledger/canonical/investment-financial-admission.ts";
+import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 
 const workflowSource = await readFile(
   new URL("./yuanta-trade-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(workflowSource, /runYuantaTradeProviderWorkflow/);
-assert.match(workflowSource, /buildYuantaInvestmentCapture/);
-assert.match(workflowSource, /financialCommit: context\.financialCommit/);
-assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
-assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
 assert.doesNotMatch(
   workflowSource,
   /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u,
@@ -68,10 +74,121 @@ assert.doesNotMatch(workflowSource, /commitCanonicalInvestmentCaptureBatch/);
 assert.match(workflowSource, /page\.goto\(YUANTA_TRADE_LOGIN_URL/);
 assert.match(workflowSource, /assertYuantaTradeServiSignAvailable/);
 assert.doesNotMatch(workflowSource, /resolveCanonicalInvestmentFundingRelations/);
-assert.match(
-  workflowSource,
-  /function normalizeHoldingRows[\s\S]*?const asOfDate = page\.endDate \|\| page\.startDate \|\| "";/,
-);
+
+// The build half from read snapshots (ADR 0065).
+const stageInput: YuantaTradeCollectionInput = {
+  credentials: {
+    yuanta_trade_user_id: "synthetic-login",
+    yuanta_trade_password: "synthetic-password",
+    yuanta_trade_ca_path: "/synthetic/certificate.p12",
+    yuanta_trade_ca_password: "synthetic-certificate-password",
+  },
+  accountIndex: -1,
+  holdingTypes: ["Stock"],
+  tradeTypes: ["StockTrade"],
+  dateRange: { startDate: "2026/08/01", endDate: "2026/08/31" },
+};
+
+function snapshotPage(
+  reportType: string,
+  options: Partial<YuantaTradeReportPage> = {},
+): YuantaTradeReportPage {
+  const trade = reportType.endsWith("Trade");
+  const assetType = trade ? reportType.slice(0, -"Trade".length) : reportType;
+  return {
+    reportType,
+    url: `https://global.yuanta.com.tw/NexusWebTrade/AssetReport/${reportType}`,
+    title: "Synthetic statement",
+    currentAssetType: assetType,
+    currentTradeType: trade ? reportType : null,
+    currentFinanceType: null,
+    queryDateType: trade ? "6" : null,
+    startDate: stageInput.dateRange.startDate,
+    endDate: stageInput.dateRange.endDate,
+    subCategory: null,
+    accountOptions: [],
+    summaryRows: [],
+    grids: [{
+      gridId: `grid${assetType}`,
+      category: assetType,
+      columns: [],
+      sourceRowsComplete: true,
+      rows: trade ? [] : [{
+        "交易帳號": "984C-0209947",
+        "股票代號": "2330",
+        "股票名稱": "Synthetic holding",
+        "幣別": "TWD",
+        "股數": "10",
+        "市值": "1000",
+      }],
+    }],
+    ...options,
+  };
+}
+
+async function stageSnapshot(holding: YuantaTradeReportPage, trade: YuantaTradeReportPage) {
+  const staged: PGliteWorkflowRunItem[] = [];
+  const result = await stageYuantaTrade(
+    { holdings: [holding], trades: [trade] },
+    stageInput,
+    yuantaCollectionContext(),
+    yuantaStagingHandle(staged),
+  );
+  return { result, staged };
+}
+
+test("stages one canonical investment commit per account from a complete read", async () => {
+  const { result, staged } = await stageSnapshot(
+    snapshotPage("Stock", { endDate: "2026/08/20" }),
+    snapshotPage("StockTrade"),
+  );
+  assert.deepEqual(result, {
+    summary: { sourceCaptureCount: 2, rowCount: 1 },
+    counts: {
+      holdingPageCount: 1, holdingGridCount: 1, holdingRowCount: 1,
+      tradePageCount: 1, tradeGridCount: 1, tradeRowCount: 0,
+      canonicalCaptureCount: 1,
+    },
+  });
+  assert.equal(staged.length, 1);
+  const [item] = staged;
+  assert.equal(item!.product, "investment");
+  assert.equal(item!.command.kind, PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND);
+  const capture = (item!.command.request as { capture: InvestmentValidatedCapture }).capture;
+  assert.equal(item!.itemKey, capture.captureId);
+  assert.equal(capture.sourceId, "yuanta-trade");
+  // A holding is as of its own page's end date, not the run's date range.
+  assert.equal(capture.scope.effectiveOn, "2026-08-20");
+  assert.deepEqual(
+    item!.relationCommands?.(undefined).map((command) => command.kind),
+    [PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND],
+  );
+});
+
+test("dates a holding page without an end date by its start date", async () => {
+  const { staged } = await stageSnapshot(
+    snapshotPage("Stock", { startDate: "2026/08/15", endDate: null }),
+    snapshotPage("StockTrade"),
+  );
+  const capture = (staged[0]!.command.request as { capture: InvestmentValidatedCapture }).capture;
+  assert.equal(capture.scope.effectiveOn, "2026-08-15");
+});
+
+test("stages nothing from an incomplete read", async () => {
+  for (const [scope, holding, trade] of [
+    ["a holding page from another route", snapshotPage("Stock", { url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Error" }), snapshotPage("StockTrade")],
+    ["a trade page with remote rows", snapshotPage("Stock"), snapshotPage("StockTrade", { grids: [{ gridId: "gridStock", category: "Stock", columns: [], rows: [], sourceRowsComplete: false }] })],
+    ["a trade page for another period", snapshotPage("Stock"), snapshotPage("StockTrade", { endDate: "2026/08/30" })],
+  ] as const) {
+    const staged: PGliteWorkflowRunItem[] = [];
+    await assert.rejects(
+      stageYuantaTrade({ holdings: [holding], trades: [trade] }, stageInput, yuantaCollectionContext(), yuantaStagingHandle(staged)),
+      /source is incomplete/,
+      scope,
+    );
+    assert.deepEqual(staged, [], `${scope} stages nothing`);
+  }
+});
 
 function fakePage(reminderVisible: boolean | Error) {
   let clicks = 0;
@@ -783,7 +900,13 @@ test("normalizes the explicit provider event labels from live Yuanta trade rows"
 test("records how many reports were collected when one report source fails", async () => {
   const requestedReportTypes: string[] = [];
   const events: WorkflowRunEvent[] = [];
-  const page = { on() {} } as unknown as Page;
+  // Already signed in: the real sign-in step finds the logout button on a report page.
+  const page = {
+    on() {},
+    url: () => "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
+    context: () => ({ grantPermissions: async () => undefined }),
+    locator: () => ({ isVisible: async () => true }),
+  } as unknown as Page;
   const context: WorkflowContextWith<"financialCommit"> = {
     runId: "yuanta-trade-report-failure-fixture",
     signal: new AbortController().signal,
@@ -809,13 +932,15 @@ test("records how many reports were collected when one report source fails", asy
         yuanta_trade_ca_path: "fixture",
         yuanta_trade_ca_password: "fixture",
       },
-    }, {
-      authenticate: async () => false,
-      captureReport: async (_page, reportType) => {
-        requestedReportTypes.push(reportType);
-        if (requestedReportTypes.length === failingReport) throw new Error("fixture: report source rejected");
-        return { reportType, url: `https://fixture/NexusWebTrade/AssetReport/${reportType}`, grids: [], summaryRows: [] } as unknown as YuantaTradeReportPage;
-      },
+    }, async (_page, input, runContext, product: ProductCollectionHandle) => {
+      const snapshot = await readYuantaTradeSource({
+        captureReport: async (reportType) => {
+          requestedReportTypes.push(reportType);
+          if (requestedReportTypes.length === failingReport) throw new Error("fixture: report source rejected");
+          return { reportType, url: `https://fixture/NexusWebTrade/AssetReport/${reportType}`, grids: [], summaryRows: [] } as unknown as YuantaTradeReportPage;
+        },
+      }, input, runContext, product);
+      return stageYuantaTrade(snapshot, input, runContext, product);
     }),
     assertProductFailure("source-collection-failed", /fixture: report source rejected/),
   );
