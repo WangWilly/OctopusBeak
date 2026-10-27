@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   buildLinebankCurrentDepositBalanceCapture,
-  buildLinebankCurrentDepositBalanceCaptures,
+  linebankCurrentBalanceCaptureMatching,
   LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
 } from "./linebank-current-deposit-canonical.ts";
 import {
@@ -10,6 +10,7 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 
@@ -75,9 +76,29 @@ assert.equal(capture.records[0]?.compact.sourceField, "wdrwAvblAmt");
 assert.equal(capture.records[0]?.compact.balanceKind, "available");
 assert.equal(capture.pages[0]?.metadata?.featureTypeCode, "01");
 
-const batch = buildLinebankCurrentDepositBalanceCaptures([row], [financialCapture]);
-assert.equal(batch.length, 1);
-assert.equal(batch[0]?.identity.sourceAccountKey, row.sourceAccountKey);
+const laterCapture = { ...financialCapture, observedAt: "2026-09-09T10:05:05.000Z" };
+const batch = matchCurrentBalanceCaptures(
+  [row],
+  [financialCapture, laterCapture],
+  linebankCurrentBalanceCaptureMatching,
+);
+assert.deepEqual(
+  batch.matched.map(({ capture }) => capture),
+  [laterCapture],
+  "LINE Bank keeps the last admitted capture under an account key",
+);
+assert.equal(
+  buildLinebankCurrentDepositBalanceCapture(row, batch.matched[0]!.capture).identity.sourceAccountKey,
+  row.sourceAccountKey,
+);
+assert.throws(
+  () => matchCurrentBalanceCaptures(
+    [row],
+    [financialCapture, { ...financialCapture, identityEpoch: financialCapture.identityEpoch + 1 }],
+    linebankCurrentBalanceCaptureMatching,
+  ),
+  /^Error: LINE Bank current deposit identities are ambiguous\.$/u,
+);
 
 assert.throws(
   () => buildLinebankCurrentDepositBalanceCapture(row, {
@@ -87,8 +108,8 @@ assert.throws(
   /does not match an existing account/u,
 );
 assert.throws(
-  () => buildLinebankCurrentDepositBalanceCaptures([row], []),
-  /no admitted financial identity/u,
+  () => matchCurrentBalanceCaptures([row], [], linebankCurrentBalanceCaptureMatching),
+  /^Error: LINE Bank current deposit has no admitted financial identity\.$/u,
 );
 
 console.log("linebank-current-deposit-canonical.check passed");
