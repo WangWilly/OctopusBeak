@@ -129,7 +129,7 @@ const linebankWorkflowSource = await readFile(
 );
 assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
-assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
+assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
 assert.match(linebankWorkflowSource, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/u);
 assert.match(linebankWorkflowSource, /runLineBankProviderWorkflow/u);
 assert.match(linebankWorkflowSource, /financialCommit: context\.financialCommit/u);

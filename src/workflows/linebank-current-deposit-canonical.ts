@@ -15,6 +15,7 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
+import type { CurrentBalanceCaptureMatching } from "./current-balance-capture-match.ts";
 
 export const LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "linebank/domestic-deposit/current-balance-v1" as const;
@@ -174,25 +175,24 @@ export function buildLinebankCurrentDepositBalanceCapture(
   };
 }
 
-export function buildLinebankCurrentDepositBalanceCaptures(
-  rows: readonly LineBankCurrentDepositBalanceRow[],
-  financialCaptures: readonly ExistingLineBankFinancialCapture[],
-): readonly CurrentDepositBalanceCaptureInput[] {
-  const byAccount = new Map<string, ExistingLineBankFinancialCapture>();
-  for (const capture of financialCaptures) {
-    const previous = byAccount.get(capture.accountKey);
-    if (
-      previous &&
-      (previous.sourceConnection !== capture.sourceConnection ||
-        previous.identityEpoch !== capture.identityEpoch)
-    )
-      throw new Error("LINE Bank current deposit identities are ambiguous.");
-    byAccount.set(capture.accountKey, capture);
-  }
-  return rows.map((row) => {
-    const financialCapture = byAccount.get(row.sourceAccountKey);
-    if (!financialCapture)
-      throw new Error("LINE Bank current deposit has no admitted financial identity.");
-    return buildLinebankCurrentDepositBalanceCapture(row, financialCapture);
-  });
-}
+/**
+ * LINE Bank keys a balance by the admitted account key (`acctNbr:arrId`). A
+ * row with no admitted capture fails the run. Unlike the other banks, the
+ * last capture under a key wins.
+ */
+export const linebankCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ sourceAccountKey: string }>,
+  ExistingLineBankFinancialCapture
+> = {
+  captureKey: (capture) => capture.accountKey,
+  rowKey: (row) => row.sourceAccountKey,
+  duplicates: "last-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.sourceConnection === candidate.sourceConnection &&
+    kept.identityEpoch === candidate.identityEpoch,
+  ambiguousMessage: "LINE Bank current deposit identities are ambiguous.",
+  unmatched: {
+    kind: "throw",
+    message: "LINE Bank current deposit has no admitted financial identity.",
+  },
+};

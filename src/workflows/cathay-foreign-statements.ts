@@ -14,6 +14,10 @@ import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balan
 import { buildCathayCurrentDepositBalanceCaptures } from "./cathay-current-deposit-canonical.ts";
 import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
 import {
+  matchCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
+import {
   type CurrentDepositBalanceCaptureInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 
@@ -444,6 +448,30 @@ export function createCathayForeignCanonicalCaptureCollector(
   };
 }
 
+type CathayForeignAdmittedIdentity = Readonly<{
+  accountNo: string;
+  sourceConnectionKey: string;
+  identityEpochKey: string;
+  subjectDigest: string;
+}>;
+
+/**
+ * Cathay foreign currency keys a balance by the admitted account number. The
+ * last capture for an account wins and is never checked for ambiguity, and a
+ * row for an account the run did not admit is skipped silently.
+ */
+export const cathayForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ sourceAccountKey: string }>,
+  CathayForeignAdmittedIdentity
+> = {
+  captureKey: (identity) => identity.accountNo,
+  rowKey: (row) => row.sourceAccountKey,
+  duplicates: "last-wins",
+  sameIdentity: () => true,
+  ambiguousMessage: "Cathay current foreign deposit identities are ambiguous.",
+  unmatched: { kind: "skip" },
+};
+
 export async function collectCathayCurrentForeignDepositBalanceCaptures(
   page: Page,
   accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
@@ -452,55 +480,54 @@ export async function collectCathayCurrentForeignDepositBalanceCaptures(
     "readCurrentDepositBalances"
   > = {},
 ): Promise<CurrentDepositBalanceCaptureInput[]> {
-  const identities = new Map<
-    string,
-    Readonly<{
-      sourceConnectionKey: string;
-      identityEpochKey: string;
-      subjectDigest: string;
-    }>
-  >();
-  for (const capture of accountCaptures) {
+  const identities = accountCaptures.map((capture): CathayForeignAdmittedIdentity => {
     const admitted = admitForeignCurrencyDepositCapture(capture);
-    identities.set(capture.accountNo, {
+    return {
+      accountNo: capture.accountNo,
       sourceConnectionKey: admitted.identity.sourceConnectionKey,
       identityEpochKey: admitted.identity.identityEpochKey,
       subjectDigest: admitted.identity.subjectDigest,
-    });
-  }
+    };
+  });
   const currentRows = await (
     options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
   )(page, "foreign", {});
-  const selectedRows = currentRows.filter((row) =>
-    identities.has(row.sourceAccountKey),
+  const { matched } = matchCurrentBalanceCaptures(
+    currentRows,
+    identities,
+    cathayForeignCurrentBalanceCaptureMatching,
   );
-  if (selectedRows.length === 0) {
+  if (matched.length === 0) {
     throw new Error(
       "Cathay current foreign balance response did not contain an admitted account.",
     );
   }
-  const missingAccountKeys = [...identities.keys()].filter(
+  const missingAccountKeys = [...new Set(identities.map(({ accountNo }) => accountNo))].filter(
     (accountKey) =>
-      !selectedRows.some((row) => row.sourceAccountKey === accountKey),
+      !matched.some(({ row }) => row.sourceAccountKey === accountKey),
   );
   if (missingAccountKeys.length > 0) {
     throw new Error(
       "Cathay current foreign balance response omitted an admitted account.",
     );
   }
-  const rowsByAccount = new Map<string, CathayCurrentDepositBalanceRow[]>();
-  for (const row of selectedRows) {
-    const accountRows = rowsByAccount.get(row.sourceAccountKey) ?? [];
-    accountRows.push(row);
-    rowsByAccount.set(row.sourceAccountKey, accountRows);
+  const rowsByAccount = new Map<
+    string,
+    { identity: CathayForeignAdmittedIdentity; rows: CathayCurrentDepositBalanceRow[] }
+  >();
+  for (const { row, capture: identity } of matched) {
+    const account = rowsByAccount.get(row.sourceAccountKey) ?? { identity, rows: [] };
+    account.rows.push(row);
+    rowsByAccount.set(row.sourceAccountKey, account);
   }
   const captures: CurrentDepositBalanceCaptureInput[] = [];
-  for (const [accountKey, rows] of rowsByAccount) {
-    const identity = identities.get(accountKey)!;
+  for (const { identity, rows } of rowsByAccount.values()) {
     const observedAt = rows[0]!.observedAt;
     captures.push(
       ...buildCathayCurrentDepositBalanceCaptures(rows, {
-        ...identity,
+        sourceConnectionKey: identity.sourceConnectionKey,
+        identityEpochKey: identity.identityEpochKey,
+        subjectDigest: identity.subjectDigest,
         observedAt,
         scopeDate: observedAt.slice(0, 10),
       }),

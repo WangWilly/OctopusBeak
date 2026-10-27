@@ -1579,7 +1579,6 @@ export async function createCathaySession(page: Page): Promise<CathaySession> {
 
 export type CathayDomesticFinancialCollection = Readonly<{
   requests: ReturnType<typeof buildCathayDomesticFinancialRequestsForPGlite>;
-  accountNumbers: readonly string[];
   captureCount: number;
   rowCount: number;
 }>;
@@ -1697,7 +1696,6 @@ export async function collectCathayDomesticFinancialRequests(
   }
   return {
     requests,
-    accountNumbers: stagedPages.map((entry) => entry.accountNo),
     captureCount: requests.length,
     rowCount: stagedStatements.reduce(
       (sum, statement) => sum + (statement.details?.length ?? 0),

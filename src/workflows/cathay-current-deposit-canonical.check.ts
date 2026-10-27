@@ -7,12 +7,21 @@ import {
 } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
+  buildCathayDomesticCurrentDepositBalanceCaptures,
+  cathayCurrentSubjectDigest,
   CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
   CATHAY_CURRENT_FOREIGN_BALANCE_AUTHORITY_ROUTE,
 } from "./cathay-current-deposit-canonical.ts";
 import {
   admitCurrentDepositBalanceCapture,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import {
+  CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  CATHAY_DOMESTIC_DEPOSIT_STREAM,
+  validateCathayDomesticDepositSyncInputForPGlite,
+} from "../ledger/pglite/cathay-domestic-admission.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 const observedAt = "2026-09-08T21:20:10.000+08:00";
@@ -131,5 +140,77 @@ assert.equal(
   false,
 );
 assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(foreignCapture));
+
+// Domestic balances take their identity from the run's admitted statement
+// captures, so they attach to the same financial account.
+const admittedStatement = buildCathayDomesticFinancialRequestsForPGlite(
+  validateCathayDomesticDepositSyncInputForPGlite({
+    sourceConnectionId: "synthetic-cathay-connection",
+    identityEpoch: "synthetic-cathay-epoch",
+    authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+    stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+    syncState: { cursor: null },
+    observedAt: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.observedAt,
+    pages: [
+      {
+        accountNo: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo,
+        currency: "TWD",
+        scope: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope,
+        pageOrdinal: 0,
+        requestPageToken: null,
+        nextPageToken: null,
+        rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse,
+        contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+        preflightFingerprint: "cathay/domestic-deposit/collection-v1",
+        absenceAuthority: "comparable-complete-range",
+      },
+    ],
+  }),
+)[0]!;
+const admittedForRows = {
+  ...admittedStatement,
+  account: { ...admittedStatement.account, sourceAccountKey: domesticRows[0]!.sourceAccountKey },
+};
+const otherAccountKey = ["9999", "9999", "9999"].join("");
+const otherAccountRow = { ...domesticRows[0]!, sourceAccountKey: otherAccountKey, uiAccountNumber: otherAccountKey };
+const matchedCaptures = buildCathayDomesticCurrentDepositBalanceCaptures(
+  [...domesticRows, otherAccountRow],
+  [admittedForRows],
+);
+assert.deepEqual(
+  matchedCaptures.map((capture) => capture.identity),
+  [
+    {
+      integrationNamespace: "cathay",
+      sourceConnectionKey: admittedStatement.capture.sourceConnectionKey,
+      identityEpochKey: admittedStatement.capture.identityEpoch,
+      stream: admittedStatement.capture.stream,
+      sourceAccountKey: admittedForRows.account.sourceAccountKey,
+    },
+  ],
+);
+assert.equal(
+  matchedCaptures[0]!.subjectDigest,
+  cathayCurrentSubjectDigest(
+    admittedStatement.capture.sourceConnectionKey,
+    admittedStatement.capture.identityEpoch,
+  ),
+);
+assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(matchedCaptures[0]!));
+assert.throws(
+  () => buildCathayDomesticCurrentDepositBalanceCaptures(domesticRows, [admittedStatement]),
+  /omitted a selected account/u,
+);
+assert.throws(
+  () =>
+    buildCathayDomesticCurrentDepositBalanceCaptures(domesticRows, [
+      admittedForRows,
+      {
+        ...admittedForRows,
+        capture: { ...admittedForRows.capture, identityEpoch: "sha256:other-epoch" },
+      },
+    ]),
+  /do not share one source identity/u,
+);
 
 console.log("cathay-current-deposit-canonical.check passed");
