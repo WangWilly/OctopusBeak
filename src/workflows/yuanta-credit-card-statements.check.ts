@@ -65,6 +65,7 @@ const {
   yuantaCreditCardCaptureBuilderOptions,
   yuantaCreditCardTerminalPagesFromHtml,
   runYuantaCreditCardStatements,
+  stageYuantaCreditCard,
   yuantaCreditCardStatementsInputSchema,
 } = await import("./yuanta-credit-card-statements.ts");
 const {
@@ -771,6 +772,94 @@ assert.equal(
   )?.instrumentKey,
 );
 assert.equal(rewardsCaptures[0]!.transactions.length, 8);
+
+// The build half from read snapshots (ADR 0065): only a read that covered the
+// whole Query Inventory (ADR 0062) stages, and the counts follow the read.
+const stageInput = {
+  ...yuantaCreditCardStatementsInputSchema.parse({}),
+  canonicalHumanAttestation: identity,
+  instrumentFingerprintSecret: "synthetic-managed-secret",
+};
+const fullSnapshot = {
+  allMonthOptions: monthOptions,
+  selectedMonthOptions: monthOptions,
+  billedRows,
+  billedHistoryPages: historyIssuerSummaries.map((summary, index) => ({
+    sourceKey: "yuanta-credit-card.queryHistoryDetail.settled-summary-v2" as const,
+    monthIndex: index,
+    pageOrdinal: index,
+    summary,
+  })),
+  terminalPages: [true, true, true, true, true, true, true],
+  unbilledRows,
+};
+const currentUsedCreditEvidence = {
+  limit: "100000",
+  usedCredit: "12345",
+  available: "87655",
+  sourceField: "已使用額度" as const,
+  endpoint: "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+  httpDate: "Thu, 10 Sep 2026 02:03:04 GMT",
+  cacheControl: "no-store",
+};
+function stageSnapshot(
+  snapshot: Parameters<typeof stageYuantaCreditCard>[0],
+  input: Parameters<typeof stageYuantaCreditCard>[1] = stageInput,
+) {
+  const staged: PGliteWorkflowRunItem[] = [];
+  const summary = stageYuantaCreditCard(
+    snapshot,
+    input,
+    yuantaCollectionContext(),
+    yuantaStagingHandle(staged),
+  );
+  return { summary, products: staged.map((item) => item.product), staged };
+}
+{
+  const { summary, products } = stageSnapshot({
+    ...fullSnapshot,
+    currentUsedCredit: currentUsedCreditEvidence,
+  });
+  assert.deepEqual(products, ["credit-card", "current-balance"]);
+  assert.deepEqual(summary, { sourceCaptureCount: 8, rowCount: 7 });
+}
+assert.deepEqual(stageSnapshot(fullSnapshot).products, ["credit-card"]);
+for (const [scope, snapshot, input, counts] of [
+  [
+    "monthIndexes requested",
+    fullSnapshot,
+    { ...stageInput, monthIndexes: [0, 1, 2, 3, 4, 5] },
+    { sourceCaptureCount: 8, rowCount: 7 },
+  ],
+  [
+    "unbilled excluded",
+    { ...fullSnapshot, terminalPages: fullSnapshot.terminalPages.slice(1), unbilledRows: [] },
+    { ...stageInput, includeUnbilled: false },
+    { sourceCaptureCount: 7, rowCount: 6 },
+  ],
+  [
+    "a short grid",
+    { ...fullSnapshot, terminalPages: fullSnapshot.terminalPages.slice(1) },
+    stageInput,
+    { sourceCaptureCount: 8, rowCount: 7 },
+  ],
+  [
+    "a card key that is not four digits",
+    {
+      ...fullSnapshot,
+      unbilledRows: [{ ...unbilledRows[0]!, creditCardNo: "4111-11**-****-12" }],
+    },
+    stageInput,
+    { sourceCaptureCount: 8, rowCount: 7 },
+  ],
+] as const) {
+  const { summary, staged } = stageSnapshot(
+    { ...snapshot, currentUsedCredit: currentUsedCreditEvidence },
+    input as Parameters<typeof stageYuantaCreditCard>[1],
+  );
+  assert.deepEqual(staged, [], `${scope} stages nothing`);
+  assert.deepEqual(summary, counts, `${scope} still reports what was read`);
+}
 
 // The runner against a synthetic signed-in frameset (ADR 0066): the site opens
 // the bills route in fmain, every month and the unbilled grid are posted from
