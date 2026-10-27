@@ -4,6 +4,7 @@ import { mock } from "node:test";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import {
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,
@@ -28,6 +29,8 @@ mock.timers.enable({
 
 const {
   buildCathayForeignCurrencyCaptureInput,
+  cathayForeignCurrentBalanceCaptureMatching,
+  collectCathayCurrentForeignDepositBalanceCaptures,
   createCathayForeignCanonicalCaptureCollector,
   deriveCathayForeignAccountNumberEvidence,
   parseCathayApiJson,
@@ -167,6 +170,70 @@ const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
 });
 assert.equal(freshForeignRows.length, 1);
 assert.equal(freshForeignRows[0]!.sourceAccountKey, syntheticCathayForeignAccountNumber);
+
+{
+  const foreignCaptureFor = (account: string, occurrence: string) =>
+    buildCathayForeignCurrencyCaptureInput(
+      { account },
+      "USD",
+      "one_week",
+      {
+        currencyCode: "USD",
+        transferInfos: [{
+          sequenceNumber: "1",
+          transferDate: "2026-08-23",
+          debitCreditType: "C",
+          amount: "10.00",
+          balance: "10.00",
+        }],
+      },
+      "2026-08-24T12:00:00+08:00",
+      occurrence,
+    );
+  const admittedCapture = foreignCaptureFor(syntheticCathayForeignAccountNumber, "cathay-foreign-check-current-1");
+  const unadmittedRow = { ...freshForeignRows[0]!, sourceAccountKey: "CATHAY-FOREIGN-UNADMITTED" };
+  const collectCurrent = (
+    captures: Parameters<typeof collectCathayCurrentForeignDepositBalanceCaptures>[1],
+    rows: typeof freshForeignRows,
+  ) => collectCathayCurrentForeignDepositBalanceCaptures({} as never, captures, {
+    readCurrentDepositBalances: async () => rows,
+  });
+
+  const current = await collectCurrent([admittedCapture], [unadmittedRow, freshForeignRows[0]!]);
+  assert.deepEqual(
+    current.map((entry) => entry.identity.sourceAccountKey),
+    [syntheticCathayForeignAccountNumber],
+    "a row for an account the run did not admit is skipped silently",
+  );
+  await assert.rejects(
+    collectCurrent([admittedCapture], [unadmittedRow]),
+    /^Error: Cathay current foreign balance response did not contain an admitted account\.$/u,
+  );
+  await assert.rejects(
+    collectCurrent(
+      [admittedCapture, foreignCaptureFor("CATHAY-FOREIGN-133", "cathay-foreign-check-current-2")],
+      [freshForeignRows[0]!],
+    ),
+    /^Error: Cathay current foreign balance response omitted an admitted account\.$/u,
+  );
+
+  const identity = {
+    accountNo: syntheticCathayForeignAccountNumber,
+    sourceConnectionKey: "sha256:cathay-connection",
+    identityEpochKey: "sha256:cathay-epoch",
+    subjectDigest: "sha256:cathay-subject-first",
+  };
+  const lastIdentity = { ...identity, subjectDigest: "sha256:cathay-subject-last" };
+  assert.deepEqual(
+    matchCurrentBalanceCaptures(
+      [freshForeignRows[0]!],
+      [identity, lastIdentity],
+      cathayForeignCurrentBalanceCaptureMatching,
+    ).matched.map(({ capture }) => capture),
+    [lastIdentity],
+    "the last admitted identity for an account wins without an ambiguity check",
+  );
+}
 
 for (const missingOccurrence of [undefined, "   "] as const) {
   assert.throws(

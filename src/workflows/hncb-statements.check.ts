@@ -9,13 +9,14 @@ import {
   ensureHncbStatementForm,
   isNoStatementDataText,
   normalizeHncbTransactionRows,
-  indexHncbCurrentDepositFinancialCaptures,
+  hncbCurrentBalanceCaptureMatching,
   parseStatementExport,
   prepareHncbStatementQueryForm,
   hncbCurrentDepositBalances,
   stageHncbDeposit,
   type HncbReadCurrentDepositBalances,
 } from "./hncb-statements.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
@@ -287,7 +288,7 @@ assert.throws(
     ),
   /cannot resolve blank currency/u,
 );
-const indexed = indexHncbCurrentDepositFinancialCaptures([
+const indexed = matchCurrentBalanceCaptures([{ accountNumber: overviewAccountB }], [
   {
     identity: {
       sourceConnectionKey: "same-connection",
@@ -298,8 +299,8 @@ const indexed = indexHncbCurrentDepositFinancialCaptures([
       currency: "TWD",
     },
   },
-]);
-assert.equal(indexed.get(overviewAccountB)?.identity.currency, "TWD");
+], hncbCurrentBalanceCaptureMatching);
+assert.equal(indexed.matched[0]?.capture.identity.currency, "TWD");
 assert.throws(
   () => parseStatementExport("x".repeat(16 * 1024 * 1024 + 1), "fallback"),
   /16 MiB safety limit/,

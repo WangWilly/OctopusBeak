@@ -38,9 +38,10 @@ import {
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
-  indexPostCurrentDepositFinancialCaptures,
+  postCurrentBalanceCaptureMatching,
   parsePostCurrentDepositBalanceSnapshot,
   POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
   POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -919,19 +920,15 @@ export async function stagePostDeposit(
       throw error;
     }
     context.signal.throwIfAborted();
-    const admittedCaptureFor = indexPostCurrentDepositFinancialCaptures(financialCaptures);
-    for (const row of currentRows) {
-      const matching = admittedCaptureFor(row);
-      if (!matching)
-        throw new Error(
-          "Post current deposit snapshot contains an account without an existing admitted identity.",
-        );
+    const { matched } = matchCurrentBalanceCaptures(
+      currentRows,
+      financialCaptures,
+      postCurrentBalanceCaptureMatching,
+    );
+    for (const { row, capture } of matched)
       currentBalanceCaptures.push(
-        admitCurrentDepositBalanceCapture(
-          buildPostCurrentDepositBalanceCapture(row, matching),
-        ),
+        admitCurrentDepositBalanceCapture(buildPostCurrentDepositBalanceCapture(row, capture)),
       );
-    }
     await product.event("validation", "completed", "current-balance-validation-completed", {
       completed: currentBalanceCaptures.length,
       total: currentRows.length,

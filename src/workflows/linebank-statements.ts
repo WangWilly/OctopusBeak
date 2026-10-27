@@ -20,8 +20,10 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
-  buildLinebankCurrentDepositBalanceCaptures,
+  buildLinebankCurrentDepositBalanceCapture,
+  linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import {
   parseLinebankApiJson,
   parseLinebankCurrentDepositBalanceSnapshot,
@@ -1416,7 +1418,7 @@ export async function runLineBankProviderWorkflow(
             total: currentBalanceRows.length,
           });
           try {
-            const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+            const { matched } = matchCurrentBalanceCaptures(
               currentBalanceRows,
               domesticCaptures.map((capture) => ({
                 accountKey: capture.accountKey,
@@ -1424,6 +1426,10 @@ export async function runLineBankProviderWorkflow(
                 identityEpoch: capture.identityEpoch,
                 observedAt: capture.observedAt,
               })),
+              linebankCurrentBalanceCaptureMatching,
+            );
+            const currentBalanceCaptures = matched.map(({ row, capture }) =>
+              buildLinebankCurrentDepositBalanceCapture(row, capture),
             );
             for (const [index, capture] of currentBalanceCaptures.entries()) {
               context.signal.throwIfAborted();
