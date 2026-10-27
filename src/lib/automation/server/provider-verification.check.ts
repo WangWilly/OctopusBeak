@@ -130,7 +130,13 @@ async function solveAndSubmit(
   verification: HumanAssistanceContract,
   answer: string,
   submitFrame?: string,
-  options: Readonly<{ signal?: AbortSignal; onSolve?: () => void }> = {},
+  options: Readonly<{
+    signal?: AbortSignal;
+    onSolve?: () => void;
+    /** Observes each page lookup the route makes. */
+    onPageLookup?: () => void;
+    onResume?: () => void;
+  }> = {},
 ) {
   let submitted: URLSearchParams | undefined;
   await page.route(`${PROVIDER_ORIGIN}/submit`, async (route) => {
@@ -147,10 +153,14 @@ async function solveAndSubmit(
     taskRunId: RUN,
     confidenceThreshold: 0.9,
     seams: {
-      pageForRun: pageForRunOf(RUN, page),
+      pageForRun: (candidate) => {
+        options.onPageLookup?.();
+        return pageForRunOf(RUN, page)(candidate);
+      },
       signal: options.signal ?? new AbortController().signal,
       solver,
       resume: async () => {
+        options.onResume?.();
         const scope = submitFrame ? page.frame({ name: submitFrame })! : page;
         await Promise.all([page.waitForResponse(`${PROVIDER_ORIGIN}/submit`), scope.click("#submit")]);
       },
@@ -197,6 +207,27 @@ test("a request cancelled after capture injects and submits nothing and rejects 
       (error: unknown) => error === reason,
     );
     assert.equal(await page.inputValue("#ctl00_sino_keyword3"), "", "no answer was injected");
+    assert.deepEqual(requests.filter((path) => path === "/submit"), [], "nothing was submitted");
+  }));
+
+test("a request cancelled while the answer is being injected never resumes or submits", () =>
+  withProviderPage(sinopacPage(), [], async ({ page, requests }) => {
+    const controller = new AbortController();
+    const reason = new Error("run cancelled");
+    let solved = false;
+    let resumed = false;
+    await assert.rejects(
+      solveAndSubmit(page, sinopacContract(), "120987", undefined, {
+        signal: controller.signal,
+        onSolve: () => { solved = true; },
+        // The first page lookup after solving belongs to answer injection, the
+        // route's last page step: cancel while it runs, after its pre-check.
+        onPageLookup: () => { if (solved) controller.abort(reason); },
+        onResume: () => { resumed = true; },
+      }),
+      (error: unknown) => error === reason,
+    );
+    assert.equal(resumed, false, "the route never resumes a cancelled request");
     assert.deepEqual(requests.filter((path) => path === "/submit"), [], "nothing was submitted");
   }));
 
