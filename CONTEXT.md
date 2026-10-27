@@ -945,6 +945,10 @@ _Avoid_: Solver profile, browser engine selection, arbitrary launch settings
 An Automation Task Run that has not yet reached a terminal outcome, from the moment its task is claimed until its finalization. At most one exists per automation task, and it alone accepts status changes, cancellation, force-quit, and finalization for that run.
 _Avoid_: Pending run, running task, in-flight execution
 
+**Workflow execution**:
+One start of the provider workflow within an Active automation task run. A CAPTCHA Retry Campaign starts a new one for each round. It owns that start's events, human assistance wait, launched Collection scope version and browser page, and they end with it (ADR 0067).
+_Avoid_: Run attempt, round, execution attempt
+
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session. The Active automation task run decides the outcome from its Commit attempts, its stop, and what its execution observed; a run no live process owns is decided the same way from its stored attempts.
 

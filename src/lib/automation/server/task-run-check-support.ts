@@ -1,8 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { MessageChannel } from "node:worker_threads";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
-import { openActiveTaskRun, type ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { openActiveTaskRun, type ActiveAutomationTaskRun, type WorkflowExecution } from "./active-task-run.ts";
+import {
+  createAppWorkflowHumanAssistancePort,
+  type HumanAssistanceRoute,
+} from "./app-workflow-human-assistance.ts";
+import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import {
   runAppWorkflowWorker,
@@ -99,6 +105,50 @@ export async function openTaskRunForCheck(
   });
 }
 
+/** The run with every Workflow execution it begins pushed to `executions`, so a check can read a log after its execution ended. */
+export function observingExecutions(
+  run: ActiveAutomationTaskRun,
+  executions: WorkflowExecution[],
+): ActiveAutomationTaskRun {
+  return {
+    ...run,
+    beginExecution(executionId, executionOptions) {
+      const execution = run.beginExecution(executionId, executionOptions);
+      executions.push(execution);
+      return execution;
+    },
+  };
+}
+
+/** Own an existing run and begin one Workflow execution on it, as the executor does before the worker starts. */
+export async function openExecutionForCheck(
+  persistence: AutomationPersistencePort,
+  taskRunId: string,
+  assistanceRoute?: HumanAssistanceRoute,
+): Promise<{ run: ActiveAutomationTaskRun; execution: WorkflowExecution }> {
+  const run = await openTaskRunForCheck(persistence, taskRunId);
+  return { run, execution: run.beginExecution(randomUUID(), { assistanceRoute }) };
+}
+
+/**
+ * Request assistance the way one Workflow execution does: the execution
+ * begins with `options.assistanceRoute`, as the executor's does, before the
+ * request and ends after it.
+ */
+export async function requestAssistanceForCheck(
+  run: ActiveAutomationTaskRun,
+  options: Pick<AutomationTaskExecutionOptions, "assistanceRoute">,
+  contract: HumanAssistanceContractInput,
+  signal: AbortSignal,
+) {
+  const execution = run.beginExecution(randomUUID(), { assistanceRoute: options.assistanceRoute });
+  try {
+    return await createAppWorkflowHumanAssistancePort({ run, execution }).request(contract, signal);
+  } finally {
+    execution.end();
+  }
+}
+
 /** Execute one workflow round over an existing run and finish it, as the runner does. */
 export async function executeTaskRunForCheck(
   task: NonNullable<ReturnType<typeof taskById>>,
@@ -106,6 +156,8 @@ export async function executeTaskRunForCheck(
   options: AutomationTaskExecutionOptions & Readonly<{
     taskRunId: string;
     onRunOpened?: (run: ActiveAutomationTaskRun) => void;
+    /** Receives each Workflow execution the round begins. */
+    executions?: WorkflowExecution[];
     /** Run the production supervised path against an in-process worker holding these ports. */
     workerPorts?: CheckWorkerPorts;
   }>,
@@ -115,8 +167,9 @@ export async function executeTaskRunForCheck(
   run: AutomationTaskRun;
   outcome: TypedWorkflowOutcome;
 }> {
-  const { taskRunId, onRunOpened, workerPorts, ...executionOptions } = options;
-  const active = await openTaskRunForCheck(persistence, taskRunId);
+  const { taskRunId, onRunOpened, executions, workerPorts, ...executionOptions } = options;
+  const opened = await openTaskRunForCheck(persistence, taskRunId);
+  const active = executions ? observingExecutions(opened, executions) : opened;
   onRunOpened?.(active);
   const report = await runAutomationTaskExecution(
     task,

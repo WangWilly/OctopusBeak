@@ -7,6 +7,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createDataVersionStore, type DataVersionStore } from "../../shared-shell/data-version.ts";
 import type { CommitAttemptReport } from "../commit-attempt.ts";
 import {
+  activeRunPageLookup,
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type TaskRunFailure,
@@ -17,6 +18,8 @@ import { hydrateAutomationRuntimeState } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationTaskStatus } from "./store.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
+import { signalRunEvent, type WorkflowRunEvent } from "../run-event.ts";
+import type { AutomationPersistencePort } from "./store.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const database = await createTestPGlite("operational");
@@ -572,4 +575,154 @@ test("an orphaned run keeps its typed summary under the quit's error code", asyn
     errorCode: "cancelled",
     summary: { status: "completed", counts: { itemCount: 4 } },
   });
+});
+
+const workerEvent = (runId: string, code: string, retrying?: true): WorkflowRunEvent => ({
+  runId, occurredAt: new Date().toISOString(), stage: "collection", outcome: "advanced", code,
+  ...(retrying ? { retrying } : {}),
+});
+const storedCodes = async (taskRunId: string) =>
+  (await persistence.taskRunById(taskRunId))?.events.map((event) => event.code) ?? [];
+
+test("a Workflow execution logs each event once, host signals included, past the store's event cap", async () => {
+  const { run, taskRunId } = await open();
+  // An earlier execution left the store one short of its 200-event cap, so the
+  // next appends shift which stored events survive.
+  for (let index = 0; index < 199; index += 1) {
+    await persistence.appendRunEvent(workerEvent(taskRunId, `earlier-${index}`));
+  }
+  const execution = run.beginExecution("round-1");
+  assert.equal(run.currentExecution(), execution);
+  await execution.appendEvent(workerEvent(taskRunId, "collection-advanced", true));
+  await execution.appendEvent(signalRunEvent("solver-route-unavailable", { runId: taskRunId, occurredAt: new Date().toISOString() }));
+  await execution.appendEvent(workerEvent(taskRunId, "collection-completed"));
+  assert.deepEqual(
+    execution.events().map((event) => event.code),
+    ["collection-advanced", "solver-route-unavailable", "collection-completed"],
+  );
+  assert.equal(execution.events()[0]?.retrying, true, "the log holds the same copy the store does");
+  const stored = (await persistence.taskRunById(taskRunId))!.events;
+  assert.equal(stored.length, 200);
+  assert.deepEqual(stored.slice(-3).map((event) => event.code), ["collection-advanced", "solver-route-unavailable", "collection-completed"]);
+  assert.equal(stored.at(-3)?.retrying, true);
+  execution.end();
+  assert.equal(run.currentExecution(), null);
+  await run.finish(ok());
+});
+
+test("one execution is current at a time, each sees only its own events, and an ended one records nothing", async () => {
+  const { run, taskRunId } = await open();
+  const first = run.beginExecution("round-1");
+  assert.throws(() => run.beginExecution("round-2"), /round-1 .* still current/u);
+  await first.appendEvent(workerEvent(taskRunId, "first-only"));
+  first.end();
+  first.end();
+  const second = run.beginExecution("round-2");
+  await second.appendEvent(workerEvent(taskRunId, "second-only"));
+  assert.deepEqual(first.events().map((event) => event.code), ["first-only"]);
+  assert.deepEqual(second.events().map((event) => event.code), ["second-only"]);
+  await assert.rejects(first.appendEvent(workerEvent(taskRunId, "late")), /round-1 has ended/u);
+  assert.deepEqual(first.events().map((event) => event.code), ["first-only"]);
+  assert.deepEqual(await storedCodes(taskRunId), ["first-only", "second-only"]);
+  second.end();
+  await run.finish(ok());
+});
+
+test("execution events persist behind the run's earlier writes and ahead of its later ones", async () => {
+  const taskRunId = await createRun();
+  const calls: string[] = [];
+  const recording = new Proxy(persistence, {
+    get(target, property: keyof AutomationPersistencePort) {
+      const member = target[property];
+      if (typeof member !== "function") return member;
+      return (...args: unknown[]) => {
+        calls.push(property);
+        return (member as (...input: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  const run = openActiveTaskRun({
+    run: (await persistence.taskRunById(taskRunId))!,
+    persistence: recording,
+    runtime: createAutomationRuntimeState(),
+    dataVersionStore: createDataVersionStore(),
+  });
+  const execution = run.beginExecution("round-1");
+  const update = run.update({ attempt: 1 });
+  const appended = execution.appendEvent(workerEvent(taskRunId, "ordered"));
+  const transition = run.transition("running");
+  await Promise.all([update, appended, transition]);
+  assert.deepEqual(calls, ["updateTaskRun", "appendRunEvent", "transitionTaskRunToActive"]);
+  execution.end();
+  await run.finish(ok());
+});
+
+test("an event accepted before finish is stored before the terminal write; later appends are not", async () => {
+  const { run, taskRunId } = await open();
+  const execution = run.beginExecution("round-1");
+  const accepted = execution.appendEvent(workerEvent(taskRunId, "before-finish"));
+  const finished = run.finish(ok());
+  await Promise.all([accepted, finished]);
+  assert.deepEqual(await storedCodes(taskRunId), ["before-finish"]);
+  assert.equal((await persistence.taskRunById(taskRunId))?.status, "completed");
+
+  await execution.appendEvent(workerEvent(taskRunId, "after-finish"));
+  assert.deepEqual(execution.events().map((event) => event.code), ["before-finish", "after-finish"], "the log stays complete");
+  await run.appendEvent(signalRunEvent("verification-solver-exhausted", { runId: taskRunId, occurredAt: new Date().toISOString() }));
+  assert.deepEqual(await storedCodes(taskRunId), ["before-finish"], "a finished run persists no more events");
+  execution.end();
+  assert.throws(() => run.beginExecution("round-2"), /has finished/u);
+});
+
+test("an event the run records between executions joins no execution's log", async () => {
+  const { run, taskRunId } = await open();
+  const first = run.beginExecution("round-1");
+  first.end();
+  await run.appendEvent(signalRunEvent("verification-solver-exhausted", { runId: taskRunId, occurredAt: new Date().toISOString() }));
+  const second = run.beginExecution("round-2");
+  assert.deepEqual(first.events(), []);
+  assert.deepEqual(second.events(), []);
+  assert.deepEqual(await storedCodes(taskRunId), ["verification-solver-exhausted"]);
+  second.end();
+  await run.finish(ok());
+});
+
+test("the App page lookup reaches the page the current execution hosts, and nothing after it ends", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  const other = await open({ taskId: "sinopac-statements" });
+  const runs = new Map([[taskRunId, run], [other.taskRunId, other.run]]);
+  const pageForRun = activeRunPageLookup((id) => runs.get(id) ?? null);
+  const page = { name: "first" } as never;
+  const connection = { endpoint: "http://127.0.0.1:9222", targetId: "target-1" };
+
+  const first = run.beginExecution("round-1");
+  assert.equal(pageForRun(taskRunId), null, "no page before the host opens one");
+  const release = first.hostPage({ page, connection });
+  assert.throws(() => first.hostPage({ page, connection: null }), /already hosts a browser page/u);
+  assert.equal(pageForRun(taskRunId), page);
+  assert.equal(first.browserConnection(), connection);
+  assert.equal(pageForRun(other.taskRunId), null, "another run never sees this page");
+  assert.equal(pageForRun("unknown-run"), null);
+  release();
+  assert.equal(pageForRun(taskRunId), null, "closing the page releases it");
+  assert.equal(first.browserConnection(), null);
+
+  first.hostPage({ page, connection });
+  first.end();
+  assert.equal(pageForRun(taskRunId), null, "ending the execution releases its page");
+  assert.equal(first.page(), null);
+  assert.throws(() => first.hostPage({ page, connection }), /round-1 has ended/u);
+
+  const second = run.beginExecution("round-2");
+  assert.equal(pageForRun(taskRunId), null, "a later execution starts without the earlier page");
+  const secondPage = { name: "second" } as never;
+  const releaseSecond = second.hostPage({ page: secondPage, connection: null });
+  release();
+  assert.equal(pageForRun(taskRunId), secondPage, "an earlier release leaves a later page alone");
+  releaseSecond();
+  second.end();
+  await run.finish(ok());
+  runs.delete(taskRunId);
+  assert.equal(pageForRun(taskRunId), null, "a finished run is no longer active");
+  await other.run.finish(ok());
 });

@@ -9,6 +9,7 @@ import { previewVisibilityFromEnvironment } from "../../preview-sources/visibili
 import { automationConfigEnv } from "./config-files.ts";
 import { offeredStatementTypes } from "./settings.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, type AutomationTask } from "./tasks.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 
 type ScopeEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -32,46 +33,37 @@ export function collectionScopeFingerprint(
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
 }
 
-type RunScope = {
-  readonly task: Pick<AutomationTask, "credentialGroupId">;
-  readonly launchFingerprint: string;
-  refused: boolean;
-};
-
-const runScopes = new Map<string, RunScope>();
-
-export type CollectionScopeRegistration = Readonly<{
-  release(): void;
+/** The Collection scope version a Workflow execution was launched with (ADR 0067). */
+export type LaunchedCollectionScope = Readonly<{
+  /** False once the Collection scope version changed; it stays false for the rest of the execution. */
+  current(currentEnvironment: () => ScopeEnvironment): boolean;
 }>;
 
-export function registerCollectionScope(
-  taskRunId: string,
+export function launchedCollectionScope(
   task: Pick<AutomationTask, "credentialGroupId">,
   launchEnvironment: ScopeEnvironment,
-): CollectionScopeRegistration {
-  const scope: RunScope = {
-    task,
-    launchFingerprint: collectionScopeFingerprint(task, launchEnvironment),
-    refused: false,
-  };
-  runScopes.set(taskRunId, scope);
+): LaunchedCollectionScope {
+  const launchFingerprint = collectionScopeFingerprint(task, launchEnvironment);
+  let refused = false;
   return {
-    release: () => {
-      if (runScopes.get(taskRunId) === scope) runScopes.delete(taskRunId);
+    current(currentEnvironment) {
+      if (!refused && collectionScopeFingerprint(task, currentEnvironment()) !== launchFingerprint) {
+        refused = true;
+      }
+      return !refused;
     },
   };
 }
 
-/** False once the run's Collection scope version changed; it stays false for the rest of the run. */
-export function collectionScopeCurrent(
-  taskRunId: string,
+/**
+ * Commit admission for the PGlite child RPC: the run's current execution
+ * checks its launched Collection scope version. A run id with no active run,
+ * or an active run with no current execution, is not gated.
+ */
+export function collectionScopeAdmitsCommit(
+  run: Pick<ActiveAutomationTaskRun, "currentExecution"> | null,
   currentEnvironment: () => ScopeEnvironment = automationConfigEnv,
 ): boolean {
-  const scope = runScopes.get(taskRunId);
-  if (!scope) return true;
-  if (!scope.refused
-    && collectionScopeFingerprint(scope.task, currentEnvironment()) !== scope.launchFingerprint) {
-    scope.refused = true;
-  }
-  return !scope.refused;
+  const scope = run?.currentExecution()?.collectionScope();
+  return scope ? scope.current(currentEnvironment) : true;
 }

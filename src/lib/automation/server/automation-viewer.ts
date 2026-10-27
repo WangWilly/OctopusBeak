@@ -6,7 +6,6 @@ import type {
   VerificationInteractionMode,
 } from "../human-assistance.ts";
 import type { VerificationSelectionPoint } from "./verification-solver.ts";
-import { appWorkflowPageForSession } from "./app-browser-host.ts";
 
 export type ViewerInput =
   | { type: "click"; x: number; y: number }
@@ -169,17 +168,25 @@ export function normalizeViewerInput(raw: unknown): ViewerInput {
   throw new Error(unsupportedInputError);
 }
 
-async function withPausedPage<T>(session: string, action: (page: Page) => Promise<T>) {
-  const page = appWorkflowPageForSession(session);
+/**
+ * Finds the browser page the current Workflow execution of a run hosts, or
+ * null (ADR 0067). The App looks it up through the Active run; the
+ * development CLI over the one page it hosts.
+ */
+export type PageForRun = (taskRunId: string) => Page | null;
+
+async function withRunPage<T>(
+  pageForRun: PageForRun,
+  session: string,
+  action: (page: Page) => Promise<T>,
+) {
+  const page = pageForRun(session);
   if (!page) throw new Error("No active App browser page is available for this workflow run.");
   return action(page);
 }
 
-export function withViewerPage<T>(
-  session: string,
-  action: (page: ViewerPageAccess) => Promise<T>,
-) {
-  return withPausedPage(session, (page) => action({
+function viewerPageAccess(page: Page): ViewerPageAccess {
+  return {
     locator: page.locator.bind(page),
     mainFrame: () => page.mainFrame(),
     frame: (name) => page.frame({ name }),
@@ -188,20 +195,7 @@ export function withViewerPage<T>(
     screenshot: (options) => page.screenshot(options),
     onDialog: (handler) => page.on("dialog", handler as (dialog: Dialog) => void),
     offDialog: (handler) => page.off("dialog", handler as (dialog: Dialog) => void),
-  }));
-}
-
-export async function sendHumanVerificationInput(
-  session: string,
-  rawInput: unknown,
-  contract: HumanAssistanceContract,
-  targetInputHandler?: ViewerTargetInputHandler,
-) {
-  const input = normalizeHumanVerificationInput(rawInput, contract);
-  const targetId = rawRecord(rawInput).targetId as string;
-  const target = contract.targets.find((candidate) => candidate.id === targetId);
-  if (!target) throw new Error("Human verification target is not declared for this stage.");
-  return sendNormalizedViewerInput(session, input, target, targetInputHandler);
+  };
 }
 
 export async function focusHumanVerificationTarget(page: Page, target: HumanVerificationTarget) {
@@ -282,62 +276,28 @@ async function fillHumanVerificationTarget(
 }
 
 async function sendNormalizedViewerInput(
-  session: string,
+  page: Page,
   input: ViewerInput,
   target: HumanVerificationTarget,
   targetInputHandler?: ViewerTargetInputHandler,
 ) {
-  await withPausedPage(session, async (page) => {
-    if (input.type === "click") {
-      if (targetInputHandler && await targetInputHandler(page, input, target)) return;
-      await page.mouse.click(input.x, input.y);
-    } else if (input.type === "drag") {
-      await page.mouse.move(input.x, input.y);
-      await page.mouse.down();
-      await page.mouse.move(input.toX, input.toY);
-      await page.mouse.up();
-    } else if (input.type === "type") {
-      if (targetInputHandler && await targetInputHandler(page, input, target)) return;
-      if (!await fillHumanVerificationTarget(page, target, input.text)) {
-        throw new Error("Human verification target moved. Reload the current verification stage.");
-      }
-    } else {
-      await focusHumanVerificationTarget(page, target);
-      await page.keyboard.press(input.key);
+  if (input.type === "click") {
+    if (targetInputHandler && await targetInputHandler(page, input, target)) return;
+    await page.mouse.click(input.x, input.y);
+  } else if (input.type === "drag") {
+    await page.mouse.move(input.x, input.y);
+    await page.mouse.down();
+    await page.mouse.move(input.toX, input.toY);
+    await page.mouse.up();
+  } else if (input.type === "type") {
+    if (targetInputHandler && await targetInputHandler(page, input, target)) return;
+    if (!await fillHumanVerificationTarget(page, target, input.text)) {
+      throw new Error("Human verification target moved. Reload the current verification stage.");
     }
-  });
-}
-
-export async function captureChallengeImageForContract(
-  session: string,
-  contract: HumanAssistanceContract,
-): Promise<Buffer | null> {
-  const rect = contract.challengeImageRegion?.rect;
-  if (!rect) return null;
-  try {
-    return await withPausedPage(session, (page) =>
-      page.screenshot({
-        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        type: "png",
-      }),
-    );
-  } catch (error) {
-    if (viewerScreenshotErrorKind(error) === "unavailable") throw error;
-    return null;
+  } else {
+    await focusHumanVerificationTarget(page, target);
+    await page.keyboard.press(input.key);
   }
-}
-
-export async function clickVerificationTarget(
-  session: string,
-  contract: HumanAssistanceContract,
-  targetId: string,
-) {
-  const target = contract.targets.find((candidate) => candidate.id === targetId);
-  if (!target?.rect) {
-    throw new Error("Verification target is not resolved for the solver click.");
-  }
-  const point = focusPointForViewerRect(target.rect);
-  await sendNormalizedViewerInput(session, { type: "click", x: point.x, y: point.y }, target);
 }
 
 export async function clickVerificationSelectionsOnPage(
@@ -353,16 +313,67 @@ export async function clickVerificationSelectionsOnPage(
   }
 }
 
-export async function injectVerificationSelections(
-  session: string,
-  contract: HumanAssistanceContract,
-  selections: readonly VerificationSelectionPoint[],
-) {
-  const rect = contract.challengeImageRegion?.rect;
-  if (!rect) {
-    throw new Error("Verification contract declares no challenge image region for the solver selections.");
-  }
-  await withPausedPage(session, (page) =>
-    clickVerificationSelectionsOnPage(page, rect, selections),
-  );
+/** The viewer's page operations, each resolving its run's page through one lookup. */
+export type AutomationViewer = Readonly<{
+  withPage<T>(session: string, action: (page: ViewerPageAccess) => Promise<T>): Promise<T>;
+  sendHumanVerificationInput(
+    session: string,
+    rawInput: unknown,
+    contract: HumanAssistanceContract,
+    targetInputHandler?: ViewerTargetInputHandler,
+  ): Promise<void>;
+  captureChallengeImage(session: string, contract: HumanAssistanceContract): Promise<Buffer | null>;
+  clickTarget(session: string, contract: HumanAssistanceContract, targetId: string): Promise<void>;
+  injectSelections(
+    session: string,
+    contract: HumanAssistanceContract,
+    selections: readonly VerificationSelectionPoint[],
+  ): Promise<void>;
+}>;
+
+export function automationViewer(pageForRun: PageForRun): AutomationViewer {
+  return {
+    withPage: (session, action) => withRunPage(pageForRun, session, (page) => action(viewerPageAccess(page))),
+    async sendHumanVerificationInput(session, rawInput, contract, targetInputHandler) {
+      const input = normalizeHumanVerificationInput(rawInput, contract);
+      const targetId = rawRecord(rawInput).targetId as string;
+      const target = contract.targets.find((candidate) => candidate.id === targetId);
+      if (!target) throw new Error("Human verification target is not declared for this stage.");
+      await withRunPage(pageForRun, session, (page) =>
+        sendNormalizedViewerInput(page, input, target, targetInputHandler));
+    },
+    async captureChallengeImage(session, contract) {
+      const rect = contract.challengeImageRegion?.rect;
+      if (!rect) return null;
+      try {
+        return await withRunPage(pageForRun, session, (page) =>
+          page.screenshot({
+            clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            type: "png",
+          }),
+        );
+      } catch (error) {
+        if (viewerScreenshotErrorKind(error) === "unavailable") throw error;
+        return null;
+      }
+    },
+    async clickTarget(session, contract, targetId) {
+      const target = contract.targets.find((candidate) => candidate.id === targetId);
+      if (!target?.rect) {
+        throw new Error("Verification target is not resolved for the solver click.");
+      }
+      const point = focusPointForViewerRect(target.rect);
+      await withRunPage(pageForRun, session, (page) =>
+        sendNormalizedViewerInput(page, { type: "click", x: point.x, y: point.y }, target));
+    },
+    async injectSelections(session, contract, selections) {
+      const rect = contract.challengeImageRegion?.rect;
+      if (!rect) {
+        throw new Error("Verification contract declares no challenge image region for the solver selections.");
+      }
+      await withRunPage(pageForRun, session, (page) =>
+        clickVerificationSelectionsOnPage(page, rect, selections),
+      );
+    },
+  };
 }

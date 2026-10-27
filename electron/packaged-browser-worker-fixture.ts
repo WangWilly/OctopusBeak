@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "../src/lib/automation/server/store.ts";
-import { appWorkflowPageForSession } from "../src/lib/automation/server/app-browser-host.ts";
+import { activeRunPageLookup } from "../src/lib/automation/server/active-task-run.ts";
+import type { PageForRun } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_EVENT,
   PACKAGED_BROWSER_FIXTURE_MARKER,
@@ -37,7 +38,7 @@ export type PackagedBrowserFixtureResult = Readonly<{
 type FixtureDependencies = Readonly<{
   startTask?: (taskId: string, provider: AutomationPersistenceProvider) => ReturnType<AutomationRuntime["startWithoutAdmission"]>;
   cancelTask?: (taskId: string) => ReturnType<AutomationRuntime["cancel"]>;
-  pageForRun?: (runId: string) => Page | null;
+  pageForRun?: PageForRun;
   pathExists?: typeof existsSync;
   wait?: (milliseconds: number) => Promise<void>;
   now?: () => number;
@@ -156,6 +157,10 @@ function summarizeFixtureRun(
     throw new Error("Packaged browser fixture success worker did not preserve its completed outcome.");
   }
   const browserContextClosed = observedPage.isClosed();
+  // The run is terminal here, so its Workflow execution has ended and the App
+  // lookup cannot serve its page (ADR 0067). This confirms the packaged wiring
+  // resolves pages through that lookup; a withPage that skips its own release
+  // is caught by the real-Chromium checks in app-browser-host.check.ts.
   const hostPageReleased = dependencies.pageForRun(run.taskRunId) === null;
   const runtimeDirectory = join(
     userDataDirectory,
@@ -204,7 +209,7 @@ function summarizeFixtureRun(
 
 /** Run two synthetic workflows through the real App task runner and browser host. */
 export async function runPackagedBrowserWorkerFixture(
-  runtime: Pick<AutomationRuntime, "provider" | "startWithoutAdmission" | "cancel">,
+  runtime: Pick<AutomationRuntime, "provider" | "startWithoutAdmission" | "cancel" | "activeRun">,
   userDataDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: FixtureDependencies = {},
@@ -215,7 +220,7 @@ export async function runPackagedBrowserWorkerFixture(
   const startTask = dependencies.startTask ?? ((taskId) => runtime.startWithoutAdmission(taskId));
   const cancelTask = dependencies.cancelTask ?? ((taskId) => runtime.cancel(taskId));
   const requiredDependencies = {
-    pageForRun: dependencies.pageForRun ?? appWorkflowPageForSession,
+    pageForRun: dependencies.pageForRun ?? activeRunPageLookup(runtime.activeRun),
     pathExists: dependencies.pathExists ?? existsSync,
     wait: dependencies.wait ?? defaultWait,
     now: dependencies.now ?? Date.now,
