@@ -445,8 +445,8 @@ function creditCardRoute(
 ): FubonRoute {
   return {
     description,
-    link: (scope) =>
-      scope.locator(`a.${taskClass}`).or(scope.locator("a").filter({ hasText: text })),
+    // The task class names this link exactly; the text can also match another menu's link.
+    link: (scope) => [scope.locator(`a.${taskClass}`), scope.locator("a").filter({ hasText: text })],
     menu: "#menu_CCC",
     ready,
   };

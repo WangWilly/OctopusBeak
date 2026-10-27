@@ -2084,6 +2084,7 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       holdMonth?: () => void;
       summaryBody?: Buffer;
       productAbsent?: boolean;
+      absentElsewhere?: boolean;
       withoutMonthLinks?: boolean;
       posted?: string[];
       onBillsServed?: () => void;
@@ -2106,8 +2107,10 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
         if (url.pathname === "/nib/tx/creditcardbillsquery" && request.method() === "GET") {
           if (url.searchParams.get("cid") !== SHELL_CID) return await route.fulfill(html("<p>連線逾時</p>"));
           options.onBillsServed?.();
+          if (options.absentElsewhere) return await route.fulfill(html(`<script>location.replace("/nib/tx/notice")</script>`));
           return await route.fulfill(html(options.productAbsent ? "<p>您目前未持有信用卡</p>" : billsPage(!options.billsWithoutForm, !options.withoutMonthLinks)));
         }
+        if (url.pathname === "/nib/tx/notice") return await route.fulfill(html("<p>您目前未持有信用卡</p>"));
         if (url.pathname === "/nib/tx/creditcardbillsquery" && url.searchParams.get("method") === "queryHistoryDetail") {
           posted.push(`month ${fields.get("cdHistoryQuery")}`);
           if (options.holdMonth) {
@@ -2188,6 +2191,13 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       (error) => error instanceof StatementComponentAbsentError && error.disposition === "not_held",
       "a login without a card fails as not held while the route renders",
     );
+    const absentElsewhereStartedAt = Date.now();
+    await assert.rejects(
+      readThroughShell({ absentElsewhere: true }),
+      (error) => error instanceof StatementComponentAbsentError && error.disposition === "not_held",
+      "a login without a card that the bank redirects to a notice elsewhere also fails as not held",
+    );
+    assert.ok(Date.now() - absentElsewhereStartedAt < 15_000, "the redirected notice is recognised without waiting out the route");
 
     // The bills page is ready once fmain shows creditcardbillsquery, as the
     // old read of the served page was: a page without month links is not

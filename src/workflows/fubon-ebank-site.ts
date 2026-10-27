@@ -18,8 +18,8 @@ const BANK_MASK_SELECTOR = "div._mask, ._mask";
 /** Where one product's page lives on the Fubon eBank site. */
 export type FubonRoute = Readonly<{
   description: string;
-  /** The task link that opens the page, searched in every scope. */
-  link(scope: BrowserScope): Locator;
+  /** The task link that opens the page, searched in every scope; candidates are tried in order within each scope. */
+  link(scope: BrowserScope): Locator | readonly Locator[];
   /** The header-frame menu that reveals the task link, such as "#menu_CLN". */
   menu?: string;
   /**
@@ -67,7 +67,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
   };
 
   const activate = async (control: Locator, scope?: BrowserScope) => {
-    const href = await frames.race(control.getAttribute("href").catch(() => null));
+    const href = await frames.race(control.getAttribute("href", { timeout: CONTROL_TIMEOUT_MS }).catch(() => null));
     if (scope && isFollowableHref(href)) {
       await frames.race(scope.goto(new URL(href, FUBON_EBANK_ENTRY_URL).toString(), { waitUntil: "domcontentloaded" }));
       return;
@@ -82,8 +82,11 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
   const findLink = (route: FubonRoute, timeoutMs: number) =>
     frames.until(async () => {
       for (const scope of frames.scopes()) {
-        const link = route.link(scope).first();
-        if ((await link.count().catch(() => 0)) > 0) return { scope, link };
+        const candidates = route.link(scope);
+        for (const candidate of Array.isArray(candidates) ? candidates : [candidates]) {
+          const link = (candidate as Locator).first();
+          if ((await link.count().catch(() => 0)) > 0) return { scope, link };
+        }
       }
       return null;
     }, `Could not find the ${route.description} link in any frame.`, { timeoutMs });
