@@ -122,15 +122,6 @@ const YUANTA_SUMMARY_MAX_PAGES = 100;
 export const YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY =
   "yuanta-credit-card.queryHistoryDetail.settled-summary-v2" as const;
 
-/**
- * Static parser contract marker emitted with safe diagnostics.  The marker is
- * deliberately versioned so a live run can prove which human-attested
- * period/balance-column extraction contract produced its telemetry without
- * exposing issuer values or page contents.
- */
-export const YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT =
-  "yuanta-credit-card.settled-summary-parser.v7-exact-period-balance-a" as const;
-
 export type YuantaCreditCardSummaryPageRequest = {
   pageOrdinal: number;
   pageTarget: string;
@@ -142,14 +133,12 @@ export type YuantaCreditCardSummaryPageEvidence = {
   terminal: boolean;
   nextPageTarget: string | null;
   pageFingerprint: string;
-  diagnostic: YuantaCreditCardSummaryDiagnostic;
 };
 
 export type YuantaCreditCardSummaryTraversal = {
   summaries: YuantaCreditCardIssuerSummary[];
   pages: YuantaCreditCardSummaryPageEvidence[];
   currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
-  currentUsedCreditDiagnostic?: YuantaCurrentUsedCreditDiagnostic;
 };
 
 export type YuantaCurrentUsedCreditSnapshot = Readonly<{
@@ -162,51 +151,10 @@ export type YuantaCurrentUsedCreditSnapshot = Readonly<{
   cacheControl?: string;
 }>;
 
-/**
- * Sanitized evidence for an optional current-used-credit read.  This keeps a
- * missing live snapshot visible in workflow telemetry without retaining the
- * issuer amounts, card masks, response body, or any other page content.
- */
-export type YuantaCurrentUsedCreditDiagnostic = Readonly<{
-  stage: "response-wait" | "response-body-read" | "dom-read" | "ready";
-  htmlSource: "response-body" | "rendered-dom" | null;
-  responseMatched: boolean;
-  responseStatus: number | null;
-  responsePath: string | null;
-  responseMethod: string | null;
-  responseQueryKeys: readonly string[];
-  hasHttpDate: boolean;
-  hasCacheControl: boolean;
-  responseTableHeaders: readonly (readonly string[])[];
-  framePaths: readonly string[];
-  rwdTableCount: number;
-  currentTableCandidateCount: number;
-  currentTableMatchCount: number;
-  reason:
-    | "ready"
-    | "missing-current-table"
-    | "missing-response"
-    | "invalid-response-status"
-    | "missing-response-evidence"
-    | "parse-error";
-}>;
-
-type YuantaCreditSummaryNavigationFailureReason =
-  | "credit-card-summary-link-not-visible-after-feature-overview"
-  | "summary-page-not-ready";
-
 class YuantaCreditSummaryNavigationError extends Error {
-  readonly diagnosticReason: YuantaCreditSummaryNavigationFailureReason;
-  readonly diagnostic?: YuantaCurrentUsedCreditDiagnostic;
-
-  constructor(
-    reason: YuantaCreditSummaryNavigationFailureReason,
-    diagnostic?: YuantaCurrentUsedCreditDiagnostic,
-  ) {
+  constructor() {
     super("YuanTa credit-card current-summary navigation did not reach the reviewed page.");
     this.name = "YuantaCreditSummaryNavigationError";
-    this.diagnosticReason = reason;
-    this.diagnostic = diagnostic;
   }
 }
 
@@ -217,104 +165,10 @@ export type YuantaCreditCardHistorySettledSummaryPage = {
   summary: YuantaCreditCardIssuerSummary;
 };
 
-export type YuantaCreditCardSummaryRequiredFields = Readonly<{
-  period: boolean;
-  closeDate: boolean;
-  dueDate: boolean;
-  balance: boolean;
-  minimumPayment: boolean;
-}>;
-
-export type YuantaCreditCardSummaryAmbiguityReason =
-  | "none"
-  | "split-across-local-groups"
-  | "multiple-complete"
-  | "conflicting-period"
-  | "conflicting-total"
-  | "empty-value"
-  | "value-invalid"
-  | "partial-candidate"
-  | "extraction-error";
-
-export type YuantaCreditCardSummaryInvalidFieldFamily =
-  | keyof YuantaCreditCardSummaryRequiredFields
-  | null;
-
-export type YuantaCreditCardSummaryInvalidValueShapeClass =
-  | "empty"
-  | "year-month"
-  | "full-date"
-  | "money"
-  | "label-like"
-  | "other";
-
-export type YuantaCreditCardSummaryInvalidValueLengthBucket =
-  | "0"
-  | "1-8"
-  | "9-16"
-  | "17-32"
-  | "33-64"
-  | "65+";
-
-/** Privacy-safe shape telemetry emitted only when the period value is invalid. */
-export type YuantaCreditCardSummaryInvalidPeriodShapeTelemetry = {
-  invalidValueShapeClass: YuantaCreditCardSummaryInvalidValueShapeClass | null;
-  invalidValueDigitGroupLengths: readonly number[];
-  invalidValueSeparatorIds: readonly string[];
-  invalidValueCellTagPairIds: readonly string[];
-  invalidValueLayoutPositionIds: readonly string[];
-  invalidValueCellCount: number | null;
-  invalidValueLabelCellCount: number | null;
-  invalidValueRawLengthBucket: YuantaCreditCardSummaryInvalidValueLengthBucket | null;
-  invalidValueContainsKnownLabel: boolean | null;
-};
-
-/** Static per-field provenance layout IDs; values and page text are excluded. */
-export type YuantaCreditCardSummaryFieldSourceLayoutMap = Readonly<{
-  period: readonly string[];
-  closeDate: readonly string[];
-  dueDate: readonly string[];
-  balance: readonly string[];
-  minimumPayment: readonly string[];
-}>;
-
-/** Privacy-safe structural telemetry for settled-summary candidate groups. */
-export type YuantaCreditCardSummaryGroupTelemetry =
-  YuantaCreditCardSummaryInvalidPeriodShapeTelemetry & {
-  candidateGroupCount: number;
-  completeGroupCount: number;
-  /** Bit order: period, closeDate, dueDate, balance, minimumPayment. */
-  partialGroupFieldMasks: readonly string[];
-  ambiguityReason: YuantaCreditCardSummaryAmbiguityReason;
-  invalidFieldFamily: YuantaCreditCardSummaryInvalidFieldFamily;
-  extractionStrategyIds: readonly string[];
-  parserContractId: typeof YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT;
-  fieldSourceLayoutIds: readonly string[];
-  fieldSourceLayoutByField: YuantaCreditCardSummaryFieldSourceLayoutMap;
-  };
-
-export type YuantaCreditCardSummaryDiagnostic = {
-  summaryPageCount: number;
-  candidateFound: boolean;
-  candidateContainerCount: number;
-  candidateTableCount: number;
-  candidateRowCount: number;
-  requiredFields: YuantaCreditCardSummaryRequiredFields;
-  matchedAliasIds: readonly string[];
-  parsedUniquePeriodCount: number;
-  allRequiredFields: boolean;
-} & YuantaCreditCardSummaryGroupTelemetry;
-
 export class YuantaCreditCardSummaryParseError extends Error {
-  readonly diagnostic: YuantaCreditCardSummaryDiagnostic;
-
-  constructor(
-    message: string,
-    diagnostic: YuantaCreditCardSummaryDiagnostic,
-  ) {
+  constructor(message: string) {
     super(message);
     this.name = "YuantaCreditCardSummaryParseError";
-    this.diagnostic = diagnostic;
   }
 }
 
@@ -775,110 +629,34 @@ async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean
   return shown ?? false;
 }
 
-function yuantaResponsePath(response: Response | null): string | null {
-  if (!response) return null;
-  try {
-    return new URL(response.url()).pathname;
-  } catch {
-    return null;
-  }
-}
-
-function yuantaResponseQueryKeys(response: Response | null): string[] {
-  if (!response) return [];
-  try {
-    return [...new Set(new URL(response.url()).searchParams.keys())].sort();
-  } catch {
-    return [];
-  }
-}
-
-function yuantaFramePaths(page: Page): string[] {
-  const paths = page.frames().flatMap((frame) => {
-    try {
-      return [new URL(frame.url()).pathname];
-    } catch {
-      return [];
-    }
-  });
-  return [...new Set(paths)].sort();
-}
-
-function yuantaRwdTableHeaders(html: string): string[][] {
-  return balancedHtmlElements(html, "table")
-    .filter((tableHtml) =>
-      /<table\b[^>]*class=["'][^"']*\brwdTable\b[^"']*["'][^>]*>/iu.test(
-        tableHtml,
-      ),
-    )
-    .slice(0, 8)
-    .map((tableHtml) =>
-      [...tableHtml.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/giu)]
-        .slice(0, 8)
-        .map((match) => cleanText(stripHtml(match[1] ?? ""))),
-    );
-}
-
-type YuantaCurrentCreditEvidenceContext = Readonly<{
-  stage: YuantaCurrentUsedCreditDiagnostic["stage"];
-  htmlSource: YuantaCurrentUsedCreditDiagnostic["htmlSource"];
-  responseTableHeaders: readonly (readonly string[])[];
-  framePaths: readonly string[];
-}>;
-
+/**
+ * Keep the current-used-credit read only when the reviewed table parsed and
+ * the provider response carries its date and cache evidence.
+ */
 function currentYuantaCreditEvidence(
   html: string,
   response: Response | null,
-  context: YuantaCurrentCreditEvidenceContext,
-): {
-  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
-  diagnostic: YuantaCurrentUsedCreditDiagnostic;
-} {
-  const shape = diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(html);
+): YuantaCurrentUsedCreditSnapshot | undefined {
   const headers = response?.headers() ?? {};
-  const hasHttpDate = Boolean(headers.date);
-  const hasCacheControl = Boolean(headers["cache-control"]);
   let parsed: YuantaCurrentUsedCreditSnapshot | undefined;
   try {
     parsed = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(html);
   } catch {
     parsed = undefined;
   }
-  let reason: YuantaCurrentUsedCreditDiagnostic["reason"] = "ready";
-  if (!parsed)
-    reason =
-      shape.currentTableCandidateCount > 0
-        ? "parse-error"
-        : "missing-current-table";
-  else if (!response) reason = "missing-response";
-  else if (response.status() !== 200) reason = "invalid-response-status";
-  else if (!hasHttpDate || !hasCacheControl)
-    reason = "missing-response-evidence";
-
-  const diagnostic: YuantaCurrentUsedCreditDiagnostic = {
-    stage: context.stage,
-    htmlSource: context.htmlSource,
-    ...shape,
-    responseMatched: response !== null,
-    responseStatus: response?.status() ?? null,
-    responsePath: yuantaResponsePath(response),
-    responseMethod: response?.request().method() ?? null,
-    responseQueryKeys: yuantaResponseQueryKeys(response),
-    hasHttpDate,
-    hasCacheControl,
-    responseTableHeaders: context.responseTableHeaders,
-    framePaths: context.framePaths,
-    reason,
-  };
-  if (reason !== "ready" || !parsed || !response) return { diagnostic };
+  if (
+    !parsed ||
+    !response ||
+    response.status() !== 200 ||
+    !headers.date ||
+    !headers["cache-control"]
+  )
+    return undefined;
   return {
-    currentUsedCredit: {
-      ...parsed,
-      endpoint: response.url(),
-      httpDate: headers.date,
-      cacheControl: headers["cache-control"],
-    },
-    diagnostic,
+    ...parsed,
+    endpoint: response.url(),
+    httpDate: headers.date,
+    cacheControl: headers["cache-control"],
   };
 }
 
@@ -888,7 +666,7 @@ export async function loadYuantaCreditCardSummaryPage(
 ): Promise<{
   firstHtml: string;
   response: Response | null;
-  evidence: ReturnType<typeof currentYuantaCreditEvidence>;
+  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
 }> {
   const { frames } = site;
   const [response] = await Promise.all([
@@ -909,21 +687,12 @@ export async function loadYuantaCreditCardSummaryPage(
       await frames.settle();
     })(),
   ]);
-  const framePaths = yuantaFramePaths(frames.page);
   const responseHtml = response ? await site.readHtml(response) : "";
-  const responseTableHeaders = yuantaRwdTableHeaders(responseHtml);
-  const responseShape =
-    diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(responseHtml);
-  if (responseShape.currentTableCandidateCount > 0) {
+  if (hasYuantaCurrentCreditTable(responseHtml)) {
     return {
       firstHtml: responseHtml,
       response,
-      evidence: currentYuantaCreditEvidence(responseHtml, response, {
-        stage: "ready",
-        htmlSource: "response-body",
-        responseTableHeaders,
-        framePaths,
-      }),
+      currentUsedCredit: currentYuantaCreditEvidence(responseHtml, response),
     };
   }
 
@@ -932,38 +701,26 @@ export async function loadYuantaCreditCardSummaryPage(
     firstHtml = await readYuantaSummaryHtml(frames);
   } catch (error) {
     if (!(error instanceof FrameScopeTimeoutError)) throw error;
-    throw new YuantaCreditSummaryNavigationError(
-      "summary-page-not-ready",
-      currentYuantaCreditEvidence(responseHtml, response, {
-        stage: response ? "dom-read" : "response-wait",
-        htmlSource: responseHtml ? "response-body" : null,
-        responseTableHeaders,
-        framePaths,
-      }).diagnostic,
-    );
+    throw new YuantaCreditSummaryNavigationError();
   }
   return {
     firstHtml,
     response,
-    evidence: currentYuantaCreditEvidence(firstHtml, response, {
-      stage: "ready",
-      htmlSource: "rendered-dom",
-      responseTableHeaders,
-      framePaths,
-    }),
+    currentUsedCredit: currentYuantaCreditEvidence(firstHtml, response),
   };
 }
 
 async function traverseYuantaSummaryWithCurrentEvidence(
   site: YuantaEbankSite,
   firstHtml: string,
-  evidence: ReturnType<typeof currentYuantaCreditEvidence>,
-  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
+  currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined,
+  sourceText: SourceTextPort,
 ): Promise<YuantaCreditCardSummaryTraversal> {
   const { frames } = site;
-  options.sourceText.assertIntact(firstHtml);
+  sourceText.assertIntact(firstHtml);
   frames.signal.throwIfAborted();
   let currentHtml = firstHtml;
+  const current = currentUsedCredit ? { currentUsedCredit } : {};
   try {
     const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
       firstHtml,
@@ -978,66 +735,33 @@ async function traverseYuantaSummaryWithCurrentEvidence(
         await frames.settle();
         frames.signal.throwIfAborted();
         const nextHtml = await readYuantaSummaryHtml(frames, currentHtml);
-        options.sourceText.assertIntact(nextHtml);
+        sourceText.assertIntact(nextHtml);
         currentHtml = nextHtml;
         return nextHtml;
       },
     );
-    return {
-      ...traversal,
-      currentUsedCreditDiagnostic: evidence.diagnostic,
-      ...(evidence.currentUsedCredit
-        ? { currentUsedCredit: evidence.currentUsedCredit }
-        : {}),
-    };
+    return { ...traversal, ...current };
   } catch (error) {
     if (!(error instanceof YuantaCreditCardSummaryParseError)) throw error;
     // The settled-summary page is an optional cross-check.  Keep a valid
     // current-used-credit evidence read even when the bank changes that table
     // independently of the historical statement parser.
-    if (!options.silent)
-      console.log("yuanta-credit-card-settled-summary-unavailable", {
-        reason: "optional-cross-check-diagnostic",
-        diagnostic: error.diagnostic,
-      });
-    return {
-      summaries: [],
-      pages: [],
-      currentUsedCreditDiagnostic: evidence.diagnostic,
-      ...(evidence.currentUsedCredit
-        ? { currentUsedCredit: evidence.currentUsedCredit }
-        : {}),
-    };
+    return { summaries: [], pages: [], ...current };
   }
 }
 
 async function submitCreditCardSummary(
   site: YuantaEbankSite,
-  options: Readonly<{ sourceText: SourceTextPort; silent?: boolean }>,
+  sourceText: SourceTextPort,
 ): Promise<YuantaCreditCardSummaryTraversal> {
   let link = await findYuantaCreditCardSummaryLink(site);
-  let navigationRoute:
-    | "visible-summary-link"
-    | "feature-overview-visible-summary-link"
-    | "menuaction-fallback" = link
-    ? "visible-summary-link"
-    : "menuaction-fallback";
   if (!link) {
     const openedFeatureOverview = await openYuantaFeatureOverview(site);
     if (openedFeatureOverview) {
       link = await findYuantaCreditCardSummaryLink(site, 15_000);
-      if (link) navigationRoute = "feature-overview-visible-summary-link";
-      else
-        throw new YuantaCreditSummaryNavigationError(
-          "credit-card-summary-link-not-visible-after-feature-overview",
-        );
+      if (!link) throw new YuantaCreditSummaryNavigationError();
     }
   }
-
-  if (!options.silent)
-    console.log("yuanta-credit-card-summary-navigation", {
-      route: navigationRoute,
-    });
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
@@ -1049,13 +773,13 @@ async function submitCreditCardSummary(
       site.frames.signal.aborted
     )
       throw error;
-    throw new YuantaCreditSummaryNavigationError("summary-page-not-ready");
+    throw new YuantaCreditSummaryNavigationError();
   }
   return await traverseYuantaSummaryWithCurrentEvidence(
     site,
     loaded.firstHtml,
-    loaded.evidence,
-    options,
+    loaded.currentUsedCredit,
+    sourceText,
   );
 }
 
@@ -1213,31 +937,11 @@ export function parseYuantaCurrentCreditCardUsedCreditSummaryHtml(
   return undefined;
 }
 
-/** Return shape-only telemetry for a current-used-credit parser attempt. */
-export function diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(
-  html: string,
-): Pick<
-  YuantaCurrentUsedCreditDiagnostic,
-  "rwdTableCount" | "currentTableCandidateCount" | "currentTableMatchCount"
-> {
-  const tables = parseRwdTablesFromHtml(html);
-  let currentTableCandidateCount = 0;
-  let currentTableMatchCount = 0;
-  for (const table of tables) {
-    const headerIndex = table.findIndex(
-      (row) => yuantaCurrentCreditHeaderIndex(row) >= 0,
-    );
-    if (headerIndex < 0) continue;
-    currentTableCandidateCount += 1;
-    const values = table[headerIndex + 1];
-    if (values && values.length >= YUANTA_CURRENT_CREDIT_HEADERS.length)
-      currentTableMatchCount += 1;
-  }
-  return {
-    rwdTableCount: tables.length,
-    currentTableCandidateCount,
-    currentTableMatchCount,
-  };
+/** Whether the HTML carries the reviewed current-credit header row. */
+function hasYuantaCurrentCreditTable(html: string): boolean {
+  return parseRwdTablesFromHtml(html).some((table) =>
+    table.some((row) => yuantaCurrentCreditHeaderIndex(row) >= 0),
+  );
 }
 
 function issuerExactAmount(value: string): CreditCardExactAmount {
@@ -1883,14 +1587,6 @@ type YuantaSummaryField =
   | "minimumPayment"
   | "paymentStatus";
 
-const YUANTA_SUMMARY_REQUIRED_ALIAS_IDS = {
-  period: "period.billing-month",
-  closeDate: "close-date.settlement-date",
-  dueDate: "due-date.payment-deadline",
-  balance: "balance.total-due",
-  minimumPayment: "minimum-payment.minimum-due",
-} as const satisfies Record<keyof YuantaCreditCardSummaryRequiredFields, string>;
-
 type YuantaSummarySourceLayout =
   | "vertical-grid-same-column"
   | "header-row-same-column"
@@ -1964,66 +1660,6 @@ function cloneYuantaSummaryCandidate(
       setYuantaSummaryCandidateFieldFromCandidate(clone, field, value, source);
   }
   return clone;
-}
-
-function yuantaSummaryCandidateFieldSourceLayoutIds(
-  candidate: YuantaSummaryCandidate,
-): string[] {
-  return [
-    ...new Set(
-      (Object.keys(candidate) as YuantaSummaryField[]).map(
-        (field) =>
-          yuantaSummaryCandidateFieldEvidence(candidate, field)?.source.layout ??
-          "unknown",
-      ),
-    ),
-  ].sort();
-}
-
-function yuantaSummaryCandidateFieldSourceLayoutByField(
-  candidate: YuantaSummaryCandidate,
-): YuantaCreditCardSummaryFieldSourceLayoutMap {
-  const layoutFor = (
-    field: keyof YuantaCreditCardSummaryFieldSourceLayoutMap,
-  ): readonly string[] => {
-    if (candidate[field] === undefined) return [];
-    return [
-      yuantaSummaryCandidateFieldEvidence(candidate, field)?.source.layout ??
-        "unknown",
-    ];
-  };
-  return {
-    period: layoutFor("period"),
-    closeDate: layoutFor("closeDate"),
-    dueDate: layoutFor("dueDate"),
-    balance: layoutFor("balance"),
-    minimumPayment: layoutFor("minimumPayment"),
-  };
-}
-
-const EMPTY_YUANTA_FIELD_SOURCE_LAYOUT_BY_FIELD = {
-  period: [],
-  closeDate: [],
-  dueDate: [],
-  balance: [],
-  minimumPayment: [],
-} satisfies YuantaCreditCardSummaryFieldSourceLayoutMap;
-
-function mergeYuantaFieldSourceLayoutMaps(
-  maps: readonly YuantaCreditCardSummaryFieldSourceLayoutMap[],
-): YuantaCreditCardSummaryFieldSourceLayoutMap {
-  const layoutsFor = (
-    field: keyof YuantaCreditCardSummaryFieldSourceLayoutMap,
-  ): readonly string[] => [
-    ...new Set(maps.flatMap((map) => map[field])),
-  ].sort();
-  return {
-    period: layoutsFor("period"),
-    closeDate: layoutsFor("closeDate"),
-    dueDate: layoutsFor("dueDate"),
-    balance: layoutsFor("balance"),
-    minimumPayment: layoutsFor("minimumPayment"),
-  };
 }
 
 function setYuantaSummaryCandidateFieldFromCandidate(
@@ -2180,7 +1816,7 @@ function isYuantaSummaryStructuredHeaderRow(
     (field) =>
       field !== undefined &&
       YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER.includes(
-        field as keyof YuantaCreditCardSummaryRequiredFields,
+        field as YuantaSummaryRequiredField,
       ),
   );
   return (
@@ -2238,10 +1874,10 @@ type YuantaSummaryVerticalPeriodExtraction = {
 
 function isYuantaSummaryRequiredField(
   field: YuantaSummaryField | undefined,
-): field is keyof YuantaCreditCardSummaryRequiredFields {
+): field is YuantaSummaryRequiredField {
   return field !== undefined &&
     YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER.includes(
-      field as keyof YuantaCreditCardSummaryRequiredFields,
+      field as YuantaSummaryRequiredField,
     );
 }
 
@@ -2466,28 +2102,6 @@ function candidateFromYuantaAttestedBalanceColumn(
   return candidate;
 }
 
-function hasYuantaSummaryVerticalGridShape(
-  rows: readonly YuantaSummaryStructuredCell[][],
-): boolean {
-  return rows.some((labelRow, rowIndex) => {
-    if (!isYuantaSummaryVerticalLabelRow(labelRow)) return false;
-    const nextRow = rows[rowIndex + 1];
-    if (
-      !nextRow ||
-      nextRow.some(
-        (cell) =>
-          yuantaSummaryField(cell.text) !== undefined ||
-          isYuantaSummaryIgnoredLabel(cell.text),
-      )
-    )
-      return false;
-    return (
-      labelRow.length === nextRow.length &&
-      isYuantaSummaryVerticalValueRow(nextRow)
-    );
-  });
-}
-
 function candidatesFromYuantaSummaryVerticalGrid(
   rows: readonly YuantaSummaryStructuredCell[][],
   excludedLabelRowIndex: number | null = null,
@@ -2535,7 +2149,7 @@ function candidatesFromYuantaSummaryVerticalGrid(
       const valueCell = nextRow[cellIndex];
       const value = cleanText(valueCell?.text);
       // Preserve an empty cell as a missing field so the normal candidate
-      // validation/diagnostic path can report an incomplete or invalid
+      // validation path can report an incomplete or invalid
       // summary.  A non-empty label-like value is structurally ambiguous and
       // must still fail closed here.
       if (!value) continue;
@@ -3051,521 +2665,10 @@ const YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER = [
   "dueDate",
   "balance",
   "minimumPayment",
-] as const satisfies readonly (keyof YuantaCreditCardSummaryRequiredFields)[];
+] as const;
 
-/**
- * Keep candidate diagnostics structural: one bit per required field, in the
- * order documented by YuantaCreditCardSummaryGroupTelemetry.  This deliberately
- * omits the field values themselves (which can contain dates, amounts, or
- * other account data).
- */
-function yuantaSummaryCandidateFieldMask(
-  candidate: YuantaSummaryCandidate,
-): string {
-  return YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER.map((field) =>
-    candidate[field] ? "1" : "0",
-  ).join("");
-}
-
-function yuantaSummaryCandidateHasInvalidRequiredValue(
-  candidate: YuantaSummaryCandidate,
-): boolean {
-  return yuantaSummaryCandidateInvalidField(candidate) !== null;
-}
-
-function yuantaSummaryCandidateInvalidField(
-  candidate: YuantaSummaryCandidate,
-): YuantaCreditCardSummaryInvalidFieldFamily {
-  for (const field of YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER) {
-    const value = candidate[field];
-    if (!value) continue;
-    if (normalizedYuantaSummaryCandidateValue(field, value) === undefined)
-      return field;
-  }
-  return null;
-}
-
-const EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY = {
-  invalidValueShapeClass: null,
-  invalidValueDigitGroupLengths: [],
-  invalidValueSeparatorIds: [],
-  invalidValueCellTagPairIds: [],
-  invalidValueLayoutPositionIds: [],
-  invalidValueCellCount: null,
-  invalidValueLabelCellCount: null,
-  invalidValueRawLengthBucket: null,
-  invalidValueContainsKnownLabel: null,
-} satisfies YuantaCreditCardSummaryInvalidPeriodShapeTelemetry;
-
-function yuantaInvalidValueLengthBucket(
-  value: string,
-): YuantaCreditCardSummaryInvalidValueLengthBucket {
-  const length = [...value].length;
-  if (length === 0) return "0";
-  if (length <= 8) return "1-8";
-  if (length <= 16) return "9-16";
-  if (length <= 32) return "17-32";
-  if (length <= 64) return "33-64";
-  return "65+";
-}
-
-function yuantaInvalidPeriodShapeClass(
-  value: string,
-): YuantaCreditCardSummaryInvalidValueShapeClass {
-  const normalized = toAsciiDigits(stripHtml(value)).normalize("NFKC").trim();
-  if (!normalized) return "empty";
-  if (yuantaSummaryField(normalized) !== undefined) return "label-like";
-  if (YUANTA_SUMMARY_REQUIRED_LABEL_PATTERNS.period.test(normalized))
-    return "label-like";
-  if (
-    /^(?:民國\s*)?\d{3,4}\s*(?:年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?|[/\.\-]\s*\d{1,2}\s*[/\.\-]\s*\d{1,2})$/u.test(
-      normalized,
-    )
-  )
-    return "full-date";
-  if (
-    /^(?:民國\s*)?\d{3,4}\s*(?:年\s*\d{1,2}\s*月(?:份)?|[/\.\-]\s*\d{1,2}(?:月(?:份)?)?)$/u.test(
-      normalized,
-    )
-  )
-    return "year-month";
-  if (
-    /^[-+]?\s*(?:(?:NT\$|TWD|新臺幣|新台幣|元)\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/iu.test(
-      normalized,
-    )
-  )
-    return "money";
-  return "other";
-}
-
-function yuantaInvalidValueSeparatorIds(value: string): string[] {
-  const normalized = toAsciiDigits(stripHtml(value)).normalize("NFKC");
-  const separatorIds = new Set<string>();
-  if (normalized.includes("/")) separatorIds.add("slash");
-  if (normalized.includes("-")) separatorIds.add("dash");
-  if (normalized.includes(".")) separatorIds.add("dot");
-  if (normalized.includes("年")) separatorIds.add("year-char");
-  if (normalized.includes("月")) separatorIds.add("month-char");
-  if (/[：:]/u.test(normalized)) separatorIds.add("colon");
-  if (/\s/u.test(normalized)) separatorIds.add("space");
-  return [...separatorIds].sort();
-}
-
-function yuantaSummaryInvalidPeriodStructure(
-  group: YuantaSummaryCandidateGroup,
-  invalidPeriodValue: string,
-  fieldEvidence?: YuantaSummaryFieldEvidence,
-): Pick<
-  YuantaCreditCardSummaryInvalidPeriodShapeTelemetry,
-  | "invalidValueCellTagPairIds"
-  | "invalidValueLayoutPositionIds"
-  | "invalidValueCellCount"
-  | "invalidValueLabelCellCount"
-> {
-  const cellTagPairIds = new Set<string>();
-  const layoutPositionIds = new Set<string>();
-  let valueCellCount = 0;
-  let labelCellCount = 0;
-
-  const verticalSource = fieldEvidence?.source.layout === "vertical-grid-same-column"
-    ? fieldEvidence
-    : undefined;
-  if (
-    verticalSource &&
-    (verticalSource.rawValue !== invalidPeriodValue ||
-      verticalSource.source.rowIndex === null ||
-      verticalSource.source.cellIndex === null)
-  )
-    throw new Error(
-      "Yuanta settled statement summary vertical period source contract is invalid.",
-    );
-  let matchedVerticalSource = false;
-
-  if (group.tables.length === 0) {
-    layoutPositionIds.add("text-fragment");
-    return {
-      invalidValueCellTagPairIds: [],
-      invalidValueLayoutPositionIds: [...layoutPositionIds],
-      invalidValueCellCount: 0,
-      invalidValueLabelCellCount: 0,
-    };
-  }
-
-  for (const table of group.tables) {
-    const rows = parseYuantaSummaryStructuredRows(table.html);
-    rows.forEach((row, rowIndex) => {
-      row.forEach((cell, cellIndex) => {
-        if (!cell.text) return;
-        const field = yuantaSummaryField(cell.text);
-        if (field !== undefined || isYuantaSummaryIgnoredLabel(cell.text))
-          labelCellCount += 1;
-        else valueCellCount += 1;
-        if (field !== "period") return;
-
-        const nextRowCell = rows[rowIndex + 1]?.[cellIndex];
-        if (verticalSource) {
-          if (
-            verticalSource.source.rowIndex !== rowIndex ||
-            verticalSource.source.cellIndex !== cellIndex ||
-            !nextRowCell ||
-            cleanText(nextRowCell.text) !== cleanText(invalidPeriodValue)
-          )
-            return;
-          matchedVerticalSource = true;
-          cellTagPairIds.add(
-            `${verticalSource.source.labelTagName ?? cell.tagName}->${
-              verticalSource.source.valueTagName ?? nextRowCell.tagName
-            }`,
-          );
-          layoutPositionIds.add("vertical-grid-same-column");
-          return;
-        }
-        if (
-          nextRowCell &&
-          cleanText(nextRowCell.text) === cleanText(invalidPeriodValue)
-        ) {
-          // The vertical grid extractor uses this exact next-row/same-column
-          // cell.  Prefer it over a decoy same-row neighbour so diagnostics
-          // describe the actual source shape without exposing its value.
-          cellTagPairIds.add(`${cell.tagName}->${nextRowCell.tagName}`);
-          layoutPositionIds.add("vertical-grid-same-column");
-          return;
-        }
-
-        const adjacent = row[cellIndex + 1];
-        const adjacentField = adjacent
-          ? yuantaSummaryField(adjacent.text)
-          : undefined;
-        if (
-          adjacent &&
-          adjacent.text &&
-          adjacentField === undefined &&
-          !isYuantaSummaryIgnoredLabel(adjacent.text)
-        ) {
-          cellTagPairIds.add(`${cell.tagName}->${adjacent.tagName}`);
-          layoutPositionIds.add("same-row-adjacent");
-          return;
-        }
-
-        if (nextRowCell) {
-          cellTagPairIds.add(`${cell.tagName}->${nextRowCell.tagName}`);
-          layoutPositionIds.add("header-row-to-value-row");
-        } else {
-          layoutPositionIds.add("same-row-empty");
-        }
-      });
-    });
-  }
-  if (verticalSource && !matchedVerticalSource)
-    throw new Error(
-      "Yuanta settled statement summary vertical period source cell is missing.",
-    );
-  if (cellTagPairIds.size === 0) cellTagPairIds.add("none");
-  if (layoutPositionIds.size === 0) layoutPositionIds.add("no-associated-cell");
-  return {
-    invalidValueCellTagPairIds: [...cellTagPairIds].sort(),
-    invalidValueLayoutPositionIds: [...layoutPositionIds].sort(),
-    invalidValueCellCount: valueCellCount,
-    invalidValueLabelCellCount: labelCellCount,
-  };
-}
-
-function yuantaInvalidPeriodShapeTelemetry(
-  group: YuantaSummaryCandidateGroup,
-  candidate: YuantaSummaryCandidate,
-): YuantaCreditCardSummaryInvalidPeriodShapeTelemetry {
-  const value = candidate.period;
-  if (!value || normalizedYuantaSummaryCandidateValue("period", value) !== undefined)
-    return EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY;
-  const normalized = toAsciiDigits(stripHtml(value)).normalize("NFKC");
-  const digitGroupLengths = [...normalized.matchAll(/\d+/gu)]
-    .slice(0, 8)
-    .map((match) => Math.min(match[0]!.length, 8));
-  const structure = yuantaSummaryInvalidPeriodStructure(
-    group,
-    value,
-    yuantaSummaryCandidateFieldEvidence(candidate, "period"),
-  );
-  return {
-    invalidValueShapeClass: yuantaInvalidPeriodShapeClass(value),
-    invalidValueDigitGroupLengths: digitGroupLengths,
-    invalidValueSeparatorIds: yuantaInvalidValueSeparatorIds(value),
-    ...structure,
-    invalidValueRawLengthBucket: yuantaInvalidValueLengthBucket(value),
-    invalidValueContainsKnownLabel:
-      YUANTA_SUMMARY_REQUIRED_LABEL_PATTERNS.period.test(normalized) ||
-      yuantaSummaryField(normalized) !== undefined,
-  };
-}
-
-function yuantaSummaryExtractionStrategyIds(
-  group: YuantaSummaryCandidateGroup,
-): string[] {
-  const strategyIds = new Set<string>();
-  if (group.tables.length === 0) {
-    strategyIds.add("text-label-value");
-  } else {
-    for (const table of group.tables) {
-      const rows = parseHtmlRowsFromString(table.html);
-      const structuredRows = parseYuantaSummaryStructuredRows(table.html);
-      const structuredHeaderRowCount = structuredRows.filter(
-        isYuantaSummaryStructuredHeaderRow,
-      ).length;
-      strategyIds.add(
-        structuredHeaderRowCount > 1
-          ? "table-grouped-label-rows"
-          : structuredHeaderRowCount === 0 &&
-              hasYuantaSummaryVerticalGridShape(structuredRows)
-            ? "table-vertical-grid"
-          : yuantaSummaryTableHeaderIndex(rows) >= 0
-          ? "table-header-matrix"
-          : structuredHeaderRowCount > 0
-            ? "table-grouped-label-rows"
-            : "table-key-value-pairs",
-      );
-    }
-    if (group.tables.length > 1) strategyIds.add("local-group-merge");
-  }
-  return [...strategyIds].sort();
-}
-
-function yuantaSummaryAmbiguityReasonFromError(
-  error: unknown,
-): YuantaCreditCardSummaryAmbiguityReason {
-  const message = error instanceof Error ? error.message : "";
-  if (/(?:conflicting|conflict).*(?:period)|(?:period).*(?:conflicting|conflict)/iu.test(message))
-    return "conflicting-period";
-  if (/(?:conflicting|conflict).*(?:balance|total)|(?:balance|total).*(?:conflicting|conflict)/iu.test(message))
-    return "conflicting-total";
-  if (/invalid/iu.test(message)) return "value-invalid";
-  if (/ambiguous|boundary|multiple/iu.test(message)) return "multiple-complete";
-  return "extraction-error";
-}
-
-type YuantaSummaryGroupInspection = {
-  candidates: YuantaSummaryCandidate[];
-  complete: boolean;
-  partialFieldMasks: string[];
-  extractionStrategyIds: string[];
-  fieldSourceLayoutIds: string[];
-  fieldSourceLayoutByField: YuantaCreditCardSummaryFieldSourceLayoutMap;
-  invalidFieldFamily: YuantaCreditCardSummaryInvalidFieldFamily;
-  invalidPeriodShapeTelemetry: YuantaCreditCardSummaryInvalidPeriodShapeTelemetry;
-  errorReason?: YuantaCreditCardSummaryAmbiguityReason;
-};
-
-function inspectYuantaSummaryGroup(
-  group: YuantaSummaryCandidateGroup,
-): YuantaSummaryGroupInspection {
-  const extractionStrategyIds = yuantaSummaryExtractionStrategyIds(group);
-  try {
-    const candidates = yuantaSummaryCandidatesFromGroups([group]);
-    const partialFieldMasks = candidates
-      .filter((candidate) => !hasYuantaSummaryRequiredCandidateFields(candidate))
-      .map(yuantaSummaryCandidateFieldMask);
-    const fieldSourceLayoutIds = [
-      ...new Set(
-        candidates.flatMap(yuantaSummaryCandidateFieldSourceLayoutIds),
-      ),
-    ].sort();
-    const fieldSourceLayoutByField = mergeYuantaFieldSourceLayoutMaps(
-      candidates.map(yuantaSummaryCandidateFieldSourceLayoutByField),
-    );
-    if (candidates.length === 0) {
-      // The label scan is intentionally separate from candidate completeness;
-      // this bitmask records that no non-empty candidate was extracted.
-      partialFieldMasks.push("00000");
-    }
-    return {
-      candidates,
-      complete: candidates.some(hasYuantaSummaryRequiredCandidateFields),
-      partialFieldMasks,
-      extractionStrategyIds,
-      fieldSourceLayoutIds,
-      fieldSourceLayoutByField,
-      invalidPeriodShapeTelemetry:
-        candidates
-          .map((candidate) => yuantaInvalidPeriodShapeTelemetry(group, candidate))
-          .find((telemetry) => telemetry.invalidValueShapeClass !== null) ??
-        EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY,
-      invalidFieldFamily:
-        candidates
-          .map(yuantaSummaryCandidateInvalidField)
-          .find((field): field is Exclude<YuantaCreditCardSummaryInvalidFieldFamily, null> =>
-            field !== null,
-          ) ?? null,
-      ...(candidates.some(yuantaSummaryCandidateHasInvalidRequiredValue)
-        ? { errorReason: "value-invalid" as const }
-        : {}),
-    };
-  } catch (error) {
-    return {
-      candidates: [],
-      complete: false,
-      partialFieldMasks: [],
-      extractionStrategyIds,
-      fieldSourceLayoutIds: [],
-      fieldSourceLayoutByField: EMPTY_YUANTA_FIELD_SOURCE_LAYOUT_BY_FIELD,
-      invalidFieldFamily: null,
-      invalidPeriodShapeTelemetry: EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY,
-      errorReason: yuantaSummaryAmbiguityReasonFromError(error),
-    };
-  }
-}
-
-function yuantaSummaryGroupTelemetry(
-  groups: readonly YuantaSummaryCandidateGroup[],
-  requiredFields: YuantaCreditCardSummaryRequiredFields,
-  requireUniqueCandidate: boolean,
-): YuantaCreditCardSummaryGroupTelemetry & {
-  candidates: YuantaSummaryCandidate[];
-  extractionSucceeded: boolean;
-} {
-  const inspections = groups.map(inspectYuantaSummaryGroup);
-  const candidates = inspections.flatMap((inspection) => inspection.candidates);
-  const extractionSucceeded = inspections.every(
-    (inspection) =>
-      inspection.errorReason === undefined ||
-      inspection.errorReason === "value-invalid",
-  );
-  const completeCandidateCount = candidates.filter(
-    hasYuantaSummaryRequiredCandidateFields,
-  ).length;
-  const partialGroupFieldMasks = [
-    ...new Set(inspections.flatMap((inspection) => inspection.partialFieldMasks)),
-  ].slice(0, 16);
-  const extractionStrategyIds = [
-    ...new Set(inspections.flatMap((inspection) => inspection.extractionStrategyIds)),
-  ].sort();
-  const fieldSourceLayoutIds = [
-    ...new Set(
-      inspections.flatMap((inspection) => inspection.fieldSourceLayoutIds),
-    ),
-  ].sort();
-  const fieldSourceLayoutByField = mergeYuantaFieldSourceLayoutMaps(
-    inspections.map((inspection) => inspection.fieldSourceLayoutByField),
-  );
-  const invalidFieldFamily = inspections
-    .map((inspection) => inspection.invalidFieldFamily)
-    .find((field): field is Exclude<YuantaCreditCardSummaryInvalidFieldFamily, null> =>
-      field !== null,
-    ) ?? null;
-  const invalidPeriodShapeTelemetry = inspections.find(
-    (inspection) =>
-      inspection.invalidPeriodShapeTelemetry.invalidValueShapeClass !== null,
-  )?.invalidPeriodShapeTelemetry ?? EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY;
-  const errorReasons = inspections
-    .map((inspection) => inspection.errorReason)
-    .filter(
-      (reason): reason is YuantaCreditCardSummaryAmbiguityReason =>
-        reason !== undefined,
-    );
-  let ambiguityReason: YuantaCreditCardSummaryAmbiguityReason = "none";
-  const reasonPriority: YuantaCreditCardSummaryAmbiguityReason[] = [
-    "conflicting-period",
-    "conflicting-total",
-    "value-invalid",
-    "multiple-complete",
-    "extraction-error",
-  ];
-  for (const reason of reasonPriority) {
-    if (errorReasons.includes(reason)) {
-      ambiguityReason = reason;
-      break;
-    }
-  }
-  if (ambiguityReason === "none") {
-    if (requireUniqueCandidate && completeCandidateCount > 1) {
-      ambiguityReason = "multiple-complete";
-    } else if (
-      completeCandidateCount === 0 &&
-      groups.length > 1 &&
-      Object.values(requiredFields).every(Boolean)
-    ) {
-      ambiguityReason = "split-across-local-groups";
-    } else if (
-      completeCandidateCount === 0 &&
-      (partialGroupFieldMasks.length > 0 || candidates.length === 0)
-    ) {
-      ambiguityReason = Object.values(requiredFields).every(Boolean)
-        ? "empty-value"
-        : "partial-candidate";
-    } else if (
-      requireUniqueCandidate &&
-      completeCandidateCount === 1 &&
-      candidates.length !== 1
-    ) {
-      ambiguityReason = "partial-candidate";
-    }
-  }
-  return {
-    candidateGroupCount: groups.length,
-    completeGroupCount: inspections.filter((inspection) => inspection.complete)
-      .length,
-    partialGroupFieldMasks,
-    ambiguityReason,
-    invalidFieldFamily,
-    ...invalidPeriodShapeTelemetry,
-    extractionStrategyIds,
-    parserContractId: YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-    fieldSourceLayoutIds,
-    fieldSourceLayoutByField,
-    candidates,
-    extractionSucceeded,
-  };
-}
-
-function mergeYuantaSummaryGroupTelemetry(
-  diagnostics: readonly YuantaCreditCardSummaryGroupTelemetry[],
-): YuantaCreditCardSummaryGroupTelemetry {
-  const reasonPriority: YuantaCreditCardSummaryAmbiguityReason[] = [
-    "conflicting-period",
-    "conflicting-total",
-    "value-invalid",
-    "multiple-complete",
-    "split-across-local-groups",
-    "empty-value",
-    "partial-candidate",
-    "extraction-error",
-    "none",
-  ];
-  const ambiguityReason = reasonPriority.find((reason) =>
-    diagnostics.some((diagnostic) => diagnostic.ambiguityReason === reason),
-  ) ?? "none";
-  const invalidPeriodShapeTelemetry = diagnostics.find(
-    (diagnostic) => diagnostic.invalidValueShapeClass !== null,
-  ) ?? EMPTY_YUANTA_INVALID_PERIOD_SHAPE_TELEMETRY;
-  return {
-    candidateGroupCount: diagnostics.reduce(
-      (count, diagnostic) => count + diagnostic.candidateGroupCount,
-      0,
-    ),
-    completeGroupCount: diagnostics.reduce(
-      (count, diagnostic) => count + diagnostic.completeGroupCount,
-      0,
-    ),
-    partialGroupFieldMasks: [
-      ...new Set(diagnostics.flatMap((diagnostic) => diagnostic.partialGroupFieldMasks)),
-    ].slice(0, 16),
-    invalidFieldFamily: diagnostics.find(
-      (diagnostic) => diagnostic.invalidFieldFamily !== null,
-    )?.invalidFieldFamily ?? null,
-    ...invalidPeriodShapeTelemetry,
-    ambiguityReason,
-    parserContractId: YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-    fieldSourceLayoutIds: [
-      ...new Set(
-        diagnostics.flatMap((diagnostic) => diagnostic.fieldSourceLayoutIds),
-      ),
-    ].sort(),
-    fieldSourceLayoutByField: mergeYuantaFieldSourceLayoutMaps(
-      diagnostics.map((diagnostic) => diagnostic.fieldSourceLayoutByField),
-    ),
-    extractionStrategyIds: [
-      ...new Set(diagnostics.flatMap((diagnostic) => diagnostic.extractionStrategyIds)),
-    ].sort(),
-  };
-}
+type YuantaSummaryRequiredField =
+  (typeof YUANTA_SUMMARY_REQUIRED_FIELDS_IN_ORDER)[number];
 
 function yuantaSummaryCandidateGroups(html: string): YuantaSummaryCandidateGroup[] {
   const tables = yuantaSummaryTableMatches(html);
@@ -3757,250 +2860,12 @@ function normalizeYuantaSummaryAmount(value: string, label: string): string {
   return normalized.replace(/^\+/u, "");
 }
 
-const YUANTA_SUMMARY_REQUIRED_LABEL_PATTERNS = {
-  period: /帳單月份|帳單期別|對帳單月份|結帳月份|帳單週期/u,
-  closeDate: /(?:帳單)?結帳(?:日|日期)|本期結帳日/u,
-  dueDate: /繳款截止日|繳款期限|到期日/u,
-  balance: /本期應繳(?:總額|總金額|金額)|應繳(?:總額|金額)/u,
-  minimumPayment: /本期最低應繳(?:額|金額)|最低應繳(?:額|金額)?|最低應繳/u,
-} as const satisfies Record<keyof YuantaCreditCardSummaryRequiredFields, RegExp>;
-
-function markYuantaSummaryRequiredFieldsFromText(
-  requiredFields: {
-    -readonly [Key in keyof YuantaCreditCardSummaryRequiredFields]: boolean;
-  },
-  text: string,
-): void {
-  for (const [field, pattern] of Object.entries(
-    YUANTA_SUMMARY_REQUIRED_LABEL_PATTERNS,
-  ) as Array<
-    [keyof YuantaCreditCardSummaryRequiredFields, RegExp]
-  >) {
-    if (pattern.test(text)) requiredFields[field] = true;
-  }
-}
-
-export function diagnoseYuantaCreditCardSummaryHtml(
-  html: string,
-  summaryPageCount = 1,
-): YuantaCreditCardSummaryDiagnostic {
-  const pageCount =
-    Number.isSafeInteger(summaryPageCount) && summaryPageCount > 0
-      ? summaryPageCount
-      : 1;
-  const candidateGroups = yuantaSummaryCandidateGroups(html);
-  const candidateTables = candidateGroups.flatMap((group) => group.tables);
-  const rows = candidateTables.flatMap((table) =>
-    parseHtmlRowsFromString(table.html),
-  );
-  const requiredFields = {
-    period: false,
-    closeDate: false,
-    dueDate: false,
-    balance: false,
-    minimumPayment: false,
-  };
-  for (const cell of rows.flat()) {
-    const field = yuantaSummaryField(cell);
-    if (field && field in requiredFields)
-      requiredFields[field as keyof YuantaCreditCardSummaryRequiredFields] = true;
-  }
-  const resultFragments = yuantaSummaryResultFragments(html);
-  for (const fragment of resultFragments)
-    markYuantaSummaryRequiredFieldsFromText(
-      requiredFields,
-      stripHtml(fragment),
-    );
-  const groupTelemetry = yuantaSummaryGroupTelemetry(
-    candidateGroups,
-    requiredFields,
-    false,
-  );
-  const candidates = groupTelemetry.candidates;
-  const candidateExtractionSucceeded = groupTelemetry.extractionSucceeded;
-  for (const candidate of candidates) {
-    for (const field of Object.keys(candidate) as YuantaSummaryField[]) {
-      if (field in requiredFields)
-        requiredFields[field as keyof YuantaCreditCardSummaryRequiredFields] = true;
-    }
-  }
-  for (const fragment of resultFragments) {
-    const candidate = candidateFromYuantaSummaryText(stripHtml(fragment));
-    for (const field of Object.keys(candidate) as YuantaSummaryField[]) {
-      if (field in requiredFields)
-        requiredFields[field as keyof YuantaCreditCardSummaryRequiredFields] = true;
-    }
-  }
-  const periods = new Set<string>();
-  for (const candidate of candidates) {
-    if (!candidate.period) continue;
-    try {
-      periods.add(normalizeYuantaSummaryPeriod(candidate.period));
-    } catch {
-      // The diagnostic intentionally reports only a count, never the raw value.
-    }
-  }
-  const allRequiredFields =
-    candidateExtractionSucceeded &&
-    candidates.length > 0 &&
-    candidates.every(hasYuantaSummaryRequiredCandidateFields);
-  const matchedAliasIds = Object.entries(requiredFields)
-    .filter(([, present]) => present)
-    .map(
-      ([field]) =>
-        YUANTA_SUMMARY_REQUIRED_ALIAS_IDS[
-          field as keyof YuantaCreditCardSummaryRequiredFields
-        ],
-    );
-  return {
-    summaryPageCount: pageCount,
-    candidateFound:
-      candidateTables.length > 0 || resultFragments.length > 0,
-    candidateContainerCount: Math.max(
-      resultFragments.length,
-      candidateTables.length,
-    ),
-    candidateTableCount: candidateTables.length,
-    candidateRowCount: rows.length,
-    requiredFields,
-    matchedAliasIds,
-    parsedUniquePeriodCount: periods.size,
-    allRequiredFields,
-    candidateGroupCount: groupTelemetry.candidateGroupCount,
-    completeGroupCount: groupTelemetry.completeGroupCount,
-    partialGroupFieldMasks: groupTelemetry.partialGroupFieldMasks,
-    ambiguityReason: groupTelemetry.ambiguityReason,
-    invalidFieldFamily: groupTelemetry.invalidFieldFamily,
-    invalidValueShapeClass: groupTelemetry.invalidValueShapeClass,
-    invalidValueDigitGroupLengths: groupTelemetry.invalidValueDigitGroupLengths,
-    invalidValueSeparatorIds: groupTelemetry.invalidValueSeparatorIds,
-    invalidValueCellTagPairIds: groupTelemetry.invalidValueCellTagPairIds,
-    invalidValueLayoutPositionIds:
-      groupTelemetry.invalidValueLayoutPositionIds,
-    invalidValueCellCount: groupTelemetry.invalidValueCellCount,
-    invalidValueLabelCellCount: groupTelemetry.invalidValueLabelCellCount,
-    invalidValueRawLengthBucket: groupTelemetry.invalidValueRawLengthBucket,
-    invalidValueContainsKnownLabel:
-      groupTelemetry.invalidValueContainsKnownLabel,
-    extractionStrategyIds: groupTelemetry.extractionStrategyIds,
-    parserContractId: groupTelemetry.parserContractId,
-    fieldSourceLayoutIds: groupTelemetry.fieldSourceLayoutIds,
-    fieldSourceLayoutByField: groupTelemetry.fieldSourceLayoutByField,
-  };
-}
-
-export const YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY =
-  "yuanta-credit-card.queryHistoryDetail" as const;
-
-export type YuantaCreditCardHistoryPageDiagnostic = {
-  sourceKey: typeof YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY;
-  monthIndex: number;
-  candidateFound: boolean;
-  candidateContainerCount: number;
-  candidateTableCount: number;
-  candidateRowCount: number;
-  requiredFields: YuantaCreditCardSummaryRequiredFields;
-  matchedAliasIds: readonly string[];
-  allRequiredFields: boolean;
-} & YuantaCreditCardSummaryGroupTelemetry;
-
-export function diagnoseYuantaCreditCardHistoryHtml(
-  html: string,
-  monthIndex: number,
-): YuantaCreditCardHistoryPageDiagnostic {
-  if (!Number.isSafeInteger(monthIndex) || monthIndex < 0)
-    throw new Error("Yuanta history diagnostic month index is invalid.");
-  const candidateGroups = yuantaSummaryCandidateGroups(html);
-  const candidateTables = candidateGroups.flatMap((group) => group.tables);
-  const rows = candidateTables.flatMap((table) =>
-    parseHtmlRowsFromString(table.html),
-  );
-  const requiredFields = {
-    period: false,
-    closeDate: false,
-    dueDate: false,
-    balance: false,
-    minimumPayment: false,
-  };
-  for (const cell of rows.flat()) {
-    const field = yuantaSummaryField(cell);
-    if (field && field in requiredFields)
-      requiredFields[field as keyof YuantaCreditCardSummaryRequiredFields] = true;
-  }
-  const resultFragments = yuantaSummaryResultFragments(html);
-  for (const fragment of resultFragments)
-    markYuantaSummaryRequiredFieldsFromText(
-      requiredFields,
-      stripHtml(fragment),
-    );
-  const groupTelemetry = yuantaSummaryGroupTelemetry(
-    candidateGroups,
-    requiredFields,
-    true,
-  );
-  const candidates = groupTelemetry.candidates;
-  const candidateExtractionSucceeded = groupTelemetry.extractionSucceeded;
-  for (const candidate of candidates) {
-    for (const field of Object.keys(candidate) as YuantaSummaryField[]) {
-      if (field in requiredFields)
-        requiredFields[field as keyof YuantaCreditCardSummaryRequiredFields] = true;
-    }
-  }
-  const matchedAliasIds = Object.entries(requiredFields)
-    .filter(([, present]) => present)
-    .map(
-      ([field]) =>
-        YUANTA_SUMMARY_REQUIRED_ALIAS_IDS[
-          field as keyof YuantaCreditCardSummaryRequiredFields
-        ],
-    );
-  return {
-    sourceKey: YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY,
-    monthIndex,
-    candidateFound: candidateTables.length > 0 || resultFragments.length > 0,
-    candidateContainerCount: new Set(resultFragments).size,
-    candidateTableCount: candidateTables.length,
-    candidateRowCount: rows.length,
-    requiredFields,
-    matchedAliasIds,
-    allRequiredFields:
-      candidateExtractionSucceeded &&
-      candidates.length === 1 &&
-      hasYuantaSummaryRequiredCandidateFields(candidates[0]!),
-    candidateGroupCount: groupTelemetry.candidateGroupCount,
-    completeGroupCount: groupTelemetry.completeGroupCount,
-    partialGroupFieldMasks: groupTelemetry.partialGroupFieldMasks,
-    ambiguityReason: groupTelemetry.ambiguityReason,
-    invalidFieldFamily: groupTelemetry.invalidFieldFamily,
-    invalidValueShapeClass: groupTelemetry.invalidValueShapeClass,
-    invalidValueDigitGroupLengths: groupTelemetry.invalidValueDigitGroupLengths,
-    invalidValueSeparatorIds: groupTelemetry.invalidValueSeparatorIds,
-    invalidValueCellTagPairIds: groupTelemetry.invalidValueCellTagPairIds,
-    invalidValueLayoutPositionIds:
-      groupTelemetry.invalidValueLayoutPositionIds,
-    invalidValueCellCount: groupTelemetry.invalidValueCellCount,
-    invalidValueLabelCellCount: groupTelemetry.invalidValueLabelCellCount,
-    invalidValueRawLengthBucket: groupTelemetry.invalidValueRawLengthBucket,
-    invalidValueContainsKnownLabel:
-      groupTelemetry.invalidValueContainsKnownLabel,
-    extractionStrategyIds: groupTelemetry.extractionStrategyIds,
-    parserContractId: groupTelemetry.parserContractId,
-    fieldSourceLayoutIds: groupTelemetry.fieldSourceLayoutIds,
-    fieldSourceLayoutByField: groupTelemetry.fieldSourceLayoutByField,
-  };
-}
-
 function wrapYuantaCreditCardSummaryParseError(
   error: unknown,
-  html: string,
-  summaryPageCount: number,
 ): YuantaCreditCardSummaryParseError {
   if (error instanceof YuantaCreditCardSummaryParseError) return error;
   const message = error instanceof Error ? error.message : "Yuanta summary parsing failed.";
-  return new YuantaCreditCardSummaryParseError(
-    message,
-    diagnoseYuantaCreditCardSummaryHtml(html, summaryPageCount),
-  );
+  return new YuantaCreditCardSummaryParseError(message);
 }
 
 /**
@@ -4014,9 +2879,8 @@ export function parseYuantaCreditCardSettledStatementSummaries(
 ): YuantaCreditCardIssuerSummary[] {
   if (hasUntraversedYuantaSummaryPager(html))
     throw new YuantaCreditCardSummaryParseError(
-      "YuanTa settled statement summary has untraversed pagination.",
-      diagnoseYuantaCreditCardSummaryHtml(html),
-    );
+        "YuanTa settled statement summary has untraversed pagination.",
+      );
   return parseYuantaCreditCardSettledStatementSummaryPage(html);
 }
 
@@ -4068,16 +2932,11 @@ export function parseYuantaCreditCardSettledStatementHistoryPage(
 
 function parseYuantaCreditCardSettledStatementSummaryPage(
   html: string,
-  summaryPageCount = 1,
 ): YuantaCreditCardIssuerSummary[] {
   try {
     return parseYuantaCreditCardSettledStatementSummaryPageUnsafe(html);
   } catch (error) {
-    throw wrapYuantaCreditCardSummaryParseError(
-      error,
-      html,
-      summaryPageCount,
-    );
+    throw wrapYuantaCreditCardSummaryParseError(error);
   }
 }
 
@@ -4163,27 +3022,17 @@ export async function traverseYuantaCreditCardSettledStatementSummaryPages(
   let html = firstHtml;
 
   while (true) {
-    const summaryPageCount = pages.length + 1;
     if (pages.length >= YUANTA_SUMMARY_MAX_PAGES)
       throw new YuantaCreditCardSummaryParseError(
         "Yuanta settled statement pagination exceeded the safe page limit.",
-        diagnoseYuantaCreditCardSummaryHtml(html, summaryPageCount),
       );
     const pageFingerprint = yuantaSummaryPageFingerprint(html);
     if (pageFingerprints.has(pageFingerprint))
       throw new YuantaCreditCardSummaryParseError(
         "Yuanta settled statement pagination repeated page.",
-        diagnoseYuantaCreditCardSummaryHtml(html, summaryPageCount),
       );
     pageFingerprints.add(pageFingerprint);
-    const diagnostic = diagnoseYuantaCreditCardSummaryHtml(
-      html,
-      summaryPageCount,
-    );
-    const summaries = parseYuantaCreditCardSettledStatementSummaryPage(
-      html,
-      summaryPageCount,
-    );
+    const summaries = parseYuantaCreditCardSettledStatementSummaryPage(html);
     parsedPages.push(summaries);
     const controls = yuantaSummaryResultFragments(html).flatMap(
       (fragment) => summaryPagerControlsFromFragment(fragment),
@@ -4198,14 +3047,12 @@ export async function traverseYuantaCreditCardSettledStatementSummaryPages(
       terminal: nextPageTarget === null,
       nextPageTarget,
       pageFingerprint,
-      diagnostic,
     });
     if (nextPageTarget === null) break;
     const requestKey = `${pageFingerprint}\u0000${nextPageTarget}`;
     if (pageRequests.has(requestKey))
       throw new YuantaCreditCardSummaryParseError(
         "Yuanta settled statement pagination repeated page request.",
-        diagnoseYuantaCreditCardSummaryHtml(html, summaryPageCount),
       );
     pageRequests.add(requestKey);
     html = await loadNextPage({
@@ -4217,47 +3064,6 @@ export async function traverseYuantaCreditCardSettledStatementSummaryPages(
   return {
     summaries: mergeYuantaCreditCardIssuerSummaries(parsedPages),
     pages,
-  };
-}
-
-function diagnoseYuantaCreditCardSummaryTraversal(
-  traversal: YuantaCreditCardSummaryTraversal,
-): YuantaCreditCardSummaryDiagnostic {
-  const requiredFields = {
-    period: traversal.pages.every((page) => page.diagnostic.requiredFields.period),
-    closeDate: traversal.pages.every((page) => page.diagnostic.requiredFields.closeDate),
-    dueDate: traversal.pages.every((page) => page.diagnostic.requiredFields.dueDate),
-    balance: traversal.pages.every((page) => page.diagnostic.requiredFields.balance),
-    minimumPayment: traversal.pages.every(
-      (page) => page.diagnostic.requiredFields.minimumPayment,
-    ),
-  };
-  const matchedAliasIds = [
-    ...new Set(traversal.pages.flatMap((page) => page.diagnostic.matchedAliasIds)),
-  ];
-  const groupTelemetry = mergeYuantaSummaryGroupTelemetry(
-    traversal.pages.map((page) => page.diagnostic),
-  );
-  return {
-    summaryPageCount: traversal.pages.length,
-    candidateFound: traversal.pages.some((page) => page.diagnostic.candidateFound),
-    candidateContainerCount: traversal.pages.reduce(
-      (count, page) => count + page.diagnostic.candidateContainerCount,
-      0,
-    ),
-    candidateTableCount: traversal.pages.reduce(
-      (count, page) => count + page.diagnostic.candidateTableCount,
-      0,
-    ),
-    candidateRowCount: traversal.pages.reduce(
-      (count, page) => count + page.diagnostic.candidateRowCount,
-      0,
-    ),
-    requiredFields,
-    matchedAliasIds,
-    parsedUniquePeriodCount: traversal.summaries.length,
-    allRequiredFields: Object.values(requiredFields).every(Boolean),
-    ...groupTelemetry,
   };
 }
 
@@ -4644,13 +3450,8 @@ export async function runYuantaCreditCardStatements(
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
-  const log = (..._args: unknown[]): void => undefined;
   const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
 
-  const pageReadyStartedAt = Date.now();
-  log("yuanta-credit-card-page-ready-start", {
-    startedAt: new Date(pageReadyStartedAt).toISOString(),
-  });
   await product.reportActivity("query");
   const bills = await openCreditCardBillsPage(site);
   const currentMonthHtml = bills.html;
@@ -4662,9 +3463,6 @@ export async function runYuantaCreditCardStatements(
       "not_held",
     );
   }
-  log("yuanta-credit-card-page-ready-complete", {
-    durationMs: Date.now() - pageReadyStartedAt,
-  });
   if (hasUntraversedPager(currentMonthHtml)) {
     throw new Error(
       "YuanTa credit-card response has untraversed pagination.",
@@ -4675,27 +3473,14 @@ export async function runYuantaCreditCardStatements(
     null,
   ).monthOptions;
   const monthOptions = selectMonthOptions(allMonthOptions, input);
-  log("yuanta-credit-card-months-found", {
-    available: allMonthOptions.length,
-    selected: monthOptions.length,
-  });
   const billedRows: StatementRow[] = [];
   const billedHistoryPages: YuantaCreditCardHistorySettledSummaryPage[] = [];
   const terminalPages: boolean[] = [];
 
-  let monthStartedAt = 0;
   await submitCreditCardMonthOptions(
     monthOptions,
-    async (month, monthPosition) => {
-      monthStartedAt = Date.now();
+    async (month) => {
       context.signal.throwIfAborted();
-      log("yuanta-credit-card-month-start", {
-        index: monthPosition + 1,
-        total: monthOptions.length,
-        monthIndex: month.index,
-        period: month.label,
-        startedAt: new Date(monthStartedAt).toISOString(),
-      });
       await product.reportActivity("query");
       return submitCreditCardMonth(site, bills.scope, month);
     },
@@ -4703,10 +3488,6 @@ export async function runYuantaCreditCardStatements(
       context.signal.throwIfAborted();
       context.text.assertIntact(monthHtml);
       terminalPages.push(true);
-      log(
-        "yuanta-credit-card-history-diagnostic",
-        diagnoseYuantaCreditCardHistoryHtml(monthHtml, month.index),
-      );
       if (input.includeSummary) {
         billedHistoryPages.push(
           parseYuantaCreditCardSettledStatementHistoryPage(
@@ -4716,25 +3497,12 @@ export async function runYuantaCreditCardStatements(
           ),
         );
       }
-      const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
-      billedRows.push(...monthRows);
-      log("yuanta-credit-card-month-complete", {
-        index: monthPosition + 1,
-        total: monthOptions.length,
-        monthIndex: month.index,
-        period: month.label,
-        rowCount: monthRows.length,
-        durationMs: Date.now() - monthStartedAt,
-      });
+      billedRows.push(...parseCreditCardBillsHtml(monthHtml, month.label).rows);
     },
   );
 
   let unbilledRows: StatementRow[] = [];
   if (input.includeUnbilled) {
-    const unbilledStartedAt = Date.now();
-    log("yuanta-credit-card-unbilled-start", {
-      startedAt: new Date(unbilledStartedAt).toISOString(),
-    });
     await product.reportActivity("query");
     const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope);
     context.text.assertIntact(unbilledHtml);
@@ -4746,10 +3514,6 @@ export async function runYuantaCreditCardStatements(
     }
     terminalPages.push(true);
     unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
-    log("yuanta-credit-card-unbilled-complete", {
-      rowCount: unbilledRows.length,
-      durationMs: Date.now() - unbilledStartedAt,
-    });
   }
 
   let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
@@ -4762,36 +3526,11 @@ export async function runYuantaCreditCardStatements(
     );
     if (issuerSummaries.length >= 2)
       statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
-    log("yuanta-credit-card-history-summary-authority", {
-      sourceKey: YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY,
-      pageCount: billedHistoryPages.length,
-      issuerSummaryCount: issuerSummaries.length,
-      settledCycleCount: statementSummaries.length,
-    });
-    const summaryStartedAt = Date.now();
-    log("yuanta-credit-card-summary-start", {
-      startedAt: new Date(summaryStartedAt).toISOString(),
-    });
-    let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
     try {
       await product.reportActivity("query");
-      summaryTraversal = await submitCreditCardSummary(site, {
-        sourceText: context.text,
-        silent: true,
-      });
+      const summaryTraversal = await submitCreditCardSummary(site, context.text);
       context.text.assertIntact(JSON.stringify(summaryTraversal));
       currentUsedCredit = summaryTraversal.currentUsedCredit;
-      log(
-        "yuanta-credit-card-summary-diagnostic",
-        diagnoseYuantaCreditCardSummaryTraversal(summaryTraversal),
-      );
-      if (!currentUsedCredit)
-        log(
-          "yuanta-credit-card-current-used-credit-unavailable",
-          summaryTraversal.currentUsedCreditDiagnostic ?? {
-            reason: "optional-current-credit-estimate",
-          },
-        );
     } catch (error) {
       if (
         error instanceof SourceTextIntegrityError ||
@@ -4799,42 +3538,7 @@ export async function runYuantaCreditCardStatements(
       ) {
         throw error;
       }
-      if (error instanceof YuantaCreditCardSummaryParseError) {
-        log(
-          "yuanta-credit-card-summary-diagnostic",
-          error.diagnostic,
-        );
-        log("yuanta-credit-card-current-used-credit-unavailable", {
-          reason: "summary-parse-error",
-        });
-      } else {
-        const reason =
-          error instanceof YuantaCreditSummaryNavigationError
-            ? error.diagnosticReason
-            : "summary-route-error";
-        log("yuanta-credit-card-summary-unavailable", {
-          reason,
-          ...(error instanceof YuantaCreditSummaryNavigationError &&
-          error.diagnostic
-            ? { diagnostic: error.diagnostic }
-            : {}),
-        });
-        log("yuanta-credit-card-current-used-credit-unavailable", {
-          reason,
-          ...(error instanceof YuantaCreditSummaryNavigationError &&
-          error.diagnostic
-            ? { diagnostic: error.diagnostic }
-            : {}),
-        });
-      }
     }
-    log("yuanta-credit-card-summary-complete", {
-      issuerSummaryCount: issuerSummaries.length,
-      settledCycleCount: statementSummaries.length,
-      pageCount: summaryTraversal?.pages.length ?? 0,
-      terminalPage: summaryTraversal?.pages.at(-1)?.pageOrdinal ?? null,
-      durationMs: Date.now() - summaryStartedAt,
-    });
   }
 
   const isFullCapture =
