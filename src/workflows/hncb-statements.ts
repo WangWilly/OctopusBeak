@@ -846,8 +846,15 @@ async function queryAccountStatements(
     )
     .catch(() => null);
 
+  // The result probe cannot tell the previous account's page from the new one,
+  // so wait for the main frame to load its next document before probing.
+  const navigated = scope.page
+    .waitForEvent("framenavigated", { predicate: (frame) => frame === mainFrame, timeout: 10_000 })
+    .catch(() => null);
+
   await scope.race(querySubmitLink(mainFrame).click());
   await scope.race(responsePromise);
+  await scope.race(navigated);
   await scope.settle();
   return await waitForStatementResult(scope);
 }
@@ -868,6 +875,7 @@ export async function downloadCurrentStatementInMemory(
 ): Promise<HncbStatementDownload> {
   signal.throwIfAborted();
   const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+  void popupPromise.catch(() => undefined);
   await withAbort(statementDownloadLink(resultFrame).click(), signal);
   const popup = await withAbort(popupPromise, signal);
   let intercepted = false;
