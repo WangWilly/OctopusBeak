@@ -9,7 +9,6 @@ import {
   CaptchaRetryCampaignTransitionError,
   type CaptchaRetryCampaign,
 } from "./captcha-retry-campaign.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
@@ -21,20 +20,21 @@ import {
 } from "./verification-routing.ts";
 import {
   completeAppWorkflowHumanAssistance,
-  registerAppWorkflowHumanAssistanceRequestHandler,
+  type HumanAssistanceRoute,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
+import type { PageForRun } from "./automation-viewer.ts";
 
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
   /** Browser workflows and the App-owned nonbrowser workflows route explicitly. */
   appWorkflow: boolean;
-  provider: AutomationPersistenceProvider;
   run: ActiveAutomationTaskRun;
+  /** Finds the page each round's Workflow execution hosts, for verification routing. */
+  pageForRun: PageForRun;
   launchVerificationSettings: AutomationSettingsFile;
-  initialExecutionOptions: AutomationTaskExecutionOptions;
   execute: (options: AutomationTaskExecutionOptions) => Promise<TaskRunReport>;
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
@@ -124,8 +124,8 @@ export async function runCaptchaRetryCampaign(
 ): Promise<TaskRunReport> {
   const {
     taskId,
-    provider,
     run,
+    pageForRun,
     launchVerificationSettings,
     execute,
   } = dependencies;
@@ -166,92 +166,84 @@ export async function runCaptchaRetryCampaign(
     });
     let routePromise: Promise<void> | null = null;
     let routeSignal: AbortSignal | undefined;
-    let unregister: (() => void) | undefined;
-    try {
-      unregister = registerAppWorkflowHumanAssistanceRequestHandler(
-        taskId,
-        (request) => {
-          routeSignal = request.signal;
-          routePromise = (async () => {
-            try {
-              const onChallengeCaptured = async () => {
-                campaign = recordCapturedChallenge(campaign, appExecutionOptions.executionId);
-                await recordActiveRound();
-              };
-              const routeOutcome = sourceRoute
-                ? await sourceRoute(request, {
-                    provider,
-                    settings: launchVerificationSettings,
-                    route,
-                    onChallengeCaptured,
-                  })
-                : await route({
-                taskId,
-                taskRunId: request.taskRunId,
-                provider,
-                resumeAppWorkflow: () => completeAppWorkflowHumanAssistance(request, provider.automation),
-                finalizeFailed: async (message) => {
-                  request.signal.throwIfAborted();
-                  throw new Error(message);
-                },
-                providerProbePostSubmit: workflowOwnsCaptchaOutcome
-                  ? async (_session, _contract, resume) => {
-                    await resume();
-                    // Join the worker and browser cleanup before starting another round.
-                    // Cleanup normally aborts the assistance request signal.
-                    const { status, errorCode } = run.assess(await executionSettled);
-                    if (errorCode === "captcha-provider-rejected") return "provider-rejected";
-                    return status === "completed" || status === "partial"
-                      ? "none" : "unrecognized-dialog";
-                  }
-                  : appProviderPostSubmitProbe(),
-                onChallengeCaptured,
-                settings: launchVerificationSettings,
-              });
-              if (!routeOutcome) return;
-              routing = routeOutcome;
-              if (
-                routing.kind === "retryable"
-                && routing.reason === "provider-rejected"
-                && campaign.status === "ready"
-                && request.contract.challengeImageRegion
-              ) {
-                campaign = recordCapturedChallenge(campaign, appExecutionOptions.executionId);
-                await recordActiveRound();
-              }
-              if (routing.kind === "failed") {
-                throw new Error("App workflow verification route failed closed.");
-              }
-              if (
-                routing.kind === "retryable"
-                && routing.reason === "solver-exhausted"
-              ) {
-                // Reject the worker's pending assistance stage. The worker
-                // cleans up its browser before the coordinator opens a new round.
-                throw new Error("App workflow solver exhausted this challenge.");
-              }
-            } catch (error) {
-              if (!request.signal.aborted && !routing) routing = { kind: "failed" };
-              throw error;
-            }
-          })();
-          return routePromise;
-        },
-      );
-
-      const report = await execute(appExecutionOptions);
-      settleExecution(report);
-      if (routePromise) {
+    const assistanceRoute: HumanAssistanceRoute = (request) => {
+      routeSignal = request.signal;
+      routePromise = (async () => {
         try {
-          await routePromise;
-        } catch {
-          if (!routeSignal?.aborted && !routing) routing = { kind: "failed" };
+          const onChallengeCaptured = async () => {
+            campaign = recordCapturedChallenge(campaign, appExecutionOptions.executionId);
+            await recordActiveRound();
+          };
+          const routeOutcome = sourceRoute
+            ? await sourceRoute(request, {
+                settings: launchVerificationSettings,
+                route,
+                onChallengeCaptured,
+                pageForRun,
+              })
+            : await route({
+              run: request.run,
+              pageForRun,
+              resumeAppWorkflow: () => completeAppWorkflowHumanAssistance(request),
+              finalizeFailed: async (message) => {
+                request.signal.throwIfAborted();
+                throw new Error(message);
+              },
+              providerProbePostSubmit: workflowOwnsCaptchaOutcome
+                ? async (_session, _contract, resume) => {
+                  await resume();
+                  // Join the worker and browser cleanup before starting another round.
+                  // Cleanup normally aborts the assistance request signal.
+                  const { status, errorCode } = run.assess(await executionSettled);
+                  if (errorCode === "captcha-provider-rejected") return "provider-rejected";
+                  return status === "completed" || status === "partial"
+                    ? "none" : "unrecognized-dialog";
+                }
+                : appProviderPostSubmitProbe(pageForRun),
+              onChallengeCaptured,
+              settings: launchVerificationSettings,
+            });
+          if (!routeOutcome) return;
+          routing = routeOutcome;
+          if (
+            routing.kind === "retryable"
+            && routing.reason === "provider-rejected"
+            && campaign.status === "ready"
+            && request.contract.challengeImageRegion
+          ) {
+            campaign = recordCapturedChallenge(campaign, appExecutionOptions.executionId);
+            await recordActiveRound();
+          }
+          if (routing.kind === "failed") {
+            throw new Error("App workflow verification route failed closed.");
+          }
+          if (
+            routing.kind === "retryable"
+            && routing.reason === "solver-exhausted"
+          ) {
+            // Reject the worker's pending assistance stage. The worker
+            // cleans up its browser before the coordinator opens a new round.
+            throw new Error("App workflow solver exhausted this challenge.");
+          }
+        } catch (error) {
+          if (!request.signal.aborted && !routing) routing = { kind: "failed" };
+          throw error;
         }
+      })();
+      return routePromise;
+    };
+
+    // The execution holds the route from its start, so no worker request can find none.
+    const report = await execute({ ...appExecutionOptions, assistanceRoute });
+    settleExecution(report);
+    if (routePromise) {
+      try {
+        await routePromise;
+      } catch {
+        if (!routeSignal?.aborted && !routing) routing = { kind: "failed" };
       }
-      return { report, ...(routing ? { routing } : {}) };
-    } finally {
-      unregister?.();
     }
+    return { report, ...(routing ? { routing } : {}) };
   };
 
   const executeAndRoute = async (
@@ -266,10 +258,7 @@ export async function runCaptchaRetryCampaign(
     return { report: await execute(executionOptions) };
   };
 
-  let executionOptions: AutomationTaskExecutionOptions = {
-    ...dependencies.initialExecutionOptions,
-    launchVerificationSettings,
-  };
+  let executionOptions: AutomationTaskExecutionOptions = {};
   while (true) {
     const { report, routing } = await executeAndRoute(executionOptions);
     // The typed assistance callback can advance the campaign during execute.
@@ -312,7 +301,9 @@ export async function runCaptchaRetryCampaign(
       }
       if (!isCaptchaRetryCampaignReady(campaign)) {
         if (campaign.status !== "exhausted") return failed(report);
-        await provider.automation.appendRunEvent(signalRunEvent("verification-solver-exhausted", {
+        // Written between executions, so it belongs to none; the report below
+        // names the failure itself and nothing classifies this signal.
+        await run.appendEvent(signalRunEvent("verification-solver-exhausted", {
           runId: run.taskRunId,
           occurredAt: new Date().toISOString(),
         }));
@@ -334,8 +325,6 @@ export async function runCaptchaRetryCampaign(
         return report;
       }
       executionOptions = {
-        ...dependencies.initialExecutionOptions,
-        launchVerificationSettings,
         attempt: nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
         executionId: randomUUID(),

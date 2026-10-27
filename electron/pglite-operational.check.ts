@@ -33,7 +33,7 @@ test("the worker exposes operational start/read/write/failure through one provid
   });
   const client = createPGliteViewWorkerClient(worker);
   const rawClient = createPGliteOperationalRpcClient(worker);
-  const runtime = createPGliteOperationalRuntime({ dataDir, worker: client });
+  const runtime = createPGliteOperationalRuntime({ dataDir, worker: client, activeRun: () => null });
   try {
     assert.deepEqual(runtime.provider.pgliteWorkflow, {
       endpoint: runtime.childRpc.endpoint,
@@ -162,7 +162,7 @@ test("the worker exposes operational start/read/write/failure through one provid
 
 test("the operational runtime requires its PGlite data directory", () => {
   assert.throws(
-    () => createPGliteOperationalRuntime({ dataDir: "" }),
+    () => createPGliteOperationalRuntime({ dataDir: "", activeRun: () => null }),
     /requires an explicit data directory/u,
   );
 });

@@ -6,11 +6,12 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import {
+  completeAppWorkflowHumanAssistance,
   createAppWorkflowHumanAssistancePort,
-  registerAppWorkflowHumanAssistanceRequestHandler,
-  resumeAppWorkflowHumanAssistance,
+  type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
+import { openExecutionForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const contract: HumanAssistanceContractInput = {
@@ -36,89 +37,86 @@ const contract: HumanAssistanceContractInput = {
   focus: { targetId: "captcha-input", contextRegionIds: [] },
 };
 
-test("App workflow assistance lets the host route and resume the same waiting run", async () => {
+async function withRunningRun(
+  taskId: string,
+  check: (provider: AutomationPersistenceProvider, taskRunId: string) => Promise<void>,
+) {
   const store = new PGliteStore(await createTestPGlite("operational"));
   try {
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
-      taskId: "sinopac-statements",
+      taskId,
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 3,
       startedAt: new Date().toISOString(),
     });
-    let releaseRoute!: () => void;
-    let notifyRouteStarted!: () => void;
-    const routeStarted = new Promise<void>((resolve) => { notifyRouteStarted = resolve; });
-    const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });
-    const humanAssistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
-      onRequest: async (_requestedContract, _signal) => {
-        const waiting = await provider.automation.taskRunById(created.taskRunId);
-        assert.equal(waiting?.status, "waiting_for_human");
-        notifyRouteStarted();
-        await provider.automation.updateHumanAssistanceCompletion(created.taskRunId, "entered");
-        assert.equal(
-          await resumeAppWorkflowHumanAssistance(created.taskRunId, "entered"),
-          true,
-        );
-        await routeFinished;
-      },
-    });
-    const controller = new AbortController();
-    const request = humanAssistance.request(contract, controller.signal);
-    await routeStarted;
-    assert.equal(await request, "entered");
-    assert.equal((await provider.automation.taskRunById(created.taskRunId))?.status, "running");
-    releaseRoute();
+    await check(provider, created.taskRunId);
   } finally {
     await store.close();
   }
-});
+}
 
-test("App workflow assistance rejects a failed host route instead of leaving a dead waiter", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "sinopac-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 3,
-      startedAt: new Date().toISOString(),
+/** Resolves with each request the route receives; the route itself never settles the stage. */
+function capturingRoute() {
+  const requests: AppWorkflowHumanAssistanceRequest[] = [];
+  let notify: (() => void) | undefined;
+  return {
+    requests,
+    route(request: AppWorkflowHumanAssistanceRequest) {
+      requests.push(request);
+      notify?.();
+    },
+    async next(count: number) {
+      while (requests.length < count) await new Promise<void>((resolve) => { notify = resolve; });
+      return requests[count - 1]!;
+    },
+  };
+}
+
+test("App workflow assistance lets the execution's route resume the same waiting run", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    let releaseRoute!: () => void;
+    const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });
+    const humanAssistance = createAppWorkflowHumanAssistancePort(
+      await openExecutionForCheck(provider.automation, taskRunId, async (request) => {
+        assert.equal(request.run.taskRunId, taskRunId);
+        assert.equal(request.contract.stageId, "sinopac-login-captcha");
+        assert.equal(request.signal.aborted, false);
+        assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "waiting_for_human");
+        assert.equal(request.run.current().humanAssistanceContract?.stageId, "sinopac-login-captcha");
+        await completeAppWorkflowHumanAssistance(request);
+        await routeFinished;
+      }),
+    );
+    try {
+      assert.equal(await humanAssistance.request(contract, new AbortController().signal), "entered");
+      const stored = await provider.automation.taskRunById(taskRunId);
+      assert.equal(stored?.status, "running");
+      assert.equal(stored?.humanAssistanceContract?.completion.status, "entered");
+    } finally {
+      releaseRoute();
+    }
+  }));
+
+test("App workflow assistance rejects a failed host route instead of leaving a dead waiter", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, async () => {
+      throw new Error("route failed");
     });
-    const humanAssistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
-      onRequest: async () => { throw new Error("route failed"); },
-    });
-    const controller = new AbortController();
     await assert.rejects(
-      humanAssistance.request(contract, controller.signal),
+      createAppWorkflowHumanAssistancePort({ run, execution }).request(contract, new AbortController().signal),
       /route failed/u,
     );
-  } finally {
-    await store.close();
-  }
-});
+    assert.equal(execution.pendingAssistance(), null);
+  }));
 
-test("solver challenges fail when the App has no registered route", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
+test("solver challenges fail when the execution has no route", async () => {
   const controller = new AbortController();
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
-    });
+  await withRunningRun("fubon-all-statements", async (provider, taskRunId) => {
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId);
+    const assistance = createAppWorkflowHumanAssistancePort({ run, execution });
     await assert.rejects(
       Promise.race([
         assistance.request(contract, controller.signal),
@@ -129,94 +127,96 @@ test("solver challenges fail when the App has no registered route", async () => 
       ]),
       /solver route is unavailable/u,
     );
-    assert.ok((await provider.automation.taskRunById(created.taskRunId))?.events.some(
+    assert.ok((await provider.automation.taskRunById(taskRunId))?.events.some(
       (event) => event.code === "solver-route-unavailable",
     ));
+    assert.deepEqual(
+      execution.events().map((event) => event.signal),
+      ["solver-route-unavailable"],
+      "the host signal is logged on the execution that requested assistance",
+    );
     await assert.rejects(
       assistance.request({ ...contract, stageId: "unknown-manual-stage", challengeKind: undefined }, controller.signal),
       /solver route is unavailable/u,
     );
-    const failedClosed = await provider.automation.taskRunById(created.taskRunId);
+    const failedClosed = await provider.automation.taskRunById(taskRunId);
     assert.equal(failedClosed?.status, "running", "unsupported solver work never enters an unavailable waiting state");
     assert.ok(failedClosed?.events.some((event) => event.code === "solver-challenge-unsupported"));
-  } finally {
-    controller.abort();
-    await store.close();
-  }
+  }).finally(() => controller.abort());
 });
 
-test("App workflow assistance dispatches the registered route by task and live run ID", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "sinopac-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 3,
-      startedAt: new Date().toISOString(),
-    });
-    let releaseRoute!: () => void;
-    const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });
-    const unregister = registerAppWorkflowHumanAssistanceRequestHandler(
-      "sinopac-statements",
-      async (request) => {
-        assert.equal(request.taskRunId, created.taskRunId);
-        assert.equal(request.contract.stageId, "sinopac-login-captcha");
-        assert.equal(request.signal.aborted, false);
-        await provider.automation.updateHumanAssistanceCompletion(created.taskRunId, "entered");
-        assert.equal(
-          await resumeAppWorkflowHumanAssistance(created.taskRunId, "entered"),
-          true,
-        );
-        await routeFinished;
-      },
-    );
-    try {
-      const controller = new AbortController();
-      const request = createAppWorkflowHumanAssistancePort({
-        run: await openTaskRunForCheck(provider.automation, created.taskRunId),
-      }).request(contract, controller.signal);
-      assert.equal(await request, "entered");
-    } finally {
-      releaseRoute();
-      unregister();
-    }
-  } finally {
-    await store.close();
-  }
-});
-
-test("a cancelled run cannot enter a verification stage", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "sinopac-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 3,
-      startedAt: new Date().toISOString(),
-    });
-    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
+test("a cancelled run cannot enter a verification stage", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const run = await openTaskRunForCheck(provider.automation, taskRunId);
     let routed = false;
-    const unregister = registerAppWorkflowHumanAssistanceRequestHandler("sinopac-statements", () => {
-      routed = true;
-    });
-    try {
-      await run.requestStop("cancelled");
-      await assert.rejects(
-        createAppWorkflowHumanAssistancePort({ run }).request(contract, new AbortController().signal),
-        /not active for human assistance/u,
-      );
-      assert.equal(routed, false);
-      assert.equal((await provider.automation.taskRunById(created.taskRunId))?.status, "cancelling");
-    } finally {
-      unregister();
-    }
-  } finally {
-    await store.close();
-  }
-});
+    await run.requestStop("cancelled");
+    const execution = run.beginExecution("cancelled-check", { assistanceRoute: () => { routed = true; } });
+    await assert.rejects(
+      createAppWorkflowHumanAssistancePort({ run, execution }).request(contract, new AbortController().signal),
+      /not active for human assistance/u,
+    );
+    assert.equal(routed, false);
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "cancelling");
+  }));
+
+test("cancelling the run rejects a request waiting on its route", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    // The worker's request signal follows the run's stop, as the supervisor's does.
+    const waiting = createAppWorkflowHumanAssistancePort({ run, execution }).request(contract, run.signal);
+    await routes.next(1);
+    assert.notEqual(execution.pendingAssistance(), null);
+    await run.requestStop("cancelled");
+    await assert.rejects(waiting);
+    assert.equal(execution.pendingAssistance(), null);
+    assert.equal(run.current().status, "cancelling");
+  }));
+
+test("ending an execution releases its route and rejects its waiting request", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    assert.equal(execution.assistanceRoute(), routes.route);
+    const waiting = createAppWorkflowHumanAssistancePort({ run, execution })
+      .request(contract, new AbortController().signal);
+    const request = await routes.next(1);
+    execution.end();
+    await assert.rejects(waiting, /has ended/u);
+    assert.equal(execution.assistanceRoute(), null);
+    assert.equal(execution.pendingAssistance(), null);
+    assert.throws(() => execution.holdAssistance(), /has ended/u);
+    await assert.rejects(
+      completeAppWorkflowHumanAssistance(request),
+      /no longer current/u,
+      "a route that outlives its execution finds no waiter to resume",
+    );
+  }));
+
+test("each execution of a run has its own route and cannot see an earlier execution's waiter", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const run = await openTaskRunForCheck(provider.automation, taskRunId);
+    const firstRoutes = capturingRoute();
+    const first = run.beginExecution("round-1", { assistanceRoute: firstRoutes.route });
+    const firstWaiting = createAppWorkflowHumanAssistancePort({ run, execution: first })
+      .request(contract, new AbortController().signal);
+    const firstRequest = await firstRoutes.next(1);
+    first.end();
+    await assert.rejects(firstWaiting, /has ended/u);
+    assert.equal(await run.transition("running"), true);
+
+    const secondRoutes = capturingRoute();
+    const second = run.beginExecution("round-2", { assistanceRoute: secondRoutes.route });
+    assert.equal(second.assistanceRoute(), secondRoutes.route);
+    assert.equal(second.pendingAssistance(), null, "the first execution's waiter is not the second's");
+    const secondWaiting = createAppWorkflowHumanAssistancePort({ run, execution: second })
+      .request(contract, new AbortController().signal);
+    const secondRequest = await secondRoutes.next(1);
+    assert.equal(firstRoutes.requests.length, 1, "the first execution's route never sees the second's request");
+    await assert.rejects(completeAppWorkflowHumanAssistance(firstRequest), /no longer current/u);
+    assert.equal(run.current().status, "waiting_for_human");
+    assert.equal(run.current().humanAssistanceContract?.completion.status, "pending");
+    await completeAppWorkflowHumanAssistance(secondRequest);
+    assert.equal(await secondWaiting, "entered");
+    second.end();
+  }));

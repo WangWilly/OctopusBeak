@@ -17,8 +17,8 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../yuanta-trade-captcha.ts";
 import {
-  sendHumanVerificationInput,
-  withViewerPage,
+  automationViewer,
+  type PageForRun,
   type ViewerDialogAccess,
   type ViewerTargetInputHandler,
   type ViewerPageAccess,
@@ -132,10 +132,18 @@ export type ProviderVerificationHost = {
   ): Promise<boolean>;
 };
 
-export type ProviderVerificationDependencies = {
-  withPage?: ProviderVerificationPageRunner;
-  sendInput?: ProviderVerificationInputForwarder;
-};
+/**
+ * The App reaches each run's page through the page lookup. Checks may run
+ * provider adapters against their own page runner instead; without an input
+ * forwarder such a host finds no page to send input to.
+ */
+export type ProviderVerificationDependencies =
+  | Readonly<{ pageForRun: PageForRun; withPage?: undefined; sendInput?: undefined }>
+  | Readonly<{
+    pageForRun?: undefined;
+    withPage: ProviderVerificationPageRunner;
+    sendInput?: ProviderVerificationInputForwarder;
+  }>;
 
 async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
   const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
@@ -722,10 +730,11 @@ function createAdapters(
 }
 
 export function createProviderVerificationHost(
-  dependencies: ProviderVerificationDependencies = {},
+  dependencies: ProviderVerificationDependencies,
 ): ProviderVerificationHost {
-  const withPage = dependencies.withPage ?? withViewerPage;
-  const forwardInput = dependencies.sendInput ?? sendHumanVerificationInput;
+  const viewer = automationViewer(dependencies.pageForRun ?? (() => null));
+  const withPage = dependencies.withPage ?? viewer.withPage;
+  const forwardInput = dependencies.sendInput ?? viewer.sendHumanVerificationInput;
   const adapters = createAdapters(withPage);
   const capabilityRegistry = createProviderVerificationCapabilityRegistry(
     adapters.flatMap((adapter) => adapter.capabilityOwner ? [adapter.capabilityOwner] : []),
@@ -858,14 +867,3 @@ export function createProviderVerificationHost(
     inspectCompletion,
   };
 }
-
-const defaultHost = createProviderVerificationHost();
-
-export const captureProviderVerificationImage = defaultHost.captureChallengeImage;
-export const isProviderVerificationImageCurrent = defaultHost.isChallengeImageCurrent;
-export const providerVerificationHandlesChallengeImage = defaultHost.handlesChallengeImage;
-export const providerVerificationRefreshesChallengeImage = defaultHost.refreshesChallengeImage;
-export const refreshProviderVerificationImage = defaultHost.refreshChallengeImage;
-export const captureProviderVerificationAudio = defaultHost.captureChallengeAudio;
-export const injectProviderVerificationAnswer = defaultHost.injectAnswer;
-export const probeProviderVerificationPostSubmit = defaultHost.probePostSubmit;

@@ -17,6 +17,7 @@ import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import {
+  activeRunPageLookup,
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type ActiveAutomationTaskRun,
@@ -109,6 +110,15 @@ export function createAutomationRunner(options: Readonly<{
   let shuttingDown = false;
   let holds = 0;
 
+  /** The opened Active Automation Task Run with this run id, or null (ADR 0067). */
+  function activeRun(taskRunId: string): ActiveAutomationTaskRun | null {
+    for (const entry of claimed.values()) {
+      if (entry.run?.taskRunId === taskRunId) return entry.run;
+    }
+    return null;
+  }
+  const pageForRun = activeRunPageLookup(activeRun);
+
   async function execute(
     task: AutomationTask,
     run: ActiveAutomationTaskRun,
@@ -138,10 +148,9 @@ export function createAutomationRunner(options: Readonly<{
       return await runCaptchaRetryCampaign({
         taskId: task.id,
         appWorkflow: task.kind === "crawler",
-        provider,
         run,
+        pageForRun,
         launchVerificationSettings: { ...readAutomationSettings() },
-        initialExecutionOptions: { scheduledAtUtc: runOptions.scheduledAtUtc },
         execute: (executionOptions) => runExecution(task, run, {
           ...executionOptions,
           launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
@@ -212,7 +221,7 @@ export function createAutomationRunner(options: Readonly<{
   }
 
   /** The Active Automation Task Run claimed for a task, checked against the caller's run. */
-  async function activeRun(taskId: string, expectedRunId: string | undefined, action: string) {
+  async function claimedRun(taskId: string, expectedRunId: string | undefined, action: string) {
     const entry = claimed.get(taskId);
     if (!entry) throw new Error(`Automation task is not running: ${taskId}`);
     if (expectedRunId !== undefined && !expectedRunId) {
@@ -289,6 +298,8 @@ export function createAutomationRunner(options: Readonly<{
       return run ? { runId: run.taskRunId, runtime: runtime.snapshot() } : null;
     },
 
+    activeRun,
+
     hasActive() {
       return claimed.size > 0;
     },
@@ -298,13 +309,13 @@ export function createAutomationRunner(options: Readonly<{
     },
 
     async cancel(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }> {
-      const { run } = await activeRun(taskId, expectedRunId, "cancellation");
+      const { run } = await claimedRun(taskId, expectedRunId, "cancellation");
       await run.requestStop("cancelled");
       return { cancelled: taskId };
     },
 
     async forceTerminate(taskId: string, expectedRunId?: string): Promise<{ cancelled: string }> {
-      const { run, entry } = await activeRun(taskId, expectedRunId, "force termination");
+      const { run, entry } = await claimedRun(taskId, expectedRunId, "force termination");
       await run.requestStop("forced");
       await entry.lifecycle;
       return { cancelled: taskId };

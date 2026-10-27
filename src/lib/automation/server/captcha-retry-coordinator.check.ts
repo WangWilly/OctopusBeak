@@ -14,6 +14,8 @@ import type { AutomationPersistenceProvider } from "./store.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
+const noHostedPage = () => null;
+
 async function withRun(
   taskId: string,
   check: (provider: AutomationPersistenceProvider, taskRunId: string) => Promise<void>,
@@ -43,10 +45,9 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
     const report = await runCaptchaRetryCampaign({
       taskId: "exchange-rates",
       appWorkflow: false,
-      provider,
+      pageForRun: noHostedPage,
       run,
       launchVerificationSettings: readAutomationSettings(),
-      initialExecutionOptions: {},
       routeWaitingRunVerification: async () => {
         verificationRoutes += 1;
         return { kind: "resumed" };
@@ -71,10 +72,9 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
     const report = await runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
-      provider,
+      pageForRun: noHostedPage,
       run,
       launchVerificationSettings: readAutomationSettings(),
-      initialExecutionOptions: {},
       async execute() {
         executions += 1;
         await run.recordCommitAttempt({ phase: "started", attemptId: "sinopac-attempt", product: null, total: 1 });

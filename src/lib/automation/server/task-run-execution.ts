@@ -3,13 +3,12 @@ import {
   AUTOMATION_CREDENTIALS_PATH,
   automationConfigEnv,
   getAutomationCredentialCodec,
-  type AutomationSettingsFile,
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
-import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
+import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
-import { registerCollectionScope } from "./collection-scope.ts";
+import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import type {
   WorkflowBrowserPort,
@@ -27,13 +26,15 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
 } from "./workflow-failure-diagnostics.ts";
 import {
-  appWorkflowBrowserConnectionForSession,
   createAppWorkflowBrowserPort,
   type AppWorkflowBrowserConnection,
   type AppWorkflowBrowserProfile,
 } from "./app-browser-host.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
-import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import {
+  createAppWorkflowHumanAssistancePort,
+  type HumanAssistanceRoute,
+} from "./app-workflow-human-assistance.ts";
 import {
   runSupervisedAppWorkflow,
   type RunSupervisedAppWorkflowOptions,
@@ -47,22 +48,22 @@ import {
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 
-/** One workflow execution within an Active Automation Task Run. */
-type AutomationTaskRunExecution = Readonly<{
+/** What one Workflow execution of an Active Automation Task Run runs with. */
+type ExecutionContext = Readonly<{
   task: NonNullable<ReturnType<typeof taskById>>;
   run: ActiveAutomationTaskRun;
-  executionId: string;
+  execution: WorkflowExecution;
 }>;
 
 export type AutomationTaskExecutionOptions = {
-  scheduledAtUtc?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
   /** The authenticated PGlite endpoint, required by every workflow that commits or reads through it. */
   pgliteRpc?: PGliteWorkflowRpc;
-  launchVerificationSettings?: AutomationSettingsFile;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
+  /** Answers this execution's human assistance requests; without it a request fails closed. */
+  assistanceRoute?: HumanAssistanceRoute;
   attempt?: number;
   maxAttempts?: number;
   /** This execution is another round of the same visible run. */
@@ -83,6 +84,8 @@ export type AutomationTaskExecutionOptions = {
     startUrl?: string;
     browserProfile?: AppWorkflowBrowserProfile;
     onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
+    /** Holds the opened page for this execution, as the App browser host does. */
+    execution: Pick<WorkflowExecution, "hostPage">;
   }) => WorkflowBrowserPort;
 };
 
@@ -94,18 +97,18 @@ function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEven
 }
 
 function createWorkflowProgressReporter(
-  execution: AutomationTaskRunExecution,
+  context: ExecutionContext,
   options: AutomationTaskExecutionOptions,
   input: unknown,
 ) {
-  let progress = execution.run.current().progress ?? indeterminateProgress(execution.run.current().attempt);
+  let progress = context.run.current().progress ?? indeterminateProgress(context.run.current().attempt);
   const selectedStatementTypes = selectedWorkflowStatementTypes(input);
   let retrying = options.retrying === true;
 
   const persistProgress = async (next: AutomationTaskProgress): Promise<void> => {
     progress = next;
     try {
-      await execution.run.update({ progress: next });
+      await context.run.update({ progress: next });
     } catch {
       // Progress is advisory; a progress write must not turn a committed
       // workflow result into an ambiguous failure.
@@ -121,7 +124,7 @@ function createWorkflowProgressReporter(
         : event;
       if (retryIsCaughtUp) retrying = false;
 
-      await execution.run.persistence.appendRunEvent(recordedEvent);
+      await context.execution.appendEvent(recordedEvent);
       const projected = projectWorkflowRunProgress(
         recordedEvent,
         progress,
@@ -137,13 +140,13 @@ function createWorkflowProgressReporter(
       percent: number;
     }>): Promise<void> {
       const percent = Math.max(progress.percent ?? 0, Math.min(99, Math.max(0, value.percent)));
-      await persistProgress({ ...value, percent, attempt: execution.run.current().attempt });
+      await persistProgress({ ...value, percent, attempt: context.run.current().attempt });
     },
   };
 }
 
 async function recordWorkflowFailure(
-  execution: AutomationTaskRunExecution,
+  context: ExecutionContext,
   options: AutomationTaskExecutionOptions,
   input: Readonly<{
     source: "workflow-worker" | "workflow-host";
@@ -154,12 +157,12 @@ async function recordWorkflowFailure(
     safeError?: unknown;
   }>,
 ): Promise<void> {
-  const workflowId = execution.task.workflowId;
+  const workflowId = context.task.workflowId;
   if (!workflowId) return;
   const launchEnv = options.launchEnv ?? automationProcessEnv();
   await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
     workflowId,
-    taskRunId: execution.run.taskRunId,
+    taskRunId: context.run.taskRunId,
     ...input,
   }, { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) });
 }
@@ -170,13 +173,16 @@ type BrowserRuntimeIdentityRecorder = Readonly<{
 }>;
 
 function createBrowserRuntimeIdentityRecorder(
-  execution: AutomationTaskRunExecution,
+  context: ExecutionContext,
 ): BrowserRuntimeIdentityRecorder {
   let pendingWrite: Promise<void> | undefined;
   let writeFailed = false;
   return {
     record(identity) {
-      pendingWrite = execution.run.persistence.updateTaskRun(execution.run.taskRunId, {
+      // The browser host reports the identity synchronously, so the write is
+      // queued on the run's write chain here and awaited by flush(), which
+      // turns a failed write into a failure of this execution.
+      pendingWrite = context.run.update({
         browserRuntime: {
           profileId: identity.profileId,
           profileRevision: identity.profileRevision,
@@ -193,22 +199,6 @@ function createBrowserRuntimeIdentityRecorder(
   };
 }
 
-async function executeAppWorkflow(
-  execution: AutomationTaskRunExecution,
-  options: AutomationTaskExecutionOptions,
-): Promise<TaskRunReport> {
-  const scope = registerCollectionScope(
-    execution.run.taskRunId,
-    execution.task,
-    options.launchEnv ?? automationProcessEnv(),
-  );
-  try {
-    return await executeSupervisedAppWorkflow(execution, options);
-  } finally {
-    scope.release();
-  }
-}
-
 function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWorkflowRpc {
   const rpc = options.pgliteRpc;
   if (!rpc?.endpoint.trim() || !rpc.token.trim()) throw new Error("PGlite workflow transport is unavailable.");
@@ -223,85 +213,78 @@ function tdccSessionHost(options: AutomationTaskExecutionOptions): TdccSessionHo
 }
 
 async function executeSupervisedAppWorkflow(
-  execution: AutomationTaskRunExecution,
+  context: ExecutionContext,
   options: AutomationTaskExecutionOptions,
 ): Promise<TaskRunReport> {
-  const workflowId = execution.task.workflowId;
+  const workflowId = context.task.workflowId;
   const definition = workflowDefinitionForTask(workflowId);
   if (!definition || !workflowId || definition.id !== workflowId) {
     return { summary: null, failure: { code: "workflow-failed", proven: true } };
   }
 
-  previewStructureReports.clear(execution.task.id);
+  previewStructureReports.clear(context.task.id);
   const recordPreviewFailure = (
     errorCode: string,
     events: readonly WorkflowRunEvent[],
     shapes: PreviewResponseShapes = { responses: [], omittedResponses: 0 },
   ) => {
-    previewStructureReports.recordFailure(execution.task.id, {
+    previewStructureReports.recordFailure(context.task.id, {
       stage: lastWorkflowStage(events) ?? null,
       errorCode,
       shapes,
     });
   };
 
-  const { signal, forceSignal } = execution.run;
+  const { signal, forceSignal } = context.run;
   let ending: ExecutionEnding;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
-  const observedEvents: WorkflowRunEvent[] = [];
-  let priorEventCount: number | null = null;
-  const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
+  const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(context);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
-    try {
-      const existing = await execution.run.persistence.taskRunById(execution.run.taskRunId);
-      priorEventCount = existing?.events.length ?? null;
-    } catch {
-      // Worker events are also observed in memory before persistence is ACKed.
-    }
-
     const input = workflowInputForTask(workflowId, launchEnv);
-    const progressReporter = createWorkflowProgressReporter(execution, options, input);
+    const progressReporter = createWorkflowProgressReporter(context, options, input);
     const runtime = workflowRuntimeForTask(workflowId);
     const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime)
       ? pgliteRpcForWorker(options)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const browser = runtime.kind === "nonbrowser" ? undefined : options.workflowBrowserPortFactory?.({
-      taskId: execution.task.id,
-      taskRunId: execution.run.taskRunId,
+      taskId: context.task.id,
+      taskRunId: context.run.taskRunId,
       signal,
       userDataDirectory,
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
+      execution: context.execution,
     }) ?? createAppWorkflowBrowserPort({
-      taskId: execution.task.id,
-      taskRunId: execution.run.taskRunId,
+      taskId: context.task.id,
+      taskRunId: context.run.taskRunId,
       signal,
       userDataDirectory,
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
+      execution: context.execution,
       nativeDialogOwner: "worker",
     });
-    const humanAssistance = createAppWorkflowHumanAssistancePort({ run: execution.run });
+    const humanAssistance = createAppWorkflowHumanAssistancePort({
+      run: context.run,
+      execution: context.execution,
+    });
 
     const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
       signal.throwIfAborted();
       return await runSupervisedAppWorkflow({
-        runId: execution.run.taskRunId,
+        runId: context.run.taskRunId,
         workflowId,
         input,
         ...(browserConnection ? { browserConnection } : {}),
         ...(pgliteRpc ? { pgliteRpc } : {}),
         signal,
         forceSignal,
-        appendEvent: async (event) => {
-          observedEvents.push(event);
-          await progressReporter.appendEvent(event);
-        },
-        recordCommitAttempt: (report) => execution.run.recordCommitAttempt(report),
+        appendEvent: (event) => progressReporter.appendEvent(event),
+        recordCommitAttempt: (report) => context.run.recordCommitAttempt(report),
         ...(workflowId === "exchange-rates" ? {
           appendExchangeRateProgress: async (progress: Readonly<{
             phaseCode: "load-request" | "sync" | "complete";
@@ -323,8 +306,9 @@ async function executeSupervisedAppWorkflow(
     const outcome = browser
       ? await browser.withPage(async () => {
         await browserRuntimeIdentity.flush();
-        const browserConnection = (options.appWorkflowBrowserConnectionForRun
-          ?? appWorkflowBrowserConnectionForSession)(execution.run.taskRunId);
+        const browserConnection = options.appWorkflowBrowserConnectionForRun
+          ? options.appWorkflowBrowserConnectionForRun(context.run.taskRunId)
+          : context.execution.browserConnection();
         if (!browserConnection) {
           throw new Error("The App browser worker connection is unavailable for this active run.");
         }
@@ -348,13 +332,13 @@ async function executeSupervisedAppWorkflow(
     };
   }
 
-  const events = await executionEvents(execution, observedEvents, priorEventCount);
+  const events = context.execution.events();
   const result = reportExecution(ending, events);
   const evidence = failureEvidence(ending);
   if (evidence) {
     const { shapes, ...diagnostic } = evidence;
-    const errorCode = execution.run.assess(result).errorCode ?? "workflow-failed";
-    await recordWorkflowFailure(execution, options, {
+    const errorCode = context.run.assess(result).errorCode ?? "workflow-failed";
+    await recordWorkflowFailure(context, options, {
       ...diagnostic,
       errorCode,
       stage: lastWorkflowStage(events),
@@ -373,28 +357,6 @@ function failureEvidence(ending: ExecutionEnding) {
   return outcome.status === "failed"
     ? { source: "workflow-worker" as const, safeError: outcome.diagnostic, shapes: outcome.previewResponses }
     : null;
-}
-
-/**
- * This execution's events: those persisted since it started, then those the
- * worker reported. Each worker action is ordered behind a main-thread event
- * ACK, so the observed list alone remains an authoritative boundary.
- */
-async function executionEvents(
-  execution: AutomationTaskRunExecution,
-  observedEvents: readonly WorkflowRunEvent[],
-  priorEventCount: number | null,
-): Promise<readonly WorkflowRunEvent[]> {
-  try {
-    const persisted = await execution.run.persistence.taskRunById(execution.run.taskRunId);
-    if (!persisted) return observedEvents;
-    return [
-      ...(priorEventCount === null ? [] : persisted.events.slice(priorEventCount)),
-      ...observedEvents,
-    ];
-  } catch {
-    return observedEvents;
-  }
 }
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
@@ -432,8 +394,13 @@ export async function runAutomationTaskExecution(
     progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
   });
   if (!started) return CANCELLED;
-  return executeAppWorkflow(
-    { task, run, executionId: options.executionId ?? randomUUID() },
-    options,
-  );
+  const execution = run.beginExecution(options.executionId ?? randomUUID(), {
+    assistanceRoute: options.assistanceRoute,
+    collectionScope: launchedCollectionScope(task, options.launchEnv ?? automationProcessEnv()),
+  });
+  try {
+    return await executeSupervisedAppWorkflow({ task, run, execution }, options);
+  } finally {
+    execution.end();
+  }
 }

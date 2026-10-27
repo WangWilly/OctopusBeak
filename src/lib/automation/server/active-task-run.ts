@@ -14,6 +14,17 @@ import type {
   TypedWorkflowErrorCode,
 } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContract,
+  HumanAssistanceContractInput,
+} from "../human-assistance.ts";
+import type { HumanAssistanceRoute } from "./app-workflow-human-assistance.ts";
+import type { LaunchedCollectionScope } from "./collection-scope.ts";
+import type { Page } from "playwright";
+import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
+import type { PageForRun } from "./automation-viewer.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -29,7 +40,10 @@ import {
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
 
-export type ActiveTaskRunFields = Pick<AutomationTaskRunUpdate, "attempt" | "maxAttempts" | "progress">;
+export type ActiveTaskRunFields = Pick<
+  AutomationTaskRunUpdate,
+  "attempt" | "maxAttempts" | "progress" | "browserRuntime"
+>;
 
 /** Why an Active Automation Task Run was asked to stop before it ended on its own. */
 export type TaskRunStop = "cancelled" | "forced" | "shutdown";
@@ -58,11 +72,91 @@ export type TaskRunOutcome = Readonly<{
   forced: boolean;
 }>;
 
+export type HumanAssistanceResolution = Exclude<HumanAssistanceCompletionStatus, "pending">;
+
+/** The one human assistance request a Workflow execution is waiting on. */
+export type HumanAssistanceWaiter = Readonly<{
+  /** Settles once: resolved by the stage's completion, rejected otherwise. */
+  completion: Promise<HumanAssistanceResolution>;
+  /** Settle the completion and release the waiter. Later calls do nothing. */
+  resolve(status: HumanAssistanceResolution): void;
+  reject(error: Error): void;
+}>;
+
+/** The browser page the App hosts for one Workflow execution. */
+export type HostedBrowserPage = Readonly<{
+  page: Page;
+  /** The loopback CDP target the worker attaches to; null when the host exposes none. */
+  connection: AppWorkflowBrowserConnection | null;
+}>;
+
+/**
+ * One start of the provider workflow within its Active Automation Task Run
+ * (ADR 0067). It records every event of that start once, worker and host
+ * events alike, and persists each through the run's write chain. "This
+ * execution's events" is its log; nothing reads stored events back for it.
+ * It also holds its human assistance route and at most one waiter, the
+ * Collection scope version its commits are checked against, and its hosted
+ * browser page, all released when it ends.
+ */
+export type WorkflowExecution = Readonly<{
+  executionId: string;
+  /** The route given when this execution began; null once it has ended or when none was given. */
+  assistanceRoute(): HumanAssistanceRoute | null;
+  /**
+   * Hold this execution's human assistance waiter. Throws while another is
+   * held or once this execution has ended. Ending rejects a held waiter.
+   */
+  holdAssistance(): HumanAssistanceWaiter;
+  /** The held waiter, or null. */
+  pendingAssistance(): HumanAssistanceWaiter | null;
+  /** The Collection scope version given when this execution began; null once it has ended or when none was given. */
+  collectionScope(): LaunchedCollectionScope | null;
+  /**
+   * Hold the page the browser host opened for this execution until the
+   * returned release runs or the execution ends. Throws once this execution
+   * has ended or while it already holds a page.
+   */
+  hostPage(hosted: HostedBrowserPage): () => void;
+  /** The hosted page, or null when none is held. */
+  page(): Page | null;
+  /** The hosted page's worker connection, or null when no page or no connection is held. */
+  browserConnection(): AppWorkflowBrowserConnection | null;
+  /** Every event this execution recorded, in the order it recorded them. */
+  events(): readonly WorkflowRunEvent[];
+  /**
+   * Record one event in this log, then persist it behind the run's earlier
+   * writes. The log holds the event before the write, so a failed write
+   * rejects but leaves it logged; once the run has finished the event is
+   * logged and not persisted. Rejects and records nothing once this
+   * execution has ended.
+   */
+  appendEvent(event: WorkflowRunEvent): Promise<void>;
+  /** Release this execution as the run's current one. Idempotent. */
+  end(): void;
+}>;
+
+export type WorkflowExecutionOptions = Readonly<{
+  /** Answers the execution's human assistance requests. Fixed before the worker can ask. */
+  assistanceRoute?: HumanAssistanceRoute;
+  /** The Collection scope version this execution was launched with. Fixed before the worker can commit. */
+  collectionScope?: LaunchedCollectionScope;
+}>;
+
 /** The sole owner of one Automation Task Run until its finalization (ADR 0052). */
 export type ActiveAutomationTaskRun = Readonly<{
   taskId: string;
   taskRunId: string;
-  persistence: AutomationPersistencePort;
+  /** Start a Workflow execution. Throws while another is current or once the run has finished. */
+  beginExecution(executionId: string, options?: WorkflowExecutionOptions): WorkflowExecution;
+  /** The execution that has begun and not ended, or null. */
+  currentExecution(): WorkflowExecution | null;
+  /**
+   * Durably record an event that belongs to no execution, such as a signal the
+   * CAPTCHA Retry Campaign writes between rounds. It joins no execution's log,
+   * so no classification reads it. Ignored once the run has finished.
+   */
+  appendEvent(event: WorkflowRunEvent): Promise<void>;
   /** Aborted with a TaskRunStop reason on cancellation, force-quit or shutdown. */
   signal: AbortSignal;
   /** Aborted only on force-quit, which allows no cleanup grace. */
@@ -75,6 +169,10 @@ export type ActiveAutomationTaskRun = Readonly<{
   transition(status: ActiveTaskRunStatus, fields?: ActiveTaskRunFields): Promise<boolean>;
   /** Record non-status fields. Ignored once the run has finished. */
   update(fields: ActiveTaskRunFields): Promise<void>;
+  /** Present a new human assistance contract on the run's row. Rejects once the run has finished. */
+  updateHumanAssistanceContract(contract: HumanAssistanceContractInput): Promise<HumanAssistanceContract>;
+  /** Record the current contract's completion. Rejects once the run has finished. */
+  updateHumanAssistanceCompletion(status: HumanAssistanceCompletionStatus): Promise<HumanAssistanceContract>;
   /** Durably append one Commit attempt phase and keep it for the run's outcome (ADR 0056). */
   recordCommitAttempt(report: CommitAttemptReport): Promise<void>;
   requestStop(reason: TaskRunStop): Promise<void>;
@@ -196,6 +294,16 @@ async function persistTerminal(
   return finalized;
 }
 
+/**
+ * The App's page lookup (ADR 0067): the page hosted by the current Workflow
+ * execution of the Active run with that id.
+ */
+export function activeRunPageLookup(
+  activeRun: (taskRunId: string) => ActiveAutomationTaskRun | null,
+): PageForRun {
+  return (taskRunId) => activeRun(taskRunId)?.currentExecution()?.page() ?? null;
+}
+
 export function openActiveTaskRun(input: Readonly<{
   run: AutomationTaskRun;
   persistence: AutomationPersistencePort;
@@ -242,10 +350,90 @@ export function openActiveTaskRun(input: Readonly<{
       return true;
     });
 
+  // Decided when the append is accepted, not when its turn in the chain comes:
+  // an event accepted before finish() is stored before the terminal write,
+  // which reads the stored events for prerequisite notices.
+  const persistEvent = (event: WorkflowRunEvent): Promise<void> =>
+    finishing ? Promise.resolve() : serialized(() => persistence.appendRunEvent(event));
+
+  let currentExecution: WorkflowExecution | null = null;
+  const beginExecution = (executionId: string, options: WorkflowExecutionOptions = {}): WorkflowExecution => {
+    if (finishing) throw new Error(`Automation task run has finished: ${taskRunId}`);
+    if (currentExecution) {
+      throw new Error(`Workflow execution ${currentExecution.executionId} of run ${taskRunId} is still current.`);
+    }
+    const log: WorkflowRunEvent[] = [];
+    let ended = false;
+    let route = options.assistanceRoute ?? null;
+    let scope = options.collectionScope ?? null;
+    let waiter: HumanAssistanceWaiter | null = null;
+    let hostedPage: HostedBrowserPage | null = null;
+    const endedError = () => new Error(`Workflow execution ${executionId} has ended.`);
+    const execution: WorkflowExecution = {
+      executionId,
+      assistanceRoute: () => route,
+      holdAssistance() {
+        if (ended) throw endedError();
+        if (waiter) throw new Error("This workflow run already has a pending human assistance request.");
+        let settle!: (status: HumanAssistanceResolution) => void;
+        let fail!: (error: Error) => void;
+        const completion = new Promise<HumanAssistanceResolution>((resolve, reject) => {
+          settle = resolve;
+          fail = reject;
+        });
+        // A waiter released before anyone awaits it must not surface as unhandled.
+        completion.catch(() => undefined);
+        const held: HumanAssistanceWaiter = {
+          completion,
+          resolve(status) {
+            if (waiter === held) waiter = null;
+            settle(status);
+          },
+          reject(error) {
+            if (waiter === held) waiter = null;
+            fail(error);
+          },
+        };
+        waiter = held;
+        return held;
+      },
+      pendingAssistance: () => waiter,
+      collectionScope: () => scope,
+      hostPage(hosted) {
+        if (ended) throw endedError();
+        if (hostedPage) throw new Error(`Workflow execution ${executionId} already hosts a browser page.`);
+        hostedPage = hosted;
+        return () => {
+          if (hostedPage === hosted) hostedPage = null;
+        };
+      },
+      page: () => hostedPage?.page ?? null,
+      browserConnection: () => hostedPage?.connection ?? null,
+      events: () => [...log],
+      appendEvent(event) {
+        if (ended) return Promise.reject(new Error(`Workflow execution ${executionId} has ended.`));
+        log.push(event);
+        return persistEvent(event);
+      },
+      end() {
+        ended = true;
+        route = null;
+        scope = null;
+        hostedPage = null;
+        waiter?.reject(endedError());
+        if (currentExecution === execution) currentExecution = null;
+      },
+    };
+    currentExecution = execution;
+    return execution;
+  };
+
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
-    persistence,
+    beginExecution,
+    currentExecution: () => currentExecution,
+    appendEvent: persistEvent,
     signal: stopController.signal,
     forceSignal: forceController.signal,
     stopReason: () => stop,
@@ -256,6 +444,18 @@ export function openActiveTaskRun(input: Readonly<{
       await persistence.updateTaskRun(taskRunId, fields);
       row = { ...row, ...fields };
       publish();
+    }),
+    updateHumanAssistanceContract: (contract) => serialized(async () => {
+      if (finishing) throw new Error(`Automation task run has finished: ${taskRunId}`);
+      const recorded = await persistence.updateHumanAssistanceContract(taskRunId, contract);
+      row = { ...row, humanAssistanceContract: recorded };
+      return recorded;
+    }),
+    updateHumanAssistanceCompletion: (status) => serialized(async () => {
+      if (finishing) throw new Error(`Automation task run has finished: ${taskRunId}`);
+      const recorded = await persistence.updateHumanAssistanceCompletion(taskRunId, status);
+      row = { ...row, humanAssistanceContract: recorded };
+      return recorded;
     }),
     recordCommitAttempt(report) {
       const recorded = recording.then(async () => {

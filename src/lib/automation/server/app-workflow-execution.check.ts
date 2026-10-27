@@ -161,7 +161,6 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     const firstResult = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: {},
       workerPorts: { financialCommit: committedFinancialCommit() },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
@@ -209,7 +208,6 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     const rejectedResult = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: rejectedRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: {},
       workerPorts: { financialCommit: rejectedCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
@@ -227,7 +225,6 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
         shutdownActive = active;
       },
       launchEnv: testCredentialEnvironment(),
-      launchVerificationSettings: {},
       workerPorts: { financialCommit: committedFinancialCommit() },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000),
     });

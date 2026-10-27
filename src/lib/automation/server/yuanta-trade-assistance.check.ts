@@ -12,7 +12,8 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openExecutionForCheck } from "./task-run-check-support.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
@@ -20,6 +21,8 @@ import {
   type YuantaTradeAppAssistanceDependencies,
 } from "./yuanta-trade-assistance.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+
+const noHostedPage = () => null;
 
 const TASK_ID = "yuanta-trade-statements";
 
@@ -197,21 +200,18 @@ async function createRun() {
 
 /** Route each stage the way the CAPTCHA Retry Campaign does, without the campaign's retries. */
 async function yuantaTradeAssistance(
+  provider: AutomationPersistenceProvider,
   taskRunId: string,
   dependencies: YuantaTradeAppAssistanceDependencies,
 ) {
-  return createAppWorkflowHumanAssistancePort({
-    run: await openTaskRunForCheck(dependencies.provider.automation, taskRunId),
-    async onRequest(contract, signal) {
-      const outcome = await routeYuantaTradeAppAssistanceRequest(
-        { taskId: TASK_ID, taskRunId, contract, signal },
-        dependencies,
-      );
+  return createAppWorkflowHumanAssistancePort(
+    await openExecutionForCheck(provider.automation, taskRunId, async (request) => {
+      const outcome = await routeYuantaTradeAppAssistanceRequest(request, dependencies);
       if (outcome?.kind === "retryable") {
         throw new Error(`Yuanta Trade verification is retryable: ${outcome.reason}`);
       }
-    },
-  });
+    }),
+  );
 }
 
 const solverSettings: AutomationSettingsFile = {
@@ -231,8 +231,8 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
     onResume(session, stageId) { sessions.push(session); actions.push(`resume:${stageId}`); },
   });
   const dependencies: YuantaTradeAppAssistanceDependencies = {
-    provider,
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: host,
     routeOptions: {
       solver: {
@@ -256,7 +256,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
 
   try {
     process.chdir(artifactRoot);
-    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
     for (const contract of [audioContract(), audioContract(), checkboxContract()]) {
       await assistance.request(contract, new AbortController().signal);
     }
@@ -292,8 +292,8 @@ test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   const controller = new AbortController();
   let solverCalls = 0;
   const dependencies: YuantaTradeAppAssistanceDependencies = {
-    provider,
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: {
@@ -307,7 +307,7 @@ test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   };
 
   try {
-    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
     await assert.rejects(
       Promise.race([
         assistance.request(audioContract(), controller.signal),
@@ -328,12 +328,12 @@ test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
 test("Yuanta Trade image challenge fails explicitly in solver mode", async () => {
   const { store, provider, run } = await createRun();
   const dependencies: YuantaTradeAppAssistanceDependencies = {
-    provider,
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
   };
   try {
-    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
     await assert.rejects(
       assistance.request(imageContract(), new AbortController().signal),
       /image challenge has no supported local solver/u,
@@ -346,8 +346,8 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
 test("Yuanta Trade fails closed when the solver route does not resume the stage", async () => {
   const { store, provider, run } = await createRun();
   const dependencies: YuantaTradeAppAssistanceDependencies = {
-    provider,
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
@@ -355,7 +355,7 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
     },
   };
   try {
-    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
     await assert.rejects(
       assistance.request(audioContract(), new AbortController().signal),
       /did not complete the current stage/u,
@@ -368,17 +368,19 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
 test("Yuanta Trade unsupported native verification fails closed in solver mode", async () => {
   const { store, provider, run } = await createRun();
   try {
+    const opened = await openExecutionForCheck(provider.automation, run.taskRunId);
+    const { execution } = opened;
     await assert.rejects(
       routeYuantaTradeAppAssistanceRequest({
-        taskId: TASK_ID,
-        taskRunId: run.taskRunId,
+        ...opened,
         contract: certificateContract(),
         signal: new AbortController().signal,
-      }, { provider, settings: {} }),
+      }, { settings: {}, pageForRun: noHostedPage }),
       /not supported by the automatic solver/u,
     );
     const saved = await provider.automation.taskRunById(run.taskRunId);
     assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
+    assert.deepEqual(execution.events().map((event) => event.signal), ["solver-challenge-unsupported"]);
     assert.equal(saved?.status, "running");
   } finally {
     await store.close();
@@ -393,8 +395,8 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
   const delayed = new Promise<void>((resolve) => { releaseSolver = resolve; });
   const injected: string[] = [];
   const dependencies: YuantaTradeAppAssistanceDependencies = {
-    provider,
     settings: solverSettings,
+    pageForRun: noHostedPage,
     verificationHost: verificationHost(),
     routeOptions: {
       solver: {
@@ -411,7 +413,7 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
 
   try {
     const controller = new AbortController();
-    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, dependencies);
     const request = assistance.request(audioContract(), controller.signal);
     await started;
     controller.abort(new Error("App shutdown"));
