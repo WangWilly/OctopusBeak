@@ -1,8 +1,6 @@
 import {
   TDCC_PRODUCT_COLLECTORS,
   TDCC_PRODUCT_IDS,
-  tdccFatalCode,
-  tdccProductFailureCode,
   TdccRunSession,
   type TdccProductId,
 } from "../../workflows/tdcc-epassbook-collection.ts";
@@ -68,8 +66,6 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
         signal: context.signal,
         event: context.event,
         productFailure: context.productFailure,
-        classifyFatal: tdccFatalCode,
-        classifyFailure: tdccProductFailureCode,
         async collect(typeId, product) {
           await product.reportActivity("query");
           const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>

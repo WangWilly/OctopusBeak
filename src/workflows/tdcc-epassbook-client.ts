@@ -1,4 +1,5 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import { FailureCodeError, type TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
 
 // Reproduces the TDCC e-Passbook Android App's request envelope, ported from
 // the TedLin1993/all-set-tw reference client. See ADR 0041.
@@ -62,14 +63,35 @@ export type TdccFailure =
   | { reason: "malformed-response" }
   | { reason: "pagination"; detail: "page-limit" | "repeated-cursor" | "incomplete" };
 
-export class TdccError extends Error {
+/** The Failure code a TDCC failure means wherever it is thrown (ADR 0068). */
+function tdccFailureCode(endpoint: TdccEndpointName, failure: TdccFailure): TypedWorkflowErrorCode {
+  switch (failure.reason) {
+    case "device-untrusted":
+      return "device-registration-required";
+    case "protocol-outdated":
+      return "provider-protocol-outdated";
+    case "session-expired":
+    case "otp-expired":
+      return "authentication-failed";
+    case "http":
+      return "source-unavailable";
+    case "rejected":
+      return endpoint === "login" || endpoint === "initialToken" ? "authentication-failed" : "source-collection-failed";
+    case "malformed-response":
+      return "source-integrity-failed";
+    case "pagination":
+      return "source-collection-failed";
+  }
+}
+
+export class TdccError extends FailureCodeError {
   readonly failure: TdccFailure;
   readonly endpoint: TdccEndpointName;
   /** TDCC's own return message. It may name the person, so callers decide where it goes. */
   readonly providerMessage: string | undefined;
 
   constructor(endpoint: TdccEndpointName, failure: TdccFailure, providerMessage?: string) {
-    super(`TDCC ${endpoint} failed: ${describeFailure(failure)}`);
+    super(tdccFailureCode(endpoint, failure), `TDCC ${endpoint} failed: ${describeFailure(failure)}`);
     this.name = "TdccError";
     this.endpoint = endpoint;
     this.failure = failure;

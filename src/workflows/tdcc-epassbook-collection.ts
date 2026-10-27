@@ -4,14 +4,12 @@ import {
   tdccFundHoldingCapture,
   tdccPassbookMovementCapture,
   tdccSecuritiesHoldingCapture,
-  TdccInvestmentContractError,
   type TdccAdmittedFundAccount,
 } from "../ledger/canonical/tdcc-investment-admission.ts";
 import {
   readTdccSettlementSnapshot,
   tdccSettlementBalanceCapture,
   tdccSettlementTransactionCapture,
-  TdccSettlementContractError,
 } from "../ledger/canonical/tdcc-settlement-admission.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -20,7 +18,7 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
-import type { TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   TdccCollectionSummaryInvariantError,
   type TdccProductId,
@@ -40,9 +38,9 @@ export { TDCC_PRODUCT_IDS, type TdccProductId } from "../lib/automation/tdcc-col
 export type TdccDataClient = Pick<TdccClient, "positions" | "fundPositions" | "bankBalances" | "bankTransactions" | "tradeDetails">;
 
 /** TDCC no longer trusts this device, or none is registered for the saved sign-in identifier. */
-export class TdccDeviceRegistrationRequiredError extends Error {
+export class TdccDeviceRegistrationRequiredError extends FailureCodeError {
   constructor() {
-    super("TDCC device registration is required.");
+    super("device-registration-required", "TDCC device registration is required.");
     this.name = "TdccDeviceRegistrationRequiredError";
   }
 }
@@ -105,35 +103,6 @@ export class TdccRunSession {
       return await request(this.#client);
     }
   }
-}
-
-/** Failures that end the whole run: every later product would fail the same way. */
-export function tdccFatalCode(error: unknown): TypedWorkflowErrorCode | undefined {
-  if (error instanceof TdccCollectionSummaryInvariantError) return "workflow-failed";
-  if (error instanceof TdccDeviceRegistrationRequiredError) return "device-registration-required";
-  if (!(error instanceof TdccError)) return undefined;
-  switch (error.failure.reason) {
-    case "device-untrusted":
-      return "device-registration-required";
-    case "protocol-outdated":
-      return "provider-protocol-outdated";
-    case "session-expired":
-    case "otp-expired":
-      return "authentication-failed";
-    case "http":
-      return "source-unavailable";
-    case "rejected":
-      return error.endpoint === "login" || error.endpoint === "initialToken" ? "authentication-failed" : undefined;
-    default:
-      return undefined;
-  }
-}
-
-/** A failure confined to one product: a malformed body, broken paging, or a response that breaks its Source Contract. */
-export function tdccProductFailureCode(error: unknown): TypedWorkflowErrorCode | undefined {
-  if (error instanceof TdccSettlementContractError || error instanceof TdccInvestmentContractError) return "source-validation-failed";
-  if (error instanceof TdccError && error.failure.reason === "malformed-response") return "source-integrity-failed";
-  return undefined;
 }
 
 export type TdccProductCollection = Readonly<{
