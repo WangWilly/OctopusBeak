@@ -7,11 +7,36 @@ import {
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
 } from "../sinopac-captcha.ts";
-import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../post-captcha.ts";
 import {
+  POST_CAPTCHA_INPUT_SELECTOR,
+  POST_CAPTCHA_INPUT_SEMANTIC_ID,
+  POST_CAPTCHA_STAGE_ID,
+} from "../post-captcha.ts";
+import {
+  YUANTA_TRADE_AUDIO_PATH,
+  YUANTA_TRADE_AUDIO_SEMANTIC_ID,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
+  YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
 } from "../yuanta-trade-captcha.ts";
+import {
+  YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
+  YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  YUANTA_BANK_MAIN_FRAME_NAME,
+} from "../yuanta-captcha.ts";
+import {
+  FUBON_CAPTCHA_IMAGE_SELECTOR,
+  FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+  FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+  FUBON_CAPTCHA_NATURAL_HEIGHT,
+  FUBON_CAPTCHA_NATURAL_WIDTH,
+  FUBON_LOGIN_FRAME_NAME,
+} from "../fubon-captcha.ts";
 import {
   automationViewer,
   type PageForRun,
@@ -27,17 +52,6 @@ import {
   createProviderVerificationCapabilityRegistry,
   type ProviderVerificationCapabilityOwner,
 } from "./provider-verification-capabilities.ts";
-
-const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
-const YUANTA_TRADE_AUDIO_SEMANTIC_ID = "yuanta-trade.login.audio-challenge";
-const YUANTA_TRADE_AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
-export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
-export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
-const FUBON_CAPTCHA_INPUT_SEMANTIC_ID = "fubon.login.captcha-input";
-const FUBON_CAPTCHA_IMAGE_SEMANTIC_ID = "fubon.login.captcha-image";
-const FUBON_CAPTCHA_FRAME_NAME = "txnFrame";
-const FUBON_CAPTCHA_NATURAL_WIDTH = 158;
-const FUBON_CAPTCHA_NATURAL_HEIGHT = 30;
 
 type YuantaCompletionProbe = {
   checkboxChecked: boolean;
@@ -58,17 +72,10 @@ type ProviderVerificationAdapter = {
   confirmClick?(session: string, contract: HumanAssistanceContract): Promise<void>;
 };
 
-export type ProviderVerificationPageRunner = <T>(
+type ProviderVerificationPageRunner = <T>(
   session: string,
   action: (page: ViewerPageAccess) => Promise<T>,
 ) => Promise<T>;
-
-export type ProviderVerificationInputForwarder = (
-  session: string,
-  rawInput: unknown,
-  contract: HumanAssistanceContract,
-  targetInputHandler?: ViewerTargetInputHandler,
-) => Promise<unknown>;
 
 export type ProviderVerificationHost = {
   captureChallengeImage(
@@ -112,19 +119,6 @@ export type ProviderVerificationHost = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
 };
-
-/**
- * The App reaches each run's page through the page lookup. Checks may run
- * provider adapters against their own page runner instead; without an input
- * forwarder such a host finds no page to send input to.
- */
-export type ProviderVerificationDependencies =
-  | Readonly<{ pageForRun: PageForRun; withPage?: undefined; sendInput?: undefined }>
-  | Readonly<{
-    pageForRun?: undefined;
-    withPage: ProviderVerificationPageRunner;
-    sendInput?: ProviderVerificationInputForwarder;
-  }>;
 
 async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
   const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
@@ -170,8 +164,8 @@ function sinopacCaptchaContract(contract: HumanAssistanceContract) {
 
 function yuantaBankCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
-    (target) => target.semanticId === "yuanta-bank.login.captcha-input",
-  ) && contract.challengeImageRegion?.semanticId === "yuanta-bank.login.captcha-image";
+    (target) => target.semanticId === YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  ) && contract.challengeImageRegion?.semanticId === YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID;
 }
 
 function yuantaTradeAudioContract(contract: HumanAssistanceContract) {
@@ -190,7 +184,7 @@ async function resolveFubonCaptchaImage(
 ): Promise<CaptchaImageDescriptor | null> {
   let frame;
   try {
-    frame = page.frame?.(FUBON_CAPTCHA_FRAME_NAME);
+    frame = page.frame?.(FUBON_LOGIN_FRAME_NAME);
   } catch {
     return null;
   }
@@ -221,7 +215,7 @@ async function resolveYuantaCaptchaImage(
 ): Promise<CaptchaImageDescriptor | null> {
   let frame;
   try {
-    frame = page.frame?.("main") ?? page.mainFrame?.();
+    frame = page.frame?.(YUANTA_BANK_MAIN_FRAME_NAME) ?? page.mainFrame?.();
   } catch {
     return null;
   }
@@ -277,13 +271,13 @@ function yuantaCompletionSatisfied(
   semanticId: string,
   probe: YuantaCompletionProbe,
 ) {
-  if (semanticId === "yuanta-trade.login.captcha-checkbox") {
+  if (semanticId === YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID) {
     return probe.checkboxChecked || probe.challengeVisible;
   }
-  if (semanticId === "yuanta-trade.login.challenge-control") {
+  if (semanticId === YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID) {
     return !probe.challengeVisible;
   }
-  if (semanticId === "yuanta-trade.login.challenge-submit") return !probe.challengeVisible;
+  if (semanticId === YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID) return !probe.challengeVisible;
   return false;
 }
 
@@ -328,21 +322,21 @@ function createAdapters(
     naturalHeight: FUBON_CAPTCHA_NATURAL_HEIGHT,
   });
   const sinopacSourceOwner = createLoadedCaptchaSourceOwner({
-    id: "sinopac.login.captcha-image",
+    id: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
     withPage,
     resolveImage: resolveSinopacCaptchaImage,
     naturalWidth: SINOPAC_CAPTCHA_NATURAL_WIDTH,
     naturalHeight: SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   });
   const yuantaSourceOwner = createLoadedCaptchaSourceOwner({
-    id: "yuanta-bank.login.captcha-image",
+    id: YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
     withPage,
     resolveImage: resolveYuantaCaptchaImage,
   });
   return [
     {
       id: "post",
-      owns: contract => contract.stageId === "ipost-login-captcha"
+      owns: contract => contract.stageId === POST_CAPTCHA_STAGE_ID
         && contract.targets.some(target => target.semanticId === POST_CAPTCHA_INPUT_SEMANTIC_ID),
       inspectCompletion: async () => false,
       handleInput: async (page, operation, target) => {
@@ -410,7 +404,7 @@ function createAdapters(
       inspectCompletion: (session, contract) => inspectYuantaCompletion(withPage, session, contract),
       async confirmClick(session, contract) {
         if (
-          contract.stageId === "yuanta-trade-captcha-checkbox"
+          contract.stageId === YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID
           && !await inspectYuantaCompletion(withPage, session, contract)
         ) {
           throw new Error("Yuanta Trade CAPTCHA checkbox did not reach its verified state.");
@@ -420,12 +414,13 @@ function createAdapters(
   ];
 }
 
+/** Each run's provider adapters, reaching its page only through the page lookup. */
 export function createProviderVerificationHost(
-  dependencies: ProviderVerificationDependencies,
+  dependencies: Readonly<{ pageForRun: PageForRun }>,
 ): ProviderVerificationHost {
-  const viewer = automationViewer(dependencies.pageForRun ?? (() => null));
-  const withPage = dependencies.withPage ?? viewer.withPage;
-  const forwardInput = dependencies.sendInput ?? viewer.sendHumanVerificationInput;
+  const viewer = automationViewer(dependencies.pageForRun);
+  const withPage = viewer.withPage;
+  const forwardInput = viewer.sendHumanVerificationInput;
   const adapters = createAdapters(withPage);
   const capabilityRegistry = createProviderVerificationCapabilityRegistry(
     adapters.flatMap((adapter) => adapter.capabilityOwner ? [adapter.capabilityOwner] : []),

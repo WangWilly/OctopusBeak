@@ -13,6 +13,13 @@ import {
 } from "./verification-routing.ts";
 import type { PageForRun } from "./automation-viewer.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
+import {
+  YUANTA_TRADE_AUDIO_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
+  YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
+  YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
+} from "../yuanta-trade-captcha.ts";
 
 export type YuantaTradeAppAssistanceDependencies = Readonly<{
   settings: AutomationSettingsFile;
@@ -37,22 +44,22 @@ function targetWithSemanticId(
 function isSupportedAutomaticStage(contract: HumanAssistanceContractInput) {
   if (contract.stageId === "yuanta-trade-audio-verification") {
     return contract.challengeKind === "audio-captcha"
-      && contract.challengeAudioSource?.semanticId === "yuanta-trade.login.audio-challenge"
+      && contract.challengeAudioSource?.semanticId === YUANTA_TRADE_AUDIO_SEMANTIC_ID
       && targetWithSemanticId(contract, "yuanta-trade.login.audio-code-input")?.modes.includes("type") === true;
   }
-  if (contract.stageId === "yuanta-trade-captcha-checkbox") {
+  if (contract.stageId === YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID) {
     return contract.challengeKind === "checkbox"
-      && targetWithSemanticId(contract, "yuanta-trade.login.captcha-checkbox")?.modes.includes("click") === true;
+      && targetWithSemanticId(contract, YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID)?.modes.includes("click") === true;
   }
   if (contract.stageId === "yuanta-trade-challenge") {
     const submit = contract.targets.find((target) => (
       target.id === "challenge-submit"
-      && target.semanticId === "yuanta-trade.login.challenge-submit"
+      && target.semanticId === YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID
       && target.modes.includes("click")
     ));
     return contract.challengeKind === "image-selection"
       && contract.challengeImageRegion?.semanticId === "yuanta-trade.login.challenge-image"
-      && targetWithSemanticId(contract, "yuanta-trade.login.challenge-control")?.modes.includes("click") === true
+      && targetWithSemanticId(contract, YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID)?.modes.includes("click") === true
       && submit !== undefined;
   }
   return false;

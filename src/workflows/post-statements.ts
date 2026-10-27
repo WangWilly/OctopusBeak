@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../lib/automation/post-captcha.ts";
+import {
+  POST_CAPTCHA_INPUT_SELECTOR,
+  POST_CAPTCHA_INPUT_SEMANTIC_ID,
+  POST_CAPTCHA_STAGE_ID,
+} from "../lib/automation/post-captcha.ts";
 import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
 import type { ElementHandle, Locator, Page, Response } from "playwright";
 import { z } from "zod";
@@ -262,7 +266,7 @@ export function postCaptchaAssistanceStage(
 ): VerificationStage {
   const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
   return {
-    stageId: "ipost-login-captcha",
+    stageId: POST_CAPTCHA_STAGE_ID,
     title: "Enter the iPost CAPTCHA",
     targets: [
       {

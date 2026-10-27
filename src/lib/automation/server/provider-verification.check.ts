@@ -1,30 +1,55 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import type {
-  HumanAssistanceContract,
-  HumanVerificationRect,
-} from "../human-assistance.ts";
-import { normalizeHumanVerificationInput } from "./automation-viewer.ts";
+import { after, before, test } from "node:test";
+import { chromium, type Browser, type Page } from "playwright";
+import { PNG } from "pngjs";
+import type { HumanAssistanceContract, HumanVerificationRect } from "../human-assistance.ts";
+import { createProviderVerificationHost } from "./provider-verification.ts";
 import {
-  createProviderVerificationHost,
-  FUBON_CAPTCHA_IMAGE_SELECTOR,
-  type ProviderVerificationPageRunner,
-} from "./provider-verification.ts";
+  routeVerificationActor,
+  type VerificationRoutingOutcome,
+} from "./verification-routing.ts";
 import {
-  SINOPAC_CAPTCHA_IMAGE_SELECTOR,
-  SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
-  SINOPAC_CAPTCHA_INPUT_SELECTOR,
-  SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
-} from "../sinopac-captcha.ts";
+  PROVIDER_ORIGIN,
+  openSyntheticPage,
+  pageForRunOf,
+  pngDataUrl,
+  scriptedSolver,
+  solidPng,
+  type SyntheticRoute,
+} from "./verification-page-check-support.ts";
+import { SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID, SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID } from "../sinopac-captcha.ts";
+import { POST_CAPTCHA_INPUT_SEMANTIC_ID, POST_CAPTCHA_STAGE_ID } from "../post-captcha.ts";
 import {
-  YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
-  YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+  FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+  FUBON_LOGIN_FRAME_NAME,
+} from "../fubon-captcha.ts";
+import {
+  YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
+  YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  YUANTA_BANK_MAIN_FRAME_NAME,
+} from "../yuanta-captcha.ts";
+import {
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
 } from "../yuanta-trade-captcha.ts";
 
-const targetRect: HumanVerificationRect = { x: 10, y: 20, width: 100, height: 40 };
+const RUN = "provider-run";
+const inputRect: HumanVerificationRect = { x: 20, y: 80, width: 140, height: 24 };
+
+const at = (rect: HumanVerificationRect) =>
+  `position:absolute;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;margin:0;box-sizing:border-box`;
+
+/** The provider's sign-in form posts here; the check reads what it submitted. */
+const loginForm = (body: string) =>
+  `<body style="margin:0"><form method="post" action="/submit">${body}<button id="submit" style="position:absolute;left:20px;top:140px">Sign in</button></form></body>`;
+
+/** A full-page frame at the origin, so frame and page coordinates agree. */
+const framedPage = (name: string, path: string) =>
+  `<body style="margin:0"><iframe name="${name}" src="${path}" style="position:absolute;left:0;top:0;width:700px;height:400px;border:0"></iframe></body>`;
 
 function contract(
-  semanticId: string,
+  inputSemanticId: string,
   overrides: Partial<HumanAssistanceContract> = {},
 ): HumanAssistanceContract {
   return {
@@ -33,615 +58,318 @@ function contract(
     stageId: "verification",
     title: "Complete verification",
     targets: [{
-      id: "verification-target",
-      label: "Verification target",
-      semanticId,
+      id: "captcha-input",
+      label: "CAPTCHA input",
+      semanticId: inputSemanticId,
       modes: ["click", "type"],
-      rect: targetRect,
+      rect: inputRect,
     }],
     contextRegions: [],
-    completion: {
-      mode: "inline",
-      targetIds: ["verification-target"],
-      status: "pending",
-    },
-    focus: { targetId: "verification-target", contextRegionIds: [] },
+    completion: { mode: "inline", targetIds: ["captcha-input"], status: "pending" },
+    focus: { targetId: "captcha-input", contextRegionIds: [] },
     ...overrides,
   };
 }
 
-type FakeLocatorOptions = {
-  count?: number;
-  visible?: boolean;
-  rect?: HumanVerificationRect | null;
-  node?: unknown;
-  child?: (selector: string) => FakeLocator;
-  onClick?: () => void;
-  onFill?: (value: string) => void;
-  inputValue?: () => string;
-  evaluateResult?: unknown;
-};
-
-type FakeLocator = {
-  first(): FakeLocator;
-  count(): Promise<number>;
-  isVisible(): Promise<boolean>;
-  boundingBox(): Promise<HumanVerificationRect | null>;
-  locator(selector: string): FakeLocator;
-  evaluate(callback: (node: unknown) => unknown): Promise<unknown>;
-  click(): Promise<void>;
-  fill(value: string): Promise<void>;
-  inputValue(): Promise<string>;
-};
-
-function fakeLocator(options: FakeLocatorOptions = {}): FakeLocator {
-  let filledValue = "";
-  const locator: FakeLocator = {
-    first: () => locator,
-    count: async () => options.count ?? 1,
-    isVisible: async () => options.visible ?? true,
-    boundingBox: async () => options.rect ?? targetRect,
-    locator: (selector) => options.child?.(selector) ?? locator,
-    evaluate: async (callback) => options.evaluateResult ?? callback(options.node),
-    click: async () => options.onClick?.(),
-    fill: async (value) => {
-      filledValue = value;
-      options.onFill?.(value);
-    },
-    inputValue: async () => options.inputValue?.() ?? filledValue,
-  };
-  return locator;
-}
-
-function fakePage(locators: Record<string, FakeLocator>) {
-  return {
-    locator(selector: string) {
-      const locator = locators[selector];
-      assert.ok(locator, `unexpected selector: ${selector}`);
-      return locator;
-    },
-  } as never;
-}
-
-function pageRunner(page: never): ProviderVerificationPageRunner {
-  return async (_session, action) => action(page);
-}
-
-function yuantaBankCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
-  return contract("yuanta-bank.login.captcha-input", {
+function captchaContract(
+  inputSemanticId: string,
+  imageSemanticId: string,
+  imageRect: HumanVerificationRect,
+  overrides: Partial<HumanAssistanceContract> = {},
+) {
+  return contract(inputSemanticId, {
     challengeKind: "text-captcha",
     charset: "digits",
     expectedAnswerLength: 6,
-    challengeImageRegion: {
-      id: "captcha-image",
-      label: "CAPTCHA image",
-      semanticId: "yuanta-bank.login.captcha-image",
-      rect: { x: 10, y: 20, width: 96, height: 28 },
-    },
+    challengeImageRegion: { id: "captcha-image", label: "CAPTCHA image", semanticId: imageSemanticId, rect: imageRect },
     ...overrides,
   });
 }
 
-function sinopacCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
-  return contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, {
-    challengeKind: "text-captcha",
-    charset: "digits",
-    expectedAnswerLength: 6,
-    challengeImageRegion: {
-      id: "captcha-image",
-      label: "CAPTCHA image",
-      semanticId: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
-      rect: { x: 150, y: 60, width: 100, height: 35 },
-    },
-    ...overrides,
+let browser: Browser;
+before(async () => { browser = await chromium.launch({ headless: true }); });
+after(async () => { await browser.close(); });
+
+type ProviderPage = Readonly<{ page: Page; requests: string[] }>;
+
+/** Open a provider page and record every provider request it makes after loading. */
+async function openProviderPage(html: string, routes: readonly SyntheticRoute[] = []): Promise<ProviderPage> {
+  const page = await openSyntheticPage(browser, html, routes);
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().startsWith(PROVIDER_ORIGIN)) requests.push(new URL(request.url()).pathname);
   });
+  return { page, requests };
 }
 
-function fubonCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
-  return contract("fubon.login.captcha-input", {
-    challengeKind: "text-captcha",
-    charset: "digits",
-    expectedAnswerLength: 6,
-    challengeImageRegion: {
-      id: "captcha-image",
-      label: "CAPTCHA image",
-      semanticId: "fubon.login.captcha-image",
-      rect: { x: 10, y: 20, width: 158, height: 30 },
-    },
-    ...overrides,
-  });
-}
-
-function fubonCaptchaPage(options: {
-  source: unknown;
-  rect?: HumanVerificationRect;
-  screenshot?: (clip: HumanVerificationRect) => Buffer;
-}) {
-  const image = fakeLocator({
-    visible: true,
-    rect: options.rect ?? { x: 10, y: 20, width: 158, height: 30 },
-    evaluateResult: options.source,
-  });
-  const frame = {
-    locator(selector: string) {
-      assert.equal(selector, FUBON_CAPTCHA_IMAGE_SELECTOR);
-      return image;
-    },
-    url: () => "https://ebank.taipeifubon.com.tw/B2C/txn/txnFrame.faces",
-    name: () => "txnFrame",
-  };
-  const screenshotCalls: HumanVerificationRect[] = [];
-  const page = {
-    locator: () => fakeLocator(),
-    frame: (name: string) => name === "txnFrame" ? frame : null,
-    url: () => "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",
-    screenshot: async ({ clip }: { clip: HumanVerificationRect }) => {
-      screenshotCalls.push(clip);
-      return options.screenshot?.(clip) ?? Buffer.from("forbidden-fallback");
-    },
-  };
-  return { page, screenshotCalls };
-}
-
-function sinopacCaptchaPage(options: {
-  source: unknown;
-  rect?: HumanVerificationRect;
-  screenshot?: (clip: HumanVerificationRect) => Buffer;
-}) {
-  const image = fakeLocator({
-    visible: true,
-    rect: options.rect ?? { x: 150, y: 60, width: 100, height: 35 },
-    evaluateResult: options.source,
-  });
-  const screenshotCalls: HumanVerificationRect[] = [];
-  const page = {
-    locator(selector: string) {
-      if (selector === SINOPAC_CAPTCHA_IMAGE_SELECTOR) return image;
-      if (selector === SINOPAC_CAPTCHA_INPUT_SELECTOR) return fakeLocator();
-      throw new Error(`unexpected selector: ${selector}`);
-    },
-    url: () => "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx",
-    screenshot: async ({ clip }: { clip: HumanVerificationRect }) => {
-      screenshotCalls.push(clip);
-      return options.screenshot?.(clip) ?? Buffer.from("forbidden-fallback");
-    },
-  };
-  return { page, screenshotCalls };
-}
-
-function yuantaCaptchaPage(options: {
-  source: unknown;
-  rect?: HumanVerificationRect;
-  screenshot?: (clip: HumanVerificationRect) => Buffer;
-  pageUrl?: string;
-  frameUrl?: string;
-}) {
-  const image = fakeLocator({
-    visible: true,
-    rect: options.rect ?? { x: 10, y: 20, width: 96, height: 28 },
-    evaluateResult: options.source,
-  });
-  const frame = {
-    locator(selector: string) {
-      assert.equal(selector, 'img[src*="GOTP"]:visible');
-      return image;
-    },
-    url: () => options.frameUrl ?? "https://ebank.yuantabank.com.tw/nib/main.jsp",
-    name: () => "main",
-  };
-  const screenshotCalls: HumanVerificationRect[] = [];
-  const page = {
-    locator: () => fakeLocator(),
-    mainFrame: () => frame,
-    frame: (name: string) => name === "main" ? frame : null,
-    url: () => options.pageUrl ?? "https://ebank.yuantabank.com.tw/nib/ibanc.jsp",
-    screenshot: async ({ clip }: { clip: HumanVerificationRect }) => {
-      screenshotCalls.push(clip);
-      return options.screenshot?.(clip) ?? Buffer.from("fallback-screenshot");
-    },
-  };
-  return { page, screenshotCalls };
-}
-
-class FakeInputElement {
-  checked = true;
-  classList = { contains: () => false };
-  parentElement = null;
-
-  getAttribute(name: string) {
-    return name === "aria-checked" ? "true" : null;
-  }
-}
-
-async function withFakeInputElement<T>(action: () => Promise<T>) {
-  const globals = globalThis as unknown as Record<string, unknown>;
-  const previous = globals.HTMLInputElement;
-  globals.HTMLInputElement = FakeInputElement;
+async function withProviderPage<T>(
+  html: string,
+  routes: readonly SyntheticRoute[],
+  action: (provider: ProviderPage) => Promise<T>,
+) {
+  const provider = await openProviderPage(html, routes);
   try {
-    return await action();
+    return await action(provider);
   } finally {
-    if (previous === undefined) delete globals.HTMLInputElement;
-    else globals.HTMLInputElement = previous;
+    await provider.page.close();
   }
 }
 
-test("SinoPac adapter owns selector-backed click and fill operations", async () => {
-  const clicks: string[] = [];
-  const fills: string[] = [];
-  const inputLocator = fakeLocator({
-    onClick: () => clicks.push("click"),
-    onFill: (value) => fills.push(value),
-  });
-  const withPage = pageRunner(fakePage({ [SINOPAC_CAPTCHA_INPUT_SELECTOR]: inputLocator }));
-  const host = createProviderVerificationHost({
-    withPage,
-    sendInput: async (session, rawInput, verificationContract, handler) => {
-      const normalized = normalizeHumanVerificationInput(rawInput, verificationContract);
-      const record = rawInput as Record<string, unknown>;
-      const target = verificationContract.targets.find((candidate) => candidate.id === record.targetId);
-      assert.ok(target && handler);
-      return withPage(session, (page) => handler(page, normalized, target));
-    },
-  });
-  const verificationContract = contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID);
-  await host.sendInput("session-sinopac", {
-    type: "click",
-    x: 20,
-    y: 30,
-    targetId: "verification-target",
-    contractVersion: verificationContract.version,
-  }, verificationContract);
-  await host.sendInput("session-sinopac", {
-    type: "type",
-    text: "1234",
-    targetId: "verification-target",
-    contractVersion: verificationContract.version,
-  }, verificationContract);
-  assert.deepEqual(clicks, ["click"]);
-  assert.deepEqual(fills, ["1234"]);
-});
+function pngSize(image: Buffer) {
+  const png = PNG.sync.read(image);
+  return { width: png.width, height: png.height };
+}
 
-test("SinoPac selector-backed fill fails when the field does not retain the answer", async () => {
-  const inputLocator = fakeLocator({ inputValue: () => "" });
-  const withPage = pageRunner(fakePage({ [SINOPAC_CAPTCHA_INPUT_SELECTOR]: inputLocator }));
-  const host = createProviderVerificationHost({
-    withPage,
-    sendInput: async (session, rawInput, verificationContract, handler) => {
-      const normalized = normalizeHumanVerificationInput(rawInput, verificationContract);
-      const target = verificationContract.targets[0];
-      assert.ok(target && handler);
-      return withPage(session, (page) => handler(page, normalized, target));
-    },
+/**
+ * Route one contract through the App's verification route against `page`
+ * with a solver that accepts `answer`; resuming clicks the provider's own
+ * submit control and returns what the form posted.
+ */
+async function solveAndSubmit(
+  page: Page,
+  verification: HumanAssistanceContract,
+  answer: string,
+  submitFrame?: string,
+) {
+  let submitted: URLSearchParams | undefined;
+  await page.route(`${PROVIDER_ORIGIN}/submit`, async (route) => {
+    submitted = new URLSearchParams(route.request().postData() ?? "");
+    await route.fulfill({ contentType: "text/html", body: "<p>submitted</p>" });
   });
-  const verificationContract = contract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID);
-  await assert.rejects(
-    host.injectAnswer("session-sinopac", verificationContract, "120987"),
-    (error: unknown) =>
-      error instanceof Error &&
-      error.message === "SinoPac CAPTCHA input did not retain the solver answer.",
-  );
-});
-
-test("Post solver fills its semantic CAPTCHA field despite stale coordinates over the user-code field", async () => {
-  const fills: string[] = [];
-  const captcha = fakeLocator({ onFill: value => fills.push(value) });
-  const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': captcha }));
-  const host = createProviderVerificationHost({
-    withPage,
-    sendInput: async (session, rawInput, verificationContract, handler) => {
-      const input = normalizeHumanVerificationInput(rawInput, verificationContract);
-      assert.ok(handler, "Post requires semantic input ownership, never coordinate fallback");
-      return withPage(session, page => handler(page, input, verificationContract.targets[0]!));
-    },
-  });
-  const verification = contract("post.login.captcha-input", { stageId: "ipost-login-captcha" });
-  await host.injectAnswer("post-session", verification, "1234");
-  assert.deepEqual(fills, ["1234"]);
-});
-
-test("Post input ownership rejects missing, ambiguous and non-retaining CAPTCHA fields", async () => {
-  for (const options of [{ count: 0 }, { count: 2 }, { inputValue: () => "" }]) {
-    const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': fakeLocator(options) }));
-    const host = createProviderVerificationHost({
-      withPage,
-      sendInput: async (session, rawInput, verificationContract, handler) => {
-        assert.ok(handler);
-        return withPage(session, page => handler(page, normalizeHumanVerificationInput(rawInput, verificationContract), verificationContract.targets[0]!));
+  const solver = scriptedSolver(() => ({ answer, confidence: 0.99 }));
+  const failures: string[] = [];
+  const outcome: VerificationRoutingOutcome = await routeVerificationActor({
+    contract: verification,
+    taskRunId: RUN,
+    confidenceThreshold: 0.9,
+    seams: {
+      pageForRun: pageForRunOf(RUN, page),
+      solver,
+      resume: async () => {
+        const scope = submitFrame ? page.frame({ name: submitFrame })! : page;
+        await Promise.all([page.waitForResponse(`${PROVIDER_ORIGIN}/submit`), scope.click("#submit")]);
       },
-    });
-    await assert.rejects(host.injectAnswer("post-session", contract("post.login.captcha-input", { stageId: "ipost-login-captcha" }), "1234"), /Post CAPTCHA/u);
-  }
-});
-
-test("Fubon source capture uses loaded 158 by 30 DOM pixels", async () => {
-  const naturalPixels = Buffer.from("fubon-natural-158x30");
-  const source = {
-    dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
-    sourceMarker: "fubon-image-v1",
-    frameMarker: "fubon-frame-v1",
-    naturalWidth: 158,
-    naturalHeight: 30,
-  };
-  const { page, screenshotCalls } = fubonCaptchaPage({ source });
-  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-
-  assert.equal(host.handlesChallengeImage(fubonCaptchaContract()), true);
-  assert.deepEqual(
-    await host.captureChallengeImage("session-fubon-source", fubonCaptchaContract()),
-    naturalPixels,
-  );
-  assert.deepEqual(screenshotCalls, []);
-});
-
-test("Fubon DOM capture fails closed without screenshot or URL refetch", async () => {
-  let refetches = 0;
-  for (const source of [
-    {
-      dataUrl: null,
-      sourceMarker: "fubon-image-v1",
-      frameMarker: "fubon-frame-v1",
-      naturalWidth: 158,
-      naturalHeight: 30,
+      postSubmitOutcome: async () => "none",
+      finalizeFailed: (message) => { failures.push(message); },
+      onChallengeCaptured: () => {},
     },
-    {
-      dataUrl: `data:image/png;base64,${Buffer.from("wrong-size").toString("base64")}`,
-      sourceMarker: "fubon-image-v1",
-      frameMarker: "fubon-frame-v1",
-      naturalWidth: 157,
-      naturalHeight: 30,
-    },
-  ]) {
-    const { page, screenshotCalls } = fubonCaptchaPage({
-      source,
-      screenshot: () => {
-        refetches += 1;
-        return Buffer.from("forbidden-fallback");
-      },
-    });
-    (page as unknown as { request?: () => never }).request = () => {
-      refetches += 1;
-      throw new Error("CAPTCHA URL must not be refetched.");
-    };
-    const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-    assert.equal(
-      await host.captureChallengeImage("session-fubon-unsupported", fubonCaptchaContract()),
-      null,
+  });
+  return { outcome, submitted, solver, failures };
+}
+
+const SINOPAC_IMAGE_RECT = { x: 200, y: 20, width: 100, height: 35 };
+
+function sinopacPage(options: { naturalWidth?: number; naturalHeight?: number; inputAttributes?: string } = {}) {
+  return loginForm(`
+    <img id="imgCode" src="${pngDataUrl(options.naturalWidth ?? 120, options.naturalHeight ?? 40)}" style="${at(SINOPAC_IMAGE_RECT)}">
+    <input id="ctl00_sino_keyword3" name="code" ${options.inputAttributes ?? ""} style="${at(inputRect)}">`);
+}
+
+const sinopacContract = () =>
+  captchaContract(SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID, SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID, SINOPAC_IMAGE_RECT, {
+    stageId: "sinopac-login-captcha",
+  });
+
+test("SinoPac captures natural CAPTCHA pixels, fills its declared field and submits the answer", () =>
+  withProviderPage(sinopacPage(), [], async ({ page }) => {
+    const result = await solveAndSubmit(page, sinopacContract(), "120987");
+    assert.deepEqual(result.outcome, { kind: "resumed" });
+    assert.deepEqual(result.failures, []);
+    assert.deepEqual(pngSize(result.solver.inputs[0]!.image!), { width: 120, height: 40 }, "never the 100x35 CSS box");
+    assert.equal(result.submitted?.get("code"), "120987");
+  }));
+
+test("SinoPac refuses a CAPTCHA image outside its calibrated natural size", () =>
+  withProviderPage(sinopacPage({ naturalWidth: 100, naturalHeight: 35 }), [], async ({ page }) => {
+    const result = await solveAndSubmit(page, sinopacContract(), "120987");
+    assert.deepEqual(result.outcome, { kind: "failed" });
+    assert.deepEqual(result.failures, ["Verification challenge image capture failed."]);
+    assert.equal(result.solver.inputs.length, 0);
+    assert.equal(result.submitted, undefined);
+  }));
+
+test("SinoPac fails the answer when its field does not retain it", () =>
+  withProviderPage(sinopacPage({ inputAttributes: `oninput="this.value=''"` }), [], async ({ page }) => {
+    const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+    await assert.rejects(
+      host.injectAnswer(RUN, sinopacContract(), "120987"),
+      /SinoPac CAPTCHA input did not retain the solver answer\./u,
     );
-    assert.deepEqual(screenshotCalls, []);
-  }
-  assert.equal(refetches, 0);
-});
+  }));
 
-test("Fubon source fingerprint rejects changed DOM pixels", async () => {
-  let version = 1;
-  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
-    const pixels = Buffer.from(`fubon-natural-v${version}`);
-    const source = {
-      dataUrl: `data:image/png;base64,${pixels.toString("base64")}`,
-      sourceMarker: `fubon-image-v${version}`,
-      frameMarker: "fubon-frame-v1",
-      naturalWidth: 158,
-      naturalHeight: 30,
-    };
-    const { page } = fubonCaptchaPage({ source });
-    const result = await action(page as never);
-    version += 1;
-    return result;
-  };
-  const host = createProviderVerificationHost({ withPage });
+test("SinoPac freshness rejects a CAPTCHA replaced after capture", () =>
+  withProviderPage(sinopacPage(), [], async ({ page }) => {
+    const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+    assert.ok(await host.captureChallengeImage(RUN, sinopacContract()));
+    await page.evaluate((next) => {
+      const image = document.getElementById("imgCode") as HTMLImageElement;
+      return new Promise((resolve) => { image.onload = resolve; image.src = next; });
+    }, pngDataUrl(120, 40, 200));
+    assert.equal(await host.isChallengeImageCurrent(RUN, sinopacContract()), false);
+  }));
 
-  assert.deepEqual(
-    await host.captureChallengeImage("session-fubon-stale", fubonCaptchaContract()),
-    Buffer.from("fubon-natural-v1"),
-  );
-  assert.equal(
-    await host.isChallengeImageCurrent("session-fubon-stale", fubonCaptchaContract()),
-    false,
-  );
-});
+const YUANTA_IMAGE_RECT = { x: 200, y: 20, width: 96, height: 28 };
 
-test("SinoPac source capture uses calibrated natural pixels and never the CSS-sized screenshot", async () => {
-  const naturalPixels = Buffer.from("sinopac-natural-120x40");
-  const source = {
-    dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
-    sourceMarker: "sinopac-image-v1",
-    frameMarker: "sinopac-page-v1",
-    naturalWidth: 120,
-    naturalHeight: 40,
-  };
-  const { page, screenshotCalls } = sinopacCaptchaPage({ source });
-  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-  assert.equal(host.handlesChallengeImage(sinopacCaptchaContract()), true);
-  assert.deepEqual(
-    await host.captureChallengeImage("session-sinopac-source", sinopacCaptchaContract()),
-    naturalPixels,
-  );
-  assert.deepEqual(screenshotCalls, []);
-});
+const yuantaBankRoutes = (frameBody: string): SyntheticRoute[] => [
+  { path: "/main", contentType: "text/html", body: frameBody },
+  { path: "/GOTP.png", contentType: "image/png", body: solidPng(180, 50) },
+];
 
-test("SinoPac source capture fails closed for missing pixels or unsupported natural geometry", async () => {
-  for (const source of [
-    {
-      dataUrl: null,
-      sourceMarker: "sinopac-image-v1",
-      frameMarker: "sinopac-page-v1",
-      naturalWidth: 120,
-      naturalHeight: 40,
-    },
-    {
-      dataUrl: `data:image/png;base64,${Buffer.from("css-sized").toString("base64")}`,
-      sourceMarker: "sinopac-image-v1",
-      frameMarker: "sinopac-page-v1",
-      naturalWidth: 100,
-      naturalHeight: 35,
-    },
-  ]) {
-    const { page, screenshotCalls } = sinopacCaptchaPage({ source });
-    const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-    assert.equal(
-      await host.captureChallengeImage("session-sinopac-unsupported", sinopacCaptchaContract()),
-      null,
-    );
-    assert.deepEqual(screenshotCalls, []);
-  }
-});
+const yuantaBankFrame = loginForm(`
+  <img id="gotp" src="/GOTP.png" style="${at(YUANTA_IMAGE_RECT)}">
+  <input id="gcode" name="gcode" style="${at(inputRect)}">`);
 
-test("SinoPac source fingerprint rejects a changed CAPTCHA before answer injection", async () => {
-  let version = 1;
-  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
-    const pixels = Buffer.from(`sinopac-natural-v${version}`);
-    const source = {
-      dataUrl: `data:image/png;base64,${pixels.toString("base64")}`,
-      sourceMarker: `sinopac-image-v${version}`,
-      frameMarker: "sinopac-page-v1",
-      naturalWidth: 120,
-      naturalHeight: 40,
-    };
-    const { page } = sinopacCaptchaPage({ source });
-    const result = await action(page as never);
-    version += 1;
-    return result;
-  };
-  const host = createProviderVerificationHost({ withPage });
-  const contractValue = sinopacCaptchaContract();
-  assert.deepEqual(
-    await host.captureChallengeImage("session-sinopac-stale", contractValue),
-    Buffer.from("sinopac-natural-v1"),
-  );
-  assert.equal(
-    await host.isChallengeImageCurrent("session-sinopac-stale", contractValue),
-    false,
-  );
-});
-
-test("Yuanta source capture uses loaded natural pixels instead of the CSS-sized rectangle", async () => {
-  const naturalPixels = Buffer.from("yuanta-natural-180x50");
-  const source = {
-    dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
-    sourceMarker: "yuanta-image-v1",
-    frameMarker: "frame-v1",
-    naturalWidth: 180,
-    naturalHeight: 50,
-  };
-  const { page, screenshotCalls } = yuantaCaptchaPage({
-    source,
-    rect: { x: 10, y: 20, width: 96, height: 28 },
+const yuantaBankContract = () =>
+  captchaContract(YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID, YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID, YUANTA_IMAGE_RECT, {
+    stageId: "yuanta-bank-login-captcha",
   });
-  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-  const image = await host.captureChallengeImage("session-yuanta-source", yuantaBankCaptchaContract());
-  assert.deepEqual(image, naturalPixels);
-  assert.deepEqual(screenshotCalls, []);
+
+test("Yuanta Bank captures the main frame's GOTP image at natural size and submits the typed answer", () =>
+  withProviderPage(framedPage(YUANTA_BANK_MAIN_FRAME_NAME, "/main"), yuantaBankRoutes(yuantaBankFrame), async ({ page, requests }) => {
+    const result = await solveAndSubmit(page, yuantaBankContract(), "654321", YUANTA_BANK_MAIN_FRAME_NAME);
+    assert.deepEqual(result.outcome, { kind: "resumed" });
+    assert.deepEqual(pngSize(result.solver.inputs[0]!.image!), { width: 180, height: 50 });
+    assert.equal(result.submitted?.get("gcode"), "654321");
+    assert.equal(requests.filter((path) => path === "/GOTP.png").length, 0, "capture never refetches the CAPTCHA URL");
+  }));
+
+test("Yuanta Bank freshness rejects a moved image and a reloaded frame", () =>
+  withProviderPage(framedPage(YUANTA_BANK_MAIN_FRAME_NAME, "/main"), yuantaBankRoutes(yuantaBankFrame), async ({ page }) => {
+    const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+    const frame = () => page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME })!;
+
+    assert.ok(await host.captureChallengeImage(RUN, yuantaBankContract()));
+    await frame().evaluate(() => { document.getElementById("gotp")!.style.left = "240px"; });
+    assert.equal(await host.isChallengeImageCurrent(RUN, yuantaBankContract()), false);
+
+    assert.ok(await host.captureChallengeImage(RUN, yuantaBankContract()));
+    await frame().evaluate(() => location.reload());
+    await frame().waitForSelector("#gotp");
+    await frame().waitForFunction(() => (document.getElementById("gotp") as HTMLImageElement).complete);
+    assert.equal(await host.isChallengeImageCurrent(RUN, yuantaBankContract()), false);
+  }));
+
+test("a capture that never happened is never current", async () => {
+  const host = createProviderVerificationHost({ pageForRun: () => null });
+  assert.equal(await host.isChallengeImageCurrent("session-without-capture", yuantaBankContract()), false);
 });
 
-test("Yuanta loaded-image capture fails closed without a screenshot fallback", async () => {
-  let refetches = 0;
-  const source = {
-    dataUrl: null,
-    sourceMarker: "yuanta-image-v1",
-    frameMarker: "frame-v1",
-    naturalWidth: 180,
-    naturalHeight: 50,
-  };
-  const { page, screenshotCalls } = yuantaCaptchaPage({
-    source,
-    screenshot: () => {
-      refetches += 1;
-      return Buffer.from("forbidden-fallback");
-    },
+const FUBON_IMAGE_RECT = { x: 200, y: 20, width: 158, height: 30 };
+
+const fubonRoutes = (naturalWidth = 158): SyntheticRoute[] => [
+  {
+    path: "/txn",
+    contentType: "text/html",
+    body: loginForm(`
+      <img id="captcha" src="/captchaImage" style="${at(FUBON_IMAGE_RECT)}">
+      <input id="m1_userCaptcha" name="captcha" style="${at(inputRect)}">`),
+  },
+  { path: "/captchaImage", contentType: "image/png", body: solidPng(naturalWidth, 30) },
+];
+
+const fubonContract = () =>
+  captchaContract(FUBON_CAPTCHA_INPUT_SEMANTIC_ID, FUBON_CAPTCHA_IMAGE_SEMANTIC_ID, FUBON_IMAGE_RECT, {
+    stageId: "fubon-login-captcha",
   });
-  (page as unknown as { request?: () => never }).request = () => {
-    refetches += 1;
-    throw new Error("CAPTCHA URL must not be refetched.");
-  };
-  const host = createProviderVerificationHost({ withPage: pageRunner(page as never) });
-  const image = await host.captureChallengeImage("session-yuanta-fallback", yuantaBankCaptchaContract());
-  assert.equal(image, null);
-  assert.equal(refetches, 0);
-  assert.deepEqual(screenshotCalls, []);
-});
 
-test("missing source captures fail freshness closed", async () => {
-  const host = createProviderVerificationHost({
-    withPage: pageRunner({ locator: () => fakeLocator() } as never),
+test("Fubon captures the login frame's 158 by 30 CAPTCHA and submits the typed answer", () =>
+  withProviderPage(framedPage(FUBON_LOGIN_FRAME_NAME, "/txn"), fubonRoutes(), async ({ page, requests }) => {
+    const result = await solveAndSubmit(page, fubonContract(), "246810", FUBON_LOGIN_FRAME_NAME);
+    assert.deepEqual(result.outcome, { kind: "resumed" });
+    assert.deepEqual(pngSize(result.solver.inputs[0]!.image!), { width: 158, height: 30 });
+    assert.equal(result.submitted?.get("captcha"), "246810");
+    assert.equal(requests.filter((path) => path === "/captchaImage").length, 0, "capture never refetches the CAPTCHA URL");
+  }));
+
+test("Fubon refuses a CAPTCHA of any other natural size without a screenshot fallback", () =>
+  withProviderPage(framedPage(FUBON_LOGIN_FRAME_NAME, "/txn"), fubonRoutes(157), async ({ page }) => {
+    const result = await solveAndSubmit(page, fubonContract(), "246810", FUBON_LOGIN_FRAME_NAME);
+    assert.deepEqual(result.outcome, { kind: "failed" });
+    assert.equal(result.solver.inputs.length, 0);
+    assert.equal(result.submitted, undefined);
+  }));
+
+test("Fubon freshness rejects changed CAPTCHA pixels", () =>
+  withProviderPage(framedPage(FUBON_LOGIN_FRAME_NAME, "/txn"), fubonRoutes(), async ({ page }) => {
+    const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+    assert.ok(await host.captureChallengeImage(RUN, fubonContract()));
+    await page.frame({ name: FUBON_LOGIN_FRAME_NAME })!.evaluate((next) => {
+      const image = document.getElementById("captcha") as HTMLImageElement;
+      return new Promise((resolve) => { image.onload = resolve; image.src = next; });
+    }, pngDataUrl(158, 30, 220));
+    assert.equal(await host.isChallengeImageCurrent(RUN, fubonContract()), false);
+  }));
+
+const userCodeRect = { x: 20, y: 40, width: 140, height: 24 };
+
+function postPage(captchaFields: string) {
+  return loginForm(`
+    <input id="user-code" name="userCode" style="${at(userCodeRect)}">
+    ${captchaFields}`);
+}
+
+/** The contract's target rectangle is stale: it now covers the user-code field. */
+const postContract = () =>
+  contract(POST_CAPTCHA_INPUT_SEMANTIC_ID, {
+    stageId: POST_CAPTCHA_STAGE_ID,
+    targets: [{ ...contract(POST_CAPTCHA_INPUT_SEMANTIC_ID).targets[0]!, rect: userCodeRect }],
   });
-  assert.equal(
-    await host.isChallengeImageCurrent("session-without-capture", yuantaBankCaptchaContract()),
-    false,
-  );
-});
 
-test("Yuanta source fingerprint rejects a replaced frame or changed image before injection", async () => {
-  const naturalPixels = Buffer.from("yuanta-natural-180x50");
-  let frameVersion = 1;
-  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
-    const source = {
-      dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
-      sourceMarker: `yuanta-image-v${frameVersion}`,
-      frameMarker: `frame-v${frameVersion}`,
-      naturalWidth: 180,
-      naturalHeight: 50,
-    };
-    const { page } = yuantaCaptchaPage({ source });
-    const result = await action(page as never);
-    frameVersion += 1;
-    return result;
-  };
-  const host = createProviderVerificationHost({ withPage });
-  const contractValue = yuantaBankCaptchaContract();
-  assert.deepEqual(
-    await host.captureChallengeImage("session-yuanta-stale", contractValue),
-    naturalPixels,
-  );
-  assert.equal(await host.isChallengeImageCurrent("session-yuanta-stale", contractValue), false);
-});
+test("Post fills its CAPTCHA field by name despite stale coordinates over the user-code field", () =>
+  withProviderPage(postPage(`<input name="captcha" style="${at(inputRect)}">`), [], async ({ page }) => {
+    const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+    await host.injectAnswer(RUN, postContract(), "1234");
+    assert.equal(await page.inputValue('input[name="captcha"]'), "1234");
+    assert.equal(await page.inputValue("#user-code"), "");
+  }));
 
-test("Yuanta source fingerprint rejects a stale live rectangle even when image bytes are unchanged", async () => {
-  const naturalPixels = Buffer.from("yuanta-natural-180x50");
-  let moved = false;
-  const withPage: ProviderVerificationPageRunner = async (_session, action) => {
-    const source = {
-      dataUrl: `data:image/png;base64,${naturalPixels.toString("base64")}`,
-      sourceMarker: "yuanta-image-v1",
-      frameMarker: "frame-v1",
-      naturalWidth: 180,
-      naturalHeight: 50,
-    };
-    const { page } = yuantaCaptchaPage({
-      source,
-      rect: moved ? { x: 40, y: 20, width: 96, height: 28 } : undefined,
-    });
-    const result = await action(page as never);
-    moved = true;
-    return result;
-  };
-  const host = createProviderVerificationHost({ withPage });
-  const contractValue = yuantaBankCaptchaContract();
-  await host.captureChallengeImage("session-yuanta-stale-rect", contractValue);
-  assert.equal(
-    await host.isChallengeImageCurrent("session-yuanta-stale-rect", contractValue),
-    false,
-  );
-});
+for (const [name, fields] of [
+  ["missing", ""],
+  ["ambiguous", `<input name="captcha"><input name="captcha">`],
+  ["non-retaining", `<input name="captcha" oninput="this.value=''">`],
+] as const) {
+  test(`Post refuses a ${name} CAPTCHA field`, () =>
+    withProviderPage(postPage(fields), [], async ({ page }) => {
+      const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+      await assert.rejects(host.injectAnswer(RUN, postContract(), "1234"), /Post CAPTCHA/u);
+      assert.equal(await page.inputValue("#user-code"), "");
+    }));
+}
+
+const yuantaTradeCheckboxContract = () =>
+  contract(YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID, {
+    stageId: YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
+    challengeKind: "checkbox",
+    completion: { mode: "independent", targetIds: ["captcha-input"], status: "pending" },
+  });
+
+for (const [state, html, completed] of [
+  ["a checked checkbox", `<input id="chbYCaptchaV2" type="checkbox" checked>`, true],
+  ["an unchecked checkbox", `<input id="chbYCaptchaV2" type="checkbox">`, false],
+  ["an opened image challenge", `<input id="chbYCaptchaV2" type="checkbox"><div id="modalYCaptchaV2">Pick the images</div>`, true],
+] as const) {
+  test(`Yuanta Trade completion reads ${state} from the page`, () =>
+    withProviderPage(`<body>${html}</body>`, [], async ({ page }) => {
+      const host = createProviderVerificationHost({ pageForRun: pageForRunOf(RUN, page) });
+      assert.equal(await host.inspectCompletion(RUN, yuantaTradeCheckboxContract()), completed);
+    }));
+}
 
 test("only adapters with calibrated source capture own challenge images", () => {
-  const host = createProviderVerificationHost({
-    withPage: pageRunner({ locator: () => fakeLocator() } as never),
-  });
-  assert.equal(host.handlesChallengeImage(sinopacCaptchaContract()), true);
-  assert.equal(host.handlesChallengeImage(yuantaBankCaptchaContract()), true);
-  assert.equal(
-    host.handlesChallengeImage(contract("yuanta-bank.login.captcha-input")),
-    false,
-  );
+  const host = createProviderVerificationHost({ pageForRun: () => null });
+  assert.equal(host.handlesChallengeImage(sinopacContract()), true);
+  assert.equal(host.handlesChallengeImage(yuantaBankContract()), true);
+  assert.equal(host.handlesChallengeImage(fubonContract()), true);
+  assert.equal(host.handlesChallengeImage(contract(YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID)), false);
   assert.equal(host.handlesChallengeImage(contract("cathay.login.email-otp-input")), false);
 });
 
 test("no provider declares an in-page CAPTCHA refresh control yet", async () => {
   const providerContracts = {
-    fubon: fubonCaptchaContract(),
-    sinopac: sinopacCaptchaContract(),
-    "yuanta-bank": yuantaBankCaptchaContract(),
-    post: contract("post.login.captcha-input", { stageId: "ipost-login-captcha" }),
+    fubon: fubonContract(),
+    sinopac: sinopacContract(),
+    "yuanta-bank": yuantaBankContract(),
+    post: postContract(),
   };
   const host = createProviderVerificationHost({ pageForRun: () => null });
   for (const [provider, verification] of Object.entries(providerContracts)) {
@@ -656,51 +384,4 @@ test("no provider declares an in-page CAPTCHA refresh control yet", async () => 
     );
     assert.equal(await host.refreshChallengeImage(`${provider}-session`, verification), false);
   }
-});
-
-function yuantaPage(options: {
-  checkboxChecked?: boolean;
-  challengeVisible?: boolean;
-  submitVisible?: boolean;
-  submitRect?: HumanVerificationRect;
-}) {
-  const checkbox = fakeLocator({
-    node: options.checkboxChecked ? new FakeInputElement() : {
-      getAttribute: () => "false",
-      classList: { contains: () => false },
-      parentElement: null,
-    },
-  });
-  const submit = fakeLocator({
-    visible: options.submitVisible ?? true,
-    rect: options.submitRect ?? { x: 250, y: 260, width: 80, height: 30 },
-  });
-  const challenge = fakeLocator({
-    visible: options.challengeVisible ?? false,
-    child: (selector) => {
-      assert.equal(selector, YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR);
-      return submit;
-    },
-  });
-  return fakePage({
-    ["#chbYCaptchaV2"]: checkbox,
-    [YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR]: challenge,
-  });
-}
-
-test("Yuanta completion inspection evaluates the checkbox and challenge probe", async () => {
-  await withFakeInputElement(async () => {
-    const host = createProviderVerificationHost({
-      withPage: pageRunner(yuantaPage({ checkboxChecked: true, challengeVisible: false })),
-    });
-    const verificationContract = contract("yuanta-trade.login.captcha-checkbox", {
-      stageId: "yuanta-trade-captcha-checkbox",
-      completion: {
-        mode: "independent",
-        targetIds: ["verification-target"],
-        status: "pending",
-      },
-    });
-    assert.equal(await host.inspectCompletion("session-yuanta", verificationContract), true);
-  });
 });
