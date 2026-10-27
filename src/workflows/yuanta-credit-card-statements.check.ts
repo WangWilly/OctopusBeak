@@ -56,14 +56,11 @@ const {
   buildYuantaCanonicalCreditCardCaptures,
   deriveYuantaCanonicalHumanAttestation,
   deriveYuantaProjectedInstrumentIdentity,
-  diagnoseYuantaCreditCardHistoryHtml,
-  diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml,
   findYuantaCreditCardSummaryLink,
   collectYuantaCreditCardHistorySummaries,
   hasUntraversedPager,
   isCreditCardProductAbsentText,
   loadYuantaCreditCardSummaryPage,
-  diagnoseYuantaCreditCardSummaryHtml,
   parseCreditCardBillsHtml,
   parseYuantaCreditCardSettledStatementSummaries,
   parseYuantaCreditCardSettledStatementHistoryPage,
@@ -72,8 +69,6 @@ const {
   toYuantaCanonicalCreditCardSourceRow,
   submitCreditCardMonthOptions,
   traverseYuantaCreditCardSettledStatementSummaryPages,
-  YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY,
-  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
   YuantaCreditCardSummaryParseError,
   yuantaCanonicalHumanAttestationFromEnvironment,
   yuantaCreditCardCaptureBuilderOptions,
@@ -135,23 +130,6 @@ assert.deepEqual(
     sourceField: "已使用額度",
   },
 );
-assert.deepEqual(
-  diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(nestedYuantaCurrentCreditHtml),
-  {
-    rwdTableCount: 3,
-    currentTableCandidateCount: 2,
-    currentTableMatchCount: 2,
-  },
-);
-assert.equal(
-  JSON.stringify(
-    diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(
-      nestedYuantaCurrentCreditHtml,
-    ),
-  ).includes("200000"),
-  false,
-);
-
 type SummaryLinkNode = {
   scopeName: "fmenu" | "fmain";
   text: string;
@@ -361,46 +339,7 @@ const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
 );
 assert.deepEqual(summaryClickArguments, []);
 assert.equal(renderedDomRead, false);
-assert.equal(responseBodyLoaded.evidence.currentUsedCredit?.usedCredit, "3741");
-assert.deepEqual(responseBodyLoaded.evidence.diagnostic, {
-  stage: "ready",
-  htmlSource: "response-body",
-  rwdTableCount: 1,
-  currentTableCandidateCount: 1,
-  currentTableMatchCount: 1,
-  responseMatched: true,
-  responseStatus: 200,
-  responsePath: "/nib/tx/creditcardsummary",
-  responseMethod: "POST",
-  responseQueryKeys: [],
-  hasHttpDate: true,
-  hasCacheControl: true,
-  responseTableHeaders: [[
-    "信用額度",
-    "已使用額度",
-    "信用額度餘額",
-    "預借現金額度",
-  ]],
-  framePaths: [
-    "/nib/pages/vnib/feature-overview",
-    "/nib/tx/creditcardbillsquery",
-  ],
-  reason: "ready",
-});
-
-const {
-  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-} = await import("../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts");
-
-assert.equal(
-  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-  "yuanta-credit-card.settled-summary-parser.v7-exact-period-balance-a",
-);
-assert.equal(
-  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics
-    .settledSummaryParserContract,
-  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-);
+assert.equal(responseBodyLoaded.currentUsedCredit?.usedCredit, "3741");
 
 const settledSummaryFixture = `
   <section>
@@ -463,47 +402,6 @@ for (const invalidPeriod of [
     /period.*(?:invalid|ambiguous)/iu,
   );
 }
-const invalidPeriodShapeCases = [
-  {
-    raw: "115/06/20",
-    shape: "full-date",
-    digitGroupLengths: [3, 2, 2],
-    separatorIds: ["slash"],
-  },
-  {
-    raw: "NT$1,234",
-    shape: "money",
-    digitGroupLengths: [1, 3],
-    separatorIds: [],
-  },
-  {
-    raw: "4111-1111-1111-1111",
-    shape: "other",
-    digitGroupLengths: [4, 4, 4, 4],
-    separatorIds: ["dash"],
-  },
-] as const;
-for (const testCase of invalidPeriodShapeCases) {
-  const diagnostic = diagnoseYuantaCreditCardSummaryHtml(
-    settledSummaryFixture.replace("115/06", testCase.raw),
-  );
-  assert.equal(diagnostic.invalidFieldFamily, "period");
-  assert.equal(diagnostic.invalidValueShapeClass, testCase.shape);
-  assert.deepEqual(
-    diagnostic.invalidValueDigitGroupLengths,
-    testCase.digitGroupLengths,
-  );
-  assert.deepEqual(diagnostic.invalidValueSeparatorIds, testCase.separatorIds);
-  assert.equal(diagnostic.invalidValueCellTagPairIds.length > 0, true);
-  assert.equal(diagnostic.invalidValueLayoutPositionIds.length > 0, true);
-  assert.equal(typeof diagnostic.invalidValueCellCount, "number");
-  assert.equal(typeof diagnostic.invalidValueLabelCellCount, "number");
-  assert.notEqual(diagnostic.invalidValueRawLengthBucket, null);
-  assert.equal(diagnostic.invalidValueContainsKnownLabel, false);
-  const serializedDiagnostic = JSON.stringify(diagnostic);
-  assert.equal(serializedDiagnostic.includes(testCase.raw), false);
-  assert.equal(serializedDiagnostic.includes("4111-1111-1111-1111"), false);
-}
 const splitSummaryFixture = `
   <section class="summary-result">
     <div class="summary-card">
@@ -529,16 +427,6 @@ assert.deepEqual(
     balance: "1234.00",
     minimumPayment: "123",
   }],
-);
-assert.deepEqual(
-  diagnoseYuantaCreditCardSummaryHtml(splitSummaryFixture).requiredFields,
-  {
-    period: true,
-    closeDate: true,
-    dueDate: true,
-    balance: true,
-    minimumPayment: true,
-  },
 );
 const ambiguousPeriodSplitFixture = `
   <section class="summary-result">
@@ -592,50 +480,6 @@ try {
   incompleteSummaryError = error;
 }
 assert.ok(incompleteSummaryError instanceof YuantaCreditCardSummaryParseError);
-if (incompleteSummaryError instanceof YuantaCreditCardSummaryParseError) {
-  const diagnostic = incompleteSummaryError.diagnostic;
-  assert.equal(diagnostic.summaryPageCount, 1);
-  assert.equal(diagnostic.candidateFound, true);
-  assert.equal(diagnostic.candidateTableCount, 1);
-  assert.equal(diagnostic.candidateRowCount, 2);
-  assert.deepEqual(diagnostic.requiredFields, {
-    period: true,
-    closeDate: true,
-    dueDate: true,
-    balance: true,
-    minimumPayment: true,
-  });
-  assert.equal(diagnostic.parsedUniquePeriodCount, 1);
-  assert.equal(diagnostic.allRequiredFields, false);
-  assert.equal(diagnostic.candidateGroupCount, 1);
-  assert.equal(diagnostic.completeGroupCount, 0);
-  assert.deepEqual(diagnostic.partialGroupFieldMasks, ["11101"]);
-  assert.equal(diagnostic.ambiguityReason, "value-invalid");
-  assert.equal(diagnostic.invalidFieldFamily, "minimumPayment");
-  assert.deepEqual(diagnostic.extractionStrategyIds, ["table-header-matrix"]);
-  assert.deepEqual(diagnostic.matchedAliasIds, [
-    "period.billing-month",
-    "close-date.settlement-date",
-    "due-date.payment-deadline",
-    "balance.total-due",
-    "minimum-payment.minimum-due",
-  ]);
-  const serializedDiagnostic = JSON.stringify(diagnostic);
-  assert.equal(serializedDiagnostic.includes("115/06"), false);
-  assert.equal(serializedDiagnostic.includes("115/06/20"), false);
-  assert.equal(serializedDiagnostic.includes("1,234"), false);
-  assert.equal(serializedDiagnostic.includes("PAN"), false);
-}
-assert.deepEqual(
-  diagnoseYuantaCreditCardSummaryHtml(incompleteSummaryFixture).requiredFields,
-  {
-    period: true,
-    closeDate: true,
-    dueDate: true,
-    balance: true,
-    minimumPayment: true,
-  },
-);
 assert.throws(
   () => parseYuantaCreditCardSettledStatementSummaries(
     settledSummaryFixture.replace(
@@ -788,89 +632,6 @@ await assert.rejects(
   /untraversed pagination/,
 );
 
-const historyPageSettledFieldsFixture = `
-  <section class="history-result">
-    <table class="history-transactions">
-      <tr><th>消費日期</th><th>入帳日期</th><th>消費明細</th><th>新臺幣金額</th></tr>
-      <tr><td>115/06/01</td><td>115/06/02</td><td>TEST PAN 4111-1111-1111-1111</td><td>1,234.00</td></tr>
-    </table>
-    <div class="settled-summary-card">
-      <table class="payment-summary">
-        <tr><th>已繳款金額</th><th>本期應繳金額</th></tr>
-        <tr><td>0</td><td>1,234.00</td></tr>
-      </table>
-      <dl>
-        <dt>結帳日</dt><dd>115/06/20</dd>
-        <dt>繳款截止日</dt><dd>115/07/05</dd>
-        <dt>本期最低應繳額</dt><dd>123</dd>
-      </dl>
-    </div>
-  </section>
-`;
-const historyDiagnostic = diagnoseYuantaCreditCardHistoryHtml(
-  historyPageSettledFieldsFixture,
-  5,
-);
-assert.deepEqual(historyDiagnostic, {
-  sourceKey: YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY,
-  monthIndex: 5,
-  candidateFound: true,
-  candidateContainerCount: 3,
-  candidateTableCount: 1,
-  candidateRowCount: 2,
-  requiredFields: {
-    period: false,
-    closeDate: true,
-    dueDate: true,
-    balance: true,
-    minimumPayment: true,
-  },
-  matchedAliasIds: [
-    "close-date.settlement-date",
-    "due-date.payment-deadline",
-    "balance.total-due",
-    "minimum-payment.minimum-due",
-  ],
-  allRequiredFields: false,
-  candidateGroupCount: 1,
-  completeGroupCount: 0,
-  partialGroupFieldMasks: ["01111"],
-  ambiguityReason: "partial-candidate",
-  invalidFieldFamily: null,
-  invalidValueShapeClass: null,
-  invalidValueDigitGroupLengths: [],
-  invalidValueSeparatorIds: [],
-  invalidValueCellTagPairIds: [],
-  invalidValueLayoutPositionIds: [],
-  invalidValueCellCount: null,
-  invalidValueLabelCellCount: null,
-  invalidValueRawLengthBucket: null,
-  invalidValueContainsKnownLabel: null,
-  extractionStrategyIds: ["table-key-value-pairs"],
-  parserContractId: YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-  fieldSourceLayoutIds: ["text-label-value"],
-  fieldSourceLayoutByField: {
-    period: [],
-    closeDate: ["text-label-value"],
-    dueDate: ["text-label-value"],
-    balance: ["text-label-value"],
-    minimumPayment: ["text-label-value"],
-  },
-});
-assert.equal(JSON.stringify(historyDiagnostic).includes("115/06"), false);
-assert.equal(JSON.stringify(historyDiagnostic).includes("115/06/20"), false);
-assert.equal(JSON.stringify(historyDiagnostic).includes("1,234"), false);
-assert.equal(JSON.stringify(historyDiagnostic).includes("4111-1111-1111-1111"), false);
-assert.deepEqual(
-  diagnoseYuantaCreditCardHistoryHtml(historyPageSettledFieldsFixture, 0)
-    .monthIndex,
-  0,
-);
-assert.equal(
-  diagnoseYuantaCreditCardHistoryHtml(historyPageSettledFieldsFixture, 0)
-    .sourceKey,
-  YUANTA_CREDIT_CARD_HISTORY_DIAGNOSTIC_SOURCE_KEY,
-);
 const singleTableSplitRowsFixture = `
   <section class="history-result">
     <table class="settled-summary">
@@ -891,22 +652,6 @@ const groupedLabelValueRowsFixture = `
     </table>
   </section>
 `;
-const groupedLabelValueRowsDiagnostic = diagnoseYuantaCreditCardHistoryHtml(
-  groupedLabelValueRowsFixture,
-  0,
-);
-assert.equal(groupedLabelValueRowsDiagnostic.allRequiredFields, true);
-assert.equal(groupedLabelValueRowsDiagnostic.candidateGroupCount, 1);
-assert.equal(groupedLabelValueRowsDiagnostic.completeGroupCount, 1);
-assert.deepEqual(groupedLabelValueRowsDiagnostic.partialGroupFieldMasks, []);
-assert.equal(groupedLabelValueRowsDiagnostic.ambiguityReason, "none");
-assert.deepEqual(groupedLabelValueRowsDiagnostic.extractionStrategyIds, [
-  "table-grouped-label-rows",
-]);
-assert.doesNotMatch(
-  JSON.stringify(groupedLabelValueRowsDiagnostic),
-  /115\/06|115\/06\/20|1,234|PAN/iu,
-);
 assert.doesNotThrow(() => {
   const { summary } = parseYuantaCreditCardSettledStatementHistoryPage(
     groupedLabelValueRowsFixture,
@@ -944,34 +689,6 @@ assert.deepEqual(verticalSummary[0], {
   balance: "1234.00",
   minimumPayment: "123",
 });
-const verticalDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  verticalLabelValueGridFixture,
-);
-assert.equal(verticalDiagnostic.allRequiredFields, true);
-assert.equal(verticalDiagnostic.completeGroupCount, 1);
-assert.deepEqual(verticalDiagnostic.extractionStrategyIds, [
-  "table-vertical-grid",
-]);
-assert.doesNotMatch(
-  JSON.stringify(verticalDiagnostic),
-  /DECOY-PERIOD-VALUE|999\/99/iu,
-);
-const invalidVerticalPeriodDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  verticalLabelValueGridFixture.replace("115/06", "2026/06月摘要"),
-);
-assert.equal(invalidVerticalPeriodDiagnostic.invalidFieldFamily, "period");
-assert.deepEqual(
-  invalidVerticalPeriodDiagnostic.invalidValueCellTagPairIds,
-  ["th->td"],
-);
-assert.deepEqual(
-  invalidVerticalPeriodDiagnostic.invalidValueLayoutPositionIds,
-  ["vertical-grid-same-column"],
-);
-assert.doesNotMatch(
-  JSON.stringify(invalidVerticalPeriodDiagnostic),
-  /2026\/06月摘要|DECOY-PERIOD-VALUE/iu,
-);
 const verticalHistory = parseYuantaCreditCardSettledStatementHistoryPage(
   verticalLabelValueGridFixture,
   { index: 0, label: "115/06" },
@@ -988,30 +705,6 @@ const verticalSourceInvariantSummary =
     verticalSourceInvariantFixture,
   );
 assert.equal(verticalSourceInvariantSummary[0]?.period, "2026/06");
-const invalidVerticalSourceInvariantDiagnostic =
-  diagnoseYuantaCreditCardSummaryHtml(
-    verticalSourceInvariantFixture.replace(
-      "<td>2026/06月</td>",
-      "<td>2026/06摘要</td>",
-    ),
-  );
-assert.equal(invalidVerticalSourceInvariantDiagnostic.invalidFieldFamily, "period");
-assert.deepEqual(
-  invalidVerticalSourceInvariantDiagnostic.invalidValueCellTagPairIds,
-  ["th->td"],
-);
-assert.deepEqual(
-  invalidVerticalSourceInvariantDiagnostic.invalidValueLayoutPositionIds,
-  ["vertical-grid-same-column"],
-);
-assert.doesNotMatch(
-  JSON.stringify(invalidVerticalSourceInvariantDiagnostic),
-  /2026\/06摘要|2026\/06\/99/iu,
-);
-assert.deepEqual(
-  invalidVerticalSourceInvariantDiagnostic.fieldSourceLayoutByField.period,
-  ["vertical-grid-same-column"],
-);
 const mixedRowPeriodColumnFixture = `
   <section class="fmain">
     <div class="cardBx Mb_m">
@@ -1037,31 +730,6 @@ assert.deepEqual(mixedRowPeriodColumnSummary[0], {
   balance: "1234.00",
   minimumPayment: "123",
 });
-const mixedRowPeriodColumnDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  mixedRowPeriodColumnFixture,
-);
-assert.equal(mixedRowPeriodColumnDiagnostic.allRequiredFields, true);
-assert.deepEqual(mixedRowPeriodColumnDiagnostic.extractionStrategyIds, [
-  "table-vertical-grid",
-]);
-assert.equal(
-  mixedRowPeriodColumnDiagnostic.parserContractId,
-  YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
-);
-assert.deepEqual(mixedRowPeriodColumnDiagnostic.fieldSourceLayoutIds, [
-  "vertical-grid-same-column",
-]);
-assert.deepEqual(mixedRowPeriodColumnDiagnostic.fieldSourceLayoutByField, {
-  period: ["vertical-grid-same-column"],
-  closeDate: ["vertical-grid-same-column"],
-  dueDate: ["vertical-grid-same-column"],
-  balance: ["vertical-grid-same-column"],
-  minimumPayment: ["vertical-grid-same-column"],
-});
-assert.doesNotMatch(
-  JSON.stringify(mixedRowPeriodColumnDiagnostic),
-  /2026\/06\/99|欄位提示|115\/06\/20|1,234/iu,
-);
 const verticalPeriodTextSupplementFixture = `
   <section class="summary-result">
     <table class="rwdTable">
@@ -1071,19 +739,6 @@ const verticalPeriodTextSupplementFixture = `
     <p>帳單月份：2026/05 顯示月份（非權威）　已繳款金額：999,999　結帳日：115/06/20 繳款截止日：115/07/05 本期應繳總額：888,888 本期最低應繳額：123</p>
   </section>
 `;
-const verticalPeriodTextSupplementDiagnostic =
-  diagnoseYuantaCreditCardSummaryHtml(verticalPeriodTextSupplementFixture);
-assert.equal(verticalPeriodTextSupplementDiagnostic.allRequiredFields, true);
-assert.deepEqual(
-  verticalPeriodTextSupplementDiagnostic.fieldSourceLayoutByField,
-  {
-    period: ["vertical-grid-same-column"],
-    closeDate: ["text-label-value"],
-    dueDate: ["text-label-value"],
-    balance: ["vertical-grid-same-column"],
-    minimumPayment: ["text-label-value"],
-  },
-);
 assert.deepEqual(
   parseYuantaCreditCardSettledStatementSummaries(
     verticalPeriodTextSupplementFixture,
@@ -1096,10 +751,6 @@ assert.deepEqual(
     balance: "1234",
     minimumPayment: "123",
   }],
-);
-assert.doesNotMatch(
-  JSON.stringify(verticalPeriodTextSupplementDiagnostic),
-  /2026\/05|9,999|999,999|888,888/iu,
 );
 assert.throws(
   () =>
@@ -1141,21 +792,6 @@ assert.throws(
     ),
   /balance.*invalid|summary/iu,
 );
-const invalidBalanceDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  verticalPeriodTextSupplementFixture.replace(
-    "<td>1,234</td>",
-    "<td>not-an-amount</td>",
-  ),
-);
-assert.equal(invalidBalanceDiagnostic.invalidFieldFamily, "balance");
-assert.deepEqual(
-  invalidBalanceDiagnostic.fieldSourceLayoutByField.balance,
-  ["vertical-grid-same-column"],
-);
-assert.doesNotMatch(
-  JSON.stringify(invalidBalanceDiagnostic),
-  /not-an-amount|888,888|999,999/iu,
-);
 const conflictingBalanceFixture = verticalPeriodTextSupplementFixture.replace(
   "  </section>",
   `
@@ -1168,33 +804,6 @@ assert.throws(
   () =>
     parseYuantaCreditCardSettledStatementSummaries(conflictingBalanceFixture),
   /conflicting.*balance|balance.*conflict|summary/iu,
-);
-const invalidVerticalPeriodTextSupplementDiagnostic =
-  diagnoseYuantaCreditCardSummaryHtml(
-    verticalPeriodTextSupplementFixture.replace(
-      "2026/06月",
-      "2026/06摘要",
-    ),
-  );
-assert.equal(
-  invalidVerticalPeriodTextSupplementDiagnostic.invalidFieldFamily,
-  "period",
-);
-assert.deepEqual(
-  invalidVerticalPeriodTextSupplementDiagnostic.invalidValueCellTagPairIds,
-  ["th->td"],
-);
-assert.deepEqual(
-  invalidVerticalPeriodTextSupplementDiagnostic.invalidValueLayoutPositionIds,
-  ["vertical-grid-same-column"],
-);
-assert.deepEqual(
-  invalidVerticalPeriodTextSupplementDiagnostic.fieldSourceLayoutByField.period,
-  ["vertical-grid-same-column"],
-);
-assert.doesNotMatch(
-  JSON.stringify(invalidVerticalPeriodTextSupplementDiagnostic),
-  /2026\/06摘要|115\/06\/20|1,234/iu,
 );
 assert.throws(
   () =>
@@ -1310,24 +919,6 @@ assert.equal(mixedTagVerticalSummary[0]?.closeDate, "2026-06-20");
 assert.equal(mixedTagVerticalSummary[0]?.dueDate, "2026-07-05");
 assert.equal(mixedTagVerticalSummary[0]?.balance, "1234.00");
 assert.equal(mixedTagVerticalSummary[0]?.minimumPayment, "123");
-const invalidMixedTagVerticalDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  mixedTagVerticalGridFixture.replace(
-    "<th>2026/06月</th>",
-    "<th>2026/06摘要</th>",
-  ),
-);
-assert.equal(invalidMixedTagVerticalDiagnostic.invalidFieldFamily, "period");
-assert.deepEqual(invalidMixedTagVerticalDiagnostic.invalidValueCellTagPairIds, [
-  "th->th",
-]);
-assert.deepEqual(
-  invalidMixedTagVerticalDiagnostic.invalidValueLayoutPositionIds,
-  ["vertical-grid-same-column"],
-);
-assert.doesNotMatch(
-  JSON.stringify(invalidMixedTagVerticalDiagnostic),
-  /2026\/06摘要|2026\/06\/99/iu,
-);
 assert.throws(
   () => parseYuantaCreditCardSettledStatementSummaries(
     mixedTagVerticalGridFixture.replace(
@@ -1415,32 +1006,6 @@ assert.throws(
   () => parseYuantaCreditCardSettledStatementSummaries(ambiguousGroupedAndPairFixture),
   /ambiguous.*(?:strateg|summary)/iu,
 );
-const ambiguousGroupedAndPairDiagnostic = diagnoseYuantaCreditCardSummaryHtml(
-  ambiguousGroupedAndPairFixture,
-);
-assert.equal(ambiguousGroupedAndPairDiagnostic.ambiguityReason, "multiple-complete");
-assert.doesNotMatch(
-  JSON.stringify(ambiguousGroupedAndPairDiagnostic),
-  /115\/06|115\/06\/20|1,234|PAN/iu,
-);
-const singleTableSplitRowsDiagnostic = diagnoseYuantaCreditCardHistoryHtml(
-  singleTableSplitRowsFixture,
-  0,
-);
-assert.equal(singleTableSplitRowsDiagnostic.candidateTableCount, 1);
-assert.equal(singleTableSplitRowsDiagnostic.candidateRowCount, 4);
-assert.equal(singleTableSplitRowsDiagnostic.allRequiredFields, true);
-assert.equal(singleTableSplitRowsDiagnostic.candidateGroupCount, 1);
-assert.equal(singleTableSplitRowsDiagnostic.completeGroupCount, 1);
-assert.deepEqual(singleTableSplitRowsDiagnostic.partialGroupFieldMasks, []);
-assert.equal(singleTableSplitRowsDiagnostic.ambiguityReason, "none");
-assert.deepEqual(singleTableSplitRowsDiagnostic.extractionStrategyIds, [
-  "table-key-value-pairs",
-]);
-assert.doesNotMatch(
-  JSON.stringify(singleTableSplitRowsDiagnostic),
-  /115\/06|115\/06\/20|1,234|PAN/iu,
-);
 assert.doesNotThrow(() => {
   const { summary } = parseYuantaCreditCardSettledStatementHistoryPage(
     singleTableSplitRowsFixture,
@@ -1454,23 +1019,6 @@ assert.doesNotThrow(() => {
 const invalidSplitRowsValueFixture = singleTableSplitRowsFixture.replace(
   "1,234",
   "not-an-amount",
-);
-const invalidSplitRowsDiagnostic = diagnoseYuantaCreditCardHistoryHtml(
-  invalidSplitRowsValueFixture,
-  0,
-);
-assert.equal(invalidSplitRowsDiagnostic.allRequiredFields, true);
-assert.equal(invalidSplitRowsDiagnostic.candidateGroupCount, 1);
-assert.equal(invalidSplitRowsDiagnostic.completeGroupCount, 1);
-assert.deepEqual(invalidSplitRowsDiagnostic.partialGroupFieldMasks, []);
-assert.equal(invalidSplitRowsDiagnostic.ambiguityReason, "value-invalid");
-assert.equal(invalidSplitRowsDiagnostic.invalidFieldFamily, "balance");
-assert.deepEqual(invalidSplitRowsDiagnostic.extractionStrategyIds, [
-  "table-key-value-pairs",
-]);
-assert.doesNotMatch(
-  JSON.stringify(invalidSplitRowsDiagnostic),
-  /115\/06|115\/06\/20|not-an-amount|PAN/iu,
 );
 assert.throws(
   () => parseYuantaCreditCardSettledStatementSummaries(invalidSplitRowsValueFixture),
