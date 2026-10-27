@@ -271,11 +271,11 @@ export function buildCathayDomesticCurrentDepositBalanceCaptures(
   const selectedRows = rows.filter(
     (row) => row.kind === "domestic" && admittedKeys.has(row.sourceAccountKey),
   );
-  if (
-    [...admittedKeys].some((key) => !selectedRows.some((row) => row.sourceAccountKey === key)) ||
-    selectedRows.some((row) => row.stream !== first.capture.stream)
-  ) {
+  if ([...admittedKeys].some((key) => !selectedRows.some((row) => row.sourceAccountKey === key))) {
     throw new Error("Cathay domestic current balance source omitted a selected account.");
+  }
+  if (selectedRows.some((row) => row.stream !== first.capture.stream)) {
+    throw new Error("Cathay domestic current balance row stream does not match its admitted capture.");
   }
   const { sourceConnectionKey, identityEpoch } = first.capture;
   return buildCathayCurrentDepositBalanceCaptures(selectedRows, {
