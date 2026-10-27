@@ -4,14 +4,19 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import type { Frame, Locator, Page } from "playwright";
-import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { chromium } from "playwright";
+import {
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { FUBON_EBANK_ENTRY_URL } from "./fubon-ebank-site.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -28,12 +33,12 @@ registerHooks({
 const {
   buildFubonCanonicalCreditCardCaptures,
   fubonCreditCardStatementsInputSchema,
-  iterateFubonStatementPeriodProbes,
   isFubonCreditCardStatementUnavailableText,
   isFubonStatementSummaryRow,
   parseFubonStatementCardLabel,
   parseFubonSettledStatementSummary,
   parseFubonCurrentCreditCardUsedCreditHtml,
+  readFubonCreditCardSourceSnapshot,
   diagnoseFubonCurrentCreditCardUsedCreditHtml,
   resolveFubonSettledStatementCycles,
   stageFubonCreditCard,
@@ -117,7 +122,7 @@ const source = await readFile(
   new URL("./fubon-credit-card-statements.ts", import.meta.url),
   "utf8",
 );
-const staticModuleHeader = source.slice(0, source.indexOf("const BANK_ENTRY_URL"));
+const staticModuleHeader = source.slice(0, source.indexOf("export type FubonStatementPeriodProbe"));
 const runtimeStaticImports = staticModuleHeader.replace(
   /import type[\s\S]*?from ["'][^"']+["'];/gu,
   "",
@@ -129,11 +134,6 @@ const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );
 assert.doesNotMatch(source, /openFubonLoginForm|fubonLogin\(|workflow\(/u);
-assert.match(source, /findStatementDetailsScope/);
-assert.match(source, /StatementComponentAbsentError/);
-assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);
-assert.match(source, /isFubonCreditCardStatementUnavailableText/);
-assert.match(runSource, /iterateFubonStatementPeriodProbes/);
 assert.match(runSource, /capture\.snapshotMode === "full"/);
 assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 
@@ -207,136 +207,181 @@ assert.deepEqual(
   },
 );
 
+// The whole source read against a synthetic signed-in frame1/txnFrame frameset
+// served by route interception (ADR 0066): the 信用卡 header menu reveals the
+// three task links, each task renders in txnFrame, the period tabs switch the
+// statement behind the bank mask, and every page is read in order.
 type PeriodMode = "available" | "no-record" | "temporarily-unavailable";
 
-class TestHTMLElement {
-  click(): void {}
-}
-
-(globalThis as unknown as { HTMLElement: typeof TestHTMLElement }).HTMLElement =
-  TestHTMLElement;
-
-type FakePeriodFrameState = {
-  currentPeriod: number;
-  mode: PeriodMode;
-  modeByPeriod: Readonly<Record<number, PeriodMode>>;
-  transitions: number[];
-  availableBodies: Readonly<Record<number, string>>;
-};
-
-function fakePeriodLocator(
-  state: FakePeriodFrameState | null,
-  selector: string,
-  filters: string[] = [],
-): Locator {
-  const locator = {
-    selector,
-    first() {
-      return this;
-    },
-    filter(options: { hasText?: string }) {
-      return fakePeriodLocator(
-        state,
-        selector,
-        options.hasText ? [...filters, options.hasText] : filters,
-      );
-    },
-    async waitFor() {
-      if (selector === "#form1\\:period" && state) return;
-      if (
-        selector === "table" &&
-        state?.mode === "available" &&
-        ["消費日期", "外幣折算日/幣別", "臺幣金額"].every((header) =>
-          filters.includes(header),
-        )
-      )
-        return;
-      if (selector === "a" && state) return;
-      throw new Error("fixture locator is not attached");
-    },
-    async count() {
-      if (selector === "div._mask, ._mask") return 0;
-      if (selector === "#form1\\:period" && state) return 1;
-      return 0;
-    },
-    async getAttribute(name: string) {
-      assert.equal(name, "value");
-      return state ? String(state.currentPeriod) : null;
-    },
-    async textContent() {
-      if (selector !== "body" || !state) return "";
-      if (state.mode === "temporarily-unavailable")
-        return "目前帳單產製中，暫時無法查詢";
-      if (state.mode === "no-record") return "查無資料";
-      return state.availableBodies[state.currentPeriod] ?? "消費日期 外幣折算日/幣別 臺幣金額";
-    },
-    async evaluate(callback: (element: HTMLElement) => unknown) {
-      const element = new TestHTMLElement();
-      element.click = () => {
-        if (selector !== "a" || !state) return;
-        const label = filters.at(-1);
-        const period =
-          label === "前一期" ? 2 : label === "前二期" ? 3 : undefined;
-        if (period === undefined) return;
-        state.currentPeriod = period;
-        state.mode = state.modeByPeriod[period] ?? "no-record";
-        state.transitions.push(period);
-      };
-      return callback(element as unknown as HTMLElement);
-    },
-  } as unknown as Locator;
-  return locator;
-}
-
-function fakePeriodPage(state: FakePeriodFrameState): Page {
-  const frame = {
-    name: () => "txnFrame",
-    locator: (selector: string) => fakePeriodLocator(state, selector),
-  } as unknown as Frame;
-  const pageState = null;
-  return {
-    locator: (selector: string) => fakePeriodLocator(pageState, selector),
-    frames: () => [frame],
-    async waitForTimeout() {},
-  } as unknown as Page;
-}
-
-test("re-probes and consumes each Fubon period before switching frames", async () => {
-  const state: FakePeriodFrameState = {
-    currentPeriod: 1,
-    mode: "temporarily-unavailable",
-    modeByPeriod: {
-      1: "temporarily-unavailable",
-      2: "available",
-      3: "no-record",
-    },
-    transitions: [],
-    availableBodies: {
-      2: "period-2 消費日期 外幣折算日/幣別 臺幣金額",
-    },
-  };
-  const probes: Array<{ periodOffset: number; status: PeriodMode }> = [];
-  const extractedBodies: string[] = [];
-  for await (const probe of iterateFubonStatementPeriodProbes(
-    fakePeriodPage(state),
-    [1, 2, 3],
-  )) {
-    probes.push({ periodOffset: probe.periodOffset, status: probe.status });
-    if (probe.status === "available")
-      extractedBodies.push((await probe.scope.locator("body").textContent()) ?? "");
+const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
+const CURRENT_CREDIT_PATH = "/B2C/cccqu/cccqu002/CCCQU002_Home.faces";
+const STATEMENT_PATH = "/B2C/cccqu/cccqu003/CCCQU003_Home.faces";
+const UNBILLED_PATH = "/B2C/cccqu/cccqu004/CCCQU004_Home.faces";
+const SHELL_HTTP_DATE = "Tue, 27 Oct 2026 00:00:00 GMT";
+const cardTaskLink = (taskClass: string, path: string, text: string) =>
+  `<a class="${taskClass}" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href=\\'${path}\\'">${text}</a>`;
+const shellCardHeader = `<a id="menu_CCC" href="javascript:void(0)" onclick="openCardMenu()">信用卡</a><div id="ccc"></div>
+<script>
+  function openCardMenu() {
+    parent.menuOpens = (parent.menuOpens ?? 0) + 1;
+    document.getElementById("ccc").innerHTML =
+      '${cardTaskLink("task_CCCQU002 menu_CCC0201", CURRENT_CREDIT_PATH, "帳務查詢")}' +
+      '${cardTaskLink("task_CCCQU003 menu_CCC0202", STATEMENT_PATH, "帳單明細查詢")}' +
+      '${cardTaskLink("task_CCCQU004 menu_CCC0203", UNBILLED_PATH, "未出帳單消費明細")}';
   }
+</script>`;
+const bankMask = `<div class="_mask" style="position:fixed;inset:0">處理中</div>
+  <script>setTimeout(() => document.querySelector("._mask").remove(), 300);</script>`;
+const htmlRow = (cells: readonly string[]) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
+const statementBody = (period: number, mode: PeriodMode) => {
+  if (mode === "temporarily-unavailable") return `<p>目前帳單產製中，暫時無法查詢</p>`;
+  if (mode === "no-record") return `<p>查無資料</p>`;
+  return `<table>${htmlRow(["帳單年月", "信用額度"])}${htmlRow([`115/0${8 - period}`, "100,000元"])}</table>
+    <table>
+      ${htmlRow(["消費日期", "消費說明", "入帳日期", "外幣折算日/幣別", "外幣金額", "臺幣金額"])}
+      ${htmlRow(["正卡末4碼1234"])}
+      ${htmlRow([`115/0${7 - period}/21`, `period-${period}-咖啡店`, `115/0${7 - period}/22`, "", "", "120"])}
+    </table>
+    <input type="hidden" name="dataGrid:currentPage" value="1">
+    <input type="hidden" name="dataGrid:currentPageSize" value="2147483647">`;
+};
+const statementPage = (period: number, mode: PeriodMode) => `<form id="form1">
+    <input type="hidden" id="form1:period" name="form1:period" value="${period}">
+  </form>
+  ${["本期", "前一期", "前二期", "前三期", "前四期", "前五期"]
+    .map((label, index) => `<a href="javascript:void(0)" onclick="location.href='${STATEMENT_PATH}?period=${index + 1}'">${label}</a>`)
+    .join("")}
+  ${statementBody(period, mode)}
+  ${bankMask}`;
+const unbilledPage = `<table>
+    ${htmlRow(["消費日期", "消費說明", "入帳日期", "消費卡號後四碼", "外幣幣別", "外幣金額", "臺幣金額", "指定消費分期"])}
+    ${htmlRow(["412345******5678"])}
+    ${htmlRow(["115/07/25", "unbilled-書店", "115/07/26", "5678", "", "", "350", ""])}
+  </table>`;
+const currentCreditPage = `<table class="CBO_totalTb">
+    ${htmlRow(["正卡人信用額度", "100,000", ""])}
+    ${htmlRow(["正卡人可用額度", "60,000", ""])}
+  </table>`;
+
+async function readCardThroughShell(
+  options: Readonly<{
+    modes: Readonly<Record<number, PeriodMode>>;
+    periodOffsets: readonly number[];
+    signal?: AbortSignal;
+    holdUnbilled?: () => void;
+  }>,
+) {
+  const browser = await chromium.launch({ headless: true });
+  const requested: string[] = [];
+  const activities: string[] = [];
+  try {
+    const page = await browser.newPage();
+    await page.route(`${SITE_ORIGIN}/**`, async (route) => {
+      const url = new URL(route.request().url());
+      requested.push(`${url.pathname}${url.search}`);
+      const html = (body: string, headers: Record<string, string> = {}) =>
+        route.fulfill({ contentType: "text/html; charset=utf-8", body, headers });
+      switch (url.pathname) {
+        case "/B2C/common/Index.faces":
+          return await html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`);
+        case "/B2C/header.faces":
+          return await html(shellCardHeader);
+        case CURRENT_CREDIT_PATH:
+          return await html(currentCreditPage, { date: SHELL_HTTP_DATE, "cache-control": "no-cache" });
+        case STATEMENT_PATH: {
+          const period = Number(url.searchParams.get("period") ?? "1");
+          return await html(statementPage(period, options.modes[period] ?? "no-record"));
+        }
+        case UNBILLED_PATH:
+          if (options.holdUnbilled) {
+            options.holdUnbilled();
+            return;
+          }
+          return await html(unbilledPage);
+        default:
+          return await html(`<p>${url.pathname}</p>`);
+      }
+    });
+    await page.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+    const snapshot = await readFubonCreditCardSourceSnapshot(
+      page,
+      fubonCreditCardStatementsInputSchema.parse({ periodOffsets: options.periodOffsets }),
+      { signal: options.signal ?? new AbortController().signal, text: strictSourceText } as unknown as WorkflowContext,
+      {
+        stage: () => {},
+        reportActivity: async (activity: string) => { activities.push(activity); },
+        event: async () => {},
+      } as unknown as ProductCollectionHandle,
+    );
+    const menuOpens = await page.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
+    return { snapshot, requested, activities, menuOpens };
+  } finally {
+    await browser.close();
+  }
+}
+
+test("Fubon credit card reads every task through the 信用卡 menu and consumes each period before switching", async () => {
+  const read = await readCardThroughShell({
+    modes: { 1: "temporarily-unavailable", 2: "no-record", 3: "available" },
+    periodOffsets: [1, 2, 3],
+  });
+  assert.equal(read.menuOpens, 1, "the task links are revealed once through the 信用卡 menu");
   assert.deepEqual(
-    probes.map(({ periodOffset, status }) => ({ periodOffset, status })),
+    read.requested.filter((path) => path.startsWith("/B2C/cccqu/")),
     [
-      { periodOffset: 1, status: "temporarily-unavailable" },
-      { periodOffset: 2, status: "available" },
-      { periodOffset: 3, status: "no-record" },
+      CURRENT_CREDIT_PATH,
+      STATEMENT_PATH,
+      `${STATEMENT_PATH}?period=2`,
+      `${STATEMENT_PATH}?period=3`,
+      UNBILLED_PATH,
     ],
+    "each task opens once, and only the periods that differ from the shown one are switched",
   );
-  assert.deepEqual(extractedBodies, [
-    "period-2 消費日期 外幣折算日/幣別 臺幣金額",
+  assert.deepEqual(read.snapshot.currentUsedCredit, {
+    limit: "100000",
+    available: "60000",
+    usedCredit: "40000",
+    sourceField: "正卡人信用額度-正卡人可用額度",
+    endpoint: `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}`,
+    httpDate: SHELL_HTTP_DATE,
+    cacheControl: "no-cache",
+  });
+  assert.deepEqual(read.snapshot.unavailablePeriodOffsets, [1]);
+  assert.deepEqual(read.snapshot.statementPeriods, ["115/05"]);
+  assert.deepEqual(
+    read.snapshot.statementRows.map((row) => [row.statement_period, row.card_number, row.description, row.twd_amount]),
+    [["115/05", "1234", "period-3-咖啡店", "120"]],
+    "only the available period's rows are read, from its own live scope",
+  );
+  assert.deepEqual(
+    read.snapshot.unbilledRows.map((row) => [row.statement_period, row.card_number, row.description, row.twd_amount]),
+    [["unbilled", "412345******5678", "unbilled-書店", "350"]],
+  );
+  assert.deepEqual(read.snapshot.gridStates, [
+    { currentPage: "1", currentPageSize: "2147483647", sourceDeclaredRowCount: undefined },
+    { currentPage: undefined, currentPageSize: undefined, sourceDeclaredRowCount: undefined },
   ]);
-  assert.deepEqual(state.transitions, [2, 3]);
+  assert.deepEqual(read.activities, ["query", "query", "query", "query"]);
+});
+
+test("Fubon credit card fails as absent when the statement task opens on the bank's no-record page", async () => {
+  await assert.rejects(
+    readCardThroughShell({ modes: { 1: "no-record" }, periodOffsets: [1] }),
+    (error: unknown) => error instanceof StatementComponentAbsentError && error.message.includes("not available"),
+  );
+});
+
+test("Fubon credit card stops inside a held task page when the run is cancelled", async () => {
+  const controller = new AbortController();
+  await assert.rejects(
+    readCardThroughShell({
+      modes: { 1: "available" },
+      periodOffsets: [1],
+      signal: controller.signal,
+      holdUnbilled: () => controller.abort(new Error("card read cancelled")),
+    }),
+    /card read cancelled/u,
+  );
 });
 
 assert.deepEqual(parseFubonStatementCardLabel("正卡 4111 1111 1111 1111"), {
