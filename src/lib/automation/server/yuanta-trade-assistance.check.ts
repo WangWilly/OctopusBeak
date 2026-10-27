@@ -17,7 +17,7 @@ import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
   routeYuantaTradeAppAssistanceRequest,
-  registerYuantaTradeAppAssistanceHandler,
+  type YuantaTradeAppAssistanceDependencies,
 } from "./yuanta-trade-assistance.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -195,6 +195,25 @@ async function createRun() {
   return { store, provider, run };
 }
 
+/** Route each stage the way the CAPTCHA Retry Campaign does, without the campaign's retries. */
+async function yuantaTradeAssistance(
+  taskRunId: string,
+  dependencies: YuantaTradeAppAssistanceDependencies,
+) {
+  return createAppWorkflowHumanAssistancePort({
+    run: await openTaskRunForCheck(dependencies.provider.automation, taskRunId),
+    async onRequest(contract, signal) {
+      const outcome = await routeYuantaTradeAppAssistanceRequest(
+        { taskId: TASK_ID, taskRunId, contract, signal },
+        dependencies,
+      );
+      if (outcome?.kind === "retryable") {
+        throw new Error(`Yuanta Trade verification is retryable: ${outcome.reason}`);
+      }
+    },
+  });
+}
+
 const solverSettings: AutomationSettingsFile = {
   VERIFICATION_AUDIO_CAPTCHA_CONFIDENCE_THRESHOLD: "0.7",
   VERIFICATION_IMAGE_SELECTION_CONFIDENCE_THRESHOLD: "0.7",
@@ -211,7 +230,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
     onAudio(session) { sessions.push(session); actions.push("capture-audio"); },
     onResume(session, stageId) { sessions.push(session); actions.push(`resume:${stageId}`); },
   });
-  const unregister = registerYuantaTradeAppAssistanceHandler({
+  const dependencies: YuantaTradeAppAssistanceDependencies = {
     provider,
     settings: solverSettings,
     verificationHost: host,
@@ -233,13 +252,11 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
         actions.push(`click:${targetId}`);
       },
     },
-  });
+  };
 
   try {
     process.chdir(artifactRoot);
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
-    });
+    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
     for (const contract of [audioContract(), audioContract(), checkboxContract()]) {
       await assistance.request(contract, new AbortController().signal);
     }
@@ -264,18 +281,17 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
     assert.ok(sessions.every((session) => session === run.taskRunId));
     assert.deepEqual(await readdir(artifactRoot), [], "App assistance writes no workflow files");
   } finally {
-    unregister();
     process.chdir(originalCwd);
     await store.close();
     await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
-test("Yuanta Trade solver exhaustion rejects the active stage", async () => {
+test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   const { store, provider, run } = await createRun();
   const controller = new AbortController();
   let solverCalls = 0;
-  const unregister = registerYuantaTradeAppAssistanceHandler({
+  const dependencies: YuantaTradeAppAssistanceDependencies = {
     provider,
     settings: solverSettings,
     verificationHost: verificationHost(),
@@ -288,12 +304,10 @@ test("Yuanta Trade solver exhaustion rejects the active stage", async () => {
       },
       providerCaptureChallengeAudio: async () => Buffer.from("fixture audio"),
     },
-  });
+  };
 
   try {
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
-    });
+    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
     await assert.rejects(
       Promise.race([
         assistance.request(audioContract(), controller.signal),
@@ -302,40 +316,36 @@ test("Yuanta Trade solver exhaustion rejects the active stage", async () => {
           1_000,
         )),
       ]),
-      /new CAPTCHA round required/u,
+      /retryable: solver-exhausted/u,
     );
     assert.equal(solverCalls, 1);
   } finally {
     controller.abort();
-    unregister();
     await store.close();
   }
 });
 
 test("Yuanta Trade image challenge fails explicitly in solver mode", async () => {
   const { store, provider, run } = await createRun();
-  const unregister = registerYuantaTradeAppAssistanceHandler({
+  const dependencies: YuantaTradeAppAssistanceDependencies = {
     provider,
     settings: solverSettings,
     verificationHost: verificationHost(),
-  });
+  };
   try {
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
-    });
+    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
     await assert.rejects(
       assistance.request(imageContract(), new AbortController().signal),
       /image challenge has no supported local solver/u,
     );
   } finally {
-    unregister();
     await store.close();
   }
 });
 
 test("Yuanta Trade fails closed when the solver route does not resume the stage", async () => {
   const { store, provider, run } = await createRun();
-  const unregister = registerYuantaTradeAppAssistanceHandler({
+  const dependencies: YuantaTradeAppAssistanceDependencies = {
     provider,
     settings: solverSettings,
     verificationHost: verificationHost(),
@@ -343,17 +353,14 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
       solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
       providerCaptureChallengeAudio: async () => null,
     },
-  });
+  };
   try {
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
-    });
+    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
     await assert.rejects(
       assistance.request(audioContract(), new AbortController().signal),
       /did not complete the current stage/u,
     );
   } finally {
-    unregister();
     await store.close();
   }
 });
@@ -385,7 +392,7 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
   const started = new Promise<void>((resolve) => { solverStarted = resolve; });
   const delayed = new Promise<void>((resolve) => { releaseSolver = resolve; });
   const injected: string[] = [];
-  const unregister = registerYuantaTradeAppAssistanceHandler({
+  const dependencies: YuantaTradeAppAssistanceDependencies = {
     provider,
     settings: solverSettings,
     verificationHost: verificationHost(),
@@ -400,13 +407,11 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
       providerCaptureChallengeAudio: async () => Buffer.from("fixture audio"),
       providerInjectAnswer: async (_session, _contract, answer) => { injected.push(answer); },
     },
-  });
+  };
 
   try {
     const controller = new AbortController();
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, run.taskRunId),
-    });
+    const assistance = await yuantaTradeAssistance(run.taskRunId, dependencies);
     const request = assistance.request(audioContract(), controller.signal);
     await started;
     controller.abort(new Error("App shutdown"));
@@ -414,7 +419,6 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
     await assert.rejects(request, /App shutdown/u);
     assert.deepEqual(injected, []);
   } finally {
-    unregister();
     await store.close();
   }
 });

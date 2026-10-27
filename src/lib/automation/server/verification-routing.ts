@@ -183,6 +183,11 @@ export function appWorkflowRoutesVerification(taskId: string) {
   return verificationOf(taskId) !== undefined;
 }
 
+/** The source's own Verification route, when it replaces the generic solver route. */
+export function sourceVerificationRoute(taskId: string) {
+  return verificationOf(taskId)?.route;
+}
+
 /**
  * These providers classify submission results inside the workflow. Join the
  * completed execution instead of racing a second owner of browser dialogs.

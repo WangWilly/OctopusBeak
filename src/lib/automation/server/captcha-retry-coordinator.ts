@@ -16,19 +16,16 @@ import {
   appProviderPostSubmitProbe,
   appWorkflowRoutesVerification,
   routeWaitingRunVerification,
+  sourceVerificationRoute,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
 import {
+  completeAppWorkflowHumanAssistance,
   registerAppWorkflowHumanAssistanceRequestHandler,
-  resumeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
-import {
-  YUANTA_TRADE_APP_TASK_ID,
-  routeYuantaTradeAppAssistanceRequest,
-} from "./yuanta-trade-assistance.ts";
 
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
@@ -143,7 +140,7 @@ export async function runCaptchaRetryCampaign(
   }
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const routesYuantaTradeCaptcha = taskId === YUANTA_TRADE_APP_TASK_ID;
+  const sourceRoute = sourceVerificationRoute(taskId);
   const routesCaptcha = appWorkflow && appWorkflowRoutesVerification(taskId);
   const workflowOwnsCaptchaOutcome = WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(taskId);
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
@@ -161,7 +158,6 @@ export async function runCaptchaRetryCampaign(
     const appExecutionOptions = {
       ...executionOptions,
       executionId: executionOptions.executionId ?? randomUUID(),
-      ...(routesYuantaTradeCaptcha ? { verificationRouteOwnedByCampaign: true } : {}),
     };
     let routing: VerificationRoutingOutcome | undefined;
     let settleExecution!: (report: TaskRunReport) => void;
@@ -182,29 +178,18 @@ export async function runCaptchaRetryCampaign(
                 campaign = recordCapturedChallenge(campaign, appExecutionOptions.executionId);
                 await recordActiveRound();
               };
-              const routeOutcome = routesYuantaTradeCaptcha
-                ? await routeYuantaTradeAppAssistanceRequest(request, {
+              const routeOutcome = sourceRoute
+                ? await sourceRoute(request, {
                     provider,
                     settings: launchVerificationSettings,
                     route,
-                    routeOptions: { onChallengeCaptured },
+                    onChallengeCaptured,
                   })
                 : await route({
                 taskId,
                 taskRunId: request.taskRunId,
                 provider,
-                resumeAppWorkflow: async () => {
-                  const current = await provider.automation.taskRunById(request.taskRunId);
-                  if (!current) throw new Error("App workflow run is unavailable for verification resume.");
-                  const status = current.humanAssistanceContract?.completion.mode === "independent"
-                    ? "verified"
-                    : "entered";
-                  await provider.automation.updateHumanAssistanceCompletion(request.taskRunId, status);
-                  const resumedInPlace = await resumeAppWorkflowHumanAssistance(request.taskRunId, status);
-                  if (!resumedInPlace) {
-                    throw new Error("App workflow verification stage is no longer active.");
-                  }
-                },
+                resumeAppWorkflow: () => completeAppWorkflowHumanAssistance(request, provider.automation),
                 finalizeFailed: async (message) => {
                   request.signal.throwIfAborted();
                   throw new Error(message);

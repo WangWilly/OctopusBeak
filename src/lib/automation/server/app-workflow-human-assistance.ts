@@ -6,6 +6,7 @@ import type {
 import type { WorkflowHumanAssistancePort } from "../workflow-executor.ts";
 import { isSolverChallengeKind } from "../verification-config.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { AutomationPersistencePort } from "./store.ts";
 
 type PendingAssistance = Readonly<{
   run: ActiveAutomationTaskRun;
@@ -130,6 +131,31 @@ export async function resumeAppWorkflowHumanAssistance(
   if (!(await waiter.run.transition("running"))) return false;
   waiter.resolve(status);
   return true;
+}
+
+/**
+ * Record the request's stage as complete in the way its contract declares,
+ * then resume the workflow waiting on it.
+ */
+export async function completeAppWorkflowHumanAssistance(
+  request: AppWorkflowHumanAssistanceRequest,
+  persistence: AutomationPersistencePort,
+) {
+  request.signal.throwIfAborted();
+  const current = await persistence.taskRunById(request.taskRunId);
+  const assistance = current?.humanAssistanceContract;
+  if (
+    current?.status !== "waiting_for_human"
+    || assistance?.stageId !== request.contract.stageId
+  ) {
+    throw new Error("App workflow verification stage is no longer current.");
+  }
+  const status = assistance.completion.mode === "independent" ? "verified" : "entered";
+  await persistence.updateHumanAssistanceCompletion(request.taskRunId, status);
+  request.signal.throwIfAborted();
+  if (!await resumeAppWorkflowHumanAssistance(request.taskRunId, status)) {
+    throw new Error("App workflow could not resume the current verification stage.");
+  }
 }
 
 export function hasPendingAppWorkflowHumanAssistance(taskRunId: string) {
