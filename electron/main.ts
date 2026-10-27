@@ -294,6 +294,7 @@ async function start() {
   process.chdir(userData);
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
+    activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,
   });
   pgliteOperationalRuntime = operationalRuntime;
   const runtime = createAutomationRuntime(operationalRuntime.provider);

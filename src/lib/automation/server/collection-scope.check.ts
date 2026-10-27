@@ -18,10 +18,13 @@ import {
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
-  collectionScopeCurrent,
+  collectionScopeAdmitsCommit,
   collectionScopeFingerprint,
-  registerCollectionScope,
+  launchedCollectionScope,
 } from "./collection-scope.ts";
+import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import { createAutomationRunner } from "./runner.ts";
+import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { automationConfigEnv } from "./config-files.ts";
 import { CHECK_PGLITE_RPC, executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
@@ -61,16 +64,57 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
   assert.doesNotMatch(fingerprint, /synthetic/u);
 });
 
-test("a refused run stays refused after the setting is reverted, and a released run is no longer gated", () => {
-  let current: Record<string, string> = { ...launchSettings, ...launchCredentials };
-  const scope = registerCollectionScope("run-sticky", fubon, current);
-  assert.equal(collectionScopeCurrent("run-sticky", () => current), true);
-  current = { ...current, [key("STATEMENT_TYPES")]: "deposit" };
-  assert.equal(collectionScopeCurrent("run-sticky", () => current), false);
-  current = { ...current, [key("STATEMENT_TYPES")]: launchSettings[key("STATEMENT_TYPES")] };
-  assert.equal(collectionScopeCurrent("run-sticky", () => current), false);
-  scope.release();
-  assert.equal(collectionScopeCurrent("run-sticky", () => current), true);
+test("commit admission goes through the runner's active run to its current execution's launched scope", async () => {
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
+  const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
+  let current = launch;
+  const admits = (taskRunId: string) => collectionScopeAdmitsCommit(runner.activeRun(taskRunId), () => current);
+  const observed: Record<string, boolean> = {};
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => { finished = resolve; });
+  try {
+    const { runId } = await runner.start("exchange-rates", provider, {
+      onFinished: () => finished(),
+      runExecution: async (_task, run) => {
+        await run.transition("running");
+        observed.beforeExecution = admits(run.taskRunId);
+        const first = run.beginExecution("round-1", { collectionScope: launchedCollectionScope(fubon, launch) });
+        observed.unchanged = admits(run.taskRunId);
+        current = changed;
+        observed.changed = admits(run.taskRunId);
+        current = launch;
+        observed.reverted = admits(run.taskRunId);
+        first.end();
+        observed.afterEnd = admits(run.taskRunId);
+        assert.equal(first.collectionScope(), null);
+        const second = run.beginExecution("round-2", { collectionScope: launchedCollectionScope(fubon, launch) });
+        observed.secondExecution = admits(run.taskRunId);
+        current = changed;
+        observed.secondChanged = admits(run.taskRunId);
+        second.end();
+        return { summary: null, failure: null };
+      },
+    });
+    await done;
+    assert.deepEqual(observed, {
+      beforeExecution: true,
+      unchanged: true,
+      changed: false,
+      reverted: false,
+      afterEnd: true,
+      secondExecution: true,
+      secondChanged: false,
+    });
+    assert.equal(runner.activeRun(runId), null, "a finished run is no longer active");
+    assert.equal(admits(runId), true);
+    assert.equal(runner.activeRun("no-such-run"), null);
+    assert.equal(admits("no-such-run"), true);
+  } finally {
+    await store.close();
+  }
 });
 
 type Listener = (value: unknown) => void;
@@ -123,18 +167,21 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
   readonly stderr = null;
   readonly workerData: WorkerOptions["workerData"];
   private readonly registry: PGliteFinancialRegistry;
+  private readonly run: ActiveAutomationTaskRun;
   private readonly editSettings: () => Promise<void>;
   constructor(
     workerData: WorkerOptions["workerData"],
     registry: PGliteFinancialRegistry,
+    run: ActiveAutomationTaskRun,
     editSettings: () => Promise<void>,
   ) {
     super();
     this.workerData = workerData;
     this.registry = registry;
+    this.run = run;
     this.editSettings = editSettings;
     setImmediate(() => this.emit("online"));
-    void this.run();
+    void this.work();
   }
   private readonly acks = new Map<string, () => void>();
   private nextEventId = 0;
@@ -144,7 +191,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     this.emit("message", { protocolVersion: 2, kind: "commit-attempt", eventId, attempt });
     await acked;
   }
-  private async run() {
+  private async work() {
     // Report nothing before the supervisor has seen the worker come online.
     await new Promise((resolve) => setImmediate(resolve));
     const start = this.workerData as AppWorkflowWorkerStart;
@@ -152,7 +199,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     const server = createPGliteFinancialRpcServer(
       ports[1],
       createPGliteFinancialLocalPort(this.registry),
-      ({ taskRunId }) => collectionScopeCurrent(taskRunId),
+      ({ taskRunId }) => collectionScopeAdmitsCommit(taskRunId === this.run.taskRunId ? this.run : null),
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
       workflowId: start.workflowId,
@@ -235,8 +282,10 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
+    let activeRun: ActiveAutomationTaskRun | undefined;
     const result = await executeTaskRunForCheck(fubon, provider.automation, {
       taskRunId,
+      onRunOpened: (run) => { activeRun = run; },
       pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
         ...automationConfigEnv({ baseEnv: {} }),
@@ -251,6 +300,7 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
       appWorkflowWorkerFactory: (_path, options) => new CommittingFakeWorker(
         options.workerData,
         registry,
+        activeRun!,
         () => writeConfig(
           { ...launchSettings, ...edit.settings },
           { ...launchCredentials, ...edit.credentials },

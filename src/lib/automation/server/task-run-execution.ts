@@ -9,7 +9,7 @@ import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
-import { registerCollectionScope } from "./collection-scope.ts";
+import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import type {
   WorkflowBrowserPort,
@@ -196,22 +196,6 @@ function createBrowserRuntimeIdentityRecorder(
       if (writeFailed) throw new Error("Browser runtime identity persistence failed.");
     },
   };
-}
-
-async function executeAppWorkflow(
-  context: ExecutionContext,
-  options: AutomationTaskExecutionOptions,
-): Promise<TaskRunReport> {
-  const scope = registerCollectionScope(
-    context.run.taskRunId,
-    context.task,
-    options.launchEnv ?? automationProcessEnv(),
-  );
-  try {
-    return await executeSupervisedAppWorkflow(context, options);
-  } finally {
-    scope.release();
-  }
 }
 
 function pgliteRpcForWorker(options: AutomationTaskExecutionOptions): PGliteWorkflowRpc {
@@ -408,9 +392,10 @@ export async function runAutomationTaskExecution(
   if (!started) return CANCELLED;
   const execution = run.beginExecution(options.executionId ?? randomUUID(), {
     assistanceRoute: options.assistanceRoute,
+    collectionScope: launchedCollectionScope(task, options.launchEnv ?? automationProcessEnv()),
   });
   try {
-    return await executeAppWorkflow({ task, run, execution }, options);
+    return await executeSupervisedAppWorkflow({ task, run, execution }, options);
   } finally {
     execution.end();
   }
