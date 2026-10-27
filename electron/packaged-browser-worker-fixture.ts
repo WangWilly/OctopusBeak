@@ -157,6 +157,10 @@ function summarizeFixtureRun(
     throw new Error("Packaged browser fixture success worker did not preserve its completed outcome.");
   }
   const browserContextClosed = observedPage.isClosed();
+  // The run is terminal here, so its Workflow execution has ended and the App
+  // lookup cannot serve its page (ADR 0067). This confirms the packaged wiring
+  // resolves pages through that lookup; a withPage that skips its own release
+  // is caught by the real-Chromium checks in app-browser-host.check.ts.
   const hostPageReleased = dependencies.pageForRun(run.taskRunId) === null;
   const runtimeDirectory = join(
     userDataDirectory,
