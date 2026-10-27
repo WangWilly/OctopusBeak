@@ -312,7 +312,9 @@ export async function runCaptchaRetryCampaign(
       }
       if (!isCaptchaRetryCampaignReady(campaign)) {
         if (campaign.status !== "exhausted") return failed(report);
-        await provider.automation.appendRunEvent(signalRunEvent("verification-solver-exhausted", {
+        // Written between executions, so it belongs to none; the report below
+        // names the failure itself and nothing classifies this signal.
+        await run.appendEvent(signalRunEvent("verification-solver-exhausted", {
           runId: run.taskRunId,
           occurredAt: new Date().toISOString(),
         }));

@@ -10,7 +10,7 @@ import {
   registerAppWorkflowHumanAssistanceRequestHandler,
   resumeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openExecutionForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const contract: HumanAssistanceContractInput = {
@@ -53,7 +53,7 @@ test("App workflow assistance lets the host route and resume the same waiting ru
     const routeStarted = new Promise<void>((resolve) => { notifyRouteStarted = resolve; });
     const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
+      ...(await openExecutionForCheck(provider.automation, created.taskRunId)),
       onRequest: async (_requestedContract, _signal) => {
         const waiting = await provider.automation.taskRunById(created.taskRunId);
         assert.equal(waiting?.status, "waiting_for_human");
@@ -90,7 +90,7 @@ test("App workflow assistance rejects a failed host route instead of leaving a d
       startedAt: new Date().toISOString(),
     });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
+      ...(await openExecutionForCheck(provider.automation, created.taskRunId)),
       onRequest: async () => { throw new Error("route failed"); },
     });
     const controller = new AbortController();
@@ -116,9 +116,8 @@ test("solver challenges fail when the App has no registered route", async () => 
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
     });
-    const assistance = createAppWorkflowHumanAssistancePort({
-      run: await openTaskRunForCheck(provider.automation, created.taskRunId),
-    });
+    const { run, execution } = await openExecutionForCheck(provider.automation, created.taskRunId);
+    const assistance = createAppWorkflowHumanAssistancePort({ run, execution });
     await assert.rejects(
       Promise.race([
         assistance.request(contract, controller.signal),
@@ -132,6 +131,11 @@ test("solver challenges fail when the App has no registered route", async () => 
     assert.ok((await provider.automation.taskRunById(created.taskRunId))?.events.some(
       (event) => event.code === "solver-route-unavailable",
     ));
+    assert.deepEqual(
+      execution.events().map((event) => event.signal),
+      ["solver-route-unavailable"],
+      "the host signal is logged on the execution that requested assistance",
+    );
     await assert.rejects(
       assistance.request({ ...contract, stageId: "unknown-manual-stage", challengeKind: undefined }, controller.signal),
       /solver route is unavailable/u,
@@ -176,7 +180,7 @@ test("App workflow assistance dispatches the registered route by task and live r
     try {
       const controller = new AbortController();
       const request = createAppWorkflowHumanAssistancePort({
-        run: await openTaskRunForCheck(provider.automation, created.taskRunId),
+        ...(await openExecutionForCheck(provider.automation, created.taskRunId)),
       }).request(contract, controller.signal);
       assert.equal(await request, "entered");
     } finally {
@@ -208,7 +212,8 @@ test("a cancelled run cannot enter a verification stage", async () => {
     try {
       await run.requestStop("cancelled");
       await assert.rejects(
-        createAppWorkflowHumanAssistancePort({ run }).request(contract, new AbortController().signal),
+        createAppWorkflowHumanAssistancePort({ run, execution: run.beginExecution("cancelled-check") })
+          .request(contract, new AbortController().signal),
         /not active for human assistance/u,
       );
       assert.equal(routed, false);

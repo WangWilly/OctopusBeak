@@ -8,9 +8,8 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, requestAssistanceForCheck } from "./task-run-check-support.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
@@ -175,9 +174,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
           const attempt = options.attempt ?? 1;
           executeAttempts.push(attempt);
           const controller = new AbortController();
-          const assistance = createAppWorkflowHumanAssistancePort({ run });
           try {
-            await assistance.request(providerContract, controller.signal);
+            await requestAssistanceForCheck(run, providerContract, controller.signal);
           } catch {
             assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
             return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
@@ -236,9 +234,8 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
       run,
       initialExecutionOptions: {},
       async execute() {
-        const assistance = createAppWorkflowHumanAssistancePort({ run });
         try {
-          await assistance.request(sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
           throw new Error("Cancellation did not interrupt verification assistance.");
         } catch {
           return { summary: null, failure: { code: "cancelled" as const, proven: true } };
@@ -301,9 +298,8 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
         async execute(options) {
           attempts.push(options.attempt ?? 1);
           if ((options.attempt ?? 1) === 1) {
-            const assistance = createAppWorkflowHumanAssistancePort({ run });
             try {
-              await assistance.request(sinopacContract, controller.signal);
+              await requestAssistanceForCheck(run, sinopacContract, controller.signal);
             } catch {
               // The App route rejects the active worker stage to restart it.
             }
@@ -361,9 +357,8 @@ test("exhausted App solver retries finalize with a typed verification failure an
       },
       async execute(options) {
         attempts.push(options.attempt ?? 1);
-        const assistance = createAppWorkflowHumanAssistancePort({ run });
         try {
-          await assistance.request(sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
         } catch {
           // Reject the current challenge so the campaign can admit its next round.
         }
@@ -421,8 +416,7 @@ for (const scenario of [
         async execute(options) {
           attempts.push(options.attempt ?? 1);
           if (scenario.requestsCaptcha) {
-            const assistance = createAppWorkflowHumanAssistancePort({ run });
-            await assistance.request(sinopacContract, controller.signal).catch(() => undefined);
+            await requestAssistanceForCheck(run, sinopacContract, controller.signal).catch(() => undefined);
           }
           return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
         },
@@ -468,9 +462,8 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
       async execute(options) {
         attempts.push(options.attempt ?? 1);
         if ((options.attempt ?? 1) === 1) {
-          const assistance = createAppWorkflowHumanAssistancePort({ run });
           try {
-            await assistance.request(yuantaTradeAudioContract, controller.signal);
+            await requestAssistanceForCheck(run, yuantaTradeAudioContract, controller.signal);
           } catch {
             // The campaign requests a fresh challenge after the worker exits.
           }
@@ -517,9 +510,8 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
         return { kind: "failed" };
       },
       async execute() {
-        const assistance = createAppWorkflowHumanAssistancePort({ run });
         await assert.rejects(
-          assistance.request(yuantaTradeImageContract, controller.signal),
+          requestAssistanceForCheck(run, yuantaTradeImageContract, controller.signal),
           /image challenge has no supported local solver/u,
         );
         return { failure: { code: "verification-failed" as const, proven: true }, summary: null };
@@ -564,9 +556,8 @@ test("a run the store refused until a Canonical Reset is never retried by the CA
       },
       async execute(options) {
         attempts.push(options.attempt ?? 1);
-        const assistance = createAppWorkflowHumanAssistancePort({ run });
         try {
-          await assistance.request(sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
         } catch {
           // The App route rejects the active worker stage to restart it.
         }

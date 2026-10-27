@@ -12,11 +12,11 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type {
   AppWorkflowWorkerHandle,
 } from "./app-workflow-worker-supervisor.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, observingExecutions, openTaskRunForCheck } from "./task-run-check-support.ts";
+import { runAutomationTaskExecution, type AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import {
   registerAppWorkflowHumanAssistanceRequestHandler,
   resumeAppWorkflowHumanAssistance,
@@ -55,6 +55,7 @@ type WorkerScenario =
 const assistanceContract = {
   stageId: "verification",
   title: "Complete verification",
+  challengeKind: "text-captcha",
   targets: [{ id: "answer", label: "Answer", semanticId: "verification-answer", modes: ["type"] }],
   contextRegions: [],
   completion: { mode: "inline", targetIds: ["answer"] },
@@ -787,6 +788,103 @@ test("supervised product invariant failures retain the worker code instead of gu
     assert.equal(run?.appWorkflowOutcome?.errorCode, "workflow-failed");
     assert.equal(run?.appWorkflowOutcome?.summary?.counts.committedCount, 4);
     assert.equal(run?.status, "failed", "a fatal invariant remains a failure with retained receipts");
+  } finally {
+    await store.close();
+  }
+});
+
+const ctbcLaunchEnv = {
+  [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
+  [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+  [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
+};
+const checkHostPage: Pick<AutomationTaskExecutionOptions, "workflowBrowserPortFactory" | "appWorkflowBrowserConnectionForRun"> = {
+  workflowBrowserPortFactory: () => ({
+    async withPage(run) { return await run({} as never); },
+  }),
+  appWorkflowBrowserConnectionForRun: (runId) => ({
+    endpoint: "http://127.0.0.1:43121",
+    targetId: `host-page-${runId}`,
+  }),
+};
+
+test("an execution logs each worker and host event once, unmoved by the store cap and pruning, and proves the unrouted solver", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const taskRunId = await createRun(provider, task);
+    // An earlier execution left the store at its 200-event cap, so the stored
+    // tail after this execution's appends holds nothing past the count a
+    // slice would start at, and the host signal would be lost to it.
+    for (let index = 0; index < 200; index += 1) {
+      await provider.automation.appendRunEvent({
+        runId: taskRunId, stage: "collection", outcome: "advanced", code: `earlier-${index}`,
+        occurredAt: new Date().toISOString(),
+      });
+    }
+    const executions: WorkflowExecution[] = [];
+    // No route is registered: the host writes solver-route-unavailable and the
+    // worker only sees its rejected request.
+    const result = await executeTaskRunForCheck(task, provider.automation, {
+      taskRunId,
+      executions,
+      pgliteRpc: CHECK_PGLITE_RPC,
+      launchEnv: ctbcLaunchEnv,
+      ...checkHostPage,
+      appWorkflowWorkerFactory: (_path, options) =>
+        new TaskExecutionFakeWorker(options.workerData, "assistance-completion", () => true),
+    });
+    assert.equal(result.outcome.errorCode, "verification-configuration-failed");
+    assert.equal(executions.length, 1);
+    assert.deepEqual(
+      executions[0]!.events().map((event) => event.code),
+      ["worker-check-started", "solver-route-unavailable"],
+    );
+    // The fake worker dates its event over 30 days back, so the store pruned it
+    // when the host signal landed; the execution log is unaffected.
+    const stored = (await provider.automation.taskRunById(taskRunId))!.events;
+    assert.equal(stored.length, 200);
+    assert.deepEqual(stored.slice(-2).map((event) => event.code), ["earlier-199", "solver-route-unavailable"]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("two executions of one run each log only their own events, and only the retry's are marked retrying", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const taskRunId = await createRun(provider, task);
+    const executions: WorkflowExecution[] = [];
+    const run = observingExecutions(await openTaskRunForCheck(provider.automation, taskRunId), executions);
+    const execute = (attempt: number) => runAutomationTaskExecution(task, run, {
+      attempt,
+      maxAttempts: 2,
+      executionId: `round-${attempt}`,
+      retrying: attempt > 1,
+      pgliteRpc: CHECK_PGLITE_RPC,
+      launchEnv: ctbcLaunchEnv,
+      ...checkHostPage,
+      appWorkflowWorkerFactory: (_path, options) =>
+        new TaskExecutionFakeWorker(options.workerData, "validation-failure", () => true),
+    });
+    assert.equal((await execute(1)).failure?.code, "source-validation-failed");
+    assert.equal(run.currentExecution(), null, "the execution ends with its workflow start");
+    const second = await execute(2);
+    assert.equal(second.failure?.code, "source-validation-failed");
+    assert.deepEqual(executions.map((execution) => execution.executionId), ["round-1", "round-2"]);
+    assert.deepEqual(executions[0]!.events().map((event) => [event.code, event.retrying]), [["worker-check-started", undefined]]);
+    assert.deepEqual(executions[1]!.events().map((event) => [event.code, event.retrying]), [["worker-check-started", true]]);
+    const stored = (await provider.automation.taskRunById(taskRunId))!.events;
+    assert.deepEqual(stored.map((event) => [event.code, event.retrying]), [
+      ["worker-check-started", undefined],
+      ["worker-check-started", true],
+    ]);
+    await run.finish(second);
   } finally {
     await store.close();
   }

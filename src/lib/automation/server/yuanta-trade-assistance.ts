@@ -141,14 +141,14 @@ export async function routeYuantaTradeAppAssistanceRequest(
   // ServiSign certificate selection is a native prerequisite the solver
   // cannot complete.
   if (!isSupportedAutomaticStage(request.contract)) {
-    await dependencies.provider.automation.appendRunEvent(signalRunEvent("solver-challenge-unsupported", {
+    await request.execution.appendEvent(signalRunEvent("solver-challenge-unsupported", {
       runId: request.taskRunId,
       occurredAt: new Date().toISOString(),
     }));
     throw new Error("Yuanta Trade verification stage is not supported by the automatic solver.");
   }
   if (request.contract.stageId === "yuanta-trade-challenge") {
-    await dependencies.provider.automation.appendRunEvent(signalRunEvent("solver-challenge-unsupported", {
+    await request.execution.appendEvent(signalRunEvent("solver-challenge-unsupported", {
       runId: request.taskRunId,
       occurredAt: new Date().toISOString(),
     }));
