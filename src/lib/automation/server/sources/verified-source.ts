@@ -12,6 +12,9 @@ import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, Wo
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { AutomationPersistenceProvider } from "../store.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
+import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-assistance.ts";
+import type { AutomationSettingsFile } from "../config-files.ts";
+import type { routeWaitingRunVerification, VerificationRoutingOutcome } from "../verification-routing.ts";
 
 /**
  * How the App hosts a workflow. A browser workflow gets a run-scoped page; a
@@ -56,6 +59,11 @@ export type VerifiedWorkflow = Readonly<
        * its execution instead of probing the page after submit.
        */
       rejection?: RejectionEvidence;
+      /**
+       * Replaces the generic solver route for this source's verification
+       * stages. Loads its module only when a stage is requested.
+       */
+      route?: SourceVerificationRoute;
     }>;
     input: Readonly<{
       /** Each sign-in field `LIBRETTO_CLOUD_<NAME>` becomes the input credential `<name>`. */
@@ -66,11 +74,22 @@ export type VerifiedWorkflow = Readonly<
     }>;
     /** Imported only when a run starts, so the main process never loads workflow code. */
     load(): Promise<WorkflowDefinition["run"]>;
-    registerHumanAssistance?: (
-      provider: AutomationPersistenceProvider,
-    ) => Promise<() => void> | (() => void);
   }
 >;
+
+/** What the CAPTCHA Retry Campaign hands a source's own Verification route. */
+export type SourceVerificationRouteDependencies = Readonly<{
+  provider: AutomationPersistenceProvider;
+  settings: AutomationSettingsFile;
+  route: typeof routeWaitingRunVerification;
+  onChallengeCaptured: () => Promise<void>;
+}>;
+
+/** Resolves undefined when the request was aborted mid-route. */
+export type SourceVerificationRoute = (
+  request: AppWorkflowHumanAssistanceRequest,
+  dependencies: SourceVerificationRouteDependencies,
+) => Promise<VerificationRoutingOutcome | undefined>;
 
 /**
  * ADR 0057: everything the App knows about one Verified source. Credential

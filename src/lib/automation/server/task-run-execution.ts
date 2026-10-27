@@ -43,7 +43,6 @@ import {
   workflowInputForTask,
   workflowRuntimeForTask,
   workflowNeedsPgliteRpc,
-  registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
@@ -62,8 +61,6 @@ export type AutomationTaskExecutionOptions = {
   /** The authenticated PGlite endpoint, required by every workflow that commits or reads through it. */
   pgliteRpc?: PGliteWorkflowRpc;
   launchVerificationSettings?: AutomationSettingsFile;
-  /** The surrounding CAPTCHA campaign installs this task's App route. */
-  verificationRouteOwnedByCampaign?: boolean;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
   attempt?: number;
@@ -249,7 +246,6 @@ async function executeSupervisedAppWorkflow(
   };
 
   const { signal, forceSignal } = execution.run;
-  let unregisterHumanAssistance: (() => void) | undefined;
   let ending: ExecutionEnding;
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const observedEvents: WorkflowRunEvent[] = [];
@@ -290,12 +286,6 @@ async function executeSupervisedAppWorkflow(
       nativeDialogOwner: "worker",
     });
     const humanAssistance = createAppWorkflowHumanAssistancePort({ run: execution.run });
-    if (!options.verificationRouteOwnedByCampaign) {
-      unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
-        workflowId,
-        { automation: execution.run.persistence },
-      );
-    }
 
     const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
       signal.throwIfAborted();
@@ -356,8 +346,6 @@ async function executeSupervisedAppWorkflow(
       cancelled: signal.aborted,
       workerSummary: workerOutcome?.summary ?? null,
     };
-  } finally {
-    unregisterHumanAssistance?.();
   }
 
   const events = await executionEvents(execution, observedEvents, priorEventCount);

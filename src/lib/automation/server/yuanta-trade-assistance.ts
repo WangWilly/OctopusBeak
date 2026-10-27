@@ -1,8 +1,7 @@
 import { signalRunEvent } from "../run-event.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import {
-  registerAppWorkflowHumanAssistanceRequestHandler,
-  resumeAppWorkflowHumanAssistance,
+  completeAppWorkflowHumanAssistance,
   type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
@@ -131,27 +130,6 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
     )),
     inspectCompletion: guardedAsync(signal, host.inspectCompletion),
   };
-}
-
-async function resumeCurrentAssistance(
-  request: AppWorkflowHumanAssistanceRequest,
-  provider: AutomationPersistenceProvider,
-) {
-  request.signal.throwIfAborted();
-  const current = await provider.automation.taskRunById(request.taskRunId);
-  const assistance = current?.humanAssistanceContract;
-  if (
-    current?.status !== "waiting_for_human"
-    || assistance?.stageId !== request.contract.stageId
-  ) {
-    throw new Error("Yuanta Trade assistance stage is no longer current.");
-  }
-  const status = assistance.completion.mode === "independent" ? "verified" : "entered";
-  await provider.automation.updateHumanAssistanceCompletion(request.taskRunId, status);
-  request.signal.throwIfAborted();
-  if (!await resumeAppWorkflowHumanAssistance(request.taskRunId, status)) {
-    throw new Error("Yuanta Trade App workflow could not resume the current assistance stage.");
-  }
 }
 
 export async function routeYuantaTradeAppAssistanceRequest(
@@ -302,7 +280,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
       },
     ),
     resumeAppWorkflow: async () => {
-      await resumeCurrentAssistance(request, dependencies.provider);
+      await completeAppWorkflowHumanAssistance(request, dependencies.provider.automation);
       assistanceResumed = true;
     },
     finalizeFailed: async () => {
@@ -324,22 +302,4 @@ export async function routeYuantaTradeAppAssistanceRequest(
     throw new Error("Yuanta Trade verification did not complete the current stage.");
   }
   return outcome;
-}
-
-/** Register the task-scoped handler while an App-owned Yuanta Trade run is active. */
-export function registerYuantaTradeAppAssistanceHandler(
-  dependencies: YuantaTradeAppAssistanceDependencies,
-) {
-  return registerAppWorkflowHumanAssistanceRequestHandler(
-    YUANTA_TRADE_APP_TASK_ID,
-    async (request) => {
-      if (request.taskId !== YUANTA_TRADE_APP_TASK_ID) {
-        throw new Error("Yuanta Trade assistance received a request for another App task.");
-      }
-      const outcome = await routeYuantaTradeAppAssistanceRequest(request, dependencies);
-      if (outcome?.kind === "retryable") {
-        throw new Error("Yuanta Trade verification failed; new CAPTCHA round required.");
-      }
-    },
-  );
 }

@@ -8,7 +8,6 @@ import {
   previewWorkflowInput,
   selectedAttachedPreviewProducts,
 } from "../../preview-sources/workflow.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { selectStatementTypes } from "../statement-selection.ts";
 import {
@@ -35,9 +34,6 @@ type AppWorkflowRegistration = Readonly<{
   definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
   runtime: AppWorkflowRuntime;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
-  registerHumanAssistance?: (
-    provider: AutomationPersistenceProvider,
-  ) => Promise<() => void> | (() => void);
 }>;
 
 export type AppWorkflowRegistryDependencies = Readonly<{
@@ -91,7 +87,7 @@ function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.Proce
 }
 
 function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegistration {
-  const { runtime, verification: _verification, input: _input, load, registerHumanAssistance, ...flags } = source.workflow;
+  const { runtime, verification: _verification, input: _input, load, ...flags } = source.workflow;
   return {
     definition: {
       id: source.task.id,
@@ -102,7 +98,6 @@ function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegist
     },
     runtime,
     inputFromEnvironment: (environment) => verifiedWorkflowInput(source, environment),
-    ...(registerHumanAssistance ? { registerHumanAssistance } : {}),
   };
 }
 
@@ -185,13 +180,4 @@ export function workflowStartUrlForTask(workflowId: string | undefined) {
 export function workflowBrowserProfileForTask(workflowId: string | undefined) {
   const runtime = workflowRuntimeForTask(workflowId);
   return runtime.kind === "browser" ? runtime.browserProfile : undefined;
-}
-
-/** Register any task-scoped App assistance route for the lifetime of one run. */
-export async function registerWorkflowHumanAssistanceForTask(
-  workflowId: string | undefined,
-  provider: AutomationPersistenceProvider,
-) {
-  const registration = workflowRegistration(workflowId);
-  return await registration?.registerHumanAssistance?.(provider) ?? (() => {});
 }
