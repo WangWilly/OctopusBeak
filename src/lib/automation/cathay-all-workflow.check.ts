@@ -211,7 +211,6 @@ function collectionDependencies(
     collectDomestic: async () =>
       override.domestic ?? {
         requests: DOMESTIC_REQUESTS,
-        accountNumbers: [CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo],
         captureCount: 1,
         rowCount: 3,
       },
@@ -365,7 +364,6 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
     collectionDependencies({
       domestic: {
         requests: DOMESTIC_REQUESTS.slice(0, 0),
-        accountNumbers: [CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo],
         captureCount: 1,
         rowCount: 0,
       },
@@ -554,7 +552,6 @@ test("Cathay malformed source decoding is isolated to its product and keeps the 
         source.text.decode(Uint8Array.from([0xff]), "utf-8");
         return {
           requests: DOMESTIC_REQUESTS,
-          accountNumbers: [CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo],
           captureCount: 1,
           rowCount: 3,
         };
