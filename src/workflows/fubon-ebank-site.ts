@@ -22,6 +22,11 @@ export type FubonRoute = Readonly<{
   link(scope: BrowserScope): Locator;
   /** The header-frame menu that reveals the task link, such as "#menu_CLN". */
   menu?: string;
+  /**
+   * Click the task link where it is even when it carries a real href, so the
+   * bank performs its own redirect instead of the site navigating to the href.
+   */
+  clickInPlace?: boolean;
   /** Whether this scope shows the product's page. It may throw a typed absence. */
   ready(scope: BrowserScope): Promise<boolean>;
 }>;
@@ -99,7 +104,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
     const present = openMenu ? null : await ifFound(findLink(route, LINK_PRESENT_TIMEOUT_MS));
     if (!present && !openMenu && route.menu) return await trigger(route, true);
     const { scope, link } = present ?? await findLink(route, LINK_TIMEOUT_MS);
-    await activateTolerantly(link, scope);
+    await activateTolerantly(link, route.clickInPlace ? undefined : scope);
   };
 
   const showing = (route: FubonRoute, timeoutMs?: number) =>
