@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { indexCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -9,7 +10,7 @@ import {
   buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
-  indexCtbcCurrentDepositFinancialCaptures,
+  ctbcCurrentBalanceCaptureMatching,
   resolveCtbcAccountScope,
   stageCtbcDeposit,
   type CtbcDepositSourceSnapshot,
@@ -150,16 +151,18 @@ assert.doesNotMatch(
   /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|deviceId/u,
 );
 
-const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures([
-  existingIdentity,
-]);
-assert.equal(
-  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }),
-  existingIdentity,
+const admittedCaptures = indexCurrentBalanceCaptures(
+  [existingIdentity],
+  ctbcCurrentBalanceCaptureMatching,
 );
 assert.equal(
-  admittedCaptureFor({ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }),
-  undefined,
+  admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }])
+    .matched[0]?.capture,
+  existingIdentity,
+);
+assert.throws(
+  () => admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }]),
+  /^Error: CTBC current deposit snapshot has no admitted account identity\.$/u,
 );
 assert.throws(
   () =>
