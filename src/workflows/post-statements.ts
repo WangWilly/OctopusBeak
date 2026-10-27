@@ -15,8 +15,8 @@ import {
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -41,7 +41,6 @@ import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
-  readPostCurrentDepositBalances,
   parsePostCurrentDepositBalanceSnapshot,
   POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
   POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -50,6 +49,7 @@ import {
   POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
   type ExistingPostCurrentDepositFinancialCapture,
+  type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
@@ -110,19 +110,26 @@ export type PostStatementResponseMetadata = Readonly<{
 
 export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
 
-export type PostStatementsRunDependencies = {
-  text?: SourceTextPort;
-  signal?: AbortSignal;
-  event?: WorkflowContext["event"];
-  collectSourceStatements?: (
-    page: Page,
-    text: SourceTextPort,
-    signal?: AbortSignal,
-    event?: WorkflowContext["event"],
-  ) => Promise<PostQueriedStatement[]>;
-  readCurrentDepositBalances?: typeof readPostCurrentDepositBalances;
-  observedAt?: string;
-};
+/** Every account's terminal statement read from iPost, and when the read began (ADR 0065). */
+export type PostDepositSourceSnapshot = Readonly<{
+  observedAt: string;
+  statements: readonly PostQueriedStatement[];
+}>;
+
+export type PostReadCurrentDepositBalances = (
+  input: Readonly<{ observedAt: string }>,
+) => Promise<readonly PostCurrentDepositBalanceRow[]>;
+
+type PostProductRunner = (
+  page: Page,
+  input: PostWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+) => Promise<ProductCollectionSummary>;
+
+export type PostWorkflowDependencies = Readonly<{
+  collectDeposit?: PostProductRunner;
+}>;
 
 function requireCredential(
   credentials: PostCredentials,
@@ -424,7 +431,7 @@ export function postCaptchaGenerationUnchanged(
 async function openDetailPageWithSignal(
   page: Page,
   index: number,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<void> {
   await withAbort(page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }), signal);
   await withAbort(
@@ -571,8 +578,8 @@ export function parsePostStatementResponse(input: Readonly<{
 
 async function queryCurrentStatement(
   page: Page,
-  text: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
+  text: SourceTextPort,
+  signal: AbortSignal,
 ) {
   if (!(await withAbort(sixMonthDateInput(page).isChecked(), signal))) {
     await withAbort(sixMonthDateLabel(page).click(), signal);
@@ -582,7 +589,7 @@ async function queryCurrentStatement(
     { timeout: 60_000 },
   );
   void responsePromise.catch(() => undefined);
-  signal?.throwIfAborted();
+  signal.throwIfAborted();
   await withAbort(
     page
       .locator("a.css_btn_class:visible")
@@ -592,7 +599,7 @@ async function queryCurrentStatement(
     signal,
   );
   const response = await withAbort(responsePromise, signal);
-  signal?.throwIfAborted();
+  signal.throwIfAborted();
   const [body, headers] = await Promise.all([
     withAbort(response.body(), signal),
     response.allHeaders(),
@@ -610,13 +617,25 @@ async function queryCurrentStatement(
   });
 }
 
+/** Read every visible account's statement from iPost: the only part of the deposit run that touches the page. */
+export async function readPostDepositSource(
+  page: Page,
+  _input: PostWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<PostDepositSourceSnapshot> {
+  const observedAt = postObservedAt(new Date(context.now()));
+  const statements = await collectPostStatementSources(page, context.text, context.signal, product.event);
+  return { observedAt, statements };
+}
+
 async function collectPostStatementSources(
   page: Page,
-  text: SourceTextPort = strictSourceText,
-  signal?: AbortSignal,
-  event?: WorkflowContext["event"],
+  text: SourceTextPort,
+  signal: AbortSignal,
+  event: ProductCollectionHandle["event"],
 ): Promise<PostQueriedStatement[]> {
-  signal?.throwIfAborted();
+  signal.throwIfAborted();
   await withAbort(
     page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }),
     signal,
@@ -630,16 +649,16 @@ async function collectPostStatementSources(
   const accountCount = await withAbort(visibleDetailLinks(page).count(), signal);
   if (accountCount === 0)
     throw new Error("No Post accounts are visible in the authenticated session.");
-  await event?.("collection", "started", "collection-started", {
+  await event("collection", "started", "collection-started", {
     completed: 0,
     total: accountCount,
   });
 
   const statements: PostQueriedStatement[] = [];
   for (let index = 0; index < accountCount; index += 1) {
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     await openDetailPageWithSignal(page, index, signal);
-    await event?.("decoding", "started", "source-decoding-started", {
+    await event("decoding", "started", "source-decoding-started", {
       completed: index,
       total: accountCount,
     });
@@ -647,7 +666,7 @@ async function collectPostStatementSources(
     try {
       statement = await queryCurrentStatement(page, text, signal);
     } catch (error) {
-      await event?.(
+      await event(
         error instanceof SourceTextIntegrityError ? "decoding" : "validation",
         "failed",
         error instanceof SourceTextIntegrityError
@@ -657,13 +676,13 @@ async function collectPostStatementSources(
       );
       throw error;
     }
-    signal?.throwIfAborted();
-    await event?.("decoding", "advanced", "source-decoding-completed", {
+    signal.throwIfAborted();
+    await event("decoding", "advanced", "source-decoding-completed", {
       completed: index + 1,
       total: accountCount,
     });
     statements.push(statement);
-    await event?.("collection", "advanced", "account-source-collected", {
+    await event("collection", "advanced", "account-source-collected", {
       completed: index + 1,
       total: accountCount,
     });
@@ -831,27 +850,20 @@ function postCaptureId(observedAt: string, index: number): string {
     .slice(0, 24)}-${Date.now()}-${index}`;
 }
 
-type StagedPostStatements = Readonly<{
-  accountCount: number;
-  rowCount: number;
-  items: readonly ProductStageRequest[];
-}>;
-
-async function stagePostStatements(
-  page: Page,
-  overrides: PostStatementsRunDependencies,
-): Promise<StagedPostStatements> {
-  const text = overrides.text ?? strictSourceText;
-  overrides.signal?.throwIfAborted();
-  const statements = await (
-    overrides.collectSourceStatements ?? collectPostStatementSources
-  )(page, text, overrides.signal, overrides.event);
+/** Admit a read snapshot, read current balances for the admitted accounts, and stage both. */
+export async function stagePostDeposit(
+  snapshot: PostDepositSourceSnapshot,
+  _input: PostWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  readCurrentBalances: PostReadCurrentDepositBalances,
+): Promise<ProductCollectionSummary> {
+  const { observedAt, statements } = snapshot;
   if (statements.length === 0)
     throw new Error("No Post accounts reached a terminal source result.");
-  const observedAt = overrides.observedAt ?? postObservedAt();
   const captures: PostDomesticDepositValidatedEvidence[] = [];
   for (const [index, statement] of statements.entries()) {
-    overrides.signal?.throwIfAborted();
+    context.signal.throwIfAborted();
     const admission = admitPostDomesticDepositCaptureEvidence(
       buildPostDomesticDepositCapture(statement, observedAt),
     );
@@ -860,13 +872,11 @@ async function stagePostStatements(
         `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
       );
     captures.push(admission.capture);
-    await overrides.event?.("validation", "advanced", "source-validation-completed", {
+    await product.event("validation", "advanced", "source-validation-completed", {
       completed: index + 1,
       total: statements.length,
     });
   }
-  const readCurrent =
-    overrides.readCurrentDepositBalances ?? readPostCurrentDepositBalances;
   const captureEntries = captures.map((capture, index) => ({
     capture,
     captureId: postCaptureId(observedAt, index),
@@ -900,15 +910,15 @@ async function stagePostStatements(
   // row still commits only after its statement identity item has committed.
   const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
   if (financialCaptures.length > 0) {
-    await overrides.event?.("collection", "started", "current-balance-collection-started");
-    let currentRows: Awaited<ReturnType<typeof readCurrent>>;
+    await product.event("collection", "started", "current-balance-collection-started");
+    let currentRows: readonly PostCurrentDepositBalanceRow[];
     try {
-      currentRows = await readCurrent(page, { observedAt });
+      currentRows = await readCurrentBalances({ observedAt });
     } catch (error) {
-      await overrides.event?.("validation", "failed", "current-balance-rejected");
+      await product.event("validation", "failed", "current-balance-rejected");
       throw error;
     }
-    overrides.signal?.throwIfAborted();
+    context.signal.throwIfAborted();
     const admittedCaptureFor = indexPostCurrentDepositFinancialCaptures(financialCaptures);
     for (const row of currentRows) {
       const matching = admittedCaptureFor(row);
@@ -922,50 +932,63 @@ async function stagePostStatements(
         ),
       );
     }
-    await overrides.event?.("validation", "completed", "current-balance-validation-completed", {
+    await product.event("validation", "completed", "current-balance-validation-completed", {
       completed: currentBalanceCaptures.length,
       total: currentRows.length,
     });
   }
 
-  overrides.signal?.throwIfAborted();
-  const items = [
-      ...financialInputs.map((entry) => ({
-        product: "domestic-deposit", itemKey: entry.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-          request: { capture: entry.financialCapture },
-        },
-      } as const)),
-      ...currentBalanceCaptures.map((capture) => ({
-        product: "current-balance",
-        itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(capture),
-        },
-      } as const)),
-  ];
+  context.signal.throwIfAborted();
+  product.stage(
+    ...financialInputs.map((entry) => ({
+      product: "domestic-deposit", itemKey: entry.captureId,
+      command: {
+        kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+        request: { capture: entry.financialCapture },
+      },
+    } as const)),
+    ...currentBalanceCaptures.map((capture) => ({
+      product: "current-balance",
+      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+      command: {
+        kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+        request: currentDepositBalanceCommandRequest(capture),
+      },
+    } as const)),
+  );
   return {
-    accountCount: statements.length,
+    sourceCaptureCount: statements.length,
     rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
-    items,
   };
+}
+
+async function runPostDeposit(
+  page: Page,
+  input: PostWorkflowInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  const snapshot = await readPostDepositSource(page, input, context, product);
+  return await stagePostDeposit(
+    snapshot,
+    input,
+    context,
+    product,
+    (options) => readPostCurrentDepositBalancesWithText(page, context.text, context.signal, options),
+  );
 }
 
 export async function runPostProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
-  overrides: Readonly<Pick<
-    PostStatementsRunDependencies,
-    "collectSourceStatements" | "readCurrentDepositBalances"
-  >> = {},
+  overrides: PostWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
+  const collectDeposit = overrides.collectDeposit ?? runPostDeposit;
 
   return await context.browser.withPage(async (page) => {
     await signIn(context, page, POST_SOURCE, postSignInPlan(parsed.data.credentials));
@@ -979,28 +1002,10 @@ export async function runPostProviderWorkflow(
       event: context.event,
       productFailure: context.productFailure,
       collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
-        const staged = await stagePostStatements(page, {
-          text: context.text,
-          signal: context.signal,
-          event: product.event,
-          observedAt: postObservedAt(new Date(context.now())),
-          ...(overrides.collectSourceStatements
-            ? { collectSourceStatements: overrides.collectSourceStatements }
-            : {}),
-          readCurrentDepositBalances: overrides.readCurrentDepositBalances ?? ((candidatePage, input) =>
-            readPostCurrentDepositBalancesWithText(
-              candidatePage,
-              context.text,
-              context.signal,
-              input,
-            )),
-        });
-        product.stage(...staged.items);
-        accountCount = staged.accountCount;
-        return {
-          sourceCaptureCount: staged.accountCount,
-          rowCount: staged.rowCount,
-        };
+        const collected = await collectDeposit(page, parsed.data, context, product);
+        // Every admitted account is one source capture.
+        accountCount = collected.sourceCaptureCount;
+        return collected;
       },
       financialCommit: context.financialCommit,
     });

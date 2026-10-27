@@ -5,8 +5,12 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
+  readSinopacDepositSource,
   runSinopacProviderWorkflow,
+  stageSinopacDeposit,
   type SinopacAccount,
+  type SinopacDepositSource,
+  type SinopacProviderWorkflowDependencies,
   type SinopacRawTransactionRow,
   type SinopacTransactionResponse,
   type SinopacWorkflowInput,
@@ -108,6 +112,19 @@ type Scenario = Readonly<{
   current?: readonly SinopacCurrentDepositBalanceRow[];
 }>;
 
+// The real read and build halves over a fake SinoPac source.
+function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDependencies {
+  return {
+    collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
+      await readSinopacDepositSource(source, depositInput, context, product),
+      depositInput,
+      context,
+      product,
+      source.readCurrentBalances,
+    ),
+  };
+}
+
 function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "sinopac-golden-run",
@@ -126,12 +143,12 @@ async function record(name: string, scenario: Scenario): Promise<Record<string, 
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     const recorder = recordDepositCommit();
-    const output = await runSinopacProviderWorkflow(workflowContext(recorder), input, {
-      readAccounts: async () => scenario.accounts.map(({ response: _response, ...account }) => account),
+    const output = await runSinopacProviderWorkflow(workflowContext(recorder), input, depositFrom({
+      listAccounts: async () => scenario.accounts.map(({ response: _response, ...account }) => account),
       queryTransactions: async (account) =>
         scenario.accounts.find((candidate) => candidate.DataValue === account.DataValue)!.response,
-      readCurrentDepositBalances: async () => scenario.current ?? [],
-    });
+      readCurrentBalances: async () => scenario.current ?? [],
+    }));
     const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);
     return recorded;
@@ -211,14 +228,14 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     await assert.rejects(
-      runSinopacProviderWorkflow(workflowContext(recorder), input, {
-        readAccounts: async () => [{ DataText: "SYNTHETIC TWD", DataValue: twdAccount, DisplayText: "TWD" }],
+      runSinopacProviderWorkflow(workflowContext(recorder), input, depositFrom({
+        listAccounts: async () => [{ DataText: "SYNTHETIC TWD", DataValue: twdAccount, DisplayText: "TWD" }],
         queryTransactions: async () => rows(
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER A"),
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER B"),
         ),
-        readCurrentDepositBalances: async () => [],
-      }),
+        readCurrentBalances: async () => [],
+      })),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
         assert.equal(error.errorCode, "source-validation-failed");
