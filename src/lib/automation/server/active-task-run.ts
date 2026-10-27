@@ -21,6 +21,7 @@ import type {
   HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { HumanAssistanceRoute } from "./app-workflow-human-assistance.ts";
+import type { LaunchedCollectionScope } from "./collection-scope.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -81,8 +82,9 @@ export type HumanAssistanceWaiter = Readonly<{
  * (ADR 0067). It records every event of that start once, worker and host
  * events alike, and persists each through the run's write chain. "This
  * execution's events" is its log; nothing reads stored events back for it.
- * It also holds its human assistance route and at most one waiter, both
- * released when it ends.
+ * It also holds its human assistance route and at most one waiter, and the
+ * Collection scope version its commits are checked against, all released
+ * when it ends.
  */
 export type WorkflowExecution = Readonly<{
   executionId: string;
@@ -95,6 +97,8 @@ export type WorkflowExecution = Readonly<{
   holdAssistance(): HumanAssistanceWaiter;
   /** The held waiter, or null. */
   pendingAssistance(): HumanAssistanceWaiter | null;
+  /** The Collection scope version given when this execution began; null once it has ended or when none was given. */
+  collectionScope(): LaunchedCollectionScope | null;
   /** Every event this execution recorded, in the order it recorded them. */
   events(): readonly WorkflowRunEvent[];
   /**
@@ -112,6 +116,8 @@ export type WorkflowExecution = Readonly<{
 export type WorkflowExecutionOptions = Readonly<{
   /** Answers the execution's human assistance requests. Fixed before the worker can ask. */
   assistanceRoute?: HumanAssistanceRoute;
+  /** The Collection scope version this execution was launched with. Fixed before the worker can commit. */
+  collectionScope?: LaunchedCollectionScope;
 }>;
 
 /** The sole owner of one Automation Task Run until its finalization (ADR 0052). */
@@ -327,6 +333,7 @@ export function openActiveTaskRun(input: Readonly<{
     const log: WorkflowRunEvent[] = [];
     let ended = false;
     let route = options.assistanceRoute ?? null;
+    let scope = options.collectionScope ?? null;
     let waiter: HumanAssistanceWaiter | null = null;
     const endedError = () => new Error(`Workflow execution ${executionId} has ended.`);
     const execution: WorkflowExecution = {
@@ -358,6 +365,7 @@ export function openActiveTaskRun(input: Readonly<{
         return held;
       },
       pendingAssistance: () => waiter,
+      collectionScope: () => scope,
       events: () => [...log],
       appendEvent(event) {
         if (ended) return Promise.reject(new Error(`Workflow execution ${executionId} has ended.`));
@@ -367,6 +375,7 @@ export function openActiveTaskRun(input: Readonly<{
       end() {
         ended = true;
         route = null;
+        scope = null;
         waiter?.reject(endedError());
         if (currentExecution === execution) currentExecution = null;
       },

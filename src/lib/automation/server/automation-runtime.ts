@@ -48,6 +48,7 @@ export function createAutomationRuntime(
     },
     rehydrate: () => hydrateAutomationRuntimeState(provider, state),
     activeTaskIds: () => runner.activeTaskIds(),
+    activeRun: (taskRunId: string) => runner.activeRun(taskRunId),
     hasActive: () => runner.hasActive(),
 
     async run(taskId: string) {

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { collectionScopeCurrent } from "../src/lib/automation/server/collection-scope.ts";
+import { collectionScopeAdmitsCommit } from "../src/lib/automation/server/collection-scope.ts";
+import type { ActiveAutomationTaskRun } from "../src/lib/automation/server/active-task-run.ts";
 import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
 import type { PGliteFinancialPort } from "./pglite-financial-registry.ts";
 import {
@@ -31,6 +32,8 @@ export type PGliteOperationalRuntime = Readonly<{
 
 export type PGliteOperationalRuntimeOptions = {
   dataDir: string;
+  /** The runner's lookup; commit admission reaches the run's current execution through it. */
+  activeRun: (taskRunId: string) => ActiveAutomationTaskRun | null;
   workerPath?: string;
   /** Protocol-test seam; production creates exactly one worker client. */
   worker?: PGliteViewWorkerClient;
@@ -56,7 +59,7 @@ export function createPGliteOperationalRuntime(
       operational: worker.operationalProvider,
       financial: worker.financial,
     },
-    isCommitAdmissible: ({ taskRunId }) => collectionScopeCurrent(taskRunId),
+    isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(options.activeRun(taskRunId)),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
     ...worker.operationalProvider,
