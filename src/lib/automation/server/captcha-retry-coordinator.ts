@@ -35,7 +35,6 @@ export type CaptchaRetryCoordinatorDependencies = {
   /** Finds the page each round's Workflow execution hosts, for verification routing. */
   pageForRun: PageForRun;
   launchVerificationSettings: AutomationSettingsFile;
-  initialExecutionOptions: AutomationTaskExecutionOptions;
   execute: (options: AutomationTaskExecutionOptions) => Promise<TaskRunReport>;
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
@@ -259,10 +258,7 @@ export async function runCaptchaRetryCampaign(
     return { report: await execute(executionOptions) };
   };
 
-  let executionOptions: AutomationTaskExecutionOptions = {
-    ...dependencies.initialExecutionOptions,
-    launchVerificationSettings,
-  };
+  let executionOptions: AutomationTaskExecutionOptions = {};
   while (true) {
     const { report, routing } = await executeAndRoute(executionOptions);
     // The typed assistance callback can advance the campaign during execute.
@@ -329,8 +325,6 @@ export async function runCaptchaRetryCampaign(
         return report;
       }
       executionOptions = {
-        ...dependencies.initialExecutionOptions,
-        launchVerificationSettings,
         attempt: nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
         executionId: randomUUID(),

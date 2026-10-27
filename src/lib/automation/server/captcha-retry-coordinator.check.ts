@@ -48,7 +48,6 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
       pageForRun: noHostedPage,
       run,
       launchVerificationSettings: readAutomationSettings(),
-      initialExecutionOptions: {},
       routeWaitingRunVerification: async () => {
         verificationRoutes += 1;
         return { kind: "resumed" };
@@ -76,7 +75,6 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
       pageForRun: noHostedPage,
       run,
       launchVerificationSettings: readAutomationSettings(),
-      initialExecutionOptions: {},
       async execute() {
         executions += 1;
         await run.recordCommitAttempt({ phase: "started", attemptId: "sinopac-attempt", product: null, total: 1 });

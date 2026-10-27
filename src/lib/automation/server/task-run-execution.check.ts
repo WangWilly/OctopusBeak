@@ -628,6 +628,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     const activeRun = await provider.automation.taskRunById(taskRunId);
     assert.equal(activeRun?.status, "running", "execution leaves the terminal transition to its owner");
     assert.deepEqual(activeRun?.browserRuntime, runtimeIdentity);
+    assert.deepEqual(active.current().browserRuntime, runtimeIdentity, "the run owner wrote the identity it holds");
     assert.equal(activeRun?.appWorkflowOutcome, null);
 
     await active.finish(outcome);
