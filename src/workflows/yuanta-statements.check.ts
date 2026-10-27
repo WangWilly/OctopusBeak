@@ -21,6 +21,8 @@ import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-brows
 import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -51,6 +53,7 @@ const {
   deriveYuantaDomesticDepositQueryRange,
   downloadYuantaStatementRows,
   readYuantaDepositAccountOptions,
+  readYuantaDepositSource,
   runYuantaStatements,
   stageYuantaDeposit,
   statementRowsFromDownloadedCsv,
@@ -327,7 +330,6 @@ assert.doesNotMatch(source, /from ["']node:fs\/promises["']|writeBankTransaction
 assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic provider must not write standalone logs or expose a legacy workflow entry");
 assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
 assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
-assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
 const lateNotice = new LateNotice();
 const dismissingLateNotice = dismissYuantaBankNotice(noticeFrame(lateNotice), 100);
@@ -338,58 +340,6 @@ assert.equal(lateNotice.clicked, true);
 const absentNotice = new LateNotice();
 assert.equal(await dismissYuantaBankNotice(noticeFrame(absentNotice), 10), false);
 assert.equal(absentNotice.clicked, false);
-
-function accountOptionsPage(
-  options: Array<{ value: string; label: string }>,
-): never {
-  const selectLocator = {
-    first: () => ({
-      waitFor: async ({ state }: { state: "attached" }) => {
-        assert.equal(state, "attached");
-      },
-    }),
-  };
-  const optionLocator = {
-    count: async () => options.length,
-    nth: (index: number) => ({
-      getAttribute: async (name: string) =>
-        name === "value" ? (options[index]?.value ?? null) : null,
-      textContent: async () => options[index]?.label ?? null,
-    }),
-  };
-  return {
-    frames: () => [],
-    waitForTimeout: async () => {},
-    locator: (selector: string) =>
-      selector === "#acctno" ? selectLocator : optionLocator,
-  } as never;
-}
-
-await assert.rejects(
-  readYuantaDepositAccountOptions(
-    accountOptionsPage([{ value: "", label: "請選擇帳戶" }]),
-  ),
-  (error: unknown) => {
-    assert.ok(error instanceof StatementComponentAbsentError);
-    assert.equal(error.skipReason, "absent");
-    return true;
-  },
-);
-
-assert.deepEqual(
-  await readYuantaDepositAccountOptions(
-    accountOptionsPage([
-      { value: "", label: "請選擇帳戶" },
-      { value: "acct-1", label: "臺幣活期存款" },
-      { value: "acct-2", label: "臺幣綜合存款" },
-    ]),
-    ["stale-account-selection"],
-  ),
-  [
-    { value: "acct-1", label: "臺幣活期存款" },
-    { value: "acct-2", label: "臺幣綜合存款" },
-  ],
-);
 
 const observedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
 assert.equal(observedAt, "2026-08-21T11:04:05+08:00");
@@ -902,22 +852,148 @@ try {
   const browser = await chromium.launch({ headless: true });
   try {
     const resultPage = await browser.newPage();
+    const resultSite = (signal = new AbortController().signal) =>
+      yuantaEbankSite(resultPage, { signal, text: strictSourceText });
     await resultPage.setContent(
       '<table><tr><th>交易日期</th><th>交易說明</th></tr><tr><td colspan="2">查無資料</td></tr></table>',
     );
     assert.equal(
-      await waitForYuantaDepositQueryResult(resultPage, 2_000),
+      await waitForYuantaDepositQueryResult(resultSite(), 2_000),
       "provider-explicit-no-data",
       "the bank's 查無資料 result row is an explicit empty result, not a missing CSV",
     );
     await resultPage.setContent('<p>查無資料的說明</p><a class="order_2 m_color_check" href="/x.csv">下載CSV檔</a>');
-    assert.equal(await waitForYuantaDepositQueryResult(resultPage, 2_000), "download-ready");
+    assert.equal(await waitForYuantaDepositQueryResult(resultSite(), 2_000), "download-ready");
     await resultPage.setContent("<p>查詢中</p>");
     await assert.rejects(
-      waitForYuantaDepositQueryResult(resultPage, 1_000),
+      waitForYuantaDepositQueryResult(resultSite(), 1_000),
       /CSV download link or a no-data result/u,
     );
+    const pendingQuery = new AbortController();
+    const cancelledWait = waitForYuantaDepositQueryResult(resultSite(pendingQuery.signal));
+    pendingQuery.abort(new Error("query wait cancelled"));
+    await assert.rejects(cancelledWait, /query wait cancelled/u, "a cancelled run stops inside the query wait");
+
+    const accountSelector = (options: Array<{ value: string; label: string }>) =>
+      `<select id="acctno">${options.map((option) => `<option value="${option.value}">${option.label}</option>`).join("")}</select>`;
+    await resultPage.setContent(accountSelector([{ value: "", label: "請選擇帳戶" }]));
+    await assert.rejects(
+      readYuantaDepositAccountOptions(resultSite()),
+      (error: unknown) => {
+        assert.ok(error instanceof StatementComponentAbsentError);
+        assert.equal(error.skipReason, "absent");
+        return true;
+      },
+    );
+    await resultPage.setContent(accountSelector([
+      { value: "", label: "請選擇帳戶" },
+      { value: "acct-1", label: "臺幣活期存款" },
+      { value: "acct-2", label: "臺幣綜合存款" },
+    ]));
+    assert.deepEqual(
+      await readYuantaDepositAccountOptions(resultSite(), ["stale-account-selection"]),
+      [
+        { value: "acct-1", label: "臺幣活期存款" },
+        { value: "acct-2", label: "臺幣綜合存款" },
+      ],
+    );
     await resultPage.close();
+
+    // The read half against a synthetic signed-in frameset: the site opens the
+    // transaction-details route in fmain, picks the range, and queries each account.
+    const SHELL_CID = "synthetic-deposit-cid";
+    async function readThroughShell(
+      options: Readonly<{ signal?: AbortSignal; holdQuery?: () => void }> = {},
+    ) {
+      const shellPage = await browser.newPage();
+      const served: string[] = [];
+      const queried: string[] = [];
+      const items: PGliteWorkflowRunItem[] = [];
+      const activities: string[] = [];
+      const html = (body: string) => ({ contentType: "text/html; charset=utf-8", body });
+      const form = (selected: string, result: string) => `<form name="jform" method="post" action="/nib/tx/transactiondetails">
+        <input type="hidden" name="cid" value="${SHELL_CID}">
+        <select id="acctno" name="acctno">
+          <option value="">請選擇帳戶</option>
+          ${[workflowAccount, { value: "YUANTA-ACCOUNT-002", label: "臺幣綜合存款 YUANTA-ACCOUNT-002" }]
+            .map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`)
+            .join("")}
+        </select>
+        <div id="duration"><a href="#" onclick="parent.picked = [...(parent.picked ?? []), this.textContent]; return false;">一週</a><a href="#" onclick="parent.picked = [...(parent.picked ?? []), this.textContent]; return false;">一個月</a></div>
+        <button id="submitbutton" type="submit">查詢</button>
+      </form>${result}`;
+      try {
+        await shellPage.route(`${YUANTA_EBANK_ORIGIN}/**`, async (route) => {
+          const request = route.request();
+          const url = new URL(request.url());
+          served.push(`${request.method()} ${url.pathname}${url.search}`);
+          if (url.pathname === "/nib/shell.jsp") {
+            return await route.fulfill(html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/home?type=page&cid=${SHELL_CID}"></iframe>`));
+          }
+          if (url.pathname === "/nib/tx/transactiondetails" && request.method() === "POST") {
+            const account = new URLSearchParams(request.postData() ?? "").get("acctno") ?? "";
+            queried.push(account);
+            if (options.holdQuery) {
+              options.holdQuery();
+              return;
+            }
+            return await route.fulfill(html(form(account, account === workflowAccount.value
+              ? '<a class="order_2 m_color_check" href="/nib/tx/export.csv">下載CSV檔</a>'
+              : '<table><tr><td colspan="2">查無資料</td></tr></table>')));
+          }
+          if (url.pathname === "/nib/tx/transactiondetails" && url.searchParams.get("cid") === SHELL_CID) {
+            return await route.fulfill(html(form("", "")));
+          }
+          if (url.pathname === "/nib/tx/export.csv") {
+            return await route.fulfill({
+              contentType: "text/csv; charset=big5",
+              headers: { "content-disposition": 'attachment; filename="yuanta-fixture.csv"' },
+              body: browserFixtureBytes,
+            });
+          }
+          return await route.fulfill(html(`<p>${url.pathname}</p>`));
+        });
+        await shellPage.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
+        const snapshot = await readYuantaDepositSource(
+          shellPage,
+          { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
+          checkContext(options.signal),
+          yuantaStagingHandle(items, activities),
+        );
+        const picked = await shellPage.evaluate(() => (window as { picked?: string[] }).picked ?? []);
+        return { snapshot, served, queried, items, activities, picked };
+      } finally {
+        await shellPage.close();
+      }
+    }
+
+    const shellRead = await readThroughShell();
+    assert.ok(
+      shellRead.served.includes(`GET /nib/tx/transactiondetails?type=page&cid=${SHELL_CID}`),
+      "the deposit page opens through the transaction-details route with the session's cid",
+    );
+    assert.deepEqual(shellRead.picked, ["一個月"], "the requested range is picked once on the opened page");
+    assert.deepEqual(shellRead.queried, [workflowAccount.value, "YUANTA-ACCOUNT-002"], "every visible account is queried in order");
+    assert.deepEqual(shellRead.activities, ["query", "download", "query"]);
+    assert.equal(shellRead.snapshot.observedAt, "2026-08-21T11:04:05+08:00");
+    assert.deepEqual(
+      shellRead.snapshot.accounts.map((read) => [read.account.value, read.query]),
+      [[workflowAccount.value, "download-ready"], ["YUANTA-ACCOUNT-002", "provider-explicit-no-data"]],
+      "a CSV result and the bank's 查無資料 result are told apart per account",
+    );
+    const shellDownload = shellRead.snapshot.accounts[0];
+    assert.ok(shellDownload?.query === "download-ready");
+    assert.equal(shellDownload.download.filename, "yuanta-fixture.csv");
+    assert.equal(shellDownload.download.rows.length, 1);
+    assert.equal(shellDownload.download.source.byteLength, browserFixtureBytes.byteLength);
+    assert.deepEqual(shellRead.items, [], "the read half stages nothing");
+
+    const shellCancellation = new AbortController();
+    const cancelledShellRead = readThroughShell({
+      signal: shellCancellation.signal,
+      holdQuery: () => shellCancellation.abort(new Error("deposit read cancelled")),
+    });
+    await assert.rejects(cancelledShellRead, /deposit read cancelled/u, "a run cancelled mid-query stops inside its wait");
 
     let runOrdinal = 0;
     async function collectFixture(
@@ -940,7 +1016,10 @@ try {
       const context = checkContext(signal);
       const result = await browserPort.withPage(async (page) => {
         page.on("download", () => { observedBrowserDownload = true; });
-        const download = await downloadYuantaStatementRows(page, workflowAccount, context.text, signal);
+        const download = await downloadYuantaStatementRows(
+          yuantaEbankSite(page, { signal, text: context.text }),
+          workflowAccount,
+        );
         return await stageYuantaDeposit(
           {
             observedAt: yuantaObservedAt(new Date(context.now())),
