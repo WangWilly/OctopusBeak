@@ -161,14 +161,27 @@ test("two connections in one run", () => {
     capture("one", { connection: "c1", account: "A" }),
     capture("two", { connection: "c2", account: "B" }),
   ];
-  assert.deepEqual(
-    ids(matchCurrentBalanceCaptures(
-      [{ account: "B", currency: "TWD" }, { account: "A", currency: "TWD" }],
+  const rows: readonly Row[] = [{ account: "B", currency: "TWD" }];
+  assert.throws(
+    () => indexCurrentBalanceCaptures(
       captures,
-      matching(),
-    )),
-    [["B", "TWD", "two"], ["A", "TWD", "one"]],
-    "each row matches the capture with its own key, not the first capture's connection",
+      matching({ oneScope: { scope: (entry) => `${entry.connection}\u0000${entry.epoch}`, message: "one scope" } }),
+    ),
+    /^Error: one scope$/u,
+    "a bank that declares one scope fails closed even when no key is shared",
+  );
+  assert.throws(
+    () => indexCurrentBalanceCaptures(
+      [capture("one"), capture("two", { epoch: "e2", account: "B" })],
+      matching({ oneScope: { scope: (entry) => `${entry.connection}\u0000${entry.epoch}`, message: "one scope" } }),
+    ),
+    /^Error: one scope$/u,
+    "two identity epochs are also more than one scope",
+  );
+  assert.deepEqual(
+    ids(matchCurrentBalanceCaptures(rows, captures, matching())),
+    [["B", "TWD", "two"]],
+    "a bank whose key is its own identity matches each capture by that key",
   );
   assert.throws(
     () => matchCurrentBalanceCaptures(

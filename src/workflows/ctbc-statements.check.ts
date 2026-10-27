@@ -164,6 +164,27 @@ assert.throws(
   () => admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }]),
   /^Error: CTBC current deposit snapshot has no admitted account identity\.$/u,
 );
+for (const otherScope of [
+  { sourceConnectionKey: "sha256:other-ctbc-connection" },
+  { identityEpochKey: "sha256:other-ctbc-epoch" },
+])
+  assert.throws(
+    () => indexCurrentBalanceCaptures([
+      existingIdentity,
+      {
+        ...existingIdentity,
+        identity: {
+          ...existingIdentity.identity,
+          ...otherScope,
+          accountNo: conflictingCtbcAccountNumber,
+          sourceAccountKey: conflictingCtbcAccountNumber,
+          accountNumber: { value: conflictingCtbcAccountNumber },
+        },
+      },
+    ], ctbcCurrentBalanceCaptureMatching),
+    /^Error: CTBC current deposit captures span more than one source connection or identity epoch\.$/u,
+    "a capture outside the run's connection and epoch fails closed",
+  );
 assert.throws(
   () =>
     buildCtbcCurrentDepositBalanceCapture(currentRow, {
