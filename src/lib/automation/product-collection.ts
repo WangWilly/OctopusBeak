@@ -6,11 +6,14 @@ import type {
 } from "../../ledger/pglite/workflow-run.ts";
 import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
 import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
-import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
-import { SourceAccessChallengeError, SourceUnavailableError } from "./source-access.ts";
-import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import { BrowserRuntimeConfigurationError } from "./server/browser-runtime.ts";
-import { FailureCodeError, TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "./workflow-failures.ts";
+import { strictSourceText } from "./source-text.ts";
+import { classifyFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
+import {
+  FailureCodeError,
+  TYPED_WORKFLOW_ERROR_CODES,
+  WORKFLOW_FAILURE_ENDS_RUN,
+  type TypedWorkflowErrorCode,
+} from "./workflow-failures.ts";
 import type {
   WorkflowEventCounts,
   WorkflowFinancialCommitPort,
@@ -269,30 +272,13 @@ function slug(typeId: string): string {
   return typeId.replaceAll("_", "-");
 }
 
-function defaultFatalCode(error: unknown): TypedWorkflowErrorCode | undefined {
-  if (error instanceof FailureCodeError) return error.errorCode;
-  if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
-  if (error instanceof SourceUnavailableError) return "source-unavailable";
-  if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
-  if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
-  return undefined;
+/** A product's own operation is collection; the stages its collector reported failed come before it. */
+function productEvidence(failed: ReadonlySet<WorkflowContextStage>): readonly FailureEvidenceEvent[] {
+  return [...[...failed].map((stage) => ({ stage, outcome: "failed" as const })), { stage: "collection", outcome: "started" }];
 }
 
-function typedProductFailureCode(error: unknown): TypedWorkflowErrorCode | undefined {
-  if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
-  if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
-  if (error instanceof SourceUnavailableError) return "source-unavailable";
-  if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
-  if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
-  return undefined;
-}
-
-/** The failed stages a collector reported, as the host would read them from run events (ADR 0058). */
-function failedStageCode(failed: ReadonlySet<WorkflowContextStage>): TypedWorkflowErrorCode | undefined {
-  if (failed.has("decoding")) return "source-integrity-failed";
-  if (failed.has("validation")) return "source-validation-failed";
-  return undefined;
-}
+/** A session check is a sign-in operation, so an untyped loss names a sign-in failure. */
+const SESSION_CHECK: readonly FailureEvidenceEvent[] = [{ stage: "authentication", outcome: "started" }];
 
 function validateSelection<TId extends CollectionProductTypeId>(
   productIds: readonly TId[],
@@ -555,58 +541,13 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
       completedByType.set(typeId, createOutcome(typeId, "success", productItemCount, receiptsForProduct));
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) throw error;
-      const fatalCode = signal.aborted
-        ? "cancelled"
-        : defaultFatalCode(error) ?? options.classifyFatal?.(error);
-      if (fatalCode) {
-        const current = completedByType.get(typeId);
-        if (!current) {
-          completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, 0, { errorCode: fatalCode }));
-        } else if (current.status !== "failed") {
-          completedByType.set(typeId, createOutcome(typeId, "failed", current.itemCount, current.committedCount, {
-            errorCode: fatalCode,
-          }));
-        }
-        if (options.assertSession && !signal.aborted) {
-          try {
-            await options.assertSession();
-          } catch (sessionError) {
-            const sessionCode = defaultFatalCode(sessionError)
-              ?? options.classifyFatal?.(sessionError)
-              ?? "authentication-failed";
-            const existing = completedByType.get(typeId);
-            completedByType.set(typeId, createOutcome(typeId, "failed", existing?.itemCount ?? 0, existing?.committedCount ?? 0, {
-              errorCode: sessionCode,
-            }));
-            const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
-            throw new ProductCollectionInterruptedError(sessionCode, summary);
-          }
-        }
-        const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
-        throw new ProductCollectionInterruptedError(fatalCode, summary);
-      }
-
-      if (error instanceof StatementComponentAbsentError && error.disposition) {
-        completedByType.set(typeId, createOutcome(typeId, error.disposition));
-        await emitProductEvent("collection", "advanced", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
-      } else {
-        const errorCode = options.classifyFailure?.(error)
-          ?? typedProductFailureCode(error)
-          ?? failedStageCode(failedStages)
-          ?? "source-collection-failed";
-        firstFailure ??= error;
-        completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
-        await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
-        await emitProductEvent("validation", "failed", `${codePrefix}-source-validation-rejected`);
-      }
-
-      if (options.assertSession && !signal.aborted) {
+      const endOnLostSession = async () => {
+        if (!options.assertSession || signal.aborted) return;
         try {
           await options.assertSession();
         } catch (sessionError) {
-          const sessionCode = defaultFatalCode(sessionError)
-            ?? options.classifyFatal?.(sessionError)
-            ?? "authentication-failed";
+          const sessionCode = options.classifyFatal?.(sessionError)
+            ?? classifyFailure({ error: sessionError, events: SESSION_CHECK, stopped: false });
           const existing = completedByType.get(typeId);
           completedByType.set(typeId, createOutcome(typeId, "failed", existing?.itemCount ?? 0, existing?.committedCount ?? 0, {
             errorCode: sessionCode,
@@ -614,7 +555,35 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
           throw new ProductCollectionInterruptedError(sessionCode, summary);
         }
+      };
+      const errorCode = options.classifyFatal?.(error)
+        ?? options.classifyFailure?.(error)
+        ?? classifyFailure({ error, events: productEvidence(failedStages), stopped: signal.aborted });
+
+      if (WORKFLOW_FAILURE_ENDS_RUN[errorCode]) {
+        const current = completedByType.get(typeId);
+        if (!current) {
+          completedByType.set(typeId, createOutcome(typeId, "failed", productItemCount, 0, { errorCode }));
+        } else if (current.status !== "failed") {
+          completedByType.set(typeId, createOutcome(typeId, "failed", current.itemCount, current.committedCount, {
+            errorCode,
+          }));
+        }
+        await endOnLostSession();
+        const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
+        throw new ProductCollectionInterruptedError(errorCode, summary);
       }
+
+      if (error instanceof StatementComponentAbsentError && error.disposition) {
+        completedByType.set(typeId, createOutcome(typeId, error.disposition));
+        await emitProductEvent("collection", "advanced", `${codePrefix}-component-${error.disposition.replaceAll("_", "-")}`);
+      } else {
+        firstFailure ??= error;
+        completedByType.set(typeId, createOutcome(typeId, "failed", 0, 0, { errorCode }));
+        await options.productFailure?.({ stage: lastStage, statementType: typeId, errorCode, error });
+        await emitProductEvent("validation", "failed", `${codePrefix}-source-validation-rejected`);
+      }
+      await endOnLostSession();
     }
 
     if (signal.aborted) {
