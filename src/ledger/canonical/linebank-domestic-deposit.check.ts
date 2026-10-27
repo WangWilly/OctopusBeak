@@ -97,6 +97,30 @@ test("a validated capture becomes one commit record per source row", () => {
   assert.notEqual(first!.occurrenceKey, second!.occurrenceKey);
   assert.notEqual(first!.collisionKey, second!.collisionKey);
 
+  // Existing ledger rows deduplicate on these digests; any drift orphans them.
+  assert.deepEqual(
+    {
+      subjectDigest: commit.identity.subjectDigest,
+      sourceConnectionKey: commit.identity.sourceConnectionKey,
+      identityEpochKey: commit.identity.identityEpochKey,
+      contractFingerprint: commit.scope.contractFingerprint,
+      preflightFingerprint: commit.scope.preflightFingerprint,
+      occurrenceKey: first!.occurrenceKey,
+      collisionKey: first!.collisionKey,
+      contentHash: first!.contentHash,
+    },
+    {
+      subjectDigest: "sha256:0b066ebec06c0cd7287647bd53511a5566bfa07d6d479ac671ed4ed598d89fba",
+      sourceConnectionKey: "sha256:fd3b8987ea30e0835e86211ea29bbb512ce41507e3d05cc63b6332feeec667aa",
+      identityEpochKey: "sha256:1ab128cfb27e58361b7b53796ac1687376e69e3ca66dee64660827b58f008b2e",
+      contractFingerprint: "sha256:bed3a69e30409009f66a7f9baf671f842a30e27a55275696987d9d3e52cdc79a",
+      preflightFingerprint: "sha256:eb790d7976fb1e808ba04c77cf5416a2523f388dafd9f0ff171ad96c3a705604",
+      occurrenceKey: "sha256:65d6370de805af2cf05351dd9f8f876396f359308f55082eff8a69669592ea56",
+      collisionKey: "sha256:5ef3dbce73207f5ad79b3b7da03f84620a4c58f76d60f6413560e9dcbf7eacdf",
+      contentHash: "sha256:2e54bc171ef92d1a18471293ca915e78b3426730af715828d8a71fc9b244e203",
+    },
+  );
+
   const compact = JSON.parse(first!.compactJson);
   assert.equal(compact.sourceOccurrenceKey, first!.occurrenceKey);
   assert.equal(compact.sourceDirectionCode, "1");

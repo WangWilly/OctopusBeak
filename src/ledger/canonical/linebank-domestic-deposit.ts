@@ -40,8 +40,8 @@ export type LineBankDomesticDepositAccountNumberEvidence = Readonly<{
 /**
  * Public evidence narrows currency only for the explicitly staged domestic
  * main-account route. No provider product code is claimed here: the
- * descriptor is the versioned adapter contract that a future workflow seam
- * must supply after establishing the source scope.
+ * descriptor is the versioned adapter contract the workflow supplies after
+ * establishing the source scope.
  */
 const LINEBANK_DOMESTIC_DEPOSIT_SCOPE_EVIDENCE_VERSION =
   "domestic-main-twd-v1" as const;
