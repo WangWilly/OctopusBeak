@@ -82,13 +82,19 @@ const CASES: Record<PGliteOperationalOperation, Readonly<{ accepted: readonly un
   "preview.statements": { accepted: [visibility, "account"], refused: [{}, "account"] },
 };
 
-function recordingProvider(calls: string[]): PGliteOperationalDomains {
-  const domain = (name: string) => new Proxy({}, {
-    get: (_target, method) => (..._args: unknown[]) => {
-      calls.push(`${name}.${String(method)}`);
-      return Promise.resolve(`${name}.${String(method)}`);
-    },
-  });
+type RecordedCall = Readonly<{ operation: string; args: readonly unknown[] }>;
+
+function recordingProvider(calls: RecordedCall[]): PGliteOperationalDomains {
+  const domain = (name: string) => {
+    const port: object = new Proxy({}, {
+      get: (_target, method) => function (this: unknown, ...args: unknown[]) {
+        assert.equal(this, port, `${name}.${String(method)} is called on its port`);
+        calls.push({ operation: `${name}.${String(method)}`, args });
+        return Promise.resolve(`${name}.${String(method)}`);
+      },
+    });
+    return port;
+  };
   return {
     automation: domain("automation"),
     exchangeRates: domain("exchangeRates"),
@@ -98,7 +104,7 @@ function recordingProvider(calls: string[]): PGliteOperationalDomains {
 }
 
 test("each operational method reaches its own port method through the derived proxy and refuses bad arguments", async () => {
-  const calls: string[] = [];
+  const calls: RecordedCall[] = [];
   const channel = new MessageChannel();
   const server = createPGliteOperationalRpcServer(channel.port1, recordingProvider(calls));
   const client = createPGliteOperationalRpcClient(channel.port2);
@@ -108,6 +114,10 @@ test("each operational method reaches its own port method through the derived pr
       const [domain, method] = operation.split(".") as [keyof PGliteOperationalDomains, string];
       const port = client.provider[domain] as unknown as Record<string, (...args: readonly unknown[]) => Promise<unknown>>;
       assert.equal(await port[method]!(...CASES[operation].accepted), operation, `${operation} dispatches to its own method`);
+      if (operation === "automation.todayTaskRunIds") {
+        const [range] = calls.at(-1)!.args as [{ startUtc: unknown; endUtc: unknown }];
+        assert.ok(range.startUtc instanceof Date && range.endUtc instanceof Date, "the store receives Date bounds");
+      }
       calls.length = 0;
       await assert.rejects(
         client.request(operation, CASES[operation].refused),
@@ -117,11 +127,17 @@ test("each operational method reaches its own port method through the derived pr
       );
       assert.deepEqual(calls, [], `${operation} never reaches the store with refused arguments`);
     }
-    await assert.rejects(
-      client.request("automation.constructor" as PGliteOperationalOperation, []),
-      /Invalid PGlite operational request/u,
-      "an inherited property name is not an operation",
-    );
+    for (const name of ["automation.constructor", "constructor", "toString", "__proto__"]) {
+      await assert.rejects(
+        Promise.race([
+          client.request(name as PGliteOperationalOperation, []),
+          new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${name} got no response`)), 1_000).unref()),
+        ]),
+        /Invalid PGlite operational request/u,
+        `${name} is not an operation`,
+      );
+    }
+    assert.deepEqual(calls, []);
   } finally {
     client.close();
     await server.close();
