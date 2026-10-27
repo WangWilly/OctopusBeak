@@ -657,8 +657,6 @@ export function createPGliteFinancialRegistry(
     "financial.loanRelations.current": ([options]) => queryPGliteCurrentLoanRepaymentRelations(store, options),
     "financial.loanSettlementGroups.current": ([options]) => queryPGliteCurrentLoanRepaymentSettlementGroups(store, options),
     "financial.investmentRelations.current": ([sourceConnectionKey]) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
-    "financial.exchangeRates.read": ([currencies]) => exchangeRates.readExchangeRates(currencies),
-    "financial.exchangeRates.upsert": ([rows]) => exchangeRates.upsertExchangeRates(rows),
     "financial.tdccFundAccounts.list": ([connection]) => listPGliteTdccFundAccounts(store, connection),
     "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
