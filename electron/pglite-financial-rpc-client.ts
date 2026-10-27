@@ -74,7 +74,6 @@ import type {
   PGliteCanonicalInvestmentRelationResolutionRequest,
   PGliteCanonicalInvestmentRelationResolutionResult,
 } from "../src/ledger/pglite/relations.ts";
-import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
 import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
@@ -351,10 +350,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0 || (args.length === 1 && typeof args[0] === "string"),
     { lane: "background" },
   ),
-  "financial.exchangeRates.read": operation<[currencies?: string[]], ExchangeRateRecord[]>(
-    (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((value) => typeof value === "string")),
-    { lane: "background" },
-  ),
   "financial.tdccFundAccounts.list": operation<[connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>], readonly TdccAdmittedFundAccount[]>(
     (args) => args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey"),
     { lane: "background" },
@@ -371,10 +366,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   /** Integration namespaces whose card captures the store refuses until a Canonical Reset. */
   "financial.canonical.resetRequired": operation<[], readonly string[]>(
     (args) => args.length === 0,
-    { lane: "background" },
-  ),
-  "financial.exchangeRates.upsert": operation<[rows: readonly ExchangeRateRecord[]], void>(
-    (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) => plainRecord(row)),
     { lane: "background" },
   ),
 });

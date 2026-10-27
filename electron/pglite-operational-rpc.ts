@@ -16,59 +16,24 @@ import {
 
 /**
  * The operational worker protocol is deliberately method based.  There is no
- * SQL operation in this list, so renderer input can never become a database
+ * SQL operation in its contract table, so renderer input can never become a database
  * statement or identifier.
  */
 export const PGLITE_OPERATIONAL_RPC_VERSION = 1 as const;
 
-const AUTOMATION_METHODS = [
-  "createTaskRun",
-  "updateTaskRun",
-  "transitionTaskRunToActive",
-  "transitionTaskRunToTerminal",
-  "updateHumanAssistanceContract",
-  "updateHumanAssistanceCompletion",
-  "taskRunById",
-  "activeTaskRuns",
-  "latestTaskRuns",
-  "todayTaskRunIds",
-  "hasSuccessfulTaskRunSince",
-  "hasOccurrenceBeenAttempted",
-  "recentTaskRuns",
-  "appendRunEvent",
-  "recordCommitAttempt",
-  "commitAttempts",
-  "pruneRunEvents",
-  "upsertTaskPrerequisiteNotice",
-  "activeTaskPrerequisiteNotices",
-  "allTaskPrerequisiteNotices",
-  "resolveTaskPrerequisiteNotices",
-] as const satisfies readonly (keyof AutomationPersistencePort & string)[];
-
-const EXCHANGE_RATE_METHODS = [
-  "readExchangeRates",
-  "upsertExchangeRates",
-] as const satisfies readonly (keyof ExchangeRatePersistencePort & string)[];
-
-const MAICOIN_METHODS = [
-  "startRun", "appendSnapshots", "appendStatementRows", "finishRun",
-] as const satisfies readonly (keyof PGliteMaicoinPersistencePort & string)[];
-
-const PREVIEW_METHODS = [
-  "write", "deleteAll", "accounts", "transactions", "creditAccounts", "purchases", "statements",
-] as const satisfies readonly (keyof PGlitePreviewFinancialDataPort & string)[];
-
-export type PGliteOperationalDomains = AutomationPersistenceProvider & {
+type OperationalPorts = {
+  automation: AutomationPersistencePort;
   exchangeRates: ExchangeRatePersistencePort;
   maicoin: PGliteMaicoinPersistencePort;
   preview: PGlitePreviewFinancialDataPort;
 };
+type OperationalDomain = keyof OperationalPorts;
 
-export type PGliteOperationalOperation =
-  | `automation.${(typeof AUTOMATION_METHODS)[number]}`
-  | `exchangeRates.${(typeof EXCHANGE_RATE_METHODS)[number]}`
-  | `maicoin.${(typeof MAICOIN_METHODS)[number]}`
-  | `preview.${(typeof PREVIEW_METHODS)[number]}`;
+export type PGliteOperationalDomains = AutomationPersistenceProvider & Omit<OperationalPorts, "automation">;
+
+export type PGliteOperationalOperation = {
+  [Domain in OperationalDomain]: `${Domain}.${keyof OperationalPorts[Domain] & string}`;
+}[OperationalDomain];
 
 export type PGliteOperationalRequest = {
   readonly kind: "pglite-operational-request";
@@ -119,13 +84,6 @@ type RpcPort = {
   off(event: "message", listener: (value: unknown) => void): unknown;
   postMessage(value: unknown): void;
 };
-
-const ALL_OPERATIONS = new Set<string>([
-  ...AUTOMATION_METHODS.map((method) => `automation.${method}`),
-  ...EXCHANGE_RATE_METHODS.map((method) => `exchangeRates.${method}`),
-  ...MAICOIN_METHODS.map((method) => `maicoin.${method}`),
-  ...PREVIEW_METHODS.map((method) => `preview.${method}`),
-]);
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -205,95 +163,137 @@ function previewVisibility(value: unknown): boolean {
       && stringValue(entry.sourceId) && isPreviewProduct(entry.product));
 }
 
-function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
-  switch (operation) {
-    case "automation.createTaskRun":
-      return args.length === 1
-        && hasOnlyFields(args[0], CREATE_TASK_RUN_FIELDS)
-        && stringFields(args[0], ["taskId", "kind", "status", "startedAt"])
-        && finiteNumber((args[0] as Record<string, unknown>).attempt)
-        && finiteNumber((args[0] as Record<string, unknown>).maxAttempts);
-    case "automation.updateTaskRun":
-      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS);
-    case "automation.transitionTaskRunToActive":
-    case "automation.transitionTaskRunToTerminal":
-      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_TRANSITION_FIELDS);
-    case "automation.updateHumanAssistanceContract":
-      return args.length === 2 && stringValue(args[0]) && plainRecord(args[1]);
-    case "automation.updateHumanAssistanceCompletion":
-      return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
-    case "automation.taskRunById":
-      return args.length === 1 && stringValue(args[0]);
-    case "automation.activeTaskRuns":
-    case "automation.latestTaskRuns":
-    case "automation.activeTaskPrerequisiteNotices":
-    case "automation.allTaskPrerequisiteNotices":
-      return args.length === 0;
-    case "automation.todayTaskRunIds":
-      return args.length === 1 && plainRecord(args[0])
-        && dateValue(args[0].startUtc) && dateValue(args[0].endUtc);
-    case "automation.hasSuccessfulTaskRunSince":
-      return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
-    case "automation.hasOccurrenceBeenAttempted":
-      return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
-    case "automation.recentTaskRuns":
-      return args.length === 0 || (args.length === 1 && Number.isSafeInteger(args[0]) && (args[0] as number) >= 0);
-    case "automation.appendRunEvent":
-      return args.length === 1 && stringFields(args[0], ["runId", "stage", "code", "occurredAt"])
-        && ["preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization"].includes(String((args[0] as Record<string, unknown>).stage))
-        && (args[0] as Record<string, unknown>).code!.toString().length <= 64;
-    case "automation.recordCommitAttempt":
-      return args.length === 2 && stringValue(args[0]) && isCommitAttemptReport(args[1]);
-    case "automation.commitAttempts":
-      return args.length === 1 && stringValue(args[0]);
-    case "automation.pruneRunEvents":
-      return args.length === 1 && stringValue(args[0]) && dateValue(args[0]);
-    case "automation.upsertTaskPrerequisiteNotice":
-      return args.length === 1 && stringFields(args[0], ["taskId", "prerequisiteId", "taskRunId", "detectedAt"]);
-    case "automation.resolveTaskPrerequisiteNotices":
-      return args.length === 3 && args.every(stringValue);
-    case "exchangeRates.readExchangeRates":
-      return args.length === 0 || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every(stringValue));
-    case "exchangeRates.upsertExchangeRates":
-      return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) =>
-        stringFields(row, ["rateDate", "currency", "source", "fetchedAt"])
-        && finiteNumber((row as Record<string, unknown>).twdPerUnit),
-      );
-    case "maicoin.startRun":
-      return args.length === 1
-        && stringFields(args[0], ["syncRunId", "startedAt", "subAccount"])
-        && Array.isArray((args[0] as Record<string, unknown>).walletTypes)
-        && ((args[0] as Record<string, unknown>).walletTypes as unknown[]).every(stringValue)
-        && Number.isSafeInteger((args[0] as Record<string, unknown>).statementLimit)
-        && plainRecord((args[0] as Record<string, unknown>).record);
-    case "maicoin.appendSnapshots":
-      return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
-        && (args[0] as unknown[]).every((row) => stringFields(row,
-          ["snapshotId", "syncRunId", "capturedAt", "subAccount", "walletType", "currency", "rawAccountJson"]));
-    case "maicoin.appendStatementRows":
-      return args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
-        && (args[0] as unknown[]).every((row) => stringFields(row,
-          ["statementId", "syncRunId", "capturedAt", "endpoint", "rowType", "externalId", "rawPayloadJson"]));
-    case "maicoin.finishRun":
-      return args.length === 1 && stringFields(args[0], ["syncRunId", "finishedAt"])
-        && plainRecord((args[0] as Record<string, unknown>).record);
-    case "preview.write":
-      return args.length === 1 && hasOnlyFields(args[0], ["sourceId", "institution", "product", "collection"])
-        && stringFields(args[0], ["sourceId", "institution", "product"])
-        && plainRecord((args[0] as Record<string, unknown>).collection);
-    case "preview.deleteAll":
-      return args.length === 0;
-    case "preview.accounts":
-      return args.length === 1 && previewVisibility(args[0]);
-    case "preview.transactions":
-    case "preview.purchases":
-    case "preview.statements":
-      return args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]);
-    case "preview.creditAccounts":
-      return args.length === 1 && previewVisibility(args[0]);
-    default:
-      return false;
-  }
+type OperationalContract = Readonly<{
+  /** True when the worker may hand these arguments to the port method. */
+  accepts(args: readonly unknown[]): boolean;
+  /** Rebuild accepted arguments the port needs in another shape. */
+  decode?(args: readonly unknown[]): readonly unknown[];
+}>;
+
+/** Every named operational method and the arguments the worker accepts for it. */
+export const PGLITE_OPERATIONAL_CONTRACTS: Readonly<Record<PGliteOperationalOperation, OperationalContract>> = Object.freeze({
+  "automation.createTaskRun": {
+    accepts: (args) => args.length === 1
+      && hasOnlyFields(args[0], CREATE_TASK_RUN_FIELDS)
+      && stringFields(args[0], ["taskId", "kind", "status", "startedAt"])
+      && finiteNumber((args[0] as Record<string, unknown>).attempt)
+      && finiteNumber((args[0] as Record<string, unknown>).maxAttempts),
+  },
+  "automation.updateTaskRun": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS),
+  },
+  "automation.transitionTaskRunToActive": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_TRANSITION_FIELDS),
+  },
+  "automation.transitionTaskRunToTerminal": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_TRANSITION_FIELDS),
+  },
+  "automation.updateHumanAssistanceContract": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && plainRecord(args[1]),
+  },
+  "automation.updateHumanAssistanceCompletion": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && stringValue(args[1]),
+  },
+  "automation.taskRunById": { accepts: (args) => args.length === 1 && stringValue(args[0]) },
+  "automation.activeTaskRuns": { accepts: (args) => args.length === 0 },
+  "automation.latestTaskRuns": { accepts: (args) => args.length === 0 },
+  "automation.todayTaskRunIds": {
+    accepts: (args) => args.length === 1 && plainRecord(args[0])
+      && dateValue(args[0].startUtc) && dateValue(args[0].endUtc),
+    decode: (args) => {
+      const value = args[0] as { startUtc: Date | string; endUtc: Date | string };
+      return [{
+        startUtc: value.startUtc instanceof Date ? value.startUtc : new Date(value.startUtc),
+        endUtc: value.endUtc instanceof Date ? value.endUtc : new Date(value.endUtc),
+      }];
+    },
+  },
+  "automation.hasSuccessfulTaskRunSince": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && stringValue(args[1]),
+  },
+  "automation.hasOccurrenceBeenAttempted": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && stringValue(args[1]),
+  },
+  "automation.recentTaskRuns": {
+    accepts: (args) => args.length === 0
+      || (args.length === 1 && Number.isSafeInteger(args[0]) && (args[0] as number) >= 0),
+  },
+  "automation.appendRunEvent": {
+    accepts: (args) => args.length === 1 && stringFields(args[0], ["runId", "stage", "code", "occurredAt"])
+      && ["preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization"].includes(String((args[0] as Record<string, unknown>).stage))
+      && (args[0] as Record<string, unknown>).code!.toString().length <= 64,
+  },
+  "automation.recordCommitAttempt": {
+    accepts: (args) => args.length === 2 && stringValue(args[0]) && isCommitAttemptReport(args[1]),
+  },
+  "automation.commitAttempts": { accepts: (args) => args.length === 1 && stringValue(args[0]) },
+  "automation.pruneRunEvents": {
+    accepts: (args) => args.length === 1 && stringValue(args[0]) && dateValue(args[0]),
+  },
+  "automation.upsertTaskPrerequisiteNotice": {
+    accepts: (args) => args.length === 1
+      && stringFields(args[0], ["taskId", "prerequisiteId", "taskRunId", "detectedAt"]),
+  },
+  "automation.activeTaskPrerequisiteNotices": { accepts: (args) => args.length === 0 },
+  "automation.allTaskPrerequisiteNotices": { accepts: (args) => args.length === 0 },
+  "automation.resolveTaskPrerequisiteNotices": { accepts: (args) => args.length === 3 && args.every(stringValue) },
+  "exchangeRates.readExchangeRates": {
+    accepts: (args) => args.length === 0
+      || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every(stringValue)),
+  },
+  "exchangeRates.upsertExchangeRates": {
+    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) =>
+      stringFields(row, ["rateDate", "currency", "source", "fetchedAt"])
+      && finiteNumber((row as Record<string, unknown>).twdPerUnit),
+    ),
+  },
+  "maicoin.startRun": {
+    accepts: (args) => args.length === 1
+      && stringFields(args[0], ["syncRunId", "startedAt", "subAccount"])
+      && Array.isArray((args[0] as Record<string, unknown>).walletTypes)
+      && ((args[0] as Record<string, unknown>).walletTypes as unknown[]).every(stringValue)
+      && Number.isSafeInteger((args[0] as Record<string, unknown>).statementLimit)
+      && plainRecord((args[0] as Record<string, unknown>).record),
+  },
+  "maicoin.appendSnapshots": {
+    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
+      && (args[0] as unknown[]).every((row) => stringFields(row,
+        ["snapshotId", "syncRunId", "capturedAt", "subAccount", "walletType", "currency", "rawAccountJson"])),
+  },
+  "maicoin.appendStatementRows": {
+    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
+      && (args[0] as unknown[]).every((row) => stringFields(row,
+        ["statementId", "syncRunId", "capturedAt", "endpoint", "rowType", "externalId", "rawPayloadJson"])),
+  },
+  "maicoin.finishRun": {
+    accepts: (args) => args.length === 1 && stringFields(args[0], ["syncRunId", "finishedAt"])
+      && plainRecord((args[0] as Record<string, unknown>).record),
+  },
+  "preview.write": {
+    accepts: (args) => args.length === 1 && hasOnlyFields(args[0], ["sourceId", "institution", "product", "collection"])
+      && stringFields(args[0], ["sourceId", "institution", "product"])
+      && plainRecord((args[0] as Record<string, unknown>).collection),
+  },
+  "preview.deleteAll": { accepts: (args) => args.length === 0 },
+  "preview.accounts": { accepts: (args) => args.length === 1 && previewVisibility(args[0]) },
+  "preview.transactions": {
+    accepts: (args) => args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]),
+  },
+  "preview.creditAccounts": { accepts: (args) => args.length === 1 && previewVisibility(args[0]) },
+  "preview.purchases": {
+    accepts: (args) => args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]),
+  },
+  "preview.statements": {
+    accepts: (args) => args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]),
+  },
+} satisfies Record<PGliteOperationalOperation, OperationalContract>);
+
+export const PGLITE_OPERATIONAL_OPERATIONS = Object.freeze(
+  Object.keys(PGLITE_OPERATIONAL_CONTRACTS) as PGliteOperationalOperation[],
+);
+
+export function isPGliteOperationalOperation(value: unknown): value is PGliteOperationalOperation {
+  return typeof value === "string" && Object.hasOwn(PGLITE_OPERATIONAL_CONTRACTS, value);
 }
 
 function postResponse(port: RpcPort, response: PGliteOperationalResponse): void {
@@ -305,125 +305,18 @@ function postResponse(port: RpcPort, response: PGliteOperationalResponse): void 
   }
 }
 
-async function invokeOperation(
+function operationParts(operation: PGliteOperationalOperation): [OperationalDomain, string] {
+  return operation.split(".") as [OperationalDomain, string];
+}
+
+function invokeOperation(
   provider: PGliteOperationalDomains,
   operation: PGliteOperationalOperation,
   args: readonly unknown[],
 ): Promise<unknown> {
-  const [namespace, method] = operation.split(".") as ["automation" | "exchangeRates" | "maicoin" | "preview", string];
-  if (namespace === "automation") {
-    switch (method) {
-      case "createTaskRun": return provider.automation.createTaskRun(args[0] as Parameters<AutomationPersistencePort["createTaskRun"]>[0]);
-      case "updateTaskRun": return provider.automation.updateTaskRun(
-        args[0] as Parameters<AutomationPersistencePort["updateTaskRun"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["updateTaskRun"]>[1],
-      );
-      case "transitionTaskRunToActive": return provider.automation.transitionTaskRunToActive(
-        args[0] as Parameters<AutomationPersistencePort["transitionTaskRunToActive"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["transitionTaskRunToActive"]>[1],
-      );
-      case "transitionTaskRunToTerminal": return provider.automation.transitionTaskRunToTerminal(
-        args[0] as Parameters<AutomationPersistencePort["transitionTaskRunToTerminal"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["transitionTaskRunToTerminal"]>[1],
-      );
-      case "updateHumanAssistanceContract": return provider.automation.updateHumanAssistanceContract(
-        args[0] as Parameters<AutomationPersistencePort["updateHumanAssistanceContract"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["updateHumanAssistanceContract"]>[1],
-      );
-      case "updateHumanAssistanceCompletion": return provider.automation.updateHumanAssistanceCompletion(
-        args[0] as Parameters<AutomationPersistencePort["updateHumanAssistanceCompletion"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["updateHumanAssistanceCompletion"]>[1],
-      );
-      case "taskRunById": return provider.automation.taskRunById(
-        args[0] as Parameters<AutomationPersistencePort["taskRunById"]>[0],
-      );
-      case "activeTaskRuns": return provider.automation.activeTaskRuns();
-      case "latestTaskRuns": return provider.automation.latestTaskRuns();
-      case "todayTaskRunIds": return provider.automation.todayTaskRunIds(
-        (() => {
-          const value = args[0] as { startUtc: Date | string; endUtc: Date | string };
-          return {
-            startUtc: value.startUtc instanceof Date ? value.startUtc : new Date(value.startUtc),
-            endUtc: value.endUtc instanceof Date ? value.endUtc : new Date(value.endUtc),
-          } as Parameters<AutomationPersistencePort["todayTaskRunIds"]>[0];
-        })(),
-      );
-      case "hasSuccessfulTaskRunSince": return provider.automation.hasSuccessfulTaskRunSince(
-        args[0] as Parameters<AutomationPersistencePort["hasSuccessfulTaskRunSince"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["hasSuccessfulTaskRunSince"]>[1],
-      );
-      case "hasOccurrenceBeenAttempted": return provider.automation.hasOccurrenceBeenAttempted(
-        args[0] as Parameters<AutomationPersistencePort["hasOccurrenceBeenAttempted"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["hasOccurrenceBeenAttempted"]>[1],
-      );
-      case "recentTaskRuns": return provider.automation.recentTaskRuns(
-        args[0] as Parameters<AutomationPersistencePort["recentTaskRuns"]>[0],
-      );
-      case "appendRunEvent": return provider.automation.appendRunEvent(
-        args[0] as Parameters<AutomationPersistencePort["appendRunEvent"]>[0],
-      );
-      case "recordCommitAttempt": return provider.automation.recordCommitAttempt(
-        args[0] as Parameters<AutomationPersistencePort["recordCommitAttempt"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["recordCommitAttempt"]>[1],
-      );
-      case "commitAttempts": return provider.automation.commitAttempts(
-        args[0] as Parameters<AutomationPersistencePort["commitAttempts"]>[0],
-      );
-      case "pruneRunEvents": return provider.automation.pruneRunEvents(
-        args[0] as Parameters<AutomationPersistencePort["pruneRunEvents"]>[0],
-      );
-      case "upsertTaskPrerequisiteNotice": return provider.automation.upsertTaskPrerequisiteNotice(
-        args[0] as Parameters<AutomationPersistencePort["upsertTaskPrerequisiteNotice"]>[0],
-      );
-      case "activeTaskPrerequisiteNotices": return provider.automation.activeTaskPrerequisiteNotices();
-      case "allTaskPrerequisiteNotices": return provider.automation.allTaskPrerequisiteNotices();
-      case "resolveTaskPrerequisiteNotices": return provider.automation.resolveTaskPrerequisiteNotices(
-        args[0] as Parameters<AutomationPersistencePort["resolveTaskPrerequisiteNotices"]>[0],
-        args[1] as Parameters<AutomationPersistencePort["resolveTaskPrerequisiteNotices"]>[1],
-        args[2] as Parameters<AutomationPersistencePort["resolveTaskPrerequisiteNotices"]>[2],
-      );
-      default: throw new Error("Unknown operational automation operation.");
-    }
-  }
-  if (namespace === "maicoin") {
-    switch (method) {
-      case "startRun": return provider.maicoin.startRun(args[0] as Parameters<PGliteMaicoinPersistencePort["startRun"]>[0]);
-      case "appendSnapshots": return provider.maicoin.appendSnapshots(args[0] as Parameters<PGliteMaicoinPersistencePort["appendSnapshots"]>[0]);
-      case "appendStatementRows": return provider.maicoin.appendStatementRows(args[0] as Parameters<PGliteMaicoinPersistencePort["appendStatementRows"]>[0]);
-      case "finishRun": return provider.maicoin.finishRun(args[0] as Parameters<PGliteMaicoinPersistencePort["finishRun"]>[0]);
-      default: throw new Error("Unknown MaiCoin operational operation.");
-    }
-  }
-  if (namespace === "preview") {
-    switch (method) {
-      case "write": return provider.preview.write(args[0] as Parameters<PGlitePreviewFinancialDataPort["write"]>[0]);
-      case "deleteAll": return provider.preview.deleteAll();
-      case "accounts": return provider.preview.accounts(args[0] as Parameters<PGlitePreviewFinancialDataPort["accounts"]>[0]);
-      case "transactions": return provider.preview.transactions(
-        args[0] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[0],
-        args[1] as Parameters<PGlitePreviewFinancialDataPort["transactions"]>[1],
-      );
-      case "creditAccounts": return provider.preview.creditAccounts(args[0] as Parameters<PGlitePreviewFinancialDataPort["creditAccounts"]>[0]);
-      case "purchases": return provider.preview.purchases(
-        args[0] as Parameters<PGlitePreviewFinancialDataPort["purchases"]>[0],
-        args[1] as Parameters<PGlitePreviewFinancialDataPort["purchases"]>[1],
-      );
-      case "statements": return provider.preview.statements(
-        args[0] as Parameters<PGlitePreviewFinancialDataPort["statements"]>[0],
-        args[1] as Parameters<PGlitePreviewFinancialDataPort["statements"]>[1],
-      );
-      default: throw new Error("Unknown preview operational operation.");
-    }
-  }
-  switch (method) {
-    case "readExchangeRates": return provider.exchangeRates.readExchangeRates(
-      args[0] as Parameters<ExchangeRatePersistencePort["readExchangeRates"]>[0],
-    );
-    case "upsertExchangeRates": return provider.exchangeRates.upsertExchangeRates(
-      args[0] as Parameters<ExchangeRatePersistencePort["upsertExchangeRates"]>[0],
-    );
-    default: throw new Error("Unknown operational exchange-rate operation.");
-  }
+  const [domain, method] = operationParts(operation);
+  const port = provider[domain] as unknown as Record<string, (...args: readonly unknown[]) => Promise<unknown>>;
+  return port[method]!(...(PGLITE_OPERATIONAL_CONTRACTS[operation].decode?.(args) ?? args));
 }
 
 export type PGliteOperationalRpcServer = {
@@ -443,12 +336,8 @@ export function createPGliteOperationalRpcServer(
       postResponse(port, operationFailure(value.id, "worker-closed"));
       return;
     }
-    if (!ALL_OPERATIONS.has(value.operation)) {
-      postResponse(port, operationFailure(value.id, "invalid-request"));
-      return;
-    }
-    const operation = value.operation as PGliteOperationalOperation;
-    if (!validOperationalArgs(operation, value.args)) {
+    const operation = value.operation;
+    if (!isPGliteOperationalOperation(operation) || !PGLITE_OPERATIONAL_CONTRACTS[operation].accepts(value.args)) {
       postResponse(port, operationFailure(value.id, "invalid-request"));
       return;
     }
@@ -506,18 +395,6 @@ export type PGliteOperationalRpcClient = {
   provider: PGliteOperationalDomains;
   close(error?: Error): void;
 };
-
-function operationName<K extends keyof AutomationPersistencePort>(namespace: "automation", method: K): PGliteOperationalOperation {
-  return `${namespace}.${String(method)}` as PGliteOperationalOperation;
-}
-
-function exchangeOperationName<K extends keyof ExchangeRatePersistencePort>(method: K): PGliteOperationalOperation {
-  return `exchangeRates.${String(method)}` as PGliteOperationalOperation;
-}
-
-function maicoinOperationName<K extends keyof PGliteMaicoinPersistencePort>(method: K): PGliteOperationalOperation {
-  return `maicoin.${String(method)}` as PGliteOperationalOperation;
-}
 
 /** Client proxy with durable rejection for every request still in flight. */
 export function createPGliteOperationalRpcClient(
@@ -586,76 +463,11 @@ export function createPGliteOperationalRpcClient(
     });
   };
 
-  function automationMethod<K extends keyof AutomationPersistencePort>(
-    method: K,
-    args: Parameters<AutomationPersistencePort[K]>,
-  ): Promise<Awaited<ReturnType<AutomationPersistencePort[K]>>> {
-    return request(operationName("automation", method), args) as Promise<Awaited<ReturnType<AutomationPersistencePort[K]>>>;
+  const domains: Record<string, Record<string, (...args: readonly unknown[]) => Promise<unknown>>> = {};
+  for (const operation of PGLITE_OPERATIONAL_OPERATIONS) {
+    const [domain, method] = operationParts(operation);
+    (domains[domain] ??= {})[method] = (...args) => request(operation, args);
   }
-
-  function exchangeMethod<K extends keyof ExchangeRatePersistencePort>(
-    method: K,
-    args: Parameters<ExchangeRatePersistencePort[K]>,
-  ): Promise<Awaited<ReturnType<ExchangeRatePersistencePort[K]>>> {
-    return request(exchangeOperationName(method), args) as Promise<Awaited<ReturnType<ExchangeRatePersistencePort[K]>>>;
-  }
-
-  function previewMethod<K extends keyof PGlitePreviewFinancialDataPort>(
-    method: K,
-    args: Parameters<PGlitePreviewFinancialDataPort[K]>,
-  ): Promise<Awaited<ReturnType<PGlitePreviewFinancialDataPort[K]>>> {
-    return request(`preview.${method}` as PGliteOperationalOperation, args) as Promise<Awaited<ReturnType<PGlitePreviewFinancialDataPort[K]>>>;
-  }
-
-  function maicoinMethod<K extends keyof PGliteMaicoinPersistencePort>(
-    method: K,
-    args: Parameters<PGliteMaicoinPersistencePort[K]>,
-  ): Promise<Awaited<ReturnType<PGliteMaicoinPersistencePort[K]>>> {
-    return request(maicoinOperationName(method), args) as Promise<Awaited<ReturnType<PGliteMaicoinPersistencePort[K]>>>;
-  }
-
-  const automation: AutomationPersistencePort = {
-    createTaskRun: (...args) => automationMethod("createTaskRun", args),
-    updateTaskRun: (...args) => automationMethod("updateTaskRun", args),
-    transitionTaskRunToActive: (...args) => automationMethod("transitionTaskRunToActive", args),
-    transitionTaskRunToTerminal: (...args) => automationMethod("transitionTaskRunToTerminal", args),
-    updateHumanAssistanceContract: (...args) => automationMethod("updateHumanAssistanceContract", args),
-    updateHumanAssistanceCompletion: (...args) => automationMethod("updateHumanAssistanceCompletion", args),
-    taskRunById: (...args) => automationMethod("taskRunById", args),
-    activeTaskRuns: (...args) => automationMethod("activeTaskRuns", args),
-    latestTaskRuns: (...args) => automationMethod("latestTaskRuns", args),
-    todayTaskRunIds: (...args) => automationMethod("todayTaskRunIds", args),
-    hasSuccessfulTaskRunSince: (...args) => automationMethod("hasSuccessfulTaskRunSince", args),
-    hasOccurrenceBeenAttempted: (...args) => automationMethod("hasOccurrenceBeenAttempted", args),
-    recentTaskRuns: (...args) => automationMethod("recentTaskRuns", args),
-    appendRunEvent: (...args) => automationMethod("appendRunEvent", args),
-    recordCommitAttempt: (...args) => automationMethod("recordCommitAttempt", args),
-    commitAttempts: (...args) => automationMethod("commitAttempts", args),
-    pruneRunEvents: (...args) => automationMethod("pruneRunEvents", args),
-    upsertTaskPrerequisiteNotice: (...args) => automationMethod("upsertTaskPrerequisiteNotice", args),
-    activeTaskPrerequisiteNotices: (...args) => automationMethod("activeTaskPrerequisiteNotices", args),
-    allTaskPrerequisiteNotices: (...args) => automationMethod("allTaskPrerequisiteNotices", args),
-    resolveTaskPrerequisiteNotices: (...args) => automationMethod("resolveTaskPrerequisiteNotices", args),
-  };
-  const exchangeRates: ExchangeRatePersistencePort = {
-    readExchangeRates: (...args) => exchangeMethod("readExchangeRates", args),
-    upsertExchangeRates: (...args) => exchangeMethod("upsertExchangeRates", args),
-  };
-  const maicoin: PGliteMaicoinPersistencePort = {
-    startRun: (...args) => maicoinMethod("startRun", args),
-    appendSnapshots: (...args) => maicoinMethod("appendSnapshots", args),
-    appendStatementRows: (...args) => maicoinMethod("appendStatementRows", args),
-    finishRun: (...args) => maicoinMethod("finishRun", args),
-  };
-  const preview: PGlitePreviewFinancialDataPort = {
-    write: (...args) => previewMethod("write", args),
-    deleteAll: (...args) => previewMethod("deleteAll", args),
-    accounts: (...args) => previewMethod("accounts", args),
-    transactions: (...args) => previewMethod("transactions", args),
-    creditAccounts: (...args) => previewMethod("creditAccounts", args),
-    purchases: (...args) => previewMethod("purchases", args),
-    statements: (...args) => previewMethod("statements", args),
-  };
 
   const close = (error = new Error("PGlite operational worker is closed.")): void => {
     if (closed) return;
@@ -667,7 +479,8 @@ export function createPGliteOperationalRpcClient(
 
   return {
     request,
-    provider: Object.freeze({ automation, exchangeRates, maicoin, preview }),
+    // The contract table names every port method, so the derived object is each port in full.
+    provider: Object.freeze(domains) as unknown as PGliteOperationalDomains,
     close,
   };
 }

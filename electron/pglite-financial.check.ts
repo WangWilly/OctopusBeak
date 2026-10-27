@@ -217,23 +217,23 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     });
     await waitFor(() => snapshots.length >= 1);
 
-    await client.financial.request("financial.exchangeRates.upsert", [[{
+    await client.operationalProvider.exchangeRates.upsertExchangeRates([{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.5,
       source: "financial-rpc-check",
       fetchedAt: "2026-09-22T00:00:00.000Z",
-    }]]);
+    }]);
     await waitFor(() => snapshots.length >= 2);
     assert.equal((snapshots.at(-1) as { availability: string }).availability, "empty");
     const afterInsert = snapshots.length;
-    await client.financial.request("financial.exchangeRates.upsert", [[{
+    await client.operationalProvider.exchangeRates.upsertExchangeRates([{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.6,
       source: "financial-rpc-check-update",
       fetchedAt: "2026-09-22T01:00:00.000Z",
-    }]]);
+    }]);
     await waitFor(() => snapshots.length > afterInsert);
     await new Promise((resolve) => setTimeout(resolve, 250));
     const afterRateUpdate = snapshots.length;
@@ -276,13 +276,13 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     await stop();
     stop = undefined;
     const beforeUnsubscribe = snapshots.length;
-    await client.financial.request("financial.exchangeRates.upsert", [[{
+    await client.operationalProvider.exchangeRates.upsertExchangeRates([{
       rateDate: "2026-09-23",
       currency: "USD",
       twdPerUnit: 31.6,
       source: "financial-rpc-check",
       fetchedAt: "2026-09-23T00:00:00.000Z",
-    }]]);
+    }]);
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(snapshots.length, beforeUnsubscribe, "unsubscribe must stop result publication");
   } finally {
