@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { chromium, type Frame, type Page } from "playwright";
+import { chromium, type Frame } from "playwright";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildHncbCapture,
@@ -12,8 +12,16 @@ import {
   indexHncbCurrentDepositFinancialCaptures,
   parseStatementExport,
   prepareHncbStatementQueryForm,
-  runHncbStatements,
+  hncbCurrentDepositBalances,
+  stageHncbDeposit,
+  type HncbReadCurrentDepositBalances,
 } from "./hncb-statements.ts";
+import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
+import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import {
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
@@ -46,8 +54,6 @@ assert.doesNotMatch(
   /console\./u,
   "HNCB production must report progress through structured events",
 );
-assert.match(providerSource, /runHncbProviderWorkflow/u);
-assert.match(providerSource, /financialCommit: overrides\.financialCommit/u);
 
 const accountA = ["0001", "0002", "0003"].join("");
 const accountB = ["0002", "0003", "0004"].join("");
@@ -434,14 +440,14 @@ assert.deepEqual(normalizedRows.map((row) => row.slice(0, 3)), [
   ["1900/01/01", "12:34:56", "1900/01/02"],
 ]);
 
-const page = {} as Page;
+const scope = {} as FrameScope;
 const currentFrame = {} as Frame;
 const reopenedFrame = {} as Frame;
 
 let reopened = false;
 assert.equal(
   await ensureHncbStatementForm(
-    page,
+    scope,
     async () => currentFrame,
     async () => {
       reopened = true;
@@ -455,13 +461,159 @@ assert.equal(reopened, false);
 let observedTimeout = 0;
 assert.equal(
   await ensureHncbStatementForm(
-    page,
-    async (_page, timeoutMs) => {
+    scope,
+    async (_scope, timeoutMs) => {
       observedTimeout = timeoutMs ?? 0;
-      throw new Error("statement form missing");
+      throw new FrameScopeTimeoutError("statement form missing");
     },
     async () => reopenedFrame,
   ),
   reopenedFrame,
 );
 assert.equal(observedTimeout, 5_000);
+
+const cancellation = new Error("run cancelled");
+reopened = false;
+await assert.rejects(
+  ensureHncbStatementForm(
+    scope,
+    async () => { throw cancellation; },
+    async () => {
+      reopened = true;
+      return reopenedFrame;
+    },
+  ),
+  (error: unknown) => error === cancellation,
+);
+assert.equal(reopened, false, "only a timed-out form wait reopens the statement detail");
+
+// The statement form lives in HNCB's `main` frame; the frame scope finds it
+// there, and a cancelled run stops the wait with its reason instead of
+// reopening the form after the 5 s probe.
+const formBrowser = await chromium.launch();
+try {
+  const formPage = await formBrowser.newPage();
+  await formPage.setContent(`<iframe name="main" srcdoc="
+    <form name='form1'><select id='acct1' name='acct1'><option value='1'>1</option></select></form>
+    <a href='javascript:doSubmit()'>查詢</a>
+  "></iframe>`);
+  const formFrame = await ensureHncbStatementForm(
+    frameScope(formPage, new AbortController().signal),
+    undefined,
+    async () => { throw new Error("the present form must not be reopened"); },
+  );
+  assert.equal(formFrame.name(), "main");
+
+  const emptyPage = await formBrowser.newPage();
+  await emptyPage.setContent(`<iframe name="main" srcdoc="<p>帳戶總覽</p>"></iframe>`);
+  const run = new AbortController();
+  const started = Date.now();
+  setTimeout(() => run.abort(cancellation), 100);
+  await assert.rejects(
+    ensureHncbStatementForm(
+      frameScope(emptyPage, run.signal),
+      undefined,
+      async () => { throw new Error("a cancelled run must not reopen the form"); },
+    ),
+    (error: unknown) => error === cancellation,
+  );
+  assert.ok(Date.now() - started < 2_000, "cancellation ends the form wait before its 5 s probe");
+} finally {
+  await formBrowser.close();
+}
+
+// Current balances: the account overview is read first and wins when it has
+// rows; the current-balance page is read only when the overview is empty.
+const balanceReads: string[] = [];
+const balanceInput = {
+  observedAt: "2026-09-09T13:57:10+08:00",
+  financialAuthority: { authorityClass: "existing-financial-admission" },
+};
+const overviewOnly = await hncbCurrentDepositBalances(
+  async () => { balanceReads.push("overview"); return [overviewCurrentRow]; },
+  async () => { balanceReads.push("detail"); return []; },
+)(balanceInput);
+assert.deepEqual(overviewOnly, [overviewCurrentRow]);
+assert.deepEqual(balanceReads, ["overview"]);
+balanceReads.length = 0;
+await hncbCurrentDepositBalances(
+  async () => { balanceReads.push("overview"); return []; },
+  async () => { balanceReads.push("detail"); return []; },
+)(balanceInput);
+assert.deepEqual(balanceReads, ["overview", "detail"]);
+
+// The build half reads current balances only after a capture was admitted as
+// financial data, and only while the run is live.
+function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
+  return {
+    stage: (...requests) => { staged.push(...requests); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+  };
+}
+const live = { signal: new AbortController().signal };
+function readCapture(account: string, label: string) {
+  const structural = admitHncbDomesticDepositCaptureEvidence(buildHncbCapture(
+    { value: account, label },
+    { startDate: "2026/08/01", endDate: "2026/08/31" },
+    "2026-08-31T12:00:00+08:00",
+    {
+      account: `${account.slice(0, 6)}-${account.slice(6)}`,
+      accountId: account,
+      queryPeriod: "2026/08/01-2026/08/31",
+      currency: "TWD",
+      rows: [duplicateHncbRow],
+      filename: "synthetic-hncb.xls",
+      byteLength: 1,
+      contentDigest: `sha256:synthetic-${account}`,
+    },
+  ));
+  assert.equal(structural.status, "admissible");
+  return structural.capture!;
+}
+const admitted = readCapture(accountA, `HNCB ${accountA}`);
+const sourceOnly = readCapture(accountB, `HNCB 共同帳戶 ${accountB}`);
+let currentReads = 0;
+const countingReads: HncbReadCurrentDepositBalances = async () => { currentReads += 1; return []; };
+
+const sourceOnlyStaged: ProductStageRequest[] = [];
+const sourceOnlySummary = await stageHncbDeposit(
+  { observedAt: "2026-08-31T12:00:00+08:00", captures: [sourceOnly] },
+  live,
+  productHandle(sourceOnlyStaged),
+  countingReads,
+);
+assert.equal(currentReads, 0, "a source-only snapshot never opens the balance pages");
+assert.deepEqual(sourceOnlyStaged.map((item) => item.command.kind), [PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND]);
+assert.deepEqual(sourceOnlySummary, { accountCount: 1, sourceCaptureCount: 1, rowCount: 1 });
+
+const financialStaged: ProductStageRequest[] = [];
+await stageHncbDeposit(
+  { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted, sourceOnly] },
+  live,
+  productHandle(financialStaged),
+  countingReads,
+);
+assert.equal(currentReads, 1);
+assert.deepEqual(financialStaged.map((item) => item.command.kind), [
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+]);
+
+const cancelledRun = new AbortController();
+cancelledRun.abort(cancellation);
+await assert.rejects(
+  stageHncbDeposit(
+    { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted] },
+    { signal: cancelledRun.signal },
+    productHandle([]),
+    countingReads,
+  ),
+  (error: unknown) => error === cancellation,
+);
+assert.equal(currentReads, 1, "a cancelled run does not read current balances");
+
+await assert.rejects(
+  stageHncbDeposit({ observedAt: "2026-08-31T12:00:00+08:00", captures: [] }, live, productHandle([]), countingReads),
+  /No HNCB accounts reached a terminal source result/u,
+);

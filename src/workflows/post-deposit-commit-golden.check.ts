@@ -9,6 +9,7 @@ import type { PostCurrentDepositBalanceRow } from "./post-current-deposit-balanc
 import {
   parsePostStatementResponse,
   runPostProviderWorkflow,
+  stagePostDeposit,
   type PostQueriedStatement,
   type PostRawStatementRow,
 } from "./post-statements.ts";
@@ -118,11 +119,16 @@ async function run(
   let error: string | null = null;
   let errorCode: string | null = null;
   const output = await runPostProviderWorkflow(context, input, {
-    collectSourceStatements: async () => statements,
-    readCurrentDepositBalances: async () => {
-      balanceReads += 1;
-      return balances;
-    },
+    collectDeposit: async (_page, parsedInput, runContext, product) => await stagePostDeposit(
+      { observedAt: "2026-09-25T20:00:00+08:00", statements },
+      parsedInput,
+      runContext,
+      product,
+      async () => {
+        balanceReads += 1;
+        return balances;
+      },
+    ),
   }).catch((caught: unknown) => {
     // The golden keeps the collector's own rejection, which the run carries as its cause.
     const original = caught instanceof ProductCollectionInterruptedError ? caught.cause : caught;

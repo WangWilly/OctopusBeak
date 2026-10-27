@@ -7,7 +7,8 @@ import {
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
   runCtbcProviderWorkflow,
-  type CtbcCollectedStatements,
+  stageCtbcDeposit,
+  type CtbcDepositSourceSnapshot,
   type CtbcDetailRow,
   type CtbcObservedAccountCapture,
   type CtbcObservedRangeResponse,
@@ -82,7 +83,7 @@ function account(accountId: string, perRange: readonly (CtbcDetailRow[] | "no-da
   };
 }
 
-function collected(captures: CtbcObservedAccountCapture[]): CtbcCollectedStatements {
+function snapshot(captures: CtbcObservedAccountCapture[]): CtbcDepositSourceSnapshot {
   return {
     output: {
       count: captures.length,
@@ -145,11 +146,16 @@ async function run(
     signalEvent: recorder.signalEvent,
   };
   const output = await runCtbcProviderWorkflow(context, input, {
-    collectStatements: async () => collected(captures),
-    readCurrentDepositBalances: async () => {
-      balanceReads += 1;
-      return balances;
-    },
+    collectDeposit: async (_page, parsedInput, productContext, product) => await stageCtbcDeposit(
+      snapshot(captures),
+      parsedInput,
+      productContext,
+      product,
+      async () => {
+        balanceReads += 1;
+        return balances;
+      },
+    ),
   });
   return { output, balanceReads, recorded: recorder.recorded() };
 }

@@ -46,7 +46,7 @@ Every wait races the run's signal and rejects with `signal.reason`, so the Produ
 - **Navigation verbs only, with each product composing its own fallback.** Rejected for the same reason.
 - **Keep each product's poll interval and settle delay as parameters.** Rejected. It would move the drift into the interface.
 - **Take the charset from the response header or a `<meta>` tag, as Yuanta Trade does.** Rejected. Neither bank declares a page charset in anything the repository has captured. `assertIntact` already passes on live bodies, so strict UTF-8 decoding keeps every read that works today.
-- **Move HNCB's copies onto the frame-scope module in the same change.** Deferred. HNCB is a single-product bank, and its runner will be reshaped together with the other single-product banks.
+- **Move HNCB's copies onto the frame-scope module in the same change.** Deferred. HNCB is a single-product bank, and its runner will be reshaped together with the other single-product banks. HNCB's statement pages and sign-in probe later moved onto the frame-scope module together with that read-then-build split. HNCB's current-balance module still polls on its own.
 - **Add a typed timeout outcome.** Rejected for now. It would need another sweep across the host and the dashboard.
 
 ## Consequences
