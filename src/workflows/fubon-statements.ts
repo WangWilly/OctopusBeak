@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowAccountIdentityPort, WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { AccountIdentityContinuity } from "../ledger/pglite/account-identity-continuity.ts";
 import {
@@ -11,11 +10,9 @@ import {
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import {
-  activateControlWithoutPointer,
-  selectOptionWithoutPointer,
-} from "./browser-interaction.ts";
-import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
+import { selectOptionWithoutPointer } from "./browser-interaction.ts";
+import { ifFound, type BrowserScope } from "./frame-scope.ts";
+import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
@@ -74,17 +71,28 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 
-const BANK_ENTRY_URL =
-  "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
+const depositFastFunctionSelector = "a.input_sel.fastFunctionLinks";
+const depositSubmitSelector = 'a[id="form1:doValidateAndSubmit"]';
 const depositQueryPath = "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces";
+/**
+ * How long the date-range radio's handler gets before the query. No captured
+ * page shows what the handler changes, so there is no condition to wait for.
+ */
+const DATE_RANGE_HANDLER_PAUSE_MS = 500;
 export const FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
   "capture-evidence-v2" as const;
 export const FUBON_DEPOSIT_TELEMETRY_VERSION = "deposit-telemetry-v1" as const;
 export const FUBON_LOAN_PAYMENT_ACCOUNT_EVIDENCE_CONTRACT_VERSION =
   "fubon/deposit-loan-payment-account/v1" as const;
 
-type BrowserScope = Page | Frame;
+/** The bank's 我的存款 page, which lists each deposit account with its task controls. */
+const MY_DEPOSITS_ROUTE: FubonRoute = {
+  description: "my deposits page",
+  link: (scope) => scope.locator("a").filter({ hasText: "我的存款" }),
+  ready: async (scope) =>
+    (await scope.locator(depositFastFunctionSelector).count().catch(() => 0)) > 0,
+};
 
 export const fubonStatementDateRangeSchema = z.enum([
   "1",
@@ -1846,24 +1854,34 @@ function depositRows(scope: BrowserScope): Locator {
   });
 }
 
-async function countDepositRows(scope: BrowserScope): Promise<number> {
-  await scope
-    .locator("a.btn_sel")
-    .filter({ hasText: "交易明細查詢" })
-    .first()
-    .waitFor({
-      state: "attached",
-      timeout: 60_000,
-    });
-  return await depositRows(scope).count();
+async function countDepositRows(
+  site: FubonEbankSite,
+  scope: BrowserScope,
+): Promise<number> {
+  await site.frames.race(
+    scope
+      .locator("a.btn_sel")
+      .filter({ hasText: "交易明細查詢" })
+      .first()
+      .waitFor({
+        state: "attached",
+        timeout: 60_000,
+      }),
+  );
+  return await site.frames.race(depositRows(scope).count());
 }
 
-async function readMaskedAccountLabel(row: Locator): Promise<string> {
-  const raw = await row
-    .locator("td")
-    .first()
-    .innerText()
-    .catch(async () => await row.innerText());
+async function readMaskedAccountLabel(
+  site: FubonEbankSite,
+  row: Locator,
+): Promise<string> {
+  const raw = await site.frames.race(
+    row
+      .locator("td")
+      .first()
+      .innerText()
+      .catch(async () => await row.innerText()),
+  );
   return maskAccount(raw);
 }
 
@@ -1878,17 +1896,18 @@ function isFubonDepositAccountPlaceholder(
 }
 
 export async function readFubonDepositAccountOptions(
-  page: Page,
+  site: FubonEbankSite,
 ): Promise<FubonDepositAccountOption[]> {
-  const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
+  const { frames } = site;
+  const scope = await frames.scopeWith(depositAccountSelectSelector);
   const options = scope.locator(`${depositAccountSelectSelector} option`);
-  const count = await options.count();
+  const count = await frames.race(options.count());
   const accounts: FubonDepositAccountOption[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await option.getAttribute("value"));
-    const label = cleanText(await option.textContent());
+    const value = cleanText(await frames.race(option.getAttribute("value")));
+    const label = cleanText(await frames.race(option.textContent()));
     if (value && label) accounts.push({ label, value });
   }
 
@@ -1905,78 +1924,26 @@ export async function readFubonDepositAccountOptions(
 }
 
 async function selectDepositAccount(
-  page: Page,
+  site: FubonEbankSite,
   account: FubonDepositAccountOption,
 ): Promise<void> {
-  const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
-  await selectOptionWithoutPointer(
-    scope.locator(depositAccountSelectSelector),
-    account.value,
+  const scope = await site.frames.scopeWith(depositAccountSelectSelector);
+  await site.frames.race(
+    selectOptionWithoutPointer(
+      scope.locator(depositAccountSelectSelector),
+      account.value,
+    ),
   );
 }
 
 async function selectDepositAccountWithUi(
-  page: Page,
+  site: FubonEbankSite,
   account: FubonDepositAccountOption,
 ): Promise<void> {
-  const scope = await findScopeWithSelector(page, depositAccountSelectSelector);
-  await scope.locator(depositAccountSelectSelector).selectOption(account.value);
-}
-
-async function findScopeWithSelector(
-  page: Page,
-  selector: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (
-      (await page
-        .locator(selector)
-        .count()
-        .catch(() => 0)) > 0
-    ) {
-      return page;
-    }
-
-    for (const frame of page.frames()) {
-      if (
-        (await frame
-          .locator(selector)
-          .count()
-          .catch(() => 0)) > 0
-      ) {
-        return frame;
-      }
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error(`Timed out waiting for selector ${selector}.`);
-}
-
-async function findScopeWithLocator(
-  page: Page,
-  locatorFor: (scope: BrowserScope) => Locator,
-  description: string,
-  timeoutMs = 60_000,
-): Promise<BrowserScope> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      if (
-        (await locatorFor(scope)
-          .count()
-          .catch(() => 0)) > 0
-      ) {
-        return scope;
-      }
-    }
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find ${description} in any frame.`);
+  const scope = await site.frames.scopeWith(depositAccountSelectSelector);
+  await site.frames.race(
+    scope.locator(depositAccountSelectSelector).selectOption(account.value),
+  );
 }
 
 function depositResultTable(scope: BrowserScope): Locator {
@@ -1988,53 +1955,13 @@ function depositResultTable(scope: BrowserScope): Locator {
     .first();
 }
 
-async function clickFirstLinkByText(
-  page: Page,
-  text: string,
-  timeoutMs = 60_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const link = scope.locator("a").filter({ hasText: text }).first();
-      if ((await link.count().catch(() => 0)) > 0) {
-        const href = await link.getAttribute("href");
-        if (href && href !== "#" && !href.startsWith("javascript:")) {
-          await scope.goto(new URL(href, BANK_ENTRY_URL).toString(), {
-            waitUntil: "domcontentloaded",
-          });
-        } else {
-          await activateControlWithoutPointer(link);
-        }
-        return;
-      }
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  throw new Error(`Could not find link with text "${text}".`);
-}
-
-async function openMyDepositsPage(page: Page): Promise<BrowserScope> {
-  const existing = await findScopeWithSelector(
-    page,
-    "a.input_sel.fastFunctionLinks",
-    15_000,
-  ).catch(() => null);
-  if (existing) return existing;
-
-  await clickFirstLinkByText(page, "我的存款");
-  return await findScopeWithSelector(page, "a.input_sel.fastFunctionLinks");
-}
-
 async function openTransactionDetailForAccountIndex(
-  page: Page,
+  site: FubonEbankSite,
   accountIndex: number,
 ): Promise<string> {
-  const scope = await openMyDepositsPage(page);
+  const scope = await site.open(MY_DEPOSITS_ROUTE);
 
-  const rowCount = await countDepositRows(scope);
+  const rowCount = await countDepositRows(site, scope);
   if (accountIndex >= rowCount) {
     throw new Error(
       `Deposit account index ${accountIndex} is out of range; only ${rowCount} account rows are visible.`,
@@ -2042,19 +1969,24 @@ async function openTransactionDetailForAccountIndex(
   }
 
   const accountRow = depositRows(scope).nth(accountIndex);
-  const maskedAccount = await readMaskedAccountLabel(accountRow);
-  const fastFunctionLink = accountRow.locator("a.input_sel.fastFunctionLinks");
+  const maskedAccount = await readMaskedAccountLabel(site, accountRow);
+  const fastFunctionLink = accountRow.locator(depositFastFunctionSelector);
   if ((await fastFunctionLink.count()) > 0) {
-    await activateControlWithoutPointer(fastFunctionLink).catch(
-      () => undefined,
-    );
+    try {
+      await site.activate(fastFunctionLink);
+    } catch (error) {
+      // Opening the row's quick menu is best effort; the 交易明細查詢 control below decides.
+      if (site.frames.signal.aborted) throw error;
+    }
   }
 
   const transactionDetails = accountRow
     .locator("a.btn_sel")
     .filter({ hasText: "交易明細查詢" });
-  await transactionDetails.waitFor({ state: "attached", timeout: 30_000 });
-  await activateControlWithoutPointer(transactionDetails);
+  await site.frames.race(
+    transactionDetails.waitFor({ state: "attached", timeout: 30_000 }),
+  );
+  await site.activate(transactionDetails);
 
   return maskedAccount;
 }
@@ -2245,27 +2177,23 @@ export async function parseFubonDepositStatementHtml(
 }
 
 async function fetchDepositStatement(
-  page: Page,
+  site: FubonEbankSite,
   dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
   accountOption: FubonDepositAccountOption,
-  sourceText?: SourceTextPort,
 ): Promise<FubonParsedDepositStatement> {
-  const scope = await findScopeWithSelector(
-    page,
-    'a[id="form1:doValidateAndSubmit"]',
-  );
+  const { page } = site.frames;
+  const scope = await site.frames.scopeWith(depositSubmitSelector);
   const dateRangeId = `input[id="form1:rdoDay${dateRange}"]`;
-  await activateControlWithoutPointer(scope.locator(dateRangeId));
-  await page.waitForTimeout(500);
+  await site.activate(scope.locator(dateRangeId));
+  await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
-  const html = await fetchFormPostbackHtml(
+  const html = await site.postback(
     scope.locator("form").first(),
     "form1:doValidateAndSubmit",
     depositDateRangeFields(dateRange),
   );
-  sourceText?.assertIntact(html);
   const pages = [await parseDepositStatementHtml(page, html, 0, 1)];
-  await replaceDocumentHtml(scope, html);
+  await site.replaceDocument(scope, html);
 
   let nextPage = pages[0].nextPage;
   let pageFieldName = pages[0].pageFieldName;
@@ -2277,12 +2205,11 @@ async function fetchDepositStatement(
     traversalRequests.add(traversalKey);
     if (pages.length >= 10_000)
       throw new Error("Fubon deposit pagination exceeded the safe page limit.");
-    const nextHtml = await fetchFormPostbackHtml(
+    const nextHtml = await site.postback(
       scope.locator("form").first(),
       undefined,
       { [pageFieldName]: nextPage },
     );
-    sourceText?.assertIntact(nextHtml);
     const nextParsed = await parseDepositStatementHtml(
       page,
       nextHtml,
@@ -2290,16 +2217,12 @@ async function fetchDepositStatement(
       pages.length + 1,
     );
     pages.push(nextParsed);
-    await replaceDocumentHtml(scope, nextHtml);
+    await site.replaceDocument(scope, nextHtml);
     nextPage = nextParsed.nextPage;
     pageFieldName = nextParsed.pageFieldName;
   }
 
-  await findScopeWithLocator(
-    page,
-    depositResultTable,
-    "deposit statement result table",
-  );
+  await site.frames.scopeWith(depositResultTable, "deposit statement result table");
 
   return assembleFubonParsedDepositStatement(pages, accountOption);
 }
@@ -2372,26 +2295,29 @@ function isFubonDepositQueryResponse(response: Response): boolean {
   }
 }
 
-async function clickFubonDepositQueryAndReadHtml(
-  page: Page,
-  scope: BrowserScope,
+/** Click a control that posts the deposit query and decode the bank's reply strictly. */
+async function clickAndReadFubonDepositQuery(
+  site: FubonEbankSite,
+  control: Locator,
 ): Promise<string> {
-  const submit = scope.locator('a[id="form1:doValidateAndSubmit"]');
-  await submit.waitFor({ state: "visible", timeout: 30_000 });
-  const [response] = await Promise.all([
-    page.waitForResponse(isFubonDepositQueryResponse, { timeout: 60_000 }),
-    submit.click({ timeout: 30_000 }),
-  ]);
-  await response.finished();
-  return await response.text();
+  const [response] = await site.frames.race(
+    Promise.all([
+      site.frames.page.waitForResponse(isFubonDepositQueryResponse, {
+        timeout: 60_000,
+      }),
+      control.click({ timeout: 30_000 }),
+    ]),
+  );
+  await site.frames.race(response.finished());
+  return await site.readHtml(response);
 }
 
 async function findFubonDepositNextPage(
-  page: Page,
-): Promise<{ scope: BrowserScope; link: Locator } | null> {
-  for (const scope of [page, ...page.frames()]) {
+  site: FubonEbankSite,
+): Promise<Locator | null> {
+  for (const scope of site.frames.scopes()) {
     const link = scope.locator("a").filter({ hasText: "下一頁" }).first();
-    if ((await link.count().catch(() => 0)) > 0) return { scope, link };
+    if ((await link.count().catch(() => 0)) > 0) return link;
   }
   return null;
 }
@@ -2399,8 +2325,8 @@ async function findFubonDepositNextPage(
 /**
  * Telemetry-only query path. It submits the visible form through Playwright
  * and reads the matching response transiently for structural metadata. It
- * deliberately does not use fetchFormPostbackHtml or replaceDocumentHtml;
- * the bank owns the resulting document lifecycle.
+ * deliberately does not post the form or replace the document itself; the
+ * bank owns the resulting document lifecycle.
  */
 export type FubonDepositUiQueryDependencies = {
   accountAlreadySelected?: boolean;
@@ -2413,43 +2339,32 @@ export type FubonDepositUiQueryDependencies = {
 };
 
 export async function fetchFubonDepositStatementViaUi(
-  page: Page,
+  site: FubonEbankSite,
   dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
   accountOption: FubonDepositAccountOption,
   dependencies: FubonDepositUiQueryDependencies = {},
 ): Promise<FubonParsedDepositStatement> {
+  const { frames } = site;
   const parsePage = dependencies.parsePage ?? parseDepositStatementHtml;
-  let scope = await findScopeWithSelector(
-    page,
-    'a[id="form1:doValidateAndSubmit"]',
-  );
+  const scope = await frames.scopeWith(depositSubmitSelector);
   if (!dependencies.accountAlreadySelected) {
-    await selectDepositAccountWithUi(page, accountOption);
+    await selectDepositAccountWithUi(site, accountOption);
   }
   const dateRangeId = `input[id="form1:rdoDay${dateRange}"]`;
-  await scope.locator(dateRangeId).click({ timeout: 30_000 });
-  await page.waitForTimeout(500);
+  await frames.race(scope.locator(dateRangeId).click({ timeout: 30_000 }));
+  await frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
   const pages: ParsedDepositStatementPage[] = [];
   const visited = new Set<string>();
-  let nextLink: Locator | null = null;
+  const submit = scope.locator(depositSubmitSelector);
+  await frames.race(submit.waitFor({ state: "visible", timeout: 30_000 }));
+  let control: Locator = submit;
   while (true) {
-    let html: string;
-    if (nextLink) {
-      const [response] = await Promise.all([
-        page.waitForResponse(isFubonDepositQueryResponse, { timeout: 60_000 }),
-        nextLink.click({ timeout: 30_000 }),
-      ]);
-      await response.finished();
-      html = await response.text();
-      nextLink = null;
-    } else {
-      html = await clickFubonDepositQueryAndReadHtml(page, scope);
-    }
-    const parsed = await parsePage(page, html, pages.length, pages.length + 1);
+    const html = await clickAndReadFubonDepositQuery(site, control);
+    const parsed = await parsePage(frames.page, html, pages.length, pages.length + 1);
     pages.push(parsed);
 
-    const next = await findFubonDepositNextPage(page);
+    const next = await findFubonDepositNextPage(site);
     if (!next || !parsed.nextPage || !parsed.pageFieldName) break;
     const traversalKey = `${parsed.pageFieldName}\u0000${parsed.nextPage}`;
     if (visited.has(traversalKey)) {
@@ -2459,15 +2374,10 @@ export async function fetchFubonDepositStatementViaUi(
     if (pages.length >= 10_000) {
       throw new Error("Fubon deposit pagination exceeded the safe page limit.");
     }
-    scope = next.scope;
-    nextLink = next.link;
+    control = next;
   }
 
-  await findScopeWithLocator(
-    page,
-    depositResultTable,
-    "deposit statement result table",
-  );
+  await frames.scopeWith(depositResultTable, "deposit statement result table");
   return assembleFubonParsedDepositStatement(pages, accountOption);
 }
 
@@ -2510,15 +2420,13 @@ function sameFields(
   );
 }
 
-async function readFubonDepositFormMetadata(page: Page): Promise<{
+async function readFubonDepositFormMetadata(site: FubonEbankSite): Promise<{
   fieldNames: string[];
   fields: Array<{ name: string; type: string }>;
 }> {
-  const scope = await findScopeWithSelector(
-    page,
-    'a[id="form1:doValidateAndSubmit"]',
-    5_000,
-  ).catch(() => null);
+  const scope = await ifFound(
+    site.frames.scopeWith(depositSubmitSelector, undefined, { timeoutMs: 5_000 }),
+  );
   if (!scope) return { fieldNames: [], fields: [] };
   const controls = scope.locator("input,select,textarea");
   const count = await controls.count().catch(() => 0);
@@ -2688,18 +2596,18 @@ function compareFubonDepositTelemetry(
 
 export type FubonDepositTelemetryRunDependencies = Readonly<{
   openTransactionDetailForAccountIndex?: (
-    page: Page,
+    site: FubonEbankSite,
     accountIndex: number,
   ) => Promise<string>;
   readDepositAccountOptions?: (
-    page: Page,
+    site: FubonEbankSite,
   ) => Promise<FubonDepositAccountOption[]>;
   selectDepositAccount?: (
-    page: Page,
+    site: FubonEbankSite,
     account: FubonDepositAccountOption,
   ) => Promise<void>;
   fetchDepositStatement?: (
-    page: Page,
+    site: FubonEbankSite,
     dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
     account: FubonDepositAccountOption,
   ) => Promise<FubonParsedDepositStatement>;
@@ -2710,7 +2618,7 @@ export type FubonDepositTelemetryRunDependencies = Readonly<{
  * It has no writer or canonical-store dependency by design.
  */
 export async function captureFubonDepositTelemetry(
-  page: Page,
+  site: FubonEbankSite,
   input: FubonDepositTelemetryInput,
   overrides: FubonDepositTelemetryRunDependencies = {},
 ): Promise<FubonDepositTelemetryOutput> {
@@ -2723,14 +2631,14 @@ export async function captureFubonDepositTelemetry(
     overrides.selectDepositAccount ?? selectDepositAccountWithUi;
   const fetchStatement =
     overrides.fetchDepositStatement ??
-    ((currentPage, range, account) =>
-      fetchFubonDepositStatementViaUi(currentPage, range, account, {
+    ((currentSite, range, account) =>
+      fetchFubonDepositStatementViaUi(currentSite, range, account, {
         accountAlreadySelected: true,
       }));
-  const tracker = new FubonDepositResponseTracker(page);
+  const tracker = new FubonDepositResponseTracker(site.frames.page);
   try {
-    await openTransactionDetail(page, 0);
-    const accounts = await readAccounts(page);
+    await openTransactionDetail(site, 0);
+    const accounts = await readAccounts(site);
     const account = accounts[0];
     if (!account)
       throw new StatementComponentAbsentError(
@@ -2742,11 +2650,11 @@ export async function captureFubonDepositTelemetry(
       queryId: "A1" | "A2" | "B",
       rangeCode: z.infer<typeof fubonStatementDateRangeSchema>,
     ) => {
-      await selectAccount(page, account);
-      const formBefore = await readFubonDepositFormMetadata(page);
+      await selectAccount(site, account);
+      const formBefore = await readFubonDepositFormMetadata(site);
       const responseSnapshot = tracker.snapshot();
-      const statement = await fetchStatement(page, rangeCode, account);
-      const formAfter = await readFubonDepositFormMetadata(page);
+      const statement = await fetchStatement(site, rangeCode, account);
+      const formAfter = await readFubonDepositFormMetadata(site);
       const form = formAfter.fields.length > 0 ? formAfter : formBefore;
       records.push(
         buildFubonDepositTelemetryRecord(
@@ -2829,7 +2737,8 @@ export async function runFubonStatements(
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
   fubonDepositSourceIdentity(input);
-  const snapshot = await readFubonDepositSourceSnapshot(page, input, context, product);
+  const site = fubonEbankSite(page, context);
+  const snapshot = await readFubonDepositSourceSnapshot(site, input, context, product);
   return stageFubonDeposit(snapshot, input, context, product, async (request) => {
     await product.reportActivity("query");
     const rows = await readFubonCurrentDepositBalances(page, request);
@@ -2838,24 +2747,25 @@ export async function runFubonStatements(
   });
 }
 
-async function readFubonDepositSourceSnapshot(
-  page: Page,
-  input: FubonDepositProductInput,
-  context: FubonDepositProductContext,
-  product: ProductCollectionHandle,
+/** The read half: every account's statements, read before anything is staged (ADR 0065). */
+export async function readFubonDepositSourceSnapshot(
+  site: FubonEbankSite,
+  input: FubonStatementsInput,
+  context: Pick<FubonDepositProductContext, "signal" | "text">,
+  product: Pick<ProductCollectionHandle, "reportActivity">,
 ): Promise<FubonDepositSourceSnapshot> {
   await product.reportActivity("query");
-  await openTransactionDetailForAccountIndex(page, 0);
-  const accounts = await readFubonDepositAccountOptions(page);
+  await openTransactionDetailForAccountIndex(site, 0);
+  const accounts = await readFubonDepositAccountOptions(site);
   const read: Array<FubonDepositSourceSnapshot["accounts"][number]> = [];
   for (const account of accounts) {
     context.signal.throwIfAborted();
-    await selectDepositAccount(page, account);
+    await selectDepositAccount(site, account);
     const statements: FubonParsedDepositStatement[] = [];
     for (const dateRange of input.dateRanges) {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      const statement = await fetchDepositStatement(page, dateRange, account, context.text);
+      const statement = await fetchDepositStatement(site, dateRange, account);
       context.text.assertIntact(JSON.stringify(statement));
       statements.push(statement);
     }
