@@ -54,6 +54,8 @@ type ProviderVerificationAdapter = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handleInput?: ViewerTargetInputHandler;
+  /** Fails when a solver click did not reach the provider's verified state. */
+  confirmClick?(session: string, contract: HumanAssistanceContract): Promise<void>;
 };
 
 export type ProviderVerificationPageRunner = <T>(
@@ -98,6 +100,12 @@ export type ProviderVerificationHost = {
     session: string,
     contract: HumanAssistanceContract,
     answer: string,
+  ): Promise<void>;
+  /** Clicks a declared target, then holds the provider to its verified state. */
+  clickTarget(
+    session: string,
+    contract: HumanAssistanceContract,
+    targetId: string,
   ): Promise<void>;
   inspectCompletion(
     session: string,
@@ -400,6 +408,14 @@ function createAdapters(
         || target.semanticId.startsWith("yuanta-bank.")
       )),
       inspectCompletion: (session, contract) => inspectYuantaCompletion(withPage, session, contract),
+      async confirmClick(session, contract) {
+        if (
+          contract.stageId === "yuanta-trade-captcha-checkbox"
+          && !await inspectYuantaCompletion(withPage, session, contract)
+        ) {
+          throw new Error("Yuanta Trade CAPTCHA checkbox did not reach its verified state.");
+        }
+      },
     },
   ];
 }
@@ -502,6 +518,17 @@ export function createProviderVerificationHost(
     }, contract);
   };
 
+  const clickTarget = async (
+    session: string,
+    contract: HumanAssistanceContract,
+    targetId: string,
+  ) => {
+    await viewer.clickTarget(session, contract, targetId);
+    for (const adapter of matchingAdapters(contract)) {
+      await adapter.confirmClick?.(session, contract);
+    }
+  };
+
   const inspectCompletion = async (
     session: string,
     contract: HumanAssistanceContract,
@@ -522,6 +549,7 @@ export function createProviderVerificationHost(
     captureChallengeAudio,
     sendInput,
     injectAnswer,
+    clickTarget,
     inspectCompletion,
   };
 }
