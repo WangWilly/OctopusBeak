@@ -18,8 +18,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import {
-  registerAppWorkflowHumanAssistanceRequestHandler,
-  resumeAppWorkflowHumanAssistance,
+  completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -251,15 +250,14 @@ test("Post App task dispatches the typed provider with human assistance, complet
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const unregister = registerAppWorkflowHumanAssistanceRequestHandler(task.id, async ({ contract }) => {
-      assert.equal(contract.stageId, "ipost-login-captcha");
-      assert.equal(contract.targets[0]?.id, "captcha-input");
-      page.setSignedIn(true);
-      await provider.automation.updateHumanAssistanceCompletion(taskRunId, "verified");
-      assert.equal(await resumeAppWorkflowHumanAssistance(taskRunId, "verified"), true);
-    });
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      async assistanceRoute(request) {
+        assert.equal(request.contract.stageId, "ipost-login-captcha");
+        assert.equal(request.contract.targets[0]?.id, "captcha-input");
+        page.setSignedIn(true);
+        await completeAppWorkflowHumanAssistance(request);
+      },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: {
         financialCommit: commitPort,
@@ -269,7 +267,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
         observedStartUrl = startUrl;
         return browser;
       },
-    }).finally(unregister);
+    });
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({
@@ -343,11 +341,11 @@ test("Post App dispatch cancellation during human assistance does not collect or
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const page = fakePostPage();
-    const unregister = registerAppWorkflowHumanAssistanceRequestHandler(task.id, () => {
-      void cancellationRun?.requestStop("cancelled");
-    });
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
+      assistanceRoute: () => {
+        void cancellationRun?.requestStop("cancelled");
+      },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       onRunOpened: (active) => {
         cancellationRun = active;
@@ -356,7 +354,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
         financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
       },
       workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
-    }).finally(unregister);
+    });
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
     assert.equal(page.sourceResponseReads, 0);

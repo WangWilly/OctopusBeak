@@ -20,9 +20,6 @@ import {
   withViewerPage,
 } from "./automation-viewer.ts";
 import { YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR } from "../yuanta-trade-captcha.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
-
-export const YUANTA_TRADE_APP_TASK_ID = "yuanta-trade-statements";
 
 type VerificationRouteInput = Parameters<typeof routeWaitingRunVerification>[0];
 
@@ -43,7 +40,6 @@ export type YuantaTradeVerificationRouteOptions = Partial<Pick<
 >>;
 
 export type YuantaTradeAppAssistanceDependencies = Readonly<{
-  provider: AutomationPersistenceProvider;
   settings: AutomationSettingsFile;
   verificationHost?: ProviderVerificationHost;
   route?: typeof routeWaitingRunVerification;
@@ -142,14 +138,14 @@ export async function routeYuantaTradeAppAssistanceRequest(
   // cannot complete.
   if (!isSupportedAutomaticStage(request.contract)) {
     await request.execution.appendEvent(signalRunEvent("solver-challenge-unsupported", {
-      runId: request.taskRunId,
+      runId: request.run.taskRunId,
       occurredAt: new Date().toISOString(),
     }));
     throw new Error("Yuanta Trade verification stage is not supported by the automatic solver.");
   }
   if (request.contract.stageId === "yuanta-trade-challenge") {
     await request.execution.appendEvent(signalRunEvent("solver-challenge-unsupported", {
-      runId: request.taskRunId,
+      runId: request.run.taskRunId,
       occurredAt: new Date().toISOString(),
     }));
     throw new Error("Yuanta Trade image challenge has no supported local solver.");
@@ -198,9 +194,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
         },
       }
       : {}),
-    taskId: YUANTA_TRADE_APP_TASK_ID,
-    taskRunId: request.taskRunId,
-    provider: dependencies.provider,
+    run: request.run,
     settings: dependencies.settings,
     providerVerification: host,
     ...(routeOptions.captureChallengeImage
@@ -280,7 +274,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
       },
     ),
     resumeAppWorkflow: async () => {
-      await completeAppWorkflowHumanAssistance(request, dependencies.provider.automation);
+      await completeAppWorkflowHumanAssistance(request);
       assistanceResumed = true;
     },
     finalizeFailed: async () => {

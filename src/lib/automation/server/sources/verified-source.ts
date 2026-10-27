@@ -10,7 +10,6 @@ import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
 import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
-import type { AutomationPersistenceProvider } from "../store.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
 import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "../config-files.ts";
@@ -79,7 +78,6 @@ export type VerifiedWorkflow = Readonly<
 
 /** What the CAPTCHA Retry Campaign hands a source's own Verification route. */
 export type SourceVerificationRouteDependencies = Readonly<{
-  provider: AutomationPersistenceProvider;
   settings: AutomationSettingsFile;
   route: typeof routeWaitingRunVerification;
   onChallengeCaptured: () => Promise<void>;

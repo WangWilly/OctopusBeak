@@ -8,7 +8,7 @@ import {
   verificationRoutingDependencies,
   type VerificationRoutingDependencies,
 } from "./verification-routing.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
+import type { AutomationTaskRun } from "./store.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
 
@@ -142,15 +142,12 @@ test("App verification uses its task-run ID and ignores legacy session text", as
     humanAssistanceContract: captchaContract(),
     events: [],
   };
-  const provider = {
-    automation: {
-      async taskRunById(id: string) { return id === taskRunId ? run : null; },
-    },
-  } as unknown as AutomationPersistenceProvider;
   const outcome = await routeWaitingRunVerification({
-    taskId: "sinopac-statements",
-    taskRunId,
-    provider,
+    run: {
+      taskId: "sinopac-statements",
+      taskRunId,
+      current: () => run as unknown as AutomationTaskRun,
+    },
     settings: {},
     solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
     providerVerification: {

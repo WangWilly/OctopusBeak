@@ -43,7 +43,6 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
     const report = await runCaptchaRetryCampaign({
       taskId: "exchange-rates",
       appWorkflow: false,
-      provider,
       run,
       launchVerificationSettings: readAutomationSettings(),
       initialExecutionOptions: {},
@@ -71,7 +70,6 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
     const report = await runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
-      provider,
       run,
       launchVerificationSettings: readAutomationSettings(),
       initialExecutionOptions: {},

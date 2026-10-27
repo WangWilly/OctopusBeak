@@ -4,7 +4,10 @@ import { MessageChannel } from "node:worker_threads";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun, type WorkflowExecution } from "./active-task-run.ts";
-import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import {
+  createAppWorkflowHumanAssistancePort,
+  type HumanAssistanceRoute,
+} from "./app-workflow-human-assistance.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import {
@@ -109,8 +112,8 @@ export function observingExecutions(
 ): ActiveAutomationTaskRun {
   return {
     ...run,
-    beginExecution(executionId) {
-      const execution = run.beginExecution(executionId);
+    beginExecution(executionId, executionOptions) {
+      const execution = run.beginExecution(executionId, executionOptions);
       executions.push(execution);
       return execution;
     },
@@ -121,19 +124,24 @@ export function observingExecutions(
 export async function openExecutionForCheck(
   persistence: AutomationPersistencePort,
   taskRunId: string,
-  executionId = randomUUID(),
+  assistanceRoute?: HumanAssistanceRoute,
 ): Promise<{ run: ActiveAutomationTaskRun; execution: WorkflowExecution }> {
   const run = await openTaskRunForCheck(persistence, taskRunId);
-  return { run, execution: run.beginExecution(executionId) };
+  return { run, execution: run.beginExecution(randomUUID(), { assistanceRoute }) };
 }
 
-/** Request assistance the way one Workflow execution does: the execution begins before the request and ends after it. */
+/**
+ * Request assistance the way one Workflow execution does: the execution
+ * begins with `options.assistanceRoute`, as the executor's does, before the
+ * request and ends after it.
+ */
 export async function requestAssistanceForCheck(
   run: ActiveAutomationTaskRun,
+  options: Pick<AutomationTaskExecutionOptions, "assistanceRoute">,
   contract: HumanAssistanceContractInput,
   signal: AbortSignal,
 ) {
-  const execution = run.beginExecution(randomUUID());
+  const execution = run.beginExecution(randomUUID(), { assistanceRoute: options.assistanceRoute });
   try {
     return await createAppWorkflowHumanAssistancePort({ run, execution }).request(contract, signal);
   } finally {

@@ -140,7 +140,6 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
       const campaign = runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
-        provider,
         launchVerificationSettings: settings,
         run,
         initialExecutionOptions: {},
@@ -175,7 +174,7 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
           executeAttempts.push(attempt);
           const controller = new AbortController();
           try {
-            await requestAssistanceForCheck(run, providerContract, controller.signal);
+            await requestAssistanceForCheck(run, options, providerContract, controller.signal);
           } catch {
             assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
             return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
@@ -225,7 +224,6 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     const campaign = runCaptchaRetryCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
-      provider,
       launchVerificationSettings: {},
       // A route still solving when the App closes.
       routeWaitingRunVerification: () => new Promise((_resolve, reject) => {
@@ -233,9 +231,9 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
       }),
       run,
       initialExecutionOptions: {},
-      async execute() {
+      async execute(options) {
         try {
-          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
           throw new Error("Cancellation did not interrupt verification assistance.");
         } catch {
           return { summary: null, failure: { code: "cancelled" as const, proven: true } };
@@ -285,7 +283,6 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
       const campaign = runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
-        provider,
         launchVerificationSettings: {},
         run,
         initialExecutionOptions: {},
@@ -299,7 +296,7 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
           attempts.push(options.attempt ?? 1);
           if ((options.attempt ?? 1) === 1) {
             try {
-              await requestAssistanceForCheck(run, sinopacContract, controller.signal);
+              await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
             } catch {
               // The App route rejects the active worker stage to restart it.
             }
@@ -346,7 +343,6 @@ test("exhausted App solver retries finalize with a typed verification failure an
     const result = await runCaptchaRetryCampaign({
       taskId,
       appWorkflow: true,
-      provider,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -358,7 +354,7 @@ test("exhausted App solver retries finalize with a typed verification failure an
       async execute(options) {
         attempts.push(options.attempt ?? 1);
         try {
-          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
         } catch {
           // Reject the current challenge so the campaign can admit its next round.
         }
@@ -403,7 +399,6 @@ for (const scenario of [
       const result = await runCaptchaRetryCampaign({
         taskId,
         appWorkflow: true,
-        provider,
         launchVerificationSettings: {},
         run,
         initialExecutionOptions: {},
@@ -416,7 +411,7 @@ for (const scenario of [
         async execute(options) {
           attempts.push(options.attempt ?? 1);
           if (scenario.requestsCaptcha) {
-            await requestAssistanceForCheck(run, sinopacContract, controller.signal).catch(() => undefined);
+            await requestAssistanceForCheck(run, options, sinopacContract, controller.signal).catch(() => undefined);
           }
           return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
         },
@@ -450,7 +445,6 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
     const campaign = runCaptchaRetryCampaign({
       taskId: "yuanta-trade-statements",
       appWorkflow: true,
-      provider,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -463,7 +457,7 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
         attempts.push(options.attempt ?? 1);
         if ((options.attempt ?? 1) === 1) {
           try {
-            await requestAssistanceForCheck(run, yuantaTradeAudioContract, controller.signal);
+            await requestAssistanceForCheck(run, options, yuantaTradeAudioContract, controller.signal);
           } catch {
             // The campaign requests a fresh challenge after the worker exits.
           }
@@ -501,7 +495,6 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
     const campaign = runCaptchaRetryCampaign({
       taskId: "yuanta-trade-statements",
       appWorkflow: true,
-      provider,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -509,9 +502,9 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
         genericRouteCalls += 1;
         return { kind: "failed" };
       },
-      async execute() {
+      async execute(options) {
         await assert.rejects(
-          requestAssistanceForCheck(run, yuantaTradeImageContract, controller.signal),
+          requestAssistanceForCheck(run, options, yuantaTradeImageContract, controller.signal),
           /image challenge has no supported local solver/u,
         );
         return { failure: { code: "verification-failed" as const, proven: true }, summary: null };
@@ -545,7 +538,6 @@ test("a run the store refused until a Canonical Reset is never retried by the CA
     const result = await runCaptchaRetryCampaign({
       taskId: "fubon-all-statements",
       appWorkflow: true,
-      provider,
       launchVerificationSettings: {},
       run,
       initialExecutionOptions: {},
@@ -557,7 +549,7 @@ test("a run the store refused until a Canonical Reset is never retried by the CA
       async execute(options) {
         attempts.push(options.attempt ?? 1);
         try {
-          await requestAssistanceForCheck(run, sinopacContract, controller.signal);
+          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
         } catch {
           // The App route rejects the active worker stage to restart it.
         }
