@@ -12,7 +12,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openExecutionForCheck } from "./task-run-check-support.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
 import {
@@ -200,11 +200,13 @@ async function yuantaTradeAssistance(
   taskRunId: string,
   dependencies: YuantaTradeAppAssistanceDependencies,
 ) {
+  const { run, execution } = await openExecutionForCheck(dependencies.provider.automation, taskRunId);
   return createAppWorkflowHumanAssistancePort({
-    run: await openTaskRunForCheck(dependencies.provider.automation, taskRunId),
+    run,
+    execution,
     async onRequest(contract, signal) {
       const outcome = await routeYuantaTradeAppAssistanceRequest(
-        { taskId: TASK_ID, taskRunId, contract, signal },
+        { taskId: TASK_ID, taskRunId, execution, contract, signal },
         dependencies,
       );
       if (outcome?.kind === "retryable") {
@@ -368,10 +370,12 @@ test("Yuanta Trade fails closed when the solver route does not resume the stage"
 test("Yuanta Trade unsupported native verification fails closed in solver mode", async () => {
   const { store, provider, run } = await createRun();
   try {
+    const { execution } = await openExecutionForCheck(provider.automation, run.taskRunId);
     await assert.rejects(
       routeYuantaTradeAppAssistanceRequest({
         taskId: TASK_ID,
         taskRunId: run.taskRunId,
+        execution,
         contract: certificateContract(),
         signal: new AbortController().signal,
       }, { provider, settings: {} }),
@@ -379,6 +383,7 @@ test("Yuanta Trade unsupported native verification fails closed in solver mode",
     );
     const saved = await provider.automation.taskRunById(run.taskRunId);
     assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
+    assert.deepEqual(execution.events().map((event) => event.signal), ["solver-challenge-unsupported"]);
     assert.equal(saved?.status, "running");
   } finally {
     await store.close();

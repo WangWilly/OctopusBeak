@@ -14,6 +14,7 @@ import type {
   TypedWorkflowErrorCode,
 } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -58,11 +59,43 @@ export type TaskRunOutcome = Readonly<{
   forced: boolean;
 }>;
 
+/**
+ * One start of the provider workflow within its Active Automation Task Run
+ * (ADR 0067). It records every event of that start once, worker and host
+ * events alike, and persists each through the run's write chain. "This
+ * execution's events" is its log; nothing reads stored events back for it.
+ */
+export type WorkflowExecution = Readonly<{
+  executionId: string;
+  /** Every event this execution recorded, in the order it recorded them. */
+  events(): readonly WorkflowRunEvent[];
+  /**
+   * Record one event in this log, then persist it behind the run's earlier
+   * writes. The log holds the event before the write, so a failed write
+   * rejects but leaves it logged; once the run has finished the event is
+   * logged and not persisted. Rejects and records nothing once this
+   * execution has ended.
+   */
+  appendEvent(event: WorkflowRunEvent): Promise<void>;
+  /** Release this execution as the run's current one. Idempotent. */
+  end(): void;
+}>;
+
 /** The sole owner of one Automation Task Run until its finalization (ADR 0052). */
 export type ActiveAutomationTaskRun = Readonly<{
   taskId: string;
   taskRunId: string;
   persistence: AutomationPersistencePort;
+  /** Start a Workflow execution. Throws while another is current or once the run has finished. */
+  beginExecution(executionId: string): WorkflowExecution;
+  /** The execution that has begun and not ended, or null. */
+  currentExecution(): WorkflowExecution | null;
+  /**
+   * Durably record an event that belongs to no execution, such as a signal the
+   * CAPTCHA Retry Campaign writes between rounds. It joins no execution's log,
+   * so no classification reads it. Ignored once the run has finished.
+   */
+  appendEvent(event: WorkflowRunEvent): Promise<void>;
   /** Aborted with a TaskRunStop reason on cancellation, force-quit or shutdown. */
   signal: AbortSignal;
   /** Aborted only on force-quit, which allows no cleanup grace. */
@@ -242,10 +275,44 @@ export function openActiveTaskRun(input: Readonly<{
       return true;
     });
 
+  // Decided when the append is accepted, not when its turn in the chain comes:
+  // an event accepted before finish() is stored before the terminal write,
+  // which reads the stored events for prerequisite notices.
+  const persistEvent = (event: WorkflowRunEvent): Promise<void> =>
+    finishing ? Promise.resolve() : serialized(() => persistence.appendRunEvent(event));
+
+  let currentExecution: WorkflowExecution | null = null;
+  const beginExecution = (executionId: string): WorkflowExecution => {
+    if (finishing) throw new Error(`Automation task run has finished: ${taskRunId}`);
+    if (currentExecution) {
+      throw new Error(`Workflow execution ${currentExecution.executionId} of run ${taskRunId} is still current.`);
+    }
+    const log: WorkflowRunEvent[] = [];
+    let ended = false;
+    const execution: WorkflowExecution = {
+      executionId,
+      events: () => [...log],
+      appendEvent(event) {
+        if (ended) return Promise.reject(new Error(`Workflow execution ${executionId} has ended.`));
+        log.push(event);
+        return persistEvent(event);
+      },
+      end() {
+        ended = true;
+        if (currentExecution === execution) currentExecution = null;
+      },
+    };
+    currentExecution = execution;
+    return execution;
+  };
+
   const run: ActiveAutomationTaskRun = {
     taskId: row.taskId,
     taskRunId,
     persistence,
+    beginExecution,
+    currentExecution: () => currentExecution,
+    appendEvent: persistEvent,
     signal: stopController.signal,
     forceSignal: forceController.signal,
     stopReason: () => stop,

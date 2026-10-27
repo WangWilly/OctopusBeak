@@ -5,7 +5,7 @@ import type {
 } from "../human-assistance.ts";
 import type { WorkflowHumanAssistancePort } from "../workflow-executor.ts";
 import { isSolverChallengeKind } from "../verification-config.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
 import type { AutomationPersistencePort } from "./store.ts";
 
 type PendingAssistance = Readonly<{
@@ -16,6 +16,8 @@ type PendingAssistance = Readonly<{
 export type AppWorkflowHumanAssistanceRequest = Readonly<{
   taskId: string;
   taskRunId: string;
+  /** The Workflow execution waiting on this request; a route records its signals here. */
+  execution: WorkflowExecution;
   contract: HumanAssistanceContractInput;
   signal: AbortSignal;
 }>;
@@ -43,12 +45,13 @@ export function registerAppWorkflowHumanAssistanceRequestHandler(
 
 export function createAppWorkflowHumanAssistancePort(input: Readonly<{
   run: ActiveAutomationTaskRun;
+  execution: WorkflowExecution;
   onRequest?: (
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
   ) => void | Promise<void>;
 }>): WorkflowHumanAssistancePort {
-  const { run } = input;
+  const { run, execution } = input;
   return {
     async request(contract, signal) {
       signal.throwIfAborted();
@@ -82,7 +85,7 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
           const reason = isSolverChallengeKind(contract.challengeKind)
             ? "solver-route-unavailable"
             : "solver-challenge-unsupported";
-          await run.persistence.appendRunEvent(signalRunEvent(reason, {
+          await execution.appendEvent(signalRunEvent(reason, {
             runId: run.taskRunId,
             occurredAt: new Date().toISOString(),
           }));
@@ -100,6 +103,7 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
               : registeredHandler?.({
                   taskId: run.taskId,
                   taskRunId: run.taskRunId,
+                  execution,
                   contract,
                   signal,
                 }))
