@@ -28,6 +28,10 @@ import {
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import {
+  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
+  parseCathayCurrentDepositBalanceSnapshot,
+} from "../../workflows/cathay-current-deposit-balances.ts";
+import {
   ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   type ProductStageRequest,
@@ -784,4 +788,53 @@ test("a session lost during an attached product ends the run with the verified o
   );
   assert.deepEqual(harness.writes, []);
   assert.equal(harness.committed.length, 1);
+});
+
+test("Cathay domestic current balances take their identity from the admitted statement through the workflow", async () => {
+  const harness = contextHarness();
+  const admitted = DOMESTIC_REQUESTS[0]!;
+  const accountKey = admitted.account.sourceAccountKey;
+  const [parsed] = parseCathayCurrentDepositBalanceSnapshot({
+    kind: "domestic",
+    response: {
+      url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`,
+      status: 200,
+      method: "POST",
+      headers: { date: "Fri, 25 Sep 2026 01:00:00 GMT" },
+    },
+    rawBody: `{"success":true,"systemTime":"2026-09-25T09:00:00.0000000+08:00","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000${["1234", "5678", "9012"].join("")}","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
+    observedAt: "2026-09-25T09:00:00.000+08:00",
+    uiAccountNumbers: [["1234", "5678", "9012"].join("")],
+  });
+  assert.ok(parsed);
+  const row = { ...parsed, sourceAccountKey: accountKey, uiAccountNumber: accountKey };
+  const { collectCurrentBalanceItems: _stubbed, ...dependencies } = collectionDependencies();
+  const output = await runCathayAllProviderWorkflow(
+    harness.context,
+    { ...bothProductsInput, statementTypes: ["domestic"] },
+    {
+      ...dependencies,
+      readCurrentBalances: async (_page, kind) => (kind === "domestic" ? [row] : []),
+    },
+  );
+
+  assert.equal(output.products![0]!.status, "success");
+  const balance = harness.committed
+    .flat()
+    .find((item) => (item as { product?: unknown }).product === "domestic-current-balance") as
+    | {
+        command: {
+          request: {
+            capture: { sourceConnectionKey: string; identityEpoch: string; stream: string };
+            account: { sourceAccountKey: string };
+          };
+        };
+      }
+    | undefined;
+  assert.ok(balance, "the workflow stages a domestic current balance");
+  const { capture, account } = balance.command.request;
+  assert.deepEqual(
+    [capture.sourceConnectionKey, capture.identityEpoch, capture.stream, account.sourceAccountKey],
+    [admitted.capture.sourceConnectionKey, admitted.capture.identityEpoch, admitted.capture.stream, accountKey],
+  );
 });
