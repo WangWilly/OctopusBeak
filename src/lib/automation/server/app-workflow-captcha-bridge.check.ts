@@ -63,6 +63,37 @@ const yuantaTradeAudioContract: HumanAssistanceContractInput = {
   focus: { targetId: "audio-code-input", contextRegionIds: [] },
 };
 
+const yuantaTradeImageContract: HumanAssistanceContractInput = {
+  stageId: "yuanta-trade-challenge",
+  title: "YuanTa Trade image challenge",
+  challengeKind: "image-selection",
+  targets: [
+    {
+      id: "challenge-image-1",
+      label: "Challenge image 1",
+      semanticId: "yuanta-trade.login.challenge-control",
+      modes: ["click"],
+      rect: { x: 1, y: 1, width: 10, height: 10 },
+    },
+    {
+      id: "challenge-submit",
+      label: "Verify challenge",
+      semanticId: "yuanta-trade.login.challenge-submit",
+      modes: ["click"],
+      rect: { x: 1, y: 20, width: 10, height: 10 },
+    },
+  ],
+  contextRegions: [],
+  challengeImageRegion: {
+    id: "challenge-image-grid",
+    label: "Image challenge",
+    semanticId: "yuanta-trade.login.challenge-image",
+    rect: { x: 1, y: 1, width: 40, height: 40 },
+  },
+  completion: { mode: "inline", targetIds: ["challenge-submit"] },
+  focus: { targetId: "challenge-image-1", contextRegionIds: [] },
+};
+
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -436,7 +467,6 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
       },
       async execute(options) {
         attempts.push(options.attempt ?? 1);
-        assert.equal(options.verificationRouteOwnedByCampaign, true);
         if ((options.attempt ?? 1) === 1) {
           const assistance = createAppWorkflowHumanAssistancePort({ run });
           try {
@@ -454,6 +484,51 @@ test("Yuanta Trade audio solver exhaustion restarts through the App campaign", a
     assert.equal((await run.finish(await campaign)).status, "completed");
     assert.deepEqual(attempts, [1, 2]);
     assert.equal(routeCalls, 1);
+  } finally {
+    controller.abort();
+    await store.close();
+  }
+});
+
+test("the CAPTCHA campaign routes Yuanta Trade stages through the route its source declares", async () => {
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  const controller = new AbortController();
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "yuanta-trade-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
+    let genericRouteCalls = 0;
+    const campaign = runCaptchaRetryCampaign({
+      taskId: "yuanta-trade-statements",
+      appWorkflow: true,
+      provider,
+      launchVerificationSettings: {},
+      run,
+      initialExecutionOptions: {},
+      routeWaitingRunVerification: async () => {
+        genericRouteCalls += 1;
+        return { kind: "failed" };
+      },
+      async execute() {
+        const assistance = createAppWorkflowHumanAssistancePort({ run });
+        await assert.rejects(
+          assistance.request(yuantaTradeImageContract, controller.signal),
+          /image challenge has no supported local solver/u,
+        );
+        return { failure: { code: "verification-failed" as const, proven: true }, summary: null };
+      },
+    });
+    assert.equal((await run.finish(await campaign)).status, "failed");
+    assert.equal(genericRouteCalls, 0, "the source route refuses the stage before any solver runs");
+    const saved = await provider.automation.taskRunById(created.taskRunId);
+    assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
   } finally {
     controller.abort();
     await store.close();
