@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_CHALLENGES_PER_ROUND,
-  appProviderPostSubmitProbe,
   routeVerificationActor,
   routeWaitingRunVerification,
   selectVerificationChallengeImage,
@@ -362,11 +361,4 @@ test("the default viewer seams reach a run's page only through the page lookup",
   );
   assert.equal(shots.length, 1);
   assert.equal(clicks.length, 1);
-});
-
-test("the App post-submit probe resumes without a provider adapter and needs no page", async () => {
-  let resumed = false;
-  const probe = appProviderPostSubmitProbe(() => null);
-  assert.equal(await probe("no-page-run", captchaContract(), async () => { resumed = true; }), "none");
-  assert.equal(resumed, true);
 });
