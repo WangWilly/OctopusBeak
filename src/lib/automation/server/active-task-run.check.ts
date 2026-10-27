@@ -7,6 +7,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createDataVersionStore, type DataVersionStore } from "../../shared-shell/data-version.ts";
 import type { CommitAttemptReport } from "../commit-attempt.ts";
 import {
+  activeRunPageLookup,
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type TaskRunFailure,
@@ -684,4 +685,44 @@ test("an event the run records between executions joins no execution's log", asy
   assert.deepEqual(await storedCodes(taskRunId), ["verification-solver-exhausted"]);
   second.end();
   await run.finish(ok());
+});
+
+test("the App page lookup reaches the page the current execution hosts, and nothing after it ends", async () => {
+  const { run, taskRunId } = await open({ taskId: "sinopac-statements" });
+  const other = await open({ taskId: "sinopac-statements" });
+  const runs = new Map([[taskRunId, run], [other.taskRunId, other.run]]);
+  const pageForRun = activeRunPageLookup((id) => runs.get(id) ?? null);
+  const page = { name: "first" } as never;
+  const connection = { endpoint: "http://127.0.0.1:9222", targetId: "target-1" };
+
+  const first = run.beginExecution("round-1");
+  assert.equal(pageForRun(taskRunId), null, "no page before the host opens one");
+  const release = first.hostPage({ page, connection });
+  assert.throws(() => first.hostPage({ page, connection: null }), /already hosts a browser page/u);
+  assert.equal(pageForRun(taskRunId), page);
+  assert.equal(first.browserConnection(), connection);
+  assert.equal(pageForRun(other.taskRunId), null, "another run never sees this page");
+  assert.equal(pageForRun("unknown-run"), null);
+  release();
+  assert.equal(pageForRun(taskRunId), null, "closing the page releases it");
+  assert.equal(first.browserConnection(), null);
+
+  first.hostPage({ page, connection });
+  first.end();
+  assert.equal(pageForRun(taskRunId), null, "ending the execution releases its page");
+  assert.equal(first.page(), null);
+  assert.throws(() => first.hostPage({ page, connection }), /round-1 has ended/u);
+
+  const second = run.beginExecution("round-2");
+  assert.equal(pageForRun(taskRunId), null, "a later execution starts without the earlier page");
+  const secondPage = { name: "second" } as never;
+  const releaseSecond = second.hostPage({ page: secondPage, connection: null });
+  release();
+  assert.equal(pageForRun(taskRunId), secondPage, "an earlier release leaves a later page alone");
+  releaseSecond();
+  second.end();
+  await run.finish(ok());
+  runs.delete(taskRunId);
+  assert.equal(pageForRun(taskRunId), null, "a finished run is no longer active");
+  await other.run.finish(ok());
 });

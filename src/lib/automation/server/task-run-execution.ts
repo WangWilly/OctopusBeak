@@ -27,7 +27,6 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
 } from "./workflow-failure-diagnostics.ts";
 import {
-  appWorkflowBrowserConnectionForSession,
   createAppWorkflowBrowserPort,
   type AppWorkflowBrowserConnection,
   type AppWorkflowBrowserProfile,
@@ -88,6 +87,8 @@ export type AutomationTaskExecutionOptions = {
     startUrl?: string;
     browserProfile?: AppWorkflowBrowserProfile;
     onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
+    /** Holds the opened page for this execution, as the App browser host does. */
+    execution: Pick<WorkflowExecution, "hostPage">;
   }) => WorkflowBrowserPort;
 };
 
@@ -255,6 +256,7 @@ async function executeSupervisedAppWorkflow(
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
+      execution: context.execution,
     }) ?? createAppWorkflowBrowserPort({
       taskId: context.task.id,
       taskRunId: context.run.taskRunId,
@@ -263,6 +265,7 @@ async function executeSupervisedAppWorkflow(
       startUrl: runtime.startUrl,
       browserProfile: runtime.browserProfile,
       onRuntimeIdentity: browserRuntimeIdentity.record,
+      execution: context.execution,
       nativeDialogOwner: "worker",
     });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
@@ -303,8 +306,9 @@ async function executeSupervisedAppWorkflow(
     const outcome = browser
       ? await browser.withPage(async () => {
         await browserRuntimeIdentity.flush();
-        const browserConnection = (options.appWorkflowBrowserConnectionForRun
-          ?? appWorkflowBrowserConnectionForSession)(context.run.taskRunId);
+        const browserConnection = options.appWorkflowBrowserConnectionForRun
+          ? options.appWorkflowBrowserConnectionForRun(context.run.taskRunId)
+          : context.execution.browserConnection();
         if (!browserConnection) {
           throw new Error("The App browser worker connection is unavailable for this active run.");
         }

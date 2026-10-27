@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, utimes, writ
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
+import type { WorkflowExecution } from "./active-task-run.ts";
 import {
   getAutomationCredentialCodec,
   type AutomationCredentialCodec,
@@ -46,6 +47,8 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   browserProfile?: AppWorkflowBrowserProfile;
   browserRuntime?: BrowserRuntime;
   onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
+  /** The Workflow execution that holds the opened page while it is open; omitted outside a run. */
+  execution?: Pick<WorkflowExecution, "hostPage">;
   /** Suppress Playwright auto-dismiss in the host connection when a worker owns dialogs. */
   nativeDialogOwner?: "worker";
   launchPersistentContext?: (
@@ -54,12 +57,6 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   ) => Promise<BrowserContext>;
 }>;
 
-type HostedPage = Readonly<{
-  page: Page;
-  connection: AppWorkflowBrowserConnection | null;
-}>;
-
-const hostedPages = new Map<string, HostedPage>();
 const COOKIE_STATE_FORMAT = "octopusbeak.browser-auth.cookies.safeStorage.v1";
 const COOKIE_STATE_MAX_BYTES = 1_048_576;
 const COOKIE_STATE_MAX_COUNT = 512;
@@ -91,43 +88,6 @@ function assertSafePathSegment(value: string) {
   if (!/^[A-Za-z0-9_-]{1,100}$/u.test(value)) {
     throw new Error("App browser host received an invalid identity.");
   }
-}
-
-/** The App viewer resolves its active page through this in-memory registry. */
-export function appWorkflowPageForSession(session: string): Page | null {
-  return hostedPages.get(session)?.page ?? null;
-}
-
-/** Register a page the caller already owns, such as the development CLI's browser. */
-export function registerAppWorkflowPage(session: string, page: Page) {
-  return registerHostedPage(session, page, null);
-}
-
-/** Returns a run-scoped CDP descriptor without persisting or logging it. */
-export function appWorkflowBrowserConnectionForSession(
-  session: string,
-): AppWorkflowBrowserConnection | null {
-  const hosted = hostedPages.get(session);
-  if (!hosted) return null;
-  if (!hosted.connection) {
-    throw new Error("The App browser worker connection is unavailable for this active run.");
-  }
-  return { ...hosted.connection };
-}
-
-function registerHostedPage(
-  session: string,
-  page: Page,
-  connection: AppWorkflowBrowserConnection | null,
-) {
-  if (hostedPages.has(session)) {
-    throw new Error("An App browser page is already registered for this workflow run.");
-  }
-  const hosted = { page, connection };
-  hostedPages.set(session, hosted);
-  return () => {
-    if (hostedPages.get(session) === hosted) hostedPages.delete(session);
-  };
 }
 
 const launchOptions: AppWorkflowBrowserLaunchOptions = {
@@ -401,7 +361,7 @@ export function createAppWorkflowBrowserPort(
   return {
     async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
       let context: BrowserContext | null = null;
-      let unregister = () => {};
+      let releasePage = () => {};
       const closeOnAbort = () => {
         void context?.close().catch(() => {});
       };
@@ -450,7 +410,7 @@ export function createAppWorkflowBrowserPort(
           // The worker/provider observer supplies classification and dismissal.
           page.on("dialog", () => {});
         }
-        unregister = registerHostedPage(input.taskRunId, page, connection);
+        if (input.execution) releasePage = input.execution.hostPage({ page, connection });
         input.signal.addEventListener("abort", closeOnAbort, { once: true });
         input.signal.throwIfAborted();
         if (input.startUrl) {
@@ -460,7 +420,7 @@ export function createAppWorkflowBrowserPort(
         return await run(page);
       } finally {
         input.signal.removeEventListener("abort", closeOnAbort);
-        unregister();
+        releasePage();
         if (credentialCodec && context) {
           try {
             const cookies = await context.cookies();

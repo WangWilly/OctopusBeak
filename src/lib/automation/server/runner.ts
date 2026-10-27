@@ -17,6 +17,7 @@ import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import {
+  activeRunPageLookup,
   finalizeOrphanedRuns,
   openActiveTaskRun,
   type ActiveAutomationTaskRun,
@@ -109,6 +110,15 @@ export function createAutomationRunner(options: Readonly<{
   let shuttingDown = false;
   let holds = 0;
 
+  /** The opened Active Automation Task Run with this run id, or null (ADR 0067). */
+  function activeRun(taskRunId: string): ActiveAutomationTaskRun | null {
+    for (const entry of claimed.values()) {
+      if (entry.run?.taskRunId === taskRunId) return entry.run;
+    }
+    return null;
+  }
+  const pageForRun = activeRunPageLookup(activeRun);
+
   async function execute(
     task: AutomationTask,
     run: ActiveAutomationTaskRun,
@@ -139,6 +149,7 @@ export function createAutomationRunner(options: Readonly<{
         taskId: task.id,
         appWorkflow: task.kind === "crawler",
         run,
+        pageForRun,
         launchVerificationSettings: { ...readAutomationSettings() },
         initialExecutionOptions: { scheduledAtUtc: runOptions.scheduledAtUtc },
         execute: (executionOptions) => runExecution(task, run, {
@@ -288,13 +299,7 @@ export function createAutomationRunner(options: Readonly<{
       return run ? { runId: run.taskRunId, runtime: runtime.snapshot() } : null;
     },
 
-    /** The opened Active Automation Task Run with this run id, or null (ADR 0067). */
-    activeRun(taskRunId: string): ActiveAutomationTaskRun | null {
-      for (const entry of claimed.values()) {
-        if (entry.run?.taskRunId === taskRunId) return entry.run;
-      }
-      return null;
-    },
+    activeRun,
 
     hasActive() {
       return claimed.size > 0;

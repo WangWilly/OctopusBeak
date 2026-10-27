@@ -22,6 +22,9 @@ import type {
 } from "../human-assistance.ts";
 import type { HumanAssistanceRoute } from "./app-workflow-human-assistance.ts";
 import type { LaunchedCollectionScope } from "./collection-scope.ts";
+import type { Page } from "playwright";
+import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
+import type { PageForRun } from "./automation-viewer.ts";
 import {
   applyCommitAttemptReport,
   commitAttemptsErrorCode,
@@ -77,14 +80,21 @@ export type HumanAssistanceWaiter = Readonly<{
   reject(error: Error): void;
 }>;
 
+/** The browser page the App hosts for one Workflow execution. */
+export type HostedBrowserPage = Readonly<{
+  page: Page;
+  /** The loopback CDP target the worker attaches to; null when the host exposes none. */
+  connection: AppWorkflowBrowserConnection | null;
+}>;
+
 /**
  * One start of the provider workflow within its Active Automation Task Run
  * (ADR 0067). It records every event of that start once, worker and host
  * events alike, and persists each through the run's write chain. "This
  * execution's events" is its log; nothing reads stored events back for it.
- * It also holds its human assistance route and at most one waiter, and the
- * Collection scope version its commits are checked against, all released
- * when it ends.
+ * It also holds its human assistance route and at most one waiter, the
+ * Collection scope version its commits are checked against, and its hosted
+ * browser page, all released when it ends.
  */
 export type WorkflowExecution = Readonly<{
   executionId: string;
@@ -99,6 +109,16 @@ export type WorkflowExecution = Readonly<{
   pendingAssistance(): HumanAssistanceWaiter | null;
   /** The Collection scope version given when this execution began; null once it has ended or when none was given. */
   collectionScope(): LaunchedCollectionScope | null;
+  /**
+   * Hold the page the browser host opened for this execution until the
+   * returned release runs or the execution ends. Throws once this execution
+   * has ended or while it already holds a page.
+   */
+  hostPage(hosted: HostedBrowserPage): () => void;
+  /** The hosted page, or null when none is held. */
+  page(): Page | null;
+  /** The hosted page's worker connection, or null when no page or no connection is held. */
+  browserConnection(): AppWorkflowBrowserConnection | null;
   /** Every event this execution recorded, in the order it recorded them. */
   events(): readonly WorkflowRunEvent[];
   /**
@@ -272,6 +292,16 @@ async function persistTerminal(
   return finalized;
 }
 
+/**
+ * The App's page lookup (ADR 0067): the page hosted by the current Workflow
+ * execution of the Active run with that id.
+ */
+export function activeRunPageLookup(
+  activeRun: (taskRunId: string) => ActiveAutomationTaskRun | null,
+): PageForRun {
+  return (taskRunId) => activeRun(taskRunId)?.currentExecution()?.page() ?? null;
+}
+
 export function openActiveTaskRun(input: Readonly<{
   run: AutomationTaskRun;
   persistence: AutomationPersistencePort;
@@ -335,6 +365,7 @@ export function openActiveTaskRun(input: Readonly<{
     let route = options.assistanceRoute ?? null;
     let scope = options.collectionScope ?? null;
     let waiter: HumanAssistanceWaiter | null = null;
+    let hostedPage: HostedBrowserPage | null = null;
     const endedError = () => new Error(`Workflow execution ${executionId} has ended.`);
     const execution: WorkflowExecution = {
       executionId,
@@ -366,6 +397,16 @@ export function openActiveTaskRun(input: Readonly<{
       },
       pendingAssistance: () => waiter,
       collectionScope: () => scope,
+      hostPage(hosted) {
+        if (ended) throw endedError();
+        if (hostedPage) throw new Error(`Workflow execution ${executionId} already hosts a browser page.`);
+        hostedPage = hosted;
+        return () => {
+          if (hostedPage === hosted) hostedPage = null;
+        };
+      },
+      page: () => hostedPage?.page ?? null,
+      browserConnection: () => hostedPage?.connection ?? null,
       events: () => [...log],
       appendEvent(event) {
         if (ended) return Promise.reject(new Error(`Workflow execution ${executionId} has ended.`));
@@ -376,6 +417,7 @@ export function openActiveTaskRun(input: Readonly<{
         ended = true;
         route = null;
         scope = null;
+        hostedPage = null;
         waiter?.reject(endedError());
         if (currentExecution === execution) currentExecution = null;
       },
