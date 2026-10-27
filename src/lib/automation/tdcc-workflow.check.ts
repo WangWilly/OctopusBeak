@@ -15,10 +15,8 @@ import { TDCC_BASE_URL } from "../../workflows/tdcc-epassbook-client.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { createTdccSecretStore } from "./server/tdcc-secret-store.ts";
 import { createTdccSessionHost } from "./server/tdcc-session-host.ts";
-import {
-  classifyTypedWorkflowFailure,
-  summarizeInterruptedProductCollection,
-} from "./server/typed-workflow-outcome.ts";
+import { classifyFailure } from "./failure-classification.ts";
+import { summarizeInterruptedProductCollection } from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow } from "./tdcc-workflow.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
@@ -480,7 +478,7 @@ test("validated exclusions survive a later request failure in the typed interrup
       exclusionCounts: { excludedUnknownInstitutionCount: 1 },
     });
     assert.equal(summarizeInterruptedProductCollection(error)?.counts.excludedUnknownInstitutionCount, 1);
-    assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "source-unavailable");
   });
 });
 
@@ -535,7 +533,7 @@ test("a later product failure retains earlier durable receipts and exclusion evi
     assert.equal(error.summary.status, "partial");
     assert.equal(error.summary.products.find(({ typeId }) => typeId === "securities")?.committedCount, 2);
     assert.equal(error.summary.products.find(({ typeId }) => typeId === "settlement")?.collection?.status, "incomplete");
-    assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "source-unavailable");
   });
 });
 
@@ -554,7 +552,7 @@ test("a lost commit reply retains collection evidence and only previously acknow
     });
     assert.equal(await count(`SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'domestic-deposit' AND source_account_key = '812-${MIXED_VALID_ACCOUNT}-TWD'`), 1,
       "the store committed even though the caller cannot know it from a reply");
-    assert.equal(classifyTypedWorkflowFailure(error, events), "commit-outcome-unknown");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "commit-outcome-unknown");
     const summary = summarizeInterruptedProductCollection(error);
     assert.equal(summary?.counts.committedCount, 2);
     assert.equal(summary?.counts.excludedUnknownInstitutionCount, 2, "securities and settlement each reported one exclusion");
@@ -599,7 +597,7 @@ test("an untrusted device ends the run as device-registration-required without a
     const error = await interruption(run(ALL, fake));
     assert.ok(error instanceof ProductCollectionInterruptedError);
     assert.equal(error.errorCode, "device-registration-required");
-    assert.equal(classifyTypedWorkflowFailure(error, events), "device-registration-required");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "device-registration-required");
     assert.deepEqual(fake.calls, ["TR001", "CM001", "AU001"]);
     assert.equal(fake.calls.some((path) => path === "AU013" || path === "AU014" || path === "AU015"), false);
     assert.deepEqual(error.summary.products.map(({ typeId, status }) => [typeId, status]), [
@@ -612,7 +610,7 @@ test("a run without a registered device stops before calling TDCC", async () => 
   await withHarness(async ({ run, events }) => {
     const fake = fakeTdcc();
     const error = await interruption(run(ALL, fake));
-    assert.equal(classifyTypedWorkflowFailure(error, events), "device-registration-required");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "device-registration-required");
     assert.deepEqual(fake.calls, []);
   }, false);
 });
@@ -620,7 +618,7 @@ test("a run without a registered device stops before calling TDCC", async () => 
 test("a protocol change ends the run as provider-protocol-outdated", async () => {
   await withHarness(async ({ run, events }) => {
     const error = await interruption(run(ALL, fakeTdcc({ protocolOutdatedAt: "TR001" })));
-    assert.equal(classifyTypedWorkflowFailure(error, events), "provider-protocol-outdated");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "provider-protocol-outdated");
   });
 });
 
@@ -628,7 +626,7 @@ test("a rotated token is saved when the run fails part way", async () => {
   await withHarness(async ({ run, secrets, events }) => {
     const fake = fakeTdcc({ httpFailureAt: "tsp/TSP007" });
     const error = await interruption(run({ statementTypes: ["settlement"] }, fake));
-    assert.equal(classifyTypedWorkflowFailure(error, events), "source-unavailable");
+    assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "source-unavailable");
     assert.equal(secrets.read().session?.tokenId, "rotated-1", "the token TSP006 rotated survives the failed run");
   });
 });
@@ -688,7 +686,7 @@ test("a selection with no TDCC product fails before it reports valid input or op
     for (const statementTypes of [[], ["unknown"]]) {
       const fake = fakeTdcc();
       const error = await run({ statementTypes }, fake).then(() => null, (rejection: unknown) => rejection);
-      assert.equal(classifyTypedWorkflowFailure(error, events), "workflow-failed");
+      assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "workflow-failed");
       assert.deepEqual(fake.calls, [], "no TDCC request is made");
     }
     assert.equal(events.some((event) => event.code === "input-validated"), false);

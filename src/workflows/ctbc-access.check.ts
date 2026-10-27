@@ -3,7 +3,7 @@ import { chromium } from "playwright";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
+import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
 
@@ -48,7 +48,7 @@ try {
   }
   assert.ok(failure instanceof SourceUnavailableError);
   assert.deepEqual(events.map((event) => event.code), ["input-validated", "authentication-started", "authentication-failed"]);
-  assert.equal(classifyTypedWorkflowFailure(failure, events), "source-unavailable");
+  assert.equal(classifyFailure({ error: failure, events: events, stopped: false }), "source-unavailable");
 
   const acceptedPage = await browser.newPage();
   await acceptedPage.route("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", async (route) => {
@@ -81,7 +81,7 @@ try {
   }
   assert.ok(acceptedFailure instanceof SourceUnavailableError);
   assert.deepEqual(acceptedEvents.map((event) => event.code), ["input-validated", "authentication-started", "authentication-failed"]);
-  assert.equal(classifyTypedWorkflowFailure(acceptedFailure, acceptedEvents), "source-unavailable");
+  assert.equal(classifyFailure({ error: acceptedFailure, events: acceptedEvents, stopped: false }), "source-unavailable");
 } finally {
   await browser.close();
 }

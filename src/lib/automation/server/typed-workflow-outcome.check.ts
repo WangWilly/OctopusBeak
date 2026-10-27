@@ -1,17 +1,11 @@
-import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SourceTextIntegrityError } from "../source-text.ts";
-import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
-import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import {
-  classifyTypedWorkflowFailure,
   sanitizeTypedWorkflowOutcome,
   summarizeInterruptedProductCollection,
 } from "./typed-workflow-outcome.ts";
 import { isWorkflowRunResult, WORKFLOW_RUN_COUNT_NAMES } from "../workflow-run-result.ts";
 import { workflowFailureExplanation } from "../workflow-failures.ts";
-import type { RunEventOutcome, WorkflowRunEvent } from "../run-event.ts";
 import { ProductCollectionInterruptedError } from "../product-collection.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "../tdcc-collection-summary.ts";
 
@@ -342,70 +336,6 @@ test("three-product TDCC exclusion aggregates stay bounded through normal and in
     "product receipt totals over the summary bound cannot pass when aggregate committedCount is omitted");
 });
 
-test("typed failures use stable privacy-safe categories", () => {
-  assert.equal(
-    classifyTypedWorkflowFailure(new BrowserRuntimeConfigurationError("unsupported-profile"), []),
-    "browser-runtime-config-failed",
-  );
-  assert.equal(
-    classifyTypedWorkflowFailure(new SourceTextIntegrityError("invalid-encoding"), []),
-    "source-integrity-failed",
-  );
-  assert.equal(
-    classifyTypedWorkflowFailure(new SourceAccessChallengeError(), []),
-    "source-access-challenged",
-  );
-  assert.equal(
-    classifyTypedWorkflowFailure(new SourceUnavailableError(), []),
-    "source-unavailable",
-  );
-  assert.equal(
-    classifyTypedWorkflowFailure(new ProviderProtocolOutdatedError(), [{
-      runId: "run-1",
-      stage: "authentication",
-      outcome: "started", code: "authentication-started",
-      occurredAt: "2026-10-10T00:00:00.000Z",
-    }]),
-    "provider-protocol-outdated",
-  );
-  assert.equal(classifyTypedWorkflowFailure(new Error("contains private account 123"), [{
-    runId: "run-1",
-    stage: "validation",
-    outcome: "failed", code: "source-validation-rejected",
-    occurredAt: "2026-09-25T00:00:00.000Z",
-  }]), "source-validation-failed");
-  // ADR 0056: commit stage events report progress; only Commit attempts decide the commit outcome.
-  for (const [outcome, code] of [["failed", "canonical-commit-failed"], ["started", "canonical-commit-started"]] as const) {
-    assert.equal(classifyTypedWorkflowFailure(new Error("provider disconnected"), [{
-      runId: "run-1",
-      stage: "commit",
-      outcome,
-      code,
-      occurredAt: "2026-09-25T00:00:00.000Z",
-    }]), "workflow-failed");
-  }
-  assert.equal(classifyTypedWorkflowFailure(new Error("user stopped"), [], true), "cancelled");
-  assert.equal(classifyTypedWorkflowFailure(new Error("provider details"), [{
-    runId: "run-1",
-    stage: "authentication",
-    outcome: "failed", signal: "verification-solver-exhausted", code: "verification-solver-exhausted",
-    occurredAt: "2026-10-03T00:00:00.000Z",
-  }]), "verification-failed");
-  assert.equal(classifyTypedWorkflowFailure(new Error("private details"), [{
-    runId: "run-1",
-    stage: "authentication",
-    outcome: "failed", signal: "solver-route-unavailable", code: "solver-route-unavailable",
-    occurredAt: "2026-09-25T00:00:00.000Z",
-  }]), "verification-configuration-failed");
-  assert.equal(classifyTypedWorkflowFailure(new Error("private response body"), []), "workflow-failed");
-});
-
-test("a provider's CAPTCHA rejection is typed without relying on operational events", () => {
-  assert.equal(classifyTypedWorkflowFailure(new CaptchaProviderRejectedError(), []), "captcha-provider-rejected");
-  assert.equal(classifyTypedWorkflowFailure(new CaptchaProviderRejectedError(), [], true), "cancelled");
-  assert.equal(classifyTypedWorkflowFailure(new Error("CAPTCHA rejected"), []), "workflow-failed");
-});
-
 test("stage diagnostics survive storage sanitization without exception details", () => {
   const codes = [
     "authentication-timeout", "authentication-dialog-interrupted", "authentication-failed",
@@ -425,20 +355,6 @@ test("stage diagnostics survive storage sanitization without exception details",
   }
   assert.equal(sanitizeTypedWorkflowOutcome({ errorCode: "authentication-private-provider-text" })?.errorCode, "workflow-failed");
   assert.equal(workflowFailureExplanation("toString", "zh-TW"), null);
-});
-
-test("fallback stage diagnostics preserve cancellation and ignore commit events", () => {
-  const event = (stage: WorkflowRunEvent["stage"], outcome: RunEventOutcome, code: string): WorkflowRunEvent => ({
-    runId: "run-1", stage, outcome, code, occurredAt: "2026-09-29T12:00:00.000Z",
-  });
-  const error = new Error("private exception text");
-  error.name = "TimeoutError";
-  const auth = event("authentication", "started", "authentication-started");
-  const finalized = event("finalization", "failed", "run-failed");
-  assert.equal(classifyTypedWorkflowFailure(error, [auth, finalized], true), "cancelled");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("commit", "started", "canonical-commit-started"), auth, finalized]), "authentication-timeout");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("collection", "started", "collection-started"), event("preparation", "started", "run-started"), auth, finalized]), "authentication-timeout");
-  assert.equal(classifyTypedWorkflowFailure(error, [event("authentication", "started", "authentication-started"), event("preparation", "started", "run-started"), finalized]), "workflow-failed");
 });
 
 test("a stored count over the bound is dropped without losing the rest of the outcome", () => {
