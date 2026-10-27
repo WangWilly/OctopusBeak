@@ -38,6 +38,7 @@ import {
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import {
   collectSelectedProducts,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
@@ -73,13 +74,17 @@ const typedInputSchema = z.object({
   accountFilters: z.array(z.string()).optional(),
 });
 
-export type CtbcProviderWorkflowDependencies = Readonly<{
-  collectStatements?: (
-    page: Page,
-    input: z.infer<typeof typedInputSchema>,
-  ) => Promise<CtbcCollectedStatements>;
-  readCurrentDepositBalances?: typeof readCtbcCurrentDepositBalances;
-}>;
+export type CtbcStatementsInput = z.infer<typeof typedInputSchema>;
+
+/** One deposit product run: read the source, then build and stage from it. */
+export type CtbcDepositRunner = (
+  page: Page,
+  input: CtbcStatementsInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+) => Promise<ProductCollectionSummary>;
+
+export type CtbcReadCurrentDepositBalances = () => Promise<readonly CtbcCurrentDepositBalanceRow[]>;
 
 type CtbcResourceResponse<T> = {
   code?: string;
@@ -165,7 +170,8 @@ export type CtbcObservedAccountCapture = {
   responses: CtbcObservedRangeResponse[];
 };
 
-export type CtbcCollectedStatements = {
+/** What the domestic-details page returned for every selected account. */
+export type CtbcDepositSourceSnapshot = {
   output: Readonly<{ count: number; rowCount: number }>;
   captures: CtbcObservedAccountCapture[];
 };
@@ -296,7 +302,7 @@ export function ctbcDetailRowsToStatementRows(
 
 function rowWithinDateRange(
   row: CtbcStatementRow,
-  input: z.infer<typeof typedInputSchema>,
+  input: CtbcStatementsInput,
 ): boolean {
   const key = dateKey(row.accountingDate || row.transactionDate);
   if (!key) return true;
@@ -662,7 +668,7 @@ function queryPeriodForDateRange(dateRange: CtbcDateRange): string {
 
 function queryPeriodsForBootstrap(
   bootstrap: CtbcBootstrapData,
-  input: z.infer<typeof typedInputSchema>,
+  input: CtbcStatementsInput,
 ): string[] {
   if (input.startDate || input.endDate) {
     return [`${input.startDate ?? ""}~${input.endDate ?? ""}`];
@@ -709,7 +715,7 @@ async function accountRowsFromCurrentPage(
   account: CtbcAccount,
   bootstrap: CtbcBootstrapData,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
-  input: z.infer<typeof typedInputSchema>,
+  input: CtbcStatementsInput,
   context: WorkflowContext,
 ): Promise<{
   queryPeriods: string[];
@@ -744,11 +750,13 @@ async function accountRowsFromCurrentPage(
   };
 }
 
-async function collectCtbcStatements(
+/** Read every selected account's month responses from the domestic-details page (ADR 0065). */
+export async function readCtbcDepositSource(
   page: Page,
-  input: z.infer<typeof typedInputSchema>,
+  input: CtbcStatementsInput,
   context: WorkflowContext,
-): Promise<CtbcCollectedStatements> {
+  _product: ProductCollectionHandle,
+): Promise<CtbcDepositSourceSnapshot> {
   const opened = await openDomesticDetailsPage(page, context);
   const allAccounts = await readDetailAccountOptions(
     page,
@@ -1057,10 +1065,9 @@ export function indexCtbcCurrentDepositFinancialCaptures(
   );
 }
 
-async function readCtbcCurrentDepositBalancesForApp(
+async function readCtbcCurrentDepositBalancesFromPage(
   page: Page,
   context: WorkflowContext,
-  reader: typeof readCtbcCurrentDepositBalances,
 ): Promise<readonly CtbcCurrentDepositBalanceRow[]> {
   const responses: Response[] = [];
   const listener = (candidate: Response) => {
@@ -1079,33 +1086,198 @@ async function readCtbcCurrentDepositBalancesForApp(
 
   page.on("response", listener);
   try {
-    const rows = await withAbort(reader(page, {
+    const rows = await withAbort(readCtbcCurrentDepositBalances(page, {
       observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
     }), context.signal);
     context.signal.throwIfAborted();
-    if (reader === readCtbcCurrentDepositBalances) {
-      if (responses.length !== 1)
-        throw new Error("CTBC current balance source response was missing or ambiguous.");
-      const bytes = await withAbort(responses[0]!.body(), context.signal);
-      decodeCtbcSourceJson(bytes, context.text);
-    }
+    if (responses.length !== 1)
+      throw new Error("CTBC current balance source response was missing or ambiguous.");
+    const bytes = await withAbort(responses[0]!.body(), context.signal);
+    decodeCtbcSourceJson(bytes, context.text);
     return rows;
   } finally {
     page.off("response", listener);
   }
 }
 
+/**
+ * Build and stage domestic-deposit items from a read snapshot. Source admission
+ * completes before any item is staged, and current balances are read only when
+ * at least one capture was admitted as financial data.
+ */
+export async function stageCtbcDeposit(
+  snapshot: CtbcDepositSourceSnapshot,
+  _input: CtbcStatementsInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+  readCurrentBalances: CtbcReadCurrentDepositBalances,
+): Promise<ProductCollectionSummary> {
+  context.signal.throwIfAborted();
+  if (snapshot.captures.length === 0 ||
+    snapshot.output.count !== snapshot.captures.length) {
+    await context.event("validation", "failed", "source-validation-rejected", {
+      completed: snapshot.captures.length,
+      total: snapshot.output.count,
+    });
+    throw new Error("CTBC source has no complete selected account capture.");
+  }
+  await context.event("validation", "started", "source-validation-started", {
+    completed: 0,
+    total: snapshot.captures.length,
+  });
+  const observedAt = ctbcObservedAt(new Date(context.now()).getTime());
+  const validatedCaptures: CtbcDomesticDepositValidatedEvidence[] = [];
+  for (const observed of snapshot.captures) {
+    context.signal.throwIfAborted();
+    const admission = admitCtbcDomesticDepositCaptureEvidence(
+      buildCtbcCapture(observed, observedAt),
+    );
+    if (admission.status !== "admissible" || !admission.capture) {
+      await context.event("validation", "failed", "source-validation-rejected", {
+        completed: validatedCaptures.length,
+        total: snapshot.captures.length,
+      });
+      throw new Error(
+        `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+      );
+    }
+    validatedCaptures.push(admission.capture);
+  }
+
+  const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
+  const financialCaptures: ExistingCtbcFinancialCapture[] = [];
+  const items: ProductStageRequest[] = [];
+  await context.event("validation", "started", "canonical-admission-started", {
+    completed: 0,
+    total: validatedCaptures.length,
+  });
+  for (const capture of validatedCaptures) {
+    context.signal.throwIfAborted();
+    const captureId = `ctbc-${randomUUID()}`;
+    const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
+    if (capture.responses.every((response) => response.rows.length === 0)) {
+      items.push({
+        product: "domestic-deposit",
+        itemKey: captureId,
+        command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
+      });
+      continue;
+    }
+    const admission = admitCtbcDomesticDepositFinancialCapture({
+      capture,
+      captureId: `ctbc-financial-${captureId}`,
+      humanAttestation: manifest,
+    });
+    if (admission.status !== "admitted" || !admission.capture) {
+      await context.event("validation", "failed", "canonical-admission-rejected", {
+        completed: financialCaptures.length,
+        total: validatedCaptures.length,
+      });
+      throw new Error(
+        `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
+      );
+    }
+    financialCaptures.push(admission.capture);
+    items.push({
+      product: "domestic-deposit",
+      itemKey: captureId,
+      command: {
+        kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+        request: { steps: [
+          { kind: "source", request: source },
+          { kind: "deposit", request: { capture: admission.capture } },
+        ] },
+      },
+    });
+  }
+  await context.event("validation", "completed", "canonical-admission-completed", {
+    completed: validatedCaptures.length,
+    total: validatedCaptures.length,
+  });
+  context.signal.throwIfAborted();
+  const balances: ProductStageRequest[] = [];
+  if (financialCaptures.length > 0) {
+    await context.event("collection", "started", "current-balance-collection-started");
+    await context.event("decoding", "started", "current-balance-decoding-started");
+    let currentRows: readonly CtbcCurrentDepositBalanceRow[];
+    try {
+      currentRows = await readCurrentBalances();
+    } catch {
+      await context.event("decoding", "failed", "current-balance-decoding-failed");
+      await context.event("collection", "failed", "current-balance-collection-failed");
+      throw new Error("CTBC current balance source collection failed.");
+    }
+    await context.event("decoding", "completed", "current-balance-decoding-completed");
+    await context.event("collection", "completed", "current-balance-collection-completed", {
+      completed: currentRows.length,
+      total: currentRows.length,
+    });
+    const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+    await context.event("validation", "started", "current-balance-validation-started", {
+      completed: 0,
+      total: currentRows.length,
+    });
+    try {
+      for (const row of currentRows) {
+        context.signal.throwIfAborted();
+        const matching = admittedCaptureFor(row);
+        if (!matching)
+          throw new Error("CTBC current deposit snapshot has no admitted account identity.");
+        balances.push({
+          product: "current-balance",
+          itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
+              buildCtbcCurrentDepositBalanceCapture(row, matching),
+            )),
+          },
+        });
+      }
+    } catch {
+      await context.event("validation", "failed", "current-balance-validation-rejected", {
+        completed: 0,
+        total: currentRows.length,
+      });
+      throw new Error("CTBC current balance source admission was rejected.");
+    }
+    await context.event("validation", "completed", "current-balance-validation-completed", {
+      completed: balances.length,
+      total: currentRows.length,
+    });
+  }
+
+  product.stage(...items, ...balances);
+  return {
+    sourceCaptureCount: validatedCaptures.length,
+    rowCount: snapshot.output.rowCount,
+  };
+}
+
+/** Collect domestic-deposit items for the App-owned financial commit. */
+export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, product) => {
+  const snapshot = await readCtbcDepositSource(page, input, context, product);
+  return await stageCtbcDeposit(
+    snapshot,
+    input,
+    context,
+    product,
+    () => readCtbcCurrentDepositBalancesFromPage(page, context),
+  );
+};
+
 /** App-owned CTBC statement provider. Source admission completes before either commit. */
 export async function runCtbcProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
-  dependencies: CtbcProviderWorkflowDependencies = {},
+  overrides: Readonly<{ collectDeposit?: CtbcDepositRunner }> = {},
 ): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("CTBC workflow credentials or input are missing or invalid.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
+  const collectDeposit = overrides.collectDeposit ?? runCtbcDeposit;
 
   return context.browser.withPage(async (page) => {
     await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
@@ -1121,154 +1293,10 @@ export async function runCtbcProviderWorkflow(
       collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
-        const collected = await (dependencies.collectStatements ??
-          ((target, input) => collectCtbcStatements(
-            target,
-            input,
-            productContext,
-          )))(page, parsed.data);
-        context.signal.throwIfAborted();
-        if (collected.captures.length === 0 ||
-          collected.output.count !== collected.captures.length) {
-          await productContext.event("validation", "failed", "source-validation-rejected", {
-            completed: collected.captures.length,
-            total: collected.output.count,
-          });
-          throw new Error("CTBC source has no complete selected account capture.");
-        }
-        await productContext.event("validation", "started", "source-validation-started", {
-          completed: 0,
-          total: collected.captures.length,
-        });
-        const observedAt = ctbcObservedAt(new Date(context.now()).getTime());
-        const validatedCaptures: CtbcDomesticDepositValidatedEvidence[] = [];
-        for (const observed of collected.captures) {
-          context.signal.throwIfAborted();
-          const admission = admitCtbcDomesticDepositCaptureEvidence(
-            buildCtbcCapture(observed, observedAt),
-          );
-          if (admission.status !== "admissible" || !admission.capture) {
-            await productContext.event("validation", "failed", "source-validation-rejected", {
-              completed: validatedCaptures.length,
-              total: collected.captures.length,
-            });
-            throw new Error(
-              `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
-            );
-          }
-          validatedCaptures.push(admission.capture);
-        }
-
-        const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
-        const financialCaptures: ExistingCtbcFinancialCapture[] = [];
-        const items: ProductStageRequest[] = [];
-        await productContext.event("validation", "started", "canonical-admission-started", {
-          completed: 0,
-          total: validatedCaptures.length,
-        });
-        for (const capture of validatedCaptures) {
-          context.signal.throwIfAborted();
-          const captureId = `ctbc-${randomUUID()}`;
-          const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
-          if (capture.responses.every((response) => response.rows.length === 0)) {
-            items.push({
-              product: "domestic-deposit",
-              itemKey: captureId,
-              command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
-            });
-            continue;
-          }
-          const admission = admitCtbcDomesticDepositFinancialCapture({
-            capture,
-            captureId: `ctbc-financial-${captureId}`,
-            humanAttestation: manifest,
-          });
-          if (admission.status !== "admitted" || !admission.capture) {
-            await productContext.event("validation", "failed", "canonical-admission-rejected", {
-              completed: financialCaptures.length,
-              total: validatedCaptures.length,
-            });
-            throw new Error(
-              `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-            );
-          }
-          financialCaptures.push(admission.capture);
-          items.push({
-            product: "domestic-deposit",
-            itemKey: captureId,
-            command: {
-              kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-              request: { steps: [
-                { kind: "source", request: source },
-                { kind: "deposit", request: { capture: admission.capture } },
-              ] },
-            },
-          });
-        }
-        await productContext.event("validation", "completed", "canonical-admission-completed", {
-          completed: validatedCaptures.length,
-          total: validatedCaptures.length,
-        });
-        context.signal.throwIfAborted();
-        const readCurrent = dependencies.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
-        const balances: ProductStageRequest[] = [];
-        if (financialCaptures.length > 0) {
-          await productContext.event("collection", "started", "current-balance-collection-started");
-          await productContext.event("decoding", "started", "current-balance-decoding-started");
-          let currentRows: readonly CtbcCurrentDepositBalanceRow[];
-          try {
-            currentRows = await readCtbcCurrentDepositBalancesForApp(page, productContext, readCurrent);
-          } catch {
-            await productContext.event("decoding", "failed", "current-balance-decoding-failed");
-            await productContext.event("collection", "failed", "current-balance-collection-failed");
-            throw new Error("CTBC current balance source collection failed.");
-          }
-          await productContext.event("decoding", "completed", "current-balance-decoding-completed");
-          await productContext.event("collection", "completed", "current-balance-collection-completed", {
-            completed: currentRows.length,
-            total: currentRows.length,
-          });
-          const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
-          await productContext.event("validation", "started", "current-balance-validation-started", {
-            completed: 0,
-            total: currentRows.length,
-          });
-          try {
-            for (const row of currentRows) {
-              context.signal.throwIfAborted();
-              const matching = admittedCaptureFor(row);
-              if (!matching)
-                throw new Error("CTBC current deposit snapshot has no admitted account identity.");
-              balances.push({
-                product: "current-balance",
-                itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-                command: {
-                  kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-                  request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
-                    buildCtbcCurrentDepositBalanceCapture(row, matching),
-                  )),
-                },
-              });
-            }
-          } catch {
-            await productContext.event("validation", "failed", "current-balance-validation-rejected", {
-              completed: 0,
-              total: currentRows.length,
-            });
-            throw new Error("CTBC current balance source admission was rejected.");
-          }
-          await productContext.event("validation", "completed", "current-balance-validation-completed", {
-            completed: balances.length,
-            total: currentRows.length,
-          });
-        }
-
-        product.stage(...items, ...balances);
-        count = collected.output.count;
-        return {
-          sourceCaptureCount: validatedCaptures.length,
-          rowCount: collected.output.rowCount,
-        };
+        const collected = await collectDeposit(page, parsed.data, productContext, product);
+        // stageCtbcDeposit admits only when every selected account was captured.
+        count = collected.sourceCaptureCount;
+        return collected;
       },
       financialCommit: context.financialCommit,
     });

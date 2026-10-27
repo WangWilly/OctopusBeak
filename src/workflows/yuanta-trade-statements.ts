@@ -48,6 +48,7 @@ import { withAbort } from "./abort.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import {
   collectSelectedProducts,
+  type ProductCollectionHandle,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -976,7 +977,7 @@ function tradeParams(
   return params;
 }
 
-function gridCount(pages: ReportPage[]): number {
+function gridCount(pages: readonly ReportPage[]): number {
   return pages.reduce((total, page) => total + page.grids.length, 0);
 }
 
@@ -986,7 +987,7 @@ type HoldingCaptureEvidence = Pick<
 >;
 
 export function isCompleteHoldingCapture(
-  pages: HoldingCaptureEvidence[],
+  pages: readonly HoldingCaptureEvidence[],
   requestedTypes: readonly string[],
 ): boolean {
   if (requestedTypes.length === 0 || pages.length !== requestedTypes.length) {
@@ -1040,7 +1041,7 @@ export function isCompleteTradeCapture(
 }
 
 export function normalizeTradeRows(
-  pages: ReportPage[],
+  pages: readonly ReportPage[],
   dateRange: { startDate: string; endDate: string },
 ): NormalizedRow[] {
   const period = periodLabel(dateRange);
@@ -1171,7 +1172,7 @@ export function normalizeTradeRows(
 }
 
 function normalizeHoldingRows(
-  pages: ReportPage[],
+  pages: readonly ReportPage[],
   _fallbackDateRange: { startDate: string; endDate: string },
 ): NormalizedRow[] {
   const rows: NormalizedRow[] = [];
@@ -1695,37 +1696,197 @@ async function authenticateYuantaTradePage(
   return usedExistingSession;
 }
 
-export type YuantaTradeWorkflowDependencies = Readonly<{
-  authenticate?: (
-    page: Page,
-    credentials: YuantaTradeCredentials,
-    context: WorkflowContext,
-  ) => Promise<boolean>;
-  captureReport?: (
-    page: Page,
+/** What one securities run reads and builds from, after the provider input is validated. */
+export type YuantaTradeCollectionInput = Readonly<{
+  credentials: YuantaTradeCredentials;
+  accountIndex: number;
+  holdingTypes: readonly HoldingType[];
+  tradeTypes: readonly TradeType[];
+  dateRange: Readonly<{ startDate: string; endDate: string }>;
+}>;
+
+/** The NexusWebTrade report pages as the read half needs them. */
+export type YuantaTradeSource = Readonly<{
+  captureReport: (
     reportType: string,
     params: Record<string, string | number>,
-    context: WorkflowContext,
   ) => Promise<YuantaTradeReportPage>;
 }>;
+
+export function yuantaTradeSource(page: Page, context: WorkflowContext): YuantaTradeSource {
+  return {
+    captureReport: (reportType, params) => captureTypedReport(page, reportType, params, context),
+  };
+}
+
+/** Every requested report page one securities run read, in request order per category (ADR 0065). */
+export type YuantaTradeSourceSnapshot = Readonly<{
+  holdings: readonly YuantaTradeReportPage[];
+  trades: readonly YuantaTradeReportPage[];
+}>;
+
+/** The staged securities product's summary and the counts the run result reports. */
+export type YuantaTradeStaged = Readonly<{
+  summary: ProductCollectionSummary;
+  counts: YuantaTradeCollectedCounts;
+}>;
+
+/**
+ * Capture every requested holding report, then every requested trade report.
+ * This is the only half that touches the page.
+ */
+export async function readYuantaTradeSource(
+  source: YuantaTradeSource,
+  input: YuantaTradeCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<YuantaTradeSourceSnapshot> {
+  const requests = [
+    ...input.holdingTypes.map((type) => ({
+      reportType: type,
+      params: { index: input.accountIndex },
+      category: "holding" as const,
+    })),
+    ...input.tradeTypes.map((type) => ({
+      reportType: type,
+      params: tradeParams(input, type, input.dateRange),
+      category: "trade" as const,
+    })),
+  ];
+  await product.event("decoding", "started", "source-decoding-started");
+  const holdings: ReportPage[] = [];
+  const trades: ReportPage[] = [];
+  try {
+    for (const [index, request] of requests.entries()) {
+      context.signal.throwIfAborted();
+      const reportPage = await source.captureReport(request.reportType, request.params);
+      (request.category === "holding" ? holdings : trades).push(reportPage);
+      await product.event("collection", "advanced", "report-collected", {
+        completed: index + 1,
+        total: requests.length,
+      });
+    }
+  } catch (error) {
+    await product.event("collection", "failed", "source-collection-failed", {
+      completed: holdings.length + trades.length,
+      total: requests.length,
+    });
+    if (error instanceof SourceTextIntegrityError)
+      await product.event("decoding", "failed", "source-decoding-failed");
+    throw error;
+  }
+  context.signal.throwIfAborted();
+  return { holdings, trades };
+}
+
+/**
+ * Admit a complete holding and trade read, build the account-scoped canonical
+ * investment captures and stage one commit per capture.
+ */
+export async function stageYuantaTrade(
+  snapshot: YuantaTradeSourceSnapshot,
+  input: YuantaTradeCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<YuantaTradeStaged> {
+  const { holdings, trades } = snapshot;
+  const { dateRange } = input;
+  const total = input.holdingTypes.length + input.tradeTypes.length;
+  const completeHoldings = isCompleteHoldingCapture(holdings, input.holdingTypes);
+  const completeTrades = isCompleteTradeCapture(trades, input.tradeTypes, dateRange);
+  if (!completeHoldings || !completeTrades) {
+    await product.event("validation", "failed", "source-validation-rejected", {
+      completed: holdings.length + trades.length,
+      total,
+    });
+    throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
+  }
+
+  await product.event("validation", "started", "source-validation-started", {
+    completed: total,
+    total,
+  });
+  const tradeRows = normalizeTradeRows(trades, dateRange);
+  const holdingRows = normalizeHoldingRows(holdings, dateRange);
+  let captures: InvestmentValidatedCapture[];
+  try {
+    captures = buildYuantaTradeCanonicalCaptures(
+      input.credentials,
+      holdingRows,
+      tradeRows,
+      { dateRange, requestedTradeTypes: input.tradeTypes },
+    );
+    if (captures.length === 0) {
+      throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
+    }
+  } catch (error) {
+    await product.event("validation", "failed", "source-validation-rejected");
+    throw error;
+  }
+  context.signal.throwIfAborted();
+
+  product.stage(...captures.map((capture) => ({
+    product: "investment",
+    itemKey: capture.captureId,
+    command: {
+      kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+      request: { capture },
+    },
+    relationCommands: () => [{
+      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+      request: {
+        sourceConnectionKey: capture.identity.sourceConnectionKey,
+        observedAt: capture.observedAt,
+      },
+    }],
+  })));
+  return {
+    summary: {
+      sourceCaptureCount: total,
+      rowCount: holdingRows.length + tradeRows.length,
+    },
+    counts: {
+      holdingPageCount: holdings.length,
+      holdingGridCount: gridCount(holdings),
+      holdingRowCount: holdingRows.length,
+      tradePageCount: trades.length,
+      tradeGridCount: gridCount(trades),
+      tradeRowCount: tradeRows.length,
+      canonicalCaptureCount: captures.length,
+    },
+  };
+}
+
+/** The securities product runner: read the report pages, then build and stage from them. */
+export type YuantaTradeProductRunner = (
+  page: Page,
+  input: YuantaTradeCollectionInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+) => Promise<YuantaTradeStaged>;
+
+const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, input, context, product) => {
+  const snapshot = await readYuantaTradeSource(yuantaTradeSource(page, context), input, context, product);
+  return stageYuantaTrade(snapshot, input, context, product);
+};
 
 /** App-owned Yuanta Trade path: complete in-memory collection and admission precede one injected commit request. */
 export async function runYuantaTradeProviderWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   rawInput: unknown,
-  dependencies: YuantaTradeWorkflowDependencies = {},
+  collectSecurities: YuantaTradeProductRunner = collectYuantaTradeSecurities,
 ): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     throw new Error("YuanTa Trade workflow credentials or selection are invalid.");
   }
-  const input = parsed.data;
-  if (!input.includeHoldings || !input.includeTrades) {
+  const parsedInput = parsed.data;
+  if (!parsedInput.includeHoldings || !parsedInput.includeTrades) {
     throw new Error("YuanTa Trade canonical collection requires holdings and trades.");
   }
   if (
-    new Set(input.holdingTypes).size !== input.holdingTypes.length ||
-    new Set(input.tradeTypes).size !== input.tradeTypes.length
+    new Set(parsedInput.holdingTypes).size !== parsedInput.holdingTypes.length ||
+    new Set(parsedInput.tradeTypes).size !== parsedInput.tradeTypes.length
   ) {
     throw new Error("YuanTa Trade source selection contains duplicate report types.");
   }
@@ -1733,32 +1894,22 @@ export async function runYuantaTradeProviderWorkflow(
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
   const now = new Date(context.now());
-  const dateRange = {
-    startDate: input.startDate ?? formatDate(defaultStartDate(now)),
-    endDate: input.endDate ?? formatDate(now),
+  const input: YuantaTradeCollectionInput = {
+    credentials: parsedInput.credentials,
+    accountIndex: parsedInput.accountIndex,
+    holdingTypes: parsedInput.holdingTypes,
+    tradeTypes: parsedInput.tradeTypes,
+    dateRange: {
+      startDate: parsedInput.startDate ?? formatDate(defaultStartDate(now)),
+      endDate: parsedInput.endDate ?? formatDate(now),
+    },
   };
-  const authenticate = dependencies.authenticate ?? authenticateYuantaTradePage;
-  const readReport = dependencies.captureReport ?? captureTypedReport;
 
   return context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
-    await authenticate(page, input.credentials, context);
+    await authenticateYuantaTradePage(page, input.credentials, context);
     context.signal.throwIfAborted();
 
-    const requestedHoldingTypes = input.holdingTypes as HoldingType[];
-    const requestedTradeTypes = input.tradeTypes as TradeType[];
-    const requests = [
-      ...requestedHoldingTypes.map((type) => ({
-        reportType: type,
-        params: { index: input.accountIndex },
-        category: "holding" as const,
-      })),
-      ...requestedTradeTypes.map((type) => ({
-        reportType: type,
-        params: tradeParams(input, type, dateRange),
-        category: "trade" as const,
-      })),
-    ];
     let collected: YuantaTradeCollectedCounts | undefined;
     const summary = await collectSelectedProducts({
       provider: "yuanta-trade",
@@ -1768,104 +1919,9 @@ export async function runYuantaTradeProviderWorkflow(
       event: context.event,
       productFailure: context.productFailure,
       collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
-        const productContext: WorkflowContext = { ...context, event: product.event };
-        await productContext.event("decoding", "started", "source-decoding-started");
-        const holdings: ReportPage[] = [];
-        const trades: ReportPage[] = [];
-        try {
-          for (const [index, request] of requests.entries()) {
-            context.signal.throwIfAborted();
-            const reportPage = await readReport(
-              page,
-              request.reportType,
-              request.params,
-              productContext,
-            );
-            (request.category === "holding" ? holdings : trades).push(reportPage);
-            await productContext.event("collection", "advanced", "report-collected", {
-              completed: index + 1,
-              total: requests.length,
-            });
-          }
-        } catch (error) {
-          await productContext.event("collection", "failed", "source-collection-failed", {
-            completed: holdings.length + trades.length,
-            total: requests.length,
-          });
-          if (error instanceof SourceTextIntegrityError)
-            await productContext.event("decoding", "failed", "source-decoding-failed");
-          throw error;
-        }
-        context.signal.throwIfAborted();
-
-        const completeHoldings = isCompleteHoldingCapture(
-          holdings,
-          requestedHoldingTypes,
-        );
-        const completeTrades = isCompleteTradeCapture(
-          trades,
-          requestedTradeTypes,
-          dateRange,
-        );
-        if (!completeHoldings || !completeTrades) {
-          await productContext.event("validation", "failed", "source-validation-rejected", {
-            completed: holdings.length + trades.length,
-            total: requests.length,
-          });
-          throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
-        }
-
-        await productContext.event("validation", "started", "source-validation-started", {
-          completed: requests.length,
-          total: requests.length,
-        });
-        const tradeRows = normalizeTradeRows(trades, dateRange);
-        const holdingRows = normalizeHoldingRows(holdings, dateRange);
-        let captures: InvestmentValidatedCapture[];
-        try {
-          captures = buildYuantaTradeCanonicalCaptures(
-            input.credentials,
-            holdingRows,
-            tradeRows,
-            { dateRange, requestedTradeTypes },
-          );
-          if (captures.length === 0) {
-            throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
-          }
-        } catch (error) {
-          await productContext.event("validation", "failed", "source-validation-rejected");
-          throw error;
-        }
-        context.signal.throwIfAborted();
-
-        product.stage(...captures.map((capture) => ({
-          product: "investment",
-          itemKey: capture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-            request: { capture },
-          },
-          relationCommands: () => [{
-            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-            request: {
-              sourceConnectionKey: capture.identity.sourceConnectionKey,
-              observedAt: capture.observedAt,
-            },
-          }],
-        })));
-        collected = {
-          holdingPageCount: holdings.length,
-          holdingGridCount: gridCount(holdings),
-          holdingRowCount: holdingRows.length,
-          tradePageCount: trades.length,
-          tradeGridCount: gridCount(trades),
-          tradeRowCount: tradeRows.length,
-          canonicalCaptureCount: captures.length,
-        };
-        return {
-          sourceCaptureCount: requests.length,
-          rowCount: holdingRows.length + tradeRows.length,
-        };
+        const staged = await collectSecurities(page, input, context, product);
+        collected = staged.counts;
+        return staged.summary;
       },
       financialCommit: context.financialCommit,
     });
