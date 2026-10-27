@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";
@@ -7,7 +8,7 @@ import {
   buildFubonLoanPaymentAccountEvidence,
   buildFubonCurrentDepositBalanceCapture,
   deriveFubonDomesticDepositAccountNumberEvidence,
-  indexFubonCurrentDepositFinancialCaptures,
+  fubonCurrentBalanceCaptureMatching,
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
   readFubonDepositSourceSnapshot,
@@ -140,17 +141,26 @@ const fubonExistingIdentity = {
     accountNumber: { value: accountNumber },
   },
 };
-assert.equal(
-  indexFubonCurrentDepositFinancialCaptures([
-    fubonExistingIdentity,
-    fubonExistingIdentity,
-  ]).size,
-  1,
-  "same account identity across date ranges is deduplicated",
-);
+{
+  const match = matchCurrentBalanceCaptures(
+    [{ accountNumber }, { accountNumber: "synthetic-unadmitted-number" }],
+    [fubonExistingIdentity, fubonExistingIdentity],
+    fubonCurrentBalanceCaptureMatching,
+  );
+  assert.deepEqual(
+    match.matched.map(({ capture }) => capture),
+    [fubonExistingIdentity],
+    "same account identity across date ranges is deduplicated",
+  );
+  assert.deepEqual(
+    match.excluded,
+    [{ accountNumber: "synthetic-unadmitted-number" }],
+    "a row without admitted account-number evidence is excluded, not thrown",
+  );
+}
 assert.throws(
   () =>
-    indexFubonCurrentDepositFinancialCaptures([
+    matchCurrentBalanceCaptures([], [
       fubonExistingIdentity,
       {
         identity: {
@@ -158,7 +168,7 @@ assert.throws(
           sourceAccountKey: "sha256:other-account",
         },
       },
-    ]),
+    ], fubonCurrentBalanceCaptureMatching),
   /ambiguous across financial captures/u,
 );
 
@@ -696,7 +706,8 @@ try {
     [continuedKey, continuedKey],
   );
   assert.ok(balanceAccountKeys(continuedRun.items).includes(continuedKey), "the current balance links to the continued account");
-  assert.doesNotThrow(() => indexFubonCurrentDepositFinancialCaptures(financialCapturesOf(continuedRun.items)));
+  assert.doesNotThrow(() =>
+    matchCurrentBalanceCaptures([], financialCapturesOf(continuedRun.items), fubonCurrentBalanceCaptureMatching));
   assert.deepEqual(continuedRun.result.events, []);
   assert.deepEqual(
     continuedRun.requests.map((request) => request.identifier.value).sort(),
