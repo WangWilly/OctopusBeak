@@ -130,13 +130,17 @@ async function solveAndSubmit(
   verification: HumanAssistanceContract,
   answer: string,
   submitFrame?: string,
+  options: Readonly<{ signal?: AbortSignal; onSolve?: () => void }> = {},
 ) {
   let submitted: URLSearchParams | undefined;
   await page.route(`${PROVIDER_ORIGIN}/submit`, async (route) => {
     submitted = new URLSearchParams(route.request().postData() ?? "");
     await route.fulfill({ contentType: "text/html", body: "<p>submitted</p>" });
   });
-  const solver = scriptedSolver(() => ({ answer, confidence: 0.99 }));
+  const solver = scriptedSolver(() => {
+    options.onSolve?.();
+    return { answer, confidence: 0.99 };
+  });
   const failures: string[] = [];
   const outcome: VerificationRoutingOutcome = await routeVerificationActor({
     contract: verification,
@@ -144,6 +148,7 @@ async function solveAndSubmit(
     confidenceThreshold: 0.9,
     seams: {
       pageForRun: pageForRunOf(RUN, page),
+      signal: options.signal ?? new AbortController().signal,
       solver,
       resume: async () => {
         const scope = submitFrame ? page.frame({ name: submitFrame })! : page;
@@ -177,6 +182,22 @@ test("SinoPac captures natural CAPTCHA pixels, fills its declared field and subm
     assert.deepEqual(result.failures, []);
     assert.deepEqual(pngSize(result.solver.inputs[0]!.image!), { width: 120, height: 40 }, "never the 100x35 CSS box");
     assert.equal(result.submitted?.get("code"), "120987");
+  }));
+
+test("a request cancelled after capture injects and submits nothing and rejects with its reason", () =>
+  withProviderPage(sinopacPage(), [], async ({ page, requests }) => {
+    const controller = new AbortController();
+    const reason = new Error("run cancelled");
+    await assert.rejects(
+      solveAndSubmit(page, sinopacContract(), "120987", undefined, {
+        signal: controller.signal,
+        // The challenge has been captured; cancellation lands while the solver works.
+        onSolve: () => controller.abort(reason),
+      }),
+      (error: unknown) => error === reason,
+    );
+    assert.equal(await page.inputValue("#ctl00_sino_keyword3"), "", "no answer was injected");
+    assert.deepEqual(requests.filter((path) => path === "/submit"), [], "nothing was submitted");
   }));
 
 test("SinoPac refuses a CAPTCHA image outside its calibrated natural size", () =>

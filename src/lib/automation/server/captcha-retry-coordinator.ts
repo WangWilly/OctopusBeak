@@ -185,6 +185,7 @@ export async function runCaptchaRetryCampaign(
             : await route({
               run: request.run,
               pageForRun,
+              signal: request.signal,
               solver: appVerificationSolver,
               resume: () => completeAppWorkflowHumanAssistance(request),
               postSubmitOutcome: workflowOwnsCaptchaOutcome

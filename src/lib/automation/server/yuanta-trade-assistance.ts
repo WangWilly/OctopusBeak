@@ -65,18 +65,6 @@ function isSupportedAutomaticStage(contract: HumanAssistanceContractInput) {
   return false;
 }
 
-function guardedAsync<TArgs extends unknown[], TResult>(
-  signal: AbortSignal,
-  operation: (...args: TArgs) => Promise<TResult>,
-): (...args: TArgs) => Promise<TResult> {
-  return async (...args) => {
-    signal.throwIfAborted();
-    const result = await operation(...args);
-    signal.throwIfAborted();
-    return result;
-  };
-}
-
 export async function routeYuantaTradeAppAssistanceRequest(
   request: AppWorkflowHumanAssistanceRequest,
   dependencies: YuantaTradeAppAssistanceDependencies,
@@ -107,21 +95,22 @@ export async function routeYuantaTradeAppAssistanceRequest(
     run: request.run,
     pageForRun: dependencies.pageForRun,
     settings: dependencies.settings,
-    // A cancelled request keeps a late solver answer off the page.
-    solver: { solve: guardedAsync(request.signal, solver.solve.bind(solver)) },
-    resume: guardedAsync(request.signal, async () => {
+    // The route performs no page operation once the request is cancelled.
+    signal: request.signal,
+    solver,
+    resume: async () => {
       await completeAppWorkflowHumanAssistance(request);
       assistanceResumed = true;
-    }),
+    },
     postSubmitOutcome: noPostSubmitOutcome,
     finalizeFailed: async () => {
       // The executor owns the terminal transition. In particular, an abort
       // must remain a cancellation and never be converted into a route error.
       request.signal.throwIfAborted();
     },
-    onChallengeCaptured: guardedAsync(request.signal, async () => {
+    onChallengeCaptured: async () => {
       await dependencies.onChallengeCaptured?.();
-    }),
+    },
   });
   if (request.signal.aborted) return;
   if (outcome.kind === "failed") {

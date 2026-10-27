@@ -42,6 +42,11 @@ export type VerificationPostSubmitOutcome =
 export type VerificationRoutingSeams = {
   /** Finds the page the run's current Workflow execution hosts. */
   pageForRun: PageForRun;
+  /**
+   * The assistance request's signal. Once it aborts, the route performs no
+   * further page operation and rejects with its reason.
+   */
+  signal: AbortSignal;
   solver: VerificationSolver;
   /** Continues the paused workflow once the stage is answered. */
   resume: () => void | Promise<void>;
@@ -107,6 +112,32 @@ type ChallengeSteps = {
  * keep the generic viewer behaviour.
  */
 function challengeSteps(
+  contract: HumanAssistanceContract,
+  taskRunId: string,
+  pageForRun: PageForRun,
+  signal: AbortSignal,
+): ChallengeSteps {
+  const steps = providerSteps(contract, taskRunId, pageForRun);
+  // Every provider stops acting on the page as soon as the request is cancelled.
+  const guarded = <A extends unknown[], R>(step: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      signal.throwIfAborted();
+      const result = await step(...args);
+      signal.throwIfAborted();
+      return result;
+    };
+  return {
+    captureChallengeImage: guarded(steps.captureChallengeImage),
+    captureChallengeAudio: guarded(steps.captureChallengeAudio),
+    validateChallengeImage: steps.validateChallengeImage && guarded(steps.validateChallengeImage),
+    refreshChallenge: steps.refreshChallenge && guarded(steps.refreshChallenge),
+    injectAnswer: guarded(steps.injectAnswer),
+    injectSelections: guarded(steps.injectSelections),
+    clickTarget: guarded(steps.clickTarget),
+  };
+}
+
+function providerSteps(
   contract: HumanAssistanceContract,
   taskRunId: string,
   pageForRun: PageForRun,
@@ -185,11 +216,12 @@ export async function routeVerificationActor(input: {
   const contract = input.contract;
   const plan = verificationPlanForContract(contract);
   const seams = input.seams;
+  seams.signal.throwIfAborted();
   if (plan.kind === "proceed") {
     await seams.resume();
     return { kind: "resumed" };
   }
-  const steps = challengeSteps(contract!, input.taskRunId, seams.pageForRun);
+  const steps = challengeSteps(contract!, input.taskRunId, seams.pageForRun, seams.signal);
   if (plan.kind === "click") {
     await steps.clickTarget(plan.targetId);
     await seams.resume();
@@ -239,6 +271,7 @@ export async function routeVerificationActor(input: {
       refresh: refreshChallenge,
     });
   } catch (error) {
+    seams.signal.throwIfAborted();
     await seams.finalizeFailed(
       error instanceof ProviderChallengeCaptureError
         ? error.message
@@ -247,6 +280,9 @@ export async function routeVerificationActor(input: {
     return { kind: "failed" };
   }
   if (outcome.status === "solved" || outcome.status === "absent") {
+    // Not checked after resume: the resumed workflow's own cleanup may abort
+    // the request while postSubmitOutcome joins its execution.
+    seams.signal.throwIfAborted();
     await seams.resume();
     const postSubmitOutcome = await seams.postSubmitOutcome();
     if (postSubmitOutcome === "provider-rejected") {
